@@ -18,6 +18,9 @@ use crate::shell::state::WorkspaceTree;
 const FOOTER_H: f64 = 40.0;
 const WARNING_H: f64 = 24.0;
 const ACTIONS_H: f64 = 40.0;
+/// Minimum pointer target (HIG §9.6): every button in this popover —
+/// Follow/Stop, Invite, Join — is at least this tall.
+const MIN_TARGET: f64 = 32.0;
 const INVITED_TAG: &str = "invited";
 const INVITED_ROW_ALPHA: f32 = 0.55;
 const ROW_H: f64 = 64.0;
@@ -212,6 +215,26 @@ impl CollaboratorsOverlay {
         model: &CollaboratorsModel<'_>,
         cursor: Option<Point>,
     ) {
+        // Theme type tokens already carry the user's text scale, and this
+        // popover lays out and paints with those resolved sizes; the
+        // renderer must not scale them a second time (HIG §7a), so it is
+        // reset for the pass exactly as the lens pass resets it, and
+        // restored for the ordinary child widgets that follow.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+        self.draw_at_theme_scale(scene, transform, text_renderer, theme, model, cursor);
+        text_renderer.set_text_scale(renderer_scale);
+    }
+
+    fn draw_at_theme_scale(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &CollaboratorsModel<'_>,
+        cursor: Option<Point>,
+    ) {
         self.layout(
             model.host,
             model.rows.len(),
@@ -235,7 +258,12 @@ impl CollaboratorsOverlay {
         let rect = self.panel;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let card = RoundedRect::from_rect(rect, f64::from(tokens.radii.lg));
+        // Panel role (HIG §9.1/§9.5): the popover's corner is the Panel
+        // radius and its edge is derived against the ground, not declared.
+        let card = RoundedRect::from_rect(
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -246,7 +274,7 @@ impl CollaboratorsOverlay {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
@@ -461,6 +489,14 @@ impl CollaboratorsOverlay {
         } else {
             CollaboratorsHit::Dismiss
         }
+    }
+
+    /// The Follow/Stop button of the row whose top edge is `y`: one pointer
+    /// target tall, centred in the row. Paint and hit-testing both read
+    /// this, so they cannot drift apart.
+    fn row_action_rect(panel: Rect, y: f64) -> Rect {
+        let top = y + (ROW_H - MIN_TARGET) / 2.0;
+        Rect::new(panel.x1 - 88.0, top, panel.x1 - 12.0, top + MIN_TARGET)
     }
 
     fn focus_order(&self) -> Vec<CollaboratorsHit> {
@@ -805,12 +841,7 @@ impl CollaboratorsOverlay {
                     + exposure_h
                     + warning_h
                     + row_count_as_f64(visible_index) * ROW_H;
-                Rect::new(
-                    self.panel.x1 - 88.0,
-                    y + 16.0,
-                    self.panel.x1 - 12.0,
-                    y + 44.0,
-                )
+                Self::row_action_rect(self.panel, y)
             })
             .collect();
         self.row_rects = (0..member_count)
@@ -859,16 +890,23 @@ impl CollaboratorsOverlay {
             self.next_people = Rect::ZERO;
         }
         if may_invite {
-            let y0 = self.panel.y1 - FOOTER_H - ACTIONS_H + 6.0;
+            // Buttons are one pointer target tall (HIG §9.6: 32 minimum),
+            // centred in the 40 px action band.
+            let y0 = self.panel.y1 - FOOTER_H - ACTIONS_H + (ACTIONS_H - MIN_TARGET) / 2.0;
             let gap = 8.0;
             let half = (self.panel.width() - 16.0 - gap) / 2.0;
             self.invite = Rect::new(
                 self.panel.x0 + 8.0,
                 y0,
                 self.panel.x0 + 8.0 + half,
-                y0 + 28.0,
+                y0 + MIN_TARGET,
             );
-            self.join = Rect::new(self.invite.x1 + gap, y0, self.panel.x1 - 8.0, y0 + 28.0);
+            self.join = Rect::new(
+                self.invite.x1 + gap,
+                y0,
+                self.panel.x1 - 8.0,
+                y0 + MIN_TARGET,
+            );
         } else {
             self.invite = Rect::ZERO;
             self.join = Rect::ZERO;
@@ -1407,14 +1445,14 @@ impl CollaboratorsOverlay {
             );
         }
         if row.followable {
-            let action = Rect::new(
-                self.panel.x1 - 88.0,
-                row_y + 16.0,
-                self.panel.x1 - 12.0,
-                row_y + 44.0,
-            );
+            let action = Self::row_action_rect(self.panel, row_y);
+            // Control role (HIG §9.1): a pressable body takes `radii.lg`;
+            // `radii.sm` is for details drawn inside a control.
+            // The pass paints with the renderer reset to 1× (see `draw`), so
+            // the face is handed the theme-scaled label size explicitly.
             let face = ButtonFace::new(action, if followed { "Stop" } else { "Follow" })
-                .radius(f64::from(tokens.radii.sm))
+                .radius(ui::chrome::ChromeRole::Control.radius(theme, action.height()))
+                .text_size(tokens.typography.scale.base)
                 .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
@@ -1431,6 +1469,11 @@ impl CollaboratorsOverlay {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         if self.invite.area() > 0.0 {
+            // Control role (HIG §9.1): pressable bodies take `radii.lg`.
+            let radius = ui::chrome::ChromeRole::Control.radius(theme, self.invite.height());
+            // The pass paints with the renderer reset to 1× (see `draw`), so
+            // each face is handed the theme-scaled label size explicitly.
+            let label_size = tokens.typography.scale.base;
             Button::paint(
                 scene,
                 transform,
@@ -1438,7 +1481,8 @@ impl CollaboratorsOverlay {
                 theme,
                 &ButtonFace::new(self.invite, "Invite")
                     .primary()
-                    .radius(f64::from(tokens.radii.sm))
+                    .radius(radius)
+                    .text_size(label_size)
                     .hovered(cursor.is_some_and(|point| self.invite.contains(point))),
             );
             Button::paint(
@@ -1447,28 +1491,34 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 &ButtonFace::new(self.join, "Join")
-                    .radius(f64::from(tokens.radii.sm))
+                    .radius(radius)
+                    .text_size(label_size)
                     .hovered(cursor.is_some_and(|point| self.join.contains(point))),
             );
         }
 
-        let separator = vello::kurbo::Line::new(
-            Point::new(self.activity.x0, self.activity.y0 - 4.0),
-            Point::new(self.activity.x1, self.activity.y0 - 4.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+        // Separator inside a Panel (HIG §9.5): derived against the panel
+        // ground and inset `s3` from both panel edges, never full-bleed into
+        // the corner radius — it was a declared `border_standard` line that
+        // vanished on the dark preset.
+        ui::surface::separator(
+            scene,
             transform,
-            colors.border_standard,
-            None,
-            &separator,
+            self.panel.x0,
+            self.panel.x1,
+            self.activity.y0 - 4.0,
+            f64::from(tokens.spacing.s3),
+            ui::chrome::shell::panel_ground(theme),
         );
-        scene.fill(
-            Fill::NonZero,
+        // Control role (HIG §9.1): the activity row takes the Control radius
+        // (`radii.sm` is for details inside a control) and rests on the lift
+        // floor with an edge derived from that floor.
+        ui::surface::card(
+            scene,
             transform,
+            self.activity,
+            ui::chrome::ChromeRole::Control.radius(theme, self.activity.height()),
             colors.lift(0.35),
-            None,
-            &RoundedRect::from_rect(self.activity, f64::from(tokens.radii.sm)),
         );
         let size = tokens.typography.scale.sm;
         let (_, height) = text_renderer.measure("Workspace activity", size, None);
@@ -1600,6 +1650,78 @@ fn active_tab_title(tree: &WorkspaceTree, tab_id: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HIG §9.5: the footer separator (derived against the Panel ground) and
+    /// the activity row's edge (derived against its lift floor) must both
+    /// register on every shipped palette.
+    #[test]
+    fn footer_separator_and_row_edge_register_on_every_palette() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let floor = theme.tokens.colors.lift(0.35);
+            for (what, fill) in [("separator", ground), ("activity row", floor)] {
+                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                assert!(
+                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: the {what} must separate from its ground (Δ luminance {delta:.4})",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// Nothing in the footer touches (HIG §7): the separator clears the
+    /// action band, the row clears the separator and the panel's edge, and
+    /// the row keeps its inset from the panel sides.
+    #[test]
+    fn footer_keeps_a_token_gap_around_the_activity_row() {
+        let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), 2, false, true, false);
+        let panel = overlay.panel_rect();
+        let activity = overlay.activity_rect();
+        let (invite, _join) = overlay.action_rects();
+        let separator_y = activity.y0 - 4.0;
+        assert!(
+            separator_y - invite.y1 >= s1,
+            "separator clears the action band"
+        );
+        assert!(activity.y0 - separator_y >= s1, "row clears the separator");
+        assert!(panel.y1 - activity.y1 >= s1, "row clears the panel edge");
+        assert!(activity.x0 - panel.x0 >= s1 && panel.x1 - activity.x1 >= s1);
+    }
+
+    #[test]
+    fn every_button_is_at_least_one_pointer_target_and_centred_in_its_band() {
+        let mut overlay = CollaboratorsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 1200.0, 800.0), 3, false, true, false);
+        let (invite, join) = overlay.action_rects();
+        for rect in [invite, join]
+            .into_iter()
+            .chain(overlay.row_action_rects().iter().copied())
+        {
+            assert!(
+                rect.height() >= MIN_TARGET && rect.width() >= MIN_TARGET,
+                "{rect:?} is at least 32 x 32"
+            );
+        }
+        for (index, rect) in overlay.row_action_rects().iter().enumerate() {
+            let row_top = overlay.panel_rect().y0 + 48.0 + row_count_as_f64(index) * ROW_H;
+            assert!(
+                (rect.center().y - (row_top + ROW_H / 2.0)).abs() < f64::EPSILON,
+                "row {index}'s button is centred in its row"
+            );
+            assert!(rect.y0 >= row_top && rect.y1 <= row_top + ROW_H);
+        }
+        let band_top = overlay.panel_rect().y1 - FOOTER_H - ACTIONS_H;
+        assert!(invite.y0 >= band_top && invite.y1 <= band_top + ACTIONS_H);
+        assert!(
+            (invite.center().y - (band_top + ACTIONS_H / 2.0)).abs() < f64::EPSILON,
+            "footer buttons are centred in the action band"
+        );
+        assert_eq!(invite.y0, join.y0);
+        assert_eq!(invite.y1, join.y1);
+    }
 
     #[test]
     fn agent_classification_uses_stable_identity_not_display_label() {

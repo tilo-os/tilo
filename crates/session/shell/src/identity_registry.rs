@@ -472,23 +472,7 @@ pub fn cycle_workspace_identity(room: &str) -> io::Result<Option<IdentityProfile
 ///
 /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME")
-        && !xdg.is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join("tilo").join("identity"));
-    }
-    if let Some(home) = std::env::var_os("HOME")
-        && !home.is_empty()
-    {
-        return Ok(PathBuf::from(home)
-            .join(".config")
-            .join("tilo")
-            .join("identity"));
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "neither XDG_CONFIG_HOME nor HOME is set",
-    ))
+    runtime_identity::identity_dir_from_env()
 }
 
 /// Convert a relative path to absolute, or return unchanged if already absolute.

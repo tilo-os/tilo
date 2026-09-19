@@ -253,7 +253,7 @@ pub fn query_text_app_page(
         results.push(SearchResult::nullary(
             kind.clone(),
             provider_id,
-            tab.to_string(),
+            ui::record::RecordId::for_tab(tab).to_string(),
             entry.title.clone(),
             snippet,
             score,
