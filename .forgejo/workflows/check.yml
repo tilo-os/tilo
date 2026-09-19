@@ -1,7 +1,7 @@
 name: CI / affected packages
 
-# Pull requests and pushes compile/test only packages touched by the change and
-# their transitive workspace dependants. Full target and test coverage remains
+# Pull requests and pushes check affected reverse dependencies on native x86,
+# and test changed packages plus contract suites. Full native coverage remains
 # mandatory in nightly.yml; this job is the short feedback path.
 # Manual dispatch validates the complete workspace on both native architectures.
 on:
@@ -147,6 +147,7 @@ jobs:
             # only with github.event.before would forget changes from earlier
             # branch pushes and could produce a misleading exact-SHA receipt.
             base=origin/main
+            selection_args+=(--full)
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
             base='${{ github.event.before }}'
           fi
@@ -249,19 +250,20 @@ jobs:
       # it is deliberately not a Rust dependency, so an affected-only Cargo
       # invocation does not otherwise produce that binary.
       - name: Build installer used by app-catalogue integration tests
-        if: contains(matrix.packages, '-p app-catalogue')
+        if: contains(matrix.test_packages, '-p app-catalogue')
         run: >-
           bash tools/ci-measure.sh "build tilo-install test fixture" --
           bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
           cargo build --locked -p install
 
       - name: Test shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci-measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
-          bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.packages }}
+          bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)"
 
       - name: Check all targets in shard ${{ matrix.shard }}
