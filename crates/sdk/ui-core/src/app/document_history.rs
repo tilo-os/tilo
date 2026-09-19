@@ -947,4 +947,46 @@ mod tests {
         assert_ne!(app.focused_node, Some(toolbar));
         assert_eq!(app.state.doc.pending_ops(), pending);
     }
+    #[test]
+    fn native_history_retained_widgets_survive_moving_initialized_app() {
+        let mut app = App::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Text::new("Document")),
+        );
+        app.state.doc.put(ROOT, "title", "saved").unwrap();
+        app.state.commit_action(None, None);
+        app.enable_document_history_chrome();
+        app.init_layout();
+        let toolbar = app.history_layout.unwrap().toolbar;
+        let admitted = app.node_map[&toolbar];
+        let mut moved = Box::new(app);
+        let retained = std::ptr::from_mut(moved.document_history.toolbar_mut() as &mut dyn Widget);
+        assert!(
+            std::ptr::addr_eq(admitted, retained),
+            "admitted pointer must still name the actual retained toolbar after App moves"
+        );
+        let handled = moved
+            .dispatch_node(toolbar, |widget, document, path| {
+                widget.perform_action(&crate::a11y::Action::Activate, document, path)
+            })
+            .unwrap();
+        assert!(handled);
+        assert_eq!(moved.dispatch_history_controls(), 1);
+        assert!(moved.document_history.is_open());
+        // The open pane and its inline children must remain stable too.
+        moved.rebuild_structure();
+        let pane = moved.history_layout.unwrap().pane.unwrap();
+        let admitted_pane = moved.node_map[&pane];
+        let mut moved_again = Box::new(*moved);
+        let retained_pane =
+            std::ptr::from_mut(moved_again.document_history.pane_mut().unwrap() as &mut dyn Widget);
+        assert!(std::ptr::addr_eq(admitted_pane, retained_pane));
+        assert_eq!(
+            moved_again
+                .inspect_node(pane, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+                .as_deref(),
+            Some("standalone-history")
+        );
+    }
 }
