@@ -185,6 +185,21 @@ def provenance_errors(root, base, head, policy):
         # supplies a clean, reviewed base checkout; -I excludes local Python imports.
         if errors:
             return errors + ["cannot establish selector proof without trusted provenance"]
+        # The selector inspects source/test existence in its working tree. It
+        # runs at the trusted base, so reject any removal or mode/type change
+        # that could make that filesystem view more permissive than the head.
+        # --no-renames represents a rename as deletion + addition deliberately.
+        records = git(root, "diff", "--raw", "-z", "--no-renames", base, head).split(b"\0")
+        for header in records[::2]:
+            if not header:
+                continue
+            fields = header.split()
+            if (len(fields) != 5 or not fields[0].startswith(b":")
+                    or fields[4] == b"D"
+                    or fields[0][1:] not in (b"000000", b"100644", b"100755")
+                    or fields[1] not in (b"100644", b"100755")
+                    or (fields[0][1:] != b"000000" and fields[0][1:] != fields[1])):
+                return errors + ["zero-Rust proof rejects deleted, renamed or mode-changed inputs"]
         if policy["trusted_revision"] != base or git(root, "rev-parse", "HEAD").decode().strip() != base:
             return errors + ["selector proof requires checkout at reviewed current base"]
         if git(root, "status", "--porcelain", "--untracked-files=all").strip():

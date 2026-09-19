@@ -40,6 +40,9 @@ protected closure must include the selector, workflows and all transitive build
 policy inputs. Missing proof, dirty checkout, changed harness or nonempty Rust
 selection rejects the skip. Keep receipts outside that checkout. Use native Linux
 with unchanged Git blob bytes; automatic newline conversion is rejected.
+Deletions, renames and mode/type changes also reject zero-Rust certification:
+the trusted selector's filesystem-sensitive helper checks must not see a file
+at the base that no longer exists with the same type at the candidate.
 
 The supplied plan must say `rust_required: false`, zero selected packages and an
 empty matrix, with nonempty changed-file evidence. Manual/full execution receives

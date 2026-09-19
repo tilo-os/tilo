@@ -1,6 +1,7 @@
 """Product captures remain blocked; explicit applicability never excuses missing jobs."""
 import copy
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -84,6 +85,51 @@ class ApplicabilityTests(unittest.TestCase):
             self.assertTrue(AUDIT.provenance_errors(root, base, head, self.policy))
             selector.write_text('raise Exception("untrusted")')
             self.assertTrue(AUDIT.provenance_errors(root, base, head, self.policy))
+
+    def test_actual_product_selector_helper_removal_cannot_certify_zero(self):
+        # Exact production selector snapshot at 4b8277286ca108cc9445dbc0ddaaea72e1afc3d1.
+        source = Path(__file__).parent / 'fixtures/ci_select_product_4b827.py'
+        spec = importlib.util.spec_from_file_location('product_selector', source)
+        selector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(selector)
+        for change in ('delete', 'rename', 'mode'):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                def git(*args):
+                    return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
+                git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@invalid')
+                git('config', 'core.autocrlf', 'false')
+                (root / 'tools/tests').mkdir(parents=True)
+                (root / 'tools/ci_select.py').write_bytes(source.read_bytes())
+                helper = root / 'tools/ci_timing_report.py'
+                helper.write_text('# source\n')
+                (root / 'tools/tests/test_ci_timing_report.py').write_text('# test\n')
+                git('add', 'tools'); git('commit', '-qm', 'reviewed base')
+                base = git('rev-parse', 'HEAD')
+                metadata = {'packages': [{'name': 'pkg', 'manifest_path': str(root / 'Cargo.toml'),
+                                          'dependencies': [], 'targets': []}]}
+                changes = ['tools/ci_timing_report.py']
+                base_plan = selector.make_plan(metadata, root, changes, 2)
+                self.assertFalse(base_plan['rust_required'])
+                if change == 'delete': helper.unlink()
+                elif change == 'rename': helper.rename(root / 'tools/renamed.py')
+                else:
+                    helper.chmod(0o755)
+                    git('update-index', '--chmod=+x', 'tools/ci_timing_report.py')
+                if change != 'mode':
+                    self.assertTrue(selector.make_plan(metadata, root, changes, 2)['rust_required'])
+                    git('add', 'tools')
+                git('commit', '-qm', change)
+                head = git('rev-parse', 'HEAD')
+                git('checkout', '-q', '--detach', base)
+                policy = dict(self.policy, trusted_revision=base,
+                              protected_paths=['tools/ci_select.py'], zero_rust_selection={
+                                  'base': base, 'head': head, 'trusted_revision': base,
+                                  'selector_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+                                  'plan': base_plan})
+                policy['runs'][0]['allowed_skips'] = ['affected (runner)', 'report-check-result']
+                errors = AUDIT.provenance_errors(root, base, head, policy)
+                self.assertIn('zero-Rust proof rejects deleted, renamed or mode-changed inputs', errors)
 
 
 if __name__ == '__main__':
