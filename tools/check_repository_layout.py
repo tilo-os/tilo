@@ -30,6 +30,11 @@ RETIRED_SOURCE_ROOTS = {
     "plan/": "docs/architecture/",
     "release/": "dist/",
     "shell/": "crates/session/shell/",
+    "tools/check-windows-": "tools/windows/check-",
+    "tools/gstreamer-licenses/": "tools/windows/gstreamer-licenses/",
+    "tools/install-windows-": "tools/windows/install-",
+    "tools/test-windows-": "tools/windows/test-",
+    "tools/windows-": "tools/windows/",
     "ui/": "crates/sdk/ui-core/",
 }
 

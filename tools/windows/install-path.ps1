@@ -36,7 +36,7 @@ namespace Tilo {
         # Normal junctions are supported; reject the package-private cache
         # specifically, because Explorer cannot discover an installation there.
         if ($physicalPath -match '\\Packages\\[^\\]+\\LocalCache\\') {
-            throw "Windows redirected installation writes into a private package cache: $physicalPath. Run tools/install-windows-apps.ps1 from an ordinary, unpackaged PowerShell session so Explorer can see the apps and Start shortcuts."
+            throw "Windows redirected installation writes into a private package cache: $physicalPath. Run tools/windows/install-apps.ps1 from an ordinary, unpackaged PowerShell session so Explorer can see the apps and Start shortcuts."
         }
     } finally {
         $probe.Dispose()
