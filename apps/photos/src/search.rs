@@ -183,6 +183,50 @@ impl PhotosSearchProvider {
         Some(seed.materialize())
     }
 
+    /// One bounded page of canonical photograph ids matching the same
+    /// filename, metadata, OCR and description index used by system search.
+    /// The in-app timeline consumes these pages incrementally instead of
+    /// rebuilding and scanning a lowercase string for every photo on every
+    /// frame.
+    pub(crate) fn photo_matches_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+    ) -> (Vec<String>, Option<SearchCursor>, usize) {
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let page = state.catalog.query_page(
+            query,
+            cursor,
+            DEFAULT_SEARCH_CANDIDATE_LIMIT,
+            DEFAULT_SEARCH_RESULT_LIMIT,
+        );
+        let ids = page
+            .results
+            .iter()
+            .filter_map(|result| result.action_address())
+            .filter(|address| {
+                matches!(
+                    state.seeds.get(&address.resource),
+                    Some(MaterializationSeed::Photo(_))
+                )
+            })
+            .map(|address| address.resource.clone())
+            .collect();
+        (ids, page.next, page.inspected)
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .stats()
+            .generation
+    }
+
     #[cfg(test)]
     fn from_library(
         doc: &AutoCommit,
@@ -305,7 +349,12 @@ impl PhotosSearchProvider {
         let located_count = library
             .photos
             .iter()
-            .filter(|photo| photo.location.is_some())
+            .filter(|photo| {
+                photo
+                    .location
+                    .as_ref()
+                    .is_some_and(crate::model::PhotoLocation::is_valid)
+            })
             .count();
         let places = SearchResult::for_action(
             PHOTO_SEARCH_KIND,
@@ -648,7 +697,7 @@ mod tests {
     use super::*;
     use crate::actions::PhotosResources;
     use crate::doc::PhotosDoc;
-    use crate::model::OpenImage;
+    use crate::model::{LocationProvenance, OpenImage, PhotoLocation};
     use tilo_actions::ActionAddress;
     use tilo_actions::ResourceProvider;
 
@@ -704,6 +753,55 @@ mod tests {
                 .actions
                 .iter()
                 .any(|action| ActionAddress::new(&resource.id.0, &action.id) == address)
+        );
+    }
+
+    #[test]
+    fn a_place_search_result_materializes_the_exact_shared_collection() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let location = PhotoLocation {
+            latitude: 48.8566,
+            longitude: 2.3522,
+            label: Some("Offline Paris".to_owned()),
+            provenance: LocationProvenance::default(),
+        };
+        let mut first = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            "/pictures/one.png",
+            64,
+            64,
+        ));
+        first.location = Some(location.clone());
+        let mut second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            "/pictures/two.png",
+            64,
+            64,
+        ));
+        second.location = Some(location.clone());
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first, second],
+                albums: Vec::new(),
+            },
+        );
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        let address = provider
+            .search("Offline Paris")
+            .into_iter()
+            .filter_map(|result| result.action_address())
+            .find(|address| address.resource.starts_with("photos.place:"))
+            .expect("place is globally searchable");
+        assert_eq!(address.resource, place_resource_id(&location.place_key()));
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("exact search target materializes");
+        assert_eq!(resource.kind, "photos.place");
+        assert!(
+            resource
+                .children
+                .iter()
+                .any(|child| child.label == "2 photographs")
         );
     }
 
@@ -944,6 +1042,10 @@ mod tests {
                 });
             assert!(provider.resolve_action_resource(&address).is_some());
         }
+        let (ids, next, inspected) = provider.photo_matches_page("invoice 42", None);
+        assert_eq!(ids, [library.photos[0].id.clone()]);
+        assert!(next.is_none());
+        assert!(inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
     }
 
     #[test]

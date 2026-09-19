@@ -181,7 +181,8 @@ pub struct PhotoLocation {
 /// Compact, inspectable provenance for photo location metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocationProvenance {
-    /// `user`, `exif`, or `device`.  No network-derived source is silently
+    /// `user`, `map`, `exif`, or `device`.  `map` records a deliberate
+    /// placement on Photos' bundled offline reference map. No network-derived source is silently
     /// accepted: hosted geocoding would be a privacy boundary, not metadata.
     #[serde(default = "default_location_source")]
     pub source: String,
@@ -221,7 +222,10 @@ impl PhotoLocation {
                     && label.chars().count() <= 256
                     && !label.chars().any(char::is_control)
             })
-            && matches!(self.provenance.source.as_str(), "user" | "exif" | "device")
+            && matches!(
+                self.provenance.source.as_str(),
+                "user" | "map" | "exif" | "device"
+            )
             && self.provenance.scope == "shared"
     }
 
