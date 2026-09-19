@@ -155,6 +155,7 @@ fn run() -> Result<(), String> {
         }],
         entries: vec![entry],
         owner_signature_hex: String::new(),
+        channel_authorization: None,
     };
     sign_snapshot(&mut snapshot, &owner).map_err(|e| format!("sign snapshot: {e}"))?;
     let entries_json =

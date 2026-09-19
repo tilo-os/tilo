@@ -41,7 +41,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use registry_types::{
-    EntryAction, EntryChangeRequest, ModerationEvent, RegistryEntry, SignedRegistrySnapshot,
+    ChannelAuthorization, EntryAction, EntryChangeRequest, ModerationEvent, RegistryEntry,
+    SignedRegistrySnapshot,
 };
 
 use crate::allowlist::PublisherAllowlist;
@@ -70,6 +71,7 @@ impl Storage {
             "moderation-cases",
             "transparency",
             "moderation-requests",
+            "staged-artifacts",
         ] {
             std::fs::create_dir_all(root.join(name))
                 .map_err(|e| StorageError::Io(format!("mkdir {name}: {e}")))?;
@@ -107,6 +109,114 @@ impl Storage {
 
     fn promotion_transaction_path(&self) -> PathBuf {
         self.root.join("first-party-promotion.pending.json")
+    }
+
+    fn staged_promotion_path(&self) -> PathBuf {
+        self.root.join("first-party-promotion.staged.json")
+    }
+
+    fn channel_authorization_path(&self) -> PathBuf {
+        self.root.join("channel-authorization.json")
+    }
+
+    fn staged_artifact_path(&self, blake3_hex: &str) -> Result<PathBuf, StorageError> {
+        if blake3_hex.len() != 64 || !blake3_hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(StorageError::Encode(
+                "invalid staged artifact digest".into(),
+            ));
+        }
+        Ok(self
+            .root
+            .join("staged-artifacts")
+            .join(format!("{}.qpkg", blake3_hex.to_ascii_lowercase())))
+    }
+
+    /// Load the active root-signed channel authorization.
+    ///
+    /// # Errors
+    /// Returns an I/O or parse error for corrupt or unreadable state.
+    pub fn load_channel_authorization(&self) -> Result<Option<ChannelAuthorization>, StorageError> {
+        load_json(&self.channel_authorization_path(), "channel authorization")
+    }
+
+    /// Atomically install the active root-signed channel authorization.
+    ///
+    /// # Errors
+    /// Returns an encoding or durable-write error.
+    pub fn save_channel_authorization(
+        &self,
+        authorization: &ChannelAuthorization,
+    ) -> Result<(), StorageError> {
+        save_json(&self.channel_authorization_path(), authorization)
+    }
+
+    /// Load the collector's untrusted staged batch manifest.
+    ///
+    /// # Errors
+    /// Returns an I/O or parse error for corrupt or unreadable state.
+    pub fn load_staged_promotion(&self) -> Result<Option<StagedPromotion>, StorageError> {
+        load_json(
+            &self.staged_promotion_path(),
+            "staged first-party promotion",
+        )
+    }
+
+    /// Atomically replace the collector's staged batch manifest.
+    ///
+    /// # Errors
+    /// Returns an encoding or durable-write error.
+    pub fn save_staged_promotion(&self, staged: &StagedPromotion) -> Result<(), StorageError> {
+        save_json(&self.staged_promotion_path(), staged)
+    }
+
+    /// Remove a consumed or empty staged batch manifest.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the durable deletion fails.
+    pub fn delete_staged_promotion(&self) -> Result<bool, StorageError> {
+        delete_if_exists(&self.staged_promotion_path())
+    }
+
+    /// Store exact package bytes at their BLAKE3-addressed path.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid digest, digest mismatch, path collision,
+    /// or durable-write failure.
+    pub fn save_staged_artifact(&self, blake3_hex: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        let actual = blake3::hash(bytes).to_hex().to_string();
+        if !actual.eq_ignore_ascii_case(blake3_hex) {
+            return Err(StorageError::Encode(
+                "staged artifact bytes do not match digest".into(),
+            ));
+        }
+        let path = self.staged_artifact_path(blake3_hex)?;
+        if path.exists() {
+            let existing = std::fs::read(&path)
+                .map_err(|error| StorageError::Io(format!("read staged artifact: {error}")))?;
+            if existing == bytes {
+                return Ok(());
+            }
+            return Err(StorageError::Parse(
+                "staged artifact digest path contains different bytes".into(),
+            ));
+        }
+        atomic_write(&path, bytes)
+    }
+
+    /// Load package bytes and re-check their content-addressed path.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid digest, missing bytes, or content mismatch.
+    pub fn load_staged_artifact(&self, blake3_hex: &str) -> Result<Vec<u8>, StorageError> {
+        let path = self.staged_artifact_path(blake3_hex)?;
+        let bytes = std::fs::read(path)
+            .map_err(|error| StorageError::Io(format!("read staged artifact: {error}")))?;
+        if blake3::hash(&bytes).to_hex().to_string() != blake3_hex.to_ascii_lowercase() {
+            return Err(StorageError::Parse(
+                "staged artifact content digest mismatch".into(),
+            ));
+        }
+        Ok(bytes)
     }
 
     /// Acquire the registry-wide mutation lock. Promotion selection, pending
@@ -926,6 +1036,24 @@ pub struct PendingSubmission {
     pub change: EntryChangeRequest,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedArtifact {
+    pub submission_id: String,
+    pub version: String,
+    pub blake3_hex: String,
+}
+
+/// Untrusted collector output. The networkless signer treats this only as an
+/// index into content-addressed bytes and independently re-verifies every
+/// request, policy constraint, digest, and qpkg signature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedPromotion {
+    pub publisher_pubkey_hex: String,
+    pub collected_at_unix: u64,
+    pub submissions: Vec<PendingSubmission>,
+    pub artifacts: Vec<StagedArtifact>,
+}
+
 /// Durable intent for one bounded automated promotion. The selected signed
 /// requests and exact owner-signed candidate make partially applied approval
 /// work distinguishable and retryable after a crash.
@@ -1070,6 +1198,7 @@ mod tests {
             publishers: Vec::new(),
             entries: vec![sample_entry(marker)],
             owner_signature_hex: marker.to_string(),
+            channel_authorization: None,
         }
     }
 

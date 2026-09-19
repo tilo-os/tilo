@@ -276,6 +276,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
             .collect(),
         entries,
         owner_signature_hex: String::new(),
+        channel_authorization: None,
     };
     registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
     storage.save_snapshot(&snapshot).unwrap();
