@@ -1,0 +1,36 @@
+"""Coverage boundaries of the production feedback and qualification workflows."""
+from pathlib import Path
+import re
+import unittest
+
+ROOT = Path(__file__).parents[2]
+
+
+class FeedbackScopeTests(unittest.TestCase):
+    def test_feedback_checks_closure_but_tests_explicit_test_scope(self):
+        workflow = (ROOT / '.forgejo/workflows/check.yml').read_text(encoding='utf-8')
+        self.assertIn('cargo check --locked --all-targets ${{ matrix.packages }}', workflow)
+        self.assertIn('cargo nextest run --locked --profile ci ${{ matrix.test_packages }}', workflow)
+        self.assertIn("if: matrix.test_packages != ''", workflow)
+        self.assertIn("if: contains(matrix.test_packages, '-p app-catalogue')", workflow)
+        self.assertIn('needs: [select, security, affected]', workflow)
+        self.assertIn('test "$SECURITY_RESULT" = success', workflow)
+        # Manual acceptance and the release-receipt branch both force full
+        # native qualification; ordinary before-SHA handling does not.
+        selection = workflow.split('selection_args=()', 1)[1].split('elif [ -z "$base" ]', 1)[0]
+        self.assertEqual(selection.count('selection_args+=(--full)'), 2)
+        self.assertIn('workflow_dispatch', selection)
+        self.assertIn('refs/heads/codex/package-desktop-release', selection)
+
+    def test_nightly_executes_complete_coverage_on_both_native_architectures(self):
+        workflow = (ROOT / '.forgejo/workflows/nightly.yml').read_text(encoding='utf-8')
+        pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)
+        self.assertEqual(pairs, [('x86_64', 'runner'), ('aarch64', 'runner-arm64')])
+        self.assertIn('runs-on: ${{ matrix.runner }}', workflow)
+        self.assertIn("./os/dev/assert-native-arch.sh '${{ matrix.arch }}'", workflow)
+        self.assertIn('lvp_icd.${{ matrix.arch }}.json', workflow)
+        self.assertIn('cargo nextest run --workspace --locked --profile ci', workflow)
+        self.assertIn('cargo check --workspace --locked --all-targets', workflow)
+        self.assertIn('cargo test --workspace --examples --locked', workflow)
+        self.assertIn('fail-fast: false', workflow)
+        self.assertNotIn("if: matrix.arch", workflow)
