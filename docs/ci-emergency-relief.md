@@ -31,13 +31,16 @@ health guarantee.
 | Infrastructure `a970175` | Deploys broker `c80bd455...` with both AX41 v2 seeds. Both replicas Ready with zero restarts at acceptance. Normal repository 23 control and lint jobs received isolated snapshot clones and created their pinned containers without a pull event; timings below. |
 | Infrastructure `64d2359` | Broker `ef490a74...` disables unrelated generic pre-pull only after verifying qOS repository scope. Global reserve, readiness and lifecycle behavior remain. Both replicas Ready with zero restarts; 316 installed-runtime tests passed. |
 | Infrastructure `021fb14` | Broker `8d313aa7...` adds priority 1000 with `preemptionPolicy: Never` only for actual disk-heavy demand, not speculative reserves. Both replicas Ready; 326 installed-runtime tests passed. EKS bootstrap persistence follows in `d1fdf88`. |
-| Infrastructure `46e7edc` | Current broker `05cdedb0...` formats fresh ephemeral scratch filesystems with `mkfs.ext4 -m0`. Existing disks remain untouched. Both replicas healthy; 331 installed-runtime tests passed. Actual retry free-space acceptance remains to be recorded. |
+| Infrastructure `46e7edc` | Broker `05cdedb0...` introduced fresh ephemeral scratch formatting with `mkfs.ext4 -m0`. Existing disks remain untouched. Retry 9404 subsequently passed the unchanged 80 GiB admission guard with 84.13 GiB available. |
+| Infrastructure `0370999` | Broker `51b50312...` accounts for the selected RuntimeClass in admission, including ARM's actual 7 GiB / 1 CPU overhead. Both updated replicas were Ready; 341 installed-runtime tests passed. Existing workers are not resized. |
+| `qos/qos` `e29c756c7` | Moves bounded security invariants to reserved quality capacity. Production job 84070 passed all 64 checks in 74.41 seconds; cached container creation took 297 ms. |
+| `qos/qos` `5ade281b0` | Generates unpublished app receipts with existing canonical Rust signature verifiers. Receipt and handoff tests passed; continuous publication remains paused and final publication receipts still require qualification. |
 | `qos/qos` `ce0eff803` | Includes `6625e7ad3`, updating the stale literal app-builder guard to verify the resolver, output and job dependency. Both complete shell guard suites and four regression tests passed; this is not a claim that all live CI at this checkpoint passed. |
 
 Broker image:
 
 ```text
-code.podesta.ai/podestaai/sandbox-broker@sha256:05cdedb0b219a27b04ba5461bed0f6617ef63d9801f649745ea611ca7660131d
+code.podesta.ai/podestaai/sandbox-broker@sha256:51b50312649e3b612adf4d44b42cc677d07f9b188efe41b80509b208a15e468e
 ```
 
 The broker runs as Deployment `sandbox-broker` in namespace `sandbox-broker`.
@@ -47,7 +50,7 @@ five-second intervals. Startup-probe recovery is healthy independently of the
 performance patch. The `c568...` image patched a source-tree copy, while the running
 broker imported its implementation from `site-packages`; the intended performance
 guard therefore did **not** take effect. Infrastructure `506195f` replaces that
-image with the imported-module correction. The current `46e7edc` deployment
+image with the imported-module correction. The current `0370999` deployment
 retains that correction, the exclusive quality lane, and `ffbd0a1` cleanup guards
 that tolerate completed resources and protect live runners. Green probes and
 source changes alone do not prove end-to-end improvement; the production
@@ -88,18 +91,31 @@ For a targeted retry:
    An existing worker does not acquire the change merely because the broker rolled.
 3. Read the actual build's free-space/admission receipt after tooling installation.
    Require at least 80 GiB at the checked data path; PVC capacity alone is not proof
-   of usable filesystem space. Retry 9404's fresh worker had the corrected command
-   at the last observation; its actual free-space receipt is still outstanding.
+   of usable filesystem space. Retry 9404 recorded `admitted=true` with
+   90,339,323,904 bytes (84.13 GiB) available. This proves initial admission,
+   not that the complete OS build will fit or finish successfully.
 4. If it still fails, inspect the mounted filesystem, used bytes and provisioning
    result before another targeted retry. Do not lower the guard, reformat an
    existing disk, run reserve-changing commands against active volumes, or delete
    a worker to force this update. Preserve manual hardware/signing work.
 
-Cloud runtime correction is a separate, **not fleet-deployed** canary. Inspection
-found unlimited QEMU cgroup paths and guest-agent timeouts; the underlying stall
-cause remains unproven. The isolated-node preflight stopped when the readiness
-label was reconciled back. Reservation taint isolation and autoscaler protection
-must hold before that experiment proceeds. AWS EBS seed support/pilot remains
+Cloud inspection also found QEMU guest memory backed by one shared `/dev/shm`
+filesystem with a 31 GiB ceiling, below the admitted guest-memory total. A captured
+KVM `Bad address` failure and backing-file pressure support this failure mechanism;
+they do not explain every historical worker loss. Both existing AMD64 CI nodes
+now have a verified 60 GiB ceiling on the same filesystem, with mount security
+flags and running QEMU processes preserved. The current eligible CPU/profile
+combinations admit at most 54 GiB of guest backing; changing those profiles or
+instance sizes requires recalculating that bound. Fresh-node persistence is still
+being qualified, so replacement nodes must not be assumed fixed.
+
+Correct QEMU cgroup placement is a separate, **not fleet-deployed** change. An
+isolated canary with a conservative 31 GiB Pod cap completed cold extraction,
+Rust commands and a 180-second hold; measured peak was 12.62 GiB. Original node
+configuration and temporary resources were restored. A second canary tests the
+ordinary envelope with a 14 GiB Pod cap and bounded anonymous-memory load;
+its result must be checked before adopting the lower overhead. Reservation taint
+isolation and autoscaler protection are required for either test. AWS EBS seed support/pilot remains
 **disabled** pending safe runtime accounting, capacity and actual clone/image-reuse
 acceptance. Neither the scratch fix nor on-prem seed timings qualifies AWS reuse.
 
