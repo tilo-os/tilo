@@ -99,9 +99,6 @@ class CheckAggregateTests(unittest.TestCase):
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
         self.assertIn("needs: [select, security, affected]", checks)
-        receipt = section(self.workflow, "report-check-result", 2)
-        self.assertIn("needs: [select, security, checks]", receipt)
-        self.assertIn("AFFECTED_RESULT: ${{ needs.checks.result }}", receipt)
         script = step_script(self.workflow, "plan")
         # Execute the production pipeline with failing selector and benign git.
         # This catches a missing pipefail even when tee exits successfully.
@@ -114,6 +111,26 @@ class CheckAggregateTests(unittest.TestCase):
                      "GITHUB_STEP_SUMMARY": (Path(directory) / "summary").as_posix()},
                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 37, result.stderr)
+
+    def test_receipt_reuses_aggregate_runner_and_preserves_failed_outcome(self):
+        checks = section(self.workflow, "checks", 2)
+        self.assertNotIn("  report-check-result:", self.workflow)
+        checkout = checks.split("      - name: Checkout CI receipt tool\n", 1)[1]
+        checkout, receipt = checkout.split(
+            "      - name: Record an observable CI receipt without touching a branch\n", 1)
+        self.assertLess(checks.index("id: aggregate"), checks.index("id: receipt-checkout"))
+        self.assertIn("always() &&", checkout)
+        self.assertIn("(github.ref == 'refs/heads/main' ||\n"
+                      "           github.ref == 'refs/heads/codex/package-desktop-release')", checkout)
+        self.assertIn("token: ${{ secrets.REGISTRY_TOKEN }}", checkout)
+        self.assertIn("fetch-depth: 0", checkout)
+        self.assertIn("if: always() && steps.receipt-checkout.outcome == 'success'", receipt)
+        self.assertIn("SELECT_RESULT: ${{ needs.select.result }}", receipt)
+        self.assertIn("SECURITY_RESULT: ${{ needs.security.result }}", receipt)
+        self.assertIn("AFFECTED_RESULT: ${{ steps.aggregate.outcome }}", receipt)
+        self.assertIn('tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"\n'
+                      '          "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin', receipt)
+        self.assertNotIn("continue-on-error:", checks)
 
 
 if __name__ == "__main__":
