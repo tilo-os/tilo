@@ -5,6 +5,7 @@ import os
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -32,7 +33,65 @@ def step_script(workflow, name):
     return textwrap.dedent('\n'.join(body))
 
 
+def step_block(workflow, name):
+    block = workflow.split(f'      - name: {name}\n', 1)[1]
+    return block.split('\n      - name: ', 1)[0]
+
+
+def action_input(block, name):
+    marker = f'          {name}: '
+    value = block.split(marker, 1)[1]
+    first, *remaining = value.splitlines()
+    if first != '|':
+        return first
+    continuation = []
+    for line in remaining:
+        if line and not line.startswith('            '):
+            break
+        continuation.append(line.removeprefix('            '))
+    return '\n'.join(continuation).rstrip()
+
+
+def action_inputs(block):
+    return {
+        match.group(1): action_input(block, match.group(1))
+        for match in re.finditer(r'^          ([a-z][a-z0-9-]*):', block, re.MULTILINE)
+    }
+
+
 class BuilderCandidates(unittest.TestCase):
+    def test_native_registry_writers_are_serialized(self):
+        build_job = BUILD.split('\n  build:\n', 1)[1].split('\n  images:\n', 1)[0]
+        self.assertEqual(build_job.count('\n      max-parallel: 1\n'), 1)
+
+    def test_image_push_finishes_before_the_same_graph_exports_cache(self):
+        image = step_block(BUILD, 'Build and push')
+        cache = step_block(BUILD, 'Export build cache')
+        signing = step_block(BUILD, 'Sign and describe the native builder')
+
+        self.assertIn('id: build', image)
+        self.assertEqual(action_input(image, 'push'), 'true')
+        self.assertNotIn('cache-to:', image)
+        self.assertEqual(action_input(cache, 'push'), 'false')
+        self.assertIn('cache-to:', cache)
+        self.assertLess(BUILD.index('- name: Build and push'),
+                        BUILD.index('- name: Export build cache'))
+        self.assertLess(BUILD.index('- name: Export build cache'),
+                        BUILD.index('- name: Sign and describe the native builder'))
+
+        # The second invocation resolves entirely from the BuildKit state made
+        # by the first. Compare every action input so a future graph option
+        # cannot drift between the two exporters unnoticed.
+        image_inputs = action_inputs(image)
+        cache_inputs = action_inputs(cache)
+        self.assertEqual(set(cache_inputs) - set(image_inputs), {'cache-to'})
+        self.assertEqual(set(image_inputs) - set(cache_inputs), set())
+        for name in sorted(set(image_inputs) - {'push'}):
+            self.assertEqual(cache_inputs[name], image_inputs[name], name)
+
+        # Signing remains bound to the pushed image, never to cache metadata.
+        self.assertIn('CHILD_DIGEST: ${{ steps.build.outputs.digest }}', signing)
+
     def test_legacy_subjects_are_installed_only_for_e2e_and_cannot_be_skipped(self):
         subjects = ['gnome-text-editor', 'qt6-qtbase-examples', 'libreoffice-writer']
         recipe = (ROOT / 'os/Containerfile.builder').read_text()
