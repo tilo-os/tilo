@@ -43,7 +43,8 @@ class Applicability(unittest.TestCase):
     @staticmethod
     def workflow(applicability=False, build_command='make image',
                  publish_condition="github.ref == 'refs/heads/main'"):
-        helper = '      - "tools/ci/workflow_applicability.py"\n' if applicability else ''
+        helper = ('      - "tools/ci/workflow_applicability.py"\n'
+                  '      - "tools/ci/prepare_pr_history.py"\n') if applicability else ''
         gate = '''
   applicability:
     runs-on: runner-quality
@@ -138,8 +139,10 @@ jobs:
         base = self.commit()
         self.write('.forgejo/workflows/fixture.yml', self.workflow(applicability=True))
         self.write('tools/ci/workflow_applicability.py', 'new gate implementation')
+        self.write('tools/ci/prepare_pr_history.py', 'new history implementation')
         head = self.commit()
-        paths = ['src/**', '.forgejo/workflows/fixture.yml', 'tools/ci/workflow_applicability.py']
+        paths = ['src/**', '.forgejo/workflows/fixture.yml',
+                 'tools/ci/workflow_applicability.py', 'tools/ci/prepare_pr_history.py']
         self.assertEqual(gate.applicable(
             self.repo, 'pull_request', self.event(base, head), paths,
             '.forgejo/workflows/fixture.yml'), (False, []))
@@ -259,11 +262,31 @@ jobs:
             path = ROOT/'.forgejo/workflows'/name
             declared = gate.declared_paths(path)
             self.assertIn('tools/ci/workflow_applicability.py', declared)
+            self.assertIn('tools/ci/prepare_pr_history.py', declared)
             self.assertIn('.forgejo/workflows/'+name, declared)
             gate.workflow_contract(path.read_text(encoding='utf-8'))
             fixture = self.repo/'workflow.yml'
             fixture.write_text(path.read_text().replace('  pull_request:', '  pull_request: {}'))
             with self.assertRaises(ValueError): gate.declared_paths(fixture)
+
+    def test_history_helper_only_routes_pull_request_gates(self):
+        def event_paths(source, event):
+            lines = source.splitlines()
+            start = lines.index(f'  {event}:') + 1
+            end = next((i for i in range(start, len(lines))
+                        if lines[i].strip()
+                        and len(lines[i]) - len(lines[i].lstrip()) <= 2), len(lines))
+            block = lines[start:end]
+            paths = block.index('    paths:') + 1
+            return {json.loads(line[len('      - '):]) for line in block[paths:]
+                    if line.startswith('      - "')}
+
+        helper = 'tools/ci/prepare_pr_history.py'
+        for name in ('build-kernel.yml', 'tilo-relay.yaml'):
+            with self.subTest(workflow=name):
+                source = (ROOT/'.forgejo/workflows'/name).read_text(encoding='utf-8')
+                self.assertNotIn(helper, event_paths(source, 'push'))
+                self.assertIn(helper, event_paths(source, 'pull_request'))
 
     def test_actual_job_map_gates_every_expensive_pr_job_on_the_fast_lane(self):
         def job(text, prefix):
@@ -288,6 +311,14 @@ jobs:
             self.assertIn('runs-on: runner-quality', gate_job)
             self.assertIn('timeout-minutes: 5', gate_job)
             self.assertRegex(gate_job, r'image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}')
+            self.assertIn('fetch-depth: 2', gate_job)
+            self.assertNotIn('fetch-depth: 0', gate_job)
+            self.assertIn('sparse-checkout-cone-mode: false', gate_job)
+            self.assertIn('tools/ci/prepare_pr_history.py', gate_job)
+            self.assertIn('tools/ci/workflow_applicability.py', gate_job)
+            self.assertIn('.forgejo/workflows/'+name, gate_job)
+            self.assertLess(gate_job.index('Prepare targeted PR history'),
+                            gate_job.index('Require an exact relevant PR diff'))
             for job_name in expensive_jobs:
                 with self.subTest(workflow=name, job=job_name):
                     build = job(text, f'  {job_name}:')
