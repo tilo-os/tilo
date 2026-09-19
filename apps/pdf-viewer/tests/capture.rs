@@ -14,7 +14,8 @@ fn production_open_completes_visual_work() {
         pdf_viewer::app_root_open(&path),
         (1280, 800),
         ui::theme::Theme::dark(),
-    );
+    )
+    .with_records(ui::RecordSet::in_memory(), automerge::AutoCommit::new());
     harness
         .wait_for_visuals(Duration::from_secs(15))
         .expect("production document open and visible images finish");
@@ -56,6 +57,7 @@ fn unfinished_visual_work_fails_capture() {
         pdf_viewer::app_root_loading(),
         (1280, 800),
         ui::theme::Theme::dark(),
-    );
+    )
+    .with_records(ui::RecordSet::in_memory(), automerge::AutoCommit::new());
     assert!(harness.wait_for_visuals(Duration::from_millis(5)).is_err());
 }

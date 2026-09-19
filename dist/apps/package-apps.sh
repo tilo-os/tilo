@@ -7,7 +7,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 native_arch=$(uname -m)
 # Use the same audited flags for compilation and the subsequently signed ISA
 # declaration. ELF machine checks below independently reject a wrong-arch payload.
-CARGO_ENCODED_RUSTFLAGS=$(python3 "$repo_root/tools/app_package_isa.py" flags \
+CARGO_ENCODED_RUSTFLAGS=$(python3 "$repo_root/tools/apps/app_package_isa.py" flags \
     --root "$repo_root" --arch "$native_arch")
 export CARGO_ENCODED_RUSTFLAGS
 apps=${TILO_RELEASE_APPS:?space-separated app directory names are required}
@@ -47,10 +47,10 @@ find "$out" -mindepth 1 -depth -delete
 mkdir -p "$out/qpkg" "$out/work"
 
 plan="$out/plan.json"
-python3 "$repo_root/tools/app_release.py" --apps "$apps" > "$plan"
+python3 "$repo_root/tools/apps/app_release.py" --apps "$apps" > "$plan"
 mapfile -t packages < <(jq -r '.packages[]' "$plan")
 runtime_plan="$out/runtime-plan.json"
-python3 "$repo_root/tools/app_release.py" --collection default > "$runtime_plan"
+python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
 features=$(jq -r '.features | join(",")' "$runtime_plan")
 (cd "$repo_root" && cargo build --release --locked -p pkg-cli -p runtime-bundle)
@@ -112,7 +112,7 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     install -pm 0755 "$built" "$payload/bin/$binary"
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
-    python3 "$repo_root/tools/app_package_isa.py" stage --arch "$native_arch" \
+    python3 "$repo_root/tools/apps/app_package_isa.py" stage --arch "$native_arch" \
         --manifest "$staged_manifest" --binary "$payload/bin/$binary" --output "$staged_manifest"
     qpkg="$out/qpkg/$name-$version-$(uname -m).qpkg"
     binary_bytes=$(stat -c %s "$built")

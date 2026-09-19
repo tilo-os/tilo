@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
+sys.path.insert(0, str(Path(__file__).parents[1] / "apps"))
 import create_app_receipt as producer
 import final_app_receipt as final
 
@@ -145,7 +145,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
         workflow = (root / '.forgejo/workflows/release-apps.yml').read_text()
         step = workflow.split('- name: Generate unpublished receipt with canonical verifiers', 1)[1].split('\n      - ', 1)[0]
         self.assertNotIn('if:', step)
-        self.assertIn('python3 tools/create_app_receipt.py', step)
+        self.assertIn('python3 tools/apps/create_app_receipt.py', step)
         self.assertIn('--signers dist/app-release/work/receipt-signers.json', step)
         self.assertIn('dist/app-release/publication-receipt.json', workflow)
         self.assertIn('dist/app-release/verification-policy.json', workflow)
@@ -155,7 +155,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
         self.assertIn('fromJSON(needs.plan.outputs.matrix).include[0].runner', publish)
         self.assertIn('image: ${{ needs.plan.outputs.builder_image }}', publish)
         self.assertIn('vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256', publish)
-        self.assertLess(publish.index('tools/final_app_receipt.py'), publish.index('put_immutable "$bundle"'))
+        self.assertLess(publish.index('tools/apps/final_app_receipt.py'), publish.index('put_immutable "$bundle"'))
         self.assertIn('bind-readback', publish)
         self.assertIn('tilo-apps-$arch.receipt.json', publish)
 

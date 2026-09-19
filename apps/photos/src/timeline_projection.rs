@@ -373,6 +373,11 @@ impl TimelineProjection {
             while start < day.ids.len() {
                 let mut end = start;
                 let mut aspect_sum = 0.0;
+                let row_item_limit = if geometry.target_height > 320.0 {
+                    2
+                } else {
+                    MAX_ROW_ITEMS
+                };
                 while end < day.ids.len() {
                     aspect_sum += photos
                         .get(&day.ids[end])
@@ -382,7 +387,7 @@ impl TimelineProjection {
                     let count = end - start;
                     let natural = aspect_sum * geometry.target_height
                         + geometry.gap * count.saturating_sub(1) as f64;
-                    if natural >= geometry.width || count >= MAX_ROW_ITEMS {
+                    if natural >= geometry.width || count >= row_item_limit {
                         break;
                     }
                 }
@@ -390,7 +395,12 @@ impl TimelineProjection {
                     end < day.ids.len() || aspect_sum * geometry.target_height >= geometry.width;
                 let height = if fills {
                     ((geometry.width - geometry.gap * (end - start - 1) as f64) / aspect_sum)
-                        .clamp(76.0, 320.0)
+                        // Ordinary timelines stay compact, while an explicit
+                        // enlarged-text target may grow to the geometry's
+                        // bounded 420px ceiling. Keeping the real justified
+                        // height here avoids dumping all clamped leftover
+                        // width into the final photograph in a row.
+                        .clamp(76.0, geometry.target_height.max(320.0).min(420.0))
                 } else {
                     geometry.target_height.clamp(76.0, 320.0)
                 };

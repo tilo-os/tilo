@@ -202,6 +202,7 @@ toast-style-deleted = Style deleted
 toast-style-duplicated = Style duplicated
 toast-saved = Document saved
 toast-save-failed = Could not save the document
+toast-open-failed = Could not open the document
 toast-file-dialog-failed = Could not open the file chooser
 
 ## Outline / navigation pane

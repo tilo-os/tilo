@@ -10,6 +10,7 @@ import unittest
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
+sys.path.append(str(Path(__file__).parents[1] / 'apps'))
 import assemble_verified_apps as assembly
 import test_app_channel_manifest as fixtures
 
