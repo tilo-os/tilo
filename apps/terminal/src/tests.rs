@@ -962,23 +962,10 @@ fn ctrl_c_without_shift_still_sends_etx_even_with_selection() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 #[serial_test::serial]
-fn ctrl_shift_c_copies_the_selection_to_the_clipboard() {
-    // Read back through `clipboard_paste`, the same entry point the
-    // production paste path uses, rather than reaching past it to a
-    // concrete backend. `clipboard_copy` resolves to one of three
-    // backends — the compositor's mirror, the Wayland selection, or
-    // arboard on X11 — and falls back to an in-process buffer when a
-    // process has none, which is exactly the case in a unit test with
-    // no window. Asserting through arboard therefore read the *host's*
-    // real clipboard while the copy went to the fallback, so the
-    // assertion compared against whatever another crate's tests had
-    // last put on the machine's clipboard.
-    //
-    // There is no skip: the fallback always resolves, so the round
-    // trip is always observable, and a clipboard that silently did
-    // nothing would now fail here rather than pass quietly.
+fn ctrl_shift_c_queues_the_canonical_confirmed_copy_action() {
+    // The shortcut only queues the exported action. The host performs the
+    // clipboard effect after live permission and confirmation checks.
     use winit::keyboard::{Key, SmolStr};
     let (mut widget, _write_rx) = build_test_widget();
     let mut doc = AutoCommit::new();
@@ -998,9 +985,95 @@ fn ctrl_shift_c_copies_the_selection_to_the_clipboard() {
         /*shift=*/ true,
     );
 
+    let intent = widget
+        .take_control_invocation()
+        .expect("copy shortcut queues a canonical action");
+    assert_eq!(intent.address.action, "copy-selection");
+    let resources = widget.resources(&doc);
+    let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
+    assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
     assert_eq!(
-        ui::text_selection::clipboard_paste().as_deref(),
-        Some("coverage one\ncoverage two"),
+        spec.contract.confirmation,
+        ui::tilo_actions::ConfirmationPolicy::Confirm
+    );
+    assert!(
+        widget.take_control_invocation().is_none(),
+        "the gesture queues exactly one intent"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn paste_shortcuts_queue_the_same_canonical_confirmed_action() {
+    use winit::keyboard::{Key, NamedKey, SmolStr};
+
+    ui::clipboard_copy("queued paste");
+    assert_eq!(ui::clipboard_paste().as_deref(), Some("queued paste"));
+    for key in [
+        Key::Character(SmolStr::new_static("V")),
+        Key::Named(NamedKey::Insert),
+    ] {
+        let (mut widget, writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        let ctrl = matches!(&key, Key::Character(_));
+        send_key(&mut widget, &mut doc, key, ctrl, true);
+
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "shortcut cannot write before host admission"
+        );
+        let intent = widget
+            .take_control_invocation()
+            .expect("paste shortcut queues a canonical action");
+        assert_eq!(intent.address.action, "paste");
+        let resources = widget.resources(&doc);
+        let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
+        assert_eq!(
+            spec.contract.confirmation,
+            ui::tilo_actions::ConfirmationPolicy::Confirm
+        );
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn denied_clipboard_gestures_cannot_bypass_the_permission_surface() {
+    use winit::keyboard::{Key, SmolStr};
+
+    ui::clipboard_copy("denied paste");
+    ui::clipboard_copy_primary("denied primary paste");
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    widget.force_grid(vec!["denied copy".to_string()]);
+    widget.force_selection(Some(Selection {
+        anchor: GridPos { row: 0, col: 0 },
+        cursor: GridPos { row: 0, col: 11 },
+    }));
+    widget.refresh_control_action_availability(&std::collections::HashSet::new());
+
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Character(SmolStr::new_static("C")),
+        true,
+        true,
+    );
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Character(SmolStr::new_static("V")),
+        true,
+        true,
+    );
+    send_cursor_move(&mut widget, &mut doc, 100.0, 100.0);
+    send_middle_press(&mut widget, &mut doc);
+
+    assert!(widget.take_control_invocation().is_none());
+    assert!(
+        drain_writes(&writes).is_empty(),
+        "denied gestures produce neither an invocation nor a PTY effect"
     );
 }
 
@@ -1334,6 +1407,8 @@ fn menu_clear_uses_real_app_permission_and_confirmation_admission() {
                     && node.role == ui::a11y::Role::MenuItem
             })
             .expect("Clear menu row");
+        assert_eq!(clear.state.disabled, role == Role::Viewer);
+        assert_eq!(clear.state.focusable, role == Role::Editor);
         let clear_id = clear.id.clone();
         let owner = clear.widget_taffy_id.expect("menu owner");
         let accepted = app
@@ -1530,6 +1605,133 @@ fn confirmed_menu_clear_checks_live_component_permissions_and_writes_exact_bytes
             .invoke_bound_action_confirmed(&address, &intent.arguments)
             .is_err(),
         "later role revocation is checked again"
+    );
+    assert!(drain_writes(&writes).is_empty());
+    driver.close_components();
+}
+
+#[test]
+#[serial_test::serial]
+fn confirmed_paste_shortcut_rechecks_live_role_before_writing_to_the_pty() {
+    use std::{cell::RefCell, rc::Rc};
+    use ui::application::{
+        ApplicationDefinition, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
+    };
+    use ui::permissions::{Actor, PermissionContext, Role, UserId};
+    use winit::keyboard::{Key, SmolStr};
+
+    const APP_ID: &str = "dev.tilo.terminal";
+    ui::clipboard_copy("admitted shortcut paste");
+    assert_eq!(
+        ui::clipboard_paste().as_deref(),
+        Some("admitted shortcut paste")
+    );
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Character(SmolStr::new_static("V")),
+        true,
+        true,
+    );
+    let intent = widget
+        .take_control_invocation()
+        .expect("shortcut queues the canonical paste action");
+    assert_eq!(intent.address.action, "paste");
+    assert!(drain_writes(&writes).is_empty());
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("state");
+    let mut owners = ui::record::RecordOwners::new(root.clone());
+    let records = owners.open(APP_ID, "terminal-shortcut-room").unwrap();
+    let views = Rc::new(
+        ui::application_view::InstanceViewStore::new(
+            root,
+            "terminal-shortcut-device",
+            "terminal-shortcut-room",
+        )
+        .unwrap(),
+    );
+    let permissions = Rc::new(RefCell::new(PermissionContext::permissive()));
+    let definition = ApplicationDefinition {
+        app_id: APP_ID,
+        title: "Terminal",
+        icon: ui::IconDescriptor::Glyph("T"),
+        record_kind: ui::record::RecordKind::new("terminal"),
+        required: vec![],
+        optional: vec![],
+        create: menu_component_factory,
+    };
+    MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));
+    let context = HostContext::prepare(
+        &definition,
+        records,
+        views,
+        "terminal-shortcut-device".into(),
+        18,
+        permissions.clone(),
+        UserId("terminal-shortcut-user".into()),
+        ui::tilo_actions::ActionContext::default(),
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    let mut driver = ui::headless::Driver::from_component(
+        component,
+        (800, 480),
+        ComponentRunnerInputs {
+            theme: ui::Theme::dark(),
+            text_renderer: ui::TextRenderer::new(),
+        },
+    )
+    .unwrap();
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: 18,
+        address: intent.address,
+    };
+
+    *permissions.borrow_mut() = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Viewer), "terminal-shortcut-user"),
+        vec![],
+    );
+    assert!(
+        driver
+            .invoke_bound_action_confirmed(&address, &intent.arguments)
+            .is_err(),
+        "a Viewer cannot bypass process-write admission through a shortcut"
+    );
+    assert!(drain_writes(&writes).is_empty());
+    *permissions.borrow_mut() = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Editor), "terminal-shortcut-user"),
+        vec![],
+    );
+    assert!(
+        driver
+            .invoke_bound_action(&address, &intent.arguments)
+            .is_err(),
+        "the canonical shortcut action still requires confirmation"
+    );
+    assert!(drain_writes(&writes).is_empty());
+    assert!(
+        driver
+            .invoke_bound_action_confirmed(&address, &intent.arguments)
+            .is_ok()
+    );
+    assert_eq!(drain_writes(&writes), b"admitted shortcut paste");
+
+    *permissions.borrow_mut() = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Viewer), "terminal-shortcut-user"),
+        vec![],
+    );
+    assert!(
+        driver
+            .invoke_bound_action_confirmed(&address, &intent.arguments)
+            .is_err(),
+        "role revocation after the first admitted paste is checked again"
     );
     assert!(drain_writes(&writes).is_empty());
     driver.close_components();
@@ -2388,6 +2590,62 @@ fn context_menu_is_keyboard_navigable_and_semantically_complete() {
 }
 
 #[test]
+fn denied_terminal_menu_rows_are_disabled_while_local_rows_remain_usable() {
+    use ui::a11y::Action;
+    use ui::widget::Widget;
+    use winit::keyboard::{Key, NamedKey};
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    widget.refresh_control_action_availability(&std::collections::HashSet::new());
+    widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
+
+    let menu = widget
+        .accessibility()
+        .unwrap()
+        .children
+        .into_iter()
+        .find(|node| node.role == ui::a11y::Role::Menu)
+        .unwrap();
+    let paste = menu
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Paste"))
+        .unwrap();
+    assert!(paste.state.disabled);
+    assert!(!paste.state.focusable);
+    assert!(!widget.perform_semantic_action(
+        paste.action_target.as_deref().unwrap(),
+        &Action::Activate,
+        &mut doc,
+        &ROOT,
+    ));
+    assert!(widget.context_menu.is_open());
+
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Named(NamedKey::ArrowDown),
+        false,
+        false,
+    );
+    send_key(
+        &mut widget,
+        &mut doc,
+        Key::Named(NamedKey::Enter),
+        false,
+        false,
+    );
+    assert!(
+        widget.find_test_state().0,
+        "keyboard navigation skips denied effects and reaches local Find"
+    );
+    assert!(widget.take_control_invocation().is_none());
+    assert!(drain_writes(&writes).is_empty());
+}
+
+#[test]
 fn context_menu_clamps_to_top_when_taller_than_viewport() {
     use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
     use vello::{
@@ -3131,27 +3389,28 @@ fn selection_is_buffer_anchored_and_survives_scrolling() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 #[serial_test::serial]
-fn middle_click_pastes_primary_selection() {
-    // Middle-click inserts the primary selection into the PTY. Requires a
-    // working primary selection (a Wayland compositor / X server); skipped
-    // when unavailable so headless CI doesn't flake.
+fn middle_click_queues_the_canonical_confirmed_primary_paste_action() {
+    // Headless runs use the toolkit primary-selection fallback, so this
+    // path is deterministic without opening a graphical session.
     ui::clipboard_copy_primary("PASTED");
-    if ui::clipboard_paste_primary().as_deref() != Some("PASTED") {
-        eprintln!("middle_click_pastes_primary_selection: no primary selection backend, skipping");
-        return;
-    }
+    assert_eq!(ui::clipboard_paste_primary().as_deref(), Some("PASTED"));
     let (mut w, write_rx) = build_test_widget();
     let mut doc = AutoCommit::new();
     w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
     w.feed(&mut doc, &automerge::ROOT, b""); // init modes (no bracketed paste)
     send_cursor_move(&mut w, &mut doc, 100.0, 100.0);
     send_middle_press(&mut w, &mut doc);
-    let got = drain_writes(&write_rx);
+    assert!(drain_writes(&write_rx).is_empty());
+    let intent = w
+        .take_control_invocation()
+        .expect("middle-click queues a canonical action");
+    assert_eq!(intent.address.action, "paste-primary");
+    let resources = w.resources(&doc);
+    let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
     assert_eq!(
-        got, b"PASTED",
-        "middle-click pastes the primary selection to the PTY"
+        spec.contract.confirmation,
+        ui::tilo_actions::ConfirmationPolicy::Confirm
     );
 }
 
