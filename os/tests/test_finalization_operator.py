@@ -229,6 +229,79 @@ class OperatorTests(unittest.TestCase):
             o.wait_status(self.root, {}, 23, 2, 'request', 2, 1, ['a' * 32])
         sleep.assert_called_once_with(1)
 
+    def test_service_reused_loader_sequences_exact_request_and_preserves_failures(self):
+        nonce = 'b' * 32
+        old_nonce = 'a' * 32
+        directory = self.root / 'run-23-attempt-2'
+        (directory / 'received').mkdir(parents=True)
+        (directory / 'responses').mkdir()
+        independent = self.inputs / 'loader.efi'
+        old_directory = self.root / 'old-run'
+        observed = {'requests': [nonce], 'job_status': 'running'}
+        fetched = {'request_id': nonce, 'input_sha256': '1' * 64,
+                   'input_bytes': 125440, 'received': True}
+        reused = {'request_id': nonce, 'output_sha256': '2' * 64,
+                  'signature_reused': True, 'private_key_used': False}
+        delivered = {'request_id': nonce, 'output_sha256': '2' * 64,
+                     'delivered': True}
+        client = Mock()
+        client.fetch.return_value = fetched
+        client.deliver.return_value = delivered
+
+        with patch.object(o, 'wait_status', return_value=observed) as wait, \
+                patch.object(o, 'client_for', return_value=client), \
+                patch.object(o, 'reuse_response', return_value=reused) as reuse:
+            result = o.service_reused_loader(
+                self.root, {}, directory, 23, 2, old_directory, old_nonce,
+                independent, 300, 5, ['c' * 32])
+
+        wait.assert_called_once_with(
+            self.root, {}, 23, 2, 'request', 300, 5, ['c' * 32])
+        client.fetch.assert_called_once_with(nonce, directory / 'received' / nonce)
+        reuse.assert_called_once_with(
+            self.root, directory, nonce, old_directory, old_nonce, independent)
+        client.deliver.assert_called_once_with(directory / 'responses' / nonce)
+        self.assertEqual(result, {
+            'request_id': nonce, 'input_sha256': '1' * 64,
+            'output_sha256': '2' * 64, 'signature_reused': True,
+            'private_key_used': False, 'delivered': True,
+        })
+
+        client.reset_mock()
+        with patch.object(o, 'wait_status', return_value=observed), \
+                patch.object(o, 'client_for', return_value=client), \
+                patch.object(o, 'reuse_response', side_effect=ValueError('signature rejected')):
+            with self.assertRaisesRegex(ValueError, 'signature rejected'):
+                o.service_reused_loader(
+                    self.root, {}, directory, 23, 2, old_directory, old_nonce,
+                    independent, 300, 5)
+        client.fetch.assert_called_once()
+        client.deliver.assert_not_called()
+
+    def test_service_reused_loader_rejects_ambiguous_or_existing_state_before_fetch(self):
+        directory = self.root / 'run-23-attempt-2'
+        (directory / 'received').mkdir(parents=True)
+        (directory / 'responses').mkdir()
+        client = Mock()
+        with patch.object(o, 'client_for', return_value=client):
+            for requests in ([], ['a' * 32, 'b' * 32]):
+                observed = {'requests': requests, 'job_status': 'running'}
+                with self.subTest(requests=requests), \
+                        patch.object(o, 'wait_status', return_value=observed), \
+                        self.assertRaisesRegex(ValueError, 'exactly one'):
+                    o.service_reused_loader(
+                        self.root, {}, directory, 23, 2, self.root / 'old',
+                        'c' * 32, self.inputs / 'loader.efi', 300, 5)
+            existing = directory / 'received' / ('d' * 32)
+            existing.mkdir()
+            observed = {'requests': ['d' * 32], 'job_status': 'running'}
+            with patch.object(o, 'wait_status', return_value=observed), \
+                    self.assertRaisesRegex(ValueError, 'state already exists'):
+                o.service_reused_loader(
+                    self.root, {}, directory, 23, 2, self.root / 'old',
+                    'c' * 32, self.inputs / 'loader.efi', 300, 5)
+        client.fetch.assert_not_called()
+
     def test_stage_failure_preserves_reservation_and_cannot_retry(self):
         c, _ = self.init()
         directory = self.args.operation / 'run-23-attempt-2'

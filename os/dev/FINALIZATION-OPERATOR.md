@@ -136,7 +136,26 @@ policy and service procedure remains in [REMOTE-SIGNING.md](REMOTE-SIGNING.md).
 
 ## Reuse a previously verified loader response
 
-For an unchanged boot loader, replace another private-key operation with:
+For an unchanged boot loader, wait for its request and replace another private-key
+operation with one bounded command:
+
+```sh
+python3 "$operator" --operation "$operation" service-reused-loader \
+  --run-id "$run_id" --attempt "$attempt" \
+  --old-run-directory "$old_run_directory" --old-request-id "$old_request_id" \
+  --independent-loader /trusted/authenticated-checkpoint/loader.efi \
+  --timeout 2400 --interval 10 \
+  --ignore-request "$already_serviced_request_id"
+```
+
+The command requires exactly one unignored pending request. It fetches that request,
+runs the same byte, context, certificate, and PE-envelope checks as `reuse-loader`,
+then delivers the rebound response. Any failure preserves the completed local step
+and stops before the next one. Existing request or response state is never resumed
+automatically because a lost delivery response is ambiguous; inspect it and use the
+individual commands below to reconcile the exact state.
+
+The equivalent individual commands remain available for recovery and diagnosis:
 
 ```sh
 python3 "$operator" --operation "$operation" reuse-loader \
