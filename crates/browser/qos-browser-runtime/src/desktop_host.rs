@@ -3255,6 +3255,155 @@ mod tests {
             report.retry_view().unwrap();
         }
     }
+    /// Mount the desktop fixture with the framing animation settled and the
+    /// Writer focused, so the next frame is an ordinary retained one.
+    pub(super) fn settled_writer_frame() -> (ui::headless::FrameHarness, DesktopHandle) {
+        let (root, handle, _) = fixture();
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(),
+            root,
+            (1280, 720),
+            ui::Theme::dark(),
+            ui::TextRenderer::new(),
+            ui::permissions::UserId("author".into()),
+        );
+        settle_external_navigation(root_ptr, &mut frame);
+        frame
+            .perform_named("word_processor", &ui::a11y::Action::Focus)
+            .unwrap();
+        frame.type_text("a");
+        frame.relayout();
+        (frame, handle)
+    }
+
+    #[test]
+    fn writer_typing_retains_the_desktop_layout_tree() {
+        let (mut frame, handle) = settled_writer_frame();
+        let ids = frame.layout_node_ids();
+        let focused = frame.focused();
+        assert!(focused.is_some(), "the Writer owns keyboard focus");
+        frame.set_retained_geometry_check(1);
+        frame.type_text("b");
+        let stats = frame.last_relayout();
+        assert!(!stats.rebuilt, "a typed key must not recompose the desktop: {stats:?}");
+        assert_eq!(frame.layout_node_ids(), ids, "node ids survive a typed key");
+        assert_eq!(frame.focused(), focused, "focus survives a typed key");
+        assert!(
+            frame.perform_named("word_processor", &ui::a11y::Action::Focus).is_ok(),
+            "bindings still resolve the Writer after a retained frame"
+        );
+        let writer = handle
+            .records
+            .borrow()
+            .values()
+            .find(|r| r.app == "dev.qos.word-processor")
+            .unwrap()
+            .clone();
+        assert!(
+            writer
+                .store
+                .read(&writer.checkout.id, |doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
+                .unwrap()
+                .contains("ab"),
+            "the retained frame still committed the typed text"
+        );
+        frame.verify_retained_geometry().unwrap();
+    }
+
+    #[test]
+    fn writer_typing_re_measures_no_desktop_leaf() {
+        // The Writer fills its tile and draws itself, the tab bar has a fixed
+        // height and every other host is inactive: a typed key changes no
+        // size anywhere, so taffy has nothing to re-measure.
+        let (mut frame, _handle) = settled_writer_frame();
+        frame.type_text("b");
+        let stats = frame.last_relayout();
+        assert!(!stats.rebuilt, "{stats:?}");
+        assert_eq!(stats.marked_leaves, 0, "a typed key re-measures no leaf: {stats:?}");
+        assert!(!stats.measured, "a typed key needs no taffy re-solve: {stats:?}");
+    }
+
+    #[test]
+    fn pointer_motion_over_each_app_body_is_inert_once_settled() {
+        // Stage 3 follow-up: a pointer resting over any app must not keep
+        // the desktop repainting. The first move may change hover; a second
+        // move inside the same spot must be skipped, and when it is not the
+        // dirty paths name the widget that still marks itself.
+        let (mut frame, handle) = settled_writer_frame();
+        frame.set_pointer_redraw_diagnostics(true);
+        let device_id = winit::event::DeviceId::dummy();
+        let move_to = |x: f64, y: f64| winit::event::WindowEvent::CursorMoved {
+            device_id,
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        };
+        for (label, tab) in [
+            ("word_processor", (5u64 << 48) | 10),
+            ("chat", (5u64 << 48) | 11),
+            ("notes", (5u64 << 48) | 12),
+            ("calculator", (5u64 << 48) | 13),
+        ] {
+            *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::Select {
+                generation: handle.generation.clone(),
+                route: crate::desktop_navigation::Route {workspace:"1".into(),strip:"2".into(),group:"3".into(),tab:tab.to_string()},
+            });
+            frame.relayout();
+            assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok(), "{label}: selection accepted");
+            // Selection animations (group framing, the Notes status bubble)
+            // are finite; let them run out before judging idleness.
+            std::thread::sleep(ui::status_bubble::DEFAULT_LINGER + ui::clock::Duration::from_millis(10));
+            for _ in 0..4 { frame.relayout(); }
+            // Well inside the tile body, below the tab bar.
+            frame.send_host_event(&move_to(640.0, 420.0));
+            frame.take_pointer_redraw_sources();
+            frame.send_host_event(&move_to(643.0, 422.0));
+            let sources = frame.take_pointer_redraw_sources();
+            assert!(
+                frame.last_send_skipped_relayout(),
+                "{label}: settled pointer motion over the app body still produced a frame; dirty paths: {sources:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_resize_rebuilds_and_matches_a_fresh_composition() {
+        let (mut frame, _handle) = settled_writer_frame();
+        let ids = frame.layout_node_ids();
+        frame.resize((1100, 700)).unwrap();
+        assert!(frame.last_relayout().rebuilt, "a viewport change recomposes the desktop");
+        assert_eq!(frame.layout_node_ids().len(), ids.len(), "the same composition at a new size");
+        let rebuilt = frame.layout_node_ids();
+        frame.type_text("c");
+        assert!(!frame.last_relayout().rebuilt, "typing after the resize retains the new tree");
+        assert_eq!(frame.layout_node_ids(), rebuilt);
+        frame.verify_retained_geometry().unwrap();
+    }
+
+    #[test]
+    fn desktop_tab_selection_rebuilds_the_composition() {
+        let (mut frame, handle) = settled_writer_frame();
+        let ids = frame.layout_node_ids();
+        *handle.navigation_command.borrow_mut() = Some(crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(),
+            route: crate::desktop_navigation::Route {workspace:"1".into(),strip:"2".into(),group:"3".into(),tab:((5u64 << 48) | 12).to_string()},
+        });
+        frame.relayout();
+        assert!(handle.navigation_result.borrow_mut().take().unwrap().is_ok());
+        // Selection may settle over more than one frame; the composition must
+        // have been rebuilt by the time Notes is the active host.
+        let mut rebuilt = frame.last_relayout().rebuilt;
+        for _ in 0..3 {
+            if rebuilt { break; }
+            frame.relayout();
+            rebuilt |= frame.last_relayout().rebuilt;
+        }
+        assert!(rebuilt, "activating another tab is a structural change");
+        assert_ne!(frame.layout_node_ids().len(), ids.len(), "the active host swapped its subtree for a differently shaped one");
+        frame.relayout();
+        frame.verify_retained_geometry().unwrap();
+    }
+
     #[test]
     fn admitted_tab_close_retains_unflushed_component_owner_until_retry() {
         let (root, handle, cache) = fixture();
@@ -3813,5 +3962,59 @@ mod tests {
         let (decide_p50, decide_p99) = percentiles(&mut decide);
         let (extra_p50, extra_p99) = percentiles(&mut stage4_extra);
         eprintln!("semantics per typed key (200 keys, desktop fixture, {nodes} nodes, {bytes} bytes JSON, native {}): serialize p50={serialize_p50:.3} p99={serialize_p99:.3} ms; structure signature p50={structure_p50:.3} p99={structure_p99:.3} ms; gate decide p50={decide_p50:.3} p99={decide_p99:.3} ms; stage-4 parse+reserialize extra p50={extra_p50:.3} p99={extra_p99:.3} ms; decisions: delivered={delivered} deferred={deferred} unchanged={unchanged}", if cfg!(debug_assertions) { "debug" } else { "release" });
+    }
+}
+
+#[cfg(test)]
+mod layout_benchmark {
+    use super::tests::settled_writer_frame;
+
+    fn mean_us(samples: &[ui::profiling::FrameTiming], pick: impl Fn(&ui::profiling::FrameTiming) -> u64) -> f64 {
+        if samples.is_empty() { return 0.0; }
+        samples.iter().map(|s| pick(s) as f64).sum::<f64>() / samples.len() as f64
+    }
+
+    /// Types 50 characters into the desktop fixture's Writer holding a 4 KiB
+    /// document and prints the per-pass mean per typed key, first with the
+    /// full-rebuild path forced (`QUICK_UI_FULL_RELAYOUT`) and then with the
+    /// retained path. Run with `--release -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual CPU microbenchmark of the headless frame passes, not a gate"]
+    fn writer_typing_layout_passes() {
+        let (mut frame, handle) = settled_writer_frame();
+        // A 4 KiB body, as the browser measurement fixture carries.
+        let writer = handle.records.borrow().values().find(|r| r.app == "dev.qos.word-processor").unwrap().clone();
+        let body: String = std::iter::repeat("The quick brown fox jumps over the lazy dog. ").take(4096 / 45 + 1).collect();
+        writer.store.with(&writer.checkout.id, |doc| {
+            let mut editor = word_processor::WordProcessor::new();
+            editor.bind(doc, &automerge::ROOT);
+            editor.insert_str(doc, &body);
+        }).unwrap();
+        frame.relayout();
+        frame.relayout();
+        let mut report = String::new();
+        for (label, forced) in [("full rebuild (QUICK_UI_FULL_RELAYOUT)", Some(true)), ("retained", Some(false))] {
+            frame.set_full_relayout(forced);
+            frame.begin_profiling();
+            frame.type_text("warm up");
+            frame.clear_profile_samples();
+            frame.type_text("Retained layout keeps the composed desktop between keys.");
+            let samples = frame.take_profile_samples();
+            frame.end_profiling();
+            let stats = frame.last_relayout();
+            report.push_str(&format!(
+                "{label}: {} frames; mean us per typed key: sync {:.0} build+compute {:.0} apply {:.0} draw {:.0} input {:.0} total {:.0}; last relayout {:?}\n",
+                samples.len(),
+                mean_us(&samples, |s| s.sync_us),
+                mean_us(&samples, |s| s.build_layout_us),
+                mean_us(&samples, |s| s.apply_layout_us),
+                mean_us(&samples, |s| s.draw_us),
+                mean_us(&samples, |s| s.handle_event_us),
+                mean_us(&samples, |s| s.total_us),
+                stats,
+            ));
+        }
+        frame.set_full_relayout(None);
+        eprintln!("desktop Writer typing, 4 KiB body, {} build:\n{report}", if cfg!(debug_assertions) { "debug" } else { "release" });
     }
 }

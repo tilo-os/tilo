@@ -670,6 +670,10 @@ impl TileHost {
         self.settle_outgoing_record();
         self.announced = None;
         self.renew_history_lifetime();
+        // A new lifetime is a new admission: the retained bindings still
+        // describe the old one, so the host must recompose before it can
+        // route anything to this content again (as `content_mut` does).
+        self.structure_dirty = true;
         if let Err(error) = admit_record(&store, &tab, create) {
             self.binding = None;
             self.pending_binding = Some(PendingBinding { store, tab, create });
@@ -1316,6 +1320,12 @@ impl Widget for TileHost {
             }),
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        // This build composed the current content and admission, so a change
+        // flagged before it (a rebind, a replacement) is satisfied. A host
+        // that inspects the flag only after building must not discard the
+        // maps it just made; a sync that replaces delegates after this build
+        // sets the flag afresh.
+        self.structure_dirty = false;
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

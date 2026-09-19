@@ -1386,14 +1386,22 @@ pub fn desktop_global_search(id:u64,generation:&str,query:&str)->Result<(),JsVal
 /// Opt-in bounded diagnostic capture; disabled by default and never persisted.
 #[wasm_bindgen]
 pub fn configure_frame_metrics(enabled: bool) {
-    MOUNTS.with_borrow_mut(|mounts| for mount in mounts.values_mut() { mount.metrics.borrow_mut().configure(enabled); mount.frame.set_pointer_redraw_diagnostics(enabled); });
+    MOUNTS.with_borrow_mut(|mounts| for mount in mounts.values_mut() {
+        mount.metrics.borrow_mut().configure(enabled);
+        mount.frame.set_pointer_redraw_diagnostics(enabled);
+        // Per-pass layout timing (sync, build/compute, apply, draw, input) for
+        // every frame the harness renders while metrics are on.
+        if enabled { mount.frame.begin_profiling(); } else { mount.frame.end_profiling(); }
+    });
 }
 #[wasm_bindgen]
 pub fn take_frame_metrics() -> Result<String, JsValue> {
-    MOUNTS.with_borrow(|mounts| {
-        let samples: Vec<_> = mounts.iter().map(|(id, mount)| {
+    MOUNTS.with_borrow_mut(|mounts| {
+        let samples: Vec<_> = mounts.iter_mut().map(|(id, mount)| {
             let mut metrics = mount.metrics.borrow_mut();
-            serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "notes": metrics.take_notes(), "redrawSources": mount.frame.redraw_sources()})
+            let passes = mount.frame.take_profile_samples();
+            let relayout = mount.frame.last_relayout();
+            serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "notes": metrics.take_notes(), "redrawSources": mount.frame.redraw_sources(), "layoutPasses": passes, "lastRelayout": {"rebuilt": relayout.rebuilt, "measured": relayout.measured, "markedDirty": relayout.marked_dirty, "markedLeaves": relayout.marked_leaves}})
         }).collect();
         serde_json::to_string(&samples).map_err(error)
     })

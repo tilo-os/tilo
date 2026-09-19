@@ -159,6 +159,10 @@ pub struct NotesApp {
     /// Forces a redraw when our own chrome (top bar / drawer) changes
     /// without any child widget flagging itself dirty.
     self_dirty: bool,
+    /// Inputs of the last canonical projection: document heads, pending
+    /// operations, selected page and tag filter. `sync` re-projects the
+    /// whole page tree only when one of them moved instead of every frame.
+    canonical_synced: Option<(Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>)>,
     /// Top-bar taffy node — present only while `built_narrow`.
     topbar_node: Option<NodeId>,
     /// Rect of the narrow-mode top bar, from `apply_layout`.
@@ -390,6 +394,7 @@ impl NotesApp {
                 .breakpoint(NARROW_BREAKPOINT),
             pending_relayout: false,
             self_dirty: false,
+            canonical_synced: None,
             topbar_node: None,
             topbar_rect: Rect::ZERO,
             menu_btn_rect: Rect::ZERO,
@@ -2300,9 +2305,23 @@ impl Widget for NotesApp {
             }
             self.drain_sidebar_events(state);
             self.drain_empty_note_request(state);
-            if let Err(error) = self.reconcile_canonical(state) {
-                tracing::warn!(%error, "notes: canonical projection refused");
-                return;
+            // Project the workspace only when its inputs moved: committed
+            // heads, an open transaction (the drains above may have written),
+            // the selected page or the tag filter. Re-projecting every frame
+            // re-listed every page and tag on each pointer move.
+            let heads = state.base_heads();
+            let pending = state.pending_ops();
+            let key = (heads, pending, self.workspace.selected(), self.active_tag_filter);
+            let unchanged = self.canonical_synced.as_ref().is_some_and(|synced| {
+                synced.0 == key.0 && synced.1 == 0 && key.1 == 0 && synced.2 == key.2 && synced.3 == key.3
+            });
+            if !unchanged {
+                if let Err(error) = self.reconcile_canonical(state) {
+                    tracing::warn!(%error, "notes: canonical projection refused");
+                    return;
+                }
+                self.canonical_synced = Some(key);
+                self.self_dirty = true;
             }
         } else {
             self.drain_empty_note_request(state);
