@@ -17,8 +17,8 @@ import tarfile
 import tempfile
 import time
 
-TOOLS = 'code.sandbox.example/qos/tilo-development-finalization-tools-aarch64@sha256:b8f09490cb08b93ca137a9aca5a7c87b97a218ae33453f6b24b315fb0469903f'
-CONFIG = 'sha256:8deaeea8c5fd08f67856c6a82efa87ad5c580e829c46fd8b15d58900c6d5e47a'
+TOOLS = 'code.sandbox.example/qos/tilo-development-finalization-tools-aarch64@sha256:a8481a3265c2f4e47287a11163ab8cc13f31b070bba3566d62191c173b54d612'
+CONFIG = 'sha256:61e3f8eee1bc46f54dbc2bdc3ae2111a754bed1689ab54de9db4f6294485aa8f'
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 # Independently reviewed assembly sources; native artifact provenance is separate.
 SOURCES = {SOURCE: 1789690573, '8fff1d6001b64a80bc730e87d3ffc529d2d9e70a': 1789733507,
