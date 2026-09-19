@@ -1,13 +1,15 @@
 //! Shared retained coverage. Callers serialize writes with the workspace lock.
 //!
 //! A lineage is an authenticated envelope author plus channel, never a timestamp.
-//! CURRENT is the only commit point: its generation contains a checkpoint and
-//! its later tail. Old generations are removed only after CURRENT is fsynced.
+//! CURRENT selects durable shared replay coverage. Opaque records append in
+//! receipt order; only proven raw Automerge ancestry permits collection. A
+//! replacement generation is collected only after its CURRENT selector is synced.
 //! Legacy files stay readable; an opaque checkpoint cannot prove that a legacy
 //! queue entry is covered merely because its filename or timestamp is older.
 
 use super::{RETAINED_DIR, StoreError, WorkspaceStore};
 use crate::{coedit::CoeditPayload, transport::Envelope};
+use automerge::ReadDoc;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -19,7 +21,7 @@ fn invalid(message: &str) -> StoreError {
 
 /// Validate the complete frame, workspace and retained payload before using it
 /// as coverage. Authentication happens at ingress, not in this disk decoder.
-pub(super) fn identity(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32], bool)> {
+fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
     let prefix: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
     if usize::try_from(u32::from_le_bytes(prefix)).ok()? != bytes.len().checked_sub(4)? {
         return None;
@@ -36,11 +38,113 @@ pub(super) fn identity(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 3
     if workspace_id != workspace {
         return None;
     }
-    let (channel, checkpoint) = match CoeditPayload::decode(&delta)? {
+    Some((author_device_public_key, CoeditPayload::decode(&delta)?))
+}
+
+pub(super) fn identity(bytes: &[u8], workspace: u64) -> Option<([u8; 32], [u8; 32], bool)> {
+    let (author, payload) = payload(bytes, workspace)?;
+    let (channel, checkpoint) = match payload {
         CoeditPayload::Checkpoint { channel, .. } => (channel, true),
         CoeditPayload::RetainedDelta { channel, .. } => (channel, false),
     };
-    Some((author_device_public_key, channel, checkpoint))
+    Some((author, channel, checkpoint))
+}
+
+fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
+    let (author, CoeditPayload::Checkpoint { channel, body }) = payload(bytes, workspace)? else {
+        return None;
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"qos-relay-retained-checkpoint-body-v1\0");
+    hash.update(&author);
+    hash.update(&channel);
+    hash.update(&body);
+    Some(hash.finalize())
+}
+
+/// Only complete, strictly decoded raw Automerge snapshots prove coverage.
+/// In particular `load_incremental` is unsuitable here: it accepts partial
+/// input, so unchanged heads after that operation can hide malformed data.
+fn covers(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
+    let Some((author, CoeditPayload::Checkpoint { channel, body })) =
+        payload(checkpoint, workspace)
+    else {
+        return false;
+    };
+    let Some((old_author, old_payload)) = payload(prior, workspace) else {
+        return false;
+    };
+    let (old_channel, old_body) = match old_payload {
+        CoeditPayload::Checkpoint { channel, body }
+        | CoeditPayload::RetainedDelta { channel, body } => (channel, body),
+    };
+    if author != old_author || channel != old_channel || body.is_empty() || old_body.is_empty() {
+        return false;
+    }
+    let Ok(document) = automerge::Automerge::load(&body) else {
+        return false;
+    };
+    if !document.get_missing_deps(&[]).is_empty() {
+        return false;
+    }
+    let heads = document.get_heads();
+    // A full snapshot provides dependencies for incremental tail chunks.
+    // Strict load rejects truncated/opaque suffixes; checking missing deps
+    // rejects well-formed changes whose unknown ancestors cannot be applied.
+    let mut combined = document.save();
+    combined.extend_from_slice(&old_body);
+    automerge::Automerge::load(&combined).is_ok_and(|combined| {
+        combined.get_missing_deps(&[]).is_empty() && combined.get_heads() == heads
+    })
+}
+
+struct Record {
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
+    let mut paths = fs::read_dir(generation)?.collect::<Result<Vec<_>, _>>()?;
+    paths.sort_by_key(fs::DirEntry::file_name);
+    let mut out = Vec::new();
+    let checkpoint = generation.join("checkpoint.delta");
+    if checkpoint.exists() {
+        out.push(Record {
+            bytes: fs::read(&checkpoint)?,
+            path: checkpoint,
+        });
+    }
+    for entry in paths {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name != "checkpoint.delta"
+            && name.ends_with(".delta")
+            && !name.starts_with('.')
+            && entry.file_type()?.is_file()
+        {
+            out.push(Record {
+                bytes: fs::read(entry.path())?,
+                path: entry.path(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn next_record_path(generation: &Path, entries: &[Record]) -> Result<PathBuf, StoreError> {
+    let last = entries
+        .iter()
+        .filter_map(|entry| {
+            let name = entry.path.file_name()?.to_str()?;
+            let prefix = name.get(..16)?;
+            u64::from_str_radix(prefix, 16).ok()
+        })
+        .max()
+        .unwrap_or(0);
+    let next = last
+        .checked_add(1)
+        .ok_or_else(|| invalid("retained record sequence exhausted"))?;
+    Ok(generation.join(format!("{next:016x}.delta")))
 }
 
 fn sync_dir(path: &Path) -> Result<(), StoreError> {
@@ -92,12 +196,22 @@ fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
     Ok(Some(generation))
 }
 
-fn commit_generation(lineage: &Path, checkpoint: Option<&[u8]>) -> Result<PathBuf, StoreError> {
+fn commit_generation(
+    lineage: &Path,
+    retained: &[&Record],
+    checkpoint: Option<&[u8]>,
+) -> Result<PathBuf, StoreError> {
     let name = hex::encode(rand::random::<[u8; 16]>());
     let generation = lineage.join(&name);
     create_dir(&generation)?;
+    // A proven raw baseline precedes uncovered dependent tails. Survivors
+    // keep their relative order, and hard links avoid copying immutable bytes.
+    // Opaque checkpoint histories never enter this replacement path.
     if let Some(bytes) = checkpoint {
         durable_write(&generation.join("checkpoint.delta"), bytes)?;
+    }
+    for (index, entry) in retained.iter().enumerate() {
+        fs::hard_link(&entry.path, generation.join(format!("{index:016x}.delta")))?;
     }
     sync_dir(&generation)?;
     durable_write(&lineage.join("CURRENT"), name.as_bytes())?;
@@ -143,32 +257,43 @@ impl WorkspaceStore {
         create_dir(&v2)?;
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
         create_dir(&lineage)?;
-        let active = current(&lineage)?;
-        if let Some(seq) = seq {
-            let active = match active {
-                Some(active) => active,
-                None => commit_generation(&lineage, None)?,
-            };
-            let hash = blake3::hash(bytes);
-            durable_write(
-                &active.join(format!("{seq:016x}-{}.delta", hash.to_hex())),
-                bytes,
-            )?;
-        } else {
-            // Retransmitting the current idempotent checkpoint must not
-            // discard a tail received after the original transmission.
-            if let Some(active) = &active {
-                match fs::read(active.join("checkpoint.delta")) {
-                    Ok(existing) if existing == bytes => {
-                        return collect_obsolete(&lineage, active);
-                    }
-                    Ok(_) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
+        let active = match current(&lineage)? {
+            Some(active) => active,
+            None => commit_generation(&lineage, &[], None)?,
+        };
+        let entries = records(&active)?;
+        if seq.is_some() {
+            // Delta identity includes the entire envelope; never collapse two
+            // different publications just because their bodies happen to match.
+            if !entries.iter().any(|entry| entry.bytes == bytes) {
+                durable_write(&next_record_path(&active, &entries)?, bytes)?;
             }
-            let active = commit_generation(&lineage, Some(bytes))?;
-            collect_obsolete(&lineage, &active)?;
+        } else {
+            let key = checkpoint_key(bytes, self.workspace_id);
+            if entries.iter().any(|entry| {
+                checkpoint_key(&entry.bytes, self.workspace_id).is_some_and(|old| Some(old) == key)
+                    || covers(&entry.bytes, bytes, self.workspace_id)
+            }) {
+                // This also recognizes older snapshot retries after their
+                // original files were collected: CURRENT proves their ancestry.
+                return collect_obsolete(&lineage, &active);
+            }
+            let has_opaque_checkpoint = entries.iter().any(|entry| {
+                checkpoint_key(&entry.bytes, self.workspace_id).is_some()
+                    && !covers(&entry.bytes, &entry.bytes, self.workspace_id)
+            });
+            if covers(bytes, bytes, self.workspace_id) && !has_opaque_checkpoint {
+                let uncovered: Vec<_> = entries
+                    .iter()
+                    .filter(|entry| !covers(bytes, &entry.bytes, self.workspace_id))
+                    .collect();
+                let active = commit_generation(&lineage, &uncovered, Some(bytes))?;
+                collect_obsolete(&lineage, &active)?;
+            } else {
+                // No proof, or an opaque checkpoint whose relative replay
+                // order must be preserved: append once without any collection.
+                durable_write(&next_record_path(&active, &entries)?, bytes)?;
+            }
         }
         Ok(())
     }
@@ -188,23 +313,7 @@ impl WorkspaceStore {
             let Some(active) = current(&lineage.path())? else {
                 continue;
             };
-            let checkpoint = active.join("checkpoint.delta");
-            if checkpoint.exists() {
-                out.push(fs::read(checkpoint)?);
-            }
-            let mut tail = fs::read_dir(active)?.collect::<Result<Vec<_>, _>>()?;
-            tail.sort_by_key(fs::DirEntry::file_name);
-            for entry in tail {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name != "checkpoint.delta"
-                    && name.ends_with(".delta")
-                    && !name.starts_with('.')
-                    && entry.file_type()?.is_file()
-                {
-                    out.push(fs::read(entry.path())?);
-                }
-            }
+            out.extend(records(&active)?.into_iter().map(|entry| entry.bytes));
         }
         Ok(out)
     }
@@ -236,15 +345,199 @@ mod tests {
         .unwrap()
     }
 
+    fn frame(checkpoint: bool, body: Vec<u8>, timestamp: u64) -> Vec<u8> {
+        let payload = if checkpoint {
+            CoeditPayload::Checkpoint {
+                channel: [9; 32],
+                body,
+            }
+        } else {
+            CoeditPayload::RetainedDelta {
+                channel: [9; 32],
+                body,
+            }
+        };
+        crate::transport::encode(&Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [1; 32],
+            authored_at_ns: timestamp,
+            delta: payload.encode().unwrap(),
+            signature: [0; 64],
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn delayed_checkpoint_retry_cannot_erase_newer_checkpoint_and_tail_after_reopen() {
+        use automerge::transaction::Transactable;
+        for fresh_timestamp in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let mut document = automerge::AutoCommit::new();
+            document.put(automerge::ROOT, "first", 1).unwrap();
+            let first_body = document.save();
+            let first = frame(true, first_body.clone(), 1);
+            store.retain_checkpoint(&[9; 32], &first).unwrap();
+            document.put(automerge::ROOT, "second", 2).unwrap();
+            let second = frame(true, document.save(), 2);
+            store.retain_checkpoint(&[9; 32], &second).unwrap();
+            document.put(automerge::ROOT, "tail", 3).unwrap();
+            let tail = frame(false, document.save_incremental(), 3);
+            store.retain_delta(&[9; 32], 3, &tail).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let retry = frame(true, first_body, if fresh_timestamp { 99 } else { 1 });
+            store.retain_checkpoint(&[9; 32], &retry).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            assert_eq!(
+                store.load_retained().unwrap(),
+                vec![second, tail],
+                "delayed checkpoint retry discarded uncovered state (fresh timestamp={fresh_timestamp})"
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_checkpoints_preserve_receipt_order_and_body_retry_keeps_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let first = frame(true, b"opaque first".to_vec(), 1);
+        let second = frame(true, b"opaque second".to_vec(), 2);
+        let tail = frame(false, b"opaque tail".to_vec(), 3);
+        store.retain_checkpoint(&[9; 32], &first).unwrap();
+        store.retain_checkpoint(&[9; 32], &second).unwrap();
+        store.retain_delta(&[9; 32], 3, &tail).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        store
+            .retain_checkpoint(&[9; 32], &frame(true, b"opaque first".to_vec(), 99))
+            .unwrap();
+        store
+            .retain_checkpoint(&[9; 32], &frame(true, b"opaque second".to_vec(), 100))
+            .unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![first, second, tail]);
+    }
+
+    #[test]
+    fn checkpoint_without_causal_tail_coverage_preserves_uncovered_tail() {
+        use automerge::transaction::Transactable;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let mut document = automerge::AutoCommit::new();
+        document.put(automerge::ROOT, "first", 1).unwrap();
+        let first = frame(true, document.save(), 1);
+        store.retain_checkpoint(&[9; 32], &first).unwrap();
+        let mut branch = document.fork();
+        branch.save();
+        branch.put(automerge::ROOT, "uncovered", 2).unwrap();
+        let tail = frame(false, branch.save_incremental(), 2);
+        store.retain_delta(&[9; 32], 2, &tail).unwrap();
+        document.put(automerge::ROOT, "other", 3).unwrap();
+        let second = frame(true, document.save(), 3);
+        store.retain_checkpoint(&[9; 32], &second).unwrap();
+        let retained = store.load_retained().unwrap();
+        assert!(retained.contains(&second));
+        assert!(
+            retained.contains(&tail),
+            "checkpoint without tail ancestry erased that tail"
+        );
+        assert!(
+            !retained.contains(&first),
+            "covered raw Automerge checkpoint was not compacted"
+        );
+        assert_eq!(
+            retained.first(),
+            Some(&second),
+            "proven replacement checkpoint must precede uncovered tails"
+        );
+        document.merge(&mut branch).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let mut recovered = automerge::AutoCommit::new();
+        for bytes in store.load_retained().unwrap() {
+            let (_, message) = payload(&bytes, 7).unwrap();
+            let body = match message {
+                CoeditPayload::Checkpoint { body, .. }
+                | CoeditPayload::RetainedDelta { body, .. } => body,
+            };
+            recovered.load_incremental(&body).unwrap();
+        }
+        assert_eq!(
+            recovered.get_heads(),
+            document.get_heads(),
+            "fresh receiver lost an uncovered dependent tail"
+        );
+    }
+
+    #[test]
+    fn opaque_checkpoint_order_is_preserved_even_between_raw_snapshots() {
+        use automerge::transaction::Transactable;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let mut document = automerge::AutoCommit::new();
+        document.put(automerge::ROOT, "first", 1).unwrap();
+        let first = frame(true, document.save(), 1);
+        let opaque = frame(true, b"unknown checkpoint".to_vec(), 2);
+        document.put(automerge::ROOT, "next", 2).unwrap();
+        let next = frame(true, document.save(), 3);
+        for checkpoint in [&first, &opaque, &next] {
+            store.retain_checkpoint(&[9; 32], checkpoint).unwrap();
+        }
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![first, opaque, next]);
+    }
+
+    #[test]
+    fn causal_proof_rejects_partial_or_missing_dependency_tails_and_keeps_publication_identity() {
+        use automerge::transaction::Transactable;
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let mut document = automerge::AutoCommit::new();
+        document.put(automerge::ROOT, "first", 1).unwrap();
+        let first = frame(true, document.save(), 1);
+        store.retain_checkpoint(&[9; 32], &first).unwrap();
+        let mut partial = document.save();
+        partial.extend_from_slice(b"invalid suffix");
+        let mut branch = document.fork();
+        branch
+            .put(automerge::ROOT, "missing dependency", 1)
+            .unwrap();
+        branch.save();
+        branch.put(automerge::ROOT, "orphan", 2).unwrap();
+        let missing = branch.save_incremental();
+        let tails = [
+            frame(false, partial, 2),
+            frame(false, missing, 3),
+            frame(false, b"opaque".to_vec(), 4),
+            frame(false, b"opaque".to_vec(), 5),
+        ];
+        for (index, tail) in tails.iter().enumerate() {
+            store.retain_delta(&[9; 32], index as u64, tail).unwrap();
+        }
+        document.put(automerge::ROOT, "new", 2).unwrap();
+        let checkpoint = frame(true, document.save(), 6);
+        store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let replay = store.load_retained().unwrap();
+        assert_eq!(replay.len(), 5);
+        assert_eq!(replay[0], checkpoint);
+        assert_eq!(&replay[1..], &tails);
+    }
+
     #[test]
     fn failed_generation_commit_reopens_old_checkpoint_and_tail_then_resumes() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        let old = message(true, 1);
-        let tail = message(false, 2);
-        let new = message(true, 3);
+        use automerge::transaction::Transactable;
+        let mut document = automerge::AutoCommit::new();
+        document.put(automerge::ROOT, "old", 1).unwrap();
+        let old = frame(true, document.save(), 1);
+        document.put(automerge::ROOT, "tail", 2).unwrap();
+        let tail = frame(false, document.save_incremental(), 2);
+        document.put(automerge::ROOT, "new", 3).unwrap();
+        let new = frame(true, document.save(), 3);
         store.retain_checkpoint(&[9; 32], &old).unwrap();
         store.retain_delta(&[9; 32], 1, &tail).unwrap();
+        let uncovered = frame(false, b"opaque survivor".to_vec(), 4);
+        store.retain_delta(&[9; 32], 2, &uncovered).unwrap();
         let lineage = store.root().join("retained/v2").join(format!(
             "{}-{}",
             hex::encode([1; 32]),
@@ -258,12 +551,19 @@ mod tests {
         assert!(store.retain_checkpoint(&[9; 32], &new).is_err());
         drop(store);
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-        assert_eq!(store.load_retained().unwrap(), vec![old, tail]);
+        assert_eq!(
+            store.load_retained().unwrap(),
+            vec![old, tail, uncovered.clone()]
+        );
         assert_eq!(current(&lineage).unwrap().unwrap(), active);
         fs::remove_dir(blocker).unwrap();
         store.retain_checkpoint(&[9; 32], &new).unwrap();
-        assert_eq!(store.load_retained().unwrap(), vec![new.clone()]);
-        let next_tail = message(false, 4);
+        assert_eq!(
+            store.load_retained().unwrap(),
+            vec![new.clone(), uncovered.clone()]
+        );
+        document.put(automerge::ROOT, "next", 4).unwrap();
+        let next_tail = frame(false, document.save_incremental(), 4);
         store.retain_delta(&[9; 32], 2, &next_tail).unwrap();
         // A crash after CURRENT commits but before old-generation GC leaves
         // obsolete files. Only CURRENT may select replay data after reopening.
@@ -274,12 +574,15 @@ mod tests {
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         assert_eq!(
             store.load_retained().unwrap(),
-            vec![new.clone(), next_tail.clone()]
+            vec![new.clone(), uncovered.clone(), next_tail.clone()]
         );
         store.retain_checkpoint(&[9; 32], &new).unwrap();
         assert!(!active.exists());
         assert!(lineage.join("unknown-legacy-directory").exists());
-        assert_eq!(store.load_retained().unwrap(), vec![new, next_tail]);
+        assert_eq!(
+            store.load_retained().unwrap(),
+            vec![new, uncovered, next_tail]
+        );
     }
 
     #[test]

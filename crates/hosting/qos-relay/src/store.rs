@@ -384,8 +384,9 @@ impl WorkspaceStore {
     }
 
     /// Commit a checkpoint for the envelope's authenticated author/channel.
-    /// The generation switch atomically retires only that lineage's old tail.
-    /// Legacy storage is preserved. `bytes` must be a complete relay frame.
+    /// Raw Automerge causal containment permits atomic replacement of covered
+    /// history. Opaque checkpoints are shared in receipt order without inferring
+    /// supersedence. Legacy storage is preserved; `bytes` is a full relay frame.
     ///
     /// # Errors
     /// Returns an error on invalid metadata or failed durable storage.
@@ -406,7 +407,8 @@ impl WorkspaceStore {
         self.retain_shared(channel, Some(seq), bytes)
     }
 
-    /// Load every retained checkpoint followed by its post-checkpoint tail.
+    /// Load retained replay coverage: proven raw baselines before uncovered
+    /// tails, and opaque checkpoint histories in original receipt order.
     /// Documents are independent, so channel ordering is irrelevant; ordering
     /// within a channel is stable.
     ///
@@ -586,23 +588,23 @@ mod tests {
     }
 
     #[test]
-    fn retained_replacement_preserves_other_publishers_and_channels() {
+    fn retained_replacement_preserves_other_publishers_channels_and_unproven_history() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         let a1 = retained(1, 9, true, 1);
         let a2 = retained(1, 9, true, 2);
-        let b = retained(2, 9, true, 3);
-        let c = retained(1, 8, false, 4);
+        let b = retained(2, 9, true, 1);
+        let c = retained(1, 8, true, 1);
         store.retain_checkpoint(&[9; 32], &a1).unwrap();
         store
             .retain_delta(&[9; 32], 10, &retained(1, 9, false, 5))
             .unwrap();
         store.retain_checkpoint(&[9; 32], &b).unwrap();
-        store.retain_delta(&[8; 32], 10, &c).unwrap();
+        store.retain_checkpoint(&[8; 32], &c).unwrap();
         store.retain_checkpoint(&[9; 32], &a2).unwrap();
         let actual = store.load_retained().unwrap();
-        assert_eq!(actual.len(), 3);
-        for expected in [a2, b, c] {
+        assert_eq!(actual.len(), 5);
+        for expected in [a1, a2, b, c, retained(1, 9, false, 5)] {
             assert!(actual.contains(&expected));
         }
     }
@@ -612,7 +614,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
         let cp = retained(1, 9, true, 1);
-        let tail = retained(1, 9, false, 2);
+        let tail = retained(1, 9, false, 1);
         store.retain_checkpoint(&[9; 32], &cp).unwrap();
         store.retain_delta(&[9; 32], 10, &tail).unwrap();
         store.retain_checkpoint(&[9; 32], &cp).unwrap();

@@ -541,17 +541,44 @@ mod tests {
         publish(&mut rt, &other_channel, 2);
         let opaque = env_delta(7, [1; 32]);
         publish(&mut rt, &opaque, 3);
+        use automerge::transaction::Transactable;
+        let mut document = AutoCommit::new();
+        document.set_actor(automerge::ActorId::from(b"retained-growth".as_slice()));
+        document
+            .put(automerge::ROOT, "payload", "x".repeat(4096))
+            .unwrap();
+        let mut latest = Vec::new();
         for round in 1..=24u8 {
-            publish(
-                &mut rt,
-                &retained_envelope([1; 32], [3; 32], true, round),
-                10 + u64::from(round) * 2,
-            );
-            publish(
-                &mut rt,
-                &retained_envelope([1; 32], [3; 32], false, round + 100),
-                11 + u64::from(round) * 2,
-            );
+            document
+                .put(automerge::ROOT, "checkpoint", u64::from(round))
+                .unwrap();
+            let checkpoint = crate::coedit::CoeditPayload::Checkpoint {
+                channel: [3; 32],
+                body: document.save(),
+            };
+            document
+                .put(automerge::ROOT, "tail", u64::from(round))
+                .unwrap();
+            let tail = crate::coedit::CoeditPayload::RetainedDelta {
+                channel: [3; 32],
+                body: document.save_incremental(),
+            };
+            latest.clear();
+            for (offset, payload) in [checkpoint, tail].into_iter().enumerate() {
+                let envelope = Envelope::Delta {
+                    workspace_id: 7,
+                    author_device_public_key: [1; 32],
+                    authored_at_ns: u64::from(round),
+                    delta: payload.encode().unwrap(),
+                    signature: [0; 64],
+                };
+                publish(
+                    &mut rt,
+                    &envelope,
+                    10 + u64::from(round) * 2 + offset as u64,
+                );
+                latest.push(envelope);
+            }
         }
         let (bytes, files) = disk_usage(rt.store.root());
         eprintln!("retained growth fixture: {bytes} logical bytes in {files} files");
@@ -561,12 +588,7 @@ mod tests {
         );
         let retained = rt.store.load_retained().unwrap();
         assert_eq!(retained.len(), 4);
-        for env in [
-            other_author,
-            other_channel,
-            retained_envelope([1; 32], [3; 32], true, 24),
-            retained_envelope([1; 32], [3; 32], false, 124),
-        ] {
+        for env in [other_author, other_channel].into_iter().chain(latest) {
             assert!(retained.contains(&crate::transport::encode(&env).unwrap()));
         }
         for peer in &rt.membership.devices {
@@ -575,6 +597,42 @@ mod tests {
                 vec![crate::transport::encode(&opaque).unwrap()]
             );
         }
+    }
+
+    #[test]
+    fn opaque_retained_history_is_shared_without_claiming_checkpoint_supersedence() {
+        let mut sizes = Vec::new();
+        for offline_peers in [1, 32] {
+            let tmp = tempfile::tempdir().unwrap();
+            let membership = Membership {
+                devices: (10..10 + offline_peers).map(|key| [key; 32]).collect(),
+            };
+            let mut runtime = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
+            for round in 1..=24u8 {
+                publish(
+                    &mut runtime,
+                    &retained_envelope([1; 32], [3; 32], true, round),
+                    u64::from(round),
+                );
+            }
+            assert_eq!(
+                runtime.store.load_retained().unwrap().len(),
+                24,
+                "unknown checkpoints have no causal supersedence proof"
+            );
+            for peer in &runtime.membership.devices {
+                assert_eq!(runtime.store.count_pending(peer).unwrap(), 0);
+            }
+            sizes.push(disk_usage(runtime.store.root()));
+        }
+        assert_eq!(
+            sizes[0], sizes[1],
+            "opaque retained storage multiplied by offline membership"
+        );
+        eprintln!(
+            "opaque retained fixture: {} logical bytes in {} files for either 1 or 32 offline peers",
+            sizes[0].0, sizes[0].1
+        );
     }
 
     #[test]
