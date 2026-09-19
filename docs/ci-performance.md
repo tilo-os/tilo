@@ -3,17 +3,19 @@
 Current deployment and measured startup results are recorded in the
 [emergency runbook](ci-emergency-relief.md). CI has three complementary paths:
 
-- `check.yml` selects affected packages (including reverse dependencies) and
-  balances them across up to two shards per native architecture (x86-64 and ARM64).
-  Small selections use one shard per architecture to avoid rebuilding shared
-  dependencies in a second clean target tree. It is the required per-change path.
+- `check.yml` uses one x86-64 shard for ordinary push/PR feedback. It checks all
+  targets in the affected reverse-dependency closure, while linking and running
+  tests for directly changed packages plus `collab-types`, `pkg`, and `qdoc`.
+  Repository-wide build inputs and unmapped workspace paths retain full-workspace
+  check/test selection. Manual dispatch and the explicit desktop release branch
+  request full checks on both native architectures (x86-64 and ARM64).
 - `lint.yml` runs formatting, repository policy, dependency policy and dependency
   usage checks on the reserved quality lane with its pinned lean tools image.
 - `nightly.yml` runs the complete workspace, all targets, examples, and live
   integration coverage. It is the coverage backstop rather than duplicated on
   every push.
 
-Software-Vulkan golden tests are omitted from the two affected-package shards
+Software-Vulkan golden tests are omitted from the affected-package check jobs
 and run once at the end of the nightly test job. A nextest test group can
 serialize goldens with each other, but it cannot make them exclusive of the
 thousands of ordinary tests in the same invocation (or of the other shard).
@@ -32,19 +34,34 @@ references together only after reviewing the new image's candidate bundle.
 The candidate workflow uploads changed PNGs, a binary patch, its SHA-256, and a
 diff inventory; it deliberately has no repository-write step.
 
-The maximum of two affected shards per architecture is intentional. A third, permanently dedicated "heavy
-apps" shard was measured as the wrong trade-off for this workspace: it repeats
-large shared dependency graphs and adds runner CPU even when a change does not
-touch those apps. `tools/ci/affected_packages.py` already weights costly packages while
-preserving dependency-correct selection, so heavy packages receive their own
-capacity when they are affected without creating an always-on third compile.
+Ordinary feedback uses one target tree to avoid recompiling shared dependencies
+across shards. Full native qualification may use up to two weighted shards per
+architecture; small selections use fewer. Do not manually dispatch `check.yml`
+as a cheap repeat of ordinary feedback: dispatch explicitly selects the entire
+workspace on both architectures. Submit the updated task branch/PR normally;
+the [scheduler owns admission and runner slots](../AGENTS.md#ci).
+
+To inspect the committed branch's selection locally, without starting a build
+or requesting a runner, run from the checkout:
+
+```sh
+git fetch origin main
+python3 tools/ci/affected_packages.py --base origin/main --head HEAD
+```
+
+This reads locked Cargo metadata and Git changes; it does not compile Rust.
+The JSON distinguishes `selected` packages to check from `tested` packages to
+link and run. Uncommitted edits are not included, and the preview does not replace
+CI for the exact pushed head. Routine feedback is separate from the
+[continuous app packaging and manual OS release roadmap](ci-product-matrix.md).
 
 ## Documentation feedback
 
 Rust compilation is explicitly inapplicable when the complete change consists
 only of `docs/designs/*.md` and/or the audited files `AGENTS.md`, `DEVELOPMENT.md`,
 `docs/ci-performance.md`, and `docs/ci-emergency-relief.md`. This is an allowlist,
-not an exemption for all Markdown. Compiled docs such as `ui/CHARTS.md`, packaging
+not an exemption for all Markdown. Compiled docs such as
+`crates/sdk/ui-core/CHARTS.md`, packaging
 contracts and unknown paths keep normal selection. Mixed Rust changes still
 select their affected closure, and manual full checks override the exception.
 
