@@ -2,6 +2,9 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createConnectPeer,pendingPeerRecoveryCount,retryPendingPeerRecovery} from './peer-session.mjs';
 import {recoverableClose,settleComponentClose} from './close-recovery.mjs';
+import {createStorageAccess} from './storage.mjs';
+import {createInlineStorage} from './storage-inline.mjs';
+import {fakeIndexedDB,fakeLocks,fakeWorkers} from './testing/fake-storage.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
 test('presentation bursts coalesce queued persistence behind an in-flight commit',async t=>{
  const f=fixture();let publications=0,commits=0;
@@ -63,7 +66,7 @@ test('typed persistence batches keep binary bytes and exact revisions through co
  f.runtime.peer_committed=()=>{assert(acknowledged);};
  const peer=await f.connect();assert(acknowledged);await peer.dispose();
 });
-function fixture({enroll,recoveryClock,initialStatus}={}){
+function fixture({enroll,recoveryClock,initialStatus,acquireStorage}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
  const mountGates=[],mountSignals=[],mountOptionsSeen=[];
  const syncs=[];const peers=new Set(),mounts=new Set(),closed=[],rebound=[],suspended=new Set();let componentOwners=0,durableRecord,statusCallback,commitStatus,publishFailure=false,failMount=false;
@@ -78,7 +81,7 @@ function fixture({enroll,recoveryClock,initialStatus}={}){
   rebind_peer(old,id){rebound.push([old,id]);for(const mount of mounts)mount.id=id;suspended.delete(old);},
  };
  const storage={fresh:true,hydrate:async()=>[],commit:async()=>{if(failCommit)throw Error('durable write failed');},release:async()=>{storageRefs--;}};
- const connect=createConnectPeer({init:async()=>{},runtime,recoveryClock,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:async()=>{storageRefs++;return storage;},mountDesktop:async(_target,options)=>{
+ const connect=createConnectPeer({init:async()=>{},runtime,recoveryClock,acquireIdentity:async()=>{held++;return{material:'opaque-key',save:async()=>{},release:async()=>{held--;}}},fetchEnrollment:enroll??(async()=>({ok:true,text:async()=>'{raw}'})),acquireStorage:acquireStorage??(async()=>{storageRefs++;return storage;}),mountDesktop:async(_target,options)=>{
   mountOptionsSeen.push(options);mountSignals.push(options.signal);const mountGate=mountGates.shift();if(mountGate){try{await mountGate.promise;}catch(error){options.onStatus({phase:'failed',error:error.message});if(mountGate.cleanup)await mountGate.cleanup.promise;options.onStatus({phase:'closed',persistence:'committed',pendingWrites:0,error:null});throw error;}}
   if(failMount)throw Error('initial fonts unavailable');
   const mount={id:next,cleanupCalls:0,flushCalls:0,async flush(){mount.flushCalls++;},state:()=>({phase:'presented',gpuGeneration:1}),recover(){options.onStatus({phase:'gpu-pending',gpuGeneration:2});},status(value){options.onStatus(value);},present(gpuGeneration){options.onStatus({phase:'presented',gpuGeneration});},failRenderer(){options.onStatus({phase:'failed',gpuGeneration:1,error:'GPU device lost'});},input(){if(!suspended.has(mount.id)){assert(peers.has(mount.id),'input addressed removed peer');}},setSuspended(){}};
@@ -469,3 +472,63 @@ test('storage failure after renderer joins admission recovery rejects immediatel
  assert.deepEqual(peer.getSnapshot().health.failures.find(f=>f.id===storageFailure.id),storageFailure);
  f.setFailCommit(false);await peer.retryPersistence();await peer.dispose();
 });
+test('light reports trigger persistence without a new snapshot; the commit report advances the health generation; identical reports do not notify',async()=>{
+ const f=fixture(),peer=await f.connect(),notifications=[];peer.subscribe(snapshot=>notifications.push(snapshot));
+ const settle=async()=>{for(let i=0;i<5;i++){await new Promise(resolve=>setTimeout(resolve,0));await drain();}};
+ await settle();
+ const before=peer.getSnapshot();notifications.length=0;
+ let commits=0;const commit=f.storage.commit;f.storage.commit=async writes=>{commits++;return commit(writes);};
+ // Publication path: between commit boundaries the runtime reports only the retained phase and the persistence trigger.
+ f.setFailCommit(false);f.status({phase:'ready',persistenceNeeded:true});await settle();
+ assert.equal(commits,1,'a light report with persistenceNeeded triggers persistence');
+ assert.strictEqual(peer.getSnapshot(),before,'a light report publishes no new snapshot');
+ assert.equal(peer.getSnapshot().health.generation,before.health.generation,'a light report does not advance the health generation');
+ assert.equal(notifications.length,0,'listeners are not notified for a light report');
+ // Acknowledgement path: the trigger is cleared; still nothing new for listeners.
+ f.status({phase:'ready',persistenceNeeded:false});await settle();
+ assert.equal(notifications.length,0);assert.strictEqual(peer.getSnapshot(),before);
+ // The full report after a commit carries fresh durability and advances the generation once.
+ f.setCommitStatus(()=>({phase:'ready',records:before.records,health:{transport:{phase:'connected',authenticated:true},admission:{phase:'ready',requiredRecords:[],pendingPrerequisites:0},records:[{record:{roomId:'r',appId:'dev.qos.word-processor',recordId:'tab:1'},admission:'admitted',current:{heads:['h']},editing:{mode:'online'},local:{state:'durable',committedAtMs:1},acknowledgement:{state:'covered',coversCurrentBasis:true},failureIds:[]}],failures:[]}}));
+ f.setFailCommit(false);f.status({phase:'ready',persistenceNeeded:true});await settle();
+ assert.equal(commits,2);
+ const committed=peer.getSnapshot();
+ assert(BigInt(committed.health.generation)>BigInt(before.health.generation),'the report after a commit advances the health generation');
+ assert.equal(notifications.length,1,'one notification for the commit report');
+ assert.equal(committed.health.records[0].local.state,'durable');
+ // An identical repeated report produces no listener notification.
+ const repeated=structuredClone(committed);
+ f.status(repeated);f.status(repeated);await settle();
+ assert.equal(notifications.length,1);assert.strictEqual(peer.getSnapshot(),committed);
+ await peer.dispose();
+});
+
+test('a private-action write between two peer batches keeps its place in the persistence worker queue',async t=>{
+ const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});t.after(()=>workers.dispose());
+ const access=createStorageAccess({createWorker:workers.createWorker,inline:createInlineStorage({locks:locks.manager('page'),indexedDB:idb})});
+ const settle=async(rounds=40)=>{for(let i=0;i<rounds;i++)await new Promise(resolve=>setImmediate(resolve));};
+ const f=fixture({acquireStorage:access.acquireStorage}),responses=new Map();let sequence=0,revision=0,durable=0,storage;
+ const host='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invocation='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+ const route={app_peer:'7',app_id:'writer',record_id:'tab:1',resource:'document',action:'insert',revision:null};
+ const catalogue={version:1,surfaces:[{peer_id:'7',app_id:'writer',record_id:'tab:1',actions:[{resource:'document',action:'insert',contract:{confirmation:{mode:'none'}}}]}]};
+ f.runtime.peer_pending_batch_bytes=()=>revision>durable?{id:`1:${revision}`,writes:[{key:'{"type":"record"}',revision:String(revision),bytes:new Uint8Array([revision]),actor:null}],records:[]}:{id:'0',writes:[],records:[]};
+ f.runtime.acknowledge_peer_storage_batch=(_id,raw)=>{const value=JSON.parse(raw);assert.equal(value.epoch,storage.epoch);if(value.result.ok)durable=Number(value.batchId.split(':')[1]);};
+ // Publication of the first batch is when the runtime reports the next pending write.
+ f.runtime.peer_committed=()=>{if(durable===1&&revision===1){revision=2;f.status({phase:'ready',persistenceNeeded:true});}};
+ f.runtime.peer_action_context=()=>JSON.stringify({room:'r',sender:'d',senderRoot:'root',target:'native',targetRoot:'root',certificate:'exact'});
+ f.runtime.peer_action_request=(_id,raw)=>{const message=JSON.parse(raw),id=String(++sequence);responses.set(id,message.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation,update:{state:'succeeded',invocation,output:{resources:[]}},uncertain:false,cancellation_requested:false});return id;};
+ f.runtime.peer_action_response=(_id,id)=>JSON.stringify(responses.get(id));f.runtime.peer_action_forget=(_id,id)=>responses.delete(id);
+ const peer=await f.connect();storage=await access.acquireStorage('p','d');
+ try{
+  const gate=idb.gateNextCommit();revision=1;
+  const first=peer.retryPersistence();await gate.held;
+  const invoked=peer.actionsV1.invoke({...route,invocation});await settle();
+  assert.equal(idb.transactions().filter(tx=>tx.mode==='readwrite').length,1,'the action write waits behind the in-flight batch');
+  gate.release();await first;await invoked;await peer.retryPersistence();
+  const committed=idb.transactions().filter(tx=>tx.mode==='readwrite').map(tx=>tx.keys.map(id=>JSON.parse(JSON.parse(id)[1]).type));
+  // intent write, then the second batch reported at publication, then the observed outcome
+  assert.deepEqual(committed,[['record'],['privateActions'],['record'],['privateActions']]);
+  assert.equal(durable,2);
+  assert.deepEqual(idb.rows().filter(row=>JSON.parse(row.key).type==='record').map(row=>[row.revision,[...row.bytes]]),[['2',[2]]]);
+  assert.equal(access.mode(),'worker');
+ }finally{await storage.release();await peer.dispose();}
+ assert.deepEqual(locks.held(),[]);});

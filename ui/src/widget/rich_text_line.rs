@@ -508,6 +508,12 @@ impl Widget for RichTextLine {
         self.inner.layout_needs_measure()
     }
 
+    /// A line's height follows its text and its inline marks (a heading run
+    /// or a larger font), both of which `measure` re-applies.
+    fn is_layout_dirty(&self) -> bool {
+        self.marks_dirty || self.inner.is_layout_dirty()
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
         let rect = Rect::new(

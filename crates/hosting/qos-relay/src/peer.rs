@@ -421,6 +421,14 @@ where
     connection_live
         .0
         .store(false, std::sync::atomic::Ordering::SeqCst);
+    if let Err(error) = &outcome {
+        metrics.inc_subscriber_dropped();
+        tracing::warn!(
+            device = %hex::encode(&peer.device_public_key[..4]),
+            %error,
+            "peer session ended with error"
+        );
+    }
     let wsmap = workspaces.lock().await;
     for id in &subscribed {
         if let Some(ws) = wsmap.get(id) {
@@ -1652,9 +1660,14 @@ async fn handle_presence(
         map.get(&workspace_id).cloned()
     };
     if let Some(ws) = ws {
-        ws.lock()
-            .await
-            .fanout_presence(&peer.device_public_key, peer.role, &env);
+        let mut wr = ws.lock().await;
+        // A device sends presence only to say hello, to ask for a baseline
+        // (`SyncReq`) or after rejecting a checkpoint — each means it needs the
+        // next live checkpoint (Stage 9 gate in `fanout_delta`).
+        if peer.role == crate::auth::PeerRole::Device {
+            wr.request_checkpoint(&peer.device_public_key);
+        }
+        wr.fanout_presence(&peer.device_public_key, peer.role, &env);
     }
     Ok(None)
 }
@@ -4236,6 +4249,92 @@ mod private_transport_tests {
         assert_eq!(wr.store.count_pending(&b.device_public_key).unwrap(), 0);
         assert!(wr.store.load_retained().unwrap().is_empty());
         assert!(wr.store.load_snapshot().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_device_presence_frame_rearms_its_live_checkpoint() {
+        // Wiring for the Stage 9 gate: after a device has been served one live
+        // checkpoint the relay stops fanning checkpoints to it; a presence frame
+        // from that device (the browser's hello / SyncReq / rejected-checkpoint
+        // path) must re-arm exactly that device so the native's fresh
+        // checkpoint reaches it.
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (native, _) = certified_device(&root, user.public_key, "native");
+        let (browser, _) = certified_device(&root, user.public_key, "browser");
+        let room = uuid::Uuid::from_u128(7);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut wr = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            false,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        wr.admit_device(native.device_public_key).unwrap();
+        wr.admit_device(browser.device_public_key).unwrap();
+        let (btx, mut brx) = mpsc::channel(4);
+        let (bdis, _bdis_rx) = mpsc::channel(1);
+        wr.add_subscriber(Subscriber {
+            device_public_key: browser.device_public_key,
+            role: browser.role,
+            tx: btx.clone(),
+            disconnect: bdis.clone(),
+        });
+        // Serve the subscribe-time need with one checkpoint from the native.
+        let raw = crate::coedit::CoeditPayload::Checkpoint { channel: [1; 32], body: vec![1] }
+            .encode()
+            .unwrap();
+        let checkpoint_at = |authored_at_ns: u64| Envelope::Delta {
+            workspace_id: id,
+            author_device_public_key: native.device_public_key,
+            authored_at_ns,
+            delta: raw.clone(),
+            signature: [0; 64],
+        };
+        let env = checkpoint_at(1);
+        wr.fanout_delta(&native.device_public_key, native.role, &env, &raw, 1).unwrap();
+        brx.try_recv().unwrap();
+        assert!(!wr.needs_checkpoint(&browser.device_public_key, &[1; 32]));
+
+        let wr = Arc::new(AsyncMutex::new(wr));
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
+        let trust = Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowMatchingUser));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = crate::metrics::Metrics::default();
+        let (ptx, _prx) = mpsc::channel(1);
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &btx,
+            own_user_public_key: &user.public_key,
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &bdis,
+            v2: false,
+            private_tx: &ptx,
+            revocations: &revocations,
+        };
+        // The browser sends a SyncReq as presence.
+        handle_presence(
+            &browser,
+            &session,
+            &[id],
+            Envelope::Presence { workspace_id: id, payload: vec![9, 9] },
+        )
+        .await
+        .unwrap();
+        assert!(
+            wr.lock().await.needs_checkpoint(&browser.device_public_key, &[1; 32]),
+            "a device presence frame must re-arm its live checkpoint"
+        );
+        // The native's fresh checkpoint now reaches it, once.
+        let env2 = checkpoint_at(2);
+        wr.lock().await.fanout_delta(&native.device_public_key, native.role, &env2, &raw, 2).unwrap();
+        assert!(brx.try_recv().is_ok());
+        let env3 = checkpoint_at(3);
+        wr.lock().await.fanout_delta(&native.device_public_key, native.role, &env3, &raw, 3).unwrap();
+        assert!(brx.try_recv().is_err(), "satisfied by one checkpoint");
     }
 }
 

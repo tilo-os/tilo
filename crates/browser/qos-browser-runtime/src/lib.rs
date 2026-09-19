@@ -66,3 +66,9 @@ mod viewport;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod frame_metrics;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod semantics_status;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod report_text;

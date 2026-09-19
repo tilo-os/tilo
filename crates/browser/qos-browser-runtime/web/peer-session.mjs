@@ -23,7 +23,20 @@ return async function connectPeer(options={}){
   const operations=new Map(),surfaces=new Map(),surfaceWaiters=new Map(),surfaceAttempts=new Map(),surfaceTargets=new WeakMap();
   let health={version:1,generation:'0',transport:{phase:'connecting',authenticated:false,lastRelayContactAtMs:null,lastSessionPeerContactAtMs:null,retry:{attempt:0,nextAttemptAtMs:null,inFlight:false}},admission:{phase:'waiting',requiredRecords:[],pendingPrerequisites:0,deadlineAtMs:null},records:[],surfaces:[],capabilities:{automaticRecovery:true,retrySaving:true,recoverRenderer:true,durablePeerAcknowledgement:false},failures:[],recoveryOperations:[]};
   const timerSet=recoveryClock.setTimeout??globalThis.setTimeout,timerClear=recoveryClock.clearTimeout??globalThis.clearTimeout,now=recoveryClock.now??Date.now;
-  const report=(next,force=false)=>{if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}for(const waiter of admissionWaiters)waiter.check();reconcileAdmission();health={...health,generation:snapshot.health?.generation??health.generation,admission:{...health.admission,deadlineAtMs:admissionDeadline}};const candidate={...snapshot,...next,health},changed=force||!samePublicValue(snapshot,candidate);if(changed){health={...health,generation:String(++healthRevision)};snapshot={...candidate,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);}for(const waiter of admissionWaiters)waiter.check();};
+  // Health is compared structurally only when something touched it since the
+  // last published snapshot (any reassignment, or a moved admission deadline);
+  // a light report between commit boundaries then costs no deep comparison.
+  let publishedHealth;
+  const report=(next,force=false)=>{
+    if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}
+    for(const waiter of admissionWaiters)waiter.check();reconcileAdmission();
+    const base=health,projected={...base,generation:snapshot.health?.generation??base.generation,admission:{...base.admission,deadlineAtMs:admissionDeadline}};
+    const healthChanged=(base!==publishedHealth||snapshot.health?.admission?.deadlineAtMs!==admissionDeadline)&&!samePublicValue(snapshot.health,projected);
+    const changed=force||healthChanged||Object.keys(next).some(key=>key!=='health'&&!samePublicValue(snapshot[key],next[key]));
+    health=changed?{...projected,generation:String(++healthRevision)}:projected;publishedHealth=health;
+    if(changed){snapshot={...snapshot,...next,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);}
+    for(const waiter of admissionWaiters)waiter.check();
+  };
   // `force` publishes (peer_committed: outbox send plus a fresh health report)
   // even when this run committed nothing. Presented frames pass false: without a
   // commit there is nothing new to send, and the health report would be unchanged.
@@ -66,7 +79,10 @@ return async function connectPeer(options={}){
     if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;actionPolling=true;
     void actionsV1.recover().catch(()=>{}).finally(()=>{actionPolling=false;if(!closed&&!closing)actionTimer=timerSet(pollActions,1000);});
   }
-  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}let next=JSON.parse(value);if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(next.persistenceNeeded)void persist().catch(()=>{});};
+  // `persistenceNeeded` asks this host to commit pending writes now. It is a
+  // trigger, not snapshot state: the runtime's light report between commit
+  // boundaries (phase plus trigger) publishes nothing to subscribers.
+  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}const {persistenceNeeded,...parsed}=JSON.parse(value);let next=parsed;if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(persistenceNeeded)void persist().catch(()=>{});};
   async function post(route,body){
     const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json'},body,signal,cache:'no-store',credentials:'same-origin'});
     const text=await response.text();

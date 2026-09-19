@@ -114,6 +114,80 @@ impl Drop for QualificationHold {
     }
 }
 
+/// Owner-side checkpoint cadence (Stage 1 / Stage 9).
+///
+/// The native host re-derives and re-publishes its ENTIRE signed state — a
+/// multi-megabyte room checkpoint plus a per-document snapshot — after every
+/// committed inbound delta. Under the browser's publication window that became a
+/// full checkpoint per key-batch: the relay fanned each ~2-3 MB checkpoint back
+/// to the live browser (thousands of ~1.5 KB frames, the replay storm) and the
+/// native's single owner loop fell far enough behind draining its own inbound
+/// fan-out that the relay disconnected it for outbound backpressure, which
+/// triggered a reconnect, a retained-baseline replay, and re-publication — the
+/// amplification.
+///
+/// Coalesce them: publish a full checkpoint at most once per [`Self::MAX_DELTAS`]
+/// committed deltas, or once the inbound stream has been idle for
+/// [`Self::IDLE`]. Intermediate deltas are still committed locally with their
+/// durability receipt (only the redundant *wire* checkpoint is coalesced), and
+/// the relay retains only the newest checkpoint per channel, so an offline
+/// device still bootstraps from exactly one.
+struct CheckpointCadence {
+    deltas_since_publish: u32,
+    pending: bool,
+    last_activity: std::time::Instant,
+}
+impl CheckpointCadence {
+    /// Publish at latest every this many committed deltas even under continuous
+    /// input, so a peer that never pauses still gets a bounded-staleness anchor.
+    /// Set well above a full typing burst so that, in practice, the anchor
+    /// fires on the idle path below and a continuous typist never floods a live
+    /// subscriber with a multi-megabyte checkpoint mid-stream.
+    const MAX_DELTAS: u32 = 1024;
+    /// Flush a coalesced checkpoint once input pauses for this long. Set well
+    /// above the browser's 100 ms publication window, normal inter-key gaps, and
+    /// the momentary main-thread stalls a delivered frame causes, so that only a
+    /// genuine pause in typing — never active typing, and not the bursty catch-up
+    /// of a backpressured native draining its inbound queue — triggers the anchor.
+    const IDLE: Duration = Duration::from_millis(5000);
+    fn new() -> Self {
+        Self {
+            deltas_since_publish: 0,
+            pending: false,
+            last_activity: std::time::Instant::now(),
+        }
+    }
+    /// A delta committed locally. Returns whether the coalesced full checkpoint
+    /// is due now (the per-delta count reached the cap); otherwise the publish
+    /// is deferred and will flush on idle or at the cap.
+    fn on_commit(&mut self, now: std::time::Instant) -> bool {
+        self.last_activity = now;
+        self.deltas_since_publish = self.deltas_since_publish.saturating_add(1);
+        self.pending = true;
+        if self.deltas_since_publish >= Self::MAX_DELTAS {
+            self.mark_published(now);
+            true
+        } else {
+            false
+        }
+    }
+    /// On an idle tick: flush the coalesced checkpoint once input has paused.
+    fn due_on_idle(&mut self, now: std::time::Instant) -> bool {
+        if self.pending && now.duration_since(self.last_activity) >= Self::IDLE {
+            self.mark_published(now);
+            true
+        } else {
+            false
+        }
+    }
+    /// A checkpoint was published (through any path); reset the coalescing state.
+    fn mark_published(&mut self, now: std::time::Instant) {
+        self.deltas_since_publish = 0;
+        self.pending = false;
+        self.last_activity = now;
+    }
+}
+
 pub struct NativeSubscription {
     session: Arc<RelayCoeditSession>,
     actions: Option<AttachedActions>,
@@ -457,6 +531,25 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
             Ok(())
         })
 }
+/// Variant name for diagnostics; never inspects payloads.
+pub fn message_kind(message: &qos_peer_state::NeighbourMsg) -> &'static str {
+    use qos_peer_state::NeighbourMsg as M;
+    match message {
+        M::SyncReq { .. } => "SyncReq",
+        M::SyncResp { .. } => "SyncResp",
+        M::AppDocument { .. } => "AppDocument",
+        M::IdentityHello { .. } => "IdentityHello",
+        M::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
+        M::PresenceMoved { .. } => "PresenceMoved",
+        M::PresenceCleared { .. } => "PresenceCleared",
+        _ => "other",
+    }
+}
+/// Every session drop names its reason so a reconnect can be traced to its cause.
+async fn close_session(old: NativeSubscription, reason: &str) {
+    tracing::warn!(reason, "native session dropped");
+    old.close().await;
+}
 fn public_status(
     owner: &SessionOwner,
     connected: bool,
@@ -504,6 +597,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let mut error = None;
     let mut reconnect: Option<Reconnect> = None;
     let mut delay = Duration::ZERO;
+    let mut cadence = CheckpointCadence::new();
     let mut stdin = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     #[cfg(feature = "test-support")]
     let mut qualification = QualificationHold::default();
@@ -523,6 +617,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             && action_error.is_none()
         {
             let _timing = crate::action_timing::Timing::new("subscription_connecting");
+            tracing::info!(delay_ms = delay.as_millis() as u64, "native reconnect starting");
             reconnect = Some(host.begin_connection(&owner, delay)?);
         }
         tokio::select! {
@@ -532,6 +627,18 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 #[cfg(feature = "test-support")]
                 if qualification.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                     qualification.expired = true; qualification.release();
+                }
+                // Flush a coalesced checkpoint once inbound input has paused
+                // (Stage 1/9 cadence). Publishing the latest full state is
+                // idempotent; the relay retains only the newest per channel.
+                if cadence.due_on_idle(std::time::Instant::now()) {
+                    if let Some(current) = session.as_ref().filter(|s| s.is_ready()) {
+                        tracing::debug!(site = "idle_flush", "publish site");
+                        if let Err(problem) = publish(&owner, current) {
+                            error = Some(problem.to_string());
+                            if let Some(old) = session.take() { close_session(old, &format!("idle checkpoint flush failed: {problem}")).await; }
+                        }
+                    }
                 }
 
                 if let Some(runtime) = actions.as_mut() {
@@ -571,7 +678,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 }
                 if action_error.is_some() {
                     *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = None;
-                    if let Some(old) = session.take() { old.close().await; }
+                    if let Some(old) = session.take() { close_session(old, &format!("action attachment failed: {}", action_error.as_deref().unwrap_or(""))).await; }
                 }
             }
             // Replacement keeps bounded durable work pending until its exact
@@ -581,7 +688,14 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
                 let result = if pending.is_desktop() { pending.apply_desktop(&mut owner) } else { pending.apply(&mut owner).map(|_| ()) };
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
-                let published = session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("owner committed while disconnected; publication pending")).and_then(|s| publish(&owner, s));
+                // An owner commit reacting to remote input (an acknowledgement or
+                // effect receipt the native's apps derive from each browser delta)
+                // is coalesced by the same cadence as the inbound path; otherwise
+                // a live browser typing drives one native checkpoint per key. The
+                // commit is durable locally regardless; only the wire checkpoint
+                // is deferred and flushes on idle or at the cap.
+                let due = cadence.on_commit(std::time::Instant::now());
+                let published = if due { tracing::debug!(site = "owner_commit", "publish site"); session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("owner committed while disconnected; publication pending")).and_then(|s| publish(&owner, s)) } else { Ok(()) };
                 if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
                 if let Err(problem) = result { action_error = Some(problem); }
                 if let Err(problem) = published { action_error = Some(signing.fail(problem.to_string())); }
@@ -626,14 +740,15 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         let _timing = crate::action_timing::Timing::new("subscription_replaying");
                         session=Some(next); error=Some("Native subscription is applying retained state".into()); delay=Duration::from_secs(1);
                     }
-                    Err(problem) => { error = Some(problem.to_string()); delay = if delay.is_zero() { Duration::from_secs(1) } else { (delay * 2).min(Duration::from_secs(4)) }; }
+                    Err(problem) => { tracing::warn!(%problem, "native reconnect failed"); error = Some(problem.to_string()); delay = if delay.is_zero() { Duration::from_secs(1) } else { (delay * 2).min(Duration::from_secs(4)) }; }
                 }
             }
             inbound = async { match session.as_mut() { Some(current) => current.recv().await, None => std::future::pending().await } } => {
                 match inbound {
-                    Some(Inbound::Ready {..}) => {
+                    Some(Inbound::Ready { pending }) => {
                         let _timing = crate::action_timing::Timing::new("subscription_ready_work");
                         subscription_generation = subscription_generation.checked_add(1).context("native subscription generation exhausted")?;
+                        tracing::info!(replayed = pending, generation = subscription_generation, "native subscription ready after relay replay");
                         owner.refresh_checkpoint()?;
                         if action_error.is_none() {
                             *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = Some(owner.peer().clone());
@@ -645,9 +760,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             }
                         }
                         if let Some(current)=session.as_ref() {
+                            tracing::debug!(site = "ready", "publish site");
                             match publish(&owner,current) {
-                                Ok(())=>error=None,
-                                Err(problem)=>{error=Some(problem.to_string());if let Some(old)=session.take(){old.close().await;}}
+                                Ok(())=>{error=None; cadence.mark_published(std::time::Instant::now());}
+                                Err(problem)=>{error=Some(problem.to_string());if let Some(old)=session.take(){close_session(old, &format!("initial publication failed: {problem}")).await;}}
                             }
                         }
                     },
@@ -658,22 +774,38 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             Inbound::Presence {author,payload} => (qos_peer_state::TransportOrigin::UntrustedPresence(author),payload),
                             Inbound::Ready {..} => unreachable!(),
                         };
+                        let inbound_bytes = bytes.len();
+                        let decoded: Result<qos_peer_state::NeighbourMsg> = postcard::from_bytes(&bytes).map_err(anyhow::Error::from);
+                        let kind = decoded.as_ref().map(message_kind).unwrap_or("undecodable");
+                        let started = std::time::Instant::now();
                         let received = {
                             let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
-                            let received = postcard::from_bytes(&bytes).map_err(anyhow::Error::from).and_then(|message|owner.receive(origin,message));
+                            let received = decoded.and_then(|message|owner.receive(origin,message));
                             *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
                             received
                         };
+                        match &received {
+                            Ok(receipt) => tracing::debug!(kind, bytes = inbound_bytes, committed = receipt.is_some(), elapsed_us = started.elapsed().as_micros() as u64, "inbound applied"),
+                            Err(problem) => tracing::warn!(kind, bytes = inbound_bytes, %problem, "inbound rejected"),
+                        }
                         if received.as_ref().is_ok_and(|receipt| receipt.is_some()) { if let Some(runtime) = actions.as_ref() { runtime.committed(&owner).map_err(anyhow::Error::msg)?; } host.update_membership(&owner).await?; }
                         match received {
                             Ok(receipt) => {
-                                if !owner.permits_publication() {error=owner.peer().incomplete_reason();if let Some(old)=session.take(){old.close().await;}}
-                                else if receipt.is_some() { if let Some(current) = session.as_ref().filter(|current|current.is_ready()) { if let Err(problem) = publish(&owner,current) { error = Some(problem.to_string()); if let Some(old)=session.take(){ old.close().await; } } } }
+                                if !owner.permits_publication() {error=owner.peer().incomplete_reason();if let Some(old)=session.take(){close_session(old, "owner incomplete after inbound").await;}}
+                                else if receipt.is_some() {
+                                    // Steady-state document deltas are coalesced by the cadence so a
+                                    // continuous typist never floods a live peer with a checkpoint;
+                                    // a SyncReq or any non-document commit is a bootstrap/catch-up
+                                    // request and publishes immediately so the requester converges.
+                                    let now = std::time::Instant::now();
+                                    let due = if kind == "AppDocument" { cadence.on_commit(now) } else { cadence.mark_published(now); true };
+                                    if due { tracing::debug!(site = if kind == "AppDocument" { "inbound_delta_cap" } else { "inbound_bootstrap" }, "publish site"); if let Some(current) = session.as_ref().filter(|current|current.is_ready()) { if let Err(problem) = publish(&owner,current) { error = Some(problem.to_string()); if let Some(old)=session.take(){ close_session(old, &format!("publication failed after receipt: {problem}")).await; } } } }
+                                }
                             },
-                            Err(problem) => { error = Some(problem.to_string()); if !owner.permits_publication() { if let Some(old)=session.take(){old.close().await;} } }
+                            Err(problem) => { error = Some(problem.to_string()); if !owner.permits_publication() { if let Some(old)=session.take(){close_session(old, "inbound rejected and owner incomplete").await;} } }
                         }
                     }
-                    None => { let _timing = crate::action_timing::Timing::new("subscription_disconnected"); error=Some("native subscription disconnected; reconnecting with durable state".into()); if let Some(old)=session.take(){old.close().await;} }
+                    None => { let _timing = crate::action_timing::Timing::new("subscription_disconnected"); error=Some("native subscription disconnected; reconnecting with durable state".into()); if let Some(old)=session.take(){close_session(old, "relay stream ended").await;} }
                 }
             }
             command = enrollments.recv() => {
@@ -734,7 +866,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     #[cfg(feature = "test-support")]
                     Some(line) if qualification.command(&line) => {},
                     Some(line) if line == "shutdown" => break,
-                    Some(line) if line == "reconnect" => { if let Some(old)=session.take(){old.close().await;} delay=Duration::ZERO; },
+                    Some(line) if line == "reconnect" => { if let Some(old)=session.take(){close_session(old, "operator reconnect").await;} delay=Duration::ZERO; },
                     Some(line) if line == "status" => println!("{}",public_status(&owner,session.as_ref().is_some_and(|current|current.is_ready()),&error)),
                     Some(line) if line == "flush" => println!("{}",serde_json::to_string(&owner.flush()?)?),
                     Some(line) if line.starts_with("export ") => { match owner.export(Path::new(&line[7..])) {Ok(())=>println!("Export committed"),Err(problem)=>eprintln!("Export failed: {problem}")} },
@@ -799,5 +931,62 @@ mod tests {
             advertised_qad_port, actual_qad_port,
             "private endpoints must advertise only the packet server's real QAD listener"
         );
+    }
+}
+
+#[cfg(test)]
+mod cadence_tests {
+    use super::CheckpointCadence;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn burst_of_fifty_deltas_yields_one_checkpoint_at_the_cadence_not_per_delta() {
+        // A 50-delta burst tighter than IDLE must NOT publish a full checkpoint
+        // per delta (that fanned a multi-megabyte checkpoint back to the browser
+        // per key — the storm). With the cap well above a burst, the whole burst
+        // coalesces and flushes as exactly one checkpoint when input pauses. The
+        // cadence only ever defers, so no reconnect can result from it.
+        let mut cadence = CheckpointCadence::new();
+        let start = Instant::now();
+        let mut during_burst = 0u32;
+        for i in 0..50u32 {
+            // 10 ms spacing keeps the whole 490 ms burst inside one IDLE window.
+            let now = start + Duration::from_millis(u64::from(i) * 10);
+            if cadence.on_commit(now) {
+                during_burst += 1;
+            }
+        }
+        assert_eq!(during_burst, 0, "a 50-delta burst under the cap publishes nothing mid-stream");
+        assert!(cadence.pending, "the burst is coalesced, awaiting an idle flush");
+        let idle = start + Duration::from_millis(50 * 10) + CheckpointCadence::IDLE;
+        assert!(cadence.due_on_idle(idle), "the paused burst flushes exactly one checkpoint");
+        assert!(!cadence.due_on_idle(idle), "an already-flushed idle does not re-fire");
+        assert!(!cadence.pending);
+    }
+
+    #[test]
+    fn continuous_input_still_anchors_at_the_hard_delta_cap() {
+        // Even a typist who never pauses gets a bounded-staleness anchor: the
+        // per-delta cap forces exactly one checkpoint once it is reached.
+        let mut cadence = CheckpointCadence::new();
+        let start = Instant::now();
+        let mut publishes = 0u32;
+        for i in 0..(CheckpointCadence::MAX_DELTAS + 5) {
+            let now = start + Duration::from_millis(u64::from(i)); // 1 ms apart, never idle
+            if cadence.on_commit(now) {
+                publishes += 1;
+            }
+        }
+        assert_eq!(publishes, 1, "the hard cap fires exactly once across MAX_DELTAS+5 deltas");
+    }
+
+    #[test]
+    fn idle_does_not_fire_during_continuous_input() {
+        let mut cadence = CheckpointCadence::new();
+        let start = Instant::now();
+        cadence.on_commit(start);
+        // A tick shorter than IDLE after activity must not flush.
+        assert!(!cadence.due_on_idle(start + CheckpointCadence::IDLE - Duration::from_millis(1)));
+        assert!(cadence.pending);
     }
 }

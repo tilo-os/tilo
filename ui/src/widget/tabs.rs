@@ -2496,6 +2496,11 @@ impl Widget for TabBar {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+    /// A fixed-height strip sized by its parent: only its first layout is a
+    /// size change. Tab additions and removals are structural.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
     fn is_focusable(&self) -> bool {
         !self.tabs.is_empty()
     }

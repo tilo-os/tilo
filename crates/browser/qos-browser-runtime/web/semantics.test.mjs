@@ -514,3 +514,31 @@ test('authoritative no-owner clears managed focus without choosing another app o
   assert.equal(document.activeElement,root.children[0],'legacy snapshots still use their published focused state');
   bridge.close();
 });
+
+test('a throttled status sequence leaves the accessibility DOM untouched until the final tree arrives intact',()=>{
+  const root=new Element('div');document.activeElement=document.body;
+  const calls=[];const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
+  const view=(value,focus)=>({keyboard_focus_owner:'desktop/writer',root:{path:'desktop',children:[
+    {path:'desktop/writer',semantics:{role:'MultilineTextInput',state:{focusable:true,focused:true,multiline:true},value,text_selection:{anchor:focus,focus}}},
+    {path:'desktop/title',semantics:{role:'TextInput',state:{focusable:true},value:'Title'}},
+  ]}});
+  // The host applies a status's tree only when the status carries one.
+  const apply=status=>{if(status.semantics)bridge.update(status.semantics);};
+  apply({phase:'presented',semantics:view('a',1)});
+  const [editor,title]=root.children;
+  assert.equal(document.activeElement,editor);
+  assert.equal(editor.value,'a');
+  // Two throttled statuses: the tree changed on the runtime side but was not sent.
+  apply({phase:'presented',frames:2});apply({phase:'presented',frames:3});
+  assert.deepEqual(root.children,[editor,title],'no DOM churn for statuses without a tree');
+  assert.equal(editor.value,'a');assert.deepEqual([editor.selectionStart,editor.selectionEnd],[1,1]);
+  assert.equal(document.activeElement,editor);
+  // The deadline delivers the final tree: value and caret catch up in one step.
+  apply({phase:'presented',frames:4,semantics:view('abcd',4)});
+  assert.deepEqual(root.children,[editor,title],'the same elements are reused');
+  assert.equal(editor.value,'abcd');assert.deepEqual([editor.selectionStart,editor.selectionEnd],[4,4]);
+  assert.equal(editor.qosState.canonicalValue,'abcd');
+  assert.equal(document.activeElement,editor);
+  assert.deepEqual(calls,[],'catching up never dispatches actions back to the runtime');
+  bridge.close();
+});

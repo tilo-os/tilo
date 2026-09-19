@@ -18,6 +18,8 @@ uuid.workspace = true
 libc.workspace = true
 rand.workspace = true
 tokio = { workspace = true, features = ["full"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"] }

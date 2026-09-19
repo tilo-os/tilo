@@ -713,6 +713,9 @@ pub struct ChatApp {
     legacy_migration_attempted: bool,
     pub(crate) canonical: bool,
     canonical_dirty: bool,
+    /// Document heads and pending-operation count at the last canonical reload,
+    /// so an unchanged document is not reloaded and repainted every frame.
+    synced: Option<(Vec<automerge::ChangeHash>, usize)>,
     host_focused: bool,
     pub(crate) external_services: bool,
 }
@@ -892,6 +895,7 @@ impl ChatApp {
             legacy_migration_attempted: false,
             canonical: false,
             canonical_dirty: true,
+            synced: None,
             host_focused: true,
             external_services: true,
         }
@@ -2783,9 +2787,19 @@ impl Widget for ChatApp {
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         if self.canonical {
-            self.canonical_dirty = true;
-            self.reload(doc);
-            if self.ensure_selection() { self.reload(doc); }
+            use automerge::transaction::Transactable as _;
+            // Reload and repaint only when the document moved: committed heads
+            // differ, or a transaction is or was open. Reloading every frame
+            // kept the whole desktop dirty on each pointer move.
+            let heads = doc.base_heads();
+            let pending = doc.pending_ops();
+            let unchanged = self.synced.as_ref().is_some_and(|(synced_heads, synced_pending)| *synced_heads == heads && *synced_pending == 0 && pending == 0);
+            if !unchanged {
+                self.canonical_dirty = true;
+                self.reload(doc);
+                self.synced = Some((heads, pending));
+            }
+            if self.ensure_selection() { self.canonical_dirty = true; self.reload(doc); }
             return;
         }
         if self.is_live {
@@ -3146,8 +3160,13 @@ impl Widget for ChatApp {
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
         let was_handled = *handled;
-        self.canonical_dirty = true;
         let requested = self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        // Pointer motion that neither Chat nor its inputs consumed changes
+        // nothing visible; every other event may. Marking every event dirty
+        // made each pointer move anywhere on the desktop repaint everything.
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || requested {
+            self.canonical_dirty = true;
+        }
         if !was_handled && requested && focus_target.is_none() {
             *focus_target = Some(node_id);
         }

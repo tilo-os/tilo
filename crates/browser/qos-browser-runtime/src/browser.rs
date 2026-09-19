@@ -48,15 +48,25 @@ struct Config {
     /// Defaults to `PUBLICATION_WINDOW_MS`; zero publishes every changed frame.
     #[serde(default)]
     publication_window_ms: Option<u64>,
+    /// Milliseconds between semantics deliveries while the tree keeps changing
+    /// without a focus or structure change. Defaults to
+    /// `semantics_status::SEMANTICS_WINDOW_MS`; zero sends every changed tree.
+    #[serde(default)]
+    semantics_window_ms: Option<u64>,
 }
-/// Default publication window: disabled. A 100 ms window measured 18.2 ms mean
-/// typing capacity against 24.3 ms, but with it the relay replayed the room's
-/// retained deltas back in bursts of hundreds (see the 2026-09-18 batching
-/// qualification), so the window stays at zero until that protocol interaction
-/// is understood. Hosts and benchmarks can still set `publication_window_ms`.
-const PUBLICATION_WINDOW_MS: u64 = 0;
+/// Default publication window. Changed records publish at most once per window
+/// while edits keep arriving; close, hide, focus loss, IME end and peer rebind
+/// publish immediately, so only a hard tab kill inside the window loses edits.
+/// Requires a native session peer with checkpoint cadence (2026-09-19): older
+/// natives re-published a multi-megabyte checkpoint per delta, and with sparser
+/// deltas the relay dropped them for backpressure and replayed the room on
+/// reconnect. Hosts and benchmarks can override with `publication_window_ms`.
+const PUBLICATION_WINDOW_MS: u64 = 100;
 fn publication_schedule(window_ms: Option<u64>) -> RefCell<crate::admitted_records::PublicationSchedule> {
     RefCell::new(crate::admitted_records::PublicationSchedule::new(std::time::Duration::from_millis(window_ms.unwrap_or(PUBLICATION_WINDOW_MS))))
+}
+fn semantics_gate(window_ms: Option<u64>) -> RefCell<crate::semantics_status::SemanticsGate> {
+    RefCell::new(crate::semantics_status::SemanticsGate::new(std::time::Duration::from_millis(window_ms.unwrap_or(crate::semantics_status::SEMANTICS_WINDOW_MS))))
 }
 use crate::storage_key::DiskKey;
 use crate::viewport::{Viewport, ViewportState};
@@ -77,6 +87,10 @@ struct Mount {
     metrics: RefCell<crate::frame_metrics::FrameMetrics>,
     published_records: std::cell::RefCell<crate::admitted_records::PublishedRecords>,
     publication: RefCell<crate::admitted_records::PublicationSchedule>,
+    /// Decides which statuses carry the semantics tree: unchanged trees are
+    /// omitted, content-only changes are throttled, focus and structure
+    /// changes go out at once.
+    semantics: RefCell<crate::semantics_status::SemanticsGate>,
     peer_suspended: bool,
     peer:Option<u32>,
     desktop:Option<crate::desktop_host::DesktopHandle>,
@@ -100,7 +114,10 @@ fn error(e: impl ToString) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 fn emit(f: &Function, v: serde_json::Value) {
-    let _ = f.call1(&JsValue::NULL, &JsValue::from_str(&v.to_string()));
+    emit_text(f, &v.to_string());
+}
+fn emit_text(f: &Function, text: &str) {
+    let _ = f.call1(&JsValue::NULL, &JsValue::from_str(text));
 }
 fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     if let Some(p) = LOOP.with_borrow(|p| p.clone()) {
@@ -286,6 +303,10 @@ impl ApplicationHandler<u64> for Runner {
                     let start = m.metric_start();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
+                    if start.is_some() {
+                        if m.frame.last_send_skipped_relayout() { m.metrics.borrow_mut().count("relayout_skipped"); }
+                        for path in m.frame.take_pointer_redraw_sources() { m.metrics.borrow_mut().note(&path); }
+                    }
                     if matches!(event, WindowEvent::Focused(false)) { m.publish_records(id, true); }
                     if start.is_some() {
                         let demand = m.frame.frame_schedule();
@@ -314,6 +335,18 @@ impl ApplicationHandler<u64> for Runner {
                         let start = m.metric_start();
                         m.publish_records(id, true);
                         m.metric_end("publish_flush", start);
+                    }
+                    else { deadline = Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due))); }
+                }
+                // A throttled semantics tree is delivered at its deadline even
+                // when no further frame is presented, so the accessibility DOM
+                // never lags the screen by more than one window.
+                let semantics_due = if m.peer_suspended || m.hidden || m.error.is_some() { None } else { m.semantics.borrow().due() };
+                if let Some(due) = semantics_due {
+                    if due <= now {
+                        let start = m.metric_start();
+                        m.publish(id);
+                        m.metric_end("semantics_flush", start);
                     }
                     else { deadline = Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due))); }
                 }
@@ -460,6 +493,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         metrics: Default::default(),
         published_records: Default::default(),
         publication: publication_schedule(config.publication_window_ms),
+        semantics: semantics_gate(config.semantics_window_ms),
         peer_suspended: false,
         peer:config.peer,
         desktop:None,
@@ -500,7 +534,7 @@ fn begin_desktop(event_loop:&ActiveEventLoop,id:u64,canvas:web_sys::HtmlCanvasEl
     frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac{ui::platform::Platform::MacOs}else{ui::platform::Platform::Linux}));
     desktop.sync_global_search(&mut frame);
     let images=std::mem::take(&mut *desktop.images.borrow_mut());
-    let mount=Mount{metrics:Default::default(),published_records:Default::default(),publication:publication_schedule(config.publication_window_ms),peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
+    let mount=Mount{metrics:Default::default(),published_records:Default::default(),publication:publication_schedule(config.publication_window_ms),semantics:semantics_gate(config.semantics_window_ms),peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
     MOUNTS.with_borrow_mut(|mounts|mounts.insert(id,mount));emit(&status,serde_json::json!({"phase":"gpu-pending","id":id}));initialize_gpu(id,1,window);Ok(())
 }
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
@@ -756,10 +790,28 @@ impl Mount {
         }).collect::<Vec<_>>();
         let pending_intents=self.desktop.as_ref().map(|desktop|desktop.session_requests.borrow().len()).unwrap_or(0);
         let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
-        emit(
-            &self.status,
-            serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.viewport.applied().dpr,"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
-        );
+        // The semantics tree is the bulk of every status; the host keeps the
+        // last tree it received, so an unchanged tree is left out entirely and
+        // content-only changes while typing are throttled (see semantics_status).
+        let decision = self.semantics.borrow_mut().decide(&f.semantics, f.ime.as_ref(), ui::clock::Instant::now());
+        let value = serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.viewport.applied().dpr,"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"ime":ime});
+        let mut text = value.to_string();
+        use crate::semantics_status::SemanticsDecision;
+        match decision {
+            SemanticsDecision::Deliver { forced } => {
+                // Splice the already serialized tree into the status object
+                // instead of parsing it back into a Value and serializing twice.
+                let gate = self.semantics.borrow();
+                text.pop();
+                text.push_str(",\"semantics\":");
+                text.push_str(std::str::from_utf8(gate.text()).unwrap_or("null"));
+                text.push('}');
+                if forced && self.metric_start().is_some() { self.metrics.borrow_mut().count("semantics_forced"); }
+            }
+            SemanticsDecision::Deferred(_) => { if self.metric_start().is_some() { self.metrics.borrow_mut().count("semantics_throttled"); } }
+            SemanticsDecision::Unchanged => { if self.metric_start().is_some() { self.metrics.borrow_mut().count("semantics_unchanged"); } }
+        }
+        emit_text(&self.status, &text);
         self.metric_end("publish_status", status_start);
     }
 }
@@ -814,6 +866,18 @@ pub fn semantic(
         m.pending = true;
         m.window.request_redraw();
         Ok(true)
+    })
+}
+/// The host needs the complete semantics tree now, for example when assistive
+/// technology focus enters the surface: the next status carries it even if
+/// the tree is unchanged or a content-only change is still inside its window.
+#[wasm_bindgen]
+pub fn request_semantics(id: u64) -> Result<(), JsValue> {
+    MOUNTS.with_borrow_mut(|m| {
+        let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        m.semantics.borrow_mut().request();
+        m.publish(id);
+        Ok(())
     })
 }
 pub(crate) fn write_json(w: &PendingWrite) -> serde_json::Value {
@@ -1324,14 +1388,22 @@ pub fn desktop_global_search(id:u64,generation:&str,query:&str)->Result<(),JsVal
 /// Opt-in bounded diagnostic capture; disabled by default and never persisted.
 #[wasm_bindgen]
 pub fn configure_frame_metrics(enabled: bool) {
-    MOUNTS.with_borrow(|mounts| for mount in mounts.values() { mount.metrics.borrow_mut().configure(enabled); });
+    MOUNTS.with_borrow_mut(|mounts| for mount in mounts.values_mut() {
+        mount.metrics.borrow_mut().configure(enabled);
+        mount.frame.set_pointer_redraw_diagnostics(enabled);
+        // Per-pass layout timing (sync, build/compute, apply, draw, input) for
+        // every frame the harness renders while metrics are on.
+        if enabled { mount.frame.begin_profiling(); } else { mount.frame.end_profiling(); }
+    });
 }
 #[wasm_bindgen]
 pub fn take_frame_metrics() -> Result<String, JsValue> {
-    MOUNTS.with_borrow(|mounts| {
-        let samples: Vec<_> = mounts.iter().map(|(id, mount)| {
+    MOUNTS.with_borrow_mut(|mounts| {
+        let samples: Vec<_> = mounts.iter_mut().map(|(id, mount)| {
             let mut metrics = mount.metrics.borrow_mut();
-            serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "redrawSources": mount.frame.redraw_sources()})
+            let passes = mount.frame.take_profile_samples();
+            let relayout = mount.frame.last_relayout();
+            serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "notes": metrics.take_notes(), "redrawSources": mount.frame.redraw_sources(), "layoutPasses": passes, "lastRelayout": {"rebuilt": relayout.rebuilt, "measured": relayout.measured, "markedDirty": relayout.marked_dirty, "markedLeaves": relayout.marked_leaves}})
         }).collect();
         serde_json::to_string(&samples).map_err(error)
     })
