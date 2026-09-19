@@ -43,6 +43,10 @@ categories = [
 license = "MIT"
 repository = "https://gitlab.freedesktop.org/pipewire/pipewire-rs"
 
+[package.metadata.cargo-machete]
+# These are referenced by build.rs; cargo-machete only scans Rust targets.
+ignored = ["bindgen", "cc", "system-deps"]
+
 [package.metadata.system-deps.libspa]
 name = "libspa-0.2"
 version = "0.2"
