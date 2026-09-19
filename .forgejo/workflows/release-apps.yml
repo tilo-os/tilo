@@ -441,12 +441,9 @@ jobs:
     # verify either target archive without executing its application payloads.
     runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
     container:
-      # This job handles publisher credentials and already-built artifacts. Its
-      # reviewed image deliberately contains no compiler or build toolchain.
-      image: code.podesta.ai/qos/tilo-release-tools@sha256:65f353e93781c3c22881078900754d1f7b59c3349f522631e6289ef2838daa70
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      # This public, immutable image is pulled before any release authorization.
+      # It contains no compiler or build toolchain and needs no registry secret.
+      image: code.podesta.ai/public/tilo-release-tools@sha256:a59c9b664bc4aa09da7a747b77aa72c965608d6da9fa5659a3e70e01810b764b
     timeout-minutes: 60
     enable-openid-connect: true
     steps:
