@@ -14,6 +14,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'app-names.ps1')
 . (Join-Path $PSScriptRoot 'install-path.ps1')
+. (Join-Path $PSScriptRoot 'app-build-plan.ps1')
 if (-not $IsWindows) { throw 'Run this installer from PowerShell on Windows.' }
 if ($Apps.Count -eq 0) { throw 'Select at least one application.' }
 $installDirectory = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Tilo/Applications'
@@ -21,9 +22,9 @@ $menuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tilo'
 Assert-TiloPublicInstallDirectory $installDirectory
 Assert-TiloPublicInstallDirectory $menuDirectory
 $repository = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$applications = $Apps | Select-Object -Unique
-$buildArguments = @('build', '--locked', '--profile', $Profile, '--jobs', $Jobs, '--message-format=json-render-diagnostics')
-foreach ($application in $applications) { $buildArguments += @('-p', $application) }
+$buildPlan = Get-TiloWindowsAppBuildPlan -Apps $Apps -Profile $Profile -Jobs $Jobs
+$applications = $buildPlan.applications
+$buildArguments = $buildPlan.applicationBuild.arguments
 
 Push-Location -LiteralPath $repository
 try {
@@ -53,10 +54,11 @@ foreach ($application in $applications) {
 }
 
 $hostHelper = $null
-if ('clocks' -in $applications) {
+if ($null -ne $buildPlan.notificationBuild) {
+    $hostBuildArguments = $buildPlan.notificationBuild.arguments
     Push-Location -LiteralPath $repository
     try {
-        $hostMessages = & cargo build --locked --profile $Profile --jobs $Jobs -p ui --example windows-host --features notifications --message-format=json-render-diagnostics
+        $hostMessages = & cargo @hostBuildArguments
         $hostExitCode = $LASTEXITCODE
     } finally {
         Pop-Location
@@ -88,7 +90,7 @@ Get-ChildItem -LiteralPath $fontSource -Recurse -File | ForEach-Object {
 }
 $shortcutShell = New-Object -ComObject WScript.Shell
 & (Join-Path $PSScriptRoot 'install-dxc.ps1')
-if ('pdf-viewer' -in $applications -or 'file-explorer' -in $applications) {
+if ($buildPlan.runtime.pdfium) {
     & (Join-Path $PSScriptRoot 'install-pdfium.ps1')
 }
 # Detect actual native media imports, so every app shares the same runtime
