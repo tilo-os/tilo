@@ -19,11 +19,10 @@ on:
         type: string
 
 concurrency:
-  # Keep every main revision, without serializing all commits behind one slow
-  # native build. Runner admission limits resource use across these runs.
-  group: check-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  # Feature branches still supersede obsolete work immediately.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Keep every event and commit independent so required PR evidence cannot be
+  # replaced by a push or by a newer revision.
+  group: check-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   CARGO_HOME: /cargo-home
