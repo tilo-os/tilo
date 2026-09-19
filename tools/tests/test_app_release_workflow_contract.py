@@ -59,6 +59,24 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         publish = publish.replace('    steps:', '    steps:\n      - run: echo token\n        env:\n          FORBIDDEN: ${{ secrets.REGISTRY_TOKEN }}', 1)
         self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
 
+    def test_verifier_package_secret_is_narrow_and_artifact_token_stays_job_scoped(self):
+        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        binding = '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}'
+        self.assertEqual(source.count(binding), 2)
+        for occurrence in (0, 1):
+            for replacement in ('${{ github.token }}', '${{ secrets.REGISTRY_TOKEN }}',
+                                '${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN || secrets.REGISTRY_TOKEN }}'):
+                with self.subTest(occurrence=occurrence, replacement=replacement):
+                    parts = source.split(binding)
+                    changed = binding.join(parts[:occurrence + 1]) + (
+                        '          VERIFIER_BUNDLE_READ_TOKEN: ' + replacement
+                    ) + binding.join(parts[occurrence + 1:])
+                    self.assertNotEqual(self.check(changed), 0)
+        artifact = '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}'
+        self.assertIn(artifact, source)
+        self.assertNotEqual(self.check(source.replace(artifact,
+            '          FORGEJO_ARTIFACT_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}')), 0)
+
     def test_disconnected_or_mutable_builder_fails(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         for before, after in (
