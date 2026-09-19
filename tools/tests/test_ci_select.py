@@ -305,6 +305,36 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected"], [])
         self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_builder_cache_policy_does_not_compile_unrelated_rust(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        changes = [
+            ".forgejo/workflows/build-builder-image.yml",
+            "tools/tests/test_cargo_download_cache_action.py",
+        ]
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertFalse(plan["rust_required"])
+
+    def test_builder_reuse_policy_does_not_compile_unrelated_rust(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        changes = [
+            ".forgejo/workflows/build-builder-image.yml",
+            "os/tests/test_builder_candidate_workflow.py",
+            "os/tests/release_pipeline_invariants.sh",
+            "os/tests/workflow_dependency_invariants.sh",
+            "tools/ci/builder_workflow_plan.py",
+            "tools/ci/resolve_promoted_builder.py",
+            "tools/tests/test_builder_workflow_plan.py",
+            "tools/tests/test_cargo_download_cache_action.py",
+            "tools/tests/test_cosign_install_action.py",
+            "tools/tests/test_resolve_promoted_builder.py",
+        ]
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected"], [])
+        self.assertEqual(plan["matrix"], {"include": []})
+
     def test_ci_control_plane_mapping_stays_exact_and_conservative(self) -> None:
         self.install_control_inputs()
         source = ".forgejo/workflows/check.yml"

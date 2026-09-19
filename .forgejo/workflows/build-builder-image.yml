@@ -19,11 +19,13 @@ on:
       - "rust-toolchain.toml"
       - "crates/system/atomic-file/**"
       - "tools/ci/check-build-env.sh"
+      - "tools/ci/builder_workflow_plan.py"
       - "tools/ci/install-pdfium.sh"
       - "tools/ci/measure.sh"
       - "tools/ci/native-mold-linker.sh"
       - "tools/ci/sccache-canary.sh"
       - "tools/ci/sccache.sh"
+      - "tools/ci/resolve_promoted_builder.py"
       - "tools/ci/verify-native-mold.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/actions/restore-cargo-downloads/**"
@@ -40,7 +42,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: runner-quality
+    timeout-minutes: 10
+    container:
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Choose native build or promoted-builder qualification
+        id: plan
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: python3 -I tools/ci/builder_workflow_plan.py
+
   signing-preflight:
+    needs: plan
+    if: needs.plan.outputs.mode == 'build'
     runs-on: runner
     timeout-minutes: 5
     enable-openid-connect: true
@@ -70,7 +96,12 @@ jobs:
           }
 
   build:
-    needs: signing-preflight
+    needs: [plan, signing-preflight]
+    if: >-
+      ${{
+        always() && needs.plan.result == 'success' &&
+        needs.plan.outputs.mode == 'build' && needs.signing-preflight.result == 'success'
+      }}
     strategy:
       fail-fast: false
       matrix:
@@ -206,22 +237,66 @@ jobs:
   images:
     # Forgejo's run_attempt counts each job separately. Consumers must use
     # producer artifacts, not reconstruct an image tag from their own attempt.
-    needs: build
+    needs: [plan, build]
+    if: >-
+      ${{
+        always() && needs.plan.result == 'success' &&
+        ((needs.plan.outputs.mode == 'build' && needs.build.result == 'success') ||
+         (needs.plan.outputs.mode == 'reuse' && needs.build.result == 'skipped'))
+      }}
     runs-on: runner
     timeout-minutes: 20
     outputs:
-      matrix: ${{ steps.resolve.outputs.matrix }}
+      matrix: ${{ steps.select.outputs.matrix }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - if: needs.plan.outputs.mode == 'build'
+        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: native-candidates
       - name: Resolve exact successful native producer attempts
-        id: resolve
+        id: built
+        if: needs.plan.outputs.mode == 'build'
         run: |
           python3 os/tests/test_builder_candidate_workflow.py
           python3 os/tests/native_index_promotion.py
           python3 os/dev/builder-canary-inputs.py matrix native-candidates
+      - name: Log in to read the promoted builder
+        if: needs.plan.outputs.mode == 'reuse'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Install checksum-pinned Cosign
+        if: needs.plan.outputs.mode == 'reuse'
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: ${{ runner.arch }}
+      - name: Set up registry inspection
+        if: needs.plan.outputs.mode == 'reuse'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Resolve the signed promoted native builders
+        id: reused
+        if: needs.plan.outputs.mode == 'reuse'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: python3 -I tools/ci/resolve_promoted_builder.py
+      - name: Select the canary matrix
+        id: select
+        env:
+          MODE: ${{ needs.plan.outputs.mode }}
+          BUILT_MATRIX: ${{ steps.built.outputs.matrix }}
+          REUSED_MATRIX: ${{ steps.reused.outputs.matrix }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            build) matrix=$BUILT_MATRIX ;;
+            reuse) matrix=$REUSED_MATRIX ;;
+            *) echo '::error::invalid builder plan mode'; exit 1 ;;
+          esac
+          test -n "$matrix"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
 
   # Two separate, fresh job containers prove that an object written by the
   # first compiler process is read back from the remote S3 cache by another.
@@ -255,6 +330,7 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Restore Cargo downloads
+        id: cargo-cache
         uses: ./.forgejo/actions/restore-cargo-downloads
       - name: Create a fresh cold cache receipt
         run: python3 os/dev/builder-canary-inputs.py cold cold-receipt
@@ -268,6 +344,16 @@ jobs:
           bash tools/ci/measure.sh "sccache cold canary" -- \
             cargo build -p atomic-file --locked
           bash tools/ci/sccache-canary.sh cold
+      - name: Save Cargo downloads
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
       - name: Retain only successful cold acceptance
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
@@ -322,23 +408,46 @@ jobs:
           path: warm-receipt/
           if-no-files-found: error
 
-  promote-builder:
-    timeout-minutes: 60
-    needs: [build, images, cache-cold, cache-warm]
+  accept-builder:
+    timeout-minutes: 20
+    needs: [plan, build, images, cache-cold, cache-warm]
+    if: >-
+      ${{
+        always() && needs.plan.result == 'success' && needs.images.result == 'success' &&
+        needs.cache-cold.result == 'success' && needs.cache-warm.result == 'success' &&
+        ((needs.plan.outputs.mode == 'reuse' && needs.build.result == 'skipped') ||
+         (needs.plan.outputs.mode == 'build' && needs.build.result == 'success'))
+      }}
     runs-on: runner
-    enable-openid-connect: true
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: acceptance-receipts
-      - name: Preserve the exact native identities used by both canaries
+      - name: Verify the exact native identities used by both canaries
         env:
           CANDIDATE_MATRIX: ${{ needs.images.outputs.matrix }}
-        run: |
-          python3 os/dev/builder-canary-inputs.py verify acceptance-receipts
-          python3 os/dev/builder-canary-inputs.py descriptors native-children
+        run: python3 os/dev/builder-canary-inputs.py verify acceptance-receipts
+
+  promote-builder:
+    timeout-minutes: 60
+    needs: [plan, build, images, accept-builder]
+    if: >-
+      ${{
+        always() && needs.plan.result == 'success' && needs.plan.outputs.mode == 'build' &&
+        needs.build.result == 'success' && needs.images.result == 'success' &&
+        needs.accept-builder.result == 'success'
+      }}
+    runs-on: runner
+    enable-openid-connect: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Preserve native identities for publication
+        env:
+          CANDIDATE_MATRIX: ${{ needs.images.outputs.matrix }}
+        run: python3 os/dev/builder-canary-inputs.py descriptors native-children
       - name: Log in to code.sandbox.example
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
