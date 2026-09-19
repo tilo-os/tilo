@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Test the packaged payload, not a parallel pre-packaging build tree.
 set -euo pipefail
+# kmod installs modinfo in sbin, which minimal runner images may omit from PATH.
+export PATH="$PATH:/usr/sbin:/sbin"
 rpm_file=$(realpath "${1:?usage: test-rpm.sh KERNEL.rpm NEW_OUTPUT_DIRECTORY}")
 out=${2:?new output directory required}
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)

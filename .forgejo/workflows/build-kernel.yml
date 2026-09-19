@@ -129,6 +129,7 @@ jobs:
       - name: Install native kernel acceptance tools
         run: |
           set -euo pipefail
+          export PATH="$PATH:/usr/sbin:/sbin"
           case '${{ matrix.arch }}' in
             aarch64) apt_qemu=qemu-system-arm; fedora_qemu=qemu-system-aarch64;;
             x86_64) apt_qemu=qemu-system-x86; fedora_qemu=qemu-system-x86;;
