@@ -1,4 +1,5 @@
 use super::*;
+use automerge::transaction::Transactable;
 use std::fmt::Write as _;
 use taffy::AvailableSpace;
 use ui::permissions::PermissionContext;
