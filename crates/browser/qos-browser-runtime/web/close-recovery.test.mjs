@@ -1,6 +1,47 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {settleComponentClose} from './close-recovery.mjs';
+import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
+import {createStorageAccess} from './storage.mjs';
+import {createInlineStorage} from './storage-inline.mjs';
+import {fakeIndexedDB,fakeLocks,fakeWorkers} from './testing/fake-storage.mjs';
+const settle=async(rounds=20)=>{for(let i=0;i<rounds;i++)await new Promise(resolve=>setImmediate(resolve));};
+function workerStorage(t){
+  const idb=fakeIndexedDB(),locks=fakeLocks(),workers=fakeWorkers({locks,indexedDB:idb});t.after(()=>workers.dispose());
+  const access=createStorageAccess({createWorker:workers.createWorker,inline:createInlineStorage({locks:locks.manager('page'),indexedDB:idb}),delay:()=>settle(1),lockRetryMs:0});
+  return {idb,locks,workers,access};
+}
+const closeWrite={key:'{"type":"record"}',revision:2,bytes:[1,4,9],actor:null};
+test('close drain: acknowledgement and finish_close wait for the worker-confirmed commit of the close writes',async t=>{
+  const {idb,workers,access}=workerStorage(t);const storage=await access.acquireStorage('p','d');
+  const events=[];
+  const runtime={prepare_close:()=>JSON.stringify({writes:[closeWrite],errors:[]}),acknowledge_storage(_profile,_device,revision){events.push(['ack',revision]);},finish_close(){events.push(['finish']);}};
+  const gate=idb.gateNextCommit();
+  const close=recoverableClose({begin(){events.push(['begin']);},settle:()=>settleComponentClose(runtime,1,storage,'p','d')});
+  const closing=close();
+  await gate.held;await settle();
+  assert.deepEqual(events,[['begin']],'nothing settles before the strict transaction completed in the worker');
+  assert.equal(idb.rows().length,0);
+  gate.release();await closing;
+  assert.deepEqual(events,[['begin'],['ack',2n],['finish']]);
+  assert.deepEqual(idb.rows().map(row=>[row.revision,[...row.bytes],row.epoch]),[[2,[1,4,9],storage.epoch]]);
+  assert.deepEqual(workers.workers[0].posted.map(message=>message.type),['open','commit']);
+  await storage.release();
+});
+test('close drain: a worker crash during the close write keeps the close retryable and the retry commits in-page',async t=>{
+  const {idb,locks,workers,access}=workerStorage(t);const storage=await access.acquireStorage('p','d');
+  let began=0,finished=0;const errors=[];
+  const runtime={prepare_close:()=>JSON.stringify({writes:[closeWrite],errors:[]}),acknowledge_storage(){},finish_close(){finished++;}};
+  const gate=idb.gateNextCommit();
+  const close=recoverableClose({begin(){began++;},settle:()=>settleComponentClose(runtime,1,storage,'p','d'),onError:error=>errors.push(error)});
+  const first=close();await gate.held;workers.workers[0].crash();
+  await assert.rejects(first,error=>error.name==='StorageWorkerError');
+  assert.equal(finished,0);assert.equal(errors.length,1);assert.equal(idb.rows().length,0);
+  await close();
+  assert.equal(began,1);assert.equal(finished,1);
+  assert.equal(idb.transactions().at(-1).owner,'page');assert.equal(locks.holder('qos-writer:["p","d"]'),'page');
+  assert.deepEqual(idb.rows().map(row=>[row.revision,row.epoch]),[[2,storage.epoch]]);
+  await storage.release();assert.deepEqual(locks.held(),[]);
+});
 test('component retry enqueues current recovery bytes before commit and final report settlement',async()=>{
   const events=[];let durable=false;
   const runtime={
