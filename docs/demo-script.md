@@ -252,7 +252,7 @@ here rather than producing a drag that carries nothing.
 `wl_data_source` anywhere, and sent people to the toolbar **Insert
 image** route instead. That route still exists and still works —
 `apps/word-processor/src/widget.rs:2250` against
-`shell/src/portal/file_chooser.rs` — it is simply no longer the only
+`crates/session/shell/src/portal/file_chooser.rs` — it is simply no longer the only
 one.)*
 
 What makes the beat worth running is what crosses. Files and the word

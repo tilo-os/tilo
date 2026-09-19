@@ -13,7 +13,7 @@ After=graphical-session-pre.target
 Type=oneshot
 RemainAfterExit=yes
 # Marker path mirrors what the `shell` binary actually reads
-# (see `shell/src/compositor/mod.rs::XdgConfigMarkerSource`):
+# (see `crates/session/shell/src/compositor/mod.rs::XdgConfigMarkerSource`):
 # `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled` with a fallback
 # to `~/.config/tilo-desktop/peer-sync.enabled`. Persistent across
 # reboots for compatibility with earlier releases.

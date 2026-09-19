@@ -261,7 +261,7 @@ else
     # for the same socket and split apps across two CRDT sessions. Prove the
     # image ships the owner and that it binds the launcher's canonical path.
     if [ "$svc" = "collab" ]; then
-      native="$REPO/shell/src/compositor/native.rs"
+      native="$REPO/crates/session/shell/src/compositor/native.rs"
       if grep -Eq 'let (mut )?collab_broker.*=' "$native" \
           && grep -q 'spawn_session_collab_broker' "$native" \
           && grep -q 'launcher::services::collab_socket()' "$native"; then
@@ -278,8 +278,8 @@ else
     # handler dispatches into the shell and pumps workspace routes on its UI
     # loop; a separate systemd daemon cannot supply that ownership.
     if [ "$svc" = "tools" ]; then
-      native="$REPO/shell/src/compositor/native.rs"
-      service="$REPO/shell/src/shell/tool_intents.rs"
+      native="$REPO/crates/session/shell/src/compositor/native.rs"
+      service="$REPO/crates/session/shell/src/shell/tool_intents.rs"
       if grep -Fq 'let tool_service = match crate::shell::tool_intents::spawn()' "$native" \
           && python3 -c '
 import pathlib, re, sys

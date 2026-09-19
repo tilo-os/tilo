@@ -7,7 +7,7 @@
 //! encoding the group verifying key.
 //!
 //! [`DkgSession`] is a per-device handle advancing `Round1 → Round2 →
-//! Complete`; a higher-level orchestrator (in `shell/`) shuttles
+//! Complete`; a higher-level orchestrator (in `crates/session/shell/`) shuttles
 //! [`EnrolmentRound1`]/[`EnrolmentRound2`] messages between devices over
 //! its transport (Iroh direct-message in production).
 //!

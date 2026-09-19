@@ -152,4 +152,4 @@ acceptance record.
 - Shell keyboard/containment map:
   [`docs/shell-navigation-keyboard-map.md`](shell-navigation-keyboard-map.md).
 - Current executable UI evidence: shell `shots` scenarios and
-  `shell/tests/e2e_shell_flows.rs`.
+  `crates/session/shell/tests/e2e_shell_flows.rs`.

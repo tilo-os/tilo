@@ -743,7 +743,7 @@ impl WindowGroup {
         &mut self.bar
     }
 
-    /// `shell/tests/` integration tests need this from outside the crate.
+    /// `crates/session/shell/tests/` integration tests need this from outside the crate.
     #[cfg(any(test, debug_assertions))]
     pub fn bar_mut_for_tests(&mut self) -> &mut crate::widget::TabBar {
         &mut self.bar

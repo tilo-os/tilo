@@ -201,7 +201,7 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
 def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, *, force_full: bool = False) -> dict:
     packages, by_dir = package_maps(metadata, root)
     global_change = any(path in GLOBAL_FILES or path.startswith(GLOBAL_PREFIXES) for path in changes)
-    workspace_source_roots = ("apps/", "crates/", "shell/")
+    workspace_source_roots = ("apps/", "crates/")
     unmapped_workspace_change = any(
         path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
         for path in changes
