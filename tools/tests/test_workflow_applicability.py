@@ -269,6 +269,25 @@ jobs:
             fixture.write_text(path.read_text().replace('  pull_request:', '  pull_request: {}'))
             with self.assertRaises(ValueError): gate.declared_paths(fixture)
 
+    def test_history_helper_only_routes_pull_request_gates(self):
+        def event_paths(source, event):
+            lines = source.splitlines()
+            start = lines.index(f'  {event}:') + 1
+            end = next((i for i in range(start, len(lines))
+                        if lines[i].strip()
+                        and len(lines[i]) - len(lines[i].lstrip()) <= 2), len(lines))
+            block = lines[start:end]
+            paths = block.index('    paths:') + 1
+            return {json.loads(line[len('      - '):]) for line in block[paths:]
+                    if line.startswith('      - "')}
+
+        helper = 'tools/ci/prepare_pr_history.py'
+        for name in ('build-kernel.yml', 'tilo-relay.yaml'):
+            with self.subTest(workflow=name):
+                source = (ROOT/'.forgejo/workflows'/name).read_text(encoding='utf-8')
+                self.assertNotIn(helper, event_paths(source, 'push'))
+                self.assertIn(helper, event_paths(source, 'pull_request'))
+
     def test_actual_job_map_gates_every_expensive_pr_job_on_the_fast_lane(self):
         def job(text, prefix):
             lines = text.splitlines()
