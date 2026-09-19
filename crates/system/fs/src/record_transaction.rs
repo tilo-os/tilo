@@ -4,11 +4,14 @@
 //! contains the exact signed manifest and exact participant batches which will
 //! be retried at every monotonic phase until broadcast has completed.
 
+mod legacy_restore;
+pub(crate) use legacy_restore::LegacyRestoreEntry;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use collab_types::{FileMutationTransactionV1, FileRecordId};
+use collab_types::{FileMutationTransaction, FileRecordId};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -52,7 +55,7 @@ pub struct RecordTransactionParticipantBatch {
 #[serde(deny_unknown_fields)]
 pub struct RecordTransactionJournalEntry {
     pub schema_version: u16,
-    pub transaction: FileMutationTransactionV1,
+    pub transaction: FileMutationTransaction,
     /// Exact batches sorted by participant record ID.
     pub participant_batches: Vec<RecordTransactionParticipantBatch>,
     pub phase: RecordTransactionPhase,
@@ -119,7 +122,12 @@ impl RecordTransactionJournalEntry {
                 return Err(RecordTransactionJournalError::InvalidEnvelopeBatch);
             }
         }
-        if self.phase < RecordTransactionPhase::HistoryCommitted && self.namespace_delta.is_some()
+        if self.phase < RecordTransactionPhase::HistoryCommitted
+            && self.namespace_delta.is_some()
+            && !matches!(
+                self.transaction.manifest.operation,
+                collab_types::FileMutationOperation::RestoreContent { .. }
+            )
             || self.phase >= RecordTransactionPhase::NamespaceCommitted
                 && self.namespace_delta.is_none()
         {
@@ -136,6 +144,7 @@ impl RecordTransactionJournalEntry {
 pub struct RecordTransactionJournal {
     root: PathBuf,
     entries: BTreeMap<Uuid, RecordTransactionJournalEntry>,
+    legacy_restores: BTreeMap<Uuid, LegacyRestoreEntry>,
 }
 
 impl RecordTransactionJournal {
@@ -146,8 +155,12 @@ impl RecordTransactionJournal {
     /// Returns an error when directory entries cannot be read or validated.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RecordTransactionJournalError> {
         let root = root.into();
-        let entries = load_entries(&root)?;
-        Ok(Self { root, entries })
+        let (entries, legacy_restores) = load_entries(&root)?;
+        Ok(Self {
+            root,
+            entries,
+            legacy_restores,
+        })
     }
 
     pub fn entries(&self) -> impl Iterator<Item = &RecordTransactionJournalEntry> {
@@ -168,23 +181,48 @@ impl RecordTransactionJournal {
         &mut self,
         entry: RecordTransactionJournalEntry,
     ) -> Result<bool, RecordTransactionJournalError> {
+        if !self.validate_prepared(&entry)? {
+            return Ok(false);
+        }
+        let id = entry.transaction_id();
+        if let Err(error) = persist_entry(&self.root, &entry) {
+            if matches!(
+                entry.transaction.manifest.operation,
+                collab_types::FileMutationOperation::RestoreContent { .. }
+            ) {
+                self.entries.insert(id, entry);
+            }
+            return Err(error);
+        }
+        self.entries.insert(id, entry);
+        Ok(true)
+    }
+
+    pub(crate) fn validate_prepared(
+        &self,
+        entry: &RecordTransactionJournalEntry,
+    ) -> Result<bool, RecordTransactionJournalError> {
         entry.validate()?;
         if entry.phase != RecordTransactionPhase::Prepared {
             return Err(RecordTransactionJournalError::InvalidInitialPhase);
         }
         let id = entry.transaction_id();
         if let Some(existing) = self.entries.get(&id) {
-            return if existing == &entry {
+            return if existing == entry {
                 Ok(false)
             } else {
                 Err(RecordTransactionJournalError::TransactionIdCollision(id))
             };
         }
-        if self.entries.len() >= MAX_RECORD_TRANSACTION_ENTRIES {
+        if self.legacy_restores.contains_key(&id) {
+            return Err(RecordTransactionJournalError::TransactionIdCollision(id));
+        }
+        if self.retained_count() >= MAX_RECORD_TRANSACTION_ENTRIES {
             return Err(RecordTransactionJournalError::TooManyEntries);
         }
-        persist_entry(&self.root, &entry)?;
-        self.entries.insert(id, entry);
+        if serde_json::to_vec(entry)?.len() > MAX_RECORD_TRANSACTION_ENTRY_BYTES {
+            return Err(RecordTransactionJournalError::EntryTooLarge);
+        }
         Ok(true)
     }
 
@@ -201,6 +239,9 @@ impl RecordTransactionJournal {
         phase: RecordTransactionPhase,
         namespace_delta: Option<Vec<u8>>,
     ) -> Result<bool, RecordTransactionJournalError> {
+        if self.legacy_restores.contains_key(&id) {
+            return self.advance_legacy(id, phase, namespace_delta);
+        }
         let current = self
             .entries
             .get(&id)
@@ -240,6 +281,15 @@ impl RecordTransactionJournal {
         id: Uuid,
         delta: Vec<u8>,
     ) -> Result<bool, RecordTransactionJournalError> {
+        if let Some(entry) = self.legacy_restores.get(&id) {
+            return if entry.phase == RecordTransactionPhase::HistoryCommitted
+                && entry.namespace_delta == delta
+            {
+                Ok(false)
+            } else {
+                Err(RecordTransactionJournalError::InvalidNamespaceDelta)
+            };
+        }
         let current = self
             .entries
             .get(&id)
@@ -279,6 +329,15 @@ impl RecordTransactionJournal {
         if entry.phase != RecordTransactionPhase::BroadcastCommitted {
             return Err(RecordTransactionJournalError::TransactionNotComplete(id));
         }
+        // Completed checked restores are durable dedupe/compensation evidence.
+        // Capacity remains reserved; never forget an ID and reinterpret retry
+        // as a new authored operation. Ordinary transactions retain old cleanup.
+        if matches!(
+            entry.transaction.manifest.operation,
+            collab_types::FileMutationOperation::RestoreContent { .. }
+        ) {
+            return Ok(());
+        }
         let path = entry_path(&self.root, id);
         fs::remove_file(path)?;
         sync_dir(&self.root);
@@ -289,11 +348,18 @@ impl RecordTransactionJournal {
 
 fn load_entries(
     root: &Path,
-) -> Result<BTreeMap<Uuid, RecordTransactionJournalEntry>, RecordTransactionJournalError> {
+) -> Result<
+    (
+        BTreeMap<Uuid, RecordTransactionJournalEntry>,
+        BTreeMap<Uuid, LegacyRestoreEntry>,
+    ),
+    RecordTransactionJournalError,
+> {
     if !root.exists() {
-        return Ok(BTreeMap::new());
+        return Ok((BTreeMap::new(), BTreeMap::new()));
     }
     let mut entries = BTreeMap::new();
+    let mut legacy = BTreeMap::new();
     for item in fs::read_dir(root)? {
         let item = item?;
         if !item.file_type()?.is_file() {
@@ -314,6 +380,24 @@ fn load_entries(
         if bytes.len() > MAX_RECORD_TRANSACTION_ENTRY_BYTES {
             return Err(RecordTransactionJournalError::EntryTooLarge);
         }
+        if serde_json::from_slice::<serde_json::Value>(&bytes)?
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(2)
+        {
+            let entry: LegacyRestoreEntry = serde_json::from_slice(&bytes)?;
+            entry.validate()?;
+            if entry.request.intent_id != id {
+                return Err(RecordTransactionJournalError::PathIdMismatch);
+            }
+            if entries.contains_key(&id) || legacy.insert(id, entry).is_some() {
+                return Err(RecordTransactionJournalError::TransactionIdCollision(id));
+            }
+            if entries.len() + legacy.len() > MAX_RECORD_TRANSACTION_ENTRIES {
+                return Err(RecordTransactionJournalError::TooManyEntries);
+            }
+            continue;
+        }
         let entry: RecordTransactionJournalEntry = serde_json::from_slice(&bytes)?;
         entry.validate()?;
         if entry.transaction_id() != id {
@@ -322,11 +406,11 @@ fn load_entries(
         if entries.insert(id, entry).is_some() {
             return Err(RecordTransactionJournalError::TransactionIdCollision(id));
         }
-        if entries.len() > MAX_RECORD_TRANSACTION_ENTRIES {
+        if entries.len() + legacy.len() > MAX_RECORD_TRANSACTION_ENTRIES {
             return Err(RecordTransactionJournalError::TooManyEntries);
         }
     }
-    Ok(entries)
+    Ok((entries, legacy))
 }
 
 fn persist_entry(
@@ -396,16 +480,18 @@ pub enum RecordTransactionJournalError {
 mod tests {
     use collab_types::{
         CONTENT_REVISION_VERSION, ContentHash, Ed25519PublicKey, FILE_BINDING_VERSION,
-        FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileMutationOperationV1,
-        FileMutationParticipantRoleV1, FileMutationParticipantV1,
-        FileMutationTransactionManifestV1, FileNodeKind, FileProvenance, FileVersionId,
-        FileVersionV1,
+        FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileMutationOperation,
+        FileMutationParticipant, FileMutationParticipantRole, FileMutationTransactionManifest,
+        FileNodeKind, FileProvenance, FileVersionId, FileVersionV1,
     };
     use rand::rngs::OsRng;
 
     use super::*;
 
-    #[allow(clippy::too_many_lines)] // Complete signed journal fixture construction.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The journal fixture builds a signed replacement rename with source/replaced projections and prepare/commit envelopes."
+    )] // Complete signed journal fixture construction.
     fn entry() -> RecordTransactionJournalEntry {
         let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
         let actor = FileActor {
@@ -426,12 +512,12 @@ mod tests {
                 content_hash: None,
                 metadata_hash: ContentHash([10; 32]),
                 provenance: match role {
-                    FileMutationParticipantRoleV1::Source => FileProvenance::Rename,
-                    FileMutationParticipantRoleV1::Replaced => FileProvenance::Delete,
+                    FileMutationParticipantRole::Source => FileProvenance::Rename,
+                    FileMutationParticipantRole::Replaced => FileProvenance::Delete,
                     _ => unreachable!("replacement fixture role"),
                 },
             };
-            let mut participant = FileMutationParticipantV1 {
+            let mut participant = FileMutationParticipant {
                 record_id,
                 role,
                 expected_version: expected,
@@ -441,7 +527,7 @@ mod tests {
                     parent: Some(destination_parent),
                     name: "destination.txt".into(),
                     kind: FileNodeKind::File,
-                    tombstoned: role == FileMutationParticipantRoleV1::Replaced,
+                    tombstoned: role == FileMutationParticipantRole::Replaced,
                     actor,
                     observed_at_ms: 10,
                 },
@@ -460,18 +546,18 @@ mod tests {
             participant
         };
         let mut participants = vec![
-            participant(source, FileMutationParticipantRoleV1::Source),
-            participant(replaced, FileMutationParticipantRoleV1::Replaced),
+            participant(source, FileMutationParticipantRole::Source),
+            participant(replaced, FileMutationParticipantRole::Replaced),
         ];
         participants.sort_by_key(|participant| participant.record_id);
-        let transaction = FileMutationTransactionV1::signed(
-            FileMutationTransactionManifestV1 {
+        let transaction = FileMutationTransaction::signed(
+            FileMutationTransactionManifest {
                 schema_version: FILE_MUTATION_TRANSACTION_VERSION,
                 transaction_id: Uuid::new_v4(),
                 workspace_id: Uuid::new_v4(),
                 actor,
                 timestamp_ms: 10,
-                operation: FileMutationOperationV1::ReplacementRename {
+                operation: FileMutationOperation::ReplacementRename {
                     source_parent: FileRecordId::new(),
                     source_name: "source.txt".into(),
                     destination_parent,
@@ -590,5 +676,126 @@ mod tests {
             value.validate(),
             Err(RecordTransactionJournalError::InvalidEnvelopeBatch)
         ));
+    }
+    fn legacy_entry() -> LegacyRestoreEntry {
+        use collab_types::files::{
+            CheckedHistoryOperationV1, CheckedHistoryRequestV1, FileRestoreReceiptV1,
+            FileRestoreReviewV1,
+        };
+        let signed = entry();
+        let participant = &signed.transaction.manifest.participants[0];
+        let mut version = participant.proposed_version.clone();
+        let selected = FileVersionId::new();
+        version.provenance = FileProvenance::Restore { from: selected };
+        let mut prior = participant.proposed_content_revision.unwrap();
+        prior.version_id = participant.expected_version;
+        let request = CheckedHistoryRequestV1 {
+            schema_version: 1,
+            intent_id: Uuid::new_v4(),
+            review: FileRestoreReviewV1 {
+                schema_version: 1,
+                workspace_id: signed.transaction.manifest.workspace_id,
+                mount_lifetime: Uuid::new_v4(),
+                record_id: version.record_id,
+                frontier: [1; 32],
+            },
+            operation: CheckedHistoryOperationV1::Restore {
+                version_id: selected,
+            },
+        };
+        LegacyRestoreEntry {
+            schema_version: 2,
+            request,
+            receipt: FileRestoreReceiptV1 {
+                schema_version: 1,
+                intent_id: request.intent_id,
+                workspace_id: request.review.workspace_id,
+                mount_lifetime: request.review.mount_lifetime,
+                record_id: version.record_id,
+                selected_version: selected,
+                prior_revision: prior,
+                prior_reference:
+                    collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative,
+                restored_revision: participant.proposed_content_revision.unwrap(),
+                compensates: None,
+            },
+            version,
+            phase: RecordTransactionPhase::Prepared,
+            namespace_delta: vec![1, 2, 3],
+        }
+    }
+
+    #[test]
+    fn checked_journal_mixed_old_signed_new_legacy_reopen_retains_dedupe_without_changing_ordinary_pruning()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = RecordTransactionJournal::open(directory.path()).unwrap();
+        let old = entry();
+        let id = old.transaction_id();
+        let legacy = legacy_entry();
+        let legacy_id = legacy.request.intent_id;
+        journal.insert_prepared(old).unwrap();
+        journal.insert_legacy_restore(legacy.clone()).unwrap();
+        for phase in [
+            RecordTransactionPhase::ParticipantRecordsCommitted,
+            RecordTransactionPhase::HistoryCommitted,
+            RecordTransactionPhase::NamespaceCommitted,
+            RecordTransactionPhase::BroadcastCommitted,
+        ] {
+            let delta = if phase >= RecordTransactionPhase::NamespaceCommitted {
+                Some(vec![1, 2, 3])
+            } else {
+                None
+            };
+            journal.advance(id, phase, delta.clone()).unwrap();
+            journal.advance(legacy_id, phase, delta).unwrap();
+        }
+        let mixed = RecordTransactionJournal::open(directory.path()).unwrap();
+        assert_eq!(mixed.retained_count(), 2);
+        assert!(mixed.get(id).is_some());
+        assert_eq!(mixed.checked_request(legacy_id), Some(legacy.request));
+        drop(mixed);
+        journal.remove_completed(id).unwrap();
+        let reopened = RecordTransactionJournal::open(directory.path()).unwrap();
+        assert!(reopened.get(id).is_none());
+        assert_eq!(reopened.checked_request(legacy_id), Some(legacy.request));
+        assert_eq!(reopened.checked_receipt(legacy_id), Some(legacy.receipt));
+        let mut collision = legacy_entry();
+        collision.request.intent_id = legacy_id;
+        collision.receipt.intent_id = legacy_id;
+        assert!(matches!(
+            journal.insert_legacy_restore(collision),
+            Err(RecordTransactionJournalError::TransactionIdCollision(_))
+        ));
+    }
+
+    #[test]
+    fn checked_journal_retention_capacity_never_evicts_and_rejects_oversized_or_inconsistent_legacy()
+     {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = RecordTransactionJournal::open(directory.path()).unwrap();
+        let legacy = legacy_entry();
+        for _ in 0..MAX_RECORD_TRANSACTION_ENTRIES {
+            let mut value = legacy.clone();
+            value.request.intent_id = Uuid::new_v4();
+            value.receipt.intent_id = value.request.intent_id;
+            journal
+                .legacy_restores
+                .insert(value.request.intent_id, value);
+        }
+        assert!(matches!(
+            journal.insert_legacy_restore(legacy.clone()),
+            Err(RecordTransactionJournalError::TooManyEntries)
+        ));
+        assert_eq!(journal.retained_count(), MAX_RECORD_TRANSACTION_ENTRIES);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        let mut inconsistent = legacy.clone();
+        inconsistent.receipt.compensates = Some(Uuid::new_v4());
+        assert!(inconsistent.validate().is_err());
+        let mut oversized = legacy;
+        oversized
+            .namespace_delta
+            .resize(MAX_RECORD_TRANSACTION_ENTRY_BYTES, 255);
+        assert!(oversized.validate().is_err());
     }
 }

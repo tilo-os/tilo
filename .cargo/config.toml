@@ -36,8 +36,8 @@ rustflags = [
 ]
 
 [target.'cfg(all(target_arch = "aarch64", not(target_os = "linux")))']
+# Preserve each platform's ABI CPU baseline (Apple ARM requires AES/SHA2).
 rustflags = [
-    "-C", "target-cpu=generic",
     "-C", "force-frame-pointers=yes",
     "--remap-path-prefix=/build=.",
 ]

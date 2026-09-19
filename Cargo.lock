@@ -1531,16 +1531,20 @@ dependencies = [
 name = "browser"
 version = "0.1.0"
 dependencies = [
+ "accesskit_consumer",
  "atomic-file",
  "automerge",
+ "base64 0.22.1",
  "blake3",
  "dirs 6.0.0",
+ "libc",
  "png 0.18.1",
  "pollster",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -6684,7 +6688,12 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "bounded-command",
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
+ "dirs 6.0.0",
  "libc",
+ "qos-ntfs-protocol",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -6695,6 +6704,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "vello",
+ "windows-sys 0.61.2",
  "winit",
  "zbus 4.4.0",
  "zstd",
@@ -9566,6 +9576,7 @@ dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
  "objc2 0.6.3",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 
@@ -11471,6 +11482,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-chromium-blocker"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "qos-ntfs-helper"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "qos-ntfs-protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "qos-ntfs-protocol"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "qrcode"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12346,6 +12387,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-connected"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tilo-connected-protocol",
+]
+
+[[package]]
 name = "runtime-dylib"
 version = "0.1.0"
 dependencies = [
@@ -12443,6 +12492,7 @@ dependencies = [
  "capnp-rpc",
  "libc",
  "nix 0.30.1",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -12871,6 +12921,7 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
+ "clap",
  "dirs 6.0.0",
  "fs",
  "iroh-blobs",
@@ -13479,6 +13530,7 @@ dependencies = [
  "reis",
  "runtime-collab",
  "runtime-identity",
+ "runtime-portal",
  "rustls",
  "seccompiler",
  "serde",
@@ -13682,6 +13734,7 @@ dependencies = [
  "tilo-app",
  "uuid",
  "vello",
+ "vello_encoding",
  "winit",
  "zip 4.6.1",
 ]
@@ -14819,6 +14872,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+]
+
+[[package]]
+name = "tilo-connected-protocol"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -16152,6 +16215,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base32",
+ "base64 0.22.1",
  "blake3",
  "capnp",
  "capnp-rpc",
@@ -16187,6 +16251,7 @@ dependencies = [
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
+ "rustc-hash 2.1.1",
  "rustls",
  "serde",
  "serde_bytes",
@@ -16222,6 +16287,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "wgpu",
+ "wgpu-hal",
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",

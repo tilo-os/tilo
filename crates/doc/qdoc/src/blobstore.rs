@@ -589,8 +589,43 @@ fn read_bounded_file(path: &Path, limit: usize) -> Option<Vec<u8>> {
 
 static STORE: OnceLock<RwLock<Arc<dyn BlobStore>>> = OnceLock::new();
 
+#[cfg(test)]
+mod runtime_store_tests {
+    #[test]
+    fn explicit_runtime_store_carries_bytes_between_processes() {
+        const CONTENT: &[u8] = b"source bytes from another application";
+        if let Ok(stage) = std::env::var("QOS_BLOB_PROOF_STAGE") {
+            if stage == "write" {
+                assert!(super::put(CONTENT).is_some());
+            } else {
+                assert_eq!(
+                    super::get(&super::hash_bytes(CONTENT)).as_deref(),
+                    Some(CONTENT)
+                );
+            }
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        for stage in ["write", "read"] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "blobstore::runtime_store_tests::explicit_runtime_store_carries_bytes_between_processes", "--nocapture"])
+                .env("TILO_BLOB_STORE", directory.path())
+                .env("QOS_BLOB_PROOF_STAGE", stage)
+                .status().unwrap();
+            assert!(status.success(), "{stage} process failed");
+        }
+    }
+}
+
 fn cell() -> &'static RwLock<Arc<dyn BlobStore>> {
-    STORE.get_or_init(|| RwLock::new(Arc::new(MemoryBlobStore::default())))
+    STORE.get_or_init(|| {
+        let store: Arc<dyn BlobStore> =
+            match std::env::var_os("TILO_BLOB_STORE").filter(|path| !path.is_empty()) {
+                Some(path) => Arc::new(FsBlobStore::new(PathBuf::from(path))),
+                None => Arc::new(MemoryBlobStore::default()),
+            };
+        RwLock::new(store)
+    })
 }
 
 /// Install the process-wide store. A global rather than a handle threaded through `DocMut`,
@@ -601,7 +636,10 @@ pub fn set_store(store: Arc<dyn BlobStore>) {
     }
 }
 
-/// The process-wide store (in-memory until [`set_store`] says otherwise).
+/// The process-wide store: the explicitly configured `TILO_BLOB_STORE`, or
+/// in-memory when absent. [`set_store`] overrides either choice. A trusted
+/// local runtime can supply one shared directory; sandboxed hosts must still
+/// provide their authorized content transport rather than an ambient path.
 pub fn store() -> Arc<dyn BlobStore> {
     match cell().read() {
         Ok(s) => s.clone(),
