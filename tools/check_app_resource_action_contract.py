@@ -355,6 +355,45 @@ def live_launch_registration_code(text: str) -> str:
     return "\n".join(reached)
 
 
+def prepared_launch_registry_wired(text: str) -> bool:
+    """Recognize the shared preparer's returned registry, not a discarded one.
+
+    This deliberately accepts a bounded form: registration immediately followed
+    by a returned LegacyLaunchInputs constructor, optionally inside a final
+    block, and simple forwarding callbacks (including map_err). Merely reaching
+    a helper that registers an unrelated registry must not satisfy the contract.
+    """
+    code = rust_code_only(text)
+    bodies = function_bodies(code)
+    pending = re.findall(
+        r"\.prepare_legacy_with_args\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)",
+        rust_code_only(live_launch_registration_code(text)),
+    )
+    seen: set[str] = set()
+    returned_registry = re.compile(
+        r"\bactions\s*::\s*register\s*\(\s*&mut\s+(?P<registry>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;"
+        r"\s*Ok\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*LegacyLaunchInputs\s*::\s*new"
+        r"\s*\([^();{}]*\)\s*(?:\.with_records\s*\([^();{}]*\)\s*)?"
+        r"\.with_registry\s*\(\s*(?P=registry)\s*\)\s*,?\s*\)\s*}*\s*$"
+    )
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for body in bodies.get(name, []):
+            if returned_registry.search(body):
+                return True
+            forwarded = re.fullmatch(
+                r"\s*([a-z_][A-Za-z0-9_]*)\s*\([^();{}]*\)"
+                r"(?:\s*\.map_err\s*\([^;{}]*\))?\s*",
+                body,
+            )
+            if forwarded:
+                pending.append(forwarded.group(1))
+    return False
+
+
 def unattached_handler_entries(text: str) -> list[str]:
     """Registry claims with no evidence on the reachable dispatch path."""
     registry = OPERATION_HANDLER_REGISTRY.search(text)
@@ -658,6 +697,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             if (
                 ACTION_REGISTRY_DEFINITION.search(combined)
                 and not LIVE_ACTION_REGISTRY_WIRING.search(main_code)
+                and not prepared_launch_registry_wired(main_raw)
             ):
                 violations.append(
                     Violation(
