@@ -94,7 +94,10 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && rm -rf "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl" \
     && sccache --version
 
-RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
+# Keep tool-install downloads and extracted crate sources out of the image.
+# CI restores its own Cargo downloads under /cargo-home; only these binaries ship.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo install --locked cargo-nextest cargo-deny cargo-machete \
     && cargo nextest --version && cargo deny --version && cargo machete --version
 
 # Match the workspace's own check so a stale image fails loudly rather than
