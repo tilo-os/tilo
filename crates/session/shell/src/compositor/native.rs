@@ -437,7 +437,11 @@ fn app_owned_transfer_region(
 
 // Coordinates have already been clamped to the u32-sized pixel buffer. The
 // float-to-integer conversion intentionally rounds outward to retain edges.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "coordinates are clamped to the u32-sized capture before conversion"
+)]
 fn frozen_transfer_frame(
     surface_id: u64,
     source: Rect,
@@ -504,14 +508,20 @@ fn frozen_floating_return_frame(
     })
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo coordinate translation uses its checked geometric operators"
+)]
 fn app_local_to_desktop(rect: Rect, app_rect: Rect) -> Rect {
     rect + app_rect.origin().to_vec2()
 }
 
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the ordered protocol pump intentionally keeps shared authentication and handoff state together"
+)]
 fn pump_floating_surface_service(
     service: &FloatingSurfaceService,
     state: &mut State,
@@ -823,7 +833,10 @@ fn pump_floating_surface_service(
     changed
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "floating-window reachability is expressed with bounded kurbo geometry"
+)]
 fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     let mut offset = vello::kurbo::Vec2::ZERO;
     let reachable = 64.0;
@@ -840,7 +853,10 @@ fn clamp_external_floating_rect(rect: Rect, bounds: Rect) -> Rect {
     rect + offset
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "window and content rectangles must receive the same bounded translation"
+)]
 fn clamp_external_floating_geometry(
     window_rect: Rect,
     content_rect: Rect,
@@ -889,7 +905,10 @@ fn floating_desktop_bounds(outputs: &[Output], fallback_size: (u32, u32)) -> Rec
 /// from becoming stranded in a hole inside the desktop's bounding box. A
 /// reachable 64×64 patch on any real output is enough; otherwise the nearest
 /// output receives the same clamp used at the outside desktop edge.
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "nearest-output selection uses finite compositor geometry"
+)]
 fn clamp_external_floating_geometry_to_outputs(
     window_rect: Rect,
     content_rect: Rect,
@@ -924,7 +943,10 @@ fn clamp_external_floating_geometry_to_outputs(
     clamp_external_floating_geometry(window_rect, content_rect, target)
 }
 
-#[allow(clippy::arithmetic_side_effects)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "rehome applies bounded geometric translations to compositor-owned rectangles"
+)]
 fn rehome_native_floating_surfaces(
     state: &mut State,
     outputs: &[Output],
@@ -4134,9 +4156,15 @@ impl crate::portal::desktop_services::ScreenshotService for NativeScreenshotServ
 }
 
 struct PortalBackend {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "holding the runtime keeps portal tasks alive for the compositor lifetime"
+    )]
     runtime: tokio::runtime::Runtime,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "holding the server handle keeps portal request serving active"
+    )]
     server: crate::portal::ServerHandle,
     remote_input: std::sync::mpsc::Receiver<crate::network::streaming::RemoteAction>,
     input_capture: crate::portal::InputCaptureCompositorHandle,
