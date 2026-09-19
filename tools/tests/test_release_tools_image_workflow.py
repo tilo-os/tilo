@@ -35,6 +35,19 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         self.assertIn("os/tests/release_tools_image.sh", self.workflow)
         self.assertIn("docker buildx imagetools create", self.workflow)
 
+    def test_pr_code_runs_before_registry_credentials_exist(self) -> None:
+        checkout, after_checkout = self.workflow.split(
+            "      - uses: actions/checkout@", 1
+        )[1].split("\n\n      - name:", 1)
+        self.assertIn("persist-credentials: false", checkout)
+        self.assertNotIn("REGISTRY_TOKEN", checkout)
+
+        before_login = after_checkout.split(
+            "\n      - name: Log in only after the candidate passed\n", 1
+        )[0]
+        self.assertIn("os/tests/release_tools_image.sh", before_login)
+        self.assertNotIn("REGISTRY_TOKEN", before_login)
+
     def test_only_immutable_candidate_or_source_tags_are_published(self) -> None:
         self.assertIn('tag="sha-$SOURCE_REVISION"', self.workflow)
         self.assertIn('tag="candidate-$SOURCE_REVISION"', self.workflow)
