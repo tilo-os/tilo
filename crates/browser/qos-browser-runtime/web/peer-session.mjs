@@ -1,5 +1,5 @@
 import {createActionClient} from './action-client.mjs';
-import {commitPeerWrites,commitPeerBatches} from './peer-persistence.mjs';
+import {commitPeerWrites,commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createRecoveryCoordinator} from './peer-recovery.mjs';
 import {retryableMemo} from './asset-recovery.mjs';
 const recoveryOwners=new Set();
@@ -38,7 +38,7 @@ return async function connectPeer(options={}){
         // The journal (including replay floors/outbox) and all canonical records
         // share this one strict IDB transaction. Network publication follows ack.
         const result=runtime.peer_pending_batch_bytes||runtime.peer_pending_batch
-          ?await commitPeerBatches({pending:()=>runtime.peer_pending_batch_bytes?runtime.peer_pending_batch_bytes(id):JSON.parse(runtime.peer_pending_batch(id)),commit:writes=>storage.commit(writes),acknowledge:value=>runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value)),epoch:storage.epoch,publish:()=>{if(request.publish)runtime.peer_committed(id);}})
+          ?await commitPeerBatches({pending:()=>readPeerBatch(runtime,id),commit:writes=>storage.commit(writes),acknowledge:value=>runtime.acknowledge_peer_storage_batch(id,JSON.stringify(value)),epoch:storage.epoch,publish:()=>{if(request.publish)runtime.peer_committed(id);}})
           :await commitPeerWrites({pending:()=>JSON.parse(runtime.peer_pending_writes(id)),commit:writes=>storage.commit(writes),acknowledge:write=>runtime.acknowledge_storage(namespace.profile,namespace.device,BigInt(write.revision),undefined),publish:()=>{if(request.publish)runtime.peer_committed(id);}});
         clearFailure('storage');
         if(result.publicationError){connectionFailure(result.publicationError);coordinator.schedule();}
