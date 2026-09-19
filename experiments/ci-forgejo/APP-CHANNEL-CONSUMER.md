@@ -145,8 +145,8 @@ The hashes must refer to the first requested architecture's verifier executables
 that native verifier can cryptographically verify both target architectures.
 The publisher uses the same immutable builder resolved by the plan job.
 
-The workflow transports only the already-built canonical binaries in dedicated
-artifacts. It rejects mismatched independently pinned hashes before execution,
+The workflow consumes the platform-owned immutable verifier bundle described below.
+It rejects mismatched independently pinned hashes before execution,
 checks the Python adapter hash before importing it, then verifies the complete
 newly assembled collection, including reused packages. Verifier subprocesses receive
 only PATH and locale variables, excluding publisher tokens and loader overrides.
@@ -213,3 +213,61 @@ builds, this stage produces no proof and cannot advance the baseline; a delibera
 no-op identity policy is still needed instead of treating a skipped job as verified.
 The final artifact retention period also bounds incremental reuse; expiration
 requires an explicit full build rather than silently trusting mutable channels.
+
+## Platform-owned reusable verifier bundle
+
+Final qualification now downloads a platform verifier bundle instead of transporting
+binaries from every app build. App changes do not change these verifier hashes.
+The existing independently pinned final-receipt policy supplies
+`canonical_verifier_bundles`, keyed by native execution architecture. Each descriptor
+contains the immutable registry URL, archive SHA256/size, binary SHA256 pair, verifier
+source SHA and compatible immutable builder image. The existing publisher keys,
+allowed app ISA and Python adapter pin remain part of the same policy. There is no
+new per-PR input, service or author-agent instruction.
+
+Platform tooling maintenance produces each bundle from already-built native tools:
+
+```sh
+python3 tools/canonical_verifier_bundle.py produce \
+  --pkg-binary /trusted-tools/tilo-pkg \
+  --runtime-binary /trusted-tools/tilo-runtime-bundle \
+  --builder-image code.podesta.ai/qos/tilo-builder@sha256:BUILDER_DIGEST \
+  --source-sha VERIFIED_TOOL_SOURCE --architecture x86_64 --output verifier.tar.gz
+```
+
+This creates a deterministic archive and `verifier.tar.descriptor.json`. The existing
+platform package publisher can upload it at the descriptor's content-addressed
+`tilo-canonical-verifiers/SHA/ARCH.tar.gz` URL and promote the generated descriptor
+into its centrally approved policy. The producer itself does not upload or confer
+trust on its source/build metadata. Its invoking trusted build must bind those
+inputs to the actual compilation. Repeat for native ARM64. Only verifier changes
+or builder compatibility changes require a new platform bundle, not app changes.
+
+The consumer fetches using the repository task token, rejects redirects and mutable
+URLs, checks archive size/digest before bounded decompression, validates the exact
+four-member regular-file inventory, manifest, ELF architecture and binary hashes.
+It executes only after the existing adapter pin and binary preflight succeed.
+Qualification requires an exact compatible builder digest; a changed builder fails
+explicitly until platform tooling is qualified there. This conservative constraint
+avoids guessing dynamic-library compatibility across images.
+
+Receipts retain the actual binary hashes and additionally identify their approved
+bundle digest/native execution architecture. The manifest reader validates these
+against central bundle descriptors. Legacy explicit-binary policies remain readable,
+but the workflow's final qualification now requires a bundle descriptor; it does not
+fall back to app-built tools. Selected-app build receipts still use the tools already
+built during packaging and remain build-observed evidence only.
+
+Qualification remains disabled. No bundle has been published, no trust policy was
+changed, and no native runtime or task-token package-read qualification was performed
+in this change. Production activation still needs one centrally released bundle per
+native architecture and independent verification of its actual package/runtime CLI
+compatibility. The coordinator's trusted helper closure must include
+`tools/canonical_verifier_bundle.py` before accepting this workflow revision.
+
+The bundle includes its frozen `canonical_app_verifier.py`; final verification loads
+that digest-checked copy rather than the candidate checkout's adapter. Qualification
+and publication helper commands run under the platform's isolated
+`python3 -I tools/ci_python.py tools/SCRIPT.py` launcher, with stdlib imports ahead of
+reviewed helper paths and no inherited PYTHONPATH. This commit depends on that
+launcher being integrated; it does not supply a second launcher implementation.
