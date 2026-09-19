@@ -92,13 +92,13 @@ has "$workflow" 'needs: signing-preflight' \
   'expensive native snapshot builds wait for signing-authority preflight'
 has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
-has "$workflow" 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' \
+has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
   'snapshot promotion rejects source-input changes during native builds'
 has "$workflow" 'driver = "vfs"' \
   'snapshot promotion isolates Podman storage from the runner overlay'
 has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
   'snapshot promotion preserves web-identity token cleanup when extending its exit trap'
-has "$workflow" 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
+has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' \
   'snapshot pin updates reject build-input changes while allowing unrelated commits'
 has "$workflow" 'git checkout --detach FETCH_HEAD' \
   'snapshot promotion applies its pin on the current branch tip'
@@ -214,5 +214,9 @@ if grep -Rqs --exclude-dir=output --include='Containerfile*' 'DROP_RPMDB_WAL' \
 else
   ok 'obsolete DROP_RPMDB_WAL workaround is absent'
 fi
+
+python3 "$repo/os/tests/test_rpm_snapshot_inputs.py" \
+  && ok "semantic snapshot input gate preserves native and manual rebuilds" \
+  || bad "semantic snapshot input gate regression"
 
 exit "$fail"
