@@ -57,6 +57,34 @@ on:
         type: boolean
         required: false
         default: false
+      coordinator_intent:
+        description: "Disabled qualification coordinator intent; always publish=false."
+        required: false
+        default: ""
+      builder_image:
+        description: "Qualification-only immutable builder image."
+        required: false
+        default: ""
+      baseline_sha:
+        description: "Prior independently verified packaging source; empty builds full collection."
+        required: false
+        default: ""
+      baseline_run_id:
+        description: "Exact previously verified packaging run for authenticated artifact lookup."
+        required: false
+        default: ""
+      coordinator_policy_sha256:
+        description: "Trusted external coordinator policy identity."
+        required: false
+        default: ""
+      baseline_receipt_sha256:
+        description: "Qualification baseline verification proof digest."
+        required: false
+        default: ""
+      baseline_evidence:
+        description: "Canonical verified baseline proof, bound to baseline_receipt_sha256."
+        required: false
+        default: ""
 
 concurrency:
   group: release-apps-${{ github.ref }}
@@ -86,12 +114,29 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Resolve one immutable builder for every architecture
         id: builder
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
         run: python3 tools/resolve_ci_builder.py
+      - name: Guard disabled nonpublishing coordinator qualification
+        env:
+          COORDINATOR_ENABLED: ${{ vars.TILO_APP_COORDINATOR_QUALIFICATION }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
+          BASELINE_RUN_ID: ${{ github.event.inputs.baseline_run_id }}
+          BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
+          COORDINATOR_POLICY_SHA256: ${{ github.event.inputs.coordinator_policy_sha256 }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
+          REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
+        run: python3 tools/app_packaging_qualification.py
       - name: Select only the affected apps or requested collection
         id: plan
         shell: bash
@@ -101,6 +146,8 @@ jobs:
           REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
           MAIN_ARCHITECTURES: ${{ vars.TILO_APP_MAIN_ARCHITECTURES }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
@@ -108,7 +155,13 @@ jobs:
             refs/tags/app-*-v*) args+=(--tag "$GITHUB_REF_NAME") ;;
             refs/tags/apps-v*) args+=(--collection "${REQUESTED_COLLECTION:-default}") ;;
             *)
-              if [[ -n ${REQUESTED_APPS:-} ]]; then
+              if [[ -n ${COORDINATOR_INTENT:-} ]]; then
+                if [[ -n ${BASELINE_SHA:-} ]]; then
+                  args+=(--base "$BASELINE_SHA")
+                else
+                  args+=(--collection "${REQUESTED_COLLECTION:-default}")
+                fi
+              elif [[ -n ${REQUESTED_APPS:-} ]]; then
                 args+=(--apps "$REQUESTED_APPS")
               elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
                 args+=(--collection "${REQUESTED_COLLECTION:-default}")
@@ -200,6 +253,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Validate native architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"

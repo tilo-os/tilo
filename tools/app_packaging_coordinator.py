@@ -24,6 +24,10 @@ TERMINAL = {'success', 'failure', 'cancelled', 'skipped'}
 EMPTY = {'sequence': -1, 'desired': None, 'baseline': None, 'active': None, 'last_attempt': None}
 
 
+class VerificationRequired(ValueError):
+    """A completed build is not yet an independently verified packaging baseline."""
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'))
 
@@ -136,18 +140,20 @@ def next_action(state):
     return 'dispatch'
 
 
-def accept_run(store, intent_id, run):
+def accept_run(store, intent_id, run, validator=validate_run):
     with store.transaction() as state:
         intent = state['active']
         if not intent or intent['id'] != intent_id:
             raise ValueError('active intent changed')
-        validate_run(intent, run)
         if intent.get('run_id') not in (None, run['id']):
             raise ValueError('run ID conflicts with accepted dispatch')
+        evidence = validator(intent, run)
         intent.update(run_id=run['id'], status=run['status'], updated_at=time.time())
         if run['status'] in TERMINAL:
             if run['status'] == 'success':
                 state['baseline'] = intent['desired']
+                state['baseline_evidence'] = evidence
+                intent['verification'] = evidence
             state['last_attempt'] = intent
             state['active'] = None
         store.record(intent)
@@ -160,15 +166,26 @@ def tick(store, api):
     action = next_action(snapshot)
     if action == 'poll':
         intent = snapshot['active']
-        accept_run(store, intent['id'], api.run(intent['run_id']))
+        try:
+            accept_run(store, intent['id'], api.run(intent['run_id']),
+                       getattr(api, 'validate_run', validate_run))
+        except VerificationRequired:
+            with store.transaction() as state:
+                if state['active'] and state['active']['id'] == intent['id']:
+                    state['active']['status'] = 'awaiting-verification'
+                    store.record(state['active'])
         return
     if action != 'dispatch':
         return
-    api.qualify(snapshot['desired']['source_sha'])
+    if hasattr(api, 'qualify_receipt'):
+        api.qualify_receipt(snapshot['desired'])
+    else:
+        api.qualify(snapshot['desired']['source_sha'])
     with store.transaction() as state:
         if next_action(state) != 'dispatch' or state['desired'] != snapshot['desired']:
             return
         intent = {'id': str(uuid.uuid4()), 'desired': state['desired'], 'baseline': state['baseline'],
+                  'baseline_evidence': state.get('baseline_evidence'),
                   'receipt_sha256': receipt_key(state['desired']), 'status': 'dispatch-intent', 'created_at': time.time()}
         state['active'] = intent
         store.record(intent)
@@ -185,7 +202,13 @@ def tick(store, api):
             state['active']['run_id'] = run_id
             state['active']['status'] = 'accepted-unverified'
             store.record(state['active'])
-        accept_run(store, intent['id'], api.run(run_id))
+        accept_run(store, intent['id'], api.run(run_id), getattr(api, 'validate_run', validate_run))
+    except VerificationRequired:
+        with store.transaction() as state:
+            active = state['active']
+            if active and active['id'] == intent['id']:
+                active['status'] = 'awaiting-verification'
+                store.record(active)
     except Exception as error:
         with store.transaction() as state:
             active = state['active']
