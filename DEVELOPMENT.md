@@ -1042,3 +1042,28 @@ git config core.hooksPath .githooks
 manifest and rejects missing, duplicate, excluded, or stale workspace members.
 Nested fixture workspaces and explicit `[workspace].exclude` entries are ignored.
 Compilation and tests run in CI (`.forgejo/workflows/check.yml`).
+
+### Linux PDF capture tests
+
+The PDF capture integration test requires native PDFium; text extraction alone
+does not qualify page rendering. CI uses Chromium/8057 on x86_64 and aarch64,
+matching the Windows runtime version. Both Linux archives and their published
+SHA-256 digests are pinned in `os/external-assets/github-assets.tsv`.
+
+The builder stages the runtime from its verified external asset context. The
+affected-PDF and nightly test workflows also stage that same runtime for older
+or explicitly selected builder images without changing installed OS packages.
+To prepare the native runtime in a disposable local directory:
+
+```sh
+asset=$(bash tools/ci/install-pdfium.sh --asset-name)
+./os/dev/cache-github-assets.sh "$asset"
+export TILO_PDFIUM_LIB=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /tmp/tilo-pdfium/8057 os/external-assets/github-assets.tsv)
+cargo test --locked -p pdf-viewer --test capture
+```
+
+The installer verifies the archive before writing, retains its license files,
+and requires the shared library to load on the native architecture. The capture
+test additionally observes the production worker's raster backend before testing
+unavailable imported content and its later arrival. Missing PDFium fails rather
+than skipping coverage or qualifying the text fallback as a raster result.
