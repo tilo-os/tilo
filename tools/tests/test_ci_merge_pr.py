@@ -1,5 +1,7 @@
 import importlib.util
 import errno
+import hashlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -75,20 +77,14 @@ class Repo:
         self.temp.cleanup()
 
 
-def protection():
+def branch_summary(commit, *, can_merge=True):
     return {
-        "enable_push": False, "apply_to_admins": True,
-        "enable_merge_whitelist": True,
-        "merge_whitelist_usernames": [merge_pr.INTEGRATOR],
-        "merge_whitelist_teams": [],
+        "commit": {"id": commit},
+        "protected": True,
         "enable_status_check": True,
         "status_check_contexts": sorted(merge_pr.REQUIRED_CONTEXTS),
-        "enable_approvals_whitelist": True,
-        "approvals_whitelist_username": sorted(merge_pr.REVIEWERS),
-        "approvals_whitelist_teams": [],
-        "block_on_outdated_branch": True, "block_on_rejected_reviews": True,
-        "block_on_official_review_requests": True,
-        "dismiss_stale_approvals": True, "ignore_stale_approvals": False,
+        "user_can_merge": can_merge,
+        "user_can_push": False,
         "required_approvals": 1,
     }
 
@@ -107,27 +103,26 @@ class FakeApi:
             state = json.loads(self.journal.read_text())["state"] if self.journal else None
             if state != "merge_intent_do_not_retry":
                 raise AssertionError("merge intent was not durable before POST")
+            if self.actor != merge_pr.INTEGRATOR:
+                raise PermissionError("account is outside the sole merge whitelist")
             self.posts.append(body)
             command(self.root, "push", "-q", "--force", "origin",
                     f"{self.head}:refs/heads/main")
             self.merged = True
             return 200, {}
         path = path.split("&page=", 1)[0].split("?limit=", 1)[0]
-        if path == "/user":
-            return 200, {"login": self.actor}
         if path == "":
             return 200, {"full_name": merge_pr.REPO, "private": True}
         if path == "/branches/main":
-            return 200, {"commit": {"id": self.main_after_merge if self.merged else self.base}}
-        if path == "/branch_protections/main":
-            return 200, protection()
+            commit = self.main_after_merge if self.merged else self.base
+            return 200, branch_summary(commit, can_merge=self.actor == merge_pr.INTEGRATOR)
         if path == "/pulls/7":
             return 200, {
                 "state": "closed" if self.merged else "open", "merged": self.merged,
                 "draft": False, "head": {"sha": self.head}, "base": {"ref": "main"},
                 "user": {"login": "author"},
                 "merge_commit_sha": self.head if self.merged else None,
-                "merged_by": {"login": merge_pr.INTEGRATOR} if self.merged else None,
+                "merged_by": {"login": self.actor} if self.merged else None,
             }
         if path == "/pulls/7/reviews":
             return 200, [{"id": 1, "state": "APPROVED", "official": True,
@@ -218,29 +213,42 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("missing allowed independent approval on exact head", result["errors"])
         self.assertIn("missing exact-head check.yml run", result["errors"])
 
-    def test_unqualified_protection_fails_closed(self):
-        api = FakeApi(self.repo.root, self.head)
-        original = api.__call__
+    def test_every_exposed_branch_protection_field_fails_closed(self):
+        changes = {
+            "protected": False,
+            "enable_status_check": False,
+            "status_check_contexts": ["wrong"],
+            "required_approvals": 0,
+            "user_can_merge": False,
+            "user_can_push": True,
+        }
+        for field, value in changes.items():
+            with self.subTest(field=field):
+                api = FakeApi(self.repo.root, self.head)
+                original = api.__call__
 
-        def changed(path, method="GET", body=None):
-            status, value = original(path, method, body)
-            if path == "/branch_protections/main":
-                value["required_approvals"] = 0
-                value["merge_whitelist_usernames"] = [merge_pr.INTEGRATOR, "author"]
-            return status, value
+                def changed(path, method="GET", body=None, *, field=field, value=value):
+                    status, response = original(path, method, body)
+                    if path == "/branches/main":
+                        response[field] = value
+                    return status, response
 
-        result = merge_pr.observe(changed, 7, self.repo.root)
-        self.assertIn("branch protection requires no independent approval", result["errors"])
-        self.assertIn("branch protection mismatch: merge_whitelist_usernames", result["errors"])
+                result = merge_pr.observe(changed, 7, self.repo.root)
+                if field == "required_approvals":
+                    expected = "branch protection requires no independent approval"
+                else:
+                    expected = "branch protection mismatch: " + field
+                self.assertIn(expected, result["errors"])
 
-    def test_wrong_token_actor_rejects_without_posting(self):
+    def test_wrong_account_cannot_pass_effective_branch_permission(self):
         with tempfile.TemporaryDirectory() as directory:
             journal = Path(directory) / "intent.json"
             api = FakeApi(self.repo.root, self.head, journal, actor="author")
             self.assertEqual(merge_pr.merge(api, 7, self.repo.root, journal, execute=True), 2)
             self.assertEqual(api.posts, [])
-            self.assertIn("token does not belong to the integration service",
-                          json.loads(journal.read_text())["errors"])
+            receipt = json.loads(journal.read_text())
+            self.assertEqual(receipt["state"], "rejected")
+            self.assertIn("branch protection mismatch: user_can_merge", receipt["errors"])
 
     def test_merge_persists_intent_and_pins_head_then_verifies_readback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -310,6 +318,21 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(receipt["state"], "not_verified_do_not_retry")
             self.assertFalse(receipt["readback"]["head_contained_in_main"])
 
+    def test_reconcile_rejects_a_merge_attributed_to_another_account(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "intent.json"
+            journal.write_text(json.dumps({"repo": merge_pr.REPO, "pr": 7,
+                                           "head": self.head,
+                                           "state": "merge_intent_do_not_retry"}))
+            self.repo.publish(self.head)
+            api = FakeApi(self.repo.root, self.head, journal, actor="author")
+            api.merged = True
+            self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 3)
+            receipt = json.loads(journal.read_text())
+            self.assertEqual(receipt["state"], "not_verified_do_not_retry")
+            self.assertEqual(receipt["readback"]["merged_by"], "author")
+            self.assertTrue(receipt["readback"]["head_contained_in_main"])
+
     def test_reconcile_rejects_api_and_fetched_main_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
             journal = Path(directory) / "intent.json"
@@ -357,6 +380,44 @@ class JournalDurabilityTests(unittest.TestCase):
         with mock.patch.object(merge_pr.os, "open", side_effect=OSError(errno.EIO, "failed")):
             with self.assertRaises(OSError):
                 merge_pr.fsync_parent(Path("journal.json"))
+
+
+class CredentialBindingTests(unittest.TestCase):
+    TOKEN = "repository-scoped-test-token"
+
+    def fingerprint(self):
+        return hashlib.sha256(self.TOKEN.encode()).hexdigest()
+
+    def test_accepts_only_the_bound_token_with_constant_time_comparison(self):
+        environ = {"FORGEJO_TOKEN": self.TOKEN,
+                   "FORGEJO_TOKEN_SHA256": self.fingerprint()}
+        with mock.patch.object(merge_pr.hmac, "compare_digest",
+                               wraps=merge_pr.hmac.compare_digest) as compare:
+            self.assertEqual(merge_pr.bound_token(environ), self.TOKEN)
+        compare.assert_called_once_with(self.fingerprint(), self.fingerprint())
+
+    def test_missing_malformed_and_wrong_fingerprints_fail_closed(self):
+        for fingerprint in (None, "A" * 64, "0" * 64):
+            with self.subTest(fingerprint=fingerprint):
+                environ = {"FORGEJO_TOKEN": self.TOKEN}
+                if fingerprint is not None:
+                    environ["FORGEJO_TOKEN_SHA256"] = fingerprint
+                self.assertEqual(merge_pr.bound_token(environ), "")
+
+    def test_worker_entrypoint_rejects_missing_or_wrong_binding_before_api_construction(self):
+        for fingerprint in (None, "0" * 64):
+            with self.subTest(fingerprint=fingerprint), tempfile.TemporaryDirectory() as directory, \
+                    mock.patch.object(merge_pr, "Api", side_effect=AssertionError("API called")), \
+                    mock.patch("sys.stderr", new=io.StringIO()):
+                environ = {"FORGEJO_TOKEN": self.TOKEN}
+                if fingerprint is not None:
+                    environ["FORGEJO_TOKEN_SHA256"] = fingerprint
+                with self.assertRaises(SystemExit) as raised:
+                    merge_pr.main([
+                        "--pr", "7", "--git-root", str(ROOT),
+                        "--journal", str(Path(directory) / "intent.json"), "--execute",
+                    ], environ)
+                self.assertEqual(raised.exception.code, 2)
 
 
 if __name__ == "__main__":
