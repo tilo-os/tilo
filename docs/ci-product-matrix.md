@@ -1,6 +1,6 @@
 # Product packaging coverage and next Windows qualification
 
-Source audit: main `0c02e6721`, 2026-09-19. A defined workflow is not evidence
+Source audit: main `f13605c59`, 2026-09-19. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
 artifact.
 
@@ -48,9 +48,9 @@ Do not route Windows work onto Linux `runner` just because it is available.
    promotion; then enable continuous `main` scheduling explicitly.
 3. Keep OS publication manual through a release tag or a `main` dispatch with
    `publish=true`, after image, reproducibility and VM gates pass.
-4. Qualify a versioned, signed Windows app archive or MSIX on disposable native
-   hosts. The shared toolkit and local installer already exist; distribution and
-   clean-machine runtime evidence do not.
+4. If native Windows app distribution becomes worthwhile, qualify a versioned,
+   signed archive or MSIX on disposable native hosts. The shared toolkit and local
+   installer already exist; distribution and clean-machine runtime evidence do not.
 5. Retain the disabled macOS imager and Homebrew definitions so later
    qualification can resume without recreating the release design.
 
