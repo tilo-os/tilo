@@ -408,7 +408,10 @@ impl TabBar {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate-mode paint inputs are independently load-bearing"
+    )]
     fn draw_pill_inner(
         &self,
         scene: &mut Scene,
@@ -524,7 +527,10 @@ impl TabBar {
     /// accent dot only; unpinned pills add the (elided) title text. Split out
     /// of `draw_pill_inner` to keep it inside the `too_many_lines` budget.
     // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "resolved pill paint state stays explicit and avoids hidden refetching"
+    )]
     fn draw_pill_body(
         &self,
         scene: &mut Scene,
@@ -807,7 +813,10 @@ impl TabBar {
     /// so they slide out of the pill's right edge as it opens. Split out of
     /// `draw_pill_inner` to keep it inside the `too_many_lines` budget.
     // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "resolved action-chip geometry and paint state are independently required"
+    )]
     fn draw_pill_action_chips(
         &self,
         scene: &mut Scene,
@@ -1909,7 +1918,10 @@ fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> Vec<f64> {
 /// zone has opened to `effective` px. A pinned pill never gets chips.
 // Every parameter (widths/insets, plus the rect and reveal they're applied
 // to) is independently load-bearing for this geometry.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "chip geometry requires the rect, reveal state, widths, and insets"
+)]
 fn chip_rects(
     r: Rect,
     effective: f64,
@@ -2420,7 +2432,10 @@ impl TabBar {
     /// out of `draw` to keep that dispatcher inside the `too_many_lines` budget.
     // Every parameter here is state `draw` already resolved once per frame — no
     // hidden refetching.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "frame-resolved pill paint state remains explicit at the drawing boundary"
+    )]
     fn draw_pills(
         &self,
         scene: &mut Scene,
