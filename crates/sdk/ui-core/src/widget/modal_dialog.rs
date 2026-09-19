@@ -951,7 +951,7 @@ mod tests {
 
     /// SAFETY: opaque `DeviceId` whose all-zero bit pattern is tolerated
     /// by winit — same trick used in `permission_prompt::tests` and in
-    /// `shell/tests/e2e_shell_flows.rs::key_press`.
+    /// `crates/session/shell/tests/e2e_shell_flows.rs::key_press`.
     fn synth_device() -> DeviceId {
         unsafe { std::mem::zeroed() }
     }

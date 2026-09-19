@@ -9,7 +9,7 @@ RUNTIME="$ROOT/crates/media/core/src/audio_runtime.rs"
 OCR="$ROOT/crates/media/ocr/src/lib.rs"
 SETTINGS_AUDIO="$ROOT/apps/settings/src/panes/audio.rs"
 NOTIFICATION_SOUND="$ROOT/crates/media/core/src/notification_sound.rs"
-SHELL_CAPTURE="$ROOT/shell/src/compositor/audio_capture.rs"
+SHELL_CAPTURE="$ROOT/crates/session/shell/src/compositor/audio_capture.rs"
 
 fails=0
 checks=0

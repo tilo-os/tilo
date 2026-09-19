@@ -8,13 +8,13 @@ on:
   pull_request:
     branches: ["main"]
     paths:
-      - "shell/src/compositor/**"
-      - "shell/src/collab/**"
-      - "shell/src/network/**"
-      - "shell/src/shell/network.rs"
-      - "shell/src/shell/overlay_host.rs"
-      - "shell/src/shell/peer_view.rs"
-      - "shell/src/shell/state/shared_surfaces.rs"
+      - "crates/session/shell/src/compositor/**"
+      - "crates/session/shell/src/collab/**"
+      - "crates/session/shell/src/network/**"
+      - "crates/session/shell/src/shell/network.rs"
+      - "crates/session/shell/src/shell/overlay_host.rs"
+      - "crates/session/shell/src/shell/peer_view.rs"
+      - "crates/session/shell/src/shell/state/shared_surfaces.rs"
       - "crates/sdk/ui-core/src/input.rs"
       - "crates/sdk/ui-core/src/interaction.rs"
       - "crates/sdk/ui-core/src/widget/group_row.rs"
@@ -25,13 +25,13 @@ on:
   # push:
   #   branches: ["main"]
   #   paths:
-  #     - "shell/src/compositor/**"
-  #     - "shell/src/collab/**"
-  #     - "shell/src/network/**"
-  #     - "shell/src/shell/network.rs"
-  #     - "shell/src/shell/overlay_host.rs"
-  #     - "shell/src/shell/peer_view.rs"
-  #     - "shell/src/shell/state/shared_surfaces.rs"
+  #     - "crates/session/shell/src/compositor/**"
+  #     - "crates/session/shell/src/collab/**"
+  #     - "crates/session/shell/src/network/**"
+  #     - "crates/session/shell/src/shell/network.rs"
+  #     - "crates/session/shell/src/shell/overlay_host.rs"
+  #     - "crates/session/shell/src/shell/peer_view.rs"
+  #     - "crates/session/shell/src/shell/state/shared_surfaces.rs"
   #     - "crates/sdk/ui-core/src/input.rs"
   #     - "crates/sdk/ui-core/src/interaction.rs"
   #     - "crates/sdk/ui-core/src/widget/group_row.rs"
