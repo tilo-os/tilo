@@ -11,6 +11,10 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+import app_packaging_contract as contract
+import app_packaging_qualification as qualification
+
 SPEC = importlib.util.spec_from_file_location(
     "app_release_history", ROOT / "tools/ci/app_release_history.py"
 )
@@ -61,6 +65,8 @@ class AppReleaseHistory(unittest.TestCase):
         return clone
 
     def test_exact_fetch_adds_only_the_requested_commit(self):
+        parent = self.commit("parent")
+        self.git(self.source, "tag", "older", parent)
         base = self.commit("base")
         self.commit("head")
         self.publish()
@@ -74,6 +80,72 @@ class AppReleaseHistory(unittest.TestCase):
         refs = self.git(clone, "for-each-ref", "--format=%(refname)").splitlines()
         self.assertNotIn("refs/tags", "\n".join(refs))
         self.assertIn(history.BASE_REF, refs)
+        self.assertNotEqual(
+            subprocess.run(
+                ["git", "-C", str(clone), "cat-file", "-e", f"{parent}^{{commit}}"],
+                capture_output=True,
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            subprocess.run(
+                ["git", "-C", str(clone), "rev-parse", "--verify", "refs/tags/older"],
+                capture_output=True,
+            ).returncode,
+            0,
+        )
+
+    def test_cli_dispatches_both_commands_and_reports_fetch_failures(self):
+        base = self.commit("base")
+        source = self.commit("source")
+        self.publish()
+        clone = self.shallow_clone("main")
+        script = ROOT / "tools/ci/app_release_history.py"
+
+        fetched = subprocess.run(
+            [sys.executable, str(script), "fetch-base", base, source],
+            cwd=clone,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("release comparison ready", fetched.stdout)
+        accepted = subprocess.run(
+            [sys.executable, str(script), "require-main-ancestor", source],
+            cwd=clone,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("release source is on observed main", accepted.stdout)
+        current = subprocess.run(
+            [sys.executable, str(script), "require-main-tip", source],
+            cwd=clone,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("release source is current observed main", current.stdout)
+
+        self.commit("newer")
+        self.git(self.source, "push", "-q", str(self.remote), "main")
+        stale = subprocess.run(
+            [sys.executable, str(script), "require-main-tip", source],
+            cwd=clone,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(stale.returncode, 1)
+        self.assertIn("is not the current main tip", stale.stderr)
+
+        rejected = subprocess.run(
+            [sys.executable, str(script), "fetch-base", "0" * 40, source],
+            cwd=clone,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(rejected.returncode, 1)
+        self.assertIn("targeted release comparison fetch failed", rejected.stderr)
 
     def test_real_planner_resolves_changes_from_a_depth_one_checkout(self):
         (self.source / "apps/notes/src").mkdir(parents=True)
@@ -136,6 +208,57 @@ class AppReleaseHistory(unittest.TestCase):
             self.git(clone, "rev-parse", history.HEAD_REF),
         )
 
+    def test_depth_one_coordinator_guard_uses_prepared_exact_history(self):
+        baseline = self.commit("baseline")
+        source = self.commit("source")
+        self.publish()
+        clone = self.shallow_clone("main")
+        self.assertEqual(self.git(clone, "rev-parse", "HEAD"), source)
+
+        history.prepare_comparison(clone, baseline, source, (2,))
+        desired = {
+            "source_sha": baseline,
+            "builder_image": "code.podesta.ai/qos/tilo-builder@sha256:" + "d" * 64,
+            "collection": "default",
+            "architectures": ["x86_64", "aarch64"],
+            "policy_sha256": "f" * 64,
+        }
+        proof = {
+            "schema": "tilo.coordinator-verification/v1",
+            "run_id": 7,
+            "desired": desired,
+            "backend": "canonical-final-artifact-v1",
+            "receipts": {"x86_64": "1" * 64, "aarch64": "2" * 64},
+        }
+        env = {
+            "COORDINATOR_INTENT": "a9eb3ab4-4321-4321-8321-123456789abc",
+            "COORDINATOR_ENABLED": "true",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_SHA": source,
+            "GITHUB_REF": source,
+            "COORDINATOR_POLICY_SHA256": desired["policy_sha256"],
+            "REQUESTED_COLLECTION": "default",
+            "REQUESTED_ARCHITECTURES": "x86_64,aarch64",
+            "REQUESTED_PUBLISH": "false",
+            "REQUESTED_BUILDER": desired["builder_image"],
+            "BASELINE_SHA": baseline,
+            "BASELINE_RECEIPT_SHA256": contract.receipt_key(proof),
+            "BASELINE_RUN_ID": "7",
+            "BASELINE_EVIDENCE": contract.canonical(proof),
+        }
+        real_run = subprocess.run
+
+        def run_in_clone(arguments, **kwargs):
+            return real_run(arguments, cwd=clone, **kwargs)
+
+        with mock.patch.object(qualification.subprocess, "run", run_in_clone):
+            self.assertTrue(qualification.validate(env))
+
+        # Selection reuses the graph prepared for the guard without fetching.
+        with mock.patch.object(history, "fetch_comparison") as fetch:
+            self.assertEqual(history.prepare_comparison(clone, baseline, source), baseline)
+        fetch.assert_not_called()
+
     def test_comparison_history_is_bounded_and_fails_closed(self):
         ancestor = self.commit("ancestor")
         self.git(self.source, "checkout", "-qb", "candidate")
@@ -171,6 +294,9 @@ class AppReleaseHistory(unittest.TestCase):
         self.assertEqual(self.git(clone, "rev-parse", history.MAIN_REF), main)
         refs = self.git(clone, "for-each-ref", "--format=%(refname)")
         self.assertNotIn("refs/remotes/origin/unrelated", refs)
+        with mock.patch.object(history, "fetch_exact") as fetch:
+            self.assertEqual(history.require_main_ancestor(clone, candidate), main)
+        fetch.assert_not_called()
 
     def test_diverged_tag_is_rejected_after_main_history_is_complete(self):
         ancestor = self.commit("ancestor")
@@ -185,6 +311,18 @@ class AppReleaseHistory(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "is not an ancestor of main"):
             history.require_main_ancestor(clone, candidate, (2, 4, 16))
+
+    def test_abandoned_main_run_is_rejected_after_force_push(self):
+        ancestor = self.commit("ancestor")
+        abandoned = self.commit("abandoned")
+        self.publish()
+        clone = self.shallow_clone("main")
+        self.git(self.source, "reset", "--hard", ancestor)
+        self.commit("replacement")
+        self.git(self.source, "push", "-q", "--force", str(self.remote), "main")
+
+        with self.assertRaisesRegex(RuntimeError, "is not an ancestor of main"):
+            history.require_main_ancestor(clone, abandoned, (2, 4, 16))
 
     def test_invalid_or_mismatched_release_source_fails_closed(self):
         head = self.commit("head")
@@ -213,11 +351,44 @@ class AppReleaseHistory(unittest.TestCase):
                 ), \
                 mock.patch.object(history, "is_ancestor", return_value=False), \
                 mock.patch.object(history, "main_has_shallow_boundary", return_value=True):
-            with self.assertRaisesRegex(RuntimeError, "cannot establish complete"):
+            with self.assertRaisesRegex(RuntimeError, "within bounded depth 8"):
                 history.require_main_ancestor(Path("."), candidate, (8,))
 
         self.assertEqual([call[-1] if len(call) == 4 else 1 for call in fetches],
-                         [1, 8, 2_147_483_647])
+                         [8])
+
+    def test_last_bounded_fetch_can_prove_an_old_main_ancestor(self):
+        candidate = "a" * 40
+        observed_main = "b" * 40
+        completed = mock.Mock(stdout=candidate + "\n", stderr="", returncode=0)
+        fetches = []
+
+        with mock.patch.object(history, "git", return_value=completed), \
+                mock.patch.object(history, "remote_main", return_value=observed_main), \
+                mock.patch.object(
+                    history, "fetch_exact", side_effect=lambda *args: fetches.append(args)
+                ), \
+                mock.patch.object(
+                    history, "is_ancestor", side_effect=(False, True)
+                ), \
+                mock.patch.object(
+                    history, "main_has_shallow_boundary", return_value=True
+                ):
+            self.assertEqual(
+                history.require_main_ancestor(Path("."), candidate, (8,)), observed_main
+            )
+
+        self.assertEqual([call[-1] for call in fetches], [8])
+
+    def test_tag_at_observed_main_needs_no_history_fetch(self):
+        source = self.commit("source")
+        self.publish()
+        clone = self.shallow_clone("main")
+
+        with mock.patch.object(history, "fetch_exact") as fetch:
+            self.assertEqual(history.require_main_ancestor(clone, source), source)
+
+        fetch.assert_not_called()
 
 
 if __name__ == "__main__":
