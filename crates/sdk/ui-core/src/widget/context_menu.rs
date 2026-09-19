@@ -263,8 +263,13 @@ impl ContextMenu {
         };
         *item_enabled = enabled;
         if !enabled && self.hovered == Some(index) {
-            self.hovered = None;
+            // Keep the old index as the navigation origin so disabling a
+            // focused middle row advances to its next peer instead of
+            // restarting at the first command.
             self.move_hover(1);
+            if self.hovered == Some(index) {
+                self.hovered = None;
+            }
         }
     }
 
@@ -1387,6 +1392,23 @@ mod tests {
         dispatch(&mut menu, &key(NamedKey::Enter));
         assert_eq!(fired.load(Ordering::SeqCst), 10);
         assert_eq!(menu.take_selection(), Some(2));
+    }
+
+    #[test]
+    fn disabling_the_focused_middle_row_advances_to_its_next_peer() {
+        let mut menu = ContextMenu::new();
+        for label in ["First", "Second", "Third"] {
+            menu.push(MenuItem::selection(label));
+        }
+        menu.open_at([10.0, 20.0]);
+        menu.move_hover(1);
+        menu.move_hover(1);
+        assert_eq!(menu.hovered(), Some(1));
+
+        menu.set_item_enabled(1, false);
+
+        assert_eq!(menu.hovered(), Some(2));
+        assert!(!menu.items()[1].is_enabled());
     }
 
     #[test]
