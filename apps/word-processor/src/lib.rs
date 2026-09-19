@@ -366,7 +366,7 @@ pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::i
     let bytes = format
         .export(dr)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    std::fs::write(path, bytes)
+    atomic_file::write(path, &bytes)
 }
 
 // ---- autosave / crash-recovery -------------------------------------------
@@ -374,7 +374,7 @@ pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::i
 /// Best-effort autosave / crash-recovery store.
 ///
 /// While editing, the word processor periodically writes a **recovery copy**
-/// (always Markdown — lossless, trivially re-importable) to a stable per-document
+/// (Markdown, which does not retain every rich-document feature) to a stable per-document
 /// path under the user's state directory. If the app crashes before saving, the
 /// next session finds the newer recovery copy and can offer to restore it; a
 /// real save deletes it. Everything here is **best-effort**: an unwritable state
@@ -481,7 +481,7 @@ pub mod recovery {
         {
             return None;
         }
-        std::fs::write(&path, markdown).ok().map(|()| path)
+        atomic_file::write(&path, markdown).ok().map(|()| path)
     }
 
     /// Read back a recovery copy's Markdown bytes for `doc_path`, if one exists.
