@@ -4236,6 +4236,8 @@ version = "0.2.0"
 dependencies = [
  "accounts",
  "automerge",
+ "cap-fs-ext",
+ "cap-std",
  "chrono",
  "collab-types",
  "dirs 6.0.0",
@@ -12429,6 +12431,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "threshold-identity",
+ "tokio",
  "zeroize",
 ]
 

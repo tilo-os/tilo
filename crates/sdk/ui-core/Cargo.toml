@@ -74,6 +74,7 @@ runtime-collab = { path = "../../runtime/runtime-collab" }
 capnp.workspace = true
 capnp-rpc.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
+runtime-identity = { path = "../../runtime/runtime-identity" }
 app-state = { path = "../../system/app-state" }
 automerge.workspace = true
 spellcheck = { path = "../../text/spellcheck" }
@@ -234,9 +235,6 @@ smithay-client-toolkit = { version = "0.20.0", features = ["calloop"] }
 # Windows builds even when an app enables `mpris`; p2p supports hermetic tests.
 zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
 ashpd = { workspace = true, optional = true }
-# Launcher-provided identity capabilities use inherited Unix socket file
-# descriptors. Native Windows apps run without that optional Tilo service.
-runtime-identity = { path = "../../runtime/runtime-identity" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }

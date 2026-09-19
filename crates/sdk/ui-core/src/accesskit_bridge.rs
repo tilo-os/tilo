@@ -611,15 +611,6 @@ pub fn resolve_synthetic_target<'a>(
     visit_synthetic_widget(root, target.0, &mut 0)
 }
 
-pub(crate) fn build_tree_update_bound<S: BuildHasher>(
-    root: &dyn Widget,
-    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
-    focused: Option<TaffyNodeId>,
-    scale: f64,
-) -> TreeUpdate {
-    build_tree_update_with_resources_bound(root, node_map, focused, scale, &[])
-}
-
 pub fn build_tree_update<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
@@ -808,7 +799,10 @@ fn append_resource_nodes(
 // The walk threads three accumulators (nodes, the parent's child list, the
 // active descendant) alongside the tree it is reading; bundling them would only
 // move the arity into a struct.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the DFS threads traversal state and output accumulators together"
+)]
 fn visit<const BOUND: bool>(
     w: &dyn Widget,
     ptr_to_taffy: &WidgetNodeMap,

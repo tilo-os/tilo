@@ -29,6 +29,31 @@ use crate::theme::Theme;
 use crate::widget::layout::CompositionFocus;
 use crate::widget::{Button, HistoryEntryId, TaffyTreeExt, Widget};
 
+pub(crate) const SEARCH_OPERATION: &str = "tilo.host.search.view";
+pub(crate) const SEARCH_RESOURCE: &str = "tilo.host:search";
+
+#[expect(
+    clippy::expect_used,
+    reason = "fixed nullary View payload serializes infallibly"
+)]
+pub(crate) fn search_resource() -> Resource {
+    Resource::new(
+        SEARCH_RESOURCE,
+        "tilo.host.search",
+        I18nManager::lookup_plain("standalone-search-title"),
+    )
+    .with_action(
+        ActionSpec::operation(
+            "open",
+            I18nManager::lookup_plain("standalone-search-title"),
+            OperationKind::View,
+            SEARCH_OPERATION,
+            &(),
+        )
+        .expect("unit Search operation serializes"),
+    )
+}
+
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
 pub(crate) const HISTORY_RESOURCE: &str = "tilo.host:history";
 
@@ -68,6 +93,8 @@ pub(crate) struct HostHistoryLayout {
     pub root: NodeId,
     pub app: NodeId,
     pub toolbar: NodeId,
+    pub search: Option<NodeId>,
+    toolbar_group: Option<NodeId>,
     pub pane: Option<NodeId>,
     pub app_visible: bool,
     content: NodeId,
@@ -77,6 +104,7 @@ pub(crate) struct StandaloneHistoryHost {
     session: Option<StandaloneHistory>,
     session_id: Option<uuid::Uuid>,
     toolbar: Button,
+    search: Option<Button>,
     pane: StandaloneHistoryPane,
     content_target: Result<HistoryTarget, HistoryError>,
     content_focus: Option<CompositionFocus>,
@@ -99,6 +127,7 @@ impl StandaloneHistoryHost {
             toolbar: Button::new("standalone-history-open", "standalone-history-title", None)
                 .on_action(binding)
                 .with_enabled(false),
+            search: None,
             pane: StandaloneHistoryPane::new(),
             content_target: Err(HistoryError::Unavailable),
             content_focus: None,
@@ -121,6 +150,34 @@ impl StandaloneHistoryHost {
             self.content_focus = focus;
             self.toolbar.set_enabled(self.content_target.is_ok());
         }
+    }
+
+    /// Presence is a host capability, not an OS check. Hosts without the
+    /// existing ActionPalette must leave this disabled (not a dead button).
+    #[expect(
+        clippy::expect_used,
+        reason = "fixed nullary Search action exists in the local host resource"
+    )]
+    pub(crate) fn enable_search(&mut self, platform: crate::platform::PlatformConventions) {
+        if self.search.is_none() {
+            let binding =
+                ActionBinding::unit_for(&search_resource(), "open").expect("unit Search binding");
+            let shortcut = crate::platform::Shortcut::command("K").label(platform);
+            self.search = Some(
+                Button::new("standalone-search-open", "standalone-search-title", None)
+                    .tooltip(format!(
+                        "{} ({shortcut})",
+                        I18nManager::lookup_plain("standalone-search-title")
+                    ))
+                    .on_action(binding),
+            );
+        }
+    }
+    pub(crate) fn search_mut(&mut self) -> Option<&mut Button> {
+        self.search.as_mut()
+    }
+    pub(crate) fn has_search(&self) -> bool {
+        self.search.is_some()
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -177,6 +234,9 @@ impl StandaloneHistoryHost {
     ) -> Result<Vec<Resource>, HistoryHostError> {
         self.refresh(context)?;
         let mut resources = vec![open_resource()];
+        if self.has_search() {
+            resources.push(search_resource());
+        }
         if let Some(session) = self.session_id {
             resources.push(session_resource(session));
         }
@@ -325,6 +385,9 @@ impl StandaloneHistoryHost {
     ) -> Result<Vec<&dyn Widget>, HistoryHostError> {
         self.refresh(context)?;
         let mut roots: Vec<&dyn Widget> = vec![&self.toolbar];
+        if let Some(search) = &self.search {
+            roots.push(search);
+        }
         if self.is_open() {
             roots.push(&self.pane);
         }
@@ -344,6 +407,20 @@ impl StandaloneHistoryHost {
         visit: impl FnOnce(&dyn Widget) -> R,
     ) -> Result<R, HistoryHostError> {
         self.refresh(context)?;
+        self.with_validated_presentation(context, app, layout, rect, visit)
+    }
+
+    /// Inspect only the already rendered frame, after rechecking its captured
+    /// authority. Mutable frame preparation refreshes the actual model/rows.
+    pub(crate) fn with_validated_presentation<R>(
+        &self,
+        context: &HistoryReadContext<'_>,
+        app: &dyn Widget,
+        layout: HostHistoryLayout,
+        rect: Rect,
+        visit: impl FnOnce(&dyn Widget) -> R,
+    ) -> Result<R, HistoryHostError> {
+        self.validate_presentation(context, layout)?;
         let mut content_children: Vec<&dyn Widget> = Vec::new();
         if layout.app_visible {
             content_children.push(app);
@@ -357,14 +434,65 @@ impl StandaloneHistoryHost {
             rect: self.content_rect,
             id: "standalone-content",
         };
+        let toolbar = PresentationRoots {
+            children: std::iter::once(&self.toolbar as &dyn Widget)
+                .chain(self.search.as_ref().map(|button| button as &dyn Widget))
+                .collect(),
+            layout_root: layout.toolbar_group.unwrap_or(layout.toolbar),
+            rect: layout
+                .toolbar_group
+                .and_then(|_| self.search.as_ref())
+                .map_or(self.toolbar.get_rect(), |search| {
+                    self.toolbar.get_rect().union(search.get_rect())
+                }),
+            id: "standalone-services",
+        };
         let roots = PresentationRoots {
-            children: vec![&self.toolbar, &content],
+            children: vec![
+                if layout.toolbar_group.is_some() {
+                    &toolbar
+                } else {
+                    &self.toolbar
+                },
+                &content,
+            ],
             layout_root: layout.root,
             rect,
             id: "standalone-presentation",
         };
         Ok(visit(&roots))
     }
+    pub(crate) fn validate_presentation(
+        &self,
+        context: &HistoryReadContext<'_>,
+        layout: HostHistoryLayout,
+    ) -> Result<(), HistoryHostError> {
+        if layout.pane.is_some() != self.is_open() {
+            return Err(HistoryHostError::StaleSession);
+        }
+        if let Some(session) = &self.session {
+            session.validate(context)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validated_local_resources(
+        &self,
+        context: &HistoryReadContext<'_>,
+        layout: HostHistoryLayout,
+    ) -> Result<Vec<Resource>, HistoryHostError> {
+        self.validate_presentation(context, layout)?;
+        let mut resources = vec![open_resource()];
+        if self.has_search() {
+            resources.push(search_resource());
+        }
+        if let Some(session) = self.session_id {
+            resources.push(session_resource(session));
+            crate::widget::collect_widget_resources(&self.pane, context.document, &mut resources);
+        }
+        Ok(resources)
+    }
+
     pub(crate) fn toolbar_mut(&mut self) -> &mut Button {
         &mut self.toolbar
     }
@@ -391,6 +519,22 @@ impl StandaloneHistoryHost {
         viewport_width: f64,
     ) -> HostHistoryLayout {
         let toolbar = self.toolbar.build_layout(taffy, theme, nodes);
+        let search = self
+            .search
+            .as_mut()
+            .map(|button| button.build_layout(taffy, theme, nodes));
+        let toolbar_group = search.map(|search| {
+            taffy.parent_node(
+                Style {
+                    gap: Size {
+                        width: taffy::LengthPercentage::length(theme.gap_standard),
+                        height: taffy::LengthPercentage::length(0.0),
+                    },
+                    ..Default::default()
+                },
+                &[toolbar, search],
+            )
+        });
         let pane = self
             .is_open()
             .then(|| self.pane.build_layout(taffy, theme, nodes));
@@ -452,12 +596,14 @@ impl StandaloneHistoryHost {
                 align_items: Some(taffy::AlignItems::FlexStart),
                 ..Default::default()
             },
-            &[toolbar, content],
+            &[toolbar_group.unwrap_or(toolbar), content],
         );
         HostHistoryLayout {
             root,
             app,
             toolbar,
+            search,
+            toolbar_group,
             pane,
             app_visible,
             content,
@@ -474,7 +620,17 @@ impl StandaloneHistoryHost {
     ) -> Point {
         let outer = taffy.layout(layout.root).copied().unwrap_or_default();
         let origin = origin + (f64::from(outer.location.x), f64::from(outer.location.y));
-        self.toolbar.apply_layout(taffy, layout.toolbar, origin);
+        let toolbar_origin = layout
+            .toolbar_group
+            .and_then(|node| taffy.layout(node).ok())
+            .map_or(origin, |layout| {
+                origin + (f64::from(layout.location.x), f64::from(layout.location.y))
+            });
+        self.toolbar
+            .apply_layout(taffy, layout.toolbar, toolbar_origin);
+        if let (Some(search), Some(node)) = (&mut self.search, layout.search) {
+            search.apply_layout(taffy, node, toolbar_origin);
+        }
         let content = taffy.layout(layout.content).copied().unwrap_or_default();
         let content_origin =
             origin + (f64::from(content.location.x), f64::from(content.location.y));
@@ -493,6 +649,9 @@ impl StandaloneHistoryHost {
 
     pub(crate) fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
         self.toolbar.sync(doc, path);
+        if let Some(search) = &mut self.search {
+            search.sync(doc, path);
+        }
         if self.is_open() {
             self.pane.sync(doc, path);
         }
@@ -513,6 +672,9 @@ impl StandaloneHistoryHost {
     ) -> Result<(), HistoryHostError> {
         self.refresh(context)?;
         self.toolbar.draw(scene, transform, text, theme, presence);
+        if let Some(search) = &mut self.search {
+            search.draw(scene, transform, text, theme, presence);
+        }
         if self.is_open() {
             self.pane.draw(scene, transform, text, theme, presence);
         }
@@ -657,6 +819,30 @@ fn decode_entry(value: &str) -> Result<HistoryEntryId, HistoryHostError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn search_is_opt_in_and_uses_host_shortcut_conventions() {
+        use crate::platform::{Platform, PlatformConventions, Shortcut};
+        use crate::widget::Widget;
+        let mut host = super::StandaloneHistoryHost::new();
+        assert!(
+            !host.has_search(),
+            "headless/history-only hosts expose no dead Search control"
+        );
+        assert!(host.search_mut().is_none());
+        for platform in [Platform::Windows, Platform::MacOs] {
+            let conventions = PlatformConventions::new(platform);
+            let mut host = super::StandaloneHistoryHost::new();
+            host.enable_search(conventions);
+            let button = host.search_mut().unwrap();
+            let shortcut = Shortcut::command("K").label(conventions);
+            assert!(Widget::tooltip(button).unwrap().contains(&shortcut));
+            assert_eq!(
+                button.accessibility().unwrap().name.as_deref(),
+                Some("Search")
+            );
+        }
+    }
+
     use super::*;
     use crate::permissions::PermissionContext;
     use crate::widget::Text;
@@ -785,83 +971,113 @@ mod tests {
         let mut host = StandaloneHistoryHost::new();
         remember(&mut host, identity);
         invoke(&mut host, &HistoryCommand::Open, &context).unwrap();
-        for width in [1100.0, 500.0] {
-            let mut app = Text::new("app content").with_id("private-app-content");
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let theme = Theme::dark();
-            let app_node = app.build_layout(&mut tree, &theme, &mut nodes);
-            let mut style = tree.style(app_node).unwrap().clone();
-            style.display = taffy::Display::Grid;
-            tree.set_style(app_node, style).unwrap();
-            let layout = host.build_layout(app_node, &mut tree, &theme, &mut nodes, width);
-            assert_eq!(layout.app_visible, width >= 900.0);
-            assert_eq!(
-                tree.style(app_node).unwrap().display,
-                if layout.app_visible {
-                    taffy::Display::Grid
-                } else {
-                    taffy::Display::None
-                }
-            );
-            assert!(nodes.contains_key(&layout.app));
-            assert!(nodes.contains_key(&layout.toolbar));
-            assert!(nodes.contains_key(&layout.pane.unwrap()));
-            assert_ne!(layout.app, layout.toolbar);
-            assert_ne!(layout.app, layout.pane.unwrap());
-            assert_eq!(
-                tree.children(layout.root).unwrap(),
-                vec![layout.toolbar, layout.content]
-            );
-            host.with_presentation(&context, &app, layout, Rect::ZERO, |presentation| {
-                fn check_pairing(
-                    widget: &dyn Widget,
-                    node: NodeId,
-                    tree: &TaffyTree<()>,
-                    nodes: &HashMap<NodeId, *mut dyn Widget>,
-                    visited: &mut Vec<String>,
-                ) {
-                    if let Some(id) = widget.test_id() {
-                        visited.push(id.to_owned());
-                    }
-                    if let Some(pointer) = nodes.get(&node) {
-                        assert_eq!(
-                            std::ptr::from_ref(widget).cast::<()>(),
-                            pointer.cast_const().cast::<()>(),
-                            "node must refer to actual retained widget"
-                        );
-                    } else {
-                        assert!(
-                            matches!(
-                                widget.test_id(),
-                                Some("standalone-presentation" | "standalone-content")
-                            ),
-                            "only ephemeral traversal containers lack node-map pointers"
-                        );
-                    }
-                    let children = widget.children();
-                    let child_nodes = tree.children(node).unwrap();
-                    assert_eq!(
-                        children.len(),
-                        child_nodes.len(),
-                        "widget/Taffy child topology must match"
-                    );
-                    for (child, node) in children.into_iter().zip(child_nodes) {
-                        check_pairing(child, node, tree, nodes, visited);
-                    }
-                }
-                let mut visited = Vec::new();
-                check_pairing(presentation, layout.root, &tree, &nodes, &mut visited);
+        for search_enabled in [false, true] {
+            if search_enabled {
+                host.enable_search(crate::platform::PlatformConventions::new(
+                    crate::platform::Platform::Windows,
+                ));
+            }
+            for width in [1100.0, 500.0] {
+                let mut app = Text::new("app content").with_id("private-app-content");
+                let mut tree = TaffyTree::new();
+                let mut nodes = HashMap::new();
+                let theme = Theme::dark();
+                let app_node = app.build_layout(&mut tree, &theme, &mut nodes);
+                let mut style = tree.style(app_node).unwrap().clone();
+                style.display = taffy::Display::Grid;
+                tree.set_style(app_node, style).unwrap();
+                let layout = host.build_layout(app_node, &mut tree, &theme, &mut nodes, width);
+                assert_eq!(layout.app_visible, width >= 900.0);
                 assert_eq!(
-                    visited.iter().any(|id| id == "private-app-content"),
-                    layout.app_visible
+                    tree.style(app_node).unwrap().display,
+                    if layout.app_visible {
+                        taffy::Display::Grid
+                    } else {
+                        taffy::Display::None
+                    }
                 );
-                assert!(visited.iter().any(|id| id == "standalone-history"));
-                assert!(presentation.callback_binding().is_none());
-                assert!(!nodes.contains_key(&layout.root));
-                assert!(!nodes.contains_key(&layout.content));
-            })
-            .unwrap();
+                assert!(nodes.contains_key(&layout.app));
+                assert!(nodes.contains_key(&layout.toolbar));
+                assert!(nodes.contains_key(&layout.pane.unwrap()));
+                assert_ne!(layout.app, layout.toolbar);
+                assert_ne!(layout.app, layout.pane.unwrap());
+                assert_eq!(
+                    tree.children(layout.root).unwrap(),
+                    vec![
+                        layout.toolbar_group.unwrap_or(layout.toolbar),
+                        layout.content
+                    ]
+                );
+                host.with_presentation(&context, &app, layout, Rect::ZERO, |presentation| {
+                    fn check_pairing(
+                        widget: &dyn Widget,
+                        node: NodeId,
+                        tree: &TaffyTree<()>,
+                        nodes: &HashMap<NodeId, *mut dyn Widget>,
+                        visited: &mut Vec<String>,
+                    ) {
+                        if let Some(id) = widget.test_id() {
+                            visited.push(id.to_owned());
+                        }
+                        if let Some(pointer) = nodes.get(&node) {
+                            assert_eq!(
+                                std::ptr::from_ref(widget).cast::<()>(),
+                                pointer.cast_const().cast::<()>(),
+                                "node must refer to actual retained widget"
+                            );
+                        } else {
+                            assert!(
+                                matches!(
+                                    widget.test_id(),
+                                    Some(
+                                        "standalone-presentation"
+                                            | "standalone-content"
+                                            | "standalone-services"
+                                    )
+                                ),
+                                "only ephemeral traversal containers lack node-map pointers"
+                            );
+                        }
+                        let children = widget.children();
+                        let child_nodes = tree.children(node).unwrap();
+                        assert_eq!(
+                            children.len(),
+                            child_nodes.len(),
+                            "widget/Taffy child topology must match"
+                        );
+                        for (child, node) in children.into_iter().zip(child_nodes) {
+                            check_pairing(child, node, tree, nodes, visited);
+                        }
+                    }
+                    let mut visited = Vec::new();
+                    check_pairing(presentation, layout.root, &tree, &nodes, &mut visited);
+                    assert_eq!(
+                        visited.iter().any(|id| id == "private-app-content"),
+                        layout.app_visible
+                    );
+                    assert!(visited.iter().any(|id| id == "standalone-history"));
+                    assert_eq!(
+                        visited
+                            .iter()
+                            .filter(|id| *id == "standalone-search-open")
+                            .count(),
+                        usize::from(search_enabled)
+                    );
+                    assert_eq!(layout.search.is_some(), search_enabled);
+                    assert_eq!(layout.toolbar_group.is_some(), search_enabled);
+                    if let Some(search) = layout.search {
+                        assert!(nodes.contains_key(&search));
+                        assert_eq!(
+                            tree.children(layout.toolbar_group.unwrap()).unwrap(),
+                            vec![layout.toolbar, search]
+                        );
+                    }
+                    assert!(presentation.callback_binding().is_none());
+                    assert!(!nodes.contains_key(&layout.root));
+                    assert!(!nodes.contains_key(&layout.content));
+                })
+                .unwrap();
+            }
         }
     }
 }
