@@ -56,6 +56,23 @@ safe_target_rel() {
         || die "TILO_FEDORA44_TARGET_REL must be a safe path below target/"
 }
 
+ensure_target_visible_in_container() {
+    local target=$repo_root/$target_rel
+    if [[ -L $target ]]; then
+        local resolved
+        resolved=$(readlink -f -- "$target") || die "cannot resolve target cache symlink: $target"
+        case "$resolved" in
+            /var/tmp/*|/var/home/*|/home/*) ;;
+            *) die "target cache symlink resolves outside host-mounted development paths: $resolved" ;;
+        esac
+        # Absolute host paths live below /run/host inside distrobox. Cargo is
+        # given that visible path directly; otherwise mkdir follows a host
+        # symlink to /var/tmp *inside the container* and reports the existing
+        # cache as an uncreatable directory.
+        target_rel=/run/host$resolved
+    fi
+}
+
 safe_vm_user() {
     [[ $vm_user =~ ^[a-z_][a-z0-9_-]*\$?$ ]] || die "TILO_VM_USER is not a valid user name"
 }
@@ -99,6 +116,7 @@ cmd_bootstrap() {
         . /etc/os-release
         test "$VERSION_ID" = 44
         command -v cargo
+        command -v mold
         command -v sccache
         rpm -q libxkbcommon-devel capnproto libavcodec-free-devel \
             libswscale-free-devel >/dev/null
@@ -116,7 +134,10 @@ cmd_bootstrap() {
 build_one() {
     local package=$1 args=()
     case "$package" in
-        shell) args=(-p shell --bin shell --features dev-session) ;;
+        # Match the shipped host-session feature set. The default HDR decoder
+        # pulls Fedora multimedia DSOs which are deliberately not part of the
+        # host-session runtime contract.
+        shell) args=(-p shell --bin shell --no-default-features --features dev-session) ;;
         tilo-launcher) args=(-p launcher --bin tilo-launcher) ;;
         tilo-unlock-helper) args=(-p tilo-unlock-helper --bin tilo-unlock-helper) ;;
         *) safe_name "$package"; args=(-p "$package") ;;
@@ -134,6 +155,10 @@ build_one() {
         # Generated libspa C wrappers require the compiler's own preprocessor;
         # sccache direct mode can omit PipeWire inline declarations on Fedora.
         export SCCACHE_DIRECT=false
+        # Keep sccache on rustc, but make cc-rs invoke the real compiler. C
+        # helper output depends on live Fedora headers (notably PipeWire SPA),
+        # and sccache can otherwise return an object generated for older ones.
+        export CC=/usr/bin/gcc CXX=/usr/bin/g++
         mkdir -p '$target_rel'
         # This is a persistent, disposable build cache rather than source. The
         # standard tag keeps backup/indexing tools from treating it as project
@@ -150,12 +175,36 @@ build_one() {
         exec flock --close '$target_rel/.build.lock' env \\
           CARGO_TARGET_DIR='$target_rel' \\
           RUSTC_WRAPPER=sccache \\
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
           cargo build --locked$quoted"
+}
+
+build_shell_pair() {
+    note "debug-building shell and its matched launcher in one cached Cargo invocation"
+    container_run "set -euo pipefail
+        export SCCACHE_SERVER_PORT='$sccache_port'
+        export SCCACHE_DIR=\"\$HOME/.cache/$sccache_cache_name\"
+        export SCCACHE_DIRECT=false
+        export CC=/usr/bin/gcc CXX=/usr/bin/g++
+        mkdir -p '$target_rel'
+        if [ ! -e '$target_rel/CACHEDIR.TAG' ]; then
+          printf '%s\\n' 'Signature: 8a477f597d28d172789f06886806bc55' \\
+            '# This file is a cache directory tag created by Tilo.' \\
+            '# For information about cache directory tags, see:' \\
+            '#       http://www.brynosaurus.com/cachedir/' > '$target_rel/CACHEDIR.TAG'
+        fi
+        exec flock --close '$target_rel/.build.lock' env \\
+          CARGO_TARGET_DIR='$target_rel' \\
+          RUSTC_WRAPPER=sccache \\
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
+          cargo build --locked -p shell --bin shell --no-default-features --features dev-session \\
+            -p launcher --bin tilo-launcher"
 }
 
 cmd_build() {
     (($#)) || set -- shell
     safe_target_rel
+    ensure_target_visible_in_container
     safe_sccache_port
     container_exists || die "container $container is absent; run: $0 bootstrap"
     local package
@@ -163,13 +212,11 @@ cmd_build() {
         if [[ $package == host ]]; then
             build_one tilo-launcher
             build_one tilo-unlock-helper
+        elif [[ $package == shell ]]; then
+            build_shell_pair
         else
             note "debug-building $package only"
             build_one "$package"
-            # The compositor resolves the sandbox launcher beside itself.
-            # Keep that host boundary matched automatically; otherwise a new
-            # shell can silently exercise an old installed launcher.
-            [[ $package != shell ]] || build_one tilo-launcher
         fi
     done
 }
@@ -221,25 +268,78 @@ remote_install() {
         <"$local_path"
 }
 
+dev_transfer_image() {
+    local source=$1 output=$2
+    [[ -x $source ]] || die "built executable not found: $source"
+    require_command strip
+    # Keep the persistent Cargo artifact intact for incremental linking. The
+    # VM only needs an executable image; local DWARF/symbol tables account for
+    # hundreds of megabytes and make every otherwise-fast iteration wait on
+    # SSH. Crash diagnostics still come from structured tracing/flight logs.
+    cp --reflink=auto -- "$source" "$output"
+    strip --strip-all -- "$output"
+    chmod 700 -- "$output"
+}
+
+assert_vm_runtime_compatible() {
+    local local_path=$1 label=$2
+    [[ -x $local_path ]] || die "built executable not found: $local_path"
+    safe_name "$label"
+    require_command readelf
+    assert_disposable_guest
+    # Send only the ELF NEEDED names (a few hundred bytes), then resolve each
+    # with the target guest's own loader cache. This catches ABI drift before a
+    # costly graphical login without transferring the large debug binary twice.
+    local needed
+    needed=$(readelf -d "$local_path" \
+        | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')
+    [[ -n $needed ]] || die "cannot read dynamic dependencies from $local_path"
+    ssh_base "set -e
+        missing=\$(while IFS= read -r soname; do
+            # Avoid grep -q here: with pipefail it exits early and makes
+            # ldconfig's expected SIGPIPE look like a missing library.
+            ldconfig -p | grep -F \"\$soname \" >/dev/null \\
+                || printf '%s\\n' \"\$soname\"
+        done)
+        if [ -n \"\$missing\" ]; then
+            printf 'candidate %s needs unavailable target libraries:\\n%s\\n' '$label' \"\$missing\" >&2
+            exit 1
+        fi" <<<"$needed"
+}
+
 deploy_one() {
     local package=$1 binary=$package
     [[ $package == shell ]] && binary=shell
     safe_name "$binary"
-    remote_install "$repo_root/$target_rel/debug/$binary" "$binary"
+    local source="$repo_root/$target_rel/debug/$binary"
+    local transfer
+    transfer=$(mktemp "${TMPDIR:-/tmp}/tilo-$binary.XXXXXX")
+    dev_transfer_image "$source" "$transfer"
+    assert_vm_runtime_compatible "$transfer" "$binary"
+    remote_install "$transfer" "$binary"
     if [[ $package == shell ]]; then
-        remote_install "$repo_root/$target_rel/debug/tilo-launcher" tilo-launcher
+        local launcher_transfer
+        launcher_transfer=$(mktemp "${TMPDIR:-/tmp}/tilo-launcher.XXXXXX")
+        dev_transfer_image "$repo_root/$target_rel/debug/tilo-launcher" "$launcher_transfer"
+        assert_vm_runtime_compatible "$launcher_transfer" tilo-launcher
+        remote_install "$launcher_transfer" tilo-launcher
+        rm -f -- "$launcher_transfer"
         # The packaged developer wrapper intentionally accepts only an absolute,
         # private path carrying this marker.  Set up precisely that contract.
         wrapper=$repo_root/dist/session/tilo-session-dev
         runner=$repo_root/dist/session/tilo-session-runner
+        recorder=$repo_root/dist/session/tilo-flight-recorder.py
         [[ -x $wrapper ]] || die "developer session wrapper is missing: $wrapper"
         [[ -x $runner ]] || die "session lifecycle runner is missing: $runner"
+        [[ -x $recorder ]] || die "flight recorder is missing: $recorder"
         ssh_base "set -eu
             shell_path=\"\$HOME/$vm_root/shell\"
             grep -aFq 'tilo-dev-session-build-marker-v1' \"\$shell_path\"
             install -d -m 700 \"\$HOME/.config/tilo\"
             printf '%s\\n' \"\$shell_path\" > \"\$HOME/.config/tilo/dev-session\"
+            sha256sum \"\$shell_path\" | cut -d' ' -f1 > \"\$HOME/.config/tilo/dev-session.sha256\"
             chmod 600 \"\$HOME/.config/tilo/dev-session\"
+            chmod 600 \"\$HOME/.config/tilo/dev-session.sha256\"
             wrapper=\"\$HOME/$vm_root/tilo-session-dev\"
             incoming=\"\$HOME/$vm_root/incoming/tilo-session-dev.\$\$\"
             cat > \"\$incoming\"
@@ -248,7 +348,10 @@ deploy_one() {
             sudo install -m 0755 \"\$wrapper\" /usr/libexec/tilo-session-dev" <"$wrapper"
         remote_install "$runner" tilo-session-runner
         ssh_base "sudo install -m 0755 \"\$HOME/$vm_root/tilo-session-runner\" /usr/libexec/tilo-session-runner"
+        remote_install "$recorder" tilo-flight-recorder
+        ssh_base "sudo install -m 0755 \"\$HOME/$vm_root/tilo-flight-recorder\" /usr/libexec/tilo-flight-recorder"
     fi
+    rm -f -- "$transfer"
 }
 
 cmd_deploy() {
