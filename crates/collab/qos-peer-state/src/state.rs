@@ -344,8 +344,7 @@ impl StatePeer {
     ) -> Result<(Role, Vec<collab_types::caps::CapOverride>, String), String> {
         let role = self.role(&source, now)?;
         let cert = self.certificate(&source, now)?;
-        let (_, _, caps) =
-            room::extract_governed_fields(self.room_doc.as_deref().ok_or("room missing")?);
+        let caps = self.room_doc.as_ref().ok_or("room missing")?.policy().caps.clone();
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         Ok((role, caps, person.id().to_owned()))
     }
@@ -481,11 +480,10 @@ impl StatePeer {
     }
     fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
         let cert = self.certificate(source, now)?;
-        let doc = self.room_doc.as_deref().ok_or("room governance missing")?;
+        let policy = self.room_doc.as_ref().ok_or("room governance missing")?.policy();
         // A root-signed certificate must also be the certificate admitted by room governance.
-        let (_, _, _, identities, _) = room::governance_of(Some(doc));
         let identity: GovernedIdentity = serde_json::from_slice(
-            identities
+            policy.identities
                 .get(&hex::encode(source))
                 .ok_or("device is absent from governed roster")?,
         )
@@ -503,9 +501,8 @@ impl StatePeer {
         if revoked.is_revoked(source) {
             return Err("device revoked by room".into());
         }
-        let (_, owner, caps) = room::extract_governed_fields(doc);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        room::role_of(owner.as_deref(), &caps, person.id(), now_secs(now))
+        room::role_of(policy.owner.as_deref(), &policy.caps, person.id(), now_secs(now))
             .ok_or("person has no room membership".into())
     }
     pub fn receive_from(

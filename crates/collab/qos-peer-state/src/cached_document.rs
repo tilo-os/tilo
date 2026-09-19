@@ -7,9 +7,15 @@ use std::sync::{Arc, OnceLock};
 pub(crate) struct CachedDocument {
     doc: AutoCommit,
     serialized: Arc<OnceLock<Vec<u8>>>,
+    policy: Arc<OnceLock<PolicyData>>,
+}
+pub(crate) struct PolicyData {
+    pub owner: Option<String>,
+    pub caps: Vec<collab_types::caps::CapOverride>,
+    pub identities: std::collections::BTreeMap<String, Vec<u8>>,
 }
 impl From<AutoCommit> for CachedDocument {
-    fn from(doc: AutoCommit) -> Self { Self { doc, serialized: Arc::default() } }
+    fn from(doc: AutoCommit) -> Self { Self { doc, serialized: Arc::default(), policy: Arc::default() } }
 }
 impl Deref for CachedDocument {
     type Target = AutoCommit;
@@ -20,10 +26,20 @@ impl DerefMut for CachedDocument {
         // Mutable access can add pending or unresolved operations without
         // changing heads. Detach before lending; older clones retain their bytes.
         self.serialized = Arc::default();
+        self.policy = Arc::default();
         &mut self.doc
     }
 }
 impl CachedDocument {
+    /// Cache document data only. Membership, expiry, certificate and revocation
+    /// decisions must still be evaluated against the caller's current inputs.
+    pub(crate) fn policy(&self) -> &PolicyData {
+        self.policy.get_or_init(|| {
+            let (_, owner, caps) = crate::room::extract_governed_fields(&self.doc);
+            let identities = crate::room::governance_of(Some(&self.doc)).3;
+            PolicyData { owner, caps, identities }
+        })
+    }
     pub(crate) fn saved(&self) -> Vec<u8> {
         self.serialized.get_or_init(|| {
             #[cfg(test)]
@@ -38,6 +54,29 @@ thread_local! { static SERIALIZATIONS: std::cell::Cell<usize> = const { std::cel
 mod tests {
     use super::*;
     use automerge::{ReadDoc, ROOT, transaction::Transactable};
+    #[test]
+    fn policy_is_shared_until_mutation_and_does_not_commit_pending_changes() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "owner", "first").unwrap();
+        let identities = doc.put_object(ROOT, "peer_identities_v1", automerge::ObjType::Map).unwrap();
+        doc.put(&identities, "device", automerge::ScalarValue::Bytes(vec![1])).unwrap();
+        doc.commit();
+        let mut cached = CachedDocument::from(doc);
+        let old = cached.clone();
+        assert!(std::ptr::eq(cached.policy(), old.policy()));
+        assert_eq!(cached.policy().owner.as_deref(), Some("first"));
+        cached.put(ROOT, "owner", "second").unwrap();
+        cached.put(&identities, "device", automerge::ScalarValue::Bytes(vec![2])).unwrap();
+        let pending = cached.pending_ops();
+        assert!(pending > 0);
+        assert_eq!(cached.policy().owner.as_deref(), Some("second"));
+        assert_eq!(cached.policy().identities.get("device"), Some(&vec![2]));
+        assert_eq!(old.policy().owner.as_deref(), Some("first"));
+        assert_eq!(old.policy().identities.get("device"), Some(&vec![1]));
+        assert_eq!(cached.pending_ops(), pending);
+        cached.delete(ROOT, "owner").unwrap();
+        assert_eq!(cached.policy().owner, None);
+    }
     #[test]
     fn unchanged_clones_share_serialization_and_mutations_keep_old_snapshots() {
         let mut doc = AutoCommit::new();

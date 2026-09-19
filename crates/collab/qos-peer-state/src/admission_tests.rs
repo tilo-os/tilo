@@ -25,6 +25,43 @@ fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
     (a, ac, b, bc, now)
 }
 #[test]
+fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
+    let (peer, _, _, cert, now) = seeded();
+    crate::room::POLICY_READS.with(|count| count.set(0));
+    let expected = peer.permissions(cert.device_public_key, now).unwrap();
+    for _ in 0..100 {
+        let actual = peer.clone().permissions(cert.device_public_key, now).unwrap();
+        assert_eq!(actual.0, expected.0);
+        assert_eq!(serde_json::to_vec(&actual.1).unwrap(), serde_json::to_vec(&expected.1).unwrap());
+        assert_eq!(actual.2, expected.2);
+    }
+    assert!(crate::room::POLICY_READS.with(|count| count.get()) <= 1, "unchanged policy data is decoded at most once");
+}
+#[test]
+fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
+    use automerge::ReadDoc;
+    use collab_types::caps::{CapOverride, Principal, Scope, Subject, Verb};
+    let (key, cert, _, other, now) = fixtures();
+    let room_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let mut doc = crate::room::candidate(None, &seed_room(room_id, &cert, &[cert.clone(), other.clone()]).unwrap()).unwrap();
+    doc.put(ROOT, "owner", "another-person").unwrap();
+    let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let person = Principal::person_from_key(collab_types::Ed25519PublicKey::from_bytes(cert.user_public_key));
+    let grant = CapOverride::grant(Subject::Principal(person), Scope::Workspace, Verb::Write).with_expiry(2001);
+    doc.put(&caps, "membership", automerge::ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap())).unwrap();
+    let changes = doc.get_changes(&[]).into_iter().map(|c| c.raw_bytes().to_vec()).collect();
+    let mut peer = StatePeer::new(room_id, cert.clone(), vec![cert.clone(), other], RevocationList::new(), now).unwrap();
+    peer.install_seed(SeedState { room_changes: changes, documents: vec![] }, &key, now).unwrap();
+    assert_eq!(peer.permissions(cert.device_public_key, now).unwrap().0, collab_types::Role::Editor);
+    assert!(peer.permissions(cert.device_public_key, now + Duration::from_secs(2)).unwrap_err().contains("membership"));
+    let old = peer.clone();
+    doc.delete(&caps, "membership").unwrap();
+    let changes = doc.get_changes(&[]).into_iter().map(|c| c.raw_bytes().to_vec()).collect();
+    peer.receive(cert.device_public_key, NeighbourMsg::SyncResp { room: room_id.into(), changes }, now).unwrap();
+    assert!(peer.permissions(cert.device_public_key, now).unwrap_err().contains("membership"));
+    assert_eq!(old.permissions(cert.device_public_key, now).unwrap().0, collab_types::Role::Editor);
+}
+#[test]
 fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_action() {
     let (a, ac, _, bc, now) = fixtures();
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -649,6 +686,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     )
     .unwrap();
     assert!(restored.permissions(bc.device_public_key, now).is_ok());
+    assert!(receiver.permissions(bc.device_public_key, now).is_ok());
     let mut revocation = RevocationEntry {
         user_public_key: bc.user_public_key,
         revoked_device_public_key: bc.device_public_key,
@@ -668,6 +706,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         )
         .unwrap();
     assert!(learned.metadata_changed);
+    assert!(receiver.permissions(bc.device_public_key, now).unwrap_err().contains("revoked"), "external revocation must take effect with a warm policy cache");
     let mut restored = StatePeer::restore(
         &receiver.durable().unwrap(),
         native.room(),
@@ -1252,7 +1291,9 @@ fn expired_known_identity_does_not_block_governed_join() {
     sign_device_cert(&mut cert, &root).unwrap();
     governor.admit_certificate(cert.clone(), &a, now).unwrap();
     let mut existing = governor.clone();
+    assert!(existing.permissions(cert.device_public_key, now).is_ok());
     let later = now + Duration::from_secs(2);
+    assert!(existing.permissions(cert.device_public_key, later).unwrap_err().contains("expired"), "a warm policy cache must not cache certificate validity");
     let mut next = governor.authority().clone();
     next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
     sign_device_cert(&mut next, &root).unwrap();
