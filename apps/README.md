@@ -75,7 +75,7 @@ the same intent.
 
 The toolkit validates the live surface before publishing it, and the broker
 validates untrusted descriptors again. Presubmit runs
-`tools/check_app_resource_action_contract.py` to reject missing resources and
+`tools/policy/check_app_resource_action_contract.py` to reject missing resources and
 unattached operation handlers. Invoke and inspect actions with:
 
 ```bash

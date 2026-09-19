@@ -77,27 +77,42 @@ def git(root: Path, *arguments: str) -> str:
 
 
 def comparison_range(root: Path, base: str, before: str) -> str:
-    candidate = base if base and base != "null" else before
-    if not candidate or candidate == ZERO_SHA:
+    """PRs compare their common ancestor; pushes compare the exact previous tree.
+
+    A shallow checkout cannot safely substitute the current target branch tree
+    for a missing PR merge base: that would attribute target-only edits to the PR.
+    Fetch both immutable endpoints, deepening only when ancestry is missing.
+    """
+    is_pr = bool(base and base != "null")
+    candidate = base if is_pr else before
+    if not candidate or candidate in {"null", ZERO_SHA}:
         candidate = git(root, "rev-parse", "HEAD^")
     try:
         subprocess.run(
             ["git", "cat-file", "-e", f"{candidate}^{{commit}}"],
-            cwd=root,
-            check=True,
-            capture_output=True,
+            cwd=root, check=True, capture_output=True,
         )
     except subprocess.CalledProcessError:
         subprocess.run(
             ["git", "fetch", "--no-tags", "--depth=1", "origin", candidate],
-            cwd=root,
-            check=True,
+            cwd=root, check=True,
         )
-    try:
-        merge_base = git(root, "merge-base", candidate, "HEAD")
-    except subprocess.CalledProcessError:
+    if not is_pr:
         return f"{candidate}..HEAD"
-    return f"{merge_base}...HEAD"
+
+    head = git(root, "rev-parse", "HEAD")
+    for deepen in ("--deepen=64", "--deepen=256", "--deepen=1024", "--unshallow", None):
+        try:
+            merge_base = git(root, "merge-base", candidate, head)
+            return f"{merge_base}..HEAD"
+        except subprocess.CalledProcessError:
+            if deepen is None or git(root, "rev-parse", "--is-shallow-repository") != "true":
+                raise
+        subprocess.run(
+            ["git", "fetch", "--no-tags", deepen, "origin", candidate, head],
+            cwd=root, check=True,
+        )
+    raise AssertionError("unreachable comparison range")
 
 
 def changed_rust_files(root: Path, revision_range: str) -> list[Path]:
@@ -126,10 +141,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("base", nargs="?", default="")
     parser.add_argument("before", nargs="?", default="")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument("--comparison-range", action="store_true",
+                        help="print the shared PR/push range for the formatter")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
         revision_range = comparison_range(root, args.base, args.before)
+        if args.comparison_range:
+            print(revision_range)
+            return 0
         violations: list[tuple[Path, Attribute]] = []
         for relative in changed_rust_files(root, revision_range):
             source = (root / relative).read_text(encoding="utf-8")

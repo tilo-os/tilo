@@ -2,7 +2,7 @@
 # Fast, deterministic repository-policy suite shared by local development and CI.
 set -euo pipefail
 
-repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"
 
 run() {
@@ -13,12 +13,12 @@ run() {
 }
 
 run 'Workspace membership' ./scripts/check-workspace-complete.sh
-run 'Repository layout' python3 tools/check_repository_layout.py
-run 'Workflow timeouts' python3 tools/check_workflow_timeouts.py
+run 'Repository layout' python3 tools/policy/check_repository_layout.py
+run 'Workflow timeouts' python3 tools/policy/check_workflow_timeouts.py
 run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
 run 'Path-filtered package dependency triggers' \
-  python3 tools/check_workflow_package_paths.py \
+  python3 tools/policy/check_workflow_package_paths.py \
   --check atomic-file .forgejo/workflows/build-builder-image.yml \
   --check tilo-crypto .forgejo/workflows/development-source.yml \
   --check fs .forgejo/workflows/fs-fuse.yml \
@@ -30,9 +30,9 @@ run 'Cargo shim tests' bash tools/tests/cargo_shim.sh
 run 'CI receipt tests' bash tools/tests/test_ci_receipt.sh
 run 'Codex hook manifest' bash -c 'python3 -m json.tool .codex/hooks.json >/dev/null'
 run 'Codex CI watcher tests' python3 .codex/hooks/test_watch_ci.py
-run 'Application text-stack contract' python3 tools/check_app_text_contract.py
+run 'Application text-stack contract' python3 tools/policy/check_app_text_contract.py
 run 'Application resource/action contract' \
-  python3 tools/check_app_resource_action_contract.py
-run 'AT-SPI endpoint contract' python3 tools/check_atspi_endpoint_contract.py
+  python3 tools/policy/check_app_resource_action_contract.py
+run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
 
 printf '\nRepository policy suite OK\n'

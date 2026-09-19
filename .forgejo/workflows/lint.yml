@@ -57,7 +57,7 @@ jobs:
           '${{ github.event.before }}'
 
       - name: Repository policy suite
-        run: bash tools/run-repository-policy.sh
+        run: bash tools/policy/run.sh
 
       - name: cargo deny
         run: cargo deny --workspace check

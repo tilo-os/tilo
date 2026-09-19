@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-BASELINE = "app_resource_action_baseline.toml"
+ROOT = Path(__file__).resolve().parents[2]
+BASELINE = Path("tools/policy/app_resource_action_baseline.toml")
 
 RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
 RESOURCE_VALUE = re.compile(r"\bResource\s*::\s*new\s*\(")
@@ -165,7 +165,7 @@ def is_ui_core_dependency(alias: str, specification: object) -> bool:
 
 
 def load_ratchet_baseline(root: Path) -> dict[str, dict[str, int]]:
-    path = root / "tools" / BASELINE
+    path = root / BASELINE
     if not path.is_file():
         return {}
     with path.open("rb") as handle:
@@ -200,7 +200,7 @@ def audit_ratchets(
                 if len(matches) < limit:
                     violations.append(
                         Violation(
-                            root / "tools" / BASELINE,
+                            root / BASELINE,
                             1,
                             f"stale {rule} ceiling for {relative}: lower {limit} to {len(matches)}",
                         )
@@ -211,7 +211,7 @@ def audit_ratchets(
                 Violation(
                     source,
                     line_number(source_text, first_excess.start()),
-                    f"{reason} ({len(matches)} found, audited ceiling {limit} in tools/{BASELINE})",
+                    f"{reason} ({len(matches)} found, audited ceiling {limit} in {BASELINE})",
                 )
             )
 
@@ -526,7 +526,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
             )
     ratchet_baseline = load_ratchet_baseline(root)
-    baseline_path = root / "tools" / BASELINE
+    baseline_path = root / BASELINE
     for rule, entries in ratchet_baseline.items():
         if rule not in RATCHETS:
             violations.append(Violation(baseline_path, 1, f"unknown ratchet rule `{rule}`"))
