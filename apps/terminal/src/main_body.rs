@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transac
 use base64::Engine as _;
 use crossbeam_channel::{Receiver, bounded};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -74,6 +74,7 @@ const MAX_FIND_MATCHES: usize = 2_048;
 /// A find string is local presentation state, but cap it before repeatedly
 /// scanning history on each keystroke or pasting an accidental large blob.
 const MAX_FIND_QUERY_CHARS: usize = 256;
+const MAX_GESTURE_EFFECTS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FindMatch {
@@ -590,6 +591,10 @@ pub struct TerminalWidget {
     find_menu_index: Option<usize>,
     menu_effects: HashMap<usize, ui::widget::ActionEmitter<()>>,
     allowed_menu_actions: Option<HashSet<ui::tilo_actions::ActionAddress>>,
+    /// Keyboard and pointer gestures enqueue the same typed invocations as
+    /// menu rows. The app host drains and admits these against the live role
+    /// and confirmation policy before any PTY or clipboard effect runs.
+    gesture_effects: VecDeque<ui::tilo_actions::ControlInvocation>,
     /// Cursor position cached on every `CursorMoved` so the press arm
     /// can hit-test without receiving a fresh position. Logical coords
     /// (post scale-factor divide), matching `text_input`'s convention.
@@ -797,6 +802,7 @@ impl TerminalWidget {
             find_menu_index: None,
             menu_effects: HashMap::new(),
             allowed_menu_actions: None,
+            gesture_effects: VecDeque::new(),
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             last_padding_x: 4.0,
@@ -1156,6 +1162,7 @@ impl TerminalWidget {
             ("interrupt", "Interrupt process"),
             ("clear", "Clear screen"),
             ("paste", "Paste"),
+            ("paste-primary", "Paste primary selection"),
         ] {
             if let Ok(spec) =
                 ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
@@ -1209,6 +1216,7 @@ impl TerminalWidget {
                 .enumerate()
                 .filter_map(|(index, item)| {
                     let label = item.label()?;
+                    let disabled = !item.is_enabled();
                     position = position.saturating_add(1);
                     Some(
                         AccessNode::new(Role::MenuItem)
@@ -1216,11 +1224,8 @@ impl TerminalWidget {
                             .with_action_target(format!("terminal.menu:{}:{index}", self.pane_id))
                             .with_position(position, action_count)
                             .with_state(AccessState {
-                                focusable: true,
-                                disabled: self
-                                    .menu_effects
-                                    .get(&index)
-                                    .is_some_and(|effect| !effect.is_available()),
+                                focusable: !disabled,
+                                disabled,
                                 ..Default::default()
                             }),
                     )
@@ -2148,9 +2153,11 @@ const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.menu_effects
-            .values_mut()
-            .find_map(ui::widget::ActionEmitter::take)
+        self.gesture_effects.pop_front().or_else(|| {
+            self.menu_effects
+                .values_mut()
+                .find_map(ui::widget::ActionEmitter::take)
+        })
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
@@ -2168,8 +2175,13 @@ impl Widget for TerminalWidget {
         allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
     ) {
         self.allowed_menu_actions = Some(allowed.clone());
-        for emitter in self.menu_effects.values_mut() {
+        let mut availability = Vec::with_capacity(self.menu_effects.len());
+        for (index, emitter) in &mut self.menu_effects {
             emitter.refresh_availability(allowed);
+            availability.push((*index, emitter.is_available()));
+        }
+        for (index, available) in availability {
+            self.context_menu.set_item_enabled(index, available);
         }
     }
 
@@ -2296,6 +2308,11 @@ impl Widget for TerminalWidget {
                 (OperationKind::Effect, "clear") => self.try_write_input(&[0x0c])?,
                 (OperationKind::Effect, "paste") => {
                     let text = clipboard_paste().ok_or("clipboard text is unavailable")?;
+                    self.try_paste(&text)?;
+                }
+                (OperationKind::Effect, "paste-primary") => {
+                    let text =
+                        clipboard_paste_primary().ok_or("primary selection text is unavailable")?;
                     self.try_paste(&text)?;
                 }
                 (OperationKind::Effect, "copy-selection") => {
@@ -3455,8 +3472,9 @@ impl TerminalWidget {
         // currently-selected text (from any app), matching every
         // terminal. Snaps the viewport back to the live bottom.
         if self.grid_rect.contains(self.last_cursor_pos) {
-            if let Some(text) = clipboard_paste_primary() {
-                self.paste(&text);
+            if clipboard_paste_primary().is_some() {
+                let session = self.session_resource();
+                self.queue_gesture_effect(&session, "paste-primary");
             }
             *handled = true;
         }
@@ -3523,14 +3541,16 @@ impl TerminalWidget {
                 if let Some(text) = self.selected_text()
                     && !text.is_empty()
                 {
-                    clipboard_copy(&text);
+                    let transcript = self.transcript_resource();
+                    self.queue_gesture_effect(&transcript, "copy-selection");
                 }
                 *handled = true;
                 return;
             }
             if c.as_str().eq_ignore_ascii_case("v") {
-                if let Some(text) = clipboard_paste() {
-                    self.paste(&text);
+                if clipboard_paste().is_some() {
+                    let session = self.session_resource();
+                    self.queue_gesture_effect(&session, "paste");
                 }
                 *handled = true;
                 return;
@@ -3540,8 +3560,9 @@ impl TerminalWidget {
         // (especially useful over remote-desktop/keymaps where Ctrl+Shift+V is
         // intercepted). It uses the same bracketed-paste-safe path.
         if mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::Insert)) {
-            if let Some(text) = clipboard_paste() {
-                self.paste(&text);
+            if clipboard_paste().is_some() {
+                let session = self.session_resource();
+                self.queue_gesture_effect(&session, "paste");
             }
             *handled = true;
             return;
@@ -4902,11 +4923,51 @@ impl TerminalWidget {
                 if let Some(allowed) = &self.allowed_menu_actions {
                     emitter.refresh_availability(allowed);
                 }
+                let available = emitter.is_available();
                 self.menu_effects.insert(menu.items().len(), emitter);
-                menu.push(MenuItem::action(label, || {}));
+                menu.push(MenuItem::action(label, || {}).with_enabled(available));
             }
             Err(error) => tracing::error!(%error, action_id, "terminal menu binding failed"),
         }
+    }
+
+    /// Queue a pointer or keyboard gesture through the exported action
+    /// contract. The invocation is still re-authorized by the host when it is
+    /// drained, so a role change between input and confirmation cannot race a
+    /// PTY or clipboard effect.
+    fn queue_gesture_effect(&mut self, resource: &Resource, action_id: &str) -> bool {
+        let Some(spec) = resource.actions.iter().find(|spec| spec.id == action_id) else {
+            tracing::error!(
+                action_id,
+                "terminal gesture action is missing its resource contract"
+            );
+            return false;
+        };
+        let Ok(binding) =
+            ui::tilo_actions::ActionBinding::new(resource, spec, |()| serde_json::Map::new())
+        else {
+            tracing::error!(action_id, "terminal gesture binding failed");
+            return false;
+        };
+        let mut emitter = ui::widget::ActionEmitter::new(binding);
+        if let Some(allowed) = &self.allowed_menu_actions {
+            emitter.refresh_availability(allowed);
+        }
+        if !emitter.is_available() || emitter.emit(()).is_err() {
+            return false;
+        }
+        let Some(invocation) = emitter.take() else {
+            return false;
+        };
+        if self.gesture_effects.len() >= MAX_GESTURE_EFFECTS {
+            tracing::warn!(
+                limit = MAX_GESTURE_EFFECTS,
+                "terminal gesture action backlog full; rejecting newest intent"
+            );
+            return false;
+        }
+        self.gesture_effects.push_back(invocation);
+        true
     }
 
     /// Open the terminal's shared context menu at a host-owned logical
