@@ -20,6 +20,9 @@ FROM registry.fedoraproject.org/fedora:42
 # package here would be shadowed by a shim reporting the component missing.
 # pulseaudio supplies only the private software endpoint started by
 # tools/with-headless-audio.sh; CI does not start or replace a host audio service.
+# cryptsetup, swtpm and tpm2-tools are test subjects too: tilo-rollback's
+# mechanism suite drives a real LUKS2 header and a private software TPM and must
+# fail rather than report success when that security boundary is unavailable.
 RUN dnf install -y \
       nodejs \
       capnproto \
@@ -46,6 +49,7 @@ RUN dnf install -y \
       nasm \
       vulkan-loader mesa-vulkan-drivers \
       bubblewrap gnome-text-editor \
+      cryptsetup swtpm swtpm-tools tpm2-tools \
     && dnf clean all
 
 # Required by production PDF capture tests. Use the same verified external
