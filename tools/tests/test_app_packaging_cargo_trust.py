@@ -34,6 +34,39 @@ class CargoTrustTests(unittest.TestCase):
     def test_real_reviewed_policy_passes(self):
         self.api.qualify_receipt(self.receipt)
 
+    def test_controller_only_changes_preserve_workflow_policy_and_baseline_inputs(self):
+        original_policy = product.core.canonical(self.api.policy)
+        self.api.qualify_receipt(self.receipt)
+        for name in ('app_packaging_product.py', 'app_packaging_coordinator.py',
+                     'app_packaging_service.py', 'accept_app_artifacts.py'):
+            path = 'tools/' + name
+            self.assertNotIn(path, product.REQUIRED_PATHS)
+            self.files[path] = b'raise AssertionError("controller is not workflow code")\n'
+        desired = dict(self.receipt, source_sha='c' * 40)
+        self.api.qualify_receipt(desired)
+        self.assertEqual(product.core.canonical(self.api.policy), original_policy)
+        evidence = {'schema': 'tilo.coordinator-verification/v1', 'run_id': 12,
+                    'desired': self.receipt, 'backend': 'canonical-final-artifact-v1',
+                    'receipts': {'x86_64': 'd' * 64}, 'final_policy_sha256': 'f' * 64}
+        intent = {'id': '12345678-1234-4234-8234-123456789abc', 'desired': desired,
+                  'baseline': self.receipt, 'baseline_evidence': evidence}
+        self.api.validate_baseline_policy(intent)
+        inputs = product.dispatch_inputs(intent)
+        self.assertEqual(inputs['baseline_sha'], self.receipt['source_sha'])
+        self.assertEqual(inputs['baseline_run_id'], '12')
+        self.assertEqual(inputs['baseline_evidence'], product.core.canonical(evidence))
+
+    def test_changed_or_unpinned_shared_contract_is_rejected(self):
+        path = 'tools/app_packaging_contract.py'
+        self.assertIn(path, product.REQUIRED_PATHS)
+        self.files[path] += b'\n# changed validation contract\n'
+        with self.assertRaisesRegex(ValueError, 'differs from trusted policy: ' + path):
+            self.api.qualify_receipt(self.receipt)
+        del self.api.policy['trusted_files'][path]
+        desired = dict(self.receipt, policy_sha256=self.api.policy_sha)
+        with self.assertRaisesRegex(ValueError, 'incomplete trusted workflow policy'):
+            self.api.qualify_receipt(desired)
+
     def test_candidate_path_toolchain_cannot_match_reviewed_policy(self):
         self.files['rust-toolchain.toml'] = b'[toolchain]\npath="candidate/toolchain"\n'
         with self.assertRaisesRegex(ValueError, 'differs from trusted policy: rust-toolchain.toml'):
