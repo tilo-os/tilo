@@ -17,7 +17,9 @@
 //! nothing. When there are no grants — a fresh session, or one where no app
 //! has been approved for anything — it shows an empty state.
 
-use crate::widgets::{El, caption, card, cards, hgap, rows, status_pill, value_row, vgap};
+use ui::tokens::SpacingStep;
+
+use crate::widgets::{El, caption, card, cards, gap, rows, status_pill, value_row};
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -27,7 +29,7 @@ use vello::peniko::Color;
 
 /// The compositor's persisted workspace tree, beside `settings.json`.
 fn state_path() -> Option<PathBuf> {
-    settings_store::config_root().map(|r| r.join("state.json"))
+    settings_store::config_path(std::path::Path::new("state.json"))
 }
 
 fn load_text() -> Option<String> {
@@ -287,7 +289,6 @@ fn cap_row(view: &CapView, c: &ui::tokens::colors::Colors) -> El {
     Box::new(
         Row::new()
             .push(status_pill(view.kind, view.tint.color(c)))
-            .push(hgap(10.0))
             .push(Box::new(
                 Text::new(&view.detail)
                     .with_size(12.0)
@@ -445,7 +446,7 @@ fn no_workspace_grants_card() -> El {
                 )
                 .with_size(12.0),
             ),
-            vgap(2.0),
+            gap(SpacingStep::S1),
             caption(
                 "Nothing here means nothing is granted: apps see only their own \
                  workspace until you say otherwise.",
@@ -498,7 +499,7 @@ fn push_workspace_grant_cards(
         for (i, app) in ws.apps.iter().enumerate() {
             body.push(app_block(app, c));
             if i != last {
-                body.push(vgap(12.0));
+                body.push(gap(SpacingStep::S3));
             }
         }
         let title = if ws.name.trim().is_empty() {

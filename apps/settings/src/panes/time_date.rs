@@ -35,7 +35,6 @@ use std::sync::Arc;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tracing::warn;
-use ui::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
@@ -388,33 +387,28 @@ impl Widget for TimeZoneMap {
         theme: &Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(if self.focused { 2.0 } else { 1.0 }),
-            transform,
-            if self.focused {
-                theme.border_focus
-            } else {
-                theme.border_standard
-            },
-            None,
-            &shape,
-        );
+        // The map is a base-surface well inside its raised card: the fill is
+        // the contrast step, and the rest edge derives from that fill
+        // (`ui::surface::card`, HIG §9.5) so it registers on the dark preset
+        // where a declared `border_standard` stroke did not. Focus replaces
+        // the hairline with the 2 px focus ring.
+        let radius = f64::from(theme.tokens.radii.md);
+        let well = theme.tokens.colors.surfaces.base;
+        ui::surface::card(scene, transform, self.rect, radius, well);
+        if self.focused {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &RoundedRect::from_rect(self.rect, radius),
+            );
+        }
 
         let plot = self.plot_rect();
-        let grid_color = vello::peniko::Color::from_rgba8(
-            theme.border_standard.r(),
-            theme.border_standard.g(),
-            theme.border_standard.b(),
-            100,
-        );
+        // Graticule lines are the same derived hairline as the well's edge,
+        // so they read as one surface's ruling rather than a second border.
+        let grid_color = ui::surface::edge_on(well);
         for longitude in [-120.0, -60.0, 0.0, 60.0, 120.0] {
             let x = plot.x0 + ((longitude + 180.0) / 360.0) * plot.width();
             scene.stroke(
@@ -461,12 +455,7 @@ impl Widget for TimeZoneMap {
                 if is_selected {
                     theme.accent_primary
                 } else {
-                    vello::peniko::Color::from_rgba8(
-                        theme.text_dim.r(),
-                        theme.text_dim.g(),
-                        theme.text_dim.b(),
-                        170,
-                    )
+                    theme.text_dim.multiply_alpha(170.0 / 255.0)
                 },
                 None,
                 &Circle::new(centre, radius),
