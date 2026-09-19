@@ -2202,10 +2202,16 @@ fn fixture_desktop_flow(available: bool) -> DesktopFlow {
 
 impl Widget for SetupApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[super::actions::SETUP_OPERATION_TYPE]
+        &[
+            super::actions::SETUP_OPERATION_TYPE,
+            super::import_actions::IMPORT_OPERATION_TYPE,
+        ]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if let Some(import_app) = &self.import_app {
+            return import_app.resources(doc);
+        }
         vec![super::actions::resource(&self.setup_projection())]
     }
 
@@ -2217,6 +2223,9 @@ impl Widget for SetupApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if let Some(import_app) = &mut self.import_app {
+            return import_app.invoke_resource_operation_v2(kind, type_id, payload, doc, path);
+        }
         let Some(operation) = super::actions::decode(type_id, payload)? else {
             for child in self.children_mut() {
                 if let Some(output) =
@@ -3840,6 +3849,160 @@ mod tests {
         assert_eq!(app.controller().default_mode(), FolderMode::Copy);
     }
 
+    #[test]
+    fn embedded_import_routes_the_live_child_without_publishing_stale_setup_resources() {
+        let mut app = supported_fixture();
+        app.import_launcher = || ImportApp::for_shot("import-first-login-later");
+        let doc = AutoCommit::new();
+        let setup = Widget::resources(&app, &doc).pop().unwrap();
+        let open = setup
+            .actions
+            .iter()
+            .find(|action| action.id == "open-imports")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        Widget::invoke_resource_operation_v2(
+            &mut app,
+            tilo_actions::OperationKind::View,
+            &open.type_id,
+            &open.payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap()
+        .unwrap();
+        let mut state = AutoCommit::new();
+        Widget::sync(&mut app, &mut state, &automerge::ROOT);
+
+        let resources = Widget::resources(&app, &state);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].kind, "imager.import");
+        assert!(
+            resources
+                .iter()
+                .all(|resource| resource.kind != "imager.setup")
+        );
+        assert!(
+            Widget::invoke_resource_operation_v2(
+                &mut app,
+                tilo_actions::OperationKind::View,
+                &open.type_id,
+                &open.payload,
+                &state,
+                &automerge::ROOT,
+            )
+            .unwrap()
+            .is_none(),
+            "a retained setup action must not mutate the hidden parent flow"
+        );
+        let folder = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "imager.import.folder")
+            .unwrap();
+        let copy = folder
+            .actions
+            .iter()
+            .find(|action| action.id == "one-time-copy")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        Widget::invoke_resource_operation_v2(
+            &mut app,
+            tilo_actions::OperationKind::View,
+            &copy.type_id,
+            &copy.payload,
+            &state,
+            &automerge::ROOT,
+        )
+        .unwrap()
+        .unwrap();
+
+        let updated = Widget::resources(&app, &state);
+        let folder = updated[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "imager.import.folder")
+            .unwrap();
+        assert!(
+            folder
+                .presentation
+                .as_ref()
+                .and_then(|presentation| presentation.detail.as_deref())
+                .is_some_and(|detail| detail.contains("copy"))
+        );
+    }
+
+    #[test]
+    fn embedded_import_publicly_observes_completed_issue_pages_before_layout() {
+        let mut app = supported_fixture();
+        app.import_launcher = || ImportApp::for_shot("import-issue-pages");
+        let mut state = AutoCommit::new();
+        let setup = Widget::resources(&app, &state).pop().unwrap();
+        let open = setup
+            .actions
+            .iter()
+            .find(|action| action.id == "open-imports")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &open).unwrap();
+        Widget::sync(&mut app, &mut state, &automerge::ROOT);
+
+        let resource = Widget::resources(&app, &state).pop().unwrap();
+        let operation = resource
+            .children
+            .iter()
+            .find(|resource| resource.kind == "imager.import.operation")
+            .unwrap();
+        let next = operation
+            .actions
+            .iter()
+            .find(|action| action.id == "next-issues")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &next).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let observed = loop {
+            Widget::update(&mut app, &mut state, &automerge::ROOT);
+            let resource = Widget::resources(&app, &state).pop().unwrap();
+            let read = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "read-status")
+                .unwrap()
+                .build_json(&serde_json::Map::new())
+                .unwrap();
+            let observed = invoke_encoded_setup(&mut app, &read).unwrap();
+            if observed["operations"][0]["issues"]
+                .as_array()
+                .is_some_and(|issues| issues.len() == 8)
+            {
+                break observed;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "embedded completed issue page was not publicly observable"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(observed["operations"][0]["next_issues_available"], false);
+
+        let resource = Widget::resources(&app, &state).pop().unwrap();
+        let read = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "read-status")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        let repeated = invoke_encoded_setup(&mut app, &read).unwrap();
+        assert_eq!(repeated, observed);
+    }
+
     fn setup_resource(app: &SetupApp, doc: &AutoCommit) -> tilo_actions::Resource {
         Widget::resources(app, doc)
             .into_iter()
@@ -3958,6 +4121,76 @@ mod tests {
         )?
         .and_then(|output| output.value)
         .ok_or_else(|| "setup operation returned no state projection".to_string())
+    }
+
+    fn retained_setup_help_before_import(
+        app: &SetupApp,
+        doc: &AutoCommit,
+    ) -> tilo_actions::EncodedAction {
+        let resource = Widget::resources(app, doc).pop().unwrap();
+        assert_eq!(
+            resource.id.as_str(),
+            super::super::actions::SETUP_RESOURCE_ID
+        );
+        assert_eq!(
+            resource.presentation.as_ref().unwrap().badge.as_deref(),
+            Some("Folders")
+        );
+        let selection = child_resource(&resource, "imager.setup.selection");
+        let detail = selection
+            .presentation
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap();
+        assert!(detail.contains("help open"), "{detail}");
+        assert!(detail.contains("imports closed"), "{detail}");
+        let toggle_help = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "toggle-help")
+            .unwrap();
+        assert!(toggle_help.contract.availability.is_available());
+        toggle_help.build_json(&serde_json::Map::new()).unwrap()
+    }
+
+    fn assert_live_import_after_activation(
+        app: &mut SetupApp,
+        doc: &AutoCommit,
+        retained_setup: &tilo_actions::EncodedAction,
+    ) {
+        let resource = Widget::resources(app, doc).pop().unwrap();
+        assert_eq!(
+            resource.id.as_str(),
+            super::super::import_actions::IMPORT_RESOURCE_ID
+        );
+        assert_eq!(resource.kind, "imager.import");
+        let read = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "read-status")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        assert_eq!(
+            invoke_encoded_setup(app, &read).unwrap()["operations"][0]["state"],
+            "complete"
+        );
+        assert!(
+            Widget::invoke_resource_operation_v2(
+                app,
+                tilo_actions::OperationKind::View,
+                &retained_setup.type_id,
+                &retained_setup.payload,
+                doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+            .is_none(),
+            "the retained setup action must not reach the hidden parent flow"
+        );
+        assert_eq!(Widget::resources(app, doc)[0].kind, "imager.import");
     }
 
     #[test]
@@ -4181,41 +4414,11 @@ mod tests {
         let folders = invoke_setup(&mut app, "toggle-help", serde_json::Map::new()).unwrap();
         assert_eq!(folders["selection"]["help_open"], true);
         assert_eq!(folders["page"], "folders");
+        let retained_help = retained_setup_help_before_import(&app, &doc);
         let opened = invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
         assert_eq!(opened["selection"]["imports_open"], true);
         assert_eq!(app.children()[0].name(), "ImportApp");
-        let updated = Widget::resources(&app, &doc).pop().unwrap();
-        assert_eq!(
-            updated.id.as_str(),
-            super::super::actions::SETUP_RESOURCE_ID
-        );
-        assert_eq!(
-            updated.presentation.as_ref().unwrap().badge.as_deref(),
-            Some("Folders")
-        );
-        assert!(
-            updated
-                .actions
-                .iter()
-                .find(|action| action.id == "toggle-help")
-                .unwrap()
-                .contract
-                .availability
-                .is_available()
-        );
-        let selection = child_resource(&updated, "imager.setup.selection");
-        let selection_detail = selection
-            .presentation
-            .as_ref()
-            .unwrap()
-            .detail
-            .as_deref()
-            .unwrap();
-        assert!(selection_detail.contains("help open"), "{selection_detail}");
-        assert!(
-            selection_detail.contains("imports open"),
-            "{selection_detail}"
-        );
+        assert_live_import_after_activation(&mut app, &doc, &retained_help);
     }
 
     #[test]
