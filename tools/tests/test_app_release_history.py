@@ -1,8 +1,10 @@
 """Targeted app-release history fetches against real shallow repositories."""
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -58,7 +60,7 @@ class AppReleaseHistory(unittest.TestCase):
         )
         return clone
 
-    def test_fetch_base_adds_only_the_exact_comparison_commit(self):
+    def test_exact_fetch_adds_only_the_requested_commit(self):
         base = self.commit("base")
         self.commit("head")
         self.publish()
@@ -72,6 +74,84 @@ class AppReleaseHistory(unittest.TestCase):
         refs = self.git(clone, "for-each-ref", "--format=%(refname)").splitlines()
         self.assertNotIn("refs/tags", "\n".join(refs))
         self.assertIn(history.BASE_REF, refs)
+
+    def test_real_planner_resolves_changes_from_a_depth_one_checkout(self):
+        (self.source / "apps/notes/src").mkdir(parents=True)
+        (self.source / "dist/apps").mkdir(parents=True)
+        (self.source / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["apps/notes"]\nresolver = "2"\n',
+            encoding="utf-8",
+        )
+        (self.source / "Cargo.lock").write_text(
+            'version = 4\n\n[[package]]\nname = "tilo-app-notes"\nversion = "1.0.0"\n',
+            encoding="utf-8",
+        )
+        (self.source / "apps/notes/Cargo.toml").write_text(
+            '[package]\nname = "tilo-app-notes"\nversion = "1.0.0"\n'
+            'edition = "2024"\n\n[[bin]]\nname = "tilo-notes"\n'
+            'path = "src/main.rs"\n',
+            encoding="utf-8",
+        )
+        (self.source / "apps/notes/tilo-app.toml").write_text(
+            '[package]\nid = "org.tilo.notes"\nversion = "1.0.0"\n'
+            'runtime = "1"\n\n[entrypoint]\nbin = "tilo-notes"\n',
+            encoding="utf-8",
+        )
+        (self.source / "dist/apps/app-collections.toml").write_text(
+            '[collections.default]\ninclude = ["notes"]\n', encoding="utf-8"
+        )
+        (self.source / "apps/notes/src/main.rs").write_text(
+            'fn main() {}\n', encoding="utf-8"
+        )
+        self.git(self.source, "add", ".")
+        self.git(self.source, "commit", "-qm", "base")
+        base = self.git(self.source, "rev-parse", "HEAD")
+        (self.source / "apps/notes/src/main.rs").write_text(
+            'fn main() { println!("changed"); }\n', encoding="utf-8"
+        )
+        self.git(self.source, "add", "apps/notes/src/main.rs")
+        self.git(self.source, "commit", "-qm", "head")
+        self.publish()
+        clone = self.shallow_clone("main")
+
+        head = self.git(clone, "rev-parse", "HEAD")
+        self.assertEqual(history.prepare_comparison(clone, base, head, (2,)), base)
+        result = json.loads(
+            self.command(
+                sys.executable,
+                str(ROOT / "tools/apps/app_release.py"),
+                "--root",
+                str(clone),
+                "--config",
+                str(clone / "dist/apps/app-collections.toml"),
+                "--base",
+                base,
+            )
+        )
+
+        self.assertEqual(result["apps"], ["notes"])
+        self.assertEqual(result["reason"], "release inputs changed: binary")
+        self.assertEqual(
+            self.git(clone, "rev-parse", "HEAD"),
+            self.git(clone, "rev-parse", history.HEAD_REF),
+        )
+
+    def test_comparison_history_is_bounded_and_fails_closed(self):
+        ancestor = self.commit("ancestor")
+        self.git(self.source, "checkout", "-qb", "candidate")
+        for number in range(5):
+            self.commit(f"candidate-{number}")
+        self.git(self.source, "checkout", "-q", "main")
+        for number in range(5):
+            self.commit(f"main-{number}")
+        base = self.git(self.source, "rev-parse", "HEAD")
+        self.publish()
+        clone = self.shallow_clone("candidate")
+
+        with self.assertRaisesRegex(RuntimeError, "after depth 3"):
+            history.prepare_comparison(
+                clone, base, self.git(clone, "rev-parse", "HEAD"), (2, 3)
+            )
 
     def test_tag_ancestry_deepens_only_the_observed_main_tip(self):
         candidate = ""
@@ -115,6 +195,10 @@ class AppReleaseHistory(unittest.TestCase):
         other = "0" * len(head)
         with self.assertRaisesRegex(ValueError, "does not match release source"):
             history.require_main_ancestor(clone, other)
+        with self.assertRaisesRegex(ValueError, "immutable full commit ID"):
+            history.prepare_comparison(clone, "main", head)
+        with self.assertRaisesRegex(ValueError, "does not match release source"):
+            history.prepare_comparison(clone, head, other)
 
     def test_incomplete_main_never_turns_into_a_negative_ancestry_decision(self):
         candidate = "a" * 40
