@@ -91,13 +91,61 @@ class QueueReliefTests(unittest.TestCase):
                                  r"if: .*github.event_name != 'pull_request'")
 
     def test_specialized_contract_checks_keep_pr_and_periodic_coverage(self):
-        for name in ("legacy-app-e2e", "fs-fuse"):
+        for name in ("legacy-app-e2e",):
             with self.subTest(workflow=name):
                 events = section(workflow(name), "on")
                 self.assertNotRegex(events, r"(?m)^  push:")
                 for event in ("pull_request", "schedule", "workflow_dispatch"):
                     self.assertRegex(events, rf"(?m)^  {event}:")
                 self.assertTrue(section(workflow(name), "jobs"))
+
+        filesystem = section(workflow("fs-fuse"), "on")
+        self.assertRegex(filesystem, r"(?m)^  pull_request:")
+        self.assertNotRegex(filesystem, r"(?m)^  (?:schedule|workflow_dispatch):")
+        executor = section(workflow("fs-fuse-executor"), "on")
+        self.assertNotRegex(executor, r"(?m)^  pull_request:")
+        for event in ("schedule", "workflow_dispatch"):
+            self.assertRegex(executor, rf"(?m)^  {event}:")
+
+    def test_filesystem_selection_runs_before_the_exclusive_lane(self):
+        parent = workflow("fs-fuse")
+        executor = workflow("fs-fuse-executor")
+        self.assertIn("group: fs-fuse-pr-${{ github.ref }}", section(parent, "concurrency"))
+        self.assertIn("cancel-in-progress: true", section(parent, "concurrency"))
+        self.assertIn("group: fs-fuse", section(executor, "concurrency"))
+        self.assertIn("cancel-in-progress: false", section(executor, "concurrency"))
+
+        applicability = section(parent, "applicability", 2)
+        self.assertIn("runs-on: runner-quality", applicability)
+        self.assertIn("fetch-depth: 2", applicability)
+        self.assertIn("tools/ci/prepare_pr_history.py", applicability)
+        contract = section(parent, "contract", 2)
+        self.assertIn("needs: applicability", contract)
+        self.assertIn("needs.applicability.result == 'success'", contract)
+        self.assertIn("needs.applicability.outputs.applicable == 'true'", contract)
+        self.assertIn("python3 -I tools/ci/run_fuse_contract.py", contract)
+
+    def test_filesystem_executor_keeps_exact_admission_and_both_suites(self):
+        executor = workflow("fs-fuse-executor")
+        admission = section(executor, "admission", 2)
+        self.assertIn('[[ $SOURCE_SHA =~ ^[0-9a-f]{40}$ ]]', admission)
+        self.assertIn('test "$SOURCE_SHA" = "$GITHUB_SHA"', admission)
+        for name in ("real-fuse", "files-ux"):
+            with self.subTest(job=name):
+                job = section(executor, name, 2)
+                self.assertIn("needs: admission", job)
+                self.assertIn("needs.admission.result == 'success'", job)
+                self.assertIn("ref: ${{ github.event.inputs.source_sha || github.sha }}", job)
+
+    def test_filesystem_pr_trigger_covers_orchestrator_inputs(self):
+        events = section(workflow("fs-fuse"), "on")
+        pull = section(events, "pull_request", 2)
+        for path in (".forgejo/workflows/fs-fuse.yml",
+                     ".forgejo/workflows/fs-fuse-executor.yml",
+                     "tools/ci/run_fuse_contract.py",
+                     "tools/ci/workflow_applicability.py",
+                     "tools/ci/prepare_pr_history.py"):
+            self.assertIn(f'      - "{path}"', pull)
 
     def test_builder_recipe_does_not_run_e2e_against_the_old_image(self):
         legacy_events = section(workflow("legacy-app-e2e"), "on")

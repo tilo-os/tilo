@@ -300,7 +300,7 @@ jobs:
         jobs = {
             'build-kernel.yml': ('build-and-push-kernel',),
             'tilo-relay.yaml': ('build-and-push',),
-            'fs-fuse.yml': ('real-fuse', 'files-ux'),
+            'fs-fuse.yml': ('contract',),
             'legacy-app-e2e.yml': ('caret',),
             'package-desktop.yml': ('validate',),
         }
