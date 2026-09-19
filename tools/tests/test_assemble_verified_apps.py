@@ -28,15 +28,25 @@ class AssemblyTests(unittest.TestCase):
             (baseline / 'qpkg/b-1-x86_64.qpkg').write_bytes(b'old-b')
             (baseline / 'qpkg/obsolete-1-x86_64.qpkg').write_bytes(b'old')
             plan = {'catalog': [{'name': 'a', 'version': '1'}, {'name': 'b', 'version': '1'}]}
-            reused = assembly.merge(plan, built, baseline, root / 'merged', 'x86_64')
+            reused = assembly.merge(plan, built, baseline, root / 'merged', 'x86_64', ['a'])
             self.assertEqual(reused, ['b-1-x86_64.qpkg'])
             self.assertEqual({p.name for p in (root / 'merged').iterdir()}, {'a-1-x86_64.qpkg', 'b-1-x86_64.qpkg'})
             self.assertEqual((root / 'merged/a-1-x86_64.qpkg').read_bytes(), b'new-a')
+            # Baseline b has the exact required version, but b was selected:
+            # silently reusing its old signed bytes would lose a source change.
+            with self.assertRaisesRegex(ValueError, 'selected app missing.*b'):
+                assembly.merge(plan, built, baseline, root / 'selected-missing', 'x86_64', ['a', 'b'])
+            self.assertFalse((root / 'selected-missing').exists())
+            with self.assertRaisesRegex(ValueError, 'unique subset'):
+                assembly.merge(plan, built, baseline, root / 'outside-scope', 'x86_64', ['not-in-collection'])
+            with self.assertRaisesRegex(ValueError, 'unique subset'):
+                assembly.merge(plan, built, baseline, root / 'duplicate-selection', 'x86_64', ['a', 'a'])
+
             (built / 'runtime/tilo-runtime/1/bundle.toml').write_text('root_hash="changed"')
             with self.assertRaisesRegex(ValueError, 'full rebuild'):
-                assembly.merge(plan, built, baseline, root / 'bad', 'x86_64')
+                assembly.merge(plan, built, baseline, root / 'bad', 'x86_64', ['a'])
             with self.assertRaisesRegex(ValueError, 'without verified baseline'):
-                assembly.merge(plan, built, None, root / 'missing', 'x86_64')
+                assembly.merge(plan, built, None, root / 'missing', 'x86_64', ['a'])
 
     def test_tar_rejects_traversal_links_duplicates_and_resource_expansion(self):
         with tempfile.TemporaryDirectory() as d:
@@ -124,6 +134,8 @@ class AssemblyTests(unittest.TestCase):
         self.assertNotIn('enable-openid-connect', job)
         self.assertNotIn('put_immutable', job)
         self.assertNotIn('cargo ', job)
+        self.assertIn('SELECTED_APPS: ${{ needs.plan.outputs.apps }}', job)
+        self.assertIn('--selected-apps "$SELECTED_APPS"', job)
         self.assertIn('assembly-provenance.json', job)
         self.assertIn('final-publication-receipt.json', job)
 
