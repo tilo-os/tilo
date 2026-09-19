@@ -1190,23 +1190,60 @@ impl RecordSet {
         }
     }
 
+    /// Flush active and parked records, reporting unavailable or failed writers.
+    ///
+    /// # Errors
+    /// Returns record-specific persistence failures without discarding live bytes.
+    pub fn try_flush(&mut self, live: &mut AutoCommit) -> Result<(), String> {
+        self.try_flush_documents(Some(live))
+    }
+
+    fn try_flush_documents(&mut self, mut live: Option<&mut AutoCommit>) -> Result<(), String> {
+        let canonical = self.canonical_root.is_some();
+        let mut errors = Vec::new();
+        for (id, slot) in &mut self.open {
+            let Some(saver) = slot.autosave.as_mut() else {
+                if self.persistent {
+                    errors.push(format!("{id}: record persistence unavailable"));
+                }
+                continue;
+            };
+            let doc = if self.active.as_ref() == Some(id) {
+                live.as_deref_mut()
+            } else {
+                slot.doc.as_mut()
+            };
+            let Some(doc) = doc else {
+                errors.push(format!("{id}: record document unavailable for flush"));
+                continue;
+            };
+            if canonical && saver.last_error().is_some() {
+                if let Err(error) = saver.try_restart_canonical() {
+                    errors.push(format!("{id}: {error}"));
+                    continue;
+                }
+                slot.action_state.commit_for_save(doc);
+                saver.request_checkpoint(doc);
+            } else {
+                slot.action_state.commit_for_save(doc);
+                saver.request(doc);
+            }
+            if let Err(error) = saver.try_flush() {
+                errors.push(format!("{id}: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
     /// Write out everything still pending, live document included, and wait
     /// for it to land.
     pub fn flush(&mut self, live: &mut AutoCommit) {
-        if let Some(id) = self.active.clone()
-            && let Some(slot) = self.open.get_mut(&id)
-            && let Some(saver) = slot.autosave.as_mut()
-        {
-            slot.action_state.commit_for_save(live);
-            saver.request(live);
-            saver.flush();
-        }
-        for slot in self.open.values_mut() {
-            if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
-                slot.action_state.commit_for_save(doc);
-                saver.request(doc);
-                saver.flush();
-            }
+        if let Err(error) = self.try_flush(live) {
+            tracing::error!(%error, "record persistence failed");
         }
     }
 }
@@ -1517,32 +1554,7 @@ impl RecordStore {
     /// # Errors
     /// Returns record-specific storage failures; a subsequent explicit retry sends a full checkpoint.
     pub fn try_flush(&self) -> Result<(), String> {
-        let mut set = self.0.borrow_mut();
-        let canonical = set.canonical_root.is_some();
-        let mut errors = Vec::new();
-        for (id, slot) in &mut set.open {
-            if let (Some(doc), Some(saver)) = (&mut slot.doc, &mut slot.autosave) {
-                if canonical && saver.last_error().is_some() {
-                    if let Err(e) = saver.try_restart_canonical() {
-                        errors.push(format!("{id}: {e}"));
-                        continue;
-                    }
-                    slot.action_state.commit_for_save(doc);
-                    saver.request_checkpoint(doc);
-                } else {
-                    slot.action_state.commit_for_save(doc);
-                    saver.request(doc);
-                }
-                if let Err(e) = saver.try_flush() {
-                    errors.push(format!("{id}: {e}"));
-                }
-            }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
+        self.0.borrow_mut().try_flush_documents(None)
     }
 
     /// Share an existing set.
