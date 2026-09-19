@@ -93,6 +93,7 @@ bundle, preserving `tools/` paths:
 ci/python.py
 ci/__init__.py
 app_packaging_service.py
+app_packaging_contract.py
 app_packaging_product.py
 app_packaging_coordinator.py
 ci/resolve_builder.py
@@ -103,6 +104,24 @@ apps/final_app_receipt.py
 canonical_verifier_bundle.py
 apps/canonical_app_verifier.py
 ```
+
+The thirteen-file controller projection and the workflow trust policy have
+different scopes. `app_packaging_contract.py` contains the shared identity,
+baseline-proof and Cargo input checks; workflow qualification and the platform
+controller both import it. The workflow does not import the coordinator state
+machine, product adapter, managed service or artifact acceptance callback. Those
+four controller implementations remain pinned by the platform projection, and
+their candidate-repository copies cannot authorize a workflow. An ordinary
+controller-only fix therefore does not change the workflow/artifact policy hash
+or discard a compatible packaging baseline.
+
+The contract extraction is an explicit trust-closure migration. The platform
+source generator must include the thirteenth contract module before deploying
+this controller version. Existing twelve-file immutable projections and their
+accepted baseline policies remain unchanged. A new reviewed workflow policy
+must pin the shared contract and updated launcher/guard; it cannot reinterpret
+an old-policy receipt as a new-policy baseline. Qualification of that transition
+is separate from landing this source refactor. No policy JSON is regenerated here.
 
 The platform must pin that complete source bundle, protect token/policy/state
 mounts, supply sufficient scratch disk for bounded artifact extraction, and
