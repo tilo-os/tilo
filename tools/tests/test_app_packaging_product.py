@@ -84,7 +84,8 @@ class API(product.ProductForgejo):
                          'status': 'running'}
         self.documents[rid] = {'schema': 'tilo.coordinator-plan/v1', 'run_id': rid, 'plan_attempt': 1,
                                'source_sha': data['ref'], 'builder_image': data['inputs']['builder_image'],
-                               'inputs': data['inputs'], 'plan': {'count': 0 if self.zero else 1,
+                               'inputs': {key: value for key, value in data['inputs'].items()
+                                          if key != 'verify_final_receipt'}, 'plan': {'count': 0 if self.zero else 1,
                                 'apps': [] if self.zero else ['terminal'], 'packages': [] if self.zero else ['terminal'],
                                 'catalog': [] if self.zero else [{'name': 'terminal'}], 'features': []}}
         if self.uncertain:
@@ -319,6 +320,19 @@ class ProductTests(unittest.TestCase):
         run['event_payload'] = json.dumps(payload)
         with self.assertRaises(ValueError):
             self.api.validate_run(intent, run)
+
+    def test_dispatch_pins_false_default_but_plan_provenance_stays_exact(self):
+        self.start()
+        self.assertEqual(self.api.calls[0]['inputs']['verify_final_receipt'], 'false')
+        intent = self.store.read()['active']
+        run = self.api.runs[1]
+        payload = json.loads(run['event_payload'])
+        payload['inputs'] = {key: value for key, value in payload['inputs'].items() if value != ''}
+        run.update(event_payload=json.dumps(payload), status='success')
+        self.assertIsNone(self.api.no_build_evidence(intent, run))
+        del self.api.documents[1]['inputs']['apps']
+        with self.assertRaisesRegex(ValueError, 'plan provenance'):
+            self.api.no_build_evidence(intent, run)
 
     def test_unknown_dispatch_never_reposts_and_reconciles_exact_run(self):
         self.store.observe(1, desired())
