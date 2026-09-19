@@ -136,12 +136,13 @@ jobs:
           esac
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip python3 rpm rpm2cpio kmod "$apt_qemu"
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip python3 rpm rpm2cpio kmod zstd "$apt_qemu"
           else
-            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip python3 rpm kmod "$fedora_qemu"
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip python3 rpm kmod zstd "$fedora_qemu"
           fi
           # Fail before compilation if the independent module parser is unavailable.
           modinfo --version
+          zstd --version
 
       # The build FROMs the frozen RPM repo for its toolchain (rpm-build,
       # kernel-devel, gcc, ...) and the Fedora kernel SRPM.  Log in on every
