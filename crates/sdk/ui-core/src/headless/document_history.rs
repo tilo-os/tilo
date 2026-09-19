@@ -83,7 +83,7 @@ impl FrameHarness {
         ))
     }
 
-    fn remember_history_content(&mut self) {
+    pub(super) fn remember_history_content(&mut self) {
         if !self.history_chrome_enabled
             || self.focused.is_some_and(|node| self.is_history_node(node))
         {
@@ -94,7 +94,7 @@ impl FrameHarness {
         self.document_history.remember_content_target(target, focus);
     }
 
-    fn is_history_node(&self, node: NodeId) -> bool {
+    pub(super) fn is_history_node(&self, node: NodeId) -> bool {
         let Some(layout) = self.history_layout else {
             return false;
         };
@@ -111,7 +111,7 @@ impl FrameHarness {
         false
     }
 
-    fn try_presentation<R>(
+    pub(super) fn try_presentation<R>(
         &self,
         visit: impl FnOnce(&dyn Widget, NodeId) -> R,
     ) -> Result<R, String> {
@@ -138,7 +138,7 @@ impl FrameHarness {
         clippy::expect_used,
         reason = "infallible current-frame inspection must fail explicitly after authority revocation; try_presentation_inspection exposes the fallible route"
     )]
-    fn presentation<R>(&self, visit: impl FnOnce(&dyn Widget, NodeId) -> R) -> R {
+    pub(super) fn presentation<R>(&self, visit: impl FnOnce(&dyn Widget, NodeId) -> R) -> R {
         self.try_presentation(visit)
             .expect("headless frame authority changed; relayout before observing")
     }
@@ -169,7 +169,7 @@ impl FrameHarness {
         })
     }
 
-    fn history_resources_snapshot(&self) -> Result<Vec<tilo_actions::Resource>, String> {
+    pub(super) fn history_resources_snapshot(&self) -> Result<Vec<tilo_actions::Resource>, String> {
         let Some(layout) = self.history_layout else {
             return Ok(Vec::new());
         };
@@ -277,7 +277,7 @@ impl FrameHarness {
         result
     }
 
-    fn history_tick(&mut self) -> Result<(), String> {
+    pub(super) fn history_tick(&mut self) -> Result<(), String> {
         let mut pending = Vec::new();
         while let Some(intent) = self
             .document_history
@@ -326,7 +326,7 @@ impl FrameHarness {
         result
     }
 
-    fn prepare_history_frame(&mut self) {
+    pub(super) fn prepare_history_frame(&mut self) {
         if !self.history_chrome_enabled {
             return;
         }
@@ -352,7 +352,7 @@ impl FrameHarness {
             .sync(&mut self.state.doc, &self.state.root);
     }
 
-    fn build_history_frame(&mut self) -> NodeId {
+    pub(super) fn build_history_frame(&mut self) -> NodeId {
         if !self.history_chrome_enabled {
             self.history_layout = None;
             // SAFETY: the original retained root and freshly built arena are exclusive.
@@ -399,7 +399,7 @@ impl FrameHarness {
         layout.root
     }
 
-    fn apply_history_frame(&mut self) {
+    pub(super) fn apply_history_frame(&mut self) {
         if let Some(layout) = self.history_layout {
             let origin = self
                 .document_history
@@ -413,7 +413,7 @@ impl FrameHarness {
         }
     }
 
-    fn restore_history_focus(&mut self) {
+    pub(super) fn restore_history_focus(&mut self) {
         if !self.history_chrome_enabled {
             return;
         }
@@ -465,7 +465,7 @@ impl FrameHarness {
         }
     }
 
-    fn history_event(
+    pub(super) fn history_event(
         &mut self,
         event: &WindowEvent,
         handled: &mut bool,
@@ -579,7 +579,7 @@ impl FrameHarness {
                 ))
     }
 
-    fn history_named_action(
+    pub(super) fn history_named_action(
         &mut self,
         node: NodeId,
         semantic_target: Option<&str>,
@@ -616,7 +616,7 @@ impl FrameHarness {
         Ok(())
     }
 
-    fn history_a11y_resource(
+    pub(super) fn history_a11y_resource(
         &mut self,
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
