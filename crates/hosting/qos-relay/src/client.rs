@@ -671,11 +671,13 @@ impl RelayClient {
                     }
                     ClientEvent::Action(None) => break,
                     ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(env)))) => {
-                        if v2 {
-                            if inbound_tx.try_send(env).is_err() {
-                                break;
-                            }
-                        } else if inbound_tx.send(env).await.is_err() {
+                        // State frames apply backpressure instead of closing on a
+                        // full receiver. A slow main-thread consumer (a browser peer
+                        // typing) otherwise loses the connection during a replay
+                        // burst, reconnects, receives the replay again and never
+                        // catches up; the pump simply waits until the consumer
+                        // drains. Actions below keep the explicit-loss policy.
+                        if inbound_tx.send(env).await.is_err() {
                             break;
                         }
                     }
