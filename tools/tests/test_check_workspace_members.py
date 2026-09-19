@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 
-MODULE_PATH = Path(__file__).parents[1] / "check_workspace_members.py"
+MODULE_PATH = Path(__file__).parents[1] / "policy/check_workspace_members.py"
 SPEC = importlib.util.spec_from_file_location("check_workspace_members", MODULE_PATH)
 assert SPEC and SPEC.loader
 checker = importlib.util.module_from_spec(SPEC)
