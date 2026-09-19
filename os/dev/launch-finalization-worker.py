@@ -176,6 +176,16 @@ def create_argv(name):
                    '/work/controller/os/dev/launch-finalization-worker.py', '--inside']
 
 
+def archive_tree(tree, label, archive):
+    # Git defaults to group-writable archive entries (tar.umask=0002), even
+    # when checkout modes are safe. Extracted signer code and every parent
+    # must be root-owned and not group/world writable. Pin this independently
+    # of repository/global Git configuration before docker cp extracts it.
+    run('git', '-c', 'tar.umask=0022', '-C', str(tree), 'archive', '--format=tar',
+        '--prefix=' + label + '/', '--output=' + str(archive), 'HEAD',
+        *(['os'] if label != 'source' else []))
+
+
 def inside():
     # Ordinary guest image operations only. The separately supervised disk
     # controller must never treat this block-backed CI guest as a disk worker.
@@ -280,8 +290,7 @@ def main():
             (stage / 'finalization-request.json').write_bytes(data)
             for label, tree in (('controller', args.controller), ('source', args.source), ('helpers', args.helpers)):
                 archive = stage / (label + '.tar')
-                run('git', '-C', str(tree), 'archive', '--format=tar', '--prefix=' + label + '/',
-                    '--output=' + str(archive), 'HEAD', *(['os'] if label != 'source' else []))
+                archive_tree(tree, label, archive)
                 # docker cp extracts tar at destination; no .git or credentials.
                 with archive.open('rb') as stream:
                     run('docker', 'cp', '-', container + ':/work', stdin=stream)
