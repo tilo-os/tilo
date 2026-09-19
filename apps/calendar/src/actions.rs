@@ -154,6 +154,9 @@ pub enum CalendarOperation {
     /// captures parsed records into one [`CalendarAction`] before it reports
     /// success; its retry contract is therefore at-most-once.
     ImportIcs,
+    /// Complete an explicitly queued local launch import after host admission.
+    /// No path or source contents are carried in the operation envelope.
+    FinalizeLaunchImport,
     /// Produce the exact typed invocation accepted by Mail's invitation-draft
     /// action. This prepares a reviewable draft; it never claims SMTP delivery.
     PrepareInvitationInMail {
@@ -194,9 +197,9 @@ fn calendar_operation(
         CalendarOperation::Sync => spec
             .retry_policy(RetryPolicy::Idempotent)
             .execution(tilo_actions::ExecutionMode::Background { cancellable: false }),
-        CalendarOperation::ExportIcs | CalendarOperation::ImportIcs => {
-            spec.retry_policy(RetryPolicy::AtMostOnce)
-        }
+        CalendarOperation::ExportIcs
+        | CalendarOperation::ImportIcs
+        | CalendarOperation::FinalizeLaunchImport => spec.retry_policy(RetryPolicy::AtMostOnce),
         CalendarOperation::PrepareInvitationInMail { .. } => spec
             .retry_policy(RetryPolicy::Idempotent)
             .requiring(PermissionRequirement::Invite)
@@ -1444,20 +1447,48 @@ fn apply_delete_task(doc: &mut Doc, id: &str, subtasks: &[String]) -> Result<(),
     Ok(())
 }
 
-fn apply_import_ics(doc: &mut Doc, events: &[EventData], tasks: &[TaskData]) {
-    for data in events {
-        if let Some(event) = data.to_event()
-            && CalDoc::project_exists(doc, event.project)
-        {
-            CalDoc::update_event(doc, &event);
-            if let Some(notes) = CalDoc::event_notes(doc, event.id) {
-                CalDoc::seed_notes_if_empty(doc, &notes, &["Imported from .ics"]);
+fn apply_import_ics(
+    doc: &mut Doc,
+    events: &[EventData],
+    tasks: &[TaskData],
+) -> Result<(), ActionError> {
+    // Decode and validate the whole batch before the first write. A replayed
+    // payload or a project removed since staging must not produce a partial
+    // import that nevertheless reports success.
+    let events = events
+        .iter()
+        .map(|data| {
+            let event = data
+                .to_event()
+                .ok_or_else(|| refused("imported event is invalid"))?;
+            if !CalDoc::project_exists(doc, event.project) {
+                return Err(refused("imported event project is unavailable"));
             }
+            Ok(event)
+        })
+        .collect::<Result<Vec<_>, ActionError>>()?;
+    let tasks = tasks
+        .iter()
+        .map(|data| {
+            let task = data
+                .to_task()
+                .ok_or_else(|| refused("imported task is invalid"))?;
+            if !CalDoc::project_exists(doc, task.project) {
+                return Err(refused("imported task project is unavailable"));
+            }
+            Ok(task)
+        })
+        .collect::<Result<Vec<_>, ActionError>>()?;
+    for event in events {
+        CalDoc::update_event(doc, &event);
+        if let Some(notes) = CalDoc::event_notes(doc, event.id) {
+            CalDoc::seed_notes_if_empty(doc, &notes, &["Imported from .ics"]);
         }
     }
-    for data in tasks {
-        apply_upsert_task(doc, data);
+    for task in tasks {
+        CalDoc::update_task(doc, &task);
     }
+    Ok(())
 }
 
 fn apply_note_ops(
@@ -1513,7 +1544,7 @@ impl Action for CalendarAction {
             CalendarAction::SetTaskDone { id, done } => apply_set_task_done(doc, id, *done)?,
             CalendarAction::DeleteTask { id, subtasks } => apply_delete_task(doc, id, subtasks)?,
             CalendarAction::ApplyNoteOps { owner, ops } => apply_note_ops(doc, owner, ops)?,
-            CalendarAction::ImportIcs { events, tasks } => apply_import_ics(doc, events, tasks),
+            CalendarAction::ImportIcs { events, tasks } => apply_import_ics(doc, events, tasks)?,
         }
         Ok(())
     }

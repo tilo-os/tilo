@@ -591,6 +591,194 @@ fn empty_first_run_offers_onboarding_prompt() {
 }
 
 #[test]
+fn launch_ics_uses_host_admission_and_preserves_existing_calendar_and_source() {
+    for writable in [true, false] {
+        let directory = std::env::temp_dir().join(format!("cal-launch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("Private Kalender – Zürich 日本.ics");
+        let payload = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:launch-event\r\nSUMMARY:Private launch event\r\nDTSTART:20260919T090000\r\nDTEND:20260919T100000\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:launch-task\r\nSUMMARY:Private launch task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        std::fs::write(&source, payload).unwrap();
+        let mut app = CalendarApp::new_empty_for_shots();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.apply_action(Action::NewEvent, &mut state.doc);
+        let existing = app.model.events[0].id;
+        app.sync(&mut state.doc, &state.root);
+        state.doc.commit();
+        let before = state.doc.get_heads();
+        let url = url::Url::from_file_path(&source).unwrap();
+        app.queue_launch_ics(url.as_str()).unwrap();
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(state.doc.get_heads(), before, "staging never mutates state");
+        let resource = app.pending_launch_resource().unwrap();
+        let spec = &resource.actions[0];
+        assert_eq!(
+            spec.contract.permission,
+            tilo_actions::PermissionRequirement::Write
+        );
+        assert!(spec.params().is_empty());
+        let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else {
+            panic!("zero-argument effect")
+        };
+        assert_eq!(
+            serde_json::from_slice::<crate::actions::CalendarOperation>(&encoded.payload).unwrap(),
+            crate::actions::CalendarOperation::FinalizeLaunchImport
+        );
+        assert!(!String::from_utf8_lossy(&encoded.payload).contains("Private"));
+        let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (800, 600));
+        // Revoke after the pending resource has been published: the actual
+        // execution must consult the current host permission, not staging time.
+        if !writable {
+            harness.set_permission_ctx(ui::permissions::PermissionContext::from_capabilities(
+                ui::permissions::Actor::person(Some(ui::permissions::Role::Viewer), "reader"),
+                vec![],
+            ));
+        }
+        harness.send(&WindowEvent::RedrawRequested);
+        let model = CalDoc::read_model(&harness.state_mut().doc);
+        assert!(model.event(existing).is_some());
+        assert_eq!(model.events.len(), if writable { 2 } else { 1 });
+        assert_eq!(model.tasks.len(), usize::from(writable));
+        if !writable {
+            assert_eq!(harness.state_mut().doc.get_heads(), before);
+        }
+        // A refusal is terminal; restoring Write must not silently retry.
+        harness.set_permission_ctx(ui::permissions::PermissionContext::permissive());
+        harness.send(&WindowEvent::RedrawRequested);
+        assert_eq!(
+            CalDoc::read_model(&harness.state_mut().doc).events.len(),
+            model.events.len()
+        );
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), payload);
+        let saved = harness.state_mut().doc.save();
+        let restored = AutoCommit::load(&saved).unwrap();
+        assert_eq!(
+            CalDoc::read_model(&restored).events.len(),
+            model.events.len()
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn launch_ics_rejects_invalid_sources_and_unstaged_finalize() {
+    let directory =
+        std::env::temp_dir().join(format!("cal-invalid-launch-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("invalid.ics");
+    std::fs::write(&source, [0xff]).unwrap();
+    let mut app = CalendarApp::new_empty_for_shots();
+    for target in [
+        "https://example.com/calendar.ics",
+        source.to_str().unwrap(),
+        directory.to_str().unwrap(),
+    ] {
+        assert!(app.queue_launch_ics(target).is_err());
+        assert!(app.pending_launch_ics.is_none());
+    }
+    let mut state = ui::State::new();
+    let payload =
+        serde_json::to_vec(&crate::actions::CalendarOperation::FinalizeLaunchImport).unwrap();
+    assert!(
+        app.start_resource_operation_with_document(
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            crate::actions::CALENDAR_OPERATION_TYPE,
+            &payload,
+            &mut state.doc,
+            &state.root
+        )
+        .is_err()
+    );
+    assert!(CalDoc::read_model(&state.doc).events.is_empty());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn shared_store_migrates_edits_and_deletes_without_rewriting_legacy() {
+    const CHILD: &str = "TILO_CALENDAR_MIGRATION_TEST";
+    let Some(directory) = std::env::var_os(CHILD) else {
+        let directory = std::env::temp_dir().join(format!("cal-host-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "app::tests::shared_store_migrates_edits_and_deletes_without_rewriting_legacy",
+                "--nocapture",
+            ])
+            .env(CHILD, &directory)
+            .env("XDG_DATA_HOME", directory.join("shared"))
+            .env("TILO_CALENDAR_DATA", directory.join("legacy.automerge"))
+            .env("TILO_PACKAGE_ID", "dev.tilo.calendar.migration-test");
+        // Exercise the native host path without relying on Unix variables.
+        #[cfg(windows)]
+        command
+            .env_remove("HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env("LOCALAPPDATA", directory.join("shared"));
+        let output = command.output().unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let directory = PathBuf::from(directory);
+    let legacy = directory.join("legacy.automerge");
+    let mut app = CalendarApp::new_empty_for_shots();
+    let mut state = ui::State::new();
+    app.sync(&mut state.doc, &state.root);
+    app.apply_action(Action::NewEvent, &mut state.doc);
+    let id = app.model.events[0].id;
+    crate::store::save(&legacy, &mut state.doc).unwrap();
+    let original = std::fs::read(&legacy).unwrap();
+
+    let (mut state, mut autosave) = crate::store::open_state("dev.tilo.calendar");
+    assert!(autosave.is_enabled());
+    assert!(
+        autosave
+            .document_path()
+            .starts_with(directory.join("shared"))
+    );
+    let mut app = CalendarApp::new();
+    assert!(app.data_path.is_none(), "only the host writes live state");
+    app.sync(&mut state.doc, &state.root);
+    let mut event = app.model.event(id).unwrap().clone();
+    event.title = "Edited after migration".into();
+    app.perform_action(&mut state.doc, &crate::actions::upsert_event_action(&event));
+    autosave.request(&mut state.doc);
+    autosave.try_flush().unwrap();
+    drop(autosave);
+
+    let (mut state, mut autosave) = crate::store::open_state("dev.tilo.calendar");
+    assert_eq!(
+        CalDoc::read_model(&state.doc).event(id).unwrap().title,
+        "Edited after migration"
+    );
+    app.perform_action(
+        &mut state.doc,
+        &crate::actions::delete_event_action(id.to_string(), None),
+    );
+    autosave.request(&mut state.doc);
+    autosave.try_flush().unwrap();
+    drop(autosave);
+
+    let (mut state, autosave) = crate::store::open_state("dev.tilo.calendar");
+    let mut app = CalendarApp::new();
+    app.sync(&mut state.doc, &state.root);
+    assert!(
+        app.model.event(id).is_none(),
+        "legacy history must not resurrect a deleted event"
+    );
+    assert_eq!(std::fs::read(&legacy).unwrap(), original);
+    drop(autosave);
+}
+
+#[test]
 fn user_events_persist_across_restart() {
     // The real backend: an event created in one session is present after a
     // fresh instance loads the same on-disk document.
@@ -690,6 +878,69 @@ fn uuid_vtodo_import_preserves_identity_and_is_idempotent() {
         app.import_action_from_payload(&payload).is_none(),
         "re-importing the same VTODO does not create a duplicate action"
     );
+}
+
+#[test]
+fn resource_import_refuses_invalid_batch_without_partial_writes_or_success() {
+    let payload = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:batch-event\r\nSUMMARY:Valid batch event\r\nDTSTART:20260919T090000\r\nDTEND:20260919T100000\r\nEND:VEVENT\r\nBEGIN:VTODO\r\nUID:batch-task\r\nSUMMARY:Valid batch task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+    for invalid in ["event", "task", "project"] {
+        let mut app = CalendarApp::new_empty_for_shots();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let mut batch = app
+            .import_action_from_payload(payload)
+            .expect("mixed import fixture");
+        let crate::actions::CalendarAction::ImportIcs { events, tasks } = &mut batch else {
+            panic!("import action");
+        };
+        assert_eq!(events.len(), 1);
+        assert_eq!(tasks.len(), 1);
+        match invalid {
+            "event" => events[0].end = "not-a-date".into(),
+            "task" => tasks[0].due = "not-a-date".into(),
+            "project" => tasks[0].project = Uuid::new_v4().to_string(),
+            _ => unreachable!(),
+        }
+        state.doc.commit();
+        let before = state.doc.get_heads();
+        // Serialized callers and deferred widget imports share the real decoder
+        // and executor; rejection cannot leave the preceding valid event behind.
+        let encoded = crate::actions::encode(&batch);
+        let decoded = crate::actions::registry().decode(&encoded).unwrap();
+        let mut transport = tilo_actions::LocalTransport::new();
+        assert!(
+            tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut transport)
+                .is_err()
+        );
+        assert_eq!(state.doc.get_heads(), before);
+
+        let invocation = tilo_actions::InvocationId::new();
+        app.pending_resource_import = Some(batch);
+        app.resource_import_invocation = Some(invocation);
+        app.sync(&mut state.doc, &state.root);
+        let result =
+            Widget::poll_resource_operation(&mut app, invocation, false, &state.doc, &state.root);
+        assert!(
+            matches!(result, Some(tilo_actions::InvocationUpdate::Failed { error, .. }) if error.code == "calendar.import_failed" && !error.retryable)
+        );
+        assert_eq!(state.doc.get_heads(), before);
+        assert!(CalDoc::read_model(&state.doc).events.is_empty());
+        assert!(CalDoc::read_model(&state.doc).tasks.is_empty());
+        assert!(
+            app.status
+                .as_deref()
+                .is_some_and(|status| status.starts_with("Import failed:"))
+        );
+        assert!(
+            Widget::take_committed_action(&mut app).is_none(),
+            "refused import creates no successful history boundary"
+        );
+        assert!(
+            Widget::poll_resource_operation(&mut app, invocation, false, &state.doc, &state.root)
+                .is_none(),
+            "failure is delivered once"
+        );
+    }
 }
 
 #[test]
