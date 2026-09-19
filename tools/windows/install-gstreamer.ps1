@@ -10,7 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'windows-gstreamer-crypto.ps1')
+. (Join-Path $PSScriptRoot 'gstreamer-crypto.ps1')
 if (-not $IsWindows) { throw 'Run this installer from PowerShell on Windows.' }
 $readObjPath = (Get-Command $ReadObj -ErrorAction Stop).Source
 $applicationLibraries = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -216,5 +216,5 @@ $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Desti
 # Keep the dynamic GIO cache relocatable and limited to the bundled backends.
 @('libgiognutls.dll: gio-tls-backend') |
     Set-Content -LiteralPath (Join-Path $Destination 'lib/gio/modules/giomodule.cache') -Encoding utf8NoBOM
-$null = & (Join-Path $PSScriptRoot 'test-windows-gstreamer.ps1') -RuntimeDirectory $Destination
+$null = & (Join-Path $PSScriptRoot 'test-gstreamer.ps1') -RuntimeDirectory $Destination
 [pscustomobject]@{ Directory = $Destination; Files = $sources.Count; Packages = $usedPackages.Count; Verified = $true; Manifest = (Join-Path $Destination 'gstreamer-runtime.json') }
