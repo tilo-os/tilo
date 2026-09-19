@@ -98,10 +98,11 @@ baseline does not claim a downloadable release has been published.
    artifacts with independent policies and canonical executable hashes. Bind
    run/job/current attempts, source, builder, scope and receipt bytes. Until then
    successful runs intentionally stop at `awaiting-verification`.
-   The current validator callback executes inside the SQLite transaction: provide
-   only a fast lookup of an already independently verified result there, or move
-   expensive replay outside the transaction and recheck the exact intent/run
-   before committing. Do not hold the write lock for a multi-minute replay.
+   The validator callback executes outside the SQLite write transaction. Before
+   committing its result, the coordinator rechecks the complete active intent.
+   New desired revisions can be recorded during replay; a concurrent change to
+   the active intent rejects the stale result. Two-connection tests exercise both
+   cases. The callback still requires fresh artifact provenance checks.
    A zero-app plan also needs an authenticated no-change proof tied to the prior
    verified artifact set; a skipped build alone must not advance the baseline.
 3. Provision a dedicated least-privilege product qualification identity and
