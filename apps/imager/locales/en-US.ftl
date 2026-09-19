@@ -144,3 +144,53 @@ imager-setup-detail-root =
         [true] yes
        *[false] no
     }
+
+# Folder import semantic resource and action labels.
+imager-import-resource-root = Folder imports
+imager-import-resource-operation = Folder import
+imager-import-resource-folder = Saved folder { $number }
+imager-import-badge-root = Imports
+imager-import-badge-operation = Copy
+imager-import-badge-folder = Saved folder
+imager-import-action-choose-source = Choose source folder
+imager-import-action-read-status = Read current import status
+imager-import-action-choose-destination = Choose destination folder
+imager-import-action-clear-selection = Clear folder selection
+imager-import-action-prepare-review = Prepare copy review
+imager-import-action-check-identity = Check identity setup
+imager-import-action-start-reviewed-folders = Copy reviewed folders
+imager-import-action-later-all = Decide later for all folders
+imager-import-action-start = Start copy
+imager-import-action-retry = Continue copy
+imager-import-action-cancel = Stop copy
+imager-import-action-toggle-details = Show or hide copy details
+imager-import-action-next-issues = Load next issue page
+imager-import-action-first-issues = Return to first issue page
+imager-import-action-review-destination = Review destination
+imager-import-action-choose-folder-destination = Choose another destination
+imager-import-action-folder-copy = Use one-time Copy
+imager-import-action-folder-later = Decide later
+imager-import-action-folder-connected = Use Connected folders
+imager-import-error-invalid-operation = Invalid folder import operation: { $error }
+imager-import-error-operation-kind = Folder import operations are local view operations
+imager-import-error-picker-unavailable = A folder chooser is already open or unavailable
+imager-import-error-selection-empty = No folder selection is available to clear
+imager-import-error-review-unavailable = Choose a source and destination before preparing a review
+imager-import-error-identity-check-unavailable = Identity setup is already ready or being checked
+imager-import-error-batch-unavailable = No reviewed Copy folder is ready to start
+imager-import-error-later-all-unavailable = Saved folder choices cannot change while a copy is running
+imager-import-error-start-unavailable = This copy is not ready to start
+imager-import-error-retry-unavailable = This copy cannot be continued in its current state
+imager-import-error-cancel-unavailable = This copy is not currently running
+imager-import-error-details-unavailable = This copy has no details to show
+imager-import-error-next-issues-unavailable = Another issue page is not available
+imager-import-error-first-issues-unavailable = The first issue page is not available
+imager-import-error-folder-review-unavailable = This saved folder cannot be reviewed in its current state
+imager-import-error-folder-mode-unavailable = Saved folder choices cannot change while a copy is running
+imager-import-error-connected-unavailable = Connected folders are not available in this build yet
+imager-import-error-stale-operation = That folder import is no longer available
+imager-import-error-stale-folder = That saved folder choice is no longer available
+imager-import-error-command-refused = The folder import action could not be completed because its current state changed
+imager-import-detail-root = { $phase } · { $operations } import(s) · error { $error }
+imager-import-detail-operation = { $state } · { $files } verified file(s) · { $bytes } verified bytes · { $issues } issue(s)
+imager-import-detail-folder = { $mode } · destination reviewed { $reviewed }

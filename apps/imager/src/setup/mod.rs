@@ -8,6 +8,7 @@ pub mod desktop_install;
 pub mod desktop_probe;
 pub mod desktop_worker;
 pub mod folders;
+pub mod import_actions;
 pub mod import_view;
 pub mod internal_bundle;
 mod internal_download_flow;
