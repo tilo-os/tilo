@@ -17,8 +17,8 @@ and drives them through the flow a pair of users would take:
 Every claim is read back from the *other* session's `state_dump` or
 from its own `check_action`, never from the side that made the change.
 
-    scripts/two-session-collab-demo.py
-    scripts/two-session-collab-demo.py --out /tmp/demo --keep
+    scripts/collab/two-session.py
+    scripts/collab/two-session.py --out /tmp/demo --keep
 
 Requires `cargo build -p shell --bin shell` to have run. No display.
 """
@@ -35,7 +35,7 @@ import subprocess
 import sys
 import time
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # The app the demonstration grants over, and the action it gates. Both
 # are arbitrary names — what matters is that the peer's answer about

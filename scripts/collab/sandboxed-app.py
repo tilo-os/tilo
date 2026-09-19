@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two Tilo sessions, one room, and an edit made inside a **sandbox**.
 
-`two-shell-app-collab.py` starts two compositors and checks that an edit
+`two-shell-app.py` starts two compositors and checks that an edit
 crosses between them — but it launches its apps as ordinary child
 processes pointed at the legacy JSON socket. A real app is not launched
 that way. It is launched by `tilo-launcher` into a bwrap sandbox, and it
@@ -16,8 +16,8 @@ op stream and prints what it loaded. If the text the first one wrote
 comes out of the second one's log, an edit made in a sandbox on one
 machine converged in a sandbox on another.
 
-    scripts/sandboxed-app-collab.py
-    scripts/sandboxed-app-collab.py --keep
+    scripts/collab/sandboxed-app.py
+    scripts/collab/sandboxed-app.py --keep
 
 Needs: cargo build -p shell -p collab-probe -p launcher, and bwrap.
 No display.
@@ -35,7 +35,7 @@ import subprocess
 import sys
 import time
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # A Unix socket address is capped at ~108 bytes and the compositor puts
 # its broker at <runtime>/tilo/services/collab.sock. A runtime dir under

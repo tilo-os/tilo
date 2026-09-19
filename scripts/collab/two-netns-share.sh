@@ -13,7 +13,7 @@
 #     target's opt-in `netns-e2e` roles
 #
 # Usage:
-#   ./scripts/two-netns-share.sh
+#   ./scripts/collab/two-netns-share.sh
 #
 # Set VETH_A_IP / VETH_B_IP to change the peer addresses.
 

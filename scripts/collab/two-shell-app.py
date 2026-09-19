@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Two Tilo sessions, one shared workspace, real apps collaborating.
 
-`two-session-collab-demo.py` proves the two sessions become one room and
+`two-session.py` proves the two sessions become one room and
 that the room's own state replicates. It never starts an app, so it says
 nothing about whether the things a person actually uses collaborate.
 
@@ -11,9 +11,9 @@ into each session — against that session's own broker, reached the way an
 app reaches it. An edit typed into one session's window is read back from
 the *other* session's process, and both are photographed.
 
-    scripts/two-shell-app-collab.py
-    scripts/two-shell-app-collab.py --app file-explorer --keep
-    scripts/two-shell-app-collab.py --one-shell     # both apps, one session
+    scripts/collab/two-shell-app.py
+    scripts/collab/two-shell-app.py --app file-explorer --keep
+    scripts/collab/two-shell-app.py --one-shell     # both apps, one session
 
 Requires `cargo build -p shell -p word-processor -p file-explorer`.
 No display.
@@ -30,7 +30,7 @@ import subprocess
 import sys
 import time
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Long paths are the thing that breaks this harness first: a Unix socket
 # address is capped at ~108 bytes and the compositor puts its broker at

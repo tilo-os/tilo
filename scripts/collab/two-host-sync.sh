@@ -4,10 +4,10 @@
 # Usage: open two terminals on the same LAN.
 #
 # Terminal 1 (owner):
-#   ./scripts/two-host-sync-test.sh owner
+#   ./scripts/collab/two-host-sync.sh owner
 #
 # Terminal 2 (peer):
-#   ./scripts/two-host-sync-test.sh peer
+#   ./scripts/collab/two-host-sync.sh peer
 #
 # Owner: launches `shell --mode hosted --enable-peer-sync`,
 # prints an invite token via /invite, copies it to clipboard, and

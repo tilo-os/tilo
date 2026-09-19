@@ -50,7 +50,7 @@ def _load(name: str, filename: str):
     return mod
 
 
-collab = _load("two_shell_app_collab", "two-shell-app-collab.py")
+collab = _load("two_shell_app_collab", "collab/two-shell-app.py")
 demo_home = _load("demo_home", "demo/home.py")
 Session = collab.Session
 step, claim, note = collab.step, collab.claim, collab.note

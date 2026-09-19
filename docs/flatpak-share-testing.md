@@ -27,7 +27,7 @@ maps the test matrix + the scripts that automate the annoying bits.
 | NVENC hardware encode | `scripts/test-flatpak-share.sh nvenc` | build in distrobox, run on host |
 | DMABUF direct-import path | `scripts/test-flatpak-share.sh dmabuf` | distrobox |
 | QUIC substream framing + backpressure | `scripts/test-flatpak-share.sh substream` | distrobox |
-| Two-netns real network | `sudo scripts/two-netns-share.sh` | bare-metal Fedora |
+| Two-netns real network | `sudo scripts/collab/two-netns-share.sh` | bare-metal Fedora |
 | Frame-link shim | `scripts/test-flatpak-share.sh shim` | distrobox |
 | Side-by-side demo video | `scripts/test-flatpak-share.sh demo` | distrobox |
 | **Everything the current host can run** | `scripts/test-flatpak-share.sh all` | mixed |
@@ -118,7 +118,7 @@ to the build path.
 
 ## The two-netns test
 
-`scripts/two-netns-share.sh` (existing) sets up two network namespaces
+`scripts/collab/two-netns-share.sh` sets up two network namespaces
 bridged by a veth pair, then spawns the share host in nsA and the
 viewer in nsB. Frames flow over the veth link; input events flow back
 over a second UDP port. Real network stack, no in-process shortcuts.
@@ -178,7 +178,7 @@ so you can compare configurations without a stopwatch.
 - `two_netns_share` — same pipeline over real UDP loopback (in-process,
   runs everywhere) and over an actual netns pair. The namespace roles compile
   only with `--features netns-e2e`, fail closed when their driver variables
-  are absent, and run under `sudo scripts/two-netns-share.sh`.
+  are absent, and run under `sudo scripts/collab/two-netns-share.sh`.
 - `vaapi_hardware_encode` / `nvenc_hardware_encode` — real bytes come
   out on real hardware. Self-skip on hosts without an H.264 encode
   profile; the NVENC file documents the on-host runbook.

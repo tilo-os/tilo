@@ -3,6 +3,7 @@ import unittest
 
 
 SCRIPTS = Path(__file__).resolve().parents[1]
+COLLAB = SCRIPTS / "collab"
 DEMO = SCRIPTS / "demo"
 VISUAL = SCRIPTS / "visual"
 
@@ -11,6 +12,7 @@ class ScriptEntrypointTests(unittest.TestCase):
     def test_python_entrypoints_parse(self) -> None:
         entrypoints = (
             sorted(SCRIPTS.glob("*.py"))
+            + sorted(COLLAB.glob("*.py"))
             + sorted(DEMO.glob("*.py"))
             + sorted(VISUAL.glob("*.py"))
         )

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Two-peer end-to-end harness for the collaborative filesystem (crates/system/fs/).
 #
-#   fs-collab-demo.sh up      # set up two synced mounts, leave them running
-#   fs-collab-demo.sh test    # run assertions against a fresh pair, then tear down
-#   fs-collab-demo.sh down    # tear down a running `up` session
+#   scripts/collab/fs-demo.sh up      # set up two synced mounts, leave them running
+#   scripts/collab/fs-demo.sh test    # run assertions against a fresh pair, then tear down
+#   scripts/collab/fs-demo.sh down    # tear down a running `up` session
 #
 # Peer A `serve`s a seeded workspace; peer B `mount`s it via the ticket. Both are
 # real iroh P2P nodes with separate content stores — bytes move over iroh-blobs,

@@ -27,7 +27,7 @@ while `system/fs/` owns the collaborative filesystem service.
 - `dev/collab-link`: standalone latency/throughput proxy for collaboration sockets.
 - `dev/frame-link`: encoded-frame network simulator and `flatpak-share-demo`.
 - `dev/collab-probe`: sandboxed collaboration test app, driven by
-  `scripts/sandboxed-app-collab.py`.
+  `scripts/collab/sandboxed-app.py`.
 - `dev/tilo-dev-template-smoke`: compiles generated app code to validate the SDK templates.
 - `collab/collab-fixtures`: shared collaboration test fixtures.
 - `../examples/packaging/hello` and `../examples/packaging/notes-cli`: executable

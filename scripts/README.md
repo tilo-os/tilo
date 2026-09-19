@@ -6,6 +6,7 @@ operator-facing development and validation flows.
 
 | Directory | Purpose |
 |---|---|
+| `collab/` | Multi-session, sandbox, filesystem, and network-namespace collaboration drivers |
 | `demo/` | The recorded multi-session demo, its staging helpers, and verification |
 | `headless-examples/` | Focused compositor and collaboration proof drivers |
 | `perf/` | Performance measurement, PGO, BOLT, and boot timing |

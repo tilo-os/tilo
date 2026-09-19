@@ -252,7 +252,7 @@ run_all() {
     run_demo
     echo
     echo "netns pair test needs sudo — run manually:"
-    echo "    sudo scripts/two-netns-share.sh"
+    echo "    sudo scripts/collab/two-netns-share.sh"
 }
 
 case "${1:-}" in

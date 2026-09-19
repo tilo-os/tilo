@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Three or more real sessions in one room, photographed together.
 
-`two-shell-app-collab.py` proves a peer's cursor crosses between two
+`two-shell-app.py` proves a peer's cursor crosses between two
 windows. It runs two sessions, so the watching session ever sees exactly
 one other person — and one peer is the case where the overlay cannot go
 wrong. Two names cannot collide when there is only one, a colour cannot
@@ -21,8 +21,8 @@ then parks each guest's pointer somewhere chosen to break the overlay:
 Every peer on screen came off the wire from another process. Nothing
 here seeds presence.
 
-    scripts/many-peer-cursors.py
-    scripts/many-peer-cursors.py --peers 4 --keep
+    scripts/collab/many-peer-cursors.py
+    scripts/collab/many-peer-cursors.py --peers 4 --keep
 
 Requires `cargo build -p shell -p word-processor`. No display.
 """
@@ -37,7 +37,7 @@ import subprocess
 import sys
 import time
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS = pathlib.Path(REPO) / "scripts"
 
 
@@ -51,7 +51,7 @@ def _load(name: str, filename: str):
 # The two-session harness already knows how to start a compositor, wait
 # for its control socket, drive the palette and take a snapshot. Reuse it
 # rather than growing a second copy that drifts.
-collab = _load("two_shell_app_collab", "two-shell-app-collab.py")
+collab = _load("two_shell_app_collab", "collab/two-shell-app.py")
 demo_home = _load("demo_home", "demo/home.py")
 
 Session = collab.Session
