@@ -1,0 +1,102 @@
+name: Development / retained kernel RPM acceptance
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: retained-kernel-rpm-9648-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    runs-on: runner
+    timeout-minutes: 20
+    steps:
+      - name: Checkout independently reviewed acceptance fixes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 9d89d2d886b95a86e14c258b9acb1b93ee4e2583
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
+      - name: Require native x86 and acceptance dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 9d89d2d886b95a86e14c258b9acb1b93ee4e2583
+          bash os/dev/assert-native-arch.sh x86_64
+          if command -v apt-get >/dev/null; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip python3 rpm rpm2cpio kmod zstd skopeo qemu-system-x86
+          else
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip python3 rpm kmod zstd skopeo qemu-system-x86
+          fi
+          command -v modinfo zstd skopeo rpm rpm2cpio gcc readelf cpio qemu-system-x86_64
+          python3 os/kernel/tests/test_boot_payload.py
+      - name: Authenticate read-only cache recovery
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: code.podesta.ai
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Recover exact already-built RPM without compiling
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir retained-kernel-evidence retained-kernel-cache
+          skopeo copy --preserve-digests \
+            docker://code.podesta.ai/qos/qos-kernel-buildcache@sha256:53c2002ac4d673dfe10e32880ca4396f11c77c8c70f4fa53099ad421f54154a5 \
+            dir:retained-kernel-cache
+          docker logout code.podesta.ai
+          python3 - <<'PY'
+          import hashlib, json, platform, tarfile
+          from pathlib import Path
+          cache = Path('retained-kernel-cache')
+          evidence = Path('retained-kernel-evidence')
+          manifest_sha = '53c2002ac4d673dfe10e32880ca4396f11c77c8c70f4fa53099ad421f54154a5'
+          layer_sha = '3475aacfb4709fa0f150a33dd01d8a165970d933991c3275b1be909c9acea478'
+          rpm_sha = '287e9e6faa8a55e461818c1eba1431afeef032df76566f5e09454760a5b23935'
+          name = 'tilo-kernel-core-7.2.5-1.x86_64.rpm'
+          def sha(path):
+              with path.open('rb') as stream:
+                  return hashlib.file_digest(stream, 'sha256').hexdigest()
+          assert sha(cache / 'manifest.json') == manifest_sha
+          manifest = json.loads((cache / 'manifest.json').read_text())
+          assert len(manifest['layers']) == 1
+          assert manifest['layers'][0]['digest'] == 'sha256:' + layer_sha
+          assert sha(cache / layer_sha) == layer_sha
+          config_sha = manifest['config']['digest'].split(':')[1]
+          assert sha(cache / config_sha) == config_sha
+          with tarfile.open(cache / layer_sha) as archive:
+              rpms = [member for member in archive.getmembers() if member.name.endswith('.rpm')]
+              assert len(rpms) == 1 and rpms[0].name == 'repo/' + name
+              assert rpms[0].isfile() and rpms[0].size == 119336815
+              with archive.extractfile(rpms[0]) as source, Path(name).open('xb') as output:
+                  while chunk := source.read(1024 * 1024):
+                      output.write(chunk)
+          assert sha(Path(name)) == rpm_sha
+          receipt = {'original_run': 9648, 'original_source': '7860e5f8502b614a70799b63dd49fc85e646463c',
+                     'acceptance_source': '9d89d2d886b95a86e14c258b9acb1b93ee4e2583',
+                     'cache_manifest_sha256': manifest_sha, 'layer_sha256': layer_sha,
+                     'rpm_sha256': rpm_sha, 'machine': platform.machine(), 'kernel_recompiled': False,
+                     'scope': 'packaged RPM boot and module enforcement; excludes UEFI/Secure Boot and hardware'}
+          (evidence / 'recovery.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          PY
+      - name: Boot the retained native RPM and prove module enforcement
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash os/kernel/tests/test-rpm.sh \
+            tilo-kernel-core-7.2.5-1.x86_64.rpm retained-kernel-evidence/acceptance
+      - name: Preserve exact native acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
+        with:
+          name: retained-kernel-9648-x86-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            retained-kernel-evidence/recovery.json
+            retained-kernel-evidence/acceptance/inputs.json
+            retained-kernel-evidence/acceptance/rpm.sha256
+            retained-kernel-evidence/acceptance/serial.log
+            retained-kernel-evidence/acceptance/init-dependencies.txt
+          if-no-files-found: error
+          retention-days: 14
