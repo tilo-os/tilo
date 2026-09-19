@@ -73,6 +73,8 @@ unic-langid.workspace = true
 # Needed by `FileExplorerWidget`'s `Widget` impl — matches the crate set
 # terminal pulls in for the same reason.
 automerge.workspace = true
+cap-std = "3.4.6"
+cap-fs-ext = "3.4.6"
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true

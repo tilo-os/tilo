@@ -834,9 +834,14 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     };
     state.set_client_keyboard_focus(None);
     let pressed = key.state == ElementState::Pressed;
-    if !state.remote_seats.local_key_transition(code, pressed) {
+    if !state.remote_seats.local_key_transition(code, pressed)
+        && (pressed || state.remote_seats.key_holder_count(code) != 0)
+    {
         return;
     }
+    // A press may predate participant tracking (or enter through a direct seat
+    // delivery). Its captured release still retires both client ledgers when
+    // no participant holds the key. Never release another participant's hold.
     let _ = track_forwarded_key(&mut state.client_input.forwarded_keys, code, pressed, false);
     // `Intercept` updates XKB but does not remove a previously forwarded
     // key from Smithay's focus-enter key array.  Focus is already `None`, so
@@ -2203,6 +2208,29 @@ mod tests {
             state.client_input.forwarded_keys.is_empty(),
             "the captured Backspace release must retire the prior client press"
         );
+    }
+
+    #[test]
+    fn captured_release_preserves_another_participants_held_modifier() {
+        const PEER: u64 = 77;
+        const SHIFT: u32 = 42;
+        let mut state = seat_state();
+        assert!(state.remote_seats.key_transition(PEER, SHIFT, true));
+        state.deliver_client_key(SHIFT, true, true);
+        state.client_input.forwarded_keys.insert(SHIFT);
+        // A local release with no recorded local press must not release the
+        // peer's modifier merely because capture cleared application focus.
+        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), false));
+        assert!(seat_has_evdev_key(&state, SHIFT));
+        assert!(state.client_input.forwarded_keys.contains(&SHIFT));
+        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 1);
+
+        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), true));
+        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 2);
+        consume_keyboard_while_captured(&mut state, &key_event(Key::Named(NamedKey::Shift), false));
+        assert!(seat_has_evdev_key(&state, SHIFT));
+        assert!(state.client_input.forwarded_keys.contains(&SHIFT));
+        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 1);
     }
 
     /// VT/device loss has no reliable release edge.  Resetting the seat,

@@ -1787,3 +1787,68 @@ fn v2_application_envelope_roundtrips_and_default_hook_refuses_payload() {
         assert_eq!(std::fs::read(host.view_path(11)).unwrap(), invalid);
     }
 }
+
+#[test]
+fn native_close_refusal_preserves_live_owner_and_retry_persists_later_edits() {
+    let host = ProbeHost::new();
+    let component = runner_probe_definition()
+        .instantiate(
+            host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                .unwrap(),
+            LaunchTarget::New,
+            RestoreInput::None,
+        )
+        .unwrap();
+    let checkout = component.record().clone();
+    host.records.try_flush().unwrap();
+    let document_path = app_state::DocStore::room_record_dir_at(
+        &host.root(),
+        APP,
+        ROOM,
+        &checkout.id.storage_key(),
+    )
+    .unwrap()
+    .join(app_state::DOCUMENT_FILE);
+    let retained = document_path.with_extension("retained");
+    std::fs::rename(&document_path, &retained).unwrap();
+    std::fs::create_dir(&document_path).unwrap();
+    let view_path = host.view_path(11);
+    std::fs::create_dir_all(&view_path).unwrap();
+    let mut app = ui::App::from_component(component, runner_inputs()).unwrap();
+    host.records
+        .with(&checkout.id, |doc| {
+            doc.put(ROOT, "body", "before refused close").unwrap();
+        })
+        .unwrap();
+    assert!(!app.request_close());
+    assert!(captured_handles().iter().all(|handle| handle.is_active()));
+    assert!(local_state().try_set("editing after close refusal".into()));
+    host.records
+        .with(&checkout.id, |doc| {
+            doc.put(ROOT, "body", "edited after refusal").unwrap();
+        })
+        .unwrap();
+    assert!(
+        !app.request_close(),
+        "both original stores still refuse persistence"
+    );
+    std::fs::remove_dir(&document_path).unwrap();
+    std::fs::remove_dir(&view_path).unwrap();
+    assert!(
+        app.request_close(),
+        "repair must retry the same live record and view owners"
+    );
+    assert_eq!(body(&host.records, &checkout), "edited after refusal");
+    let saved = automerge::AutoCommit::load(&std::fs::read(&document_path).unwrap()).unwrap();
+    use automerge::ReadDoc;
+    assert_eq!(
+        saved.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+        Some("edited after refusal")
+    );
+    assert!(view_path.is_file());
+    // Admission alone is non-destructive; only the event-loop exit boundary
+    // finalizes. Existing forced close remains available to test teardown.
+    assert!(captured_handles().iter().all(|handle| handle.is_active()));
+    app.close_components();
+    assert!(captured_handles().iter().all(|handle| !handle.is_active()));
+}
