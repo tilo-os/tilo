@@ -9,6 +9,7 @@ import unittest
 
 
 MODULE_PATH = Path(__file__).parents[1] / "ci/affected_packages.py"
+REPO_ROOT = MODULE_PATH.parents[2]
 SPEC = importlib.util.spec_from_file_location("ci_select", MODULE_PATH)
 assert SPEC and SPEC.loader
 ci_select = importlib.util.module_from_spec(SPEC)
@@ -112,6 +113,49 @@ class SelectorTests(unittest.TestCase):
                     if extra == "leaf/src/lib.rs":
                         self.assertIn("leaf", plan["selected"])
 
+    def install_builder_recipe(self) -> None:
+        recipe = self.root / "os/Containerfile.builder"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text("FROM scratch\n")
+
+    def test_builder_recipe_only_omits_compile_in_unchanged_image(self) -> None:
+        self.install_builder_recipe()
+        self.install_quality_helpers()
+        for extras in ([], ["docs/ci-performance.md"], ["tools/ci/affected_packages.py"]):
+            with self.subTest(extras=extras):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, ["os/Containerfile.builder", *extras], 2)
+                self.assertFalse(plan["rust_required"])
+                self.assertEqual(plan["selected"], [])
+                self.assertEqual(plan["tested"], [])
+                self.assertEqual(plan["matrix"], {"include": []})
+                self.assertIn("candidate image qualification is separate", plan["reason"])
+
+    def test_builder_recipe_mixed_inputs_and_deletion_retain_full_checks(self) -> None:
+        self.install_builder_recipe()
+        for extra in ("leaf/src/lib.rs", "Cargo.lock", ".cargo/config.toml",
+                      "rust-toolchain.toml", ".forgejo/workflows/check.yml"):
+            with self.subTest(extra=extra):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, ["os/Containerfile.builder", extra], 2)
+                self.assertTrue(plan["rust_required"])
+                self.assertTrue(plan["full"])
+                self.assertEqual(plan["selected_count"], plan["workspace_count"])
+        (self.root / "os/Containerfile.builder").unlink()
+        deleted = ci_select.make_plan(self.metadata, self.root, ["os/Containerfile.builder"], 2)
+        self.assertTrue(deleted["full"])
+        self.assertTrue(deleted["rust_required"])
+
+    def test_builder_recipe_explicit_acceptance_checks_both_architectures(self) -> None:
+        self.install_builder_recipe()
+        plan = ci_select.make_plan(
+            self.metadata, self.root, ["os/Containerfile.builder"], 2, force_full=True)
+        self.assertTrue(plan["full"])
+        self.assertEqual(plan["selected_count"], plan["workspace_count"])
+        self.assertEqual(plan["tested"], plan["selected"])
+        self.assertEqual({row["arch"] for row in plan["matrix"]["include"]},
+                         set(ci_select.NATIVE_RUNNERS))
+
     def test_build_input_forces_full_workspace(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
         self.assertTrue(plan["full"])
@@ -151,6 +195,13 @@ class SelectorTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text("# fixture for path existence\n")
 
+    def install_control_inputs(self) -> None:
+        for source, observers in ci_select.QUALITY_ONLY_CONTROL_INPUTS.items():
+            for path in (source, *observers):
+                target = self.root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("# fixture for path existence\n")
+
     def test_tested_ci_helper_changes_have_no_native_shards(self) -> None:
         self.install_quality_helpers()
         for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
@@ -170,7 +221,7 @@ class SelectorTests(unittest.TestCase):
         self.install_quality_helpers()
         for source in ci_select.QUALITY_ONLY_HELPERS:
             for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
-                          "tools/policy/run.sh", "os/tests/security-boundaries.sh",
+                          "os/tests/security-boundaries.sh",
                           "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
                 with self.subTest(source=source, extra=extra):
                     plan = ci_select.make_plan(self.metadata, self.root, [source, extra], 2)
@@ -196,6 +247,105 @@ class SelectorTests(unittest.TestCase):
                 with self.subTest(source=source, missing=missing):
                     plan = ci_select.make_plan(self.metadata, self.root, [source, test], 2)
                     self.assertTrue(plan["rust_required"])
+
+    def test_ci_control_plane_change_does_not_compile_the_workspace(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        recipe = self.root / "os/Containerfile.builder"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text("FROM scratch\n")
+        # Exact file set from PR #86, whose first two checks selected all 140
+        # Rust packages even though every change was CI orchestration or its test.
+        changes = [
+            ".forgejo/workflows/check.yml",
+            ".forgejo/workflows/legacy-app-e2e.yml",
+            ".forgejo/workflows/tilo-relay.yaml",
+            "os/Containerfile.builder",
+            "os/tests/test_builder_candidate_workflow.py",
+            "tools/ci/affected_packages.py",
+            "tools/policy/run.sh",
+            "tools/tests/test_ci_check_aggregate.py",
+            "tools/tests/test_ci_queue_relief.py",
+            "tools/tests/test_ci_receipt.sh",
+            "tools/tests/test_ci_select.py",
+            "tools/tests/test_workflow_package_paths.py",
+        ]
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertFalse(plan["full"])
+        self.assertEqual(plan["selected"], [])
+        self.assertEqual(plan["matrix"], {"include": []})
+
+    def test_mold_builder_policy_does_not_compile_unrelated_rust(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        for path in (
+            ".forgejo/workflows/build-builder-image.yml",
+            "os/tests/test_builder_candidate_workflow.py",
+            "tools/ci/native-mold-linker.sh",
+            "tools/ci/verify-native-mold.sh",
+            "tools/tests/test_ci_native_mold.py",
+        ):
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("checked by mandatory policy\n")
+        recipe = self.root / "os/Containerfile.builder"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text("FROM scratch\n")
+        changes = [
+            ".forgejo/workflows/build-builder-image.yml",
+            "os/Containerfile.builder",
+            "os/tests/test_builder_candidate_workflow.py",
+            "tools/ci/native-mold-linker.sh",
+            "tools/ci/verify-native-mold.sh",
+            "tools/tests/test_ci_native_mold.py",
+        ]
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected"], [])
+        self.assertEqual(plan["matrix"], {"include": []})
+
+    def test_ci_control_plane_mapping_stays_exact_and_conservative(self) -> None:
+        self.install_control_inputs()
+        source = ".forgejo/workflows/check.yml"
+        for extra in (".forgejo/workflows/unknown.yml", "leaf/src/lib.rs",
+                      "Cargo.lock", ".cargo/config.toml"):
+            with self.subTest(extra=extra):
+                plan = ci_select.make_plan(self.metadata, self.root, [source, extra], 2)
+                self.assertTrue(plan["rust_required"])
+        for mapped_source, observers in ci_select.QUALITY_ONLY_CONTROL_INPUTS.items():
+            for missing in (mapped_source, *observers):
+                with self.subTest(source=mapped_source, missing=missing):
+                    self.install_control_inputs()
+                    (self.root / missing).unlink()
+                    plan = ci_select.make_plan(
+                        self.metadata, self.root, [mapped_source], 2)
+                    self.assertTrue(plan["rust_required"])
+
+    def test_builder_recipe_deletion_and_mixed_inputs_stay_conservative(self) -> None:
+        recipe = self.root / "os/Containerfile.builder"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text("FROM scratch\n")
+        for extra in ("leaf/src/lib.rs", "Cargo.lock", ".cargo/config.toml",
+                      ".forgejo/workflows/unknown.yml"):
+            with self.subTest(extra=extra):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, ["os/Containerfile.builder", extra], 2)
+                self.assertTrue(plan["rust_required"])
+                self.assertTrue(plan["full"])
+        recipe.unlink()
+        deleted = ci_select.make_plan(
+            self.metadata, self.root, ["os/Containerfile.builder"], 2)
+        self.assertTrue(deleted["rust_required"])
+        self.assertTrue(deleted["full"])
+
+    def test_builder_observer_runs_in_mandatory_policy_suite(self) -> None:
+        policy = (REPO_ROOT / "tools/policy/run.sh").read_text()
+        self.assertIn(
+            "run 'Builder candidate workflow tests' python3 "
+            "os/tests/test_builder_candidate_workflow.py",
+            policy,
+        )
 
     def test_unowned_deleted_crate_path_forces_full_workspace(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["apps/removed/Cargo.toml"], 2)
