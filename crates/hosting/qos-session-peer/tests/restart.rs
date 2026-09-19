@@ -321,6 +321,7 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
         .strip_prefix("http://")
         .unwrap();
     let mut last_generation = 1u64;
+    let mut last_subscription = 0u64;
     let mut last_status = None;
     for cycle in 0..2 {
         if cycle == 1 {
@@ -340,7 +341,12 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
             let body = text.split_once("\r\n\r\n").unwrap().1;
             let status: serde_json::Value = serde_json::from_str(body).unwrap();
             let generation = status["generation"].as_u64().unwrap();
-            if status["native_peer"] == "subscribed" && generation > last_generation {
+            let subscription = status["native_subscription_generation"].as_u64().unwrap();
+            if status["native_peer"] == "subscribed"
+                && generation > last_generation
+                && subscription > last_subscription
+            {
+                last_subscription = subscription;
                 last_generation = generation;
                 last_status =
                     Some(serde_json::from_value::<qos_session_peer::Status>(status).unwrap());
@@ -357,10 +363,44 @@ async fn health_polling_does_not_cancel_initial_connection_or_reconnect() {
     // Abrupt process death must release custody without losing acknowledged state.
     guard.0.kill().unwrap();
     guard.0.wait().unwrap();
-    assert_eq!(
-        SessionOwner::open(&path).unwrap().status(),
-        last_status.unwrap()
-    );
+    let restored = SessionOwner::open(&path).unwrap();
+    assert_observed_state_survives(&restored, &last_status.unwrap());
+}
+
+// A status response acknowledges this cut, but the running owner can commit
+// additional worker signatures before SIGKILL. Require causal preservation of
+// every acknowledged route/head and author floor, allowing those later commits.
+fn assert_observed_state_survives(owner: &SessionOwner, observed: &qos_session_peer::Status) {
+    let current = owner.status();
+    assert_eq!(current.room, observed.room);
+    assert_eq!(current.authority, observed.authority);
+    assert!(current.generation >= observed.generation);
+    for row in &observed.records {
+        let bytes = owner
+            .peer()
+            .document(&row.app_id, &row.record_id)
+            .expect("every acknowledged route survives abrupt death");
+        let mut doc = ui::automerge::AutoCommit::load(&bytes).unwrap();
+        for head in &row.heads {
+            let hash = ui::automerge::ChangeHash(hex::decode(head).unwrap().try_into().unwrap());
+            assert!(
+                doc.get_change_by_hash(&hash).is_some(),
+                "acknowledged head missing after abrupt death"
+            );
+        }
+    }
+    for (app, record, author, floor) in &observed.replay_floors {
+        let restored_floor = current
+            .replay_floors
+            .iter()
+            .find(|(a, r, k, _)| a == app && r == record && k == author)
+            .expect("acknowledged author floor survives abrupt death")
+            .3;
+        assert!(
+            restored_floor >= *floor,
+            "acknowledged author floor regressed"
+        );
+    }
 }
 
 #[test]

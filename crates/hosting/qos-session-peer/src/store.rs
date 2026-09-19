@@ -10,8 +10,24 @@ pub const MAX_AGGREGATE_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct SessionStore {
     root: PathBuf,
-    _lock: File,
+    _lock: Custody,
     poisoned: bool,
+}
+
+/// Custody belongs to this owner, rather than a fork child's inherited open
+/// file description. Normal drop explicitly releases the lock before close.
+/// Abrupt process death still follows the operating system's descriptor rules.
+pub(crate) struct Custody {
+    file: File,
+    acquired_by: u32,
+}
+impl Drop for Custody {
+    fn drop(&mut self) {
+        // An inherited guard must not unlock a still-live acquiring process.
+        if self.acquired_by == std::process::id() {
+            let _ = self.file.unlock();
+        }
+    }
 }
 pub(crate) fn private_dir(path: &Path) -> Result<()> {
     fs::create_dir(path)?;
@@ -40,7 +56,7 @@ pub(crate) fn sync_dir(path: &Path) -> Result<()> {
     File::open(path)?.sync_all()?;
     Ok(())
 }
-pub(crate) fn custody(path: &Path) -> Result<File> {
+pub(crate) fn custody(path: &Path) -> Result<Custody> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
@@ -54,7 +70,10 @@ pub(crate) fn custody(path: &Path) -> Result<File> {
     }
     file.try_lock()
         .context("another process owns this native session or identity")?;
-    Ok(file)
+    Ok(Custody {
+        file,
+        acquired_by: std::process::id(),
+    })
 }
 impl SessionStore {
     pub fn create(root: &Path) -> Result<Self> {
@@ -116,6 +135,27 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inherited_custody_cleanup_cannot_unlock_the_acquiring_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("custody.lock");
+        let mut inherited = custody(&path).unwrap();
+        // A duplicate keeps the shared open-file description alive exactly as
+        // the acquiring process would after fork. Simulate only the inherited
+        // guard's process identity; no Rust code runs inside a fork child.
+        let acquiring_process_file = inherited.file.try_clone().unwrap();
+        inherited.acquired_by = std::process::id().wrapping_add(1);
+        drop(inherited);
+        assert!(
+            custody(&path).is_err(),
+            "non-acquiring cleanup unlocked a live owner's description"
+        );
+        drop(acquiring_process_file);
+        assert!(
+            custody(&path).is_ok(),
+            "final descriptor close must release custody"
+        );
+    }
     #[test]
     fn oversize_commit_cannot_replace_reopenable_state() {
         let temp = tempfile::tempdir().unwrap();

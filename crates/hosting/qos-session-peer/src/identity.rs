@@ -1,5 +1,5 @@
 //! Existing native identity paths are the only private-key owner.
-use crate::store::{check_dir, custody, private_dir, sync_dir};
+use crate::store::{Custody, check_dir, custody, private_dir, sync_dir};
 use anyhow::{Result, bail};
 use ed25519_dalek::SigningKey;
 use qos_user_identity::{
@@ -7,14 +7,14 @@ use qos_user_identity::{
     persist::{self, IdentityPaths},
     sign_device_cert, verify_device_cert_at,
 };
-use std::{fs::File, path::Path};
+use std::path::Path;
 pub(crate) struct Identity {
     pub root: SigningKey,
     pub native: SigningKey,
     pub native_cert: DeviceCert,
     pub host: SigningKey,
     pub host_cert: DeviceCert,
-    _custody: File,
+    _custody: Custody,
 }
 fn directories(root: &Path) -> Result<IdentityPaths> {
     private_dir(root)?;
