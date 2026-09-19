@@ -7,7 +7,7 @@
 //! waveform — an empty slice draws an empty (honest) chart.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
 /// Maximum number of measured points retained / plotted across the chart.
@@ -17,7 +17,10 @@ pub const SAMPLES: usize = 56;
 ///
 /// Colours are pulled from the theme: `down` uses the info/accent blue,
 /// `up` uses the success green. A faint card + gridlines anchor the plot.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "throughput painting combines scene, transform, bounds and theme with both data series and connection state"
+)]
 pub fn draw_chart(
     scene: &mut Scene,
     transform: Affine,
@@ -28,20 +31,14 @@ pub fn draw_chart(
     connected: bool,
 ) {
     let radius = f64::from(theme.tokens.radii.lg);
-    let card = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        Fill::NonZero,
+    // The plot is a raised card like the stat tiles above it, with the edge
+    // derived from its own fill (HIG §9.5).
+    ui::surface::card(
+        scene,
         transform,
-        theme.tokens.colors.surfaces.base,
-        None,
-        &card,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26),
-        None,
-        &card,
+        rect,
+        radius,
+        theme.tokens.colors.surfaces.raised,
     );
 
     // Plot inset.
@@ -52,9 +49,7 @@ pub fn draw_chart(
     }
 
     // Horizontal gridlines (3 divisions).
-    let grid_color =
-        ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 26)
-            .multiply_alpha(0.6);
+    let grid_color = ui::surface::edge_on(theme.tokens.colors.surfaces.raised).multiply_alpha(0.6);
     for k in 0..=3 {
         let y = plot.y0 + plot.height() * (f64::from(k) / 3.0);
         scene.stroke(

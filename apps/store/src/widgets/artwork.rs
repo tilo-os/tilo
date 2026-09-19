@@ -164,7 +164,7 @@ impl Widget for Artwork {
         let tile = RoundedRect::from_rect(self.rect, self.radius);
         scene.fill(Fill::NonZero, transform, background, None, &tile);
         let inset = self.rect.width().min(self.rect.height()) * 0.22;
-        let inner = self.rect.inset(inset);
+        let inner = self.rect.inset(-inset);
         match mark {
             FallbackMark::Terminal => {
                 let chevron = BezPath::from_vec(vec![
