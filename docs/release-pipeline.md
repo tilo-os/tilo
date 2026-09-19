@@ -103,7 +103,7 @@ Examples:
 
 ```sh
 # Validate the recovery set locally.
-python3 tools/app_release.py --collection recovery
+python3 tools/apps/app_release.py --collection recovery
 
 # Package two apps in one Cargo invocation.
 TILO_RELEASE_APPS='notes calculator' dist/apps/package-apps.sh
