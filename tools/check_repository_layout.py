@@ -28,6 +28,8 @@ RETIRED_SOURCE_ROOTS = {
     "crates/system/windows-vm/": "crates/windows/windows-vm/",
     "fs/": "crates/system/fs/",
     "plan/": "docs/architecture/",
+    "release/": "dist/",
+    "shell/": "crates/session/shell/",
     "ui/": "crates/sdk/ui-core/",
 }
 

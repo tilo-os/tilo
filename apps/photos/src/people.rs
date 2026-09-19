@@ -368,17 +368,73 @@ impl PeopleController {
         if model_id != &batch.model_id || revision != &batch.revision {
             return 0;
         }
-        batch
-            .clusters
-            .into_iter()
-            .filter(|cluster| {
-                self.add_cluster(
-                    cluster.id.clone(),
-                    cluster.photo_ids.clone(),
+        let mut changed = 0;
+        for cluster in batch.clusters {
+            let photos: BTreeSet<_> = cluster
+                .photo_ids
+                .into_iter()
+                .filter(|id| valid_photo_id(id))
+                .map(|photo_id| LocalClusterPhoto { photo_id })
+                .collect();
+            if !valid_cluster_id(&cluster.id) || photos.is_empty() {
+                continue;
+            }
+
+            // A face pipeline scopes its opaque cluster ids to each request.
+            // Reconcile only by a stable photo id that occurs in both bounded
+            // batches; no embedding, crop, geometry, or confidence crosses
+            // the private runtime/controller boundary.
+            let mut matches: Vec<_> = self
+                .clusters
+                .values()
+                .filter(|known| {
+                    known.origin == ProposalOrigin::VerifiedLocalPipeline
+                        && !known.rejected
+                        && !known.photos.is_disjoint(&photos)
+                })
+                .map(|known| known.id.clone())
+                .collect();
+            matches.sort();
+            matches.dedup();
+
+            if matches.is_empty() {
+                if self.add_cluster(
+                    cluster.id,
+                    photos.into_iter().map(|photo| photo.photo_id),
                     ProposalOrigin::VerifiedLocalPipeline,
-                )
-            })
-            .count()
+                ) {
+                    changed += 1;
+                }
+                continue;
+            }
+
+            let destination = matches.remove(0);
+            let Some(mut destination_cluster) = self.clusters.remove(&destination) else {
+                continue;
+            };
+            let before = destination_cluster.photos.len();
+            destination_cluster.photos.extend(photos);
+            let mut merged = false;
+            for source in matches {
+                if source == destination {
+                    continue;
+                }
+                if let Some(source_cluster) = self.clusters.remove(&source) {
+                    destination_cluster.photos.extend(source_cluster.photos);
+                    if destination_cluster.display_name.is_none() {
+                        destination_cluster.display_name = source_cluster.display_name;
+                    }
+                    merged = true;
+                }
+            }
+            let changed_cluster = destination_cluster.photos.len() != before || merged;
+            self.clusters.insert(destination, destination_cluster);
+            if changed_cluster {
+                changed += 1;
+                self.save();
+            }
+        }
+        changed
     }
 
     #[must_use]
@@ -399,6 +455,24 @@ impl PeopleController {
     #[must_use]
     pub fn all_clusters(&self) -> impl Iterator<Item = &LocalPersonCluster> {
         self.clusters.values()
+    }
+
+    /// A tiny local-only representative set for the next bounded recognition
+    /// request. Sending one already-local photo beside a fresh disjoint slice
+    /// lets the signed local runtime connect batch-local cluster ids; only the
+    /// resulting photo-id grouping returns here. These anchors are never put
+    /// in a Photos action or resource.
+    #[must_use]
+    pub fn reconciliation_anchor_photo_ids(&self, limit: usize) -> Vec<String> {
+        self.clusters
+            .values()
+            .filter(|cluster| {
+                cluster.origin == ProposalOrigin::VerifiedLocalPipeline && !cluster.rejected
+            })
+            .filter_map(|cluster| cluster.photos.iter().next())
+            .map(|photo| photo.photo_id.clone())
+            .take(limit)
+            .collect()
     }
 
     /// Name/confirm a local proposal. This does not share it: call
@@ -482,6 +556,53 @@ impl PeopleController {
             self.save();
             PeopleChange::Updated
         }
+    }
+
+    /// Split explicitly chosen mistaken members into a fresh private review
+    /// suggestion. The new id is supplied by the local runtime/UI so this
+    /// operation has no global identity and cannot accidentally become a
+    /// shared person. At least one photo remains in each side of the split.
+    pub fn split_cluster(
+        &mut self,
+        id: &str,
+        new_id: impl Into<String>,
+        photo_ids: impl IntoIterator<Item = String>,
+    ) -> PeopleChange {
+        let new_id = new_id.into();
+        if !valid_cluster_id(&new_id) || self.clusters.contains_key(&new_id) {
+            return PeopleChange::Unchanged;
+        }
+        let chosen: BTreeSet<_> = photo_ids
+            .into_iter()
+            .map(|photo_id| LocalClusterPhoto { photo_id })
+            .collect();
+        let Some(cluster) = self.clusters.get(id) else {
+            return PeopleChange::Unchanged;
+        };
+        if chosen.is_empty() || !chosen.is_subset(&cluster.photos) || chosen == cluster.photos {
+            return PeopleChange::Unchanged;
+        }
+        let origin = cluster.origin;
+        let cluster = self
+            .clusters
+            .get_mut(id)
+            .expect("cluster was checked above");
+        for photo in &chosen {
+            cluster.photos.remove(photo);
+        }
+        self.clusters.insert(
+            new_id.clone(),
+            LocalPersonCluster {
+                id: new_id,
+                display_name: None,
+                photos: chosen,
+                origin,
+                hidden: false,
+                rejected: false,
+            },
+        );
+        self.save();
+        PeopleChange::Updated
     }
 
     /// Merge two local clusters. Names remain local until the caller has
@@ -691,6 +812,71 @@ mod tests {
         let cluster = restored.cluster("local-cluster").unwrap();
         assert_eq!(cluster.display_name.as_deref(), Some("Sam"));
         assert_eq!(cluster.visible_photo_ids(), [A]);
+    }
+
+    #[test]
+    fn overlapping_batches_converge_into_one_private_suggestion_without_biometrics() {
+        let mut people = PeopleController::new();
+        people.set_recognition_enabled(true);
+        assert!(people.set_verified_local_face_model("face-local", "r42"));
+        let batch = |id: &str, photos: Vec<String>| VerifiedFaceClusterBatch {
+            model_id: "face-local".to_owned(),
+            revision: "r42".to_owned(),
+            clusters: vec![VerifiedFaceCluster {
+                id: id.to_owned(),
+                photo_ids: photos,
+            }],
+        };
+        let c = "photos.photo:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        // These are disjoint fresh slices, so their opaque model-local ids do
+        // not reconcile by themselves.
+        assert_eq!(
+            people.ingest_verified_face_clusters(batch("first", vec![A.to_owned()])),
+            1
+        );
+        assert_eq!(
+            people.ingest_verified_face_clusters(batch("later", vec![c.to_owned()])),
+            1
+        );
+        assert_eq!(people.all_clusters().count(), 2);
+        // The next fresh slice carries `A` only as a local representative
+        // anchor. Its returned grouping bridges the two private proposals.
+        assert_eq!(
+            people.ingest_verified_face_clusters(batch(
+                "anchored-bridge",
+                vec![A.to_owned(), c.to_owned()]
+            )),
+            1
+        );
+        assert_eq!(people.all_clusters().count(), 1);
+        let cluster = people.cluster("first").unwrap();
+        assert_eq!(cluster.visible_photo_ids().len(), 2);
+        assert_eq!(cluster.origin, ProposalOrigin::VerifiedLocalPipeline);
+        // The persisted review record has stable ids only, never model output.
+        assert!(
+            cluster
+                .photos
+                .iter()
+                .all(|photo| photo.photo_id.starts_with("photos.photo:"))
+        );
+    }
+
+    #[test]
+    fn splitting_and_removing_mistaken_local_members_is_private_and_reversible() {
+        let mut people = PeopleController::new();
+        assert!(people.add_cluster(
+            "mixed",
+            [A.to_owned(), B.to_owned()],
+            ProposalOrigin::ImportedOrManual
+        ));
+        assert_eq!(
+            people.split_cluster("mixed", "separate", [B.to_owned()]),
+            PeopleChange::Updated
+        );
+        assert_eq!(people.cluster("mixed").unwrap().visible_photo_ids(), [A]);
+        assert_eq!(people.cluster("separate").unwrap().visible_photo_ids(), [B]);
+        assert_eq!(people.remove_photo("separate", B), PeopleChange::Deleted);
+        assert_eq!(people.restore_suggestion("mixed"), PeopleChange::Unchanged);
     }
 
     #[test]
