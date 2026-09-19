@@ -26,40 +26,7 @@ interpreter=$(readelf -l "$out/rootfs/init" | sed -n 's/.*Requesting program int
 test -n "$interpreter"
 mkdir -p "$out/rootfs$(dirname "$interpreter")"
 cp -L "$interpreter" "$out/rootfs$interpreter"
-python3 - "$stage" "$release" "$out" <<'PY'
-import hashlib, json, struct, sys, tarfile
-from pathlib import Path
-stage, release, output = sys.argv[1:]
-out = Path(output)
-with tarfile.open(stage) as archive:
-    prefix = f"./lib/modules/{release}/"
-    # Read only named regular files; never extract archive paths or symlinks.
-    for source, target in (("vmlinuz", "Image"),
-                           ("kernel/drivers/net/dummy.ko", "rootfs/signed.ko")):
-        member = archive.getmember(prefix + source)
-        if not member.isfile():
-            raise ValueError(f"not a regular file: {member.name}")
-        (out / target).write_bytes(archive.extractfile(member).read())
-data = (out / "rootfs/signed.ko").read_bytes()
-trailer = b"~Module signature appended~\n"
-if not data.endswith(trailer):
-    raise ValueError("dummy.ko has no signature trailer")
-header = len(data) - len(trailer) - 12
-length = struct.unpack_from(">I", data, header + 8)[0]
-if not 0 < length < header - 64:
-    raise ValueError("invalid module signature length")
-unsigned = data[:header - length]
-if unsigned[:4] != b"\x7fELF":
-    raise ValueError("dummy.ko is not ELF")
-(out / "rootfs/unsigned.ko").write_bytes(unsigned)
-tampered = bytearray(data)
-tampered[len(unsigned) - 1] ^= 1
-(out / "rootfs/tampered.ko").write_bytes(tampered)
-evidence = {"release": release, "stageSha256": hashlib.file_digest(open(stage, "rb"), "sha256").hexdigest(),
-            "kernelSha256": hashlib.sha256((out / "Image").read_bytes()).hexdigest(),
-            "signedModuleSha256": hashlib.sha256(data).hexdigest()}
-(out / "inputs.json").write_text(json.dumps(evidence, indent=2) + "\n")
-PY
+python3 "$script_dir/prepare-boot-smoke.py" "$stage" "$release" "$out"
 (cd "$out/rootfs"; find . -print0 | cpio --null -o --format=newc --quiet | gzip -1 > "$out/initramfs.cpio.gz")
 timeout 180 "$qemu" -machine "$machine" -cpu max -accel tcg -smp 2 -m 1024 \
     -nographic -no-reboot -nic none -kernel "$out/Image" -initrd "$out/initramfs.cpio.gz" \
