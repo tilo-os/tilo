@@ -685,6 +685,7 @@ impl Mount {
         Ok(())
     }
     fn publish(&self, id: u64) {
+        let records_start = self.metric_start();
         if let Some(peer)=self.peer.filter(|_| !self.peer_suspended) {
             for record in self.owned_records(){
                 let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
@@ -692,7 +693,11 @@ impl Mount {
                 if let Err(error)=published{crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
             }
         }
+        self.metric_end("publish_records", records_start);
+        let output_start = self.metric_start();
         let f = self.frame.frame_output();
+        self.metric_end("publish_frame_output", output_start);
+        let status_start = self.metric_start();
         let heads=self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>())).unwrap_or_default();
         let document=self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|automerge::AutoSerde::from(doc).serialize(serde_json::value::Serializer).ok())).flatten();
         let setup_errors=self.desktop.as_ref().map(|desktop|desktop.errors.borrow().clone()).unwrap_or_default();
@@ -708,6 +713,7 @@ impl Mount {
             &self.status,
             serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.viewport.applied().dpr,"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"semantics":f.semantics,"ime":ime}),
         );
+        self.metric_end("publish_status", status_start);
     }
 }
 use automerge::transaction::Transactable;

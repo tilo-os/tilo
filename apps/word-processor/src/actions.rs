@@ -2214,7 +2214,9 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
     // though enumeration itself is read-only. Clone the lightweight document
     // handle so the resource-provider contract remains immutable.
     let mut history_doc = doc.clone();
-    let changes = history_doc.get_changes(&[]);
+    // Revision resources need labels and hashes, not reconstructed operation
+    // payloads for every change in the document's history.
+    let changes = history_doc.get_changes_meta(&[]);
     if !changes.is_empty() {
         let mut history = Resource::new(
             "word-processor.revisions",
@@ -2223,7 +2225,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         );
         let start = changes.len().saturating_sub(MAX_RESOURCE_REVISIONS);
         for (index, change) in changes.iter().enumerate().skip(start) {
-            let label = change.message().map_or_else(
+            let label = change.message.as_deref().map_or_else(
                 || format!("Revision {}", index + 1),
                 |message| short(message, "Revision"),
             );
@@ -2236,7 +2238,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             ) {
                 history = history.with_child(
                     Resource::new(
-                        format!("word-processor.revision:{}", change.hash()),
+                        format!("word-processor.revision:{}", change.hash),
                         "word_processor.revision",
                         label,
                     )
@@ -3308,7 +3310,20 @@ mod tests {
 
     #[test]
     fn resource_results_and_revisions_are_bounded_and_precisely_addressable() {
-        let (state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
+        let (mut state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
+        for index in 0..MAX_RESOURCE_REVISIONS + 8 {
+            state.doc.put(automerge::ROOT, "revision-fixture", index as u64).unwrap();
+            state.doc.commit_with(automerge::transaction::CommitOptions::default().with_message(format!("Edit {index}")));
+        }
+        let mut remote = state.doc.fork();
+        remote.put(automerge::ROOT, "remote-fixture", true).unwrap();
+        remote.commit();
+        state.doc.put(automerge::ROOT, "local-fixture", true).unwrap();
+        state.doc.commit();
+        state.doc.merge(&mut remote).unwrap();
+        state.doc.put(automerge::ROOT, "unfinished-fixture", true).unwrap();
+        let pending = (state.doc.base_heads(), state.doc.pending_ops());
+        let expected = state.doc.clone().get_changes(&[]);
         let block = ids[0].clone();
         let ctx = WpResourceCtx {
             caret_block: block.clone(),
@@ -3352,7 +3367,18 @@ mod tests {
             .iter()
             .find(|resource| resource.id.as_str() == "word-processor.revisions")
             .expect("history resource group");
-        assert!(revisions.children.len() <= MAX_RESOURCE_REVISIONS);
+        assert_eq!(revisions.children.len(), MAX_RESOURCE_REVISIONS);
+        let start = expected.len() - MAX_RESOURCE_REVISIONS;
+        for (index, (revision, change)) in revisions.children.iter().zip(&expected[start..]).enumerate() {
+            let index = start + index;
+            assert_eq!(revision.id.as_str(), format!("word-processor.revision:{}", change.hash()));
+            let label = change.message().map_or_else(|| format!("Revision {}", index + 1), |message| short(message, "Revision"));
+            assert_eq!(revision.label, label);
+            let show = revision.actions.iter().find(|action| action.id == "show").unwrap();
+            assert_eq!(show.build_args(std::iter::empty::<(String, qos_actions::ArgValue)>()).unwrap(),
+                EncodedAction::encode_operation(WORD_PROCESSOR_OPERATION_TYPE, &WordProcessorOperation::ShowRevision { index }).unwrap());
+        }
+        assert_eq!((state.doc.base_heads(), state.doc.pending_ops()), pending, "resource discovery must not commit the owner");
         assert!(
             revisions
                 .children
