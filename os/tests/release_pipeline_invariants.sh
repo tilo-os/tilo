@@ -71,7 +71,9 @@ else
   bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
 fi
 
-if grep -Fq 'needs: [build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
+if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-builder-image.yml" \
+  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-builder-image.yml" \
   && grep -Fq 'runner: runner-arm64' "$workflows/build-builder-image.yml" \
   && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
