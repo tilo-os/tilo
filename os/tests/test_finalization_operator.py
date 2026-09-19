@@ -37,11 +37,13 @@ class OperatorTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.q = request()
-        self.q['receipt_sha256'] = s.digest(b'{"fixture":true}')
+        self.receipt = s.canonical({'schema': 1, 'purpose': 'tilo-retained-development-raw-rootfs',
+                                    'hardware_profile': None})
+        self.q['receipt_sha256'] = s.digest(self.receipt)
         self.inputs = self.root / 'inputs'
         self.inputs.mkdir(mode=0o700)
         self.put(self.inputs / 'request.json', s.canonical(self.q))
-        self.put(self.inputs / 'receipt.json', b'{"fixture":true}')
+        self.put(self.inputs / 'receipt.json', self.receipt)
         for folder in ('old', 'new'):
             (self.inputs / folder).mkdir(mode=0o700)
             for name in o.stage.PUBLIC:
@@ -51,7 +53,7 @@ class OperatorTests(unittest.TestCase):
             request=self.inputs / 'request.json', receipt=self.inputs / 'receipt.json',
             original_public=self.inputs / 'old', new_public=self.inputs / 'new',
             helper_archive=self.inputs / 'helpers.tar', archive_sha256=s.digest(self.archive_raw),
-            tools_image_id='sha256:' + '2' * 64, hardware_profile='generic-aarch64',
+            tools_image_id='sha256:' + '2' * 64, hardware_profile='generic',
             initial_free_bytes=2**30, forgejo_host='code.podesta.ai', repository='qos/qos',
             dispatch_ref='feature/device-support')
 
@@ -88,12 +90,39 @@ class OperatorTests(unittest.TestCase):
     def test_initialize_is_exclusive_and_every_snapshot_is_pinned(self):
         c, q = self.init()
         self.assertEqual(q, self.q)
-        self.assertEqual(c['hardware_profile'], 'generic-aarch64')
+        self.assertEqual(c['hardware_profile'], 'generic')
         with self.assertRaises(FileExistsError):
             o.initialize(self.args)
         self.put(self.args.operation / 'new-public/efi-signing.crt', b'changed')
         with self.assertRaisesRegex(ValueError, 'snapshot changed'):
             o.load(self.args.operation)
+
+    def test_initialize_binds_operation_profile_to_retained_receipt(self):
+        self.args.hardware_profile = 'lenovo-83ed'
+        with self.assertRaisesRegex(ValueError, 'profile differs'):
+            o.initialize(self.args)
+        self.assertFalse(self.args.operation.exists())
+
+        retained = json.loads(self.receipt)
+        retained['hardware_profile'] = 'lenovo-83ed'
+        self.receipt = s.canonical(retained)
+        self.put(self.inputs / 'receipt.json', self.receipt)
+        self.q['receipt_sha256'] = s.digest(self.receipt)
+        self.put(self.inputs / 'request.json', s.canonical(self.q))
+        c, _ = self.init()
+        self.assertEqual(c['hardware_profile'], 'lenovo-83ed')
+
+    def test_initialize_rejects_missing_or_invalid_retained_profile(self):
+        for receipt in ({'schema': 1, 'purpose': 'tilo-retained-development-raw-rootfs'},
+                        {'schema': 1, 'purpose': 'tilo-retained-development-raw-rootfs',
+                         'hardware_profile': '../board'}):
+            raw = s.canonical(receipt)
+            self.put(self.inputs / 'receipt.json', raw)
+            self.q['receipt_sha256'] = s.digest(raw)
+            self.put(self.inputs / 'request.json', s.canonical(self.q))
+            with self.subTest(receipt=receipt), self.assertRaises(ValueError):
+                o.initialize(self.args)
+            self.assertFalse(self.args.operation.exists())
 
     def test_local_operator_change_does_not_silently_change_operation(self):
         self.init()
