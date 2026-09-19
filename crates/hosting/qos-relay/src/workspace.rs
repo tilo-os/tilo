@@ -228,6 +228,41 @@ impl WorkspaceRuntime {
         raw_delta_bytes: &[u8],
         seq: u64,
     ) -> Result<usize, crate::store::StoreError> {
+        // Shared retained coverage is the durable delivery obligation for
+        // every reconnect (including newly admitted devices). Commit before
+        // live publication, and never duplicate these payloads per member.
+        let raw = crate::transport::encode(envelope).map_err(|error| {
+            crate::store::StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("encode: {error}"),
+            ))
+        })?;
+        let retained = if let Envelope::Delta {
+            workspace_id,
+            author_device_public_key,
+            delta,
+            ..
+        } = envelope
+        {
+            if workspace_id != &self.store.workspace_id() || author_device_public_key != author {
+                return Err(crate::store::StoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "delta workspace or authenticated author mismatch",
+                )));
+            }
+            crate::coedit::CoeditPayload::decode(delta)
+        } else {
+            None
+        };
+        match &retained {
+            Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
+                self.store.retain_checkpoint(channel, &raw)?;
+            }
+            Some(crate::coedit::CoeditPayload::RetainedDelta { channel, .. }) => {
+                self.store.retain_delta(channel, seq, &raw)?;
+            }
+            None => {}
+        }
         // 1. Live fan-out — prune closed subscribers as we go.
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
@@ -254,25 +289,19 @@ impl WorkspaceRuntime {
         //    pubkey in `membership` that is not the author and not
         //    currently subscribed.
         for member in &self.membership.devices {
-            if member == author {
+            if retained.is_some() || member == author {
                 continue;
             }
             if self.subscribers.contains_key(member) {
                 continue;
             }
-            let raw = crate::transport::encode(envelope).map_err(|e| {
-                crate::store::StoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("encode: {e}"),
-                ))
-            })?;
             self.store.enqueue_pending(member, seq, &raw)?;
         }
         // 3. Store-and-forward for offline peer relays — reuses the
         //    same `store.enqueue_pending` path keyed by device pubkey.
         //    Suppressed when the origin is itself a peer relay (echo
         //    prevention across a chain of federated relays).
-        if from_role == PeerRole::Device {
+        if retained.is_none() && from_role == PeerRole::Device {
             for pr in &self.known_peer_relays {
                 if pr == author {
                     continue;
@@ -280,12 +309,6 @@ impl WorkspaceRuntime {
                 if self.subscribers.contains_key(pr) {
                     continue;
                 }
-                let raw = crate::transport::encode(envelope).map_err(|e| {
-                    crate::store::StoreError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("encode: {e}"),
-                    ))
-                })?;
                 self.store.enqueue_pending(pr, seq, &raw)?;
             }
         }
@@ -297,25 +320,6 @@ impl WorkspaceRuntime {
             authored_at_ns: seq,
             delta_len: raw_delta_bytes.len() as u64,
         });
-        // Keep a transport-level bootstrap independent of the membership
-        // queue. A device can be invited while every existing device is
-        // offline, so it may have no per-device pending directory yet.
-        if let Some(payload) = crate::coedit::CoeditPayload::decode(raw_delta_bytes) {
-            let encoded = crate::transport::encode(envelope).map_err(|error| {
-                crate::store::StoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("encode retained envelope: {error}"),
-                ))
-            })?;
-            match payload {
-                crate::coedit::CoeditPayload::Checkpoint { channel, .. } => {
-                    self.store.retain_checkpoint(&channel, &encoded)?;
-                }
-                crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => {
-                    self.store.retain_delta(&channel, seq, &encoded)?;
-                }
-            }
-        }
         // 4. Materialize into the pinned doc so the host holds
         //    authoritative current state (the source for anti-entropy
         //    resync), not just per-peer queues. Runs AFTER fan-out +
@@ -473,6 +477,132 @@ mod tests {
             delta: vec![1, 2, 3],
             signature: [7u8; 64],
         }
+    }
+
+    fn retained_envelope(
+        author: [u8; 32],
+        channel: [u8; 32],
+        checkpoint: bool,
+        value: u8,
+    ) -> Envelope {
+        let body = vec![value; 4096];
+        let payload = if checkpoint {
+            crate::coedit::CoeditPayload::Checkpoint { channel, body }
+        } else {
+            crate::coedit::CoeditPayload::RetainedDelta { channel, body }
+        };
+        Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: author,
+            authored_at_ns: 1,
+            delta: payload.encode().unwrap(),
+            signature: [0; 64],
+        }
+    }
+
+    fn publish(rt: &mut WorkspaceRuntime, env: &Envelope, seq: u64) {
+        let Envelope::Delta {
+            author_device_public_key,
+            delta,
+            ..
+        } = env
+        else {
+            panic!("delta")
+        };
+        rt.fanout_delta(author_device_public_key, PeerRole::Device, env, delta, seq)
+            .unwrap();
+    }
+
+    fn disk_usage(path: &std::path::Path) -> (u64, usize) {
+        let mut total = (0, 0);
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            let (bytes, files) = if path.is_dir() {
+                disk_usage(&path)
+            } else {
+                (path.metadata().unwrap().len(), 1)
+            };
+            total.0 += bytes;
+            total.1 += files;
+        }
+        total
+    }
+
+    #[test]
+    fn retained_growth_is_independent_of_obsolete_checkpoints_and_offline_peers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let membership = Membership {
+            devices: (10..42).map(|key| [key; 32]).collect(),
+        };
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 7, false, membership).unwrap();
+        let other_author = retained_envelope([2; 32], [3; 32], true, 201);
+        let other_channel = retained_envelope([1; 32], [4; 32], true, 202);
+        publish(&mut rt, &other_author, 1);
+        publish(&mut rt, &other_channel, 2);
+        let opaque = env_delta(7, [1; 32]);
+        publish(&mut rt, &opaque, 3);
+        for round in 1..=24u8 {
+            publish(
+                &mut rt,
+                &retained_envelope([1; 32], [3; 32], true, round),
+                10 + u64::from(round) * 2,
+            );
+            publish(
+                &mut rt,
+                &retained_envelope([1; 32], [3; 32], false, round + 100),
+                11 + u64::from(round) * 2,
+            );
+        }
+        let (bytes, files) = disk_usage(rt.store.root());
+        eprintln!("retained growth fixture: {bytes} logical bytes in {files} files");
+        assert!(
+            bytes < 100_000 && files < 100,
+            "retained payload amplification: {bytes} bytes in {files} files"
+        );
+        let retained = rt.store.load_retained().unwrap();
+        assert_eq!(retained.len(), 4);
+        for env in [
+            other_author,
+            other_channel,
+            retained_envelope([1; 32], [3; 32], true, 24),
+            retained_envelope([1; 32], [3; 32], false, 124),
+        ] {
+            assert!(retained.contains(&crate::transport::encode(&env).unwrap()));
+        }
+        for peer in &rt.membership.devices {
+            assert_eq!(
+                rt.store.drain_pending(peer).unwrap(),
+                vec![crate::transport::encode(&opaque).unwrap()]
+            );
+        }
+    }
+
+    #[test]
+    fn failed_retained_commit_never_publishes_to_live_subscriber() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 7, false, Membership::default()).unwrap();
+        let (tx, mut rx) = mpsc::channel(8);
+        let (disconnect, _) = mpsc::channel(1);
+        rt.add_subscriber(Subscriber {
+            device_public_key: [8; 32],
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+        std::fs::remove_dir_all(rt.store.root().join("retained")).unwrap();
+        std::fs::write(rt.store.root().join("retained"), b"blocked").unwrap();
+        let env = retained_envelope([1; 32], [3; 32], true, 1);
+        let Envelope::Delta { delta, .. } = &env else {
+            panic!("delta")
+        };
+        assert!(
+            rt.fanout_delta(&[1; 32], PeerRole::Device, &env, delta, 1)
+                .is_err()
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "uncommitted checkpoint reached live queue"
+        );
     }
 
     #[test]

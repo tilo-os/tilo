@@ -9,9 +9,12 @@
 //!     └── <workspace_id>/
 //!         ├── snapshot.automerge    # full pinned CRDT snapshot
 //!         ├── log.jsonl             # append-only delta metadata (audit)
+//!         ├── retained/v2/<author>-<channel>/
+//!         │   ├── CURRENT          # atomic generation selector
+//!         │   └── <generation>/    # shared checkpoint + immutable tail
 //!         └── pending/
 //!             └── <device_pubkey_hex>/
-//!                 └── <seq>.delta   # queued deltas for offline peers
+//!                 └── <seq>.delta   # non-retained / legacy offline deltas
 //! ```
 //!
 //! `snapshot.automerge` is only written when a workspace is
@@ -19,6 +22,8 @@
 //! + store-and-forward. Pending directories exist regardless of
 //!   pin state — the point of a host is that a peer's phone can be
 //!   offline for a week and still catch up.
+
+mod retained;
 
 use std::fs;
 use std::io::{self, Write};
@@ -378,48 +383,27 @@ impl WorkspaceStore {
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
-    /// Replace the durable checkpoint for `channel` and discard the tail that
-    /// preceded it. `bytes` is a complete encoded relay envelope.
+    /// Commit a checkpoint for the envelope's authenticated author/channel.
+    /// The generation switch atomically retires only that lineage's old tail.
+    /// Legacy storage is preserved. `bytes` must be a complete relay frame.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the atomic write fails, the old tail
-    /// directory can't be removed, or the fresh tail directory can't
-    /// be created.
+    /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
-        let name = hex::encode(channel);
-        atomic_file::write(
-            &self.root.join(RETAINED_DIR).join("checkpoints").join(&name),
-            bytes,
-        )?;
-        let tail = self.root.join(RETAINED_DIR).join("tails").join(name);
-        if tail.exists() {
-            fs::remove_dir_all(&tail)?;
-        }
-        fs::create_dir_all(tail)?;
-        Ok(())
+        self.retain_shared(channel, None, bytes)
     }
 
-    /// Append one encoded relay envelope to the retained tail for `channel`.
+    /// Durably append a tail to the envelope's authenticated author/channel.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the tail directory can't be created or the
-    /// atomic write fails.
+    /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_delta(
         &self,
         channel: &[u8; 32],
         seq: u64,
         bytes: &[u8],
     ) -> Result<(), StoreError> {
-        let tail = self
-            .root
-            .join(RETAINED_DIR)
-            .join("tails")
-            .join(hex::encode(channel));
-        fs::create_dir_all(&tail)?;
-        atomic_file::write(&tail.join(format!("{seq:016x}.delta")), bytes)?;
-        Ok(())
+        self.retain_shared(channel, Some(seq), bytes)
     }
 
     /// Load every retained checkpoint followed by its post-checkpoint tail.
@@ -457,6 +441,11 @@ impl WorkspaceStore {
                 }
             }
         }
+        // Legacy coverage remains available until an explicit migration can
+        // prove replacement. Never infer coverage from its old channel path.
+        out.extend(self.load_shared()?);
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|bytes| seen.insert(bytes.clone()));
         Ok(out)
     }
 
@@ -574,22 +563,60 @@ mod tests {
         assert_eq!(out2, vec![b"b".to_vec()]);
     }
 
+    fn retained(author: u8, channel: u8, checkpoint: bool, value: u8) -> Vec<u8> {
+        let payload = if checkpoint {
+            crate::coedit::CoeditPayload::Checkpoint {
+                channel: [channel; 32],
+                body: vec![value],
+            }
+        } else {
+            crate::coedit::CoeditPayload::RetainedDelta {
+                channel: [channel; 32],
+                body: vec![value],
+            }
+        };
+        crate::transport::encode(&crate::transport::Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [author; 32],
+            authored_at_ns: 1,
+            delta: payload.encode().unwrap(),
+            signature: [0; 64],
+        })
+        .unwrap()
+    }
+
     #[test]
-    fn retained_checkpoint_replaces_its_old_tail() {
+    fn retained_replacement_preserves_other_publishers_and_channels() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
-        let channel = [9u8; 32];
-        store.retain_checkpoint(&channel, b"checkpoint-1").unwrap();
-        store.retain_delta(&channel, 10, b"delta-1").unwrap();
-        assert_eq!(
-            store.load_retained().unwrap(),
-            vec![b"checkpoint-1".to_vec(), b"delta-1".to_vec()]
-        );
-        store.retain_checkpoint(&channel, b"checkpoint-2").unwrap();
-        assert_eq!(
-            store.load_retained().unwrap(),
-            vec![b"checkpoint-2".to_vec()]
-        );
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let a1 = retained(1, 9, true, 1);
+        let a2 = retained(1, 9, true, 2);
+        let b = retained(2, 9, true, 3);
+        let c = retained(1, 8, false, 4);
+        store.retain_checkpoint(&[9; 32], &a1).unwrap();
+        store
+            .retain_delta(&[9; 32], 10, &retained(1, 9, false, 5))
+            .unwrap();
+        store.retain_checkpoint(&[9; 32], &b).unwrap();
+        store.retain_delta(&[8; 32], 10, &c).unwrap();
+        store.retain_checkpoint(&[9; 32], &a2).unwrap();
+        let actual = store.load_retained().unwrap();
+        assert_eq!(actual.len(), 3);
+        for expected in [a2, b, c] {
+            assert!(actual.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn retry_of_current_checkpoint_does_not_erase_later_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let cp = retained(1, 9, true, 1);
+        let tail = retained(1, 9, false, 2);
+        store.retain_checkpoint(&[9; 32], &cp).unwrap();
+        store.retain_delta(&[9; 32], 10, &tail).unwrap();
+        store.retain_checkpoint(&[9; 32], &cp).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![cp, tail]);
     }
 
     #[test]

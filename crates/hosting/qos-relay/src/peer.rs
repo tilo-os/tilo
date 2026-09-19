@@ -463,7 +463,7 @@ fn load_retained_replay(
     replay: &mut Vec<Envelope>,
 ) -> Result<(u32, std::collections::HashSet<Vec<u8>>), PeerError> {
     let retained = wr.store.load_retained()?;
-    let retained_bytes = retained.iter().cloned().collect();
+    let mut retained_bytes = std::collections::HashSet::new();
     let mut retained_count = 0u32;
     for raw in retained {
         let Some(payload) = raw.get(4..) else {
@@ -475,6 +475,19 @@ fn load_retained_replay(
         };
         match crate::transport::decode(payload) {
             Ok(envelope) => {
+                // Only bytes that are actually replayed as retained data
+                // may retire an exact duplicate from a legacy device queue.
+                // Unknown/corrupt retained files are not delivery coverage.
+                if let Envelope::Delta {
+                    workspace_id: actual_workspace,
+                    delta,
+                    ..
+                } = &envelope
+                    && *actual_workspace == workspace_id
+                    && crate::coedit::CoeditPayload::decode(delta).is_some()
+                {
+                    retained_bytes.insert(raw);
+                }
                 replay.push(envelope);
                 retained_count = retained_count.saturating_add(1);
             }
@@ -1186,6 +1199,213 @@ mod private_transport_tests {
         let proof = crate::auth::build_hello_ack2(&key, &[1; 32]);
         crate::auth::verify_hello_ack2(&proof, &peer.device_public_key, &[1; 32]).unwrap();
         (peer, key)
+    }
+
+    #[tokio::test]
+    async fn retained_replay_failure_and_legacy_duplicate_retirement_are_recoverable() {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (peer, _) = certified_device(&root, user.public_key, "reader");
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            7,
+            false,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        runtime.admit_device(peer.device_public_key).unwrap();
+        let envelope = |author, payload: crate::coedit::CoeditPayload| Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [author; 32],
+            authored_at_ns: 1,
+            delta: payload.encode().unwrap(),
+            signature: [0; 64],
+        };
+        let cp = envelope(
+            1,
+            crate::coedit::CoeditPayload::Checkpoint {
+                channel: [9; 32],
+                body: vec![1],
+            },
+        );
+        let tail = envelope(
+            1,
+            crate::coedit::CoeditPayload::RetainedDelta {
+                channel: [9; 32],
+                body: vec![2],
+            },
+        );
+        let other = envelope(
+            2,
+            crate::coedit::CoeditPayload::Checkpoint {
+                channel: [9; 32],
+                body: vec![3],
+            },
+        );
+        let cp_bytes = crate::transport::encode(&cp).unwrap();
+        runtime
+            .store
+            .retain_checkpoint(&[9; 32], &cp_bytes)
+            .unwrap();
+        runtime
+            .store
+            .retain_delta(&[9; 32], 2, &crate::transport::encode(&tail).unwrap())
+            .unwrap();
+        runtime
+            .store
+            .enqueue_pending(&peer.device_public_key, 1, &cp_bytes)
+            .unwrap();
+        runtime
+            .store
+            .enqueue_pending(
+                &peer.device_public_key,
+                2,
+                &crate::transport::encode(&other).unwrap(),
+            )
+            .unwrap();
+        runtime
+            .store
+            .enqueue_pending(&peer.device_public_key, 4, &cp_bytes)
+            .unwrap();
+        let opaque = b"unknown legacy bytes";
+        runtime
+            .store
+            .enqueue_pending(&peer.device_public_key, 3, opaque)
+            .unwrap();
+        // Matching undecodable retained bytes do NOT constitute replay coverage.
+        std::fs::write(
+            runtime.store.root().join("retained/checkpoints/opaque"),
+            opaque,
+        )
+        .unwrap();
+        let shared = Arc::new(AsyncMutex::new(runtime));
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(7, shared.clone())])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let metrics = crate::metrics::Metrics::default();
+        let (outbound, _rx) = mpsc::channel(8);
+        let (disconnect, _) = mpsc::channel(1);
+        let (private, _) = mpsc::channel(8);
+        let session = SessionCtx {
+            workspaces: &registry,
+            autobind: None,
+            outbound: &outbound,
+            own_user_public_key: &user.public_key,
+            metrics: &metrics,
+            trust_policy: &trust,
+            disconnect: &disconnect,
+            v2: false,
+            private_tx: &private,
+            revocations: &revocations,
+        };
+        let (mut broken, reader) = tokio::io::duplex(1);
+        drop(reader);
+        assert!(
+            handle_inbound_frame(
+                Envelope::Subscribe { workspace_id: 7 },
+                &peer,
+                &session,
+                &mut Vec::new(),
+                &mut broken
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            shared
+                .lock()
+                .await
+                .store
+                .count_pending(&peer.device_public_key)
+                .unwrap(),
+            4
+        );
+        // Emulate a crash during resumable legacy cleanup: write the complete
+        // replay, remove only its first duplicate, then reopen before the rest
+        // of the cleanup list can be processed.
+        let mut migration_replay = Vec::new();
+        let mut migration_cleanup = Vec::new();
+        {
+            let runtime = shared.lock().await;
+            let (_, retained) = load_retained_replay(&runtime, 7, &mut migration_replay).unwrap();
+            load_pending_replay(
+                &runtime,
+                &peer,
+                7,
+                &retained,
+                &mut migration_replay,
+                &mut migration_cleanup,
+            )
+            .unwrap();
+        }
+        let mut completed_wire = Vec::new();
+        for envelope in migration_replay {
+            completed_wire
+                .write_all(&crate::transport::encode(&envelope).unwrap())
+                .await
+                .unwrap();
+        }
+        std::fs::remove_file(&migration_cleanup[0]).unwrap();
+        assert_eq!(
+            shared
+                .lock()
+                .await
+                .store
+                .count_pending(&peer.device_public_key)
+                .unwrap(),
+            3
+        );
+        // Reopen the actual disk state after the failed replay.
+        *shared.lock().await = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            7,
+            false,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        let mut wire = Vec::new();
+        handle_inbound_frame(
+            Envelope::Subscribe { workspace_id: 7 },
+            &peer,
+            &session,
+            &mut Vec::new(),
+            &mut wire,
+        )
+        .await
+        .unwrap();
+        let mut decoded = Vec::new();
+        let mut remaining = wire.as_slice();
+        while !remaining.is_empty() {
+            let length = u32::from_le_bytes(remaining[..4].try_into().unwrap()) as usize;
+            decoded.push(crate::transport::decode(&remaining[4..4 + length]).unwrap());
+            remaining = &remaining[4 + length..];
+        }
+        assert_eq!(
+            decoded,
+            vec![
+                cp,
+                tail,
+                other,
+                Envelope::Ready {
+                    workspace_id: 7,
+                    pending_deltas: 3
+                }
+            ]
+        );
+        let pending = shared
+            .lock()
+            .await
+            .store
+            .load_pending(&peer.device_public_key)
+            .unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "unknown legacy entry was incorrectly retired"
+        );
+        assert_eq!(pending[0].bytes, opaque);
     }
 
     #[tokio::test]
