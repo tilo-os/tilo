@@ -7,6 +7,7 @@ pub mod reconcile;
 pub mod store;
 
 mod transaction;
+pub(crate) mod worker;
 
 /// Early binary startup adapter for the isolated Linux lease receiver only.
 /// Ordinary invocations return `None`; no native capability crosses this API.
