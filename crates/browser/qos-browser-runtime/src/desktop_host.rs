@@ -36,6 +36,17 @@ pub(crate) struct OwnedRecord {
     pub store: RecordStore,
     pub checkout: RecordCheckout,
 }
+fn active_route(tree: &WorkspaceTree) -> Option<crate::desktop_navigation::Route> {
+    let workspace = tree.workspaces.iter().find(|workspace| workspace.id == tree.active)?;
+    let strip_id = *tree.active_strip.get(&workspace.id)?;
+    let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
+    let group_id = *tree.active_group.get(&strip.id)?;
+    let group = strip.window_groups.iter().find(|group| group.id == group_id)?;
+    Some(crate::desktop_navigation::Route {
+        workspace: workspace.id.0.to_string(), strip: strip.id.0.to_string(),
+        group: group.id.to_string(), tab: group.active_tab.to_string(),
+    })
+}
 #[derive(Clone)]
 pub(crate) struct DesktopHandle {
     pub tree: Rc<RefCell<WorkspaceTree>>,
@@ -48,6 +59,7 @@ pub(crate) struct DesktopHandle {
     pub navigation: Rc<RefCell<serde_json::Value>>,
     pub navigation_revision: Rc<std::cell::Cell<u64>>,
     pub activation_sequence: Rc<std::cell::Cell<u64>>,
+    pending_local_activation: Rc<RefCell<Option<crate::desktop_navigation::Route>>>,
     pub navigation_command: Rc<RefCell<Option<crate::desktop_navigation::Command>>>,
     pub navigation_result: Rc<RefCell<Option<Result<Option<String>, String>>>>,
     pub(crate) generation: String,
@@ -56,6 +68,30 @@ pub(crate) struct DesktopHandle {
 
 }
 impl DesktopHandle {
+    pub(crate) fn check_local_activation(&self, frame: &ui::headless::FrameHarness) -> Result<(), String> {
+        frame.check_app_activation()
+    }
+    pub(crate) fn perform_semantic_input(
+        &self, frame: &mut ui::headless::FrameHarness, path: &str,
+        target: Option<&str>, action: &ui::a11y::Action,
+    ) -> Result<(), String> {
+        let active = active_route(&self.tree.borrow()).and_then(|route| route.ids().ok()).map(|route| route.3);
+        let owner = frame.semantic_owner_instance(path);
+        let switches_app = target.is_some_and(|target| target.starts_with("tab:"))
+            || owner.is_some_and(|owner| Some(owner) != active);
+        if switches_app { self.check_local_activation(frame)?; }
+        frame.perform_semantic_named(path, target, action)?;
+        self.finish_local_activation(frame);
+        Ok(())
+    }
+    pub(crate) fn finish_local_activation(&self, frame: &mut ui::headless::FrameHarness) {
+        let Some(route) = self.pending_local_activation.borrow_mut().take() else { return; };
+        if self.check_local_activation(frame).is_err() || active_route(&self.tree.borrow()).as_ref() != Some(&route) { return; }
+        let Ok((_, _, _, instance)) = route.ids() else { return; };
+        frame.prepare_app_activation(instance);
+        frame.activate_app_focus(instance);
+        self.activation_sequence.set(self.activation_sequence.get().wrapping_add(1));
+    }
     pub(crate) fn invalidate_history(&self) {
         self.history_available.set(false);
         // A pre-revocation admission must never restore a withdrawn read grant.
@@ -63,8 +99,10 @@ impl DesktopHandle {
     }
     /// The single accepted-activation boundary shared by toolbar and Search.
     pub fn navigate(&self, frame: &mut ui::headless::FrameHarness, command: crate::desktop_navigation::Command) -> Result<Option<String>, String> {
+        self.pending_local_activation.borrow_mut().take();
         // Admit queued topology before validating an exact route.
         frame.relayout();
+        self.pending_local_activation.borrow_mut().take();
         let instance = match &command {
             crate::desktop_navigation::Command::Select { route, .. } => {
                 frame.check_app_activation()?;
@@ -260,6 +298,11 @@ pub(crate) struct DesktopRoot {
     view_changed: bool,
 }
 impl DesktopRoot {
+    fn apply_local(handle: &DesktopHandle, tree: &mut WorkspaceTree, intent: LocalViewIntent) {
+        let activation = matches!(intent, LocalViewIntent::Tab { .. } | LocalViewIntent::Group { .. });
+        Self::local(tree, intent.clone());
+        if activation { *handle.pending_local_activation.borrow_mut() = active_route(tree); }
+    }
     pub fn new(
         admission: Admission,
         storage: PortableStorage,
@@ -292,7 +335,7 @@ impl DesktopRoot {
             session_requests: Rc::default(),
             inbox: Rc::default(),
             navigation: Rc::new(RefCell::new(serde_json::Value::Null)),
-            navigation_revision: Rc::default(), activation_sequence: Rc::default(), navigation_command: Rc::default(), navigation_result: Rc::default(),
+            navigation_revision: Rc::default(), activation_sequence: Rc::default(), pending_local_activation: Rc::default(), navigation_command: Rc::default(), navigation_result: Rc::default(),
             generation: uuid::Uuid::new_v4().to_string(),
             search: Rc::default(),
             history_available: Rc::new(std::cell::Cell::new(true)),
@@ -804,7 +847,7 @@ impl DesktopRoot {
         }
         for intent in intents {
             match intent {
-                DesktopIntent::Local(intent) => Self::local(&mut tree, intent),
+                DesktopIntent::Local(intent) => Self::apply_local(&self.handle, &mut tree, intent),
                 DesktopIntent::Session(intent) => match qos_desktop::session_commands::bind_intent(&tree,
                     qos_desktop::session_commands::CommandSource { room: self.resolver.host.room.clone(), heads: self.source_heads.clone() }, intent) {
                     Ok(command) => {
@@ -2510,7 +2553,7 @@ mod tests {
             ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
         );
         frame.set_platform_conventions(ui::platform::PlatformConventions::new(ui::platform::Platform::Linux));
-        frame.set_modifiers(&["ctrl".into()]);
+        frame.set_modifiers(&["super".into()]);
         frame.key("k");
         frame.set_modifiers(&[]);
         frame.type_text("Open Notes");
@@ -3906,6 +3949,131 @@ mod tests {
         assert!(handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
             generation: handle.generation.clone(), route: chat,
         }).is_err());
+    }
+
+    #[test]
+    fn local_tab_selection_transfers_keyboard_ownership_from_chat_to_notes() {
+        let (root, handle, _) = fixture();
+        let mut root = Box::new(root);
+        let root_ptr = std::ptr::from_mut(root.as_mut());
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), root, (1280, 720), Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        let route = |label: &str| serde_json::from_value::<crate::desktop_navigation::Route>(
+            handle.navigation.borrow()["entries"].as_array().unwrap().iter()
+                .find(|entry| entry["label"] == label).unwrap()["route"].clone()
+        ).unwrap();
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: route("Chat"),
+        }).unwrap();
+        let (composer, _) = browser_semantic_route(&frame, "Message composer");
+        frame.perform_semantic_named(&composer, None, &ui::a11y::Action::Focus).unwrap();
+        let chat_owner = frame.inspection().keyboard_focus_owner.expect("Chat composer owns input");
+        let chat = handle.records.borrow().values().find(|record| record.app == "dev.qos.chat").unwrap().clone();
+        let chat_before = chat.store.read(&chat.checkout.id, |doc| doc.clone().save()).unwrap();
+        let notes = route("Notes").ids().unwrap().3;
+        // SAFETY: frame retains this root and the temporary access ends before
+        // the harness runs the ordinary update/reconcile/layout pipeline.
+        unsafe { (&mut *root_ptr).surface.row_mut(StripId(2)).unwrap().groups[0].set_active_tab(notes); }
+        frame.relayout();
+        assert_eq!(handle.tree.borrow().workspaces[0].strips[0].window_groups[0].active_tab, notes);
+        handle.finish_local_activation(&mut frame);
+        let notes_owner = frame.inspection().keyboard_focus_owner.expect("selected Notes owns input");
+        assert_ne!(notes_owner, chat_owner, "the retained Chat composer must lose keyboard ownership");
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("must not reach Chat".into())));
+        assert_eq!(chat.store.read(&chat.checkout.id, |doc| doc.clone().save()).unwrap(), chat_before);
+
+        let chat_tab = route("Chat").ids().unwrap().3;
+        unsafe { (&mut *root_ptr).surface.row_mut(StripId(2)).unwrap().groups[0].set_active_tab(chat_tab); }
+        frame.relayout();
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: route("Calculator"),
+        }).unwrap();
+        let calculator_owner = frame.inspection().keyboard_focus_owner.expect("Calculator owns input");
+        handle.finish_local_activation(&mut frame);
+        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(calculator_owner.as_str()),
+            "a stale local Chat request must not override a newer external Calculator selection");
+    }
+
+    #[test]
+    fn ordinary_app_modal_rejects_background_group_semantic_focus() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs.into_iter().enumerate().map(|(index, tab)| WindowGroup {
+                id: 100 + index as u64, active_tab: tab.id, tabs: vec![tab],
+                width: WindowWidth::Normal, maximized: false,
+            }).collect();
+        });
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), Box::new(root), (1800, 900), Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        let route = |label: &str| serde_json::from_value::<crate::desktop_navigation::Route>(
+            handle.navigation.borrow()["entries"].as_array().unwrap().iter()
+                .find(|entry| entry["label"] == label).unwrap()["route"].clone()
+        ).unwrap();
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: route("Writer"),
+        }).unwrap();
+        fn widget_rect(node: &ui::headless::InspectionNode, widget: &str) -> Option<Rect> {
+            if node.widget == widget { return Some(Rect::new(node.rect[0], node.rect[1], node.rect[2], node.rect[3])); }
+            node.children.iter().find_map(|child| widget_rect(child, widget))
+        }
+        let point = widget_rect(&frame.inspection().root, "WordProcessor").unwrap().center();
+        let device_id = winit::event::DeviceId::dummy();
+        frame.send_host_event(&winit::event::WindowEvent::CursorMoved {
+            device_id, position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+        });
+        for state in [winit::event::ElementState::Pressed, winit::event::ElementState::Released] {
+            frame.send_host_event(&winit::event::WindowEvent::MouseInput {
+                device_id, state, button: winit::event::MouseButton::Right,
+            });
+        }
+        assert!(handle.check_local_activation(&frame).is_err());
+        let before_group = handle.tree.borrow().active_group[&StripId(2)];
+        let before_owner = frame.inspection().keyboard_focus_owner;
+        let (composer, _) = browser_semantic_route(&frame, "Message composer");
+        assert!(handle.perform_semantic_input(&mut frame, &composer, None, &ui::a11y::Action::Focus).is_err());
+        assert_eq!(handle.tree.borrow().active_group[&StripId(2)], before_group,
+            "modal preflight must reject background-group focus before selection changes");
+        assert_eq!(frame.inspection().keyboard_focus_owner, before_owner);
+    }
+
+    #[test]
+    fn local_group_selection_transfers_keyboard_ownership_to_its_active_notes_tab() {
+        let (root, handle, _) = fixture_with_topology(|tree| {
+            let strip = &mut tree.workspaces[0].strips[0];
+            let tabs = std::mem::take(&mut strip.window_groups[0].tabs);
+            strip.window_groups = tabs.into_iter().enumerate().map(|(index, tab)| WindowGroup {
+                id: 100 + index as u64, active_tab: tab.id, tabs: vec![tab],
+                width: WindowWidth::Normal, maximized: false,
+            }).collect();
+        });
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(
+            ui::State::new(), Box::new(root), (1800, 900), Theme::dark(),
+            ui::TextRenderer::new(), ui::permissions::UserId("author".into()),
+        );
+        let route = |label: &str| serde_json::from_value::<crate::desktop_navigation::Route>(
+            handle.navigation.borrow()["entries"].as_array().unwrap().iter()
+                .find(|entry| entry["label"] == label).unwrap()["route"].clone()
+        ).unwrap();
+        handle.navigate(&mut frame, crate::desktop_navigation::Command::Select {
+            generation: handle.generation.clone(), route: route("Chat"),
+        }).unwrap();
+        let (composer, _) = browser_semantic_route(&frame, "Message composer");
+        frame.perform_semantic_named(&composer, None, &ui::a11y::Action::Focus).unwrap();
+        let chat_owner = frame.inspection().keyboard_focus_owner.expect("Chat composer owns input");
+        let notes = route("Notes").ids().unwrap();
+        {
+            let mut tree = handle.tree.borrow_mut();
+            DesktopRoot::apply_local(&handle, &mut tree, LocalViewIntent::Group { strip: notes.1, group: notes.2 });
+        }
+        frame.relayout();
+        handle.finish_local_activation(&mut frame);
+        assert_ne!(frame.inspection().keyboard_focus_owner.as_deref(), Some(chat_owner.as_str()));
+        assert_eq!(handle.tree.borrow().active_group[&notes.1], notes.2);
     }
 
     #[test]

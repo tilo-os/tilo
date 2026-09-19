@@ -302,6 +302,7 @@ impl ApplicationHandler<u64> for Runner {
                     }
                     let start = m.metric_start();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
+                    if let Some(desktop) = m.desktop.clone() { desktop.finish_local_activation(&mut m.frame); }
                     m.metric_end("input", start);
                     if start.is_some() {
                         if m.frame.last_send_skipped_relayout() { m.metrics.borrow_mut().count("relayout_skipped"); }
@@ -860,8 +861,10 @@ pub fn semantic(
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.peer_suspended { return Ok(false); }
-        crate::clipboard::during_input(&m.status, || {
-            m.frame.perform_semantic_named(path, target.as_deref(), &action)
+        let desktop = m.desktop.clone();
+        crate::clipboard::during_input(&m.status, || match desktop {
+            Some(desktop) => desktop.perform_semantic_input(&mut m.frame, path, target.as_deref(), &action),
+            None => m.frame.perform_semantic_named(path, target.as_deref(), &action),
         }).map_err(error)?;
         m.pending = true;
         m.window.request_redraw();

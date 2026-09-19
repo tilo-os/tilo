@@ -2491,6 +2491,12 @@ impl FrameHarness {
         targets
     }
 
+    /// App instance bound to a live semantic owner path or stable widget id.
+    pub fn semantic_owner_instance(&self, name: &str) -> Option<crate::application::InstanceId> {
+        let node = *self.named_target_nodes().get(name)?;
+        self.bindings.binding_for(node).map(|binding| binding.instance_id)
+    }
+
     fn access_node_named(
         &self,
         name: &str,
