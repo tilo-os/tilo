@@ -54,6 +54,8 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
             qpkg_root_hash_hex: "ab".repeat(32),
             qpkg_size_bytes: 1,
             released_at_unix: 1,
+            qpkg_blake3_hex: None,
+            target: None,
         }],
         updated_at_unix: 1,
         signature_hex: String::new(),

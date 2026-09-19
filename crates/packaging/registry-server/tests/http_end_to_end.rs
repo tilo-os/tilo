@@ -297,6 +297,12 @@ fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
             qpkg_root_hash_hex: "cd".repeat(32),
             qpkg_size_bytes: 1024,
             released_at_unix: 1_800_000_000,
+            qpkg_blake3_hex: Some("ef".repeat(32)),
+            target: Some(registry_types::RegistryTarget {
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+            }),
         }],
         updated_at_unix: updated_at,
         signature_hex: String::new(),

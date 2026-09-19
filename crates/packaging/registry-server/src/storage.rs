@@ -30,6 +30,12 @@
 //! path/serde wrapper.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+#[cfg(unix)]
+use std::fs::{File, OpenOptions};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -86,6 +92,64 @@ impl Storage {
         self.root.join("published-snapshot.json")
     }
 
+    fn snapshot_transaction_path(&self) -> PathBuf {
+        self.root.join("snapshot-publish.pending.json")
+    }
+
+    #[cfg(unix)]
+    fn snapshot_lock_path(&self) -> PathBuf {
+        self.root.join("snapshot.lock")
+    }
+
+    fn promotion_transaction_path(&self) -> PathBuf {
+        self.root.join("first-party-promotion.pending.json")
+    }
+
+    /// Acquire the registry-wide snapshot writer lock. The retained lock file
+    /// and kernel `flock` make this safe across `CronJobs` and CLI processes;
+    /// the in-process mutex also covers independently opened [`Storage`]s.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process mutex is poisoned or the cross-process
+    /// lock file cannot be opened or locked.
+    pub fn lock_snapshot(&self) -> Result<SnapshotLock<'_>, StorageError> {
+        SnapshotLock::acquire(self)
+    }
+
+    /// Load a crash-recovery record for the first-party batch promoter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the journal cannot be read or decoded.
+    pub fn load_promotion_transaction(&self) -> Result<Option<PromotionJournal>, StorageError> {
+        load_json(
+            &self.promotion_transaction_path(),
+            "first-party promotion transaction",
+        )
+    }
+
+    /// Persist the exact batch and candidate snapshot before applying reviews.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the journal cannot be encoded or written atomically.
+    pub fn save_promotion_transaction(
+        &self,
+        journal: &PromotionJournal,
+    ) -> Result<(), StorageError> {
+        save_json(&self.promotion_transaction_path(), journal)
+    }
+
+    /// Remove a completed promotion transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the journal cannot be removed from durable storage.
+    pub fn delete_promotion_transaction(&self) -> Result<bool, StorageError> {
+        delete_if_exists(&self.promotion_transaction_path())
+    }
+
     /// Loads the currently published owner-signed snapshot, if present.
     ///
     /// # Errors
@@ -111,24 +175,27 @@ impl Storage {
     ///
     /// Returns an error if the snapshot cannot be encoded or written.
     pub fn save_snapshot(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
+        let guard = self.lock_snapshot()?;
+        guard.publish(snapshot)
+    }
+
+    fn archive_snapshot(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         let body =
             serde_json::to_vec_pretty(snapshot).map_err(|e| StorageError::Encode(e.to_string()))?;
         let hash = registry_types::snapshot_hash(snapshot)
             .map_err(|e| StorageError::Encode(e.to_string()))?;
         let archive = self.snapshot_history_path(snapshot.sequence, &hash)?;
-        if archive.exists() {
-            let existing = std::fs::read(&archive)
-                .map_err(|e| StorageError::Io(format!("read snapshot history: {e}")))?;
-            if existing != body {
+        match self.load_snapshot_sequence(snapshot.sequence)? {
+            Some(existing) if existing == *snapshot => return Ok(()),
+            Some(_) => {
                 return Err(StorageError::Parse(format!(
                     "snapshot history collision at sequence {}",
                     snapshot.sequence
                 )));
             }
-        } else {
-            atomic_write(&archive, &body)?;
+            None => {}
         }
-        atomic_write(&self.snapshot_path(), &body)
+        atomic_write(&archive, &body)
     }
 
     /// Load an immutable historical snapshot by its monotonic sequence.
@@ -136,6 +203,11 @@ impl Storage {
     /// Exactly one archive member must match. The hash remains in the filename
     /// so operators can compare backup/object-store listings without parsing
     /// JSON, while sequence is the stable rollback handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if history cannot be read, contains multiple members
+    /// for the sequence, or the selected member fails filename/body checks.
     pub fn load_snapshot_sequence(
         &self,
         sequence: u64,
@@ -152,7 +224,7 @@ impl Storage {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_default();
-            if name.starts_with(&prefix) && name.ends_with(".json") {
+            if name.starts_with(&prefix) && path.extension() == Some(std::ffi::OsStr::new("json")) {
                 matches.push(path);
             }
         }
@@ -163,6 +235,12 @@ impl Storage {
                     load_json(path, "historical registry snapshot")?.ok_or_else(|| {
                         StorageError::Parse("snapshot history entry disappeared".into())
                     })?;
+                if snapshot.sequence != sequence {
+                    return Err(StorageError::Parse(format!(
+                        "snapshot history member names sequence {sequence} but contains sequence {}",
+                        snapshot.sequence
+                    )));
+                }
                 let expected = path
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -331,6 +409,7 @@ impl Storage {
 
     /// Process-wide lock used by the server and local reviewer CLI to
     /// serialize multi-file moderation transitions.
+    #[cfg(unix)]
     pub(crate) fn moderation_lock_path(&self) -> PathBuf {
         self.root.join("moderation.lock")
     }
@@ -551,6 +630,187 @@ impl Storage {
     }
 }
 
+static SNAPSHOT_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Exclusive snapshot publication transaction. A signed snapshot is first
+/// recorded as an exact durable intent, then archived, then installed as the
+/// public pointer. Recovery repeats those idempotent steps after a crash.
+pub struct SnapshotLock<'a> {
+    storage: &'a Storage,
+    _process_mutex: std::sync::MutexGuard<'static, ()>,
+    #[cfg(unix)]
+    file: File,
+}
+
+impl<'a> SnapshotLock<'a> {
+    fn acquire(storage: &'a Storage) -> Result<Self, StorageError> {
+        let process_mutex = SNAPSHOT_MUTEX
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|_| StorageError::Io("snapshot writer lock was poisoned".into()))?;
+        #[cfg(unix)]
+        {
+            let path = storage.snapshot_lock_path();
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(|error| {
+                    StorageError::Io(format!("open snapshot lock {}: {error}", path.display()))
+                })?;
+            let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            if status != 0 {
+                return Err(StorageError::Io(format!(
+                    "lock snapshot writer {}: {}",
+                    path.display(),
+                    std::io::Error::last_os_error()
+                )));
+            }
+            Ok(Self {
+                storage,
+                _process_mutex: process_mutex,
+                file,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Self {
+                storage,
+                _process_mutex: process_mutex,
+            })
+        }
+    }
+
+    /// Current published snapshot while the writer lock is held.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the current snapshot cannot be read or decoded.
+    pub fn current(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
+        self.storage.load_snapshot()
+    }
+
+    /// Load an immutable historical member while the writer lock is held.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if history cannot be read or the member is invalid.
+    pub fn sequence(&self, sequence: u64) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
+        self.storage.load_snapshot_sequence(sequence)
+    }
+
+    /// Archive a legacy current pointer without changing the live pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the snapshot conflicts with history or cannot be
+    /// written atomically.
+    pub fn archive_current(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
+        self.storage.archive_snapshot(snapshot)
+    }
+
+    /// Exact signed transaction left by a crashed writer, if any. Callers
+    /// verify its owner signature before invoking [`Self::recover`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pending transaction cannot be read or decoded.
+    pub fn pending_transaction(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
+        load_json(
+            &self.storage.snapshot_transaction_path(),
+            "pending snapshot transaction",
+        )
+    }
+
+    /// Finish the existing exact transaction after the caller authenticates it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if recovery cannot validate or durably publish the
+    /// recorded snapshot.
+    pub fn recover(&self) -> Result<Option<SignedRegistrySnapshot>, StorageError> {
+        let Some(snapshot) = self.pending_transaction()? else {
+            return Ok(None);
+        };
+        self.complete(&snapshot)?;
+        Ok(Some(snapshot))
+    }
+
+    /// Durably publish one already signed snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if another transaction is pending, the transition is
+    /// stale, or any journal, archive, or pointer write fails.
+    pub fn publish(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
+        if let Some(pending) = self.pending_transaction()? {
+            if pending != *snapshot {
+                return Err(StorageError::Parse(
+                    "another snapshot transaction requires recovery".into(),
+                ));
+            }
+        } else {
+            // Refuse a stale candidate before making it durable. Leaving a
+            // journal that can never be a child of the current pointer would
+            // wedge every later writer.
+            self.validate_transition(snapshot)?;
+            let body = serde_json::to_vec_pretty(snapshot)
+                .map_err(|error| StorageError::Encode(error.to_string()))?;
+            atomic_write(&self.storage.snapshot_transaction_path(), &body)?;
+        }
+        self.complete(snapshot)
+    }
+
+    fn complete(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
+        self.validate_transition(snapshot)?;
+        self.storage.archive_snapshot(snapshot)?;
+        let body = serde_json::to_vec_pretty(snapshot)
+            .map_err(|error| StorageError::Encode(error.to_string()))?;
+        atomic_write(&self.storage.snapshot_path(), &body)?;
+        delete_if_exists(&self.storage.snapshot_transaction_path())?;
+        Ok(())
+    }
+
+    fn validate_transition(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
+        let current = self.storage.load_snapshot()?;
+        match current.as_ref() {
+            Some(current) if current == snapshot => {}
+            Some(current) => {
+                let next = current
+                    .sequence
+                    .checked_add(1)
+                    .ok_or_else(|| StorageError::Parse("snapshot sequence is exhausted".into()))?;
+                let previous_hash = registry_types::snapshot_hash(current)
+                    .map_err(|error| StorageError::Parse(error.to_string()))?;
+                if snapshot.sequence != next || snapshot.previous_snapshot_hash_hex != previous_hash
+                {
+                    return Err(StorageError::Parse(
+                        "pending snapshot is not the direct child of the published snapshot".into(),
+                    ));
+                }
+            }
+            None => {
+                if snapshot.sequence != 1 || !snapshot.previous_snapshot_hash_hex.is_empty() {
+                    return Err(StorageError::Parse(
+                        "first snapshot transaction must be sequence 1 without a predecessor"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Drop for SnapshotLock<'_> {
+    fn drop(&mut self) {
+        let _result = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
 fn load_json<T: serde::de::DeserializeOwned>(
     path: &Path,
     label: &str,
@@ -616,6 +876,18 @@ pub struct PendingSubmission {
     pub submitted_at_unix: u64,
     /// The publisher-signed request that will be re-verified at approval.
     pub change: EntryChangeRequest,
+}
+
+/// Durable intent for one bounded automated promotion. The selected signed
+/// requests and exact owner-signed candidate make partially applied approval
+/// work distinguishable and retryable after a crash.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PromotionJournal {
+    pub publisher_pubkey_hex: String,
+    pub reviewer: String,
+    pub reason: String,
+    pub submissions: Vec<PendingSubmission>,
+    pub candidate_snapshot: SignedRegistrySnapshot,
 }
 
 /// The terminal effect recorded for a moderator action.
@@ -721,6 +993,7 @@ pub enum StorageError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use registry_types::SNAPSHOT_PROTOCOL;
 
     fn sample_entry(id: &str) -> RegistryEntry {
         RegistryEntry {
@@ -738,6 +1011,20 @@ mod tests {
         }
     }
 
+    fn snapshot(sequence: u64, previous: String, marker: &str) -> SignedRegistrySnapshot {
+        SignedRegistrySnapshot {
+            protocol: SNAPSHOT_PROTOCOL,
+            sequence,
+            issued_at_unix: sequence,
+            expires_at_unix: sequence.checked_add(100).unwrap(),
+            previous_snapshot_hash_hex: previous,
+            moderation_head_hex: String::new(),
+            publishers: Vec::new(),
+            entries: vec![sample_entry(marker)],
+            owner_signature_hex: marker.to_string(),
+        }
+    }
+
     #[test]
     fn open_creates_layout() {
         let dir = tempfile::tempdir().unwrap();
@@ -747,6 +1034,111 @@ mod tests {
         assert!(s.root.join("reviews").is_dir());
         assert!(s.root.join("quarantined").is_dir());
         assert!(s.root.join("snapshots").is_dir());
+    }
+
+    #[test]
+    fn snapshot_transaction_recovers_each_crash_boundary() {
+        for crash_point in ["intent", "archive", "pointer"] {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            let candidate = snapshot(1, String::new(), crash_point);
+            let body = serde_json::to_vec_pretty(&candidate).unwrap();
+            atomic_write(&storage.snapshot_transaction_path(), &body).unwrap();
+            if matches!(crash_point, "archive" | "pointer") {
+                storage.archive_snapshot(&candidate).unwrap();
+            }
+            if crash_point == "pointer" {
+                atomic_write(&storage.snapshot_path(), &body).unwrap();
+            }
+
+            let writer = storage.lock_snapshot().unwrap();
+            assert_eq!(writer.recover().unwrap(), Some(candidate.clone()));
+            assert_eq!(writer.current().unwrap(), Some(candidate.clone()));
+            assert_eq!(writer.sequence(1).unwrap(), Some(candidate));
+            drop(writer);
+            assert!(!storage.snapshot_transaction_path().exists());
+        }
+    }
+
+    #[test]
+    fn concurrent_snapshot_writers_form_one_chain_without_sequence_forks() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut threads = Vec::new();
+        for marker in ["dev.tilo.a", "dev.tilo.b"] {
+            let storage = storage.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                let writer = storage.lock_snapshot().unwrap();
+                let current = writer.current().unwrap();
+                let (sequence, previous) = current.as_ref().map_or((1, String::new()), |head| {
+                    (
+                        head.sequence.checked_add(1).unwrap(),
+                        registry_types::snapshot_hash(head).unwrap(),
+                    )
+                });
+                writer
+                    .publish(&snapshot(sequence, previous, marker))
+                    .unwrap();
+            }));
+        }
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let first = storage.load_snapshot_sequence(1).unwrap().unwrap();
+        let second = storage.load_snapshot_sequence(2).unwrap().unwrap();
+        assert_eq!(
+            second.previous_snapshot_hash_hex,
+            registry_types::snapshot_hash(&first).unwrap()
+        );
+        assert_eq!(storage.load_snapshot().unwrap(), Some(second));
+    }
+
+    #[test]
+    fn history_filename_sequence_must_match_signed_body_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let wrong = snapshot(2, String::new(), "wrong");
+        let hash = registry_types::snapshot_hash(&wrong).unwrap();
+        let path = storage.snapshot_history_path(1, &hash).unwrap();
+        atomic_write(&path, &serde_json::to_vec_pretty(&wrong).unwrap()).unwrap();
+        assert!(matches!(
+            storage.load_snapshot_sequence(1),
+            Err(StorageError::Parse(message)) if message.contains("contains sequence 2")
+        ));
+    }
+
+    #[test]
+    fn stale_candidate_is_rejected_without_leaving_a_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let writer = storage.lock_snapshot().unwrap();
+        let first = snapshot(1, String::new(), "first");
+        writer.publish(&first).unwrap();
+        let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
+        writer.publish(&second).unwrap();
+        let stale = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "stale");
+        assert!(writer.publish(&stale).is_err());
+        assert!(!storage.snapshot_transaction_path().exists());
+        assert_eq!(writer.current().unwrap(), Some(second));
+        drop(writer);
+    }
+
+    #[test]
+    fn archiving_a_stale_pointer_never_rewinds_the_live_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let writer = storage.lock_snapshot().unwrap();
+        let first = snapshot(1, String::new(), "first");
+        writer.publish(&first).unwrap();
+        let second = snapshot(2, registry_types::snapshot_hash(&first).unwrap(), "second");
+        writer.publish(&second).unwrap();
+        writer.archive_current(&first).unwrap();
+        assert_eq!(writer.current().unwrap(), Some(second));
+        drop(writer);
     }
 
     #[test]

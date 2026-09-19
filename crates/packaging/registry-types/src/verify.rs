@@ -166,6 +166,8 @@ mod tests {
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 1024,
                 released_at_unix: 100,
+                qpkg_blake3_hex: None,
+                target: None,
             }],
             updated_at_unix: 200,
             signature_hex: String::new(),

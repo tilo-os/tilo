@@ -391,7 +391,11 @@ fn moderation_status(error: &ModerationError) -> Option<StatusCode> {
         }
         ModerationError::EntryAlreadyExists(_)
         | ModerationError::StaleTimestamp { .. }
-        | ModerationError::PendingTimestampNotNewer { .. } => Some(StatusCode::CONFLICT),
+        | ModerationError::PendingTimestampNotNewer { .. }
+        | ModerationError::DuplicateVersionIdentity { .. }
+        | ModerationError::VersionHistoryRemoved { .. }
+        | ModerationError::VersionIdentityReused { .. } => Some(StatusCode::CONFLICT),
+        ModerationError::UnsupportedPackageTarget { .. } => Some(StatusCode::BAD_REQUEST),
         _ => None,
     }
 }

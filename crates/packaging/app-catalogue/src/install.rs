@@ -154,6 +154,14 @@ fn validate_offer_metadata(app: &CatalogueApp) -> Result<(), InstallError> {
             detail: "registry supplied a package root that is not 32 bytes".to_string(),
         });
     }
+    let expected_qpkg = hex::decode(&app.qpkg_blake3_hex).map_err(|e| InstallError::Integrity {
+        detail: format!("registry supplied an invalid qpkg content hash: {e}"),
+    })?;
+    if expected_qpkg.len() != 32 {
+        return Err(InstallError::Integrity {
+            detail: "registry supplied a qpkg content hash that is not 32 bytes".to_string(),
+        });
+    }
     let publisher =
         hex::decode(&app.publisher_pubkey_hex).map_err(|e| InstallError::Integrity {
             detail: format!("registry supplied an invalid publisher key: {e}"),
@@ -360,6 +368,16 @@ pub fn install_app_reporting(
         let _ = std::fs::remove_file(&dest);
         return Err(error);
     }
+    let downloaded_bytes = std::fs::read(&dest).map_err(|error| InstallError::Integrity {
+        detail: format!("read staged qpkg for content verification: {error}"),
+    })?;
+    let actual_hash = blake3::hash(&downloaded_bytes).to_hex().to_string();
+    if !actual_hash.eq_ignore_ascii_case(&app.qpkg_blake3_hex) {
+        let _ = std::fs::remove_file(&dest);
+        return Err(InstallError::Integrity {
+            detail: "downloaded qpkg content hash does not match the signed registry entry".into(),
+        });
+    }
 
     let mut command = Command::new(tilo_install_bin());
     command.args(install_argv(
@@ -464,6 +482,10 @@ mod tests {
             download_url: "https://example.invalid/test.qpkg".into(),
             qpkg_root_hash_hex: "cd".repeat(32),
             qpkg_size_bytes: bytes.len() as u64,
+            qpkg_blake3_hex: blake3::hash(bytes).to_hex().to_string(),
+            architecture: "x86_64".into(),
+            isa: "x86_64-v3".into(),
+            runtime: None,
             publisher_pubkey_hex: "ab".repeat(32),
             trust: "verified".into(),
         }

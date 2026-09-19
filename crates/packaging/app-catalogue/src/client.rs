@@ -354,6 +354,12 @@ mod tests {
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 1024,
                 released_at_unix: 100,
+                qpkg_blake3_hex: Some("ef".repeat(32)),
+                target: Some(registry_types::RegistryTarget {
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: "x86_64".into(),
+                    runtime: None,
+                }),
             }],
             updated_at_unix: 200,
             signature_hex: String::new(),

@@ -30,11 +30,13 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use registry_server::{
-    AppState, InspectionPolicy, ModerationService, PublisherAllowlist, PublisherRow,
-    ServerIdentity, Storage, default_data_dir, inspect_entry, run_server,
+    AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
+    PublisherRow, ServerIdentity, Storage, default_data_dir, inspect_entry, run_server,
 };
 use registry_types::EntryAction;
-use registry_types::{PublisherAuthorization, SNAPSHOT_PROTOCOL, SignedRegistrySnapshot};
+use registry_types::{
+    PublisherAuthorization, SNAPSHOT_PROTOCOL, SignedRegistrySnapshot, verify_change_request,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -143,6 +145,28 @@ enum Cmd {
         #[arg(long, default_value_t = 86_400)]
         valid_for_seconds: u64,
     },
+    /// Verify and promote a bounded batch from one explicitly pinned
+    /// first-party publisher, then publish exactly one owner-signed snapshot.
+    PromoteFirstParty {
+        /// Exact 32-byte Ed25519 publisher public key (64 hex characters).
+        #[arg(long)]
+        publisher_pubkey: String,
+        /// Owner seed used only by this offline/CronJob command.
+        #[arg(long)]
+        owner_key_file: PathBuf,
+        #[arg(long, default_value = "registry-promoter")]
+        reviewer: String,
+        #[arg(long, default_value = "automated first-party promotion")]
+        reason: String,
+        /// Maximum requests processed in one run (1..=100).
+        #[arg(long, default_value_t = 50)]
+        max_items: usize,
+        #[arg(long, default_value_t = 86_400)]
+        valid_for_seconds: u64,
+        /// Test-only escape hatch for loopback package fixtures.
+        #[arg(long, hide = true)]
+        allow_insecure_local: bool,
+    },
     /// Review signed publisher changes before they enter the public catalogue.
     Review {
         #[command(subcommand)]
@@ -249,8 +273,248 @@ async fn main() -> anyhow::Result<()> {
             owner_key_file,
             valid_for_seconds,
         } => cmd_rollback_snapshot(&storage, to_sequence, &owner_key_file, valid_for_seconds),
+        Cmd::PromoteFirstParty {
+            publisher_pubkey,
+            owner_key_file,
+            reviewer,
+            reason,
+            max_items,
+            valid_for_seconds,
+            allow_insecure_local,
+        } => cmd_promote_first_party(
+            &storage,
+            &publisher_pubkey,
+            &owner_key_file,
+            &reviewer,
+            &reason,
+            max_items,
+            valid_for_seconds,
+            allow_insecure_local,
+        ),
         Cmd::Review { command } => cmd_review(&storage, command),
     }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "each argument is a separately audited CronJob control at the CLI boundary"
+)]
+fn cmd_promote_first_party(
+    storage: &Storage,
+    publisher_pubkey: &str,
+    owner_key_file: &std::path::Path,
+    reviewer: &str,
+    reason: &str,
+    max_items: usize,
+    valid_for_seconds: u64,
+    allow_insecure_local: bool,
+) -> anyhow::Result<()> {
+    if !(1..=100).contains(&max_items) {
+        anyhow::bail!("--max-items must be between 1 and 100");
+    }
+    if valid_for_seconds == 0 || valid_for_seconds > registry_types::MAX_SNAPSHOT_VALIDITY_SECONDS {
+        anyhow::bail!("snapshot validity must be between 1 second and 7 days");
+    }
+    let publisher_bytes: [u8; 32] = hex::decode(publisher_pubkey)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| anyhow::anyhow!("--publisher-pubkey must be a 32-byte hex key"))?;
+    let publisher_pubkey = hex::encode(publisher_bytes);
+    let identity = storage.load_identity()?;
+    let owner_key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
+    let writer = storage.lock_snapshot()?;
+    recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
+    let allowlist = storage.load_allowlist()?;
+    let first_party = allowlist.get(&publisher_bytes).ok_or_else(|| {
+        anyhow::anyhow!("the explicitly selected first-party publisher is not allowlisted")
+    })?;
+
+    let journal = if let Some(journal) = storage.load_promotion_transaction()? {
+        if !journal
+            .publisher_pubkey_hex
+            .eq_ignore_ascii_case(&publisher_pubkey)
+        {
+            anyhow::bail!("a promotion transaction for another publisher requires recovery");
+        }
+        registry_types::verify_snapshot(
+            &journal.candidate_snapshot,
+            &identity.owner_pubkey_hex,
+            journal.candidate_snapshot.issued_at_unix,
+        )?;
+        journal
+    } else {
+        let mut selected: Vec<_> = ModerationService::new(storage.clone())
+            .pending_submissions()?
+            .into_iter()
+            .filter(|pending| {
+                pending
+                    .change
+                    .entry
+                    .publisher_pubkey_hex
+                    .eq_ignore_ascii_case(&publisher_pubkey)
+            })
+            .collect();
+        selected.sort_by(|left, right| left.submission_id.cmp(&right.submission_id));
+        selected.truncate(max_items);
+        if selected.is_empty() {
+            println!("{}", serde_json::json!({"status": "noop", "promoted": 0}));
+            return Ok(());
+        }
+        if !first_party.can_add_new
+            && selected
+                .iter()
+                .any(|pending| pending.change.action == EntryAction::Add)
+        {
+            anyhow::bail!("the selected publisher is not authorized to add new packages");
+        }
+        for pending in &selected {
+            verify_change_request(&pending.change, &[publisher_bytes])
+                .map_err(|error| anyhow::anyhow!("verify {}: {error}", pending.submission_id))?;
+            if pending.change.action != EntryAction::Delete {
+                let _inspection = inspect_for_decision(pending, allow_insecure_local)?;
+            }
+        }
+        let current = writer.current()?;
+        if let Some(current) = &current {
+            registry_types::verify_snapshot(
+                current,
+                &identity.owner_pubkey_hex,
+                current.issued_at_unix,
+            )?;
+            writer.archive_current(current)?;
+        }
+        let mut entries = current
+            .as_ref()
+            .map_or_else(Vec::new, |snapshot| snapshot.entries.clone());
+        for pending in &selected {
+            let id = &pending.change.entry.package_id;
+            let existing = entries.iter().position(|entry| entry.package_id == *id);
+            match pending.change.action {
+                EntryAction::Add if existing.is_none() => {
+                    entries.push(pending.change.entry.clone());
+                }
+                EntryAction::Update => {
+                    let Some(index) = existing else {
+                        anyhow::bail!(
+                            "{} no longer applies to the published snapshot",
+                            pending.submission_id
+                        );
+                    };
+                    let Some(entry) = entries.get_mut(index) else {
+                        anyhow::bail!(
+                            "{} no longer applies to the published snapshot",
+                            pending.submission_id
+                        );
+                    };
+                    *entry = pending.change.entry.clone();
+                }
+                EntryAction::Delete => {
+                    let Some(index) = existing else {
+                        anyhow::bail!(
+                            "{} no longer applies to the published snapshot",
+                            pending.submission_id
+                        );
+                    };
+                    entries.remove(index);
+                }
+                EntryAction::Add => anyhow::bail!(
+                    "{} no longer applies to the published snapshot",
+                    pending.submission_id
+                ),
+            }
+        }
+        entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
+        let candidate_snapshot = build_signed_snapshot(
+            storage,
+            current.as_ref(),
+            entries,
+            &owner_key,
+            valid_for_seconds,
+        )?;
+        let journal = PromotionJournal {
+            publisher_pubkey_hex: publisher_pubkey,
+            reviewer: reviewer.to_string(),
+            reason: reason.to_string(),
+            submissions: selected,
+            candidate_snapshot,
+        };
+        storage.save_promotion_transaction(&journal)?;
+        journal
+    };
+
+    // Re-fetch every selected artifact on recovery too. URLs are mutable; the
+    // exact signed whole-file hash makes a changed response fail closed.
+    for pending in &journal.submissions {
+        if pending.change.action != EntryAction::Delete {
+            let _inspection = inspect_for_decision(pending, allow_insecure_local)?;
+        }
+    }
+    let moderation = ModerationService::new(storage.clone());
+    let reviews = moderation.approve_batch(
+        &journal.submissions,
+        &journal.reviewer,
+        &journal.reason,
+        now_unix(),
+        &allowlist,
+    )?;
+    writer.publish(&journal.candidate_snapshot)?;
+    drop(writer);
+    let _deleted = storage.delete_promotion_transaction()?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "published",
+            "promoted": reviews.len(),
+            "sequence": journal.candidate_snapshot.sequence,
+            "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+        })
+    );
+    Ok(())
+}
+
+fn build_signed_snapshot(
+    storage: &Storage,
+    previous: Option<&SignedRegistrySnapshot>,
+    mut entries: Vec<registry_types::RegistryEntry>,
+    key: &ed25519_dalek::SigningKey,
+    valid_for_seconds: u64,
+) -> anyhow::Result<SignedRegistrySnapshot> {
+    let allowlist = storage.load_allowlist()?;
+    let mut publishers: Vec<_> = allowlist
+        .publishers
+        .into_iter()
+        .map(|row| PublisherAuthorization {
+            pubkey_hex: row.pubkey_hex.to_ascii_lowercase(),
+            can_add_new: row.can_add_new,
+        })
+        .collect();
+    publishers.sort_by(|left, right| left.pubkey_hex.cmp(&right.pubkey_hex));
+    entries.sort_by(|left, right| left.package_id.cmp(&right.package_id));
+    let (sequence, previous_snapshot_hash_hex) = match previous {
+        Some(previous) => (
+            previous
+                .sequence
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("snapshot sequence is exhausted"))?,
+            registry_types::snapshot_hash(previous)?,
+        ),
+        None => (1, String::new()),
+    };
+    let issued_at_unix = now_unix();
+    let mut snapshot = SignedRegistrySnapshot {
+        protocol: SNAPSHOT_PROTOCOL,
+        sequence,
+        issued_at_unix,
+        expires_at_unix: issued_at_unix.saturating_add(valid_for_seconds),
+        previous_snapshot_hash_hex,
+        moderation_head_hex: storage.moderation_head()?,
+        publishers,
+        entries,
+        owner_signature_hex: String::new(),
+    };
+    registry_types::sign_snapshot(&mut snapshot, key)?;
+    Ok(snapshot)
 }
 
 fn cmd_sign_snapshot(
@@ -263,7 +527,10 @@ fn cmd_sign_snapshot(
     }
     let identity = storage.load_identity()?;
     let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
-    let previous = storage.load_snapshot()?;
+    let writer = storage.lock_snapshot()?;
+    recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
+    refuse_active_promotion(storage)?;
+    let previous = writer.current()?;
     if let Some(snapshot) = &previous {
         registry_types::verify_snapshot(
             snapshot,
@@ -272,13 +539,16 @@ fn cmd_sign_snapshot(
         )?;
         // Backfill history for registries created before immutable snapshots
         // were introduced. Saving identical bytes is idempotent.
-        storage.save_snapshot(snapshot)?;
+        writer.archive_current(snapshot)?;
     }
     let (sequence, previous_snapshot_hash_hex) = previous.as_ref().map_or_else(
         || Ok((1, String::new())),
         |snapshot| {
             Ok::<_, registry_types::SnapshotError>((
-                snapshot.sequence.saturating_add(1),
+                snapshot
+                    .sequence
+                    .checked_add(1)
+                    .ok_or(registry_types::SnapshotError::Sequence)?,
                 registry_types::snapshot_hash(snapshot)?,
             ))
         },
@@ -309,7 +579,8 @@ fn cmd_sign_snapshot(
     };
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
-    storage.save_snapshot(&snapshot)?;
+    writer.publish(&snapshot)?;
+    drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())
 }
@@ -323,17 +594,20 @@ fn cmd_rollback_snapshot(
     if valid_for_seconds == 0 || valid_for_seconds > registry_types::MAX_SNAPSHOT_VALIDITY_SECONDS {
         anyhow::bail!("snapshot validity must be between 1 second and 7 days");
     }
-    let target = storage
-        .load_snapshot_sequence(to_sequence)?
-        .ok_or_else(|| anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"))?;
-    let current = storage
-        .load_snapshot()?
-        .ok_or_else(|| anyhow::anyhow!("no current snapshot to roll back"))?;
     let identity = storage.load_identity()?;
+    let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
+    let writer = storage.lock_snapshot()?;
+    recover_snapshot_transaction(&writer, &identity.owner_pubkey_hex)?;
+    refuse_active_promotion(storage)?;
+    let target = writer
+        .sequence(to_sequence)?
+        .ok_or_else(|| anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"))?;
+    let current = writer
+        .current()?
+        .ok_or_else(|| anyhow::anyhow!("no current snapshot to roll back"))?;
     registry_types::verify_snapshot(&target, &identity.owner_pubkey_hex, target.issued_at_unix)?;
     registry_types::verify_snapshot(&current, &identity.owner_pubkey_hex, current.issued_at_unix)?;
 
-    let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
     let allowlist = storage.load_allowlist()?;
     let mut publishers: Vec<_> = allowlist
         .publishers
@@ -360,7 +634,10 @@ fn cmd_rollback_snapshot(
     let issued_at_unix = now_unix();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: SNAPSHOT_PROTOCOL,
-        sequence: current.sequence.saturating_add(1),
+        sequence: current
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("snapshot sequence is exhausted"))?,
         issued_at_unix,
         expires_at_unix: issued_at_unix.saturating_add(valid_for_seconds),
         previous_snapshot_hash_hex: registry_types::snapshot_hash(&current)?,
@@ -371,8 +648,36 @@ fn cmd_rollback_snapshot(
     };
     registry_types::sign_snapshot(&mut snapshot, &key)?;
     registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
-    storage.save_snapshot(&snapshot)?;
+    writer.publish(&snapshot)?;
+    drop(writer);
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+fn recover_snapshot_transaction(
+    writer: &registry_server::storage::SnapshotLock<'_>,
+    owner_pubkey_hex: &str,
+) -> anyhow::Result<()> {
+    let Some(pending) = writer.pending_transaction()? else {
+        return Ok(());
+    };
+    registry_types::verify_snapshot(&pending, owner_pubkey_hex, pending.issued_at_unix)
+        .map_err(|error| anyhow::anyhow!("verify pending snapshot transaction: {error}"))?;
+    let recovered = writer
+        .recover()?
+        .ok_or_else(|| anyhow::anyhow!("pending snapshot transaction disappeared"))?;
+    if recovered != pending {
+        anyhow::bail!("recovered snapshot transaction changed unexpectedly");
+    }
+    Ok(())
+}
+
+fn refuse_active_promotion(storage: &Storage) -> anyhow::Result<()> {
+    if storage.load_promotion_transaction()?.is_some() {
+        anyhow::bail!(
+            "a first-party promotion transaction requires recovery; run promote-first-party with its pinned publisher"
+        );
+    }
     Ok(())
 }
 

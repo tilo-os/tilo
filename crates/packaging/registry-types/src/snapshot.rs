@@ -243,6 +243,23 @@ fn entry_within_bounds(entry: &RegistryEntry) -> bool {
             version.version.len() <= 128
                 && version.qpkg_url.len() <= 4_096
                 && version.qpkg_root_hash_hex.len() == 64
+                && version
+                    .qpkg_root_hash_hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                && version.qpkg_blake3_hex.as_ref().is_none_or(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                && version.target.as_ref().is_none_or(|target| {
+                    matches!(target.architecture.as_str(), "x86_64" | "aarch64")
+                        && !target.isa.is_empty()
+                        && target.isa.len() <= 64
+                        && target
+                            .runtime
+                            .as_ref()
+                            .is_none_or(|runtime| runtime.len() <= 256)
+                })
+                && version.qpkg_blake3_hex.is_some() == version.target.is_some()
         })
 }
 
@@ -270,6 +287,8 @@ mod tests {
                 qpkg_root_hash_hex: "ab".repeat(32),
                 qpkg_size_bytes: 1,
                 released_at_unix: 1,
+                qpkg_blake3_hex: None,
+                target: None,
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),
