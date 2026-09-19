@@ -1,6 +1,8 @@
 # Nonpublishing app packaging adapter
 
-Consolidated with main through `f6acde7bb`; not dispatched or activated. This reuses
+Source checkpoint `d4e96bedb`; product packaging qualification and continuous
+publication remain inactive. The separate service-account fixture dispatch
+described below does not qualify the packaging workflow. This reuses
 `app_packaging_coordinator.Store`, transactions, intent-before-POST protocol and
 latest-pending state machine. There is no second queue implementation or service.
 The private fixture adapter and its ten regression tests remain supported.
@@ -33,8 +35,9 @@ with no coordinator inputs is preserved.
 
 ## Baseline semantics and verification seam
 
-A successful workflow alone does **not** advance the product baseline. A build stays
-active with status `awaiting-verification`, blocking later desired sources. A
+A successful workflow alone does **not** advance the product baseline. Without
+an installed verifier, a build stays active with status `awaiting-verification`,
+blocking later desired sources. A
 trusted verifier callback must independently verify the authenticated final
 artifacts, then return:
 
@@ -56,8 +59,12 @@ artifacts, then return:
 ```
 
 This is a trusted-code callback return contract, **not** an importable JSON proof
-or a flag in a candidate artifact. No CLI verifier provider exists yet. Therefore
-the current adapter cannot autonomously accept a successful package build.
+or a flag in a candidate artifact. The low-level product CLI deliberately has no
+verifier installed and cannot accept a successful package build by itself. The
+[managed service entrypoint](PACKAGING-SERVICE.md) installs
+`FinalArtifactAcceptance` with platform-owned policies and bounded authenticated
+clients before invoking the same coordinator. That implementation is locally
+tested; complete live collection acceptance remains unqualified.
 
 Zero-app plans have a separate cheap completion path. The existing trusted plan
 job uploads `coordinator-plan-<plan attempt>` and logs its intent-bound content
@@ -75,8 +82,8 @@ diffs from that package baseline. An empty first bootstrap leaves the baseline
 null. Repeated ticks/restarts for the handled desired receipt remain idle. A later
 verified package build clears the handled marker when installing its new baseline.
 
-Integrate the existing independent artifact-verification work instead of
-reimplementing signing/parsing: `final_app_receipt.verify(tree, pkg, runtime,
+The callback reuses the existing independent artifact-verification work:
+`final_app_receipt.verify(tree, pkg, runtime,
 policy_path, policy_sha, source, architecture)` verifies a fresh archive/tree
 using independently pinned policy and canonical binary hashes. Its receipt does
 not bind run ID or builder digest; the adapter's artifact retrieval must bind
@@ -87,18 +94,30 @@ This branch includes `assemble_verified_apps.py` and a guarded nonpublishing
 final-assembly job. Changed apps must come from the current build; only unselected
 apps may be reused from the exact verified baseline. The final collection is
 canonically verified again and retained with its receipt and assembly provenance.
-This does not install the controller's independent acceptance callback. That
-callback must authenticate artifacts and bind current job attempts, source,
-builder and scope before replaying verification for every architecture.
-Candidate receipt or provenance claims alone are insufficient.
+The managed service's independent acceptance callback authenticates artifacts
+and binds current job attempts, source, builder and scope before replaying
+verification for every requested architecture. Candidate receipt or provenance
+claims alone are insufficient. Assembly wiring and local callback tests do not
+establish a successfully accepted live collection.
 
 Read-only live API checks on 2026-09-19 confirmed the jobs endpoint's array
 response and `attempt`, `task_id`, `handle`, `repo_id`, `run_id` fields; artifact
 listing also returns an array with run identity, expiry and byte size. Fetching
 artifact 34748's ZIP returned HTTP 200 without a redirect using an operator
-credential. Built-in workflow-token access to historical artifacts and the
-new plan artifact's run/attempt binding still need live qualification. The
-operator probe does not establish either permission or end-to-end acceptance.
+credential. Subsequently, nonadmin service account `qos-packaging-controller`
+(user 82) dispatched the tiny `artifact-token-probe.yml` fixture at immutable
+source `a987e76ba`: API run 23095/job 84767 succeeded, and its built-in job token
+read historical artifact 38734 from run 22993. Infra records this bounded result
+in `apps/forgejo/packaging-controller/qualification/service-dispatch.json`.
+This proves that historical-token read for that fixture; the real packaging
+plan artifact's current-attempt/partial-rerun binding and end-to-end collection
+acceptance still need live qualification.
+
+The dedicated account's read/Git permission boundaries and the exact x86 native
+verifier bundle's signed-fixture acceptance/corruption rejection are also
+qualified separately in infra's qualification record. These results do not
+qualify ARM replay, an actual full app collection, incremental reuse, or
+continuous packaging activation.
 
 The first verified build has no baseline and selects the whole collection.
 Subsequent compatible default-collection builds use the prior **verified packaging** source and the
@@ -125,10 +144,11 @@ baseline does not claim a downloadable release has been published.
    set is a guardrail, not an automatic proof of complete closure. Use a policy
    stored outside candidate checkout, signed/reviewed immutable revisions and
    matching immutable builder trust. Do not accept hashes proposed by a candidate.
-2. Complete and test the callback above on authenticated final nonpublishing
-   artifacts with independent policies and canonical executable hashes. Bind
-   run/job/current attempts, source, builder, scope and receipt bytes. Until then
-   successful runs intentionally stop at `awaiting-verification`.
+2. Qualify the implemented managed callback on actual final nonpublishing
+   collection artifacts with independent policies and canonical executable
+   hashes. Prove run/job/current-attempt, source, builder, scope and receipt
+   bindings live. The low-level CLI without a verifier continues to stop at
+   `awaiting-verification`; using the managed entrypoint does not waive acceptance.
    The validator callback executes outside the SQLite write transaction. Before
    committing its result, the coordinator rechecks the complete active intent.
    New desired revisions can be recorded during replay; a concurrent change to
@@ -165,14 +185,20 @@ baseline does not claim a downloadable release has been published.
    partial rerun. It must also verify the installed CLI's raw ZIP/log responses.
    Raw capture reads at most the limit plus one byte and kills/reaps the CLI on
    overflow or timeout; this does not bound the CLI's internal HTTP buffering.
-3. Provision a dedicated least-privilege product qualification identity and
-   protected credentials; the existing integrator identity has pilot-only access.
-   The default interactive fgj administrator profile is not a service identity.
-   Prove dispatch/read scopes and retain `publish=false` publication guards.
-4. Provision one durable local SQLite database shared by all coordinator workers
-   on one host (not a network filesystem), backup/recovery and strict ownership.
-   Keep publication and qualification states separate. Observe monotonically
-   sequenced eligible committed sources; no scheduler is installed here.
+3. Use the provisioned nonadmin packaging account and protected credentials,
+   preserving the qualified read/Git boundaries and `publish=false` guards.
+   Its successful fixture dispatch does not qualify the real packaging workflow.
+   Actions write remains repository-wide; managed transport restrictions do not
+   make the server grant workflow-specific. The separate integrator identity has
+   pilot-only access, and the interactive fgj administrator profile is not a
+   service identity.
+4. Use one durable local SQLite database shared by all coordinator workers,
+   with strict ownership and qualified backup/recovery. Infra's separate
+   `controller-runtime.json` records actual local ZFS PVC persistence and locking
+   across two Pods with a simulated dispatch crash. That bounded proof does not
+   qualify backup restoration or a real ambiguous Forgejo dispatch. Keep
+   publication and qualification states separate and observe monotonically
+   sequenced eligible committed sources; the production controller remains disabled.
 5. Enable the repository variable and external policy only for an explicitly
    bounded qualification through normal scheduler admission; prove full-SHA input handling and
    artifact verification live. Reconcile uncertain dispatches before any repeat.
