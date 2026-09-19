@@ -21285,9 +21285,10 @@ mod empty_workspace_tests {
                 "Tasks",
                 "Plan a meeting",
                 "Invite people",
-                "Catch up"
+                "Catch up",
+                "Open an app"
             ],
-            "first use presents the actual collaboration jobs, not a generic app picker"
+            "first use presents collaboration jobs plus one explicit app-launch escape hatch"
         );
         let rect = launchpad_rect(host.content.as_ref()).expect("launchpad is mounted");
         assert!(
