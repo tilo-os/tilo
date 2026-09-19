@@ -141,13 +141,21 @@ def next_action(state):
 
 
 def accept_run(store, intent_id, run, validator=validate_run):
+    observed = store.read()['active']
+    if not observed or observed['id'] != intent_id:
+        raise ValueError('active intent changed')
+    if observed.get('run_id') not in (None, run['id']):
+        raise ValueError('run ID conflicts with accepted dispatch')
+    fingerprint = canonical(observed)
+    # Artifact downloads and canonical verification can be slow. Observers must
+    # remain able to record the newest desired revision while that work runs.
+    evidence = validator(observed, run)
     with store.transaction() as state:
         intent = state['active']
         if not intent or intent['id'] != intent_id:
             raise ValueError('active intent changed')
-        if intent.get('run_id') not in (None, run['id']):
-            raise ValueError('run ID conflicts with accepted dispatch')
-        evidence = validator(intent, run)
+        if canonical(intent) != fingerprint:
+            raise ValueError('active intent changed during verification')
         intent.update(run_id=run['id'], status=run['status'], updated_at=time.time())
         if run['status'] in TERMINAL:
             if run['status'] == 'success':
