@@ -250,7 +250,7 @@ pub struct Saver {
 
 enum SaverMsg {
     Save(Workspace),
-    Flush,
+    Flush(Option<Sender<Result<(), String>>>),
     Stop,
 }
 
@@ -302,10 +302,20 @@ impl Saver {
         let _ = self.tx.send(SaverMsg::Save(workspace));
     }
 
-    /// Force an immediate flush of any pending workspace. Blocks until
-    /// the writer thread has processed the request.
+    /// Queue an immediate flush of any pending workspace.
     pub fn flush(&self) {
-        let _ = self.tx.send(SaverMsg::Flush);
+        let _ = self.tx.send(SaverMsg::Flush(None));
+    }
+
+    /// Wait for queued saves and report failed or disconnected storage.
+    pub fn try_flush(&self) -> Result<(), String> {
+        let (sender, receiver) = mpsc::channel();
+        self.tx
+            .send(SaverMsg::Flush(Some(sender)))
+            .map_err(|_| "Notebook writer disconnected".to_string())?;
+        receiver
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|error| format!("Notebook flush did not complete: {error}"))?
     }
 
     pub fn debounce(&self) -> Duration {
@@ -320,7 +330,7 @@ impl Saver {
 
 impl Drop for Saver {
     fn drop(&mut self) {
-        let _ = self.tx.send(SaverMsg::Flush);
+        let _ = self.tx.send(SaverMsg::Flush(None));
         let _ = self.tx.send(SaverMsg::Stop);
         if let Some(j) = self.join_handle.take() {
             let _ = j.join();
@@ -344,7 +354,7 @@ pub struct PageSaver {
 
 enum PageSaverMsg {
     Save(PageId, String),
-    Flush,
+    Flush(Option<Sender<Result<(), String>>>),
     Stop,
 }
 
@@ -401,30 +411,26 @@ impl PageSaver {
     /// need a deterministic on-disk state, see
     /// [`PageSaver::flush_blocking`].
     pub fn flush(&self) {
-        let _ = self.tx.send(PageSaverMsg::Flush);
+        let _ = self.tx.send(PageSaverMsg::Flush(None));
     }
 
-    /// Synchronous flush: writes every pending body inline and
-    /// returns. Used in tests so callers don't have to sleep for the
-    /// debounce window.
-    pub fn flush_blocking(&self, root: &std::path::Path) {
-        // We can't block on the worker easily, so do the writes
-        // directly. The worker's queue may still hold older saves
-        // — those land on the next debounce tick. This is fine for
-        // tests because the *latest* body for each page is what we
-        // want to assert against.
-        //
-        // In production code (Drop), we send Flush+Stop and join.
-        let _ = self.tx.send(PageSaverMsg::Flush);
-        // Give the worker thread a brief slice to process. Most
-        // tests don't need this — the debounced thread will write
-        // before the test reads — but if a caller writes then
-        // immediately reads, the worker hasn't yet got the cycle.
-        //
-        // Worker writes are idempotent: the same body written twice
-        // is identical bytes. So even if the inline path below races
-        // with the worker, the final disk state is correct.
-        let _ = root;
+    /// Wait for queued bodies and report failed or disconnected storage.
+    pub fn try_flush(&self) -> Result<(), String> {
+        let (sender, receiver) = mpsc::channel();
+        self.tx
+            .send(PageSaverMsg::Flush(Some(sender)))
+            .map_err(|_| "Note body writer disconnected".to_string())?;
+        receiver
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|error| format!("Note body flush did not complete: {error}"))?
+    }
+
+    /// Compatibility helper for callers that need a completed body flush.
+    /// Prefer `try_flush` when the caller can report storage failures.
+    pub fn flush_blocking(&self, _root: &std::path::Path) {
+        if let Err(error) = self.try_flush() {
+            tracing::error!(%error, "notes: blocking body flush failed");
+        }
     }
 
     pub fn debounce(&self) -> Duration {
@@ -439,7 +445,7 @@ impl PageSaver {
 
 impl Drop for PageSaver {
     fn drop(&mut self) {
-        let _ = self.tx.send(PageSaverMsg::Flush);
+        let _ = self.tx.send(PageSaverMsg::Flush(None));
         let _ = self.tx.send(PageSaverMsg::Stop);
         if let Some(j) = self.join_handle.take() {
             let _ = j.join();
@@ -496,44 +502,68 @@ fn page_saver_loop(
                 last_request = Some(Instant::now());
                 status.store(SaveStatus::Saving.as_u8(), Ordering::Release);
             }
-            Some(PageSaverMsg::Flush) => {
-                let drained: Vec<(PageId, String)> = lock(pending).drain().collect();
-                let mut all_ok = true;
-                for (id, body) in drained {
-                    if let Err(e) = write_page_body(root, id, &body) {
-                        tracing::error!(error = %e, page = %id, "notes: page body save failed");
-                        all_ok = false;
-                    }
-                }
+            Some(PageSaverMsg::Flush(ack)) => {
+                let result = flush_page_bodies(pending, root);
                 last_request = None;
-                let new_status = if all_ok {
-                    SaveStatus::Saved
-                } else {
-                    SaveStatus::Failed
-                };
-                status.store(new_status.as_u8(), Ordering::Release);
+                status.store(
+                    if result.is_ok() {
+                        SaveStatus::Saved
+                    } else {
+                        SaveStatus::Failed
+                    }
+                    .as_u8(),
+                    Ordering::Release,
+                );
+                if let Some(ack) = ack {
+                    let _ = ack.send(result);
+                }
             }
             Some(PageSaverMsg::Stop) => return,
             None => {
-                // Timeout — flush every pending body.
-                let drained: Vec<(PageId, String)> = lock(pending).drain().collect();
-                let mut all_ok = true;
-                for (id, body) in drained {
-                    if let Err(e) = write_page_body(root, id, &body) {
-                        tracing::error!(error = %e, page = %id, "notes: page body save failed");
-                        all_ok = false;
-                    }
-                }
+                let result = flush_page_bodies(pending, root);
                 last_request = None;
-                let new_status = if all_ok {
-                    SaveStatus::Saved
-                } else {
-                    SaveStatus::Failed
-                };
-                status.store(new_status.as_u8(), Ordering::Release);
+                status.store(
+                    if result.is_ok() {
+                        SaveStatus::Saved
+                    } else {
+                        SaveStatus::Failed
+                    }
+                    .as_u8(),
+                    Ordering::Release,
+                );
             }
         }
     }
+}
+
+fn flush_page_bodies(
+    pending: &Arc<Mutex<std::collections::HashMap<PageId, String>>>,
+    root: &Path,
+) -> Result<(), String> {
+    let drained: Vec<_> = lock(pending).drain().collect();
+    let mut errors = Vec::new();
+    for (id, body) in drained {
+        if let Err(error) = write_page_body(root, id, &body) {
+            errors.push(error.to_string());
+            lock(pending).insert(id, body);
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+fn flush_workspace(pending: &Arc<Mutex<Option<Workspace>>>, root: &Path) -> Result<(), String> {
+    let Some(workspace) = lock(pending).take() else {
+        return Ok(());
+    };
+    if let Err(error) = save_workspace(root, &workspace) {
+        *lock(pending) = Some(workspace);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 fn saver_loop(
@@ -581,41 +611,35 @@ fn saver_loop(
                 last_request = Some(Instant::now());
                 status.store(SaveStatus::Saving.as_u8(), Ordering::Release);
             }
-            Some(SaverMsg::Flush) => {
-                let to_write = lock(pending).take();
-                let mut ok = true;
-                if let Some(w) = to_write
-                    && let Err(e) = save_workspace(root, &w)
-                {
-                    tracing::error!(error = %e, "notes: workspace save failed");
-                    ok = false;
-                }
+            Some(SaverMsg::Flush(ack)) => {
+                let result = flush_workspace(pending, root);
                 last_request = None;
-                let new_status = if ok {
-                    SaveStatus::Saved
-                } else {
-                    SaveStatus::Failed
-                };
-                status.store(new_status.as_u8(), Ordering::Release);
+                status.store(
+                    if result.is_ok() {
+                        SaveStatus::Saved
+                    } else {
+                        SaveStatus::Failed
+                    }
+                    .as_u8(),
+                    Ordering::Release,
+                );
+                if let Some(ack) = ack {
+                    let _ = ack.send(result);
+                }
             }
             Some(SaverMsg::Stop) => return,
             None => {
-                // Timeout — flush the pending snapshot.
-                let to_write = lock(pending).take();
-                let mut ok = true;
-                if let Some(w) = to_write
-                    && let Err(e) = save_workspace(root, &w)
-                {
-                    tracing::error!(error = %e, "notes: workspace save failed");
-                    ok = false;
-                }
+                let result = flush_workspace(pending, root);
                 last_request = None;
-                let new_status = if ok {
-                    SaveStatus::Saved
-                } else {
-                    SaveStatus::Failed
-                };
-                status.store(new_status.as_u8(), Ordering::Release);
+                status.store(
+                    if result.is_ok() {
+                        SaveStatus::Saved
+                    } else {
+                        SaveStatus::Failed
+                    }
+                    .as_u8(),
+                    Ordering::Release,
+                );
             }
         }
     }
@@ -689,6 +713,40 @@ mod tests {
         assert_eq!(back.get(a).unwrap().title, "Root");
         assert_eq!(back.get(b).unwrap().title, "Child");
         assert_eq!(back.selected(), Some(b));
+    }
+
+    #[test]
+    fn checked_flush_reports_and_retains_failed_writes_until_recovery() {
+        let temp = TempDir::new().unwrap();
+        ensure_layout(temp.path()).unwrap();
+        let mut workspace = Workspace::new();
+        let page = workspace.create_page(None);
+        let body_path = page_file_path(temp.path(), page);
+        std::fs::create_dir(&body_path).unwrap();
+        let bodies = PageSaver::spawn(temp.path().to_path_buf(), Duration::from_secs(60)).unwrap();
+        bodies.request(page, "Retained body".into());
+        assert!(bodies.try_flush().is_err());
+        assert_eq!(bodies.status(), SaveStatus::Failed);
+        assert!(
+            bodies.try_flush().is_err(),
+            "empty subsequent flush must not erase a failed write"
+        );
+        std::fs::remove_dir(&body_path).unwrap();
+        bodies.try_flush().unwrap();
+        assert_eq!(std::fs::read_to_string(body_path).unwrap(), "Retained body");
+
+        let metadata_path = workspace_file_path(temp.path());
+        std::fs::create_dir(&metadata_path).unwrap();
+        let metadata = Saver::spawn(temp.path().to_path_buf(), Duration::from_secs(60)).unwrap();
+        metadata.request(workspace);
+        assert!(metadata.try_flush().is_err());
+        assert!(metadata.try_flush().is_err());
+        std::fs::remove_dir(metadata_path).unwrap();
+        metadata.try_flush().unwrap();
+        assert_eq!(
+            load_workspace(temp.path()).unwrap().unwrap().pages().len(),
+            1
+        );
     }
 
     #[test]
