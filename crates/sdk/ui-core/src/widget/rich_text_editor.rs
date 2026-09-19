@@ -928,7 +928,7 @@ impl Widget for RichTextEditor {
             let border = if self.focused {
                 theme.border_focus
             } else {
-                theme.border_standard
+                crate::surface::edge_on(theme.bg_primary)
             };
             scene.stroke(&Stroke::new(1.0), transform, border, None, &body);
         }

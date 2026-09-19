@@ -592,6 +592,7 @@ extern "C" fn on_export_shm_buffer(
                 rgba.set_len(n);
                 crate::webview::profile::record_frame(width, height, swizzle_start.elapsed());
                 *state.shared.frames.lock().unwrap() = Some(Frame {
+                    trace_id: None,
                     rgba: Arc::new(rgba),
                     width,
                     height,
@@ -997,10 +998,13 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                     load_uri(state, &uri);
                 }
             }
+            WebViewCommand::RequestNavigationHistory { .. }
+            | WebViewCommand::NavigateToHistoryEntry { .. } => {}
             WebViewCommand::GoBack => ffi::webkit_web_view_go_back(state.view),
             WebViewCommand::GoForward => ffi::webkit_web_view_go_forward(state.view),
             WebViewCommand::Reload => ffi::webkit_web_view_reload(state.view),
             WebViewCommand::StopLoading => ffi::webkit_web_view_stop_loading(state.view),
+            WebViewCommand::SetAudioMuted(_) => {}
             WebViewCommand::Resize {
                 width,
                 height,
@@ -1271,6 +1275,23 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                     }
                 }
             }
+            WebViewCommand::SetClearOnExit(_)
+            | WebViewCommand::ShowDeveloperTools
+            | WebViewCommand::PermissionDecision { .. }
+            | WebViewCommand::DownloadDecision { .. }
+            | WebViewCommand::Find { .. }
+            | WebViewCommand::ContextMenuAction { .. }
+            | WebViewCommand::StopFinding
+            | WebViewCommand::SetZoomLevel(_)
+            | WebViewCommand::CancelNativeDownload { .. }
+            | WebViewCommand::RetryDownload { .. }
+            | WebViewCommand::CancelAllDownloads
+            | WebViewCommand::SetNativeFilterRules { .. }
+            | WebViewCommand::SetBlockingScripts(_)
+            | WebViewCommand::SetSiteExceptions(_)
+            | WebViewCommand::RequestSiteStatus { .. }
+            | WebViewCommand::Credentials(_)
+            | WebViewCommand::SiteAction { .. } => {}
             WebViewCommand::StartDownload { uri } => {
                 if (uri.starts_with("https://") || uri.starts_with("http://"))
                     && let Ok(uri) = CString::new(uri)
