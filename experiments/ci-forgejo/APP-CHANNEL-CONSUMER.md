@@ -1,7 +1,9 @@
 # Real app publication receipts and pinned channel consumption
 
 `tools/app_channel_manifest.py` supplies the schema/adapter and reader for the
-production transition. **No workflow is wired to it yet and no channel is written.**
+production transition. The release build now generates and uploads unpublished
+receipts using its already-built canonical Rust verifiers. **Channel consumption
+and promotion remain inactive; no channel is written.**
 The private atomic-promotion CLI remains unchanged and restricted to its fixture.
 
 ## Existing consumers and concrete migration
@@ -104,3 +106,30 @@ All nine tests use the standard library. Receipt creation additionally requires
 the explicitly selected verifier's dependencies; the retained historical replay
 uses its isolated WSL venv with `blake3` and `cryptography`. No verifier is downloaded,
 no global package is installed, and no publication is performed by this tool.
+
+## Staged canonical build receipts
+
+`release-apps.yml` invokes `tools/create_app_receipt.py` after packaging, including
+manual `publish=false` runs. It calls `tilo-pkg verify` with explicit trusted keys
+and `tilo-runtime-bundle verify` with required publisher, signature and architecture.
+The Python adapter uses the standard library; production receipt generation does
+not depend on the experimental Python crypto implementation. Signer public keys
+are captured from the signing invocation, not inferred from downloaded packages.
+Canonical executable hashes and the adapter hash are recorded and checked.
+
+Only `publication-receipt.json` and `verification-policy.json` are added to public
+artifact uploads; the work directory and private signing identities are excluded.
+The generated policy and executable hashes are **build-observed metadata, not
+independently trusted provenance**. Consumers must use separately reviewed policy
+and must never automatically adopt the uploaded policy as a trust root.
+
+These receipts cover the build archive, which can contain only selected apps.
+The publisher later merges prior artifacts and assembles a different collection:
+its final archive still needs canonical verification and a fresh receipt before
+trusted upload confirmation and channel promotion. This change does not qualify
+that final publication path or enable continuous publishing. The next production
+slice should retain canonical tools/public signer inputs through assembly, verify
+the merged archive, and bind its immutable upload receipt before promotion.
+
+See [retained artifact evidence](canonical-app-receipts-20406/README.md) for actual
+canonical verification without recompilation.
