@@ -91,7 +91,7 @@ extern "C" {
 
 #[cfg(test)]
 mod test {
-    use crate::{spa_type_media_type, SPA_MEDIA_TYPE_audio};
+    use crate::{SPA_MEDIA_TYPE_audio, spa_type_media_type};
 
     use std::ffi;
 
