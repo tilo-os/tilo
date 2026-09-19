@@ -127,6 +127,20 @@ mod component_adapter {
         reason = "existing Widget callback signatures"
     )]
     impl Widget for BoundAppWidget {
+        fn unsaved_documents(
+            &self,
+            _: &AutoCommit,
+        ) -> Vec<crate::close_admission::UnsavedDocument> {
+            self.component.unsaved_documents()
+        }
+        fn checkpoint_components(&mut self) -> Vec<String> {
+            self.component.checkpoint_for_close()
+        }
+        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            self.component.finish_admitted_close();
+            self.component.take_close_reports()
+        }
+
         fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
             self.component.close();
             self.component.take_close_reports()
