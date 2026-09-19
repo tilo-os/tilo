@@ -218,12 +218,22 @@ else
   ok 'headless relay excludes the OpenSSL-linked VPN plugin and unused hardware daemons'
 fi
 
-if rg -n 'Command::new\("ssh"\)|^[[:space:]]*(exec[[:space:]]+)?ssh[[:space:]]' \
-    "$repo/os/usr" "$repo/apps" "$repo/crates" "$repo/shell" \
-    -g '*.rs' -g '*.sh' -g '!**/tests/**' >/dev/null; then
-  bad 'Tilo-owned runtime source invokes OpenSSH outside the reviewed distro dependency exception'
-else
-  ok 'Tilo-owned Remote transport does not invoke the distro OpenSSH CLI'
+runtime_source_roots=("$repo/os/usr" "$repo/apps" "$repo/crates")
+missing_runtime_source_root=0
+for root in "${runtime_source_roots[@]}"; do
+  if [ ! -d "$root" ]; then
+    bad "runtime source scan root does not exist: ${root#"$repo/"}"
+    missing_runtime_source_root=1
+  fi
+done
+if [ "$missing_runtime_source_root" -eq 0 ]; then
+  if rg -n 'Command::new\("ssh"\)|^[[:space:]]*(exec[[:space:]]+)?ssh[[:space:]]' \
+      "${runtime_source_roots[@]}" \
+      -g '*.rs' -g '*.sh' -g '!**/tests/**' >/dev/null; then
+    bad 'Tilo-owned runtime source invokes OpenSSH outside the reviewed distro dependency exception'
+  else
+    ok 'Tilo-owned Remote transport does not invoke the distro OpenSSH CLI'
+  fi
 fi
 
 runtime_network="$(sed -n '/# System utilities\./,/xdg-desktop-portal/p' "$repo/os/Containerfile")"
