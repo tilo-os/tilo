@@ -34,6 +34,7 @@ on:
       - "tools/ci/__init__.py"
       - "tools/ci/affected_packages.py"
       - "tools/ci/check-build-env.sh"
+      - "tools/ci/app_release_history.py"
       - "tools/ci/python.py"
       - "tools/ci/resolve_builder.py"
       - "tools/ci/rustc-thin-app-wrapper.sh"
@@ -123,7 +124,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          # Planning reads the event tree plus at most one exact comparison
+          # commit. Tag ancestry is deepened separately against one main tip.
+          fetch-depth: 1
       - name: Resolve one immutable builder for every architecture
         id: builder
         # PRs only select affected apps; no builder-dependent job runs for them.
@@ -161,13 +164,17 @@ jobs:
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
+          use_base() {
+            python3 -I tools/ci/python.py tools/ci/app_release_history.py fetch-base "$1"
+            args+=(--base "$1")
+          }
           case "$GITHUB_REF" in
             refs/tags/app-*-v*) args+=(--tag "$GITHUB_REF_NAME") ;;
             refs/tags/apps-v*) args+=(--collection "${REQUESTED_COLLECTION:-default}") ;;
             *)
               if [[ -n ${COORDINATOR_INTENT:-} ]]; then
                 if [[ -n ${BASELINE_SHA:-} ]]; then
-                  args+=(--base "$BASELINE_SHA")
+                  use_base "$BASELINE_SHA"
                 else
                   args+=(--collection "${REQUESTED_COLLECTION:-default}")
                 fi
@@ -183,7 +190,7 @@ jobs:
                 if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
                   args+=(--collection default)
                 else
-                  args+=(--base "$base")
+                  use_base "$base"
                 fi
               fi
               ;;
@@ -214,8 +221,8 @@ jobs:
               exit 1
             fi
             if [[ $GITHUB_REF != refs/heads/main ]]; then
-              git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-              git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+              python3 -I tools/ci/python.py tools/ci/app_release_history.py \
+                require-main-ancestor "$GITHUB_SHA"
             fi
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
@@ -287,7 +294,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          # The plan already selected the build inputs; compilation needs only
+          # the immutable event tree.
+          fetch-depth: 1
       - name: Validate native architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Restore Cargo downloads
@@ -371,7 +380,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          ref: ${{ github.sha }}
+          fetch-depth: 1
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release
@@ -450,7 +460,10 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
+          # Publication derives its source epoch from this exact commit and
+          # reuses prior collections over HTTPS; it needs no Git history.
+          ref: ${{ github.sha }}
+          fetch-depth: 1
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release
@@ -523,7 +536,8 @@ jobs:
           [[ -n ${COLLECTION:-} ]] || exit 0
           collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
           python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
-          source_epoch=$(git log -1 --format=%ct)
+          source_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
+          [[ $source_epoch =~ ^[0-9]+$ ]]
           channel_url=
           channel_sha=
           for index in release/*/index.json; do

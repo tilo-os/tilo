@@ -9,6 +9,23 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AppReleaseWorkflowContract(unittest.TestCase):
+    def test_each_job_checks_out_only_the_exact_event_commit(self):
+        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        checkouts = source.split('uses: actions/checkout@')[1:]
+        self.assertEqual(len(checkouts), 4)
+        for checkout in checkouts:
+            block = checkout.split('\n      - ', 1)[0]
+            self.assertIn('ref: ${{ github.sha }}', block)
+            self.assertIn('fetch-depth: 1', block)
+            self.assertNotIn('fetch-depth: 0', block)
+
+        plan = source.split('\n  plan:\n', 1)[1].split('\n  build:\n', 1)[0]
+        self.assertIn('app_release_history.py fetch-base "$1"', plan)
+        self.assertIn('require-main-ancestor "$GITHUB_SHA"', plan)
+        self.assertNotIn('+refs/heads/main:refs/remotes/origin/main', plan)
+        publish = source.split('\n  publish:\n', 1)[1]
+        self.assertIn('git show -s --format=%ct "$GITHUB_SHA"', publish)
+
     def test_every_main_pr_plans_but_never_packages(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         self.assertIn('- "tools/apps/**"', source)
