@@ -327,7 +327,11 @@ async fn server_refuses_a_tampered_or_expired_published_snapshot() {
     let h = spawn_server(true).await;
     let mut snapshot = h.storage.load_snapshot().unwrap().unwrap();
     snapshot.expires_at_unix = 1;
-    h.storage.save_snapshot(&snapshot).unwrap();
+    std::fs::write(
+        h.storage.snapshot_path(),
+        serde_json::to_vec_pretty(&snapshot).unwrap(),
+    )
+    .unwrap();
     let response = reqwest::Client::new()
         .get(url(h.addr, "/entries"))
         .send()

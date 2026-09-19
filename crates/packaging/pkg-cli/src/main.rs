@@ -34,7 +34,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 
@@ -65,6 +65,23 @@ const QPKG_FORMAT: u32 = 1;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum RegistryAction {
+    Add,
+    Update,
+    Delete,
+}
+
+impl From<RegistryAction> for registry_types::EntryAction {
+    fn from(value: RegistryAction) -> Self {
+        match value {
+            RegistryAction::Add => Self::Add,
+            RegistryAction::Update => Self::Update,
+            RegistryAction::Delete => Self::Delete,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -157,11 +174,12 @@ enum Command {
         /// Public URL the .qpkg will be downloadable from.
         #[arg(long)]
         url: String,
-        /// Publisher identity JSON that signs the entry; a fresh key is
-        /// generated when absent (fine locally — `tilo-install` re-verifies
-        /// the package's own signature).
+        /// Publisher identity JSON that signed the qpkg and signs this entry.
         #[arg(long)]
-        identity: Option<PathBuf>,
+        identity: PathBuf,
+        /// Wrap the entry in the signed mutation shape accepted by POST /entries.
+        #[arg(long)]
+        action: Option<RegistryAction>,
         /// The .qpkg to describe.
         file: PathBuf,
     },
@@ -203,8 +221,9 @@ fn main() -> Result<()> {
         Command::Entry {
             url,
             identity,
+            action,
             file,
-        } => cmd_entry(&file, &url, identity.as_deref()),
+        } => cmd_entry(&file, &url, &identity, action),
     }
 }
 
@@ -726,6 +745,14 @@ fn registry_entry_for(
     signer: &SigningKey,
 ) -> Result<registry_types::RegistryEntry> {
     let meta = app_registry::qpkg::load(qpkg_bytes).map_err(|e| anyhow!("load qpkg: {e}"))?;
+    let declared = meta
+        .manifest
+        .publisher
+        .identity_bytes()
+        .map_err(|e| anyhow!("manifest publisher identity: {e}"))?;
+    if declared != signer.verifying_key().to_bytes() {
+        bail!("registry entry identity does not match the qpkg publisher");
+    }
     let package = &meta.manifest.package;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -753,16 +780,28 @@ fn registry_entry_for(
     Ok(entry)
 }
 
-fn cmd_entry(file: &Path, url: &str, identity: Option<&Path>) -> Result<()> {
+fn cmd_entry(
+    file: &Path,
+    url: &str,
+    identity: &Path,
+    action: Option<RegistryAction>,
+) -> Result<()> {
     let qpkg_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
-    let signer = match identity {
-        Some(p) => load_signing_key(p)?,
-        None => SigningKey::generate(&mut rand::rngs::OsRng),
-    };
+    let signer = load_signing_key(identity)?;
     let entry = registry_entry_for(&qpkg_bytes, url, &signer)?;
+    let output = action.map_or_else(
+        || serde_json::to_value(&entry),
+        |action| {
+            serde_json::to_value(registry_types::sign_change_request(
+                action.into(),
+                entry.clone(),
+                &signer,
+            ))
+        },
+    )?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&entry).context("encode entry")?
+        serde_json::to_string_pretty(&output).context("encode entry")?
     );
     // `registry_entry_for` always builds exactly one version; `.first()`
     // avoids indexing so a future refactor there can't turn this into a panic.

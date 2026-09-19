@@ -169,6 +169,29 @@ Publishers build a `RegistryEntry`, sign it with `sign_entry`
 (from `registry-types`), then POST an `EntryChangeRequest` to
 `/entries`. Publisher tooling should derive the advertised root hash and
 size from the final locally-built `.qpkg`, never from an intermediate build.
+CI can generate the complete request from those final bytes with the same
+identity that signed the package:
+
+```text
+tilo-pkg entry \
+  --identity /run/secrets/app-publisher.json \
+  --action update \
+  --url https://packages.example/immutable/app.qpkg \
+  app.qpkg > request.json
+curl --fail --header 'Content-Type: application/json' \
+  --data-binary @request.json https://apps.example/entries
+```
+
+Use `--action add` for the first version. The command refuses an identity that
+does not match the publisher embedded in the qpkg, so the registry submission
+cannot relabel artifacts signed by another key.
+
+The current `RegistryVersion` wire shape has no architecture field and the
+catalogue selects the first version. Until that protocol carries target
+selection, the official registry publication lane must advertise one native
+architecture (currently `x86_64`) even if CI retains immutable `aarch64`
+artifacts alongside it. Do not publish a macOS package through this Linux qpkg
+lane.
 
 ### 6. Moderator workflow
 
@@ -208,6 +231,24 @@ sequence, predecessor hash, validity window, and current moderation-log head.
 It atomically writes `published-snapshot.json`. The long-running `serve` process
 only has the public identity and refuses to serve a missing, expired, tampered,
 or otherwise invalid snapshot; it never receives the owner private key.
+
+Every successful signing also retains the exact signed JSON under
+`snapshots/<sequence>-<hash>.json` before advancing `published-snapshot.json`.
+These small immutable files are the channel history and should share the data
+directory's backup policy. Roll back catalogue contents by publishing a new,
+higher sequence from one of them:
+
+```text
+tilo-registry-server rollback-snapshot \
+  --to-sequence 41 \
+  --owner-key-file /secure/registry-owner.seed \
+  --valid-for-seconds 86400
+```
+
+The command does not replay sequence 41. It signs sequence `current + 1`, links
+it to the current snapshot, uses the current publisher allowlist, and refuses
+to restore entries from a publisher that has since been removed. Client
+anti-rollback checkpoints therefore remain monotonic.
 
 For urgent removal, `review quarantine` immediately moves a public entry
 out of search while keeping its bytes and decision record recoverable.
@@ -278,6 +319,9 @@ data-dir/
         <review-id>.json # immutable moderator audit records
     quarantined/
         <pkg-id>.json    # recoverable entries hidden from clients
+    snapshots/
+        <sequence>-<hash>.json # immutable signed channel history
+    published-snapshot.json    # atomic current channel pointer
 ```
 
 All writes are atomic-rename (`.tmp` → real path), so

@@ -128,6 +128,21 @@ enum Cmd {
         #[arg(long, default_value_t = 86_400)]
         valid_for_seconds: u64,
     },
+    /// Publish a new monotonic snapshot containing the entries from an older
+    /// sequence. This is a forward-moving rollback: clients never see a lower
+    /// sequence and the current publisher allowlist remains authoritative.
+    RollbackSnapshot {
+        /// Immutable snapshot sequence whose entry set should be restored.
+        #[arg(long)]
+        to_sequence: u64,
+        /// File containing exactly a 32-byte Ed25519 secret seed as 64 hex
+        /// characters. On Unix it must not be accessible by group/others.
+        #[arg(long)]
+        owner_key_file: PathBuf,
+        /// Snapshot lifetime. Short validity bounds freeze attacks.
+        #[arg(long, default_value_t = 86_400)]
+        valid_for_seconds: u64,
+    },
     /// Review signed publisher changes before they enter the public catalogue.
     Review {
         #[command(subcommand)]
@@ -229,6 +244,11 @@ async fn main() -> anyhow::Result<()> {
             owner_key_file,
             valid_for_seconds,
         } => cmd_sign_snapshot(&storage, &owner_key_file, valid_for_seconds),
+        Cmd::RollbackSnapshot {
+            to_sequence,
+            owner_key_file,
+            valid_for_seconds,
+        } => cmd_rollback_snapshot(&storage, to_sequence, &owner_key_file, valid_for_seconds),
         Cmd::Review { command } => cmd_review(&storage, command),
     }
 }
@@ -241,28 +261,8 @@ fn cmd_sign_snapshot(
     if valid_for_seconds == 0 || valid_for_seconds > registry_types::MAX_SNAPSHOT_VALIDITY_SECONDS {
         anyhow::bail!("snapshot validity must be between 1 second and 7 days");
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt as _;
-        let mode = std::fs::metadata(owner_key_file)?.mode() & 0o777;
-        if mode & 0o077 != 0 {
-            anyhow::bail!("owner key file must not be accessible by group or others");
-        }
-    }
-    let key_hex =
-        zeroize::Zeroizing::new(std::fs::read_to_string(owner_key_file)?.trim().to_owned());
-    let seed: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new(
-        hex::decode(key_hex.as_str())
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| anyhow::anyhow!("owner key file must contain a 32-byte hex seed"))?,
-    );
-    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
     let identity = storage.load_identity()?;
-    let actual_owner = hex::encode(key.verifying_key().to_bytes());
-    if !actual_owner.eq_ignore_ascii_case(&identity.owner_pubkey_hex) {
-        anyhow::bail!("owner private key does not match the pinned registry identity");
-    }
+    let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
     let previous = storage.load_snapshot()?;
     if let Some(snapshot) = &previous {
         registry_types::verify_snapshot(
@@ -270,6 +270,9 @@ fn cmd_sign_snapshot(
             &identity.owner_pubkey_hex,
             snapshot.issued_at_unix,
         )?;
+        // Backfill history for registries created before immutable snapshots
+        // were introduced. Saving identical bytes is idempotent.
+        storage.save_snapshot(snapshot)?;
     }
     let (sequence, previous_snapshot_hash_hex) = previous.as_ref().map_or_else(
         || Ok((1, String::new())),
@@ -309,6 +312,96 @@ fn cmd_sign_snapshot(
     storage.save_snapshot(&snapshot)?;
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
     Ok(())
+}
+
+fn cmd_rollback_snapshot(
+    storage: &Storage,
+    to_sequence: u64,
+    owner_key_file: &std::path::Path,
+    valid_for_seconds: u64,
+) -> anyhow::Result<()> {
+    if valid_for_seconds == 0 || valid_for_seconds > registry_types::MAX_SNAPSHOT_VALIDITY_SECONDS {
+        anyhow::bail!("snapshot validity must be between 1 second and 7 days");
+    }
+    let target = storage
+        .load_snapshot_sequence(to_sequence)?
+        .ok_or_else(|| anyhow::anyhow!("snapshot sequence {to_sequence} is not retained"))?;
+    let current = storage
+        .load_snapshot()?
+        .ok_or_else(|| anyhow::anyhow!("no current snapshot to roll back"))?;
+    let identity = storage.load_identity()?;
+    registry_types::verify_snapshot(&target, &identity.owner_pubkey_hex, target.issued_at_unix)?;
+    registry_types::verify_snapshot(&current, &identity.owner_pubkey_hex, current.issued_at_unix)?;
+
+    let key = load_owner_key(owner_key_file, &identity.owner_pubkey_hex)?;
+    let allowlist = storage.load_allowlist()?;
+    let mut publishers: Vec<_> = allowlist
+        .publishers
+        .into_iter()
+        .map(|row| PublisherAuthorization {
+            pubkey_hex: row.pubkey_hex.to_ascii_lowercase(),
+            can_add_new: row.can_add_new,
+        })
+        .collect();
+    publishers.sort_by(|left, right| left.pubkey_hex.cmp(&right.pubkey_hex));
+    for entry in &target.entries {
+        if !publishers.iter().any(|publisher| {
+            publisher
+                .pubkey_hex
+                .eq_ignore_ascii_case(&entry.publisher_pubkey_hex)
+        }) {
+            anyhow::bail!(
+                "snapshot sequence {to_sequence} contains publisher {} which is no longer allowed",
+                entry.publisher_pubkey_hex
+            );
+        }
+    }
+
+    let issued_at_unix = now_unix();
+    let mut snapshot = SignedRegistrySnapshot {
+        protocol: SNAPSHOT_PROTOCOL,
+        sequence: current.sequence.saturating_add(1),
+        issued_at_unix,
+        expires_at_unix: issued_at_unix.saturating_add(valid_for_seconds),
+        previous_snapshot_hash_hex: registry_types::snapshot_hash(&current)?,
+        moderation_head_hex: storage.moderation_head()?,
+        publishers,
+        entries: target.entries,
+        owner_signature_hex: String::new(),
+    };
+    registry_types::sign_snapshot(&mut snapshot, &key)?;
+    registry_types::verify_snapshot(&snapshot, &identity.owner_pubkey_hex, issued_at_unix)?;
+    storage.save_snapshot(&snapshot)?;
+    println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    Ok(())
+}
+
+fn load_owner_key(
+    owner_key_file: &std::path::Path,
+    expected_owner: &str,
+) -> anyhow::Result<ed25519_dalek::SigningKey> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let mode = std::fs::metadata(owner_key_file)?.mode() & 0o777;
+        if mode & 0o077 != 0 {
+            anyhow::bail!("owner key file must not be accessible by group or others");
+        }
+    }
+    let key_hex =
+        zeroize::Zeroizing::new(std::fs::read_to_string(owner_key_file)?.trim().to_owned());
+    let seed: zeroize::Zeroizing<[u8; 32]> = zeroize::Zeroizing::new(
+        hex::decode(key_hex.as_str())
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| anyhow::anyhow!("owner key file must contain a 32-byte hex seed"))?,
+    );
+    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let actual_owner = hex::encode(key.verifying_key().to_bytes());
+    if !actual_owner.eq_ignore_ascii_case(expected_owner) {
+        anyhow::bail!("owner private key does not match the pinned registry identity");
+    }
+    Ok(key)
 }
 
 fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
