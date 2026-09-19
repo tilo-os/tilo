@@ -9,6 +9,14 @@ import subprocess
 import sys
 
 
+APPLICABILITY_INPUT = "tools/ci/workflow_applicability.py"
+APPLICABILITY_GUARD = (
+    "(github.event_name != 'pull_request' || "
+    "(needs.applicability.result == 'success' && "
+    "needs.applicability.outputs.applicable == 'true')) && "
+)
+
+
 def declared_paths(workflow):
     """Read the deliberately restricted, quoted PR paths block; reject ambiguity."""
     lines = Path(workflow).read_text(encoding="utf-8").splitlines()
@@ -55,7 +63,92 @@ def pattern_regex(pattern):
     return re.compile(result + r"\Z")
 
 
-def applicable(repo, event_name, event, paths):
+def workflow_contract(source):
+    """Project a workflow onto everything that can change build/publication."""
+    lines = source.splitlines()
+    if lines.count("on:") != 1 or lines.count("jobs:") != 1:
+        raise ValueError("workflow must have one on section and one jobs section")
+    on_start = lines.index("on:")
+    jobs_start = lines.index("jobs:")
+    if on_start >= jobs_start:
+        raise ValueError("workflow sections are out of order")
+    on_end = next((i for i in range(on_start + 1, len(lines))
+                   if lines[i] and not lines[i].startswith((" ", "#"))), len(lines))
+
+    projected = []
+    applicability_jobs = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if on_start < i < on_end and line == f'      - "{APPLICABILITY_INPUT}"':
+            i += 1
+            continue
+
+        if i > jobs_start and line == "  applicability:":
+            applicability_jobs += 1
+            i += 1
+            while i < len(lines) and not re.fullmatch(r"  [A-Za-z0-9_-]+:", lines[i]):
+                i += 1
+            continue
+
+        if i > jobs_start and line.startswith("    needs:"):
+            raw = line.split(":", 1)[1].strip()
+            if raw.startswith("[") and raw.endswith("]"):
+                needs = [item.strip() for item in raw[1:-1].split(",") if item.strip()]
+            elif re.fullmatch(r"[A-Za-z0-9_-]+", raw):
+                needs = [raw]
+            else:
+                raise ValueError("unsupported job needs syntax")
+            needs = [item for item in needs if item != "applicability"]
+            projected.append("    needs: " + ",".join(needs))
+            i += 1
+            continue
+
+        if i > jobs_start and line.startswith("    if:"):
+            raw = line.split(":", 1)[1].strip()
+            if raw in (">", ">-", "|", "|-"):
+                parts = []
+                i += 1
+                while i < len(lines) and (not lines[i].strip() or lines[i].startswith("      ")):
+                    if lines[i].strip():
+                        parts.append(lines[i].strip())
+                    i += 1
+                raw = " ".join(parts)
+            else:
+                i += 1
+            expression = re.sub(r"\s+", " ", raw).strip()
+            expression = expression.replace(APPLICABILITY_GUARD, "")
+            if "needs.applicability" in expression:
+                raise ValueError("unsupported applicability guard")
+            projected.append("    if: " + expression)
+            continue
+
+        if line.strip():
+            projected.append(line)
+        i += 1
+
+    if applicability_jobs > 1:
+        raise ValueError("ambiguous applicability job")
+    return "\n".join(projected) + "\n"
+
+
+def workflow_contract_changed(repo, base, head, workflow):
+    """Return true on a contract difference or when comparison is unprovable."""
+    path = Path(workflow).as_posix()
+    if Path(path).is_absolute() or path.startswith("../"):
+        return True
+    try:
+        def show(ref):
+            return subprocess.check_output(
+                ["git", "-C", str(repo), "show", f"{ref}:{path}"],
+                stderr=subprocess.PIPE,
+            ).decode()
+        return workflow_contract(show(base)) != workflow_contract(show(head))
+    except (OSError, UnicodeError, ValueError, subprocess.CalledProcessError):
+        return True
+
+
+def applicable(repo, event_name, event, paths, workflow=None):
     patterns = [pattern_regex(p) for p in paths]
     if event_name in ("push", "workflow_dispatch"):
         return True, []
@@ -72,6 +165,15 @@ def applicable(repo, event_name, event, paths):
     ancestor = git("merge-base", *refs).decode().strip()
     changed = git("diff", "--name-only", "--no-renames", "-z", ancestor, refs[1], "--").decode().split("\0")
     matched = [path for path in changed if path and any(p.fullmatch(path) for p in patterns)]
+    if workflow is not None:
+        workflow = Path(workflow).as_posix()
+        contract_inputs = {APPLICABILITY_INPUT, workflow}
+        direct = [path for path in matched if path not in contract_inputs]
+        if direct:
+            return True, matched
+        if matched and workflow_contract_changed(repo, ancestor, refs[1], workflow):
+            return True, [workflow]
+        return False, []
     return bool(matched), matched
 
 
@@ -82,7 +184,9 @@ def main():
     try:
         paths = declared_paths(args.workflow)
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
-        result, matched = applicable(Path.cwd(), os.environ["GITHUB_EVENT_NAME"], event, paths)
+        result, matched = applicable(
+            Path.cwd(), os.environ["GITHUB_EVENT_NAME"], event, paths, args.workflow
+        )
         print(json.dumps({"applicable": result, "matched_paths": matched}))
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
             stream.write(f"applicable={str(result).lower()}\n")
