@@ -3205,7 +3205,10 @@ impl ShellNetwork {
 
     /// Stream an immutable Nearby spool object from a receiver-confirmed
     /// checkpoint to one exact certified transport peer.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "verified transfer identity, hashes, offsets, and path are boundary inputs"
+    )]
     pub(crate) fn start_nearby_transfer(
         &self,
         target: &crate::shell::personal_continuity::DeviceId,
@@ -5311,7 +5314,10 @@ impl ShellNetwork {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "invite redemption keeps validation and state transition in one atomic flow"
+    )]
     fn redeem_invited_identity(
         &self,
         workspace_topic: u64,

@@ -9308,7 +9308,10 @@ impl ShellOverlayHost {
     /// sees it: the file picker (genuinely modal — a D-Bus call is
     /// parked on the answer), an in-flight peer-sync token prompt, and
     /// the projection sheet.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "modal routing needs the shared event-dispatch context so it can absorb the event atomically"
+    )]
     fn route_modal_absorbing_overlays(
         &mut self,
         event: &WindowEvent,
@@ -9706,7 +9709,10 @@ impl ShellOverlayHost {
     /// `pump_permission_prompt` drains `pending_choice` next tick.
     /// Gated on the prompt's rect so its hit zone doesn't swallow
     /// clicks outside the bar.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "permission routing needs the shared event-dispatch context plus the prompt-specific focus result"
+    )]
     fn route_permission_prompt_event(
         &mut self,
         event: &WindowEvent,
@@ -12887,7 +12893,10 @@ impl ShellOverlayHost {
         }
     }
     /// Shells out to the OS for changes returned by the root component.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each option is the independently pending value for one quick-settings hardware control"
+    )]
     fn dispatch_quick_settings_toggle_actions(
         &self,
         pending_wifi: Option<bool>,
@@ -13296,7 +13305,10 @@ impl ShellOverlayHost {
     /// Palette-owned input, ahead of the sidebar/content dispatch: kind
     /// chips, a click on a result row, keyboard Enter, then everything
     /// else the palette widget itself wants (typing, arrow selection).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "palette routing needs the shared event-dispatch context plus its retained layout nodes"
+    )]
     fn route_palette_event(
         &mut self,
         event: &WindowEvent,
@@ -13404,7 +13416,10 @@ impl ShellOverlayHost {
     /// content dispatch, then the horizontal-wheel fallback that steps
     /// focus along the strip (the same step Super+Left/Right takes;
     /// 0.5 rejects trackpad noise).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "content routing needs the shared event-dispatch context plus the complete retained child layout"
+    )]
     fn dispatch_pointer_and_content_event(
         &mut self,
         event: &WindowEvent,
@@ -17573,7 +17588,10 @@ impl ShellOverlayHost {
     /// `right_x`, centred on `cy`. `ground` must match the surface behind
     /// the stack — the separator ring is a hole punched in the face below.
     /// An absent member stays at reduced opacity rather than disappearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "avatar painting requires the complete scene, theme, roster, identity-color, and background context"
+    )]
     fn draw_face_stack(
         scene: &mut Scene,
         transform: Affine,
@@ -17664,7 +17682,10 @@ impl ShellOverlayHost {
     }
 
     /// One room row in the "go to" list.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "room-row painting requires the complete scene context and the selected room presentation state"
+    )]
     fn draw_overview_room_row(
         &self,
         scene: &mut Scene,

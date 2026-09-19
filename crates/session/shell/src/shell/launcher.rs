@@ -1393,7 +1393,10 @@ pub fn build_launch_command(
 /// instance. The tab id is passed through the launcher environment and becomes
 /// the record component of the app's authenticated collaboration route, so a
 /// later continuation capture can attach metadata to this exact tab.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "launch authority and durable tab identity are explicit boundary inputs"
+)]
 pub fn build_launch_command_for_tab(
     app: &InstalledApp,
     launcher_bin: &Path,
