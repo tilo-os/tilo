@@ -5,6 +5,7 @@ import os
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -51,6 +52,13 @@ def action_input(block, name):
     return '\n'.join(continuation).rstrip()
 
 
+def action_inputs(block):
+    return {
+        match.group(1): action_input(block, match.group(1))
+        for match in re.finditer(r'^          ([a-z][a-z0-9-]*):', block, re.MULTILINE)
+    }
+
+
 class BuilderCandidates(unittest.TestCase):
     def test_image_push_finishes_before_the_same_graph_exports_cache(self):
         image = step_block(BUILD, 'Build and push')
@@ -68,10 +76,14 @@ class BuilderCandidates(unittest.TestCase):
                         BUILD.index('- name: Sign and describe the native builder'))
 
         # The second invocation resolves entirely from the BuildKit state made
-        # by the first. A changed graph here could rerun expensive image layers.
-        for name in ('context', 'build-contexts', 'file', 'platforms',
-                     'provenance', 'labels', 'build-args', 'tags', 'cache-from'):
-            self.assertEqual(action_input(cache, name), action_input(image, name), name)
+        # by the first. Compare every action input so a future graph option
+        # cannot drift between the two exporters unnoticed.
+        image_inputs = action_inputs(image)
+        cache_inputs = action_inputs(cache)
+        self.assertEqual(set(cache_inputs) - set(image_inputs), {'cache-to'})
+        self.assertEqual(set(image_inputs) - set(cache_inputs), set())
+        for name in sorted(set(image_inputs) - {'push'}):
+            self.assertEqual(cache_inputs[name], image_inputs[name], name)
 
         # Signing remains bound to the pushed image, never to cache metadata.
         self.assertIn('CHILD_DIGEST: ${{ steps.build.outputs.digest }}', signing)
