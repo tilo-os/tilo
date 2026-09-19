@@ -79,6 +79,18 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         publish = publish.replace('    steps:', '    steps:\n      - run: echo token\n        env:\n          FORBIDDEN: ${{ secrets.REGISTRY_TOKEN }}', 1)
         self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
 
+    def test_persisted_collection_urls_use_the_configured_public_origin(self):
+        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        publish = source.split('\n  publish:\n', 1)[1]
+        self.assertIn('TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}', publish)
+        self.assertIn('package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}', publish)
+        self.assertIn('bundle_url="$package_public_api/tilo-app-collections/', publish)
+        self.assertIn('bundle_upload_url="$package_api/tilo-app-collections/', publish)
+        self.assertIn('channel_url=$bundle_url', publish)
+        self.assertIn('update_variable TILO_APP_COLLECTION_URL "$channel_url"', publish)
+        self.assertNotIn('channel_url=$bundle_upload_url', publish)
+        self.assertIn("$package_public_api != *'.svc.cluster.local'*", publish)
+
     def test_verifier_package_secret_is_narrow_and_artifact_token_stays_job_scoped(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         binding = '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}'
