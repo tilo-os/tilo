@@ -11,9 +11,8 @@ FROM registry.fedoraproject.org/fedora:42
 
 # nodejs: actions/checkout. capnproto: runtime-collab build.rs.
 # vulkan-loader + mesa-vulkan-drivers: llvmpipe, so GPU tests run headless.
-# GNOME Text Editor, qt6-qtbase-examples and LibreOffice Writer are process-level
-# subjects for the legacy-app caret E2E. Keeping them in this weekly-built
-# image makes the path-gated PR job deterministic and avoids live dnf traffic.
+# Qt examples and LibreOffice are installed by the path-gated legacy-app E2E.
+# GNOME Text Editor stays here: shell integration tests also launch it directly.
 # bubblewrap is a test *subject*, not a tool — the launcher's confinement
 # suites drive the sandbox and refuse to skip when it is absent. So is
 # rust-analyzer, for the code editor's language-server suite, but it comes from
@@ -46,8 +45,7 @@ RUN dnf install -y \
       fuse3-devel dbus-devel \
       nasm \
       vulkan-loader mesa-vulkan-drivers \
-      bubblewrap \
-      gnome-text-editor qt6-qtbase-examples libreoffice-writer \
+      bubblewrap gnome-text-editor \
     && dnf clean all
 
 # Required by production PDF capture tests. Use the same verified external
@@ -94,7 +92,10 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     && rm -rf "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl" \
     && sccache --version
 
-RUN cargo install --locked cargo-nextest cargo-deny cargo-machete \
+# Keep tool-install downloads and extracted crate sources out of the image.
+# CI restores its own Cargo downloads under /cargo-home; only these binaries ship.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo install --locked cargo-nextest cargo-deny cargo-machete \
     && cargo nextest --version && cargo deny --version && cargo machete --version
 
 # Match the workspace's own check so a stale image fails loudly rather than
