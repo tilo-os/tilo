@@ -158,20 +158,34 @@ class SelectorTests(unittest.TestCase):
                 with self.subTest(changes=changes):
                     plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
                     self.assertFalse(plan["rust_required"])
+                    self.assertEqual(plan["selected"], [])
+                    self.assertEqual(plan["tested"], [])
+                    self.assertEqual(plan["selected_count"], 0)
+                    self.assertEqual(plan["estimated_cost"], 0)
+                    self.assertEqual(plan["shard_count"], 0)
                     self.assertEqual(plan["matrix"], {"include": []})
                     self.assertIn("mandatory repository-policy tests", plan["reason"])
 
     def test_ci_helper_exception_preserves_unknown_mixed_and_full_checks(self) -> None:
         self.install_quality_helpers()
-        for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
-                      "tools/policy/run.sh", "os/tests/security-boundaries.sh",
-                      "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
-            with self.subTest(extra=extra):
-                plan = ci_select.make_plan(self.metadata, self.root, ["tools/ci/affected_packages.py", extra], 2)
-                self.assertTrue(plan["rust_required"])
-        full = ci_select.make_plan(self.metadata, self.root, ["tools/ci/affected_packages.py"], 2, force_full=True)
-        self.assertTrue(full["full"])
-        self.assertEqual(full["selected_count"], full["workspace_count"])
+        for source in ci_select.QUALITY_ONLY_HELPERS:
+            for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
+                          "tools/policy/run.sh", "os/tests/security-boundaries.sh",
+                          "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
+                with self.subTest(source=source, extra=extra):
+                    plan = ci_select.make_plan(self.metadata, self.root, [source, extra], 2)
+                    self.assertTrue(plan["rust_required"])
+                    if extra == "leaf/src/lib.rs":
+                        self.assertIn("leaf", plan["selected"])
+                    if extra == "Cargo.lock":
+                        self.assertTrue(plan["full"])
+                        self.assertEqual(plan["selected_count"], plan["workspace_count"])
+            with self.subTest(source=source, force_full=True):
+                full = ci_select.make_plan(self.metadata, self.root, [source], 2, force_full=True)
+                self.assertTrue(full["full"])
+                self.assertEqual(full["selected_count"], full["workspace_count"])
+                self.assertEqual({row["arch"] for row in full["matrix"]["include"]},
+                                 set(ci_select.NATIVE_RUNNERS))
         self.assertTrue(ci_select.make_plan(self.metadata, self.root, [], 2)["rust_required"])
 
     def test_missing_helper_or_test_retains_native_checks(self) -> None:
