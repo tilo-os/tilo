@@ -59,7 +59,9 @@ class StagingTests(unittest.TestCase):
         receipt = s.receive(self.packet, self.work, self.bridge)
         self.assertFalse((self.work / 'operator-ready').exists())
         self.assertEqual((self.bridge / 'requests').stat().st_mode & 0o777, 0o700)
-        self.assertEqual(s.spool.document(self.bridge / 'bridge.json')['context'], self.context)
+        config = s.spool.document(self.bridge / 'bridge.json')
+        self.assertEqual(config['context'], self.context)
+        self.assertEqual(config['timeout_seconds'], self.request['signing_response_timeout_seconds'])
         with self.assertRaises(FileExistsError):
             s.receive(self.packet, self.work, self.bridge)
         self.assertTrue(s.release(receipt, self.work)['ready'])

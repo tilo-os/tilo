@@ -29,6 +29,7 @@ def request():
             'wpe_ref': 'registry.invalid/wpe@sha256:' + '4' * 64,
             'signer': '/var/lib/bridge/signer', 'systemd_version': '259.1',
             'minimum_free_bytes': 1024**3, 'stage_timeout_seconds': 600,
+            'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 3600,
             'publish_repository': 'code.podesta.ai/qos/tilo-development'}
 
 
@@ -210,6 +211,16 @@ class FinalizationTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 finalizer.validate_request(request() | change)
 
+    def test_prediction_deadline_exceeds_signing_and_non_signing_budgets(self):
+        for change in ({'signing_response_timeout_seconds': 1801},
+                       {'prediction_stage_timeout_seconds': 8401},
+                       {'prediction_stage_timeout_seconds': 2400},
+                       {'prediction_stage_timeout_seconds': 2399}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                finalizer.validate_request(request() | change)
+        self.assertEqual(finalizer.validate_request(request() | {
+            'prediction_stage_timeout_seconds': 2401})['prediction_stage_timeout_seconds'], 2401)
+
     def test_target_origins_require_the_matching_native_suffix(self):
         repository = 'code.podesta.ai/qos/tilo-development'
         for field in ('target', 'new_target'):
@@ -254,7 +265,7 @@ class FinalizationTests(unittest.TestCase):
         final_id = 'sha256:' + spool.digest(config)
         manifest = spool.canonical({'schemaVersion': 2, 'config': {'digest': final_id}})
         manifest_id = 'sha256:' + spool.digest(manifest)
-        calls = []
+        calls, timed_calls = [], []
         driver = finalizer.Driver(q, '/verified/helpers', self.root)
         driver.preflight = lambda: None
         driver.capacity = lambda: None
@@ -273,9 +284,11 @@ class FinalizationTests(unittest.TestCase):
         driver.current_context = lambda: {'sha256': '7' * 64, 'revision': q['source_revision'],
             'architecture': q['architecture'], 'manifest_sha256': q['new_manifest_sha256'],
             'target': q['new_target']}
-        def command(arguments):
+        def command(arguments, timeout=None):
             argv = [str(x) for x in arguments]
             calls.append(argv)
+            if timeout is not None:
+                timed_calls.append((argv, timeout))
             if '--iidfile' in argv:
                 Path(argv[argv.index('--iidfile') + 1]).write_text(final_id)
             if 'inspect' in argv and argv[0] == 'podman':
@@ -294,6 +307,13 @@ class FinalizationTests(unittest.TestCase):
         self.assertFalse(result['installable'])
         self.assertTrue(result['cosign_signing_required'])
         self.assertTrue((self.root / '08-published.json').is_file())
+        prediction_timeout = next(timeout for argv, timeout in timed_calls
+                                  if 'sign-target-prediction.sh' in ' '.join(argv))
+        inspect_timeout = next(timeout for argv, timeout in timed_calls
+                               if argv[:4] == ['podman', '--remote=false', 'image', 'inspect'])
+        self.assertGreater(prediction_timeout, q['signing_response_timeout_seconds'] + q['stage_timeout_seconds'])
+        self.assertLessEqual(prediction_timeout, q['prediction_stage_timeout_seconds'])
+        self.assertLessEqual(inspect_timeout, q['stage_timeout_seconds'])
         pushes = [c for c in calls if isinstance(c, list) and 'push' in c]
         self.assertEqual(len(pushes), 2)
         self.assertTrue(all(push[-1] != 'docker://' + q['new_target'] for push in pushes))
