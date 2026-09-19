@@ -53,3 +53,17 @@ long matrix names, exact reviews, latest-run selection, scope changes, deletions
 and custom-build helper exclusion. No native code is compiled. A live PR61 shadow
 attempt also stopped when main advanced beyond the reviewed base; no product PR
 has been declared ready by this slice.
+
+## Reviewed developer-feedback contract (2026-09-19)
+
+The read-only generator pins the check, lint, nightly and selector bytes shipped
+at main `0cb62f077`. Routine PR policy requires the single x86 affected job to
+check every reverse dependant and run direct-owner plus existing contract tests.
+Its exact matrix name includes `test_packages`; the generator rejects missing,
+extra or mismatched compilation/test assignments. Manual dispatch and the release
+branch retain full native selection; the pinned nightly workflow covers both
+architectures. Nightly is a coverage backstop, not a fabricated per-PR status.
+
+Changed workflow/selector bytes require another independent contract review.
+Exact-head independent reviewer approval and current-base checks are unchanged.
+This remains a GET-only readiness report and never grants merge authorization.

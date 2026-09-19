@@ -65,13 +65,13 @@ class PolicyTests(unittest.TestCase):
         self.assertIn('tools', policy['protected_paths'])
         self.assertIn('apps/calculator/Cargo.toml', policy['protected_paths'])
 
-    def test_current_workflows_real_native_matrix_both_arches(self):
+    def test_current_workflows_real_feedback_matrix(self):
         head = self.candidate('apps/calculator/src/lib.rs', 'pub fn changed() {}\n')
         policy, plan = self.derive(head)
         self.assertTrue(plan['rust_required'])
         self.assertEqual(plan['selected'], ['calculator', 'collab-types', 'pkg', 'qdoc'])
-        expected = {f'affected ({arch}, 52, 4, -p calculator -p collab-types -p pkg -p qdoc, {runner}, 1)'
-                    for arch, runner in [('x86_64', 'runner'), ('aarch64', 'runner-arm64')]}
+        expected = {'affected (x86_64, 52, 4, -p calculator -p collab-types -p pkg -p qdoc, runner, 1, -p calculator -p collab-types -p pkg -p qdoc)'}
+        self.assertEqual(plan['tested'], plan['selected'])
         self.assertEqual(set(policy['runs'][0]['jobs'][5:]), expected)
         self.assertEqual(policy['runs'][0]['allowed_skips'], ['report-check-result'])
         self.assertNotIn('zero_rust_selection', policy)
@@ -86,6 +86,34 @@ class PolicyTests(unittest.TestCase):
         jobs[-1]['status'] = 'skipped'
         jobs[-1]['task_id'] = 0
         self.assertTrue(p.audit.run_errors(run, jobs, 'qos/qos', run['commit_sha'], policy['runs'][0]))
+
+    def test_reverse_dependant_checked_but_not_added_to_direct_test_scope(self):
+        consumer = self.root / 'apps/consumer'
+        (consumer / 'src').mkdir(parents=True)
+        (consumer / 'src/lib.rs').write_text('pub fn consumer() {}\n')
+        (consumer / 'Cargo.toml').write_text('[package]\nname="consumer"\nversion="0.1.0"\nedition="2024"\n[dependencies]\ncalculator={path="../calculator"}\n')
+        subprocess.run(['cargo', 'metadata', '--no-deps', '--format-version', '1'], cwd=self.root, check=True, capture_output=True)
+        self.git('add', '.')
+        self.git('commit', '-qm', 'reviewed dependant')
+        self.base = self.git('rev-parse', 'HEAD')
+        _, plan = self.derive(self.candidate('apps/calculator/src/lib.rs', 'pub fn changed() {}\n'))
+        self.assertIn('consumer', plan['selected'])
+        self.assertNotIn('consumer', plan['tested'])
+        row = plan['matrix']['include'][0]
+        self.assertIn('-p consumer', row['packages'])
+        self.assertNotIn('-p consumer', row['test_packages'])
+        row['test_packages'] = ''
+        with self.assertRaisesRegex(ValueError, 'test scope'):
+            p.matrix_names(plan)
+
+    def test_nightly_contract_drift_fails_closed(self):
+        workflow = self.root / '.forgejo/workflows/nightly.yml'
+        workflow.write_bytes(workflow.read_bytes() + b'\n# unreviewed change\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'unreviewed qualification change')
+        self.base = self.git('rev-parse', 'HEAD')
+        with self.assertRaisesRegex(ValueError, 'unreviewed workflow/selector contract'):
+            self.derive(self.candidate('docs/designs/fixture.md'))
 
     def test_review_requires_exact_head_official_independent_reviewer(self):
         head = 'a' * 40
@@ -124,13 +152,14 @@ class PolicyTests(unittest.TestCase):
     def test_native_matrix_completeness_and_long_display_names(self):
         selected = ['package_' + str(i) + '_' + 'x' * 20 for i in range(30)]
         rows = [dict(arch=arch, runner=runner, shard=1, package_count=30, estimated_cost=400,
-                     packages=' '.join('-p ' + name for name in selected))
-                for arch, runner in [('x86_64', 'runner'), ('aarch64', 'runner-arm64')]]
-        plan = dict(rust_required=True, selected=selected, selected_count=30, matrix={'include': rows})
+                     packages=' '.join('-p ' + name for name in selected), test_packages='-p ' + selected[0])
+                for arch, runner in [('x86_64', 'runner')]]
+        plan = dict(rust_required=True, selected=selected, tested=selected[:1], qualification='developer-feedback', selected_count=30, matrix={'include': rows})
         names = p.matrix_names(plan)
         self.assertTrue(all(len(name.encode()) == 255 and name.endswith('…') for name in names))
         self.assertEqual(names[0], ('affected (' + ', '.join(str(rows[0][k]) for k in sorted(rows[0])) + ')')[:252] + '…')
-        plan['matrix']['include'] = rows[:1]
+        plan['selected'] = selected[:-1]
+        plan['selected_count'] = 29
         with self.assertRaisesRegex(ValueError, 'omits or duplicates'):
             p.matrix_names(plan)
 

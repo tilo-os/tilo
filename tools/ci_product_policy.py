@@ -16,12 +16,14 @@ import tempfile
 import ci_integration_readiness as audit
 import ci_product_report as reports
 
-# Reviewed at product main 709ca95a130a25567429d7fbfde7637acf597f5f. Changing
-# workflow shape, selector semantics or naming requires a new operator review.
+# Reviewed feedback contract at product main 0cb62f077. Routine PRs check
+# the affected closure on x86 and test owners/contracts; manual/release/nightly
+# retain full dual-native qualification. Contract changes require fresh review.
 CONTRACT = {
-    '.forgejo/workflows/check.yml': '42b8e988bdc37e59e9bb3ed8ecc68bf39194911a926187b3254f6de263a41eec',
+    '.forgejo/workflows/check.yml': 'a812f15b6df9554d00b4801f29c2b72b36331f1f430fed81fbcaae874b1c4492',
     '.forgejo/workflows/lint.yml': '8a21a27d5bc1c37e1f64eaf670a9a967dcc30de536a6589917b2a0e5961effa2',
-    'tools/ci_select.py': 'cbe2dd9c854f7ee95c7038071a48905ade417c78646615d146b5ec8ef4af1c66',
+    '.forgejo/workflows/nightly.yml': '2df73d613378fcd11e7069f5c78c859694fc988075dd3704353657d61a8da583',
+    'tools/ci_select.py': 'e488b597f2cdb4386d7abf43da6884f961a357f66e9e2c5fea81a1f25563f8a6',
 }
 
 
@@ -97,15 +99,21 @@ def matrix_names(plan):
         require(plan['selected'] == [] and plan['selected_count'] == 0 and rows == [], 'inconsistent zero-Rust plan')
         return ['affected (runner)']
     require(plan['rust_required'] is True and rows and plan['selected_count'] == len(plan['selected']), 'invalid native plan')
+    require(plan.get('qualification') == 'developer-feedback' and len(rows) == 1, 'unexpected feedback qualification')
+    require(isinstance(plan.get('tested'), list) and set(plan['tested']) <= set(plan['selected'])
+            and len(plan['tested']) == len(set(plan['tested'])), 'invalid test selection')
     names, assignments = [], {}
     for row in rows:
-        require(set(row) == {'arch', 'estimated_cost', 'package_count', 'packages', 'runner', 'shard'}, 'unknown matrix shape')
-        require(row['arch'] in ('x86_64', 'aarch64') and row['runner'] == {'x86_64': 'runner', 'aarch64': 'runner-arm64'}[row['arch']], 'unexpected native runner')
-        require(type(row['shard']) is int and 1 <= row['shard'] <= 2, 'unexpected shard')
+        require(set(row) == {'arch', 'estimated_cost', 'package_count', 'packages', 'runner', 'shard', 'test_packages'}, 'unknown matrix shape')
+        require(row['arch'] == 'x86_64' and row['runner'] == 'runner', 'unexpected feedback runner')
+        require(type(row['shard']) is int and row['shard'] == 1, 'unexpected shard')
         words = row['packages'].split()
         require(len(words) % 2 == 0 and words[::2] == ['-p'] * (len(words) // 2), 'invalid package arguments')
         packages = words[1::2]
         require(len(packages) == row['package_count'] and all(re.fullmatch('[A-Za-z0-9_-]+', p) for p in packages), 'invalid shard packages')
+        tests = row['test_packages'].split()
+        require(len(tests) % 2 == 0 and tests[::2] == ['-p'] * (len(tests) // 2)
+                and sorted(tests[1::2]) == sorted(plan['tested']), 'matrix test scope differs from trusted selection')
         key = (row['arch'], row['shard'])
         require(key not in assignments, 'duplicate native shard')
         assignments[key] = packages
@@ -115,7 +123,7 @@ def matrix_names(plan):
         name = 'affected (' + ', '.join(str(row[k]) for k in sorted(row)) + ')'
         require(name.isascii(), 'unsupported matrix display encoding')
         names.append(name if len(name) <= 255 else name[:252] + '…')
-    for arch in ('x86_64', 'aarch64'):
+    for arch in ('x86_64',):
         packages = [p for (a, _), ps in assignments.items() if a == arch for p in ps]
         require(sorted(packages) == sorted(plan['selected']), 'native matrix omits or duplicates selected packages')
     require(len(names) == len(set(names)), 'truncated matrix names collide')
