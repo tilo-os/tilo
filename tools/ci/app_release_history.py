@@ -13,6 +13,7 @@ import sys
 DEPTHS = (32, 128, 512, 2048)
 FULL_SHA = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 BASE_REF = "refs/ci/app-release-base"
+HEAD_REF = "refs/ci/app-release-head"
 MAIN_REF = "refs/ci/app-release-main"
 
 
@@ -50,6 +51,71 @@ def fetch_exact(repo: Path, sha: str, destination: str, depth: int = 1) -> None:
     if fetched != sha:
         raise RuntimeError(f"targeted release history resolved {fetched}, expected {sha}")
     git(repo, "cat-file", "-e", f"{sha}^{{commit}}")
+
+
+def fetch_comparison(repo: Path, base: str, head: str, depth: int) -> None:
+    base = full_sha(base, "release comparison")
+    head = full_sha(head, "release source")
+    if depth < 1:
+        raise ValueError("release comparison depth must be positive")
+    result = git(
+        repo,
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        f"--depth={depth}",
+        "origin",
+        f"+{base}:{BASE_REF}",
+        f"+{head}:{HEAD_REF}",
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"targeted release comparison fetch failed: {result.stderr.strip()}"
+        )
+    for sha, destination in ((base, BASE_REF), (head, HEAD_REF)):
+        fetched = git(repo, "rev-parse", destination).stdout.strip()
+        if fetched != sha:
+            raise RuntimeError(
+                f"targeted release history resolved {fetched}, expected {sha}"
+            )
+        git(repo, "cat-file", "-e", f"{sha}^{{commit}}")
+
+
+def merge_base(repo: Path, base: str, head: str) -> str | None:
+    result = git(repo, "merge-base", base, head, check=False)
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        raise RuntimeError(f"cannot inspect release comparison: {result.stderr.strip()}")
+    return full_sha(result.stdout.strip(), "release merge base")
+
+
+def prepare_comparison(
+    repo: Path, base: str, head: str, depths: tuple[int, ...] = DEPTHS
+) -> str:
+    base = full_sha(base, "release comparison")
+    head = full_sha(head, "release source")
+    checked_out = git(repo, "rev-parse", "HEAD").stdout.strip()
+    if checked_out != head:
+        raise ValueError(
+            f"checked out revision {checked_out} does not match release source {head}"
+        )
+
+    # Both tips must be deepened together. Fetching only the comparison commit
+    # leaves a depth-one event commit marked as a shallow root, so merge-base
+    # cannot connect even a direct parent and child.
+    attempts = tuple(dict.fromkeys(depths))
+    if not attempts:
+        raise ValueError("release comparison requires at least one fetch depth")
+    for depth in attempts:
+        fetch_comparison(repo, base, head, depth)
+        ancestor = merge_base(repo, base, head)
+        if ancestor is not None:
+            return ancestor
+    raise RuntimeError(
+        f"cannot establish release merge base after depth {attempts[-1]}"
+    )
 
 
 def remote_main(repo: Path) -> str:
@@ -131,6 +197,7 @@ def parser() -> argparse.ArgumentParser:
     subcommands = result.add_subparsers(dest="command", required=True)
     fetch = subcommands.add_parser("fetch-base")
     fetch.add_argument("sha")
+    fetch.add_argument("head")
     ancestor = subcommands.add_parser("require-main-ancestor")
     ancestor.add_argument("sha")
     return result
@@ -140,8 +207,8 @@ def main() -> int:
     args = parser().parse_args()
     try:
         if args.command == "fetch-base":
-            fetch_exact(Path.cwd(), args.sha, BASE_REF)
-            print(f"release comparison ready: {args.sha}")
+            ancestor = prepare_comparison(Path.cwd(), args.sha, args.head)
+            print(f"release comparison ready: {ancestor}")
         else:
             observed = require_main_ancestor(Path.cwd(), args.sha)
             print(f"release source is on observed main: {observed}")
