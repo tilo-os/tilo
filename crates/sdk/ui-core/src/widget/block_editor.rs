@@ -6913,7 +6913,7 @@ mod tests {
             let y = line.get_rect().center().y;
             assert_eq!(
                 editor.link_at_point(Point::new(right - 0.1, y)),
-                Some(target),
+                Some(LinkTarget::Page(target)),
                 "the final painted sliver must link on this frame at {scale}x, bold={bold}"
             );
             assert_eq!(editor.link_at_point(Point::new(right + 0.1, y)), None);
@@ -6933,7 +6933,7 @@ mod tests {
         let theme = Theme::dark();
         layout_and_draw_editor(&mut editor, &theme);
         let band = editor.blocks[0].line.selection_rect(&theme, 0, 6);
-        assert_eq!(editor.link_at_point(band.center()), Some(target));
+        assert_eq!(editor.link_at_point(band.center()), Some(LinkTarget::Page(target)));
     }
 
     #[test]
@@ -6952,8 +6952,8 @@ mod tests {
         let line = &editor.blocks[0].line;
         let first = line.selection_rect(&theme, 0, 2);
         let last = line.selection_rect(&theme, 10, 12);
-        assert_eq!(editor.link_at_point(first.center()), Some(target));
-        assert_eq!(editor.link_at_point(last.center()), Some(target));
+        assert_eq!(editor.link_at_point(first.center()), Some(LinkTarget::Page(target)));
+        assert_eq!(editor.link_at_point(last.center()), Some(LinkTarget::Page(target)));
         let gap = line.selection_rect(&theme, 3, 9);
         assert!(gap.x0 >= first.x1 && gap.x1 <= last.x0);
         assert_eq!(

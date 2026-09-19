@@ -2007,7 +2007,7 @@ mod tests {
             .open_app_global_state(scoped_open_state)
             .configure_app(scoped_configure)
             .history(&HISTORY);
-        let app = spec.build_controlled_app_for_test().unwrap();
+        let mut app = spec.build_controlled_app_for_test().unwrap();
         assert!(app.build_a11y_tree_update(1.0).nodes.iter().any(|(_, node)| node.label() == Some("History")), "production constructor must consume managed History metadata");
         let captures = LAUNCH_WAKE_CAPTURES.with(|captures| std::mem::take(&mut *captures.borrow_mut()));
         assert!(captures.iter().all(crate::WakeHandle::is_active));
@@ -2064,7 +2064,7 @@ mod tests {
             let spec = LaunchSpec::new(HISTORY.app_id, dummy_root)
                 .open_app_global_state_with_args(open)
                 .history(&HISTORY);
-            let app = build_native_app_with_constructor(&spec, &args, |scope, state, root| {
+            let mut app = build_native_app_with_constructor(&spec, &args, |scope, state, root| {
                 assert_eq!(
                     state
                         .doc

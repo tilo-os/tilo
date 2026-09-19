@@ -20865,7 +20865,7 @@ pub(crate) fn flush_widget_owned_persistence(
 mod legacy_owner_routing_tests {
     use super::*;
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
-    use std::rc::Rc;
+    use std::{collections::HashMap, rc::Rc};
 
     struct OwnerProbe {
         label: &'static str,
