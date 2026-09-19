@@ -865,6 +865,9 @@ pub struct WordProcessorWidget {
     rect: Rect,
     lifecycle: EditorLifecycle,
     save_status: DocumentSaveStatus,
+    // Full read-only content projection, including formatting/comments/media.
+    // Host undo and remote document actions need not touch the UI status enum.
+    saved_document: Option<serde_json::Value>,
     /// Framework-owned action dispatch: brackets the undo boundary and dispatches
     /// each action through the executor (so a test can prove parity with Ctrl+K).
     actions: ui::ActionHost,
@@ -1100,6 +1103,7 @@ impl WordProcessorWidget {
                 needs_commit: false,
             },
             save_status: DocumentSaveStatus::Clean,
+            saved_document: None,
             actions: ui::ActionHost::new(),
             pointer: Point::ZERO,
             drag: DragSelect::new(),
@@ -2046,6 +2050,13 @@ impl WordProcessorWidget {
         &mut self.inner
     }
 
+    fn remember_saved_document(&mut self, state: &AutoCommit) {
+        self.saved_document = serde_json::to_value(automerge::AutoSerde::from(state)).ok();
+    }
+    pub(crate) fn remember_open_document(&mut self, state: &AutoCommit) {
+        self.remember_saved_document(state);
+    }
+
     pub fn set_file(&mut self, path: PathBuf, format: WpFormat) {
         self.path = Some(path);
         self.format = Some(format);
@@ -2311,6 +2322,7 @@ impl WordProcessorWidget {
         self.spell_cache.clear();
         // A freshly-opened document is not "modified" — it matches its file.
         self.save_status = DocumentSaveStatus::Clean;
+        self.remember_saved_document(state);
         self.lifecycle.needs_commit = true;
         self.lifecycle.dirty = true;
         self.check_for_recovery();
@@ -2377,6 +2389,7 @@ impl WordProcessorWidget {
             self.set_file(path.to_path_buf(), format);
             self.clear_recovery();
             self.save_status = DocumentSaveStatus::Clean;
+            self.remember_saved_document(state);
         }
         Ok(())
     }
@@ -8620,6 +8633,34 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
+        let current = serde_json::to_value(automerge::AutoSerde::from(doc)).ok();
+        if current
+            .as_ref()
+            .zip(self.saved_document.as_ref())
+            .is_some_and(|(current, saved)| current == saved)
+        {
+            return Vec::new();
+        }
+        if self.saved_document.is_none()
+            && self.inner.containers.is_none()
+            && doc.length(&automerge::ROOT) == 0
+        {
+            return Vec::new();
+        }
+        vec![ui::close_admission::UnsavedDocument {
+            save: tilo_actions::ActionAddress::new("word-processor.document", "save"),
+            // The host may discard only the exact document the user reviewed.
+            // Serializing a clone does not commit the live typing transaction.
+            revision: doc.clone().save(),
+            identity: self
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }]
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::WORD_PROCESSOR_OPERATION_TYPE]
     }
@@ -8773,7 +8814,22 @@ impl Widget for WordProcessorWidget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let pristine = self.saved_document.is_none()
+            && self.inner.containers.is_none()
+            && state.length(root) == 0;
+        // First binding adds built-in styles/an empty paragraph. Rebase only
+        // if the full imported projection is unchanged; a pre-sync remote edit
+        // must remain unsaved. Bind on the live path after the host sets actor.
+        let unchanged_open = self.inner.containers.is_none()
+            && self.saved_document.is_some()
+            && serde_json::to_value(automerge::AutoSerde::from(&*state))
+                .ok()
+                .as_ref()
+                == self.saved_document.as_ref();
         self.inner.bind(state, root);
+        if pristine || unchanged_open {
+            self.remember_saved_document(state);
+        }
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
             self.resource_file_result =
                 Some(match self.try_open_document_in_place(state, &open_path) {
