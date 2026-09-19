@@ -732,6 +732,7 @@ mod tests {
         for (index, expected) in expected.into_iter().enumerate() {
             let mut menu = PowerMenu::default();
             menu.open();
+            menu.force_settled_for_visual_test();
             assert_eq!(
                 menu.click(viewport, action_rect(viewport, index).center()),
                 expected
