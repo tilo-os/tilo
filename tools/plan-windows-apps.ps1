@@ -29,10 +29,12 @@ foreach ($app in $selected) {
         throw "Missing selected application manifest: $app"
     }
 }
-$cargo = @('build', '--locked', '--profile', 'release', '--jobs', '2', '--message-format=json-render-diagnostics')
-foreach ($app in $selected) { $cargo += @('-p', $app) }
+. (Join-Path $PSScriptRoot 'windows/app-build-plan.ps1')
+$buildPlan = Get-TiloWindowsAppBuildPlan -Apps $selected
+$builds = @($buildPlan.applicationBuild)
+if ($null -ne $buildPlan.notificationBuild) { $builds += $buildPlan.notificationBuild }
 $inputs = @('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'rust-toolchain.toml', 'tools/windows/install-apps.ps1',
-    'tools/windows/install-dxc.ps1', 'tools/windows/install-pdfium.ps1',
+    'tools/windows/app-build-plan.ps1', 'tools/windows/install-dxc.ps1', 'tools/windows/install-pdfium.ps1',
     'tools/windows/install-gstreamer.ps1', 'tools/windows/gstreamer-crypto.ps1')
 $inputs += @($selected | ForEach-Object { "apps/$_/Cargo.toml" })
 [ordered]@{
@@ -44,7 +46,9 @@ $inputs += @($selected | ForEach-Object { "apps/$_/Cargo.toml" })
     runnerAvailability = 'must-be-verified-before-dispatch'
     applications = $selected
     installerAllowlistCount = $supported.Count
-    cargo = [ordered]@{ executable = 'cargo'; arguments = $cargo }
+    cargo = $buildPlan.applicationBuild
+    builds = $builds
+    runtime = $buildPlan.runtime
     qualification = @(
         'Verify physical processor architecture and native rustc host; reject emulation or mixed hosts.',
         'Require PowerShell 7, pinned Rust/MSVC, CapnProto, LLVM readobj and native build dependencies.',
@@ -54,11 +58,12 @@ $inputs += @($selected | ForEach-Object { "apps/$_/Cargo.toml" })
         'Retain binary/runtime checksums and exact source/toolchain/native dependency receipts before designing publication.'
     )
     cache = [ordered]@{
+        reusable = $false
         scope = 'windows-native-architecture-toolchain-and-native-dependency-identity'
         inputs = @($inputs | ForEach-Object {
             [ordered]@{ path = $_; sha256 = (Get-FileHash -LiteralPath (Join-Path $repository $_) -Algorithm SHA256).Hash.ToLowerInvariant() }
         })
-        limitation = 'Input inventory only; not a reusable artifact key. Compiler, SDK, native dependency and resolved feature identities still need qualification.'
+        limitation = 'Input inventory only; not a reusable artifact key. Complete source/dependency closure, resolved Cargo features, compiler/SDK identity and actual native runtime hashes still need qualification.'
     }
     publicationEnabled = $false
 } | ConvertTo-Json -Depth 8

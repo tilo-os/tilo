@@ -22,7 +22,7 @@ impl ChartPalette {
         Self {
             categorical,
             sequential: (primary.multiply_alpha(0.28), primary),
-            diverging: (primary, Color::from_rgb8(148, 148, 148), last),
+            diverging: (primary, <Color as Lerp>::lerp(primary, last, 0.5), last),
         }
     }
 
