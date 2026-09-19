@@ -55,7 +55,7 @@ if [ -n "$added_ignores" ]; then
 fi
 
 # Credentials in the staged diff.
-"$root/scripts/scan-secrets.sh" || fail=1
+"$root/tools/policy/scan-secrets.sh" || fail=1
 
 if git diff --cached -U0 --diff-filter=ACM | grep -qE '^\+(<{7}|={7}|>{7})( |$)'; then
   note "merge-conflict marker in the staged diff"

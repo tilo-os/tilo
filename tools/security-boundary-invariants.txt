@@ -1,5 +1,5 @@
 # One repository-relative Python or Bash invariant per line.
-scripts/check-install-contract.py
+tools/policy/check_install_contract.py
 os/tests/kernel_hardening_invariants.sh
 os/tests/kernel_architecture.sh
 os/tests/hardware_profile_test.py

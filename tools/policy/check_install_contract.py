@@ -8,7 +8,7 @@ from pathlib import Path
 import tomllib
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 contract = json.loads((ROOT / "docs/install-contract.json").read_text())
 
 assert contract["schemaVersion"] == 2

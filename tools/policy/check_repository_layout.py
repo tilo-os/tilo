@@ -46,6 +46,8 @@ RETIRED_SOURCE_ROOTS = {
     "scripts/check-workspace-complete.sh": "tools/policy/check_workspace_members.py",
     "scripts/ci-fuse-preflight.sh": "tools/ci/fuse-preflight.sh",
     "scripts/ci-run.sh": "tools/ci/run-command.sh",
+    "scripts/check-install-contract.py": "tools/policy/check_install_contract.py",
+    "scripts/scan-secrets.sh": "tools/policy/scan-secrets.sh",
     "crates/app/": "crates/sdk/",
     "crates/format/": "crates/doc/",
     "crates/identity/": "crates/collab/",

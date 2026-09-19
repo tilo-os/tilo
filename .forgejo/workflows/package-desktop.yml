@@ -19,7 +19,7 @@ on:
       - "crates/session/tilo-unlock-helper/**"
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
-      - "scripts/check-install-contract.py"
+      - "tools/policy/check_install_contract.py"
   schedule:
     # One weekly candidate, separated from Saturday's OS image build.
     - cron: "0 4 * * 5"
@@ -59,7 +59,7 @@ jobs:
         run: |
           set -uo pipefail
           diagnostic=success
-          if ! python3 scripts/check-install-contract.py; then
+          if ! python3 tools/policy/check_install_contract.py; then
             diagnostic=install-contract
           elif ! bash -n dist/*.sh dist/*/*.sh dist/ci/proot-apt-key dist/arch/PKGBUILD; then
             diagnostic=bash-syntax

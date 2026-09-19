@@ -76,7 +76,7 @@ jobs:
       - name: Require the native medium architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
       - name: Verify documented installation targets
-        run: python3 scripts/check-install-contract.py
+        run: python3 tools/policy/check_install_contract.py
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3

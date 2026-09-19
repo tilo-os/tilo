@@ -179,7 +179,7 @@ class SelectorTests(unittest.TestCase):
             [
                 ".forgejo/workflows/check.yml",
                 "os/tests/imager_ephemeral_runner.sh",
-                "scripts/check-install-contract.py",
+                "tools/policy/check_install_contract.py",
                 "tools/ci/runners/imager-ephemeral-linux.sh",
             ],
             2,

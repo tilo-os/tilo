@@ -2,8 +2,8 @@
 # Look for credentials in the staged diff. Reads added lines only, so an
 # existing string does not re-fire on every commit that touches its file.
 #
-#   scan-secrets.sh            scan the staged diff
-#   scan-secrets.sh --all      scan every tracked file (slow; for an audit)
+#   tools/policy/scan-secrets.sh            scan the staged diff
+#   tools/policy/scan-secrets.sh --all      scan every tracked file (slow; for an audit)
 #
 # Deliberately narrow: a scanner that cries wolf gets bypassed, and a bypassed
 # scanner catches nothing. Each pattern below matches a credential *shape* that
@@ -22,7 +22,7 @@ else
     ')
 fi
 # This file is a list of credential shapes, so it matches itself.
-subject=$(printf '%s\n' "$subject" | grep -v '^scripts/scan-secrets\.sh:' || true)
+subject=$(printf '%s\n' "$subject" | grep -v '^tools/policy/scan-secrets\.sh:' || true)
 [ -z "$subject" ] && exit 0
 
 # name = regex. Anchored to a recognisable prefix or an exact key length.
