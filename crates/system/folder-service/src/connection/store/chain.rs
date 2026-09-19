@@ -498,44 +498,18 @@ impl ConnectionStore {
         {
             return Err(StoreError::StaleRevision);
         }
-        let canonical_kind = match kind {
-            format::ChainStopKind::NeverBegun => 0,
-            format::ChainStopKind::StagedOnly => 1,
-            format::ChainStopKind::PublishedAccounted => 3,
-        };
+        let canonical_kind = stop_evidence_kind(*kind, evidence)?;
         let mut rows = match evidence {
-            format::DirectoryChainStopEvidenceV1::Regular { evidence } => {
-                if evidence.as_ref().is_some_and(|e| e.displaced.is_some())
-                    || match kind {
-                        format::ChainStopKind::NeverBegun => evidence.is_some(),
-                        format::ChainStopKind::StagedOnly => {
-                            evidence.as_ref().is_none_or(|e| e.outcome.is_some())
-                        }
-                        format::ChainStopKind::PublishedAccounted => {
-                            evidence.as_ref().is_none_or(|e| e.outcome.is_none())
-                        }
-                    }
-                {
-                    return Err(StoreError::RecoveryRequired);
-                }
-                self.reduce_native_boundary(
+            format::DirectoryChainStopEvidenceV1::Regular { evidence } => self
+                .reduce_native_boundary(
                     id,
                     *expected,
                     *expected,
                     *fence,
                     canonical_kind,
                     evidence.as_ref(),
-                )?
-            }
+                )?,
             format::DirectoryChainStopEvidenceV1::Directory { fact } => {
-                if fact.kind() != canonical_kind
-                    || matches!(
-                        fact,
-                        format::DirectoryBoundaryFact::Published { outcome: None, .. }
-                    )
-                {
-                    return Err(StoreError::RecoveryRequired);
-                }
                 self.reduce_directory_boundary(id, *expected, *expected, *fence, fact)?
             }
         };
@@ -545,8 +519,10 @@ impl ConnectionStore {
                 Row::Operation(o) => {
                     o.stage = operation.stage;
                     o.native_boundary = operation.native_boundary;
-                    o.native_boundary_evidence = operation.native_boundary_evidence.clone();
-                    o.native_directory_boundary = operation.native_directory_boundary.clone();
+                    o.native_boundary_evidence
+                        .clone_from(&operation.native_boundary_evidence);
+                    o.native_directory_boundary
+                        .clone_from(&operation.native_directory_boundary);
                     o.directory_chain_stop_boundary = Some(format::DirectoryChainStopBoundaryV1 {
                         schedule_revision: *expected_schedule,
                         operation_revision: o.revision,
@@ -559,6 +535,46 @@ impl ConnectionStore {
         }
         Ok(rows)
     }
+}
+
+/// The same typed shape is required at append and when a retained fact is reopened.
+fn stop_evidence_kind(
+    kind: format::ChainStopKind,
+    evidence: &format::DirectoryChainStopEvidenceV1,
+) -> Result<u8, StoreError> {
+    let canonical = match kind {
+        format::ChainStopKind::NeverBegun => 0,
+        format::ChainStopKind::StagedOnly => 1,
+        format::ChainStopKind::PublishedAccounted => 3,
+    };
+    match evidence {
+        format::DirectoryChainStopEvidenceV1::Regular { evidence } => {
+            if evidence.as_ref().is_some_and(|e| e.displaced.is_some())
+                || match kind {
+                    format::ChainStopKind::NeverBegun => evidence.is_some(),
+                    format::ChainStopKind::StagedOnly => {
+                        evidence.as_ref().is_none_or(|e| e.outcome.is_some())
+                    }
+                    format::ChainStopKind::PublishedAccounted => {
+                        evidence.as_ref().is_none_or(|e| e.outcome.is_none())
+                    }
+                }
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+        }
+        format::DirectoryChainStopEvidenceV1::Directory { fact } => {
+            if fact.kind() != canonical
+                || matches!(
+                    fact,
+                    format::DirectoryBoundaryFact::Published { outcome: None, .. }
+                )
+            {
+                return Err(StoreError::RecoveryRequired);
+            }
+        }
+    }
+    Ok(canonical)
 }
 
 pub(super) fn absent_first_directory(operation: &format::Operation) -> Result<bool, StoreError> {
@@ -584,6 +600,19 @@ pub(super) fn directory_descriptor(
         d::decode(bytes)
     }
     .map_err(|_| StoreError::Corrupt)
+}
+
+fn descriptor_progress(operation: &format::Operation, bytes: &[u8]) -> Result<u64, StoreError> {
+    if operation.native_kind.is_some() {
+        Ok(directory_descriptor(operation, bytes)?.header.progress)
+    } else {
+        Ok(
+            crate::connection::transaction::native::descriptor::decode(bytes)
+                .map_err(|_| StoreError::Corrupt)?
+                .header
+                .progress,
+        )
+    }
 }
 
 impl ConnectionStore {
@@ -755,6 +784,14 @@ impl ChainRows<'_> {
         }
         Ok(selection)
     }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the complete bounded correlation or future-phase matrix in a single auditable predicate."
+    )]
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "Join differently named fields across operation, cursor, connection and native admission records."
+    )]
     fn cursor(
         &self,
         connection: &format::Connection,
@@ -780,6 +817,22 @@ impl ChainRows<'_> {
         {
             return Err(StoreError::Corrupt);
         }
+        let committed_baseline = if let Some(previous) = cursor.predecessor {
+            Some(self.operation(previous)?.revision)
+        } else {
+            selection.baseline
+        };
+        if connection.baseline != committed_baseline {
+            return Err(StoreError::Corrupt);
+        }
+        if let Some(revision) = committed_baseline {
+            self.store.read_baseline(
+                connection,
+                connection.baseline_root,
+                connection.baseline_count,
+                revision,
+            )?;
+        }
         if let Some(previous) = cursor.predecessor {
             let operation = self.operation(previous)?;
             let reference = operation
@@ -791,6 +844,7 @@ impl ChainRows<'_> {
                 || reference.anchor != cursor.anchor
                 || reference.digest != cursor.digest
                 || reference.index.checked_add(1) != Some(cursor.next_index)
+                || (cursor.current.is_none() && operation.revision != cursor.progress_revision)
             {
                 return Err(StoreError::Corrupt);
             }
@@ -816,7 +870,8 @@ impl ChainRows<'_> {
             if retirement == Some(format::ChainRetirementReason::Completed) {
                 return Err(StoreError::Corrupt);
             }
-            if retirement == Some(format::ChainRetirementReason::Abandoned) && operation.stage != 7
+            if retirement == Some(format::ChainRetirementReason::Abandoned)
+                && (operation.stage != 7 || operation.revision != cursor.progress_revision)
             {
                 return Err(StoreError::Corrupt);
             }
@@ -862,6 +917,14 @@ impl ChainRows<'_> {
 }
 
 impl ConnectionStore {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the complete bounded correlation or future-phase matrix in a single auditable predicate."
+    )]
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "Join differently named fields across operation, cursor, connection and native admission records."
+    )]
     pub(super) fn validate_chain_history(&self, replacements: &[Row]) -> Result<(), StoreError> {
         let view = ChainRows {
             store: self,
@@ -888,11 +951,34 @@ impl ConnectionStore {
                         (Some(cursor), Some(schedule)) => {
                             view.cursor(&connection, cursor, None)?;
                             let anchor = view.operation(cursor.anchor)?;
+                            // Every control advances both scalars; Fence alone adds one
+                            // further schedule revision and cannot be repeated.
+                            let sequence_offset = if schedule.state == Schedule::Disconnected {
+                                2
+                            } else {
+                                1
+                            };
                             if anchor.directory_chain_retired.is_some()
-                                || schedule.revision == 0
-                                || schedule.control_sequence >= schedule.revision
+                                || schedule.control_sequence.checked_add(sequence_offset)
+                                    != Some(schedule.revision)
                             {
                                 return Err(StoreError::Corrupt);
+                            }
+                            if matches!(schedule.state, Schedule::Stopped { .. }) {
+                                if let Some(current) = cursor.current {
+                                    let operation = view.operation(current)?;
+                                    let stop = operation
+                                        .directory_chain_stop_boundary
+                                        .as_ref()
+                                        .ok_or(StoreError::Corrupt)?;
+                                    // Ack advanced the schedule once. Paid inspection may
+                                    // advance operation/progress afterward without a new stop.
+                                    if stop.schedule_revision.checked_add(1)
+                                        != Some(schedule.revision)
+                                    {
+                                        return Err(StoreError::Corrupt);
+                                    }
+                                }
                             }
                             let selection = first_selection(&anchor)?;
                             if schedule.state == Schedule::Disconnected {
@@ -921,6 +1007,27 @@ impl ConnectionStore {
                     operation.decode()?;
                     let selection = view.member(&operation)?;
                     view.member_phase(&operation)?;
+                    if operation.stage == 4 {
+                        let connection = view.connection(operation.connection)?;
+                        let baseline = self.read_baseline(
+                            &connection,
+                            connection.baseline_root,
+                            connection.baseline_count,
+                            connection.baseline.ok_or(StoreError::Corrupt)?,
+                        )?;
+                        let expected = if operation.decision == 1 {
+                            &operation.source
+                        } else {
+                            &operation.destination
+                        };
+                        if baseline
+                            .entries()
+                            .and_then(|entries| entries.get(&operation.path.to_relative().ok()?))
+                            != expected.as_ref().map(|state| state.clone().into()).as_ref()
+                        {
+                            return Err(StoreError::Corrupt);
+                        }
+                    }
                     let reference = operation
                         .directory_chain_ref
                         .as_ref()
@@ -956,6 +1063,11 @@ impl ConnectionStore {
                         if stop.operation_revision <= operation.expected
                             || stop.operation_revision > operation.revision
                             || stop.schedule_revision < 2
+                            || stop.schedule_revision == u64::MAX
+                            || (anchor.directory_chain_retired.is_none()
+                                && connection.directory_chain_schedule.as_ref().is_some_and(
+                                    |schedule| stop.schedule_revision > schedule.revision,
+                                ))
                         {
                             return Err(StoreError::Corrupt);
                         }
@@ -1017,6 +1129,18 @@ impl ConnectionStore {
                     } else {
                         registration.validate()?;
                     }
+                    for bytes in [
+                        &registration.intent,
+                        &registration.stage,
+                        &registration.outcome,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if descriptor_progress(&operation, bytes)? >= operation.revision {
+                            return Err(StoreError::Corrupt);
+                        }
+                    }
                     if registration.intent.is_some() {
                         if operation.stage == 0 || registration.stage.is_none() {
                             return Err(StoreError::Corrupt);
@@ -1063,7 +1187,9 @@ impl ConnectionStore {
                 .map(|retired| &retired.cursor)
                 .or(c.directory_chain.as_ref())
                 .ok_or(StoreError::Corrupt)?;
-            let expected = usize::from(cursor.next_index) + usize::from(cursor.current.is_some());
+            let expected = usize::from(cursor.next_index)
+                .checked_add(usize::from(cursor.current.is_some()))
+                .ok_or(StoreError::Corrupt)?;
             if members.len() != expected
                 || members
                     .keys()
@@ -1127,8 +1253,84 @@ impl ConnectionStore {
 }
 
 impl ChainRows<'_> {
+    /// Project only descriptor facts already recorded before this accounting event.
+    /// An older stop remains valid after resumed work records a later outcome.
+    fn retained_boundary(
+        &self,
+        operation: &format::Operation,
+        registrations: &[format::NativeRegistration],
+        resulting_revision: u64,
+        kind: u8,
+        evidence: &format::DirectoryChainStopEvidenceV1,
+    ) -> Result<(), StoreError> {
+        let cutoff = resulting_revision
+            .checked_sub(1)
+            .ok_or(StoreError::Corrupt)?;
+        let progress = |bytes: &[u8]| descriptor_progress(operation, bytes);
+        let mut historical = registrations.to_vec();
+        for registration in &mut historical {
+            if registration
+                .intent
+                .as_deref()
+                .map(&progress)
+                .transpose()?
+                .is_some_and(|revision| revision > cutoff)
+            {
+                registration.intent = None;
+                registration.stage = None;
+                registration.outcome = None;
+            } else if registration
+                .outcome
+                .as_deref()
+                .map(&progress)
+                .transpose()?
+                .is_some_and(|revision| revision > cutoff)
+            {
+                registration.outcome = None;
+            }
+        }
+        let mut prior = operation.clone();
+        prior.revision = cutoff;
+        prior.native_boundary = None;
+        prior.native_boundary_evidence = None;
+        prior.native_directory_boundary = None;
+        prior.directory_chain_stop_boundary = None;
+        prior.stage = historical
+            .iter()
+            .rev()
+            .find(|reg| reg.intent.is_some())
+            .map_or(0, |reg| if reg.outcome.is_some() { 2 } else { 6 });
+        let fence = self.member(operation)?.original_fence;
+        match evidence {
+            format::DirectoryChainStopEvidenceV1::Regular { evidence } => {
+                self.store.validate_regular_boundary(
+                    &prior,
+                    cutoff,
+                    fence,
+                    kind,
+                    evidence.as_ref(),
+                    false,
+                    &historical,
+                )
+            }
+            format::DirectoryChainStopEvidenceV1::Directory { fact } if fact.kind() == kind => {
+                ConnectionStore::validate_directory_boundary(
+                    &prior,
+                    cutoff,
+                    fence,
+                    fact,
+                    &historical,
+                )
+            }
+            format::DirectoryChainStopEvidenceV1::Directory { .. } => Err(StoreError::Corrupt),
+        }
+    }
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the complete bounded correlation or future-phase matrix in a single auditable predicate."
+    )]
     fn member_phase(&self, operation: &format::Operation) -> Result<(), StoreError> {
-        let mut latest = None;
+        let mut registrations = Vec::new();
         let mut nonces = std::collections::BTreeSet::new();
         let mut gap = false;
         for attempt in 1u32..=8 {
@@ -1139,14 +1341,46 @@ impl ChainRows<'_> {
                     if gap || !nonces.insert(registration.nonce) {
                         return Err(StoreError::Corrupt);
                     }
-                    latest = Some(registration);
+                    registrations.push(registration);
                 }
                 None => gap = true,
                 _ => return Err(StoreError::Corrupt),
             }
         }
+        if let Some(stop) = &operation.directory_chain_stop_boundary {
+            let kind = stop_evidence_kind(stop.kind, &stop.evidence)?;
+            self.retained_boundary(
+                operation,
+                &registrations,
+                stop.operation_revision,
+                kind,
+                &stop.evidence,
+            )?;
+        }
+        if operation.stage == 7 {
+            let kind = operation.native_boundary.ok_or(StoreError::Corrupt)?;
+            let evidence = if operation.native_kind.is_some() {
+                format::DirectoryChainStopEvidenceV1::Directory {
+                    fact: operation
+                        .native_directory_boundary
+                        .clone()
+                        .ok_or(StoreError::Corrupt)?,
+                }
+            } else {
+                format::DirectoryChainStopEvidenceV1::Regular {
+                    evidence: operation.native_boundary_evidence.clone(),
+                }
+            };
+            self.retained_boundary(
+                operation,
+                &registrations,
+                operation.revision,
+                kind,
+                &evidence,
+            )?;
+        }
         if matches!(operation.stage, 6 | 2 | 3 | 4) {
-            let registration = latest.as_ref().ok_or(StoreError::Corrupt)?;
+            let registration = registrations.last().ok_or(StoreError::Corrupt)?;
             if registration.intent.is_none()
                 || registration.stage.is_none()
                 || (operation.stage == 6 && registration.outcome.is_some())
@@ -1207,6 +1441,8 @@ impl ChainRows<'_> {
     }
 }
 
+pub(super) const REGULAR_OUTCOME_MAX: usize = 571;
+
 fn singleton_size(row: &Row) -> Result<usize, StoreError> {
     format::encode(row)?;
     Ok(format::encode(&format::PageNode {
@@ -1219,6 +1455,10 @@ impl ConnectionStore {
     /// Serialization ceilings only: synthetic descriptor bytes never enter rows,
     /// reducers, native decoders, or effect authority. Ordinary Directory callers
     /// retain their existing estimator; this wraps it with chain extension costs.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the complete bounded correlation or future-phase matrix in a single auditable predicate."
+    )]
     pub(super) fn preflight_chain_intent(
         &self,
         operation: &format::Operation,
@@ -1277,9 +1517,9 @@ impl ConnectionStore {
             },
         });
         let directory = operation.native_kind.is_some();
-        // Endpoint-source regular Stage/Outcome bodies have fixed maxima444/539;
+        // Endpoint-source regular Stage/Outcome bodies have fixed maxima 444/571;
         // Directory375/333 are the existing shared estimator's fixed wire sizes.
-        let outcome = vec![255; if directory { 333 } else { 539 }];
+        let outcome = vec![255; if directory { 333 } else { REGULAR_OUTCOME_MAX }];
         let registration = format::NativeRegistration {
             native_kind: operation.native_kind,
             connection: operation.connection,
@@ -1439,22 +1679,12 @@ impl ConnectionStore {
             stop,
             boundary,
         ] {
-            let size = format::encode(&format::Event {
+            let event = format::Event {
                 schema: 1,
                 predecessor: [255; 32],
                 change,
-            })?
-            .len() as u64
-                + 44;
-            if self
-                .log
-                .metadata()?
-                .len()
-                .checked_add(size)
-                .is_none_or(|size| size > 15 * 1024 * 1024)
-            {
-                return Err(StoreError::LimitExceeded);
-            }
+            };
+            self.check_event_capacity(&event, format::encode(&event)?.len())?;
         }
         Ok(())
     }

@@ -1291,6 +1291,10 @@ fn regular_phase_bytes(operation: &format::Operation, progress: u64) -> [Vec<u8>
     .unwrap();
     [intent, stage, outcome]
 }
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "Private fixture offsets and revisions are bounded by the explicit wire vectors and finite test phases."
+)]
 fn directory_phase_bytes(operation: &format::Operation, progress: u64) -> [Vec<u8>; 3] {
     let [_, intent, stage, outcome] = directory_wire_facts(operation.baseline.is_some());
     let patch_header = |bytes: Vec<u8>, revision: u64| {
@@ -1304,9 +1308,17 @@ fn directory_phase_bytes(operation: &format::Operation, progress: u64) -> [Vec<u
     };
     let mut intent = patch_header(intent, progress);
     intent[303..335].copy_from_slice(&format::digest(operation.native_identity.as_ref().unwrap()));
+    let admission = operation.native_identity.as_ref().unwrap();
+    intent.truncate(369);
+    intent.extend(&admission[187..admission.len() - 32]);
     let intent = seal_directory(intent);
     let mut stage = patch_header(stage, progress);
     stage[121..153].copy_from_slice(&intent[intent.len() - 32..]);
+    if operation.path.to_relative().unwrap().components().len() == 2 {
+        let mut parent = Vec::new();
+        directory_object(&mut parent, 22);
+        stage[257..309].copy_from_slice(&parent);
+    }
     let stage = seal_directory(stage);
     let mut outcome = patch_header(outcome, progress + 1);
     outcome[121..153].copy_from_slice(&intent[intent.len() - 32..]);
@@ -2822,7 +2834,7 @@ fn chain_actual_capacity_codec_fixed_phase_sizes_are_covered() {
         "current preflight Stage ceiling undercounts actual production bytes"
     );
     assert!(
-        outcome.len() <= 539,
+        outcome.len() <= super::chain::REGULAR_OUTCOME_MAX,
         "current preflight Outcome ceiling undercounts actual production bytes"
     );
 }
@@ -2901,5 +2913,1367 @@ fn chain_checkpoint_closure_advisory_baseline_stop_wrapper_and_swapped_outcome()
             ConnectionStore::open_at(&path).is_err(),
             "advisory regression case {case}"
         );
+    }
+}
+
+// A second fixture driver keeps a cached ordinary session in the same store
+// lifetime. Every transition still uses the common production append pipeline.
+fn advance_in_place(store: &mut ConnectionStore, id: ConnectionId, phase: u8) {
+    if phase == 0 {
+        return;
+    }
+    let mut registration = historical_registration(store, id);
+    let expected = store.connection(id).unwrap().revision;
+    historical_append(
+        store,
+        Change::NativeReserve {
+            registration: registration.clone(),
+            expected,
+        },
+    )
+    .unwrap();
+    let operation = store
+        .operation(OperationId {
+            connection: id,
+            serial: store.connection(id).unwrap().pending.unwrap(),
+        })
+        .unwrap();
+    let [intent, stage, outcome] = if operation.native_kind.is_some() {
+        directory_phase_bytes(&operation, operation.revision)
+    } else {
+        regular_phase_bytes(&operation, operation.revision)
+    };
+    registration.intent = Some(intent);
+    registration.stage = Some(stage);
+    historical_append(
+        store,
+        Change::NativePrepared {
+            registration: registration.clone(),
+            expected: operation.revision,
+        },
+    )
+    .unwrap();
+    for verified in [false, true]
+        .into_iter()
+        .take(usize::from(phase.saturating_sub(1)))
+    {
+        registration.outcome = Some(outcome.clone());
+        let expected = store.connection(id).unwrap().revision;
+        historical_append(
+            store,
+            Change::NativeOutcome {
+                registration: registration.clone(),
+                expected,
+                verified,
+                reconstructed: false,
+            },
+        )
+        .unwrap();
+    }
+}
+fn append_control(
+    store: &mut ConnectionStore,
+    id: ConnectionId,
+    transition: format::DirectoryChainControlTransitionV1,
+) {
+    let change = chain_control(store, id, transition);
+    historical_append(store, change).unwrap();
+}
+#[test]
+fn chain_controls_between_members_and_retained_stop_after_resumed_progress() {
+    use format::DirectoryChainControlTransitionV1 as T;
+    for reason in [format::PauseOrCancel::Pause, format::PauseOrCancel::Cancel] {
+        let (_tmp, path, mut store, record) = nested_chain_first();
+        let change = baseline_change(&store, record.id);
+        historical_append(&mut store, change).unwrap();
+        let before = store.connection(record.id).unwrap();
+        assert!(before.directory_chain.as_ref().unwrap().current.is_none());
+        for transition in [T::StopRequested { reason }, T::StopAcknowledged, T::Resume] {
+            append_control(&mut store, record.id, transition);
+        }
+        assert_eq!(
+            store.connection(record.id).unwrap().revision,
+            before.revision
+        );
+        store.checkpoint().unwrap();
+        drop(store);
+        ConnectionStore::open_at(&path).unwrap();
+    }
+    for directory in [false, true] {
+        for phase in [0, 1] {
+            let (_tmp, path, mut store, record) = phase_history(directory, phase);
+            append_control(
+                &mut store,
+                record.id,
+                T::StopRequested {
+                    reason: format::PauseOrCancel::Pause,
+                },
+            );
+            let stop = stop_change(&store, record.id, phase, directory);
+            historical_append(&mut store, stop).unwrap();
+            append_control(&mut store, record.id, T::StopAcknowledged);
+            append_control(&mut store, record.id, T::Resume);
+            if phase == 0 {
+                advance_in_place(&mut store, record.id, 3);
+            } else {
+                let op = store
+                    .operation(OperationId {
+                        connection: record.id,
+                        serial: 1,
+                    })
+                    .unwrap();
+                let mut key = format::key(5, record.id.0, 1);
+                key.extend(1u32.to_be_bytes());
+                let Some(Row::NativeRegistration(mut reg)) = store.row(&key).unwrap() else {
+                    panic!("registration")
+                };
+                let mut bytes = if directory {
+                    directory_phase_bytes(&op, op.revision - 1)[2].clone()
+                } else {
+                    regular_phase_bytes(&op, op.revision - 1)[2].clone()
+                };
+                // Join the original immutable intent/stage and use the new progress.
+                if directory {
+                    bytes.truncate(bytes.len() - 32);
+                    bytes[121..153].copy_from_slice(
+                        &reg.intent.as_ref().unwrap()[reg.intent.as_ref().unwrap().len() - 32..],
+                    );
+                    bytes[153..185].copy_from_slice(
+                        &reg.stage.as_ref().unwrap()[reg.stage.as_ref().unwrap().len() - 32..],
+                    );
+                    bytes = seal_directory(bytes);
+                } else {
+                    use crate::connection::transaction::native::descriptor as d;
+                    let mut outcome = d::decode(&bytes).unwrap();
+                    if let d::Body::Outcome(body) = &mut outcome.body {
+                        body.intent = d::decode(reg.intent.as_ref().unwrap()).unwrap().digest;
+                        body.stage = Some(d::decode(reg.stage.as_ref().unwrap()).unwrap().digest);
+                    }
+                    bytes = d::encode(&outcome.header, &outcome.body).unwrap();
+                }
+                reg.outcome = Some(bytes);
+                for verified in [false, true] {
+                    let expected = store.connection(record.id).unwrap().revision;
+                    historical_append(
+                        &mut store,
+                        Change::NativeOutcome {
+                            registration: reg.clone(),
+                            expected,
+                            verified,
+                            reconstructed: false,
+                        },
+                    )
+                    .unwrap();
+                }
+            }
+            let change = baseline_change(&store, record.id);
+            historical_append(&mut store, change).unwrap();
+            store.checkpoint().unwrap();
+            drop(store);
+            ConnectionStore::open_at(&path)
+                .expect("old stop must retain its historical phase after later publish/completion");
+        }
+    }
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "Private fixture offsets and revisions are bounded by the explicit wire vectors and finite test phases."
+)]
+fn nested_existing_wire(
+    store: &ConnectionStore,
+    record: &ConnectionRecord,
+    directory: bool,
+) -> format::Operation {
+    use crate::connection::transaction::native::descriptor as d;
+    let wire = if directory {
+        first_directory_wire(store, record)
+    } else {
+        first_regular_wire(store, record)
+    };
+    let mut op: format::Operation = serde_json::from_value(wire).unwrap();
+    let mut selected = selection_vector(false, !directory);
+    selected[153..161].copy_from_slice(&record.revision.to_le_bytes());
+    if let Some(b) = record.baseline_revision {
+        selected[170..178].copy_from_slice(&b.to_le_bytes());
+    } else {
+        selected[169] = 0;
+        selected.drain(170..178);
+    }
+    let n = selected.len();
+    selected[n - 48..n - 40].copy_from_slice(&2u64.to_le_bytes());
+    selected[n - 40..n - 32].copy_from_slice(&0u64.to_le_bytes());
+    resign(&mut selected);
+    op.directory_chain_ref
+        .as_mut()
+        .unwrap()
+        .digest
+        .copy_from_slice(&selected[selected.len() - 32..]);
+    op.directory_chain_anchor = Some(selected);
+    op.path = format::NativePath::Unix(b"a/b".to_vec());
+    if directory {
+        let old = op.native_identity.as_ref().unwrap();
+        let mut bytes = old[..187].to_vec();
+        bytes.extend([0, 2, 3, 0, b'a', b'/', b'b']);
+        for (root, parent) in [(11, 21), (12, 22)] {
+            bytes.push(2);
+            directory_object(&mut bytes, root);
+            directory_object(&mut bytes, parent);
+        }
+        bytes.extend(&old[187 + 5 + 2 * (1 + 52)..old.len() - 32]);
+        op.native_identity = Some(seal_directory(bytes));
+    } else {
+        let mut a = d::Admission::decode(op.native_identity.as_ref().unwrap()).unwrap();
+        a.path = RelativePath::unix(b"a/b").unwrap();
+        for (chain, ino) in a.chains.iter_mut().zip([21, 22]) {
+            chain.push(d::Object {
+                dev: 1,
+                ino,
+                kind: 0o040_000,
+                generation: [u8::try_from(ino).unwrap(); 32],
+            });
+        }
+        op.native_identity = Some(a.encode().unwrap());
+    }
+    op.decode()
+        .expect("independent nested existing-prefix admission");
+    op
+}
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "Private fixture offsets and revisions are bounded by the explicit wire vectors and finite test phases."
+)]
+fn nested_baseline_change(store: &ConnectionStore, id: ConnectionId, directory: bool) -> Change {
+    let mut change = baseline_change(store, id);
+    let c = store.connection(id).unwrap();
+    let op = store
+        .operation(OperationId {
+            connection: id,
+            serial: c.pending.unwrap(),
+        })
+        .unwrap();
+    let mut entries = store
+        .load_baseline(id)
+        .unwrap()
+        .entries()
+        .cloned()
+        .unwrap_or_default();
+    entries.insert(RelativePath::unix(b"a").unwrap(), EntryState::Directory);
+    entries.insert(
+        RelativePath::unix(b"a/b").unwrap(),
+        op.source.clone().unwrap().into(),
+    );
+    let root = storage::build_pages(
+        &store.storage,
+        entries.into_iter().enumerate().map(|(i, (path, state))| {
+            Ok(Row::Baseline(format::BaselineEntry {
+                connection: id.0,
+                revision: c.revision + 1,
+                ordinal: u32::try_from(i).unwrap(),
+                path: format::NativePath::relative(&path),
+                state: state.into(),
+            }))
+        }),
+    )
+    .unwrap();
+    if let Change::BaselineCommit {
+        root: r,
+        count,
+        existing_ancestors,
+        directory_ancestors,
+        ..
+    } = &mut change
+    {
+        *r = root;
+        *count = c.baseline_count + 2;
+        let admission = format::digest(op.native_identity.as_ref().unwrap());
+        if directory {
+            *directory_ancestors = Some(format::DirectoryAncestorPatchV1 {
+                version: 1,
+                admission,
+                prefixes: 2,
+            });
+        } else {
+            *existing_ancestors = Some(format::ExistingAncestorPatchV1 {
+                version: 1,
+                admission,
+                prefixes: 2,
+            });
+        }
+    }
+    change
+}
+#[test]
+fn chain_atomic_baseline_nested_existing_prefix_receipts_and_candidates() {
+    for directory in [false, true] {
+        for present in [false, true] {
+            let (_tmp, path, mut store, mut record) = empty_history();
+            if present {
+                ordinary_baseline(&mut store, &record);
+                record = store.load_connection(record.id).unwrap();
+            }
+            let op = nested_existing_wire(&store, &record, directory);
+            historical_append(&mut store, Change::Intent { operation: op }).unwrap();
+            advance_in_place(&mut store, record.id, 3);
+            let valid = nested_baseline_change(&store, record.id, directory);
+            for case in 0..6 {
+                let mut bad = valid.clone();
+                if let Change::BaselineCommit {
+                    existing_ancestors,
+                    directory_ancestors,
+                    directory_chain,
+                    root,
+                    count,
+                    initial_review,
+                    ..
+                } = &mut bad
+                {
+                    match case {
+                        0 => {
+                            *existing_ancestors = None;
+                            *directory_ancestors = None;
+                        }
+                        1 => {
+                            if directory {
+                                directory_ancestors.as_mut().unwrap().prefixes = 0;
+                            } else {
+                                existing_ancestors.as_mut().unwrap().prefixes = 0;
+                            }
+                        }
+                        2 => {
+                            if directory {
+                                directory_ancestors.as_mut().unwrap().admission[0] ^= 1;
+                            } else {
+                                existing_ancestors.as_mut().unwrap().admission[0] ^= 1;
+                            }
+                        }
+                        3 => directory_chain.as_mut().unwrap().member.index = 1,
+                        4 => {
+                            *root = None;
+                            *count = 0;
+                        }
+                        _ => *initial_review = true,
+                    }
+                }
+                unchanged_refusal(&mut store, bad);
+            }
+            historical_append(&mut store, valid).unwrap();
+            let baseline = store.load_baseline(record.id).unwrap();
+            assert_eq!(
+                baseline.entries().unwrap().len(),
+                if present { 3 } else { 2 }
+            );
+            assert_eq!(
+                baseline.entries().unwrap()[&RelativePath::unix(b"a").unwrap()],
+                EntryState::Directory
+            );
+            let c = store.connection(record.id).unwrap();
+            assert!(c.pending.is_none() && c.directory_chain.is_none());
+            store.checkpoint().unwrap();
+            drop(store);
+            let store = ConnectionStore::open_at(&path).unwrap();
+            assert_eq!(store.connection(record.id).unwrap(), c);
+        }
+    }
+}
+#[test]
+fn chain_checkpoint_closure_inter_member_baseline_and_each_retained_join() {
+    for successor in [false, true] {
+        for case in 0..8 {
+            let (_tmp, path, mut store, record) = nested_chain_first();
+            let change = baseline_change(&store, record.id);
+            historical_append(&mut store, change).unwrap();
+            if successor {
+                let op = successor_wire(&store, &record);
+                historical_append(&mut store, Change::Intent { operation: op }).unwrap();
+            }
+            store.checkpoint().unwrap();
+            let rows = store
+                .rows()
+                .unwrap()
+                .filter_map(|row| {
+                    let mut row = row.unwrap();
+                    match &mut row {
+                        Row::Connection(c) => match case {
+                            0 => {
+                                c.baseline = None;
+                                c.baseline_root = None;
+                                c.baseline_count = 0;
+                            }
+                            1 => c.baseline = Some(c.baseline.unwrap() - 1),
+                            2 => {
+                                c.directory_chain
+                                    .as_mut()
+                                    .unwrap()
+                                    .predecessor
+                                    .as_mut()
+                                    .unwrap()
+                                    .serial = 99;
+                            }
+                            3 => c.directory_chain.as_mut().unwrap().anchor.serial = 99,
+                            4 => {
+                                c.directory_chain.as_mut().unwrap().current =
+                                    Some(format::ChainOperationIdV1 {
+                                        connection: c.id,
+                                        serial: 99,
+                                    });
+                            }
+                            _ => (),
+                        },
+                        Row::Operation(op) if op.serial == 1 => match case {
+                            5 => return None,
+                            6 => {
+                                let selected = op.directory_chain_anchor.as_mut().unwrap();
+                                selected[180] ^= 1;
+                                resign(selected);
+                                op.directory_chain_ref
+                                    .as_mut()
+                                    .unwrap()
+                                    .digest
+                                    .copy_from_slice(&selected[selected.len() - 32..]);
+                            }
+                            _ => (),
+                        },
+                        Row::NativeRegistration(_) if case == 7 => return None,
+                        _ => (),
+                    }
+                    Some(row)
+                })
+                .collect();
+            replace_checkpoint(&store, rows);
+            drop(store);
+            assert!(
+                ConnectionStore::open_at(&path).is_err(),
+                "successor={successor} case={case}"
+            );
+        }
+    }
+}
+#[test]
+fn chain_abandon_terminal_full_source_phase_matrix_retains_all_rows() {
+    use format::DirectoryChainControlTransitionV1 as T;
+    for directory in [false, true] {
+        for phase in 0..=3 {
+            for source in 0..3 {
+                let (_tmp, path, mut store, record) = phase_history(directory, phase);
+                if source > 0 {
+                    append_control(
+                        &mut store,
+                        record.id,
+                        T::StopRequested {
+                            reason: format::PauseOrCancel::Cancel,
+                        },
+                    );
+                }
+                if source == 2 {
+                    let stop = stop_change(&store, record.id, phase, directory);
+                    historical_append(&mut store, stop).unwrap();
+                    append_control(&mut store, record.id, T::StopAcknowledged);
+                }
+                let keys: Vec<_> = store.rows().unwrap().map(|r| r.unwrap().key()).collect();
+                append_control(&mut store, record.id, T::AbandonRequested);
+                let terminal = terminal_change(&store, record.id, phase, directory);
+                historical_append(&mut store, terminal).unwrap();
+                append_control(&mut store, record.id, T::Retire);
+                assert_eq!(
+                    store
+                        .rows()
+                        .unwrap()
+                        .map(|r| r.unwrap().key())
+                        .collect::<Vec<_>>(),
+                    keys
+                );
+                store.checkpoint().unwrap();
+                drop(store);
+                ConnectionStore::open_at(&path).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the finite denial matrix and its before/after persistence assertions together."
+)]
+fn chain_live_denial_legacy_retirement_matrix_cached_and_reopened() {
+    use format::DirectoryChainControlTransitionV1 as T;
+    for case in 0..3 {
+        for checkpoint in [false, true] {
+            let (_tmp, path, mut store, mut record) = empty_history();
+            let cached = store.transaction_session(record.id).unwrap();
+            if case == 2 {
+                ordinary_baseline(&mut store, &record);
+                record = store.load_connection(record.id).unwrap();
+            }
+            let mut wire = first_directory_wire(&store, &record);
+            if case == 0 {
+                let mut selection = selection_vector(false, true);
+                selection[153..161].copy_from_slice(&record.revision.to_le_bytes());
+                selection[169] = 0;
+                selection.drain(170..178);
+                resign(&mut selection);
+                wire["directory_chain_ref"]["digest"] =
+                    serde_json::json!(selection[selection.len() - 32..].to_vec());
+                wire["directory_chain_anchor"] = serde_json::json!(selection);
+            }
+            historical_append(
+                &mut store,
+                Change::Intent {
+                    operation: serde_json::from_value(wire).unwrap(),
+                },
+            )
+            .unwrap();
+            advance_in_place(&mut store, record.id, 3);
+            let change = baseline_change(&store, record.id);
+            historical_append(&mut store, change).unwrap();
+            if case == 0 {
+                append_control(&mut store, record.id, T::AbandonRequested);
+                append_control(&mut store, record.id, T::Retire);
+            }
+            if checkpoint {
+                store.checkpoint().unwrap();
+                assert!(store.overlay.is_empty());
+            }
+            cached
+                .validate(record.id, &store.native_lifetime)
+                .expect("cached session remains same lifetime and connection");
+            let before = store.connection(record.id).unwrap();
+            assert!(before.directory_chain.is_none() && before.directory_chain_schedule.is_none());
+            let rows = format::encode(
+                &store
+                    .rows()
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap(),
+            )
+            .unwrap();
+            let intent = unmarked_intent(&store, record.id);
+            assert!(matches!(
+                store.begin_native_operation(intent, &cached, None, None, None, None),
+                Err(StoreError::RecoveryRequired)
+            ));
+            assert_eq!(store.connection(record.id).unwrap(), before);
+            assert_eq!(
+                format::encode(
+                    &store
+                        .rows()
+                        .unwrap()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap()
+                )
+                .unwrap(),
+                rows
+            );
+            drop(store);
+            let mut store = ConnectionStore::open_at(&path).unwrap();
+            assert!(matches!(
+                store.transaction_session(record.id),
+                Err(StoreError::RecoveryRequired)
+            ));
+            let intent = unmarked_intent(&store, record.id);
+            let candidate =
+                format::Operation::new(intent.clone(), before.serial + 1, &before).unwrap();
+            assert!(candidate.directory_chain_ref.is_none());
+            assert!(matches!(
+                store.begin_intent(intent),
+                Err(StoreError::RecoveryRequired)
+            ));
+            assert!(matches!(
+                store.append(Change::Intent {
+                    operation: candidate
+                }),
+                Err(StoreError::RecoveryRequired)
+            ));
+            assert_eq!(store.connection(record.id).unwrap(), before);
+            assert_eq!(
+                format::encode(
+                    &store
+                        .rows()
+                        .unwrap()
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap()
+                )
+                .unwrap(),
+                rows
+            );
+            // A different ordinary connection still admits normal work in this store.
+            let other = store
+                .create_connection(
+                    ConnectionId([8; 16]),
+                    record.source.clone(),
+                    record.destination.clone(),
+                    ConnectionPolicy {
+                        deletion_retention_seconds: 2_592_000,
+                    },
+                )
+                .unwrap()
+                .value;
+            store.transaction_session(other.id).unwrap();
+            ordinary_baseline(&mut store, &other);
+            let c = store.connection(other.id).unwrap();
+            assert!(c.baseline.is_some());
+            let ack = store.request_disconnect(other.id, c.revision).unwrap();
+            store.finish_disconnect(&ack).unwrap();
+        }
+    }
+}
+#[test]
+fn chain_persistence_faults_checkpoint_baseline_reread_refuses_missing_page() {
+    for directory in [false, true] {
+        let (_tmp, path, mut store, record) = phase_history(directory, 3);
+        let change = baseline_change(&store, record.id);
+        historical_append(&mut store, change).unwrap();
+        store.checkpoint().unwrap();
+        let before = store.connection(record.id).unwrap();
+        let current = std::fs::read(path.join("CURRENT")).unwrap();
+        let page = path
+            .join("pages")
+            .join(format::hex(&before.baseline_root.unwrap()));
+        let held = page.with_extension("held");
+        std::fs::rename(&page, &held).unwrap();
+        assert!(
+            store.checkpoint().is_err(),
+            "checkpoint must observe missing committed baseline page"
+        );
+        assert_eq!(std::fs::read(path.join("CURRENT")).unwrap(), current);
+        std::fs::rename(held, page).unwrap();
+        drop(store);
+        let store = ConnectionStore::open_at(&path).unwrap();
+        assert_eq!(store.connection(record.id).unwrap(), before);
+    }
+}
+#[test]
+fn chain_actual_capacity_overlay_key_bytes_and_real_log_framing_limits() {
+    let (_tmp, _path, store, record) = empty_history();
+    let base = store.connection(record.id).unwrap();
+    let rows: Vec<_> = (0u32..1024)
+        .map(|i| {
+            let mut c = base.clone();
+            c.id[..4].copy_from_slice(&i.to_le_bytes());
+            Row::Connection(c)
+        })
+        .collect();
+    assert!(
+        store
+            .prepare_rows(rows[..1023].to_vec())
+            .unwrap()
+            .fits_overlay()
+    );
+    assert!(
+        !store.prepare_rows(rows.clone()).unwrap().fits_overlay(),
+        "existing key plus1024 new keys exceeds1024"
+    );
+    let mut huge = rows[..100].to_vec();
+    for row in &mut huge {
+        let Row::Connection(c) = row else {
+            panic!("expected a Connection fixture row")
+        };
+        let mut locator = vec![b'x'; 30_000];
+        locator[0] = b'/';
+        c.source.locator = format::NativePath::Unix(locator);
+    }
+    let encoded: usize = huge
+        .iter()
+        .map(|row| format::encode(row).unwrap().len())
+        .sum();
+    assert!(encoded > 8 * 1024 * 1024);
+    assert!(!store.prepare_rows(huge).unwrap().fits_overlay());
+    let (_tmp, _path, mut store, record) = first_history(false);
+    let before = store.connection(record.id).unwrap();
+    let control = chain_control(
+        &store,
+        record.id,
+        format::DirectoryChainControlTransitionV1::StopRequested {
+            reason: format::PauseOrCancel::Pause,
+        },
+    );
+    let normal = stop_change(&store, record.id, 0, false);
+    for (change, limit) in [
+        (control, 16u64 * 1024 * 1024),
+        (normal, 15 * 1024 * 1024),
+        (
+            Change::Fence {
+                connection: record.id.0,
+                expected: before.revision,
+                generation: before.fence + 1,
+            },
+            16 * 1024 * 1024,
+        ),
+    ] {
+        let event = Event {
+            schema: 1,
+            predecessor: store.digest,
+            change,
+        };
+        let encoded = format::encode(&event).unwrap().len();
+        let framed = encoded as u64 + 44;
+        if matches!(event.change, Change::Fence { .. }) {
+            assert!(framed <= 512);
+        }
+        // Sparse lengths are capacity probes only; they are never replayed as history.
+        let original = store.log.metadata().unwrap().len();
+        store.log.set_len(limit - framed).unwrap();
+        store.check_event_capacity(&event, encoded).unwrap();
+        store.log.set_len(limit - framed + 1).unwrap();
+        assert!(matches!(
+            store.check_event_capacity(&event, encoded),
+            Err(StoreError::LimitExceeded)
+        ));
+        store.log.set_len(original).unwrap();
+    }
+    store.log_identity = storage::regular(&store.log).unwrap();
+    assert_eq!(store.connection(record.id).unwrap(), before);
+}
+
+#[test]
+fn chain_actual_capacity_maximum_native_paths_and_real_json_history_phases() {
+    use crate::connection::transaction::native::descriptor as d;
+    for windows in [false, true] {
+        let (_tmp, path, mut store, record) = empty_history();
+        let mut op: format::Operation =
+            serde_json::from_value(first_regular_wire(&store, &record)).unwrap();
+        let lengths = [vec![255; 15], vec![160], vec![1; 48]].concat();
+        let parts: Vec<_> = lengths.into_iter().map(|n| "z".repeat(n)).collect();
+        let text = parts.join(if windows { "\\" } else { "/" });
+        assert_eq!(text.len(), 4096);
+        assert_eq!(parts.len(), 64);
+        let native = if windows {
+            text.encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+        } else {
+            text.as_bytes().to_vec()
+        };
+        let mut selected = selection_vector(windows, true);
+        if windows {
+            selected[219] = 0;
+        }
+        selected.splice(
+            210..if windows { 219 } else { 216 },
+            [
+                vec![if windows { 2 } else { 1 }],
+                4096u16.to_le_bytes().to_vec(),
+                native,
+            ]
+            .concat(),
+        );
+        selected[153..161].copy_from_slice(&record.revision.to_le_bytes());
+        selected[169] = 0;
+        selected.drain(170..178);
+        let offset = selected.len() - 56;
+        selected[offset..offset + 8].copy_from_slice(&0u64.to_le_bytes());
+        selected[offset + 8..offset + 16].copy_from_slice(&(u64::MAX - 1).to_le_bytes());
+        selected[offset + 16..offset + 24].copy_from_slice(&0u64.to_le_bytes());
+        resign(&mut selected);
+        let selection = DirectoryChainSelectionV1::decode(&selected).unwrap();
+        assert_eq!(selection.member_count().unwrap(), 1);
+        let mut admission = d::Admission::decode(op.native_identity.as_ref().unwrap()).unwrap();
+        admission.path = selection.path.clone();
+        for (side, chain) in admission.chains.iter_mut().enumerate() {
+            for i in 1..64 {
+                chain.push(d::Object {
+                    dev: 1,
+                    ino: 100 + side as u64 * 100 + i,
+                    kind: 0o040_000,
+                    generation: [9; 32],
+                });
+            }
+        }
+        op.path = format::NativePath::relative(&selection.path);
+        op.native_identity = Some(admission.encode().unwrap());
+        op.directory_chain_ref.as_mut().unwrap().digest = selection.selection_digest;
+        op.directory_chain_anchor = Some(selected);
+        historical_append(&mut store, Change::Intent { operation: op })
+            .expect("maximum legal native paths fit actual row and future phase ceilings");
+        advance_in_place(&mut store, record.id, 3);
+        append_control(
+            &mut store,
+            record.id,
+            format::DirectoryChainControlTransitionV1::StopRequested {
+                reason: format::PauseOrCancel::Pause,
+            },
+        );
+        let stop = stop_change(&store, record.id, 3, false);
+        historical_append(&mut store, stop).unwrap();
+        let sizes: Vec<_> = store
+            .rows()
+            .unwrap()
+            .map(|row| {
+                let row = row.unwrap();
+                let object = format::encode(&row).unwrap().len();
+                let page = format::encode(&format::PageNode {
+                    schema: 1,
+                    node: format::Node::Leaf(vec![row]),
+                })
+                .unwrap()
+                .len();
+                assert!(object <= 131_072 && page <= 131_072);
+                (object, page)
+            })
+            .collect();
+        eprintln!("max native4096/depth64 windows={windows} actual row/singleton sizes={sizes:?}");
+        store.checkpoint().unwrap();
+        drop(store);
+        ConnectionStore::open_at(&path).unwrap();
+    }
+}
+
+#[test]
+fn chain_checkpoint_closure_refuses_future_descriptor_progress() {
+    for directory in [false, true] {
+        let (_tmp, path, mut store, record) = phase_history(directory, 2);
+        let revision = store.connection(record.id).unwrap().revision;
+        store.checkpoint().unwrap();
+        let rows = store
+            .rows()
+            .unwrap()
+            .map(|row| {
+                let mut row = row.unwrap();
+                if let Row::NativeRegistration(reg) = &mut row {
+                    if directory {
+                        let bytes = reg.outcome.as_mut().unwrap();
+                        bytes.truncate(bytes.len() - 32);
+                        bytes[105..113].copy_from_slice(&(revision + 10).to_le_bytes());
+                        *bytes = seal_directory(bytes.clone());
+                    } else {
+                        use crate::connection::transaction::native::descriptor as d;
+                        let mut outcome = d::decode(reg.outcome.as_ref().unwrap()).unwrap();
+                        outcome.header.progress = revision + 10;
+                        reg.outcome = Some(d::encode(&outcome.header, &outcome.body).unwrap());
+                    }
+                }
+                row
+            })
+            .collect();
+        replace_checkpoint(&store, rows);
+        drop(store);
+        assert!(
+            ConnectionStore::open_at(&path).is_err(),
+            "future outcome cannot precede its recorded operation directory={directory}"
+        );
+    }
+}
+#[test]
+fn chain_checkpoint_closure_refuses_missing_committed_existing_prefix() {
+    for directory in [false, true] {
+        let (_tmp, path, mut store, record) = empty_history();
+        let op = nested_existing_wire(&store, &record, directory);
+        historical_append(&mut store, Change::Intent { operation: op }).unwrap();
+        advance_in_place(&mut store, record.id, 3);
+        let change = nested_baseline_change(&store, record.id, directory);
+        historical_append(&mut store, change).unwrap();
+        store.checkpoint().unwrap();
+        let c = store.connection(record.id).unwrap();
+        let state = store.load_baseline(record.id).unwrap().entries().unwrap()
+            [&RelativePath::unix(b"a/b").unwrap()]
+            .clone();
+        let root = storage::build_pages(
+            &store.storage,
+            std::iter::once(Ok(Row::Baseline(format::BaselineEntry {
+                connection: record.id.0,
+                revision: c.baseline.unwrap(),
+                ordinal: 0,
+                path: format::NativePath::Unix(b"a/b".to_vec()),
+                state: state.into(),
+            }))),
+        )
+        .unwrap();
+        let rows = store
+            .rows()
+            .unwrap()
+            .map(|row| {
+                let mut row = row.unwrap();
+                if let Row::Connection(c) = &mut row {
+                    c.baseline_root = root;
+                    c.baseline_count = 1;
+                }
+                row
+            })
+            .collect();
+        replace_checkpoint(&store, rows);
+        drop(store);
+        assert!(
+            ConnectionStore::open_at(&path).is_err(),
+            "committed existing prefix must survive baseline closure directory={directory}"
+        );
+    }
+}
+
+#[test]
+fn chain_first_next_history_wrong_proposal_fields_and_successor_timing() {
+    for case in 0..8 {
+        let (_tmp, _path, mut store, record) = empty_history();
+        let mut op: format::Operation =
+            serde_json::from_value(first_regular_wire(&store, &record)).unwrap();
+        match case {
+            0 => op.baseline = Some(1),
+            1 => op.expected += 1,
+            2 => op.directory_chain_ref.as_mut().unwrap().digest[0] ^= 1,
+            3 => {
+                op.initial_review = Some(format::InitialReviewFact {
+                    preview: [8; 32],
+                    selection: [9; 32],
+                    revision: op.expected,
+                });
+            }
+            4 => op.decision = 0,
+            5 => op.source = Some(format::State::Directory),
+            6 => op.native_kind = Some(format::NativeOperationKind::DirectoryV1),
+            _ => {
+                op.action = Some(format::SelectedAction::Restore {
+                    version: 1,
+                    target: 1,
+                    replace: false,
+                    revision: op.expected,
+                    fence: 0,
+                    selected: format::SelectedVersion::Recovery {
+                        operation: 1,
+                        slot: 0,
+                        content: op.source.clone().unwrap(),
+                    },
+                    conflict: None,
+                });
+            }
+        }
+        unchanged_refusal(&mut store, Change::Intent { operation: op });
+    }
+    let (_tmp, _path, mut store, record) = nested_chain_first();
+    let mut early = successor_wire(&store, &record);
+    let reference = early.directory_chain_ref.as_mut().unwrap();
+    reference.index = 1;
+    reference.predecessor = Some(reference.anchor);
+    unchanged_refusal(&mut store, Change::Intent { operation: early });
+    let change = baseline_change(&store, record.id);
+    historical_append(&mut store, change).unwrap();
+    let valid = successor_wire(&store, &record);
+    for case in 0..8 {
+        let mut bad = valid.clone();
+        match case {
+            0 => bad.baseline = None,
+            1 => bad.expected += 1,
+            2 => bad.serial += 1,
+            3 => bad.directory_chain_ref.as_mut().unwrap().digest[0] ^= 1,
+            4 => {
+                bad.directory_chain_ref
+                    .as_mut()
+                    .unwrap()
+                    .predecessor
+                    .as_mut()
+                    .unwrap()
+                    .serial = 99;
+            }
+            5 => bad.directory_chain_ref.as_mut().unwrap().index = 0,
+            6 => bad.path = format::NativePath::Unix(b"other".to_vec()),
+            _ => bad.source_binding.volume[0] ^= 1,
+        }
+        unchanged_refusal(&mut store, Change::Intent { operation: bad });
+    }
+    historical_append(&mut store, Change::Intent { operation: valid }).unwrap();
+}
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "Keep the finite denial matrix and its before/after persistence assertions together."
+)]
+fn chain_progress_closure_remaining_excluded_variants_and_reservation_sequence() {
+    use crate::connection::transaction::native::descriptor as d;
+    let (_tmp, _path, mut store, record) = first_history(false);
+    let c = store.connection(record.id).unwrap();
+    let op = store
+        .operation(OperationId {
+            connection: record.id,
+            serial: 1,
+        })
+        .unwrap();
+    let a = d::Admission::decode(op.native_identity.as_ref().unwrap()).unwrap();
+    let snapshot = d::ConflictSnapshot {
+        connection: c.id,
+        operation: 1,
+        admission: op.expected + 1,
+        revision: c.revision,
+        fence: c.fence,
+        baseline: c.baseline,
+        endpoints: a.endpoints,
+        path: a.path,
+        chains: a.chains,
+        versions: vec![
+            d::CapturedVersion {
+                side: 0,
+                role: 0,
+                state: a.states[0].clone(),
+                displaced: None,
+            },
+            d::CapturedVersion {
+                side: 1,
+                role: 0,
+                state: a.states[1].clone(),
+                displaced: None,
+            },
+        ],
+    }
+    .encode()
+    .unwrap();
+    let entry = format::Recovery {
+        captured: None,
+        connection: c.id,
+        serial: 1,
+        slot: 0,
+        side: 1,
+        path: op.path,
+        reason: 0,
+        state: 0,
+        content: op.source,
+        object: None,
+        retained: 0,
+    };
+    let fact = format::NativeRecoveryFact {
+        captured: None,
+        connection: c.id,
+        serial: 1,
+        slot: 0,
+        attempt: 1,
+        fact: vec![],
+        displaced: vec![],
+    };
+    let source = format::BoundaryEvidence {
+        attempt: 1,
+        displaced: None,
+        outcome: None,
+    };
+    let changes = vec![
+        Change::Reserve {
+            entry: entry.clone(),
+            expected: c.revision,
+            fence: c.fence,
+        },
+        Change::Bytes {
+            entry: entry.clone(),
+            expected: c.revision,
+            fence: c.fence,
+        },
+        Change::SelectedCaptureDrain {
+            entry: entry.clone(),
+            expected: c.revision,
+            operation_expected: c.revision,
+            fence: c.fence,
+            fact: None,
+        },
+        Change::NativeCaptureDrain {
+            entry: entry.clone(),
+            expected: c.revision,
+            operation_expected: c.revision,
+            fence: c.fence,
+            fact: None,
+        },
+        Change::NativeDrain {
+            entry: entry.clone(),
+            expected: c.revision,
+            operation_expected: c.revision,
+            fence: c.fence,
+            source: source.clone(),
+            fact: None,
+        },
+        Change::SelectedDrain {
+            entry,
+            expected: c.revision,
+            operation_expected: c.revision,
+            fence: c.fence,
+            source: source.clone(),
+            fact: None,
+        },
+        Change::SelectedBoundary {
+            connection: c.id,
+            serial: 1,
+            expected: c.revision,
+            operation_expected: c.revision,
+            fence: c.fence,
+            kind: 0,
+            evidence: source,
+        },
+        Change::NativeBound {
+            fact,
+            expected: c.revision,
+            fence: c.fence,
+        },
+        Change::NativeCapture {
+            snapshot: snapshot.clone(),
+            displaced: vec![],
+            expected: c.revision,
+            kind: 0,
+        },
+        Change::NativeSelectedCollision {
+            snapshot,
+            expected: c.revision,
+        },
+    ];
+    for change in changes {
+        assert!(
+            matches!(
+                store.chain_event_guard(&change),
+                Err(StoreError::RecoveryRequired)
+            ),
+            "closed event table rejected before payload-specific validation: {change:?}"
+        );
+        unchanged_refusal(&mut store, change);
+    }
+    let mut paid = read_reserve(&store, record.id, false);
+    if let Change::ReadReserve { next, .. } = &mut paid {
+        next.sequence = u64::MAX;
+    }
+    unchanged_refusal(&mut store, paid);
+}
+
+fn review_fix1_corrupt_checkpoint(
+    mut store: ConnectionStore,
+    path: &Path,
+    rows: Vec<Row>,
+    publish: bool,
+) {
+    if publish {
+        let current = std::fs::read(path.join("CURRENT")).unwrap();
+        let prepared = store.prepare_rows(rows).unwrap();
+        store.commit_rows(prepared);
+        assert!(
+            store.checkpoint().is_err(),
+            "checkpoint publication must close retained joins"
+        );
+        assert_eq!(std::fs::read(path.join("CURRENT")).unwrap(), current);
+    } else {
+        replace_checkpoint(&store, rows);
+        drop(store);
+        assert!(
+            ConnectionStore::open_at(path).is_err(),
+            "empty-log reopen must close retained joins"
+        );
+    }
+}
+#[test]
+fn chain_review_fix1_stopped_requires_boundary_and_exact_schedule_relationships() {
+    use format::DirectoryChainControlTransitionV1 as T;
+    for directory in [false, true] {
+        for publish in [false, true] {
+            for case in 0..5 {
+                let (_tmp, path, mut store, record) = first_history(directory);
+                append_control(
+                    &mut store,
+                    record.id,
+                    T::StopRequested {
+                        reason: format::PauseOrCancel::Pause,
+                    },
+                );
+                let stop = stop_change(&store, record.id, 0, directory);
+                historical_append(&mut store, stop).unwrap();
+                append_control(&mut store, record.id, T::StopAcknowledged);
+                if case == 3 {
+                    let c = store.connection(record.id).unwrap();
+                    store.request_disconnect(record.id, c.revision).unwrap();
+                }
+                if case == 4 {
+                    append_control(&mut store, record.id, T::Resume);
+                }
+                store.checkpoint().unwrap();
+                let schedule = store
+                    .connection(record.id)
+                    .unwrap()
+                    .directory_chain_schedule
+                    .unwrap()
+                    .revision;
+                let rows = store
+                    .rows()
+                    .unwrap()
+                    .map(|row| {
+                        let mut row = row.unwrap();
+                        match &mut row {
+                            Row::Operation(op) if case == 0 => {
+                                op.directory_chain_stop_boundary = None
+                            }
+                            Row::Operation(op) if case == 1 || case == 4 => {
+                                op.directory_chain_stop_boundary
+                                    .as_mut()
+                                    .unwrap()
+                                    .schedule_revision = schedule + 1
+                            }
+                            Row::Connection(c) if case == 2 || case == 3 => {
+                                c.directory_chain_schedule
+                                    .as_mut()
+                                    .unwrap()
+                                    .control_sequence = 0
+                            }
+                            _ => (),
+                        }
+                        row
+                    })
+                    .collect();
+                review_fix1_corrupt_checkpoint(store, &path, rows, publish);
+            }
+        }
+    }
+}
+#[test]
+fn chain_review_fix1_terminal_and_between_member_progress_is_exact() {
+    use format::DirectoryChainControlTransitionV1 as T;
+    for publish in [false, true] {
+        for case in 0..5 {
+            let (_tmp, path, mut store, record) = if case < 2 {
+                phase_history(true, if case == 0 { 3 } else { 0 })
+            } else {
+                nested_chain_first()
+            };
+            if case != 1 {
+                let change = baseline_change(&store, record.id);
+                historical_append(&mut store, change).unwrap();
+            }
+            if case == 1 || case == 2 {
+                append_control(&mut store, record.id, T::AbandonRequested);
+                if case == 1 {
+                    let terminal = terminal_change(&store, record.id, 0, true);
+                    historical_append(&mut store, terminal).unwrap();
+                }
+                append_control(&mut store, record.id, T::Retire);
+            }
+            if case == 4 {
+                let c = store.connection(record.id).unwrap();
+                store.request_disconnect(record.id, c.revision).unwrap();
+            }
+            store.checkpoint().unwrap();
+            let rows = store
+                .rows()
+                .unwrap()
+                .map(|row| {
+                    let mut row = row.unwrap();
+                    match &mut row {
+                        Row::Operation(op) if case < 3 => {
+                            op.directory_chain_retired
+                                .as_mut()
+                                .unwrap()
+                                .cursor
+                                .progress_revision = 1
+                        }
+                        Row::Connection(c) if case == 3 => {
+                            c.revision += 1;
+                            c.directory_chain.as_mut().unwrap().progress_revision = c.revision;
+                        }
+                        Row::Connection(c) if case == 4 => {
+                            c.directory_chain.as_mut().unwrap().progress_revision = 1
+                        }
+                        _ => (),
+                    }
+                    row
+                })
+                .collect();
+            review_fix1_corrupt_checkpoint(store, &path, rows, publish);
+        }
+    }
+}
+#[test]
+fn chain_review_fix1_stopped_paid_inspection_and_resumed_old_boundary_remain_valid() {
+    use format::DirectoryChainControlTransitionV1 as T;
+    for directory in [false, true] {
+        let (_tmp, path, mut store, record) = phase_history(directory, 1);
+        append_control(
+            &mut store,
+            record.id,
+            T::StopRequested {
+                reason: format::PauseOrCancel::Cancel,
+            },
+        );
+        let stop = stop_change(&store, record.id, 1, directory);
+        historical_append(&mut store, stop).unwrap();
+        append_control(&mut store, record.id, T::StopAcknowledged);
+        let before = store
+            .operation(OperationId {
+                connection: record.id,
+                serial: 1,
+            })
+            .unwrap();
+        let paid = read_reserve(&store, record.id, true);
+        historical_append(&mut store, paid).unwrap();
+        let after = store
+            .operation(OperationId {
+                connection: record.id,
+                serial: 1,
+            })
+            .unwrap();
+        assert!(
+            after.revision
+                > before
+                    .directory_chain_stop_boundary
+                    .as_ref()
+                    .unwrap()
+                    .operation_revision
+        );
+        assert_eq!(
+            after.directory_chain_stop_boundary,
+            before.directory_chain_stop_boundary
+        );
+        store.checkpoint().unwrap();
+        drop(store);
+        let mut store = ConnectionStore::open_at(&path).unwrap();
+        append_control(&mut store, record.id, T::Resume);
+        store.checkpoint().unwrap();
+        drop(store);
+        let mut store = ConnectionStore::open_at(&path).unwrap();
+        append_control(
+            &mut store,
+            record.id,
+            T::StopRequested {
+                reason: format::PauseOrCancel::Pause,
+            },
+        );
+        let old = chain_control(&store, record.id, T::StopAcknowledged);
+        unchanged_refusal(&mut store, old);
+        let stop = stop_change(&store, record.id, 1, directory);
+        historical_append(&mut store, stop).unwrap();
+        append_control(&mut store, record.id, T::StopAcknowledged);
+        store.checkpoint().unwrap();
+        drop(store);
+        ConnectionStore::open_at(&path).unwrap();
+    }
+}
+#[test]
+fn chain_review_fix1_terminal_and_between_member_fence_divergence_remains_valid() {
+    use format::DirectoryChainControlTransitionV1 as T;
+    for case in 0..4 {
+        let (_tmp, path, mut store, record) = if case < 2 {
+            phase_history(true, if case == 0 { 3 } else { 0 })
+        } else {
+            nested_chain_first()
+        };
+        if case != 1 {
+            let change = baseline_change(&store, record.id);
+            historical_append(&mut store, change).unwrap();
+        }
+        if case == 1 || case == 2 {
+            append_control(&mut store, record.id, T::AbandonRequested);
+            if case == 1 {
+                let terminal = terminal_change(&store, record.id, 0, true);
+                historical_append(&mut store, terminal).unwrap();
+            }
+            append_control(&mut store, record.id, T::Retire);
+        }
+        let before = store.connection(record.id).unwrap();
+        let ack = store
+            .request_disconnect(record.id, before.revision)
+            .unwrap();
+        store.finish_disconnect(&ack).unwrap();
+        let current = store.connection(record.id).unwrap();
+        assert!(current.revision > before.revision);
+        let anchor = store
+            .operation(OperationId {
+                connection: record.id,
+                serial: 1,
+            })
+            .unwrap();
+        let cursor = anchor
+            .directory_chain_retired
+            .as_ref()
+            .map(|r| &r.cursor)
+            .or(current.directory_chain.as_ref())
+            .unwrap();
+        assert_eq!(cursor.progress_revision, before.revision);
+        store.checkpoint().unwrap();
+        drop(store);
+        ConnectionStore::open_at(&path).unwrap();
     }
 }
