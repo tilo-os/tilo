@@ -3,6 +3,7 @@
 
 import argparse
 from datetime import datetime, timezone
+import errno
 import json
 import os
 from pathlib import Path
@@ -33,8 +34,9 @@ class Api:
 
     def __call__(self, path, method="GET", body=None):
         data = None if body is None else json.dumps(body).encode()
+        endpoint = f"/api/v1{path}" if path == "/user" else f"/api/v1/repos/{REPO}{path}"
         request = urllib.request.Request(
-            f"https://{HOST}/api/v1/repos/{REPO}{path}", data=data, method=method,
+            f"https://{HOST}{endpoint}", data=data, method=method,
             headers={"Authorization": "token " + self.token,
                      "Content-Type": "application/json"},
         )
@@ -172,6 +174,7 @@ def run_errors(api, runs, head, workflow, required_job):
 
 
 def observe(api, number, root):
+    _, actor = api("/user")
     _, repository = api("")
     _, pr = api(f"/pulls/{number}")
     _, branch = api(f"/branches/{BRANCH}")
@@ -179,6 +182,8 @@ def observe(api, number, root):
     head = pr.get("head", {}).get("sha", "")
     base = branch.get("commit", {}).get("id", "")
     errors = []
+    if actor.get("login") != INTEGRATOR:
+        errors.append("token does not belong to the integration service")
     if repository.get("full_name") != REPO or repository.get("private") is not True:
         errors.append("repository identity mismatch")
     if (pr.get("state") != "open" or pr.get("merged") is not False or pr.get("draft") is not False
@@ -210,6 +215,7 @@ def save(path, value, *, exclusive=False):
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
+        fsync_parent(path)
         return
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", encoding="utf-8") as stream:
@@ -217,9 +223,26 @@ def save(path, value, *, exclusive=False):
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
+    fsync_parent(path)
 
 
-def reconcile(api, journal_path):
+def fsync_parent(path):
+    """Persist the directory entry on systems that support directory fsync."""
+    descriptor = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        descriptor = os.open(path.parent, flags)
+        os.fsync(descriptor)
+    except OSError as error:
+        # Windows and some filesystems do not permit opening/fsyncing directories.
+        if error.errno not in {errno.EACCES, errno.EINVAL, errno.ENOTSUP, errno.EPERM}:
+            raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def reconcile(api, journal_path, root):
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     if (journal.get("repo"), journal.get("state")) not in {
             (REPO, "merge_intent_do_not_retry"),
@@ -228,12 +251,20 @@ def reconcile(api, journal_path):
         raise ValueError("journal is not a valid unresolved merge intent")
     _, pr = api(f"/pulls/{journal['pr']}")
     _, branch = api(f"/branches/{BRANCH}")
+    main = branch.get("commit", {}).get("id", "")
+    contained = False
+    if SHA.fullmatch(main):
+        try:
+            git(root, "merge-base", "--is-ancestor", journal["head"], main)
+            contained = True
+        except subprocess.CalledProcessError:
+            pass
     verified = (pr.get("merged") is True and pr.get("merge_commit_sha") == journal["head"]
                 and (pr.get("merged_by") or {}).get("login") == INTEGRATOR
-                and branch.get("commit", {}).get("id") == journal["head"])
+                and contained)
     journal["readback"] = {"merged": pr.get("merged"), "merge_commit_sha": pr.get("merge_commit_sha"),
                            "merged_by": (pr.get("merged_by") or {}).get("login"),
-                           "main": branch.get("commit", {}).get("id")}
+                           "main": main, "head_contained_in_main": contained}
     journal["state"] = "merged_verified" if verified else "not_verified_do_not_retry"
     save(journal_path, journal)
     return 0 if verified else 3
@@ -268,7 +299,7 @@ def merge(api, number, root, journal_path, execute=False):
     except (OSError, urllib.error.HTTPError) as error:
         journal["response_error"] = type(error).__name__
     save(journal_path, journal)
-    return reconcile(api, journal_path)
+    return reconcile(api, journal_path, root)
 
 
 def main():
@@ -285,7 +316,7 @@ def main():
     if args.reconcile:
         if not args.journal.exists():
             parser.error("reconciliation requires an existing journal")
-        return reconcile(Api(token), args.journal)
+        return reconcile(Api(token), args.journal, args.git_root.resolve())
     if args.journal.exists():
         parser.error("a new journal path is required")
     return merge(Api(token), args.pr, args.git_root.resolve(), args.journal, args.execute)

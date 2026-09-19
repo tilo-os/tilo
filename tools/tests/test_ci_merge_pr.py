@@ -1,9 +1,11 @@
 import importlib.util
+import errno
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,10 +71,12 @@ def protection():
 
 
 class FakeApi:
-    def __init__(self, root, head, journal=None):
+    def __init__(self, root, head, journal=None, actor=merge_pr.INTEGRATOR):
         self.root, self.head, self.base = root, head, command(root, "rev-parse", "HEAD")
         self.journal = journal
+        self.actor = actor
         self.merged = False
+        self.main_after_merge = head
         self.posts = []
 
     def __call__(self, path, method="GET", body=None):
@@ -84,10 +88,12 @@ class FakeApi:
             self.merged = True
             return 200, {}
         path = path.split("&page=", 1)[0].split("?limit=", 1)[0]
+        if path == "/user":
+            return 200, {"login": self.actor}
         if path == "":
             return 200, {"full_name": merge_pr.REPO, "private": True}
         if path == "/branches/main":
-            return 200, {"commit": {"id": self.head if self.merged else self.base}}
+            return 200, {"commit": {"id": self.main_after_merge if self.merged else self.base}}
         if path == "/branch_protections/main":
             return 200, protection()
         if path == "/pulls/7":
@@ -202,6 +208,15 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("branch protection requires no independent approval", result["errors"])
         self.assertIn("branch protection mismatch: merge_whitelist_usernames", result["errors"])
 
+    def test_wrong_token_actor_rejects_without_posting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "intent.json"
+            api = FakeApi(self.repo.root, self.head, journal, actor="author")
+            self.assertEqual(merge_pr.merge(api, 7, self.repo.root, journal, execute=True), 2)
+            self.assertEqual(api.posts, [])
+            self.assertIn("token does not belong to the integration service",
+                          json.loads(journal.read_text())["errors"])
+
     def test_merge_persists_intent_and_pins_head_then_verifies_readback(self):
         with tempfile.TemporaryDirectory() as directory:
             journal = Path(directory) / "intent.json"
@@ -231,9 +246,62 @@ class AdmissionTests(unittest.TestCase):
                                            "state": "merge_intent_do_not_retry"}))
             api = FakeApi(self.repo.root, self.head, journal)
             api.merged = True
-            self.assertEqual(merge_pr.reconcile(api, journal), 0)
+            self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 0)
             self.assertEqual(api.posts, [])
             self.assertEqual(json.loads(journal.read_text())["state"], "merged_verified")
+
+    def test_reconcile_accepts_a_later_main_that_contains_the_merge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "intent.json"
+            journal.write_text(json.dumps({"repo": merge_pr.REPO, "pr": 7,
+                                           "head": self.head,
+                                           "state": "merge_intent_do_not_retry"}))
+            command(self.repo.root, "checkout", "-q", self.head)
+            (self.repo.root / "later.txt").write_text("later\n")
+            command(self.repo.root, "add", "later.txt")
+            command(self.repo.root, "commit", "-qm", "later main")
+            later = command(self.repo.root, "rev-parse", "HEAD")
+            api = FakeApi(self.repo.root, self.head, journal)
+            api.merged = True
+            api.main_after_merge = later
+            self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 0)
+            receipt = json.loads(journal.read_text())
+            self.assertEqual(receipt["readback"]["main"], later)
+            self.assertTrue(receipt["readback"]["head_contained_in_main"])
+
+    def test_reconcile_rejects_main_without_the_merged_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "intent.json"
+            journal.write_text(json.dumps({"repo": merge_pr.REPO, "pr": 7,
+                                           "head": self.head,
+                                           "state": "merge_intent_do_not_retry"}))
+            api = FakeApi(self.repo.root, self.head, journal)
+            api.merged = True
+            api.main_after_merge = self.repo.base
+            self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 3)
+            receipt = json.loads(journal.read_text())
+            self.assertEqual(receipt["state"], "not_verified_do_not_retry")
+            self.assertFalse(receipt["readback"]["head_contained_in_main"])
+
+
+class JournalDurabilityTests(unittest.TestCase):
+    def test_save_syncs_parent_after_create_and_replace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "journal.json"
+            with mock.patch.object(merge_pr, "fsync_parent") as sync:
+                merge_pr.save(path, {"state": "one"}, exclusive=True)
+                merge_pr.save(path, {"state": "two"})
+            self.assertEqual(sync.call_args_list, [mock.call(path), mock.call(path)])
+
+    def test_directory_fsync_is_portable_when_directory_open_is_unsupported(self):
+        unsupported = OSError(errno.ENOTSUP, "unsupported")
+        with mock.patch.object(merge_pr.os, "open", side_effect=unsupported):
+            merge_pr.fsync_parent(Path("journal.json"))
+
+    def test_directory_fsync_does_not_hide_io_errors(self):
+        with mock.patch.object(merge_pr.os, "open", side_effect=OSError(errno.EIO, "failed")):
+            with self.assertRaises(OSError):
+                merge_pr.fsync_parent(Path("journal.json"))
 
 
 if __name__ == "__main__":
