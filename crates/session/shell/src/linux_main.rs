@@ -152,11 +152,34 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
     match identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
             if provision_requested {
-                tracing::info!(
-                    path = %store.path().display(),
-                    "identity repair found no existing identity; interactive native setup will handle creation"
-                );
-                return Some(std::process::ExitCode::SUCCESS);
+                let Some(identity_dir) = store.path().parent() else {
+                    tracing::error!("identity record has no parent directory");
+                    return Some(std::process::ExitCode::FAILURE);
+                };
+                let paths = firstboot::collaboration_identity_paths();
+                let result = if compositor::parse_install_mode_from_args()
+                    == compositor::InstallMode::HostDesktop
+                {
+                    firstboot::ensure_collaboration_identity_for_legacy_linux_host(
+                        identity_dir,
+                        &paths,
+                    )
+                } else {
+                    firstboot::ensure_collaboration_identity(identity_dir, &paths)
+                };
+                return Some(match result {
+                    Ok(_) => {
+                        tracing::info!(
+                            path = %store.path().display(),
+                            "Tilo collaboration identity is provisioned"
+                        );
+                        std::process::ExitCode::SUCCESS
+                    }
+                    Err(error) => {
+                        tracing::error!("could not provision collaboration identity: {error}");
+                        std::process::ExitCode::FAILURE
+                    }
+                });
             }
             if compositor::parse_mode_from_args() == Mode::Hosted {
                 tracing::error!(
