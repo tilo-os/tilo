@@ -154,9 +154,39 @@ fn covers(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
     })
 }
 
+#[cfg(test)]
+thread_local! { static RECORD_BYTES: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) }; }
+
 struct Record {
     path: PathBuf,
     bytes: Vec<u8>,
+}
+
+impl Record {
+    fn read(path: PathBuf) -> Result<Self, StoreError> {
+        Self::from_bytes(path.clone(), fs::read(path)?)
+    }
+    fn read_for_proof(path: PathBuf) -> Result<Self, StoreError> {
+        let bytes = super::replay::frame_bytes(&path)?.unwrap_or_default();
+        Self::from_bytes(path, bytes)
+    }
+    fn from_bytes(path: PathBuf, bytes: Vec<u8>) -> Result<Self, StoreError> {
+        #[cfg(test)]
+        RECORD_BYTES.with(|counter| {
+            let (live, peak) = counter.get();
+            counter.set((live + bytes.len(), peak.max(live + bytes.len())));
+        });
+        Ok(Self { path, bytes })
+    }
+}
+#[cfg(test)]
+impl Drop for Record {
+    fn drop(&mut self) {
+        RECORD_BYTES.with(|counter| {
+            let (live, peak) = counter.get();
+            counter.set((live - self.bytes.len(), peak));
+        });
+    }
 }
 
 fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
@@ -165,10 +195,7 @@ fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
     let mut out = Vec::new();
     let checkpoint = generation.join("checkpoint.delta");
     if checkpoint.exists() {
-        out.push(Record {
-            bytes: fs::read(&checkpoint)?,
-            path: checkpoint,
-        });
+        out.push(Record::read(checkpoint)?);
     }
     for entry in paths {
         let name = entry.file_name();
@@ -178,29 +205,10 @@ fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
             && !name.starts_with('.')
             && entry.file_type()?.is_file()
         {
-            out.push(Record {
-                bytes: fs::read(entry.path())?,
-                path: entry.path(),
-            });
+            out.push(Record::read(entry.path())?);
         }
     }
     Ok(out)
-}
-
-fn next_record_path(generation: &Path, entries: &[Record]) -> Result<PathBuf, StoreError> {
-    let last = entries
-        .iter()
-        .filter_map(|entry| {
-            let name = entry.path.file_name()?.to_str()?;
-            let prefix = name.get(..16)?;
-            u64::from_str_radix(prefix, 16).ok()
-        })
-        .max()
-        .unwrap_or(0);
-    let next = last
-        .checked_add(1)
-        .ok_or_else(|| invalid("retained record sequence exhausted"))?;
-    Ok(generation.join(format!("{next:016x}.delta")))
 }
 
 fn sync_dir(path: &Path) -> Result<(), StoreError> {
@@ -236,17 +244,21 @@ fn generation_name(name: &str) -> bool {
     name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
-    let name = match fs::read_to_string(lineage.join("CURRENT")) {
-        Ok(name) => name,
+pub(super) fn current(lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
+    use std::io::Read;
+    let mut name = String::new();
+    match fs::File::open(lineage.join("CURRENT")) {
+        Ok(file) => {
+            file.take(33).read_to_string(&mut name)?;
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
-    };
+    }
     if !generation_name(&name) {
         return Err(invalid("invalid retained generation"));
     }
     let generation = lineage.join(name);
-    if !generation.is_dir() {
+    if !fs::symlink_metadata(&generation)?.is_dir() {
         return Err(invalid("missing retained generation"));
     }
     Ok(Some(generation))
@@ -274,38 +286,271 @@ fn commit_generation(
     Ok(generation)
 }
 
-fn collect_obsolete(lineage: &Path, active: &Path) -> Result<(), StoreError> {
-    // Re-establish the barrier even after reopening a previous interrupted
-    // commit. Unknown files/directories are never maintenance candidates.
-    fs::File::open(lineage.join("CURRENT"))?.sync_all()?;
-    sync_dir(lineage)?;
-    for entry in fs::read_dir(lineage)? {
-        let entry = entry?;
-        if entry.path() != active
-            && entry.file_type()?.is_dir()
-            && generation_name(&entry.file_name().to_string_lossy())
-        {
-            fs::remove_dir_all(entry.path())?;
-        }
+/// Bounded incremental GC; no recursion and no authority over unknown content.
+pub(crate) struct GenerationGc {
+    lineage: PathBuf,
+    entries: fs::ReadDir,
+    child: Option<(PathBuf, fs::ReadDir)>,
+}
+impl GenerationGc {
+    pub(crate) fn new(lineage: PathBuf) -> Result<Self, StoreError> {
+        Ok(Self {
+            entries: fs::read_dir(&lineage)?,
+            lineage,
+            child: None,
+        })
     }
-    sync_dir(lineage)
+    pub(crate) fn step(
+        &mut self,
+        limit: super::bounded::WorkLimit,
+    ) -> Result<super::bounded::Step<()>, StoreError> {
+        use super::bounded::Step;
+        let limit = limit.checked()?;
+        // Reestablish Task 1's mandatory barrier after reopen and before every quantum.
+        fs::File::open(self.lineage.join("CURRENT"))?.sync_all()?;
+        sync_dir(&self.lineage)?;
+        let active = current(&self.lineage)?.ok_or_else(|| invalid("missing CURRENT during GC"))?;
+        for _ in 0..limit.record_entries() {
+            if let Some((path, entries)) = &mut self.child {
+                if *path == active {
+                    self.child = None;
+                    continue;
+                }
+                if let Some(entry) = entries.next() {
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    if known_record(&name) && entry.file_type()?.is_file() {
+                        fs::remove_file(entry.path())?;
+                    }
+                } else {
+                    match fs::remove_dir(&*path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == io::ErrorKind::DirectoryNotEmpty => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                    self.child = None;
+                }
+            } else if let Some(entry) = self.entries.next() {
+                let entry = entry?;
+                if entry.path() != active
+                    && entry.file_type()?.is_dir()
+                    && generation_name(&entry.file_name().to_string_lossy())
+                {
+                    self.child = Some((entry.path(), fs::read_dir(entry.path())?));
+                }
+            } else {
+                sync_dir(&self.lineage)?;
+                return Ok(Step::Done(()));
+            }
+        }
+        Ok(Step::More)
+    }
+}
+fn known_record(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name == "checkpoint.delta"
+            || (name.strip_suffix(".delta").is_some_and(|prefix| {
+                matches!(prefix.len(), 8 | 16) && prefix.bytes().all(|b| b.is_ascii_hexdigit())
+            }))
+    })
 }
 
+enum RetainPhase {
+    Scan(fs::ReadDir),
+    Sort,
+    Inspect(fs::File),
+    Stage(fs::File),
+    Commit,
+    Collect(GenerationGc),
+    Done,
+}
+/// Owner must retain this transaction's ordered position across every step.
+/// Drop only closes handles: abandoned staging files are reclaimed separately.
+pub(crate) struct RetainBuild {
+    lineage: PathBuf,
+    active: PathBuf,
+    scratch: PathBuf,
+    bytes: Vec<u8>,
+    checkpoint: bool,
+    workspace: u64,
+    sorter: super::bounded::Sorter,
+    sorted: Option<PathBuf>,
+    phase: RetainPhase,
+    duplicate: bool,
+    opaque: bool,
+    last: u64,
+    key: Option<blake3::Hash>,
+    staged: Option<PathBuf>,
+    survivors: u64,
+    written: u64,
+}
+impl RetainBuild {
+    pub(crate) fn scratch(&self) -> &Path {
+        &self.scratch
+    }
+    pub(crate) fn stats(&self) -> &super::bounded::WorkStats {
+        &self.sorter.stats
+    }
+    pub(crate) fn step(
+        &mut self,
+        limit: super::bounded::WorkLimit,
+    ) -> Result<super::bounded::Step<u64>, StoreError> {
+        use super::bounded::{Meta, Step, increment, read_meta};
+        let limit = limit.checked()?;
+        self.sorter.stats.last_step_work = 0;
+        match &mut self.phase {
+            RetainPhase::Scan(entries) => {
+                if self.sorter.spilling() {
+                    self.sorter.spill_step(limit)?;
+                    return Ok(Step::More);
+                }
+                for _ in 0..limit.record_entries() {
+                    self.sorter.stats.last_step_work += 1;
+                    let Some(entry) = entries.next() else {
+                        self.phase = RetainPhase::Sort;
+                        return Ok(Step::More);
+                    };
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    let lossy = name.to_string_lossy();
+                    if entry.file_type()?.is_file()
+                        && lossy.ends_with(".delta")
+                        && !lossy.starts_with('.')
+                    {
+                        let order = if name == "checkpoint.delta" { "0" } else { "1" };
+                        self.sorter.push(Meta {
+                            key: vec![order.into(), name.clone()],
+                            source: name.into(),
+                            pin: 0,
+                            len: entry.metadata()?.len(),
+                            pending: false,
+                        })?;
+                        if self.sorter.spilling() {
+                            return Ok(Step::More);
+                        }
+                    }
+                }
+            }
+            RetainPhase::Sort => {
+                if let Step::Done(path) = self.sorter.step(limit)? {
+                    self.phase = RetainPhase::Inspect(fs::File::open(&path)?);
+                    self.sorted = Some(path);
+                }
+            }
+            RetainPhase::Inspect(file) => {
+                for _ in 0..limit.record_entries() {
+                    self.sorter.stats.last_step_work += 1;
+                    let Some(meta) = read_meta(file)? else {
+                        if self.duplicate {
+                            self.phase =
+                                RetainPhase::Collect(GenerationGc::new(self.lineage.clone())?);
+                        } else if self.checkpoint
+                            && !self.opaque
+                            && covers(&self.bytes, &self.bytes, self.workspace)
+                        {
+                            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
+                            create_dir(&staged)?;
+                            durable_write(&staged.join("checkpoint.delta"), &self.bytes)?;
+                            self.staged = Some(staged);
+                            self.phase =
+                                RetainPhase::Stage(fs::File::open(self.sorted.as_ref().unwrap())?);
+                        } else {
+                            let next = self
+                                .last
+                                .checked_add(1)
+                                .ok_or_else(|| invalid("retained record sequence exhausted"))?;
+                            durable_write(
+                                &self.active.join(format!("{next:016x}.delta")),
+                                &self.bytes,
+                            )?;
+                            self.written = self.bytes.len() as u64;
+                            self.phase = RetainPhase::Done;
+                        }
+                        return Ok(Step::More);
+                    };
+                    if let Some(name) = meta.source.file_name().and_then(|n| n.to_str())
+                        && let Some(prefix) = name.get(..16)
+                        && let Ok(ordinal) = u64::from_str_radix(prefix, 16)
+                    {
+                        self.last = self.last.max(ordinal);
+                    }
+                    let record = Record::read_for_proof(self.active.join(meta.source))?;
+                    increment(&mut self.sorter.stats.preparation_reads)?;
+                    self.sorter.stats.peak_frame_bytes = self
+                        .sorter
+                        .stats
+                        .peak_frame_bytes
+                        .max(record.bytes.len() + self.bytes.len());
+                    if self.checkpoint {
+                        // Preserve reviewed proof verbatim; hold only this prior record.
+                        let old_key = checkpoint_key(&record.bytes, self.workspace);
+                        self.duplicate |= old_key.is_some_and(|old| Some(old) == self.key)
+                            || covers(&record.bytes, &self.bytes, self.workspace);
+                        self.opaque |= old_key.is_some()
+                            && !covers(&record.bytes, &record.bytes, self.workspace);
+                    } else {
+                        self.duplicate |= record.bytes == self.bytes;
+                    }
+                }
+            }
+            RetainPhase::Stage(file) => {
+                for _ in 0..limit.record_entries() {
+                    self.sorter.stats.last_step_work += 1;
+                    let Some(meta) = read_meta(file)? else {
+                        self.phase = RetainPhase::Commit;
+                        return Ok(Step::More);
+                    };
+                    let record = Record::read_for_proof(self.active.join(meta.source))?;
+                    increment(&mut self.sorter.stats.preparation_reads)?;
+                    self.sorter.stats.peak_frame_bytes = self
+                        .sorter
+                        .stats
+                        .peak_frame_bytes
+                        .max(record.bytes.len() + self.bytes.len());
+                    if !covers(&self.bytes, &record.bytes, self.workspace) {
+                        fs::hard_link(
+                            &record.path,
+                            self.staged
+                                .as_ref()
+                                .unwrap()
+                                .join(format!("{:016x}.delta", self.survivors)),
+                        )?;
+                        increment(&mut self.survivors)?;
+                    }
+                }
+            }
+            RetainPhase::Commit => {
+                let staged = self.staged.as_ref().unwrap();
+                sync_dir(staged)?;
+                durable_write(
+                    &self.lineage.join("CURRENT"),
+                    staged.file_name().unwrap().as_encoded_bytes(),
+                )?;
+                self.written = self.bytes.len() as u64;
+                self.phase = RetainPhase::Collect(GenerationGc::new(self.lineage.clone())?);
+            }
+            RetainPhase::Collect(gc) => {
+                if let Step::Done(()) = gc.step(limit)? {
+                    self.phase = RetainPhase::Done;
+                }
+            }
+            RetainPhase::Done => return Ok(Step::Done(self.written)),
+        }
+        Ok(Step::More)
+    }
+}
 impl WorkspaceStore {
-    pub(super) fn retain_shared(
+    pub(crate) fn start_retain(
         &self,
         channel: &[u8; 32],
         seq: Option<u64>,
-        bytes: &[u8],
-    ) -> Result<u64, StoreError> {
-        let (author, actual_channel, checkpoint) = identity(bytes, self.workspace_id)
+        bytes: Vec<u8>,
+    ) -> Result<RetainBuild, StoreError> {
+        let (author, actual_channel, checkpoint) = identity(&bytes, self.workspace_id)
             .ok_or_else(|| invalid("invalid retained envelope"))?;
         if actual_channel != *channel || checkpoint != seq.is_none() {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
-        // WorkspaceStore::open may have just created this workspace's
-        // layout. Persist the retained/workspace/workspaces directory entries
-        // too, before declaring the first retained publication durable.
         for directory in self.root.ancestors().take(3) {
             sync_dir(directory)?;
         }
@@ -317,45 +562,57 @@ impl WorkspaceStore {
             Some(active) => active,
             None => commit_generation(&lineage, &[], None)?,
         };
-        let entries = records(&active)?;
-        let mut written = 0;
-        if seq.is_some() {
-            // Delta identity includes the entire envelope; never collapse two
-            // different publications just because their bodies happen to match.
-            if !entries.iter().any(|entry| entry.bytes == bytes) {
-                durable_write(&next_record_path(&active, &entries)?, bytes)?;
-                written = bytes.len() as u64;
+        let scratch_root = self.root.join("store-work-v1");
+        fs::create_dir_all(&scratch_root)?;
+        let scratch = scratch_root.join(format!(
+            "retain-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        fs::create_dir(&scratch)?;
+        let sorter = super::bounded::Sorter::new(scratch.join("sort"))?;
+        let phase = RetainPhase::Scan(fs::read_dir(&active)?);
+        let key = checkpoint_key(&bytes, self.workspace_id);
+        Ok(RetainBuild {
+            lineage,
+            active,
+            scratch,
+            bytes,
+            checkpoint,
+            workspace: self.workspace_id,
+            sorter,
+            sorted: None,
+            phase,
+            duplicate: false,
+            opaque: false,
+            last: 0,
+            key,
+            staged: None,
+            survivors: 0,
+            written: 0,
+        })
+    }
+    pub(super) fn retain_shared(
+        &self,
+        channel: &[u8; 32],
+        seq: Option<u64>,
+        bytes: &[u8],
+    ) -> Result<u64, StoreError> {
+        // Compatibility synchronous driver. 2c2 will yield owner worker permits
+        // between the exact same bounded transaction steps.
+        let mut build = self.start_retain(channel, seq, bytes.to_vec())?;
+        let written = loop {
+            if let super::bounded::Step::Done(written) =
+                build.step(super::bounded::WorkLimit::default())?
+            {
+                break written;
             }
-        } else {
-            let key = checkpoint_key(bytes, self.workspace_id);
-            if entries.iter().any(|entry| {
-                checkpoint_key(&entry.bytes, self.workspace_id).is_some_and(|old| Some(old) == key)
-                    || covers(&entry.bytes, bytes, self.workspace_id)
-            }) {
-                // This also recognizes older snapshot retries after their
-                // original files were collected: CURRENT proves their ancestry.
-                collect_obsolete(&lineage, &active)?;
-                return Ok(0);
-            }
-            let has_opaque_checkpoint = entries.iter().any(|entry| {
-                checkpoint_key(&entry.bytes, self.workspace_id).is_some()
-                    && !covers(&entry.bytes, &entry.bytes, self.workspace_id)
-            });
-            if covers(bytes, bytes, self.workspace_id) && !has_opaque_checkpoint {
-                let uncovered: Vec<_> = entries
-                    .iter()
-                    .filter(|entry| !covers(bytes, &entry.bytes, self.workspace_id))
-                    .collect();
-                let active = commit_generation(&lineage, &uncovered, Some(bytes))?;
-                written = bytes.len() as u64;
-                collect_obsolete(&lineage, &active)?;
-            } else {
-                // No proof, or an opaque checkpoint whose relative replay
-                // order must be preserved: append once without any collection.
-                durable_write(&next_record_path(&active, &entries)?, bytes)?;
-                written = bytes.len() as u64;
-            }
-        }
+        };
+        let mut discard = super::replay::WorkDiscard::new(build.scratch.clone())?;
+        drop(build);
+        while matches!(
+            discard.step(super::bounded::WorkLimit::default())?,
+            super::bounded::Step::More
+        ) {}
         Ok(written)
     }
 
@@ -374,7 +631,11 @@ impl WorkspaceStore {
             let Some(active) = current(&lineage.path())? else {
                 continue;
             };
-            out.extend(records(&active)?.into_iter().map(|entry| entry.bytes));
+            out.extend(
+                records(&active)?
+                    .into_iter()
+                    .map(|entry| entry.bytes.clone()),
+            );
         }
         Ok(out)
     }
@@ -434,6 +695,34 @@ mod tests {
     // Fixed bytes avoid a test-only hashing dependency or an external fixture.
     fn inconsistent_heads_fixture() -> (Vec<u8>, Vec<u8>) {
         (hex::decode("856f4a83c3fea776007601100f75efc4a706295a6e71caea86e1a64e017a07c67c94f7ee52107ad9ad2e5ea2b79cc169c7a806544ae3fbd291f52ea14d0601020302130223024002560208150b2102230234014202560257018001027f007f017f017f007f007f077f0963616e6469646174657f007f01017f017f14017f0000").unwrap(), hex::decode("856f4a8360dd956a00760110fb33a1cfd10ffd7d878aa85a2d64767c017a07c67c94f7ee52107ad9ad2e5ea2b79cc169c7a806544ae3fbd291f52ea14d0601020302130223024002560208150b2102230234014202560257018001027f007f017f017f007f007f077f09756e636f76657265647f007f01017f017f14027f0000").unwrap())
+    }
+
+    #[test]
+    fn retention_hydrates_one_prior_record_at_a_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let initial = frame(false, vec![0; 8192], 0);
+        store.retain_delta(&[9; 32], 0, &initial).unwrap();
+        let lineage = store.root.join("retained/v2").join(format!(
+            "{}-{}",
+            hex::encode([1; 32]),
+            hex::encode([9; 32])
+        ));
+        let active = current(&lineage).unwrap().unwrap();
+        for index in 2..514 {
+            fs::write(active.join(format!("{index:016x}.delta")), &initial).unwrap();
+        }
+        RECORD_BYTES.with(|counter| counter.set((0, 0)));
+        store
+            .retain_delta(&[9; 32], 999, &frame(false, vec![1; 8192], 999))
+            .unwrap();
+        let (live, peak) = RECORD_BYTES.with(std::cell::Cell::get);
+        assert_eq!(live, 0);
+        assert!(
+            peak <= initial.len(),
+            "hydrated prior bytes {peak}, single frame {}",
+            initial.len()
+        );
     }
 
     #[test]

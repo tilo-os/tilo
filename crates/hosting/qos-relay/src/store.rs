@@ -23,7 +23,9 @@
 //!   pin state — the point of a host is that a peer's phone can be
 //!   offline for a week and still catch up.
 
-mod retained;
+pub(crate) mod bounded;
+pub(crate) mod replay;
+pub(crate) mod retained;
 #[cfg(test)]
 pub(crate) mod test_barrier;
 
@@ -336,6 +338,8 @@ impl WorkspaceStore {
         Ok(path)
     }
 
+    /// Eager compatibility helper; serving replay is migrated in Task 2c2.
+    /// New bounded storage paths must use replay cursors, not this loader.
     /// Load the pending queue in delivery order without acknowledging it.
     /// The peer task removes entries only after their replay is written.
     pub(crate) fn load_pending(
@@ -440,6 +444,8 @@ impl WorkspaceStore {
         self.retain_shared(channel, seq, bytes)
     }
 
+    /// Eager compatibility helper for existing serving/maintenance callers.
+    /// New bounded replay and retention paths never call this method.
     /// Load retained replay coverage: proven raw baselines before uncovered
     /// tails, and opaque checkpoint histories in original receipt order.
     /// Documents are independent, so channel ordering is irrelevant; ordering
