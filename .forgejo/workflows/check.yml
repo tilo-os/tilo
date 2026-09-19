@@ -73,7 +73,7 @@ jobs:
         env:
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: python3 tools/resolve_ci_builder.py
+        run: python3 tools/ci/resolve_builder.py
       - name: Verify named public-trust contexts with Docker BuildKit
         env:
           DOCKER_BUILDKIT: "1"
@@ -156,7 +156,7 @@ jobs:
             base=HEAD^
           fi
           echo "base=$(git rev-parse "$base^{commit}")" >> "$GITHUB_OUTPUT"
-          python3 tools/ci_select.py --base "$base" --shards 2 "${selection_args[@]}" \
+          python3 tools/ci/select.py --base "$base" --shards 2 "${selection_args[@]}" \
             --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
           {
             echo '```json'
@@ -235,7 +235,7 @@ jobs:
           echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
-          bash tools/ci-sccache.sh prepare
+          bash tools/ci/sccache.sh prepare
 
       # Older/explicitly selected builders may predate the audio fixture.
       # The helper replaces only the conflicting audio daemon; other installed
@@ -252,7 +252,7 @@ jobs:
       - name: Build installer used by app-catalogue integration tests
         if: contains(matrix.test_packages, '-p app-catalogue')
         run: >-
-          bash tools/ci-measure.sh "build tilo-install test fixture" --
+          bash tools/ci/measure.sh "build tilo-install test fixture" --
           bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
           cargo build --locked -p install
 
@@ -261,7 +261,7 @@ jobs:
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
-          bash tools/ci-measure.sh "test shard ${{ matrix.shard }}" --
+          bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
           bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)"
@@ -270,7 +270,7 @@ jobs:
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
-          bash tools/ci-measure.sh "check shard ${{ matrix.shard }}" --
+          bash tools/ci/measure.sh "check shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
           cargo check --locked --all-targets ${{ matrix.packages }}
 
@@ -294,16 +294,16 @@ jobs:
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
-          bash tools/ci-measure.sh "clippy shard ${{ matrix.shard }}" --
+          bash tools/ci/measure.sh "clippy shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
-          tools/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
+          tools/ci/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
 
       - name: Report remote compiler-cache effectiveness
         if: always()
         run: |
           echo "### sccache shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci-sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       # One writer avoids two shards racing to create the same immutable key.
@@ -380,5 +380,5 @@ jobs:
           fetch-depth: 0
       - name: Record an observable CI receipt without touching a branch
         run: >-
-          tools/ci-receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
+          tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
           "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin

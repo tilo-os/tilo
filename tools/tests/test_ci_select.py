@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 
-MODULE_PATH = Path(__file__).parents[1] / "ci_select.py"
+MODULE_PATH = Path(__file__).parents[1] / "ci/select.py"
 SPEC = importlib.util.spec_from_file_location("ci_select", MODULE_PATH)
 assert SPEC and SPEC.loader
 ci_select = importlib.util.module_from_spec(SPEC)
@@ -165,11 +165,11 @@ class SelectorTests(unittest.TestCase):
         self.install_quality_helpers()
         for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
                       "tools/run-repository-policy.sh", "os/tests/security-boundaries.sh",
-                      "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci_select.py"):
+                      "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/select.py"):
             with self.subTest(extra=extra):
-                plan = ci_select.make_plan(self.metadata, self.root, ["tools/ci_select.py", extra], 2)
+                plan = ci_select.make_plan(self.metadata, self.root, ["tools/ci/select.py", extra], 2)
                 self.assertTrue(plan["rust_required"])
-        full = ci_select.make_plan(self.metadata, self.root, ["tools/ci_select.py"], 2, force_full=True)
+        full = ci_select.make_plan(self.metadata, self.root, ["tools/ci/select.py"], 2, force_full=True)
         self.assertTrue(full["full"])
         self.assertEqual(full["selected_count"], full["workspace_count"])
         self.assertTrue(ci_select.make_plan(self.metadata, self.root, [], 2)["rust_required"])

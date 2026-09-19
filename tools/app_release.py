@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tomllib
 
-import ci_select
+from ci import select as ci_select
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,13 +23,13 @@ BINARY_INPUTS = {
     "rust-toolchain.toml",
     "dist/apps/app-collections.toml",
     "tools/app_package_isa.py",
-    "tools/rustc-thin-app-wrapper.sh",
+    "tools/ci/rustc-thin-app-wrapper.sh",
     "os/scripts/build-thin-apps.sh",
     "os/Containerfile.builder",
     "os/external-assets/github-assets.tsv",
     "os/dev/cache-github-assets.sh",
-    "tools/check-build-env.sh",
-    "tools/resolve_ci_builder.py",
+    "tools/ci/check-build-env.sh",
+    "tools/ci/resolve_builder.py",
 }
 PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
@@ -39,7 +39,8 @@ PACKAGING_INPUTS = {
 }
 VERIFICATION_INPUTS = {
     "tools/app_release.py",
-    "tools/ci_select.py",
+    "tools/ci/__init__.py",
+    "tools/ci/select.py",
     "tools/app_channel_manifest.py",
     "tools/canonical_app_verifier.py",
     "tools/create_app_receipt.py",
