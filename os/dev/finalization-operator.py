@@ -451,6 +451,32 @@ def reuse_response(operation, directory, nonce, old_directory, old_nonce, indepe
             'output_sha256': response['output_sha256'], 'directory': str(destination)}
 
 
+def service_reused_loader(operation, c, directory, run_id, attempt, old_directory,
+                          old_nonce, independent_loader, timeout, interval, ignore=()):
+    """Wait for, fetch, verify, reuse, and deliver one exact loader request."""
+    observed = wait_status(
+        operation, c, run_id, attempt, 'request', timeout, interval, ignore)
+    require(observed['job_status'] == 'running' and len(observed['requests']) == 1,
+            'expected exactly one pending loader request from a running job')
+    nonce = observed['requests'][0]
+    received = directory / 'received' / nonce
+    response = directory / 'responses' / nonce
+    require(not received.exists() and not response.exists(),
+            'loader service state already exists; inspect it before continuing')
+    client = client_for(directory)
+    fetched = client.fetch(nonce, received)
+    reused = reuse_response(
+        operation, directory, nonce, old_directory, old_nonce, independent_loader)
+    delivered = client.deliver(response)
+    require(fetched.get('request_id') == nonce and reused.get('request_id') == nonce
+            and delivered.get('request_id') == nonce
+            and reused.get('output_sha256') == delivered.get('output_sha256'),
+            'loader service result identity differs')
+    return {'request_id': nonce, 'input_sha256': fetched['input_sha256'],
+            'output_sha256': delivered['output_sha256'], 'signature_reused': True,
+            'private_key_used': False, 'delivered': True}
+
+
 def handoff(operation, directory, c):
     context = document(directory / 'signing-context.json')
     stage.bound_context(context, document(directory / 'binding.json'))
@@ -491,18 +517,20 @@ def main():
     for name in ('archive-sha256', 'tools-image-id', 'hardware-profile', 'forgejo-host', 'repository', 'dispatch-ref'):
         init.add_argument('--' + name, required=True)
     init.add_argument('--initial-free-bytes', type=int, required=True)
-    for command in ('bind', 'stage', 'status', 'wait', 'fetch', 'reuse-loader', 'deliver', 'handoff'):
+    for command in ('bind', 'stage', 'status', 'wait', 'fetch', 'reuse-loader',
+                    'service-reused-loader', 'deliver', 'handoff'):
         p = sub.add_parser(command)
         p.add_argument('--run-id', type=int, required=True)
         p.add_argument('--attempt', type=int, required=True)
         if command in ('fetch', 'reuse-loader', 'deliver'):
             p.add_argument('--request-id', required=True)
-        if command == 'wait':
-            p.add_argument('--until', choices=('running', 'request'), required=True)
+        if command in ('wait', 'service-reused-loader'):
+            if command == 'wait':
+                p.add_argument('--until', choices=('running', 'request'), required=True)
             p.add_argument('--timeout', type=int, default=300)
             p.add_argument('--interval', type=int, default=30)
             p.add_argument('--ignore-request', action='append', default=[])
-        if command == 'reuse-loader':
+        if command in ('reuse-loader', 'service-reused-loader'):
             p.add_argument('--old-run-directory', type=Path, required=True)
             p.add_argument('--old-request-id', required=True)
             p.add_argument('--independent-loader', type=Path, required=True)
@@ -541,6 +569,11 @@ def main():
         elif a.command == 'stage': result = stage_run(a.operation, c, directory)
         elif a.command == 'status': result = status(a.operation, c, a.run_id, a.attempt)
         elif a.command == 'wait': result = wait_status(a.operation, c, a.run_id, a.attempt, a.until, a.timeout, a.interval, a.ignore_request)
+        elif a.command == 'service-reused-loader':
+            require(NONCE.fullmatch(a.old_request_id), 'invalid old request ID')
+            result = service_reused_loader(a.operation, c, directory, a.run_id, a.attempt,
+                a.old_run_directory, a.old_request_id, a.independent_loader,
+                a.timeout, a.interval, a.ignore_request)
         elif a.command == 'handoff': result = handoff(a.operation, directory, c)
         else:
             require(NONCE.fullmatch(a.request_id), 'invalid request ID')
