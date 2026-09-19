@@ -11,6 +11,9 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         self.workflow = (
             ROOT / ".forgejo/workflows/build-release-tools-image.yml"
         ).read_text()
+        self.release_workflow = (
+            ROOT / ".forgejo/workflows/release-apps.yml"
+        ).read_text()
         self.containerfile = (ROOT / "os/Containerfile.release-tools").read_text()
 
     def test_image_installs_only_publication_runtime_tools(self) -> None:
@@ -35,6 +38,20 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         self.assertIn('tag="candidate-$SOURCE_REVISION"', self.workflow)
         self.assertNotRegex(self.workflow, r"(?m)^\s*(?:tags:|tag=).*(?:latest|:main)\s*$")
         self.assertIn("release-tools-image-receipt/release-tools-image.json", self.workflow)
+
+    def test_credentialed_publisher_uses_the_verified_compiler_free_image(self) -> None:
+        expected = (
+            "code.podesta.ai/qos/tilo-release-tools@"
+            "sha256:bb519a7b710e61f7dc9f383dde3b5045f2d3b01145302f6c01e4e0b5f433b67b"
+        )
+        publish = self.release_workflow.split("\n  publish:\n", 1)[1]
+        self.assertIn(f"image: {expected}", publish)
+        self.assertNotIn("image: ${{ needs.plan.outputs.builder_image }}", publish)
+
+        build = self.release_workflow.split("\n  build:\n", 1)[1].split(
+            "\n  qualify-collection:\n", 1
+        )[0]
+        self.assertIn("image: ${{ needs.plan.outputs.builder_image }}", build)
 
 
 if __name__ == "__main__":
