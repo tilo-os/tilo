@@ -16,12 +16,12 @@ import ci_select
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = ROOT / "release/app-collections.toml"
+CONFIG = ROOT / "dist/apps/app-collections.toml"
 GLOBAL_INPUTS = {
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "release/app-collections.toml",
+    "dist/apps/app-collections.toml",
     "tools/app_release.py",
     "tools/app_package_isa.py",
     "dist/apps/package-apps.sh",

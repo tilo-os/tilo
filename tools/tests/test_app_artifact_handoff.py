@@ -33,7 +33,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "os/scripts/bake-runtime-bundle.sh", "tools/app_release.py",
             "tools/ci_select.py", "tools/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
-            "release/app-collections.toml", ".cargo/config.toml", "tools/app_package_isa.py",
+            "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
         self.write("bin/cargo", """#!/usr/bin/env python3
