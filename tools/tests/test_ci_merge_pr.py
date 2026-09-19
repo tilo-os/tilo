@@ -22,8 +22,13 @@ def command(root, *args):
 class Repo:
     def __init__(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        home = Path(self.temp.name)
+        self.root = home / "work"
+        self.remote = home / "origin.git"
+        self.root.mkdir()
         command(self.root, "init", "-q")
+        subprocess.run(["git", "init", "--bare", "-q", str(self.remote)], check=True)
+        command(self.root, "remote", "add", "origin", str(self.remote))
         command(self.root, "config", "user.email", "test@example.invalid")
         command(self.root, "config", "user.name", "Test")
         path = self.root / "apps/calculator/src/main.rs"
@@ -32,7 +37,9 @@ class Repo:
         (path.parents[1] / "Cargo.toml").write_text("[package]\nname='calculator'\nversion='0.0.0'\n")
         command(self.root, "add", "apps/calculator")
         command(self.root, "commit", "-qm", "base")
+        command(self.root, "branch", "-M", "main")
         self.base = command(self.root, "rev-parse", "HEAD")
+        command(self.root, "push", "-qu", "origin", "main")
 
     def candidate(self, path="apps/calculator/src/main.rs", content="fn main() { ok(); }\n",
                   remove=False):
@@ -47,6 +54,22 @@ class Repo:
         head = command(self.root, "rev-parse", "HEAD")
         command(self.root, "checkout", "-q", self.base)
         return head
+
+    def publish(self, commit):
+        command(self.root, "push", "-q", "--force", "origin", f"{commit}:refs/heads/main")
+
+    def advance_remote(self):
+        publisher = Path(self.temp.name) / "publisher"
+        subprocess.run(["git", "clone", "-q", "--branch", "main",
+                        str(self.remote), str(publisher)], check=True)
+        command(publisher, "config", "user.email", "test@example.invalid")
+        command(publisher, "config", "user.name", "Test")
+        (publisher / "later.txt").write_text("later\n")
+        command(publisher, "add", "later.txt")
+        command(publisher, "commit", "-qm", "later main")
+        later = command(publisher, "rev-parse", "HEAD")
+        command(publisher, "push", "-q", "origin", "main")
+        return later
 
     def close(self):
         self.temp.cleanup()
@@ -85,6 +108,8 @@ class FakeApi:
             if state != "merge_intent_do_not_retry":
                 raise AssertionError("merge intent was not durable before POST")
             self.posts.append(body)
+            command(self.root, "push", "-q", "--force", "origin",
+                    f"{self.head}:refs/heads/main")
             self.merged = True
             return 200, {}
         path = path.split("&page=", 1)[0].split("?limit=", 1)[0]
@@ -245,6 +270,7 @@ class AdmissionTests(unittest.TestCase):
                                            "head": self.head,
                                            "state": "merge_intent_do_not_retry"}))
             api = FakeApi(self.repo.root, self.head, journal)
+            self.repo.publish(self.head)
             api.merged = True
             self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 0)
             self.assertEqual(api.posts, [])
@@ -256,18 +282,19 @@ class AdmissionTests(unittest.TestCase):
             journal.write_text(json.dumps({"repo": merge_pr.REPO, "pr": 7,
                                            "head": self.head,
                                            "state": "merge_intent_do_not_retry"}))
-            command(self.repo.root, "checkout", "-q", self.head)
-            (self.repo.root / "later.txt").write_text("later\n")
-            command(self.repo.root, "add", "later.txt")
-            command(self.repo.root, "commit", "-qm", "later main")
-            later = command(self.repo.root, "rev-parse", "HEAD")
+            self.repo.publish(self.head)
+            later = self.repo.advance_remote()
+            missing = subprocess.run(["git", "-C", str(self.repo.root), "cat-file", "-e", later])
+            self.assertNotEqual(missing.returncode, 0)
             api = FakeApi(self.repo.root, self.head, journal)
             api.merged = True
             api.main_after_merge = later
             self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 0)
             receipt = json.loads(journal.read_text())
             self.assertEqual(receipt["readback"]["main"], later)
+            self.assertEqual(receipt["readback"]["fetched_main"], later)
             self.assertTrue(receipt["readback"]["head_contained_in_main"])
+            self.assertEqual(command(self.repo.root, "rev-parse", merge_pr.FETCHED_MAIN_REF), later)
 
     def test_reconcile_rejects_main_without_the_merged_head(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -281,6 +308,34 @@ class AdmissionTests(unittest.TestCase):
             self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 3)
             receipt = json.loads(journal.read_text())
             self.assertEqual(receipt["state"], "not_verified_do_not_retry")
+            self.assertFalse(receipt["readback"]["head_contained_in_main"])
+
+    def test_reconcile_rejects_api_and_fetched_main_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "intent.json"
+            journal.write_text(json.dumps({"repo": merge_pr.REPO, "pr": 7,
+                                           "head": self.head,
+                                           "state": "merge_intent_do_not_retry"}))
+            api = FakeApi(self.repo.root, self.head, journal)
+            api.merged = True
+            self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 3)
+            receipt = json.loads(journal.read_text())
+            self.assertEqual(receipt["readback"]["main"], self.head)
+            self.assertEqual(receipt["readback"]["fetched_main"], self.repo.base)
+            self.assertFalse(receipt["readback"]["head_contained_in_main"])
+
+    def test_reconcile_rejects_fetch_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journal = Path(directory) / "intent.json"
+            journal.write_text(json.dumps({"repo": merge_pr.REPO, "pr": 7,
+                                           "head": self.head,
+                                           "state": "merge_intent_do_not_retry"}))
+            command(self.repo.root, "remote", "remove", "origin")
+            api = FakeApi(self.repo.root, self.head, journal)
+            api.merged = True
+            self.assertEqual(merge_pr.reconcile(api, journal, self.repo.root), 3)
+            receipt = json.loads(journal.read_text())
+            self.assertEqual(receipt["readback"]["fetched_main"], "")
             self.assertFalse(receipt["readback"]["head_contained_in_main"])
 
 

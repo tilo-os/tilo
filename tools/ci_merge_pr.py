@@ -18,6 +18,7 @@ REPO = "qos/qos"
 BRANCH = "main"
 INTEGRATOR = "qos-integrator"
 REVIEWERS = {"claude"}
+FETCHED_MAIN_REF = "refs/qos-integration/observed-main"
 REQUIRED_CONTEXTS = {
     "CI / affected packages / checks (pull_request)",
     "CI / fast quality / quality (pull_request)",
@@ -252,19 +253,25 @@ def reconcile(api, journal_path, root):
     _, pr = api(f"/pulls/{journal['pr']}")
     _, branch = api(f"/branches/{BRANCH}")
     main = branch.get("commit", {}).get("id", "")
-    contained = False
+    fetched_main, contained = "", False
     if SHA.fullmatch(main):
         try:
-            git(root, "merge-base", "--is-ancestor", journal["head"], main)
+            git(root, "fetch", "--force", "--no-tags", "origin",
+                f"refs/heads/{BRANCH}:{FETCHED_MAIN_REF}")
+            fetched_main = git(root, "rev-parse", FETCHED_MAIN_REF).decode().strip()
+            if fetched_main != main:
+                raise ValueError("fetched main differs from API main")
+            git(root, "merge-base", "--is-ancestor", journal["head"], fetched_main)
             contained = True
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, ValueError):
             pass
     verified = (pr.get("merged") is True and pr.get("merge_commit_sha") == journal["head"]
                 and (pr.get("merged_by") or {}).get("login") == INTEGRATOR
                 and contained)
     journal["readback"] = {"merged": pr.get("merged"), "merge_commit_sha": pr.get("merge_commit_sha"),
                            "merged_by": (pr.get("merged_by") or {}).get("login"),
-                           "main": main, "head_contained_in_main": contained}
+                           "main": main, "fetched_main": fetched_main,
+                           "head_contained_in_main": contained}
     journal["state"] = "merged_verified" if verified else "not_verified_do_not_retry"
     save(journal_path, journal)
     return 0 if verified else 3
