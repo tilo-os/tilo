@@ -29,8 +29,11 @@ impl VideoEditorApp {
         );
         let add = self.add_title_rect(r);
         let face = ui::widget::ButtonFace::new(add, "+ Title")
-            .style(ui::widget::ButtonStyle::Neutral).radius(5.0).text_size(10.5)
-            .weight(TextWeight::Medium).hovered(add.contains(self.last_mouse));
+            .style(ui::widget::ButtonStyle::Neutral)
+            .radius(5.0)
+            .text_size(10.5)
+            .weight(TextWeight::Medium)
+            .hovered(add.contains(self.last_mouse));
         ui::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
         let count = format!("{} clips", self.project.media.len());
         let (count_width, _) = ctx.text.measure(&count, 11.0, None);
@@ -57,9 +60,18 @@ impl VideoEditorApp {
         rect: Rect,
     ) -> Rect {
         let colors = &ctx.theme.tokens.colors;
-        selection_row(ctx.scene, ctx.transform, ctx.theme, rect,
+        selection_row(
+            ctx.scene,
+            ctx.transform,
+            ctx.theme,
+            rect,
             f64::from(ctx.theme.tokens.radii.md),
-            ui::chrome::SelectionState::new(self.selected_media == Some(media_id), self.hover_media == Some(media_id), false));
+            ui::chrome::SelectionState::new(
+                self.selected_media == Some(media_id),
+                self.hover_media == Some(media_id),
+                false,
+            ),
+        );
 
         let row_inset = 8.0 * ctx.scale;
         let thumb_height = (rect.height() - 2.0 * row_inset).clamp(0.0, 64.0);

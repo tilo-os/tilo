@@ -40,7 +40,10 @@ enum Command {
     FileRefresh,
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "independent presentation, focus and refresh flags are not mutually exclusive modes")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent presentation, focus and refresh flags are not mutually exclusive modes"
+)]
 pub struct HistoryHost {
     enclosing_owner: Option<super::HistoryOwner>,
     embedded: bool,
@@ -96,15 +99,20 @@ impl HistoryHost {
             .scopes
             .first()
             .ok_or(HistoryRegistrationError::InvalidScopes)?;
-        let source = registration.sources.iter().find(|source| source.scope() == scope.key)
+        let source = registration
+            .sources
+            .iter()
+            .find(|source| source.scope() == scope.key)
             .ok_or(HistoryRegistrationError::InvalidScopes)?;
 
         let controller = match source {
-            HistorySourceRegistration::HostDocument { resource, .. } | HistorySourceRegistration::OwnedDocument { resource, .. } => Some(
+            HistorySourceRegistration::HostDocument { resource, .. }
+            | HistorySourceRegistration::OwnedDocument { resource, .. } => Some(
                 HistoryController::new(resource.clone(), &source.document(doc)?)
                     .map_err(|_| HistoryRegistrationError::ForeignSource)?,
             ),
-            HistorySourceRegistration::Unversioned { .. } | HistorySourceRegistration::CheckedFiles { .. } => None,
+            HistorySourceRegistration::Unversioned { .. }
+            | HistorySourceRegistration::CheckedFiles { .. } => None,
         };
         let unavailable = Text::new(match registration.sources.first() {
             Some(HistorySourceRegistration::Unversioned { reason, .. }) => reason,
@@ -126,7 +134,9 @@ impl HistoryHost {
                     .push(Box::new(Text::new(scope.title))),
             ));
         let mut host = Self {
-            enclosing_owner: None, embedded: false, keyboard_active: true,
+            enclosing_owner: None,
+            embedded: false,
+            keyboard_active: true,
             registration,
             assets: media::AssetSession::new(),
             active_scope: 0,
@@ -136,7 +146,12 @@ impl HistoryHost {
             review_request: None,
             review_node: None,
             clock: review::unix_now,
-            controller, files: None, retired_files: vec![], requested_file_version: None, observed_file_binding: None, file_target_resolved: false,
+            controller,
+            files: None,
+            retired_files: vec![],
+            requested_file_version: None,
+            observed_file_binding: None,
+            file_target_resolved: false,
             toolbar,
             unavailable,
             unavailable_node: None,
@@ -165,40 +180,69 @@ impl HistoryHost {
         host.rebuild_toolbar();
         Ok(host)
     }
-    pub(crate) fn sync_status_matches(&self, status: Option<&str>) -> bool { self.sync_status.as_deref() == status }
+    pub(crate) fn sync_status_matches(&self, status: Option<&str>) -> bool {
+        self.sync_status.as_deref() == status
+    }
     pub(crate) fn set_sync_status(&mut self, status: Option<String>) {
         self.sync_status = status;
         self.rebuild_toolbar();
     }
     pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
-        self.registration.validate_root_with_owner(root, self.enclosing_owner.as_ref())
+        self.registration
+            .validate_root_with_owner(root, self.enclosing_owner.as_ref())
     }
-    pub(crate) fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>) { self.embedded = true; self.enclosing_owner = owner; }
-    pub(crate) fn keyboard_is_active(&self) -> bool { self.keyboard_active }
-    pub(crate) fn cancel_focus_return(&mut self) { self.saved_focus = None; self.returning_live = false; }
+    pub(crate) fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>) {
+        self.embedded = true;
+        self.enclosing_owner = owner;
+    }
+    pub(crate) fn keyboard_is_active(&self) -> bool {
+        self.keyboard_active
+    }
+    pub(crate) fn cancel_focus_return(&mut self) {
+        self.saved_focus = None;
+        self.returning_live = false;
+    }
     pub(crate) fn activate_at_pointer(&mut self, event: &WindowEvent, scale: f64) {
         let point = match event {
-            WindowEvent::Touch(touch) => Point::new(touch.location.x / scale, touch.location.y / scale),
+            WindowEvent::Touch(touch) => {
+                Point::new(touch.location.x / scale, touch.location.y / scale)
+            }
             _ => self.cursor,
         };
         self.keyboard_active = self.rect.contains(point);
     }
-    pub(crate) fn set_keyboard_active(&mut self, active: bool) { self.keyboard_active = active; }
+    pub(crate) fn set_keyboard_active(&mut self, active: bool) {
+        self.keyboard_active = active;
+    }
     pub(crate) fn composition_contains(&self, target: NodeId, tree: &TaffyTree<()>) -> bool {
         let mut pending: Vec<_> = self.chrome_node.into_iter().collect();
         while let Some(node) = pending.pop() {
-            if node == target { return true; }
+            if node == target {
+                return true;
+            }
             pending.extend(tree.children(node).unwrap_or_default());
         }
         false
     }
-    pub(crate) fn live_interactive(&self) -> bool { !self.captures_input() && !self.invalid_owner }
-    pub(crate) fn width_needs_refresh(&self, width: f64) -> bool { (self.width < 600.0) != (width < 600.0) }
+    pub(crate) fn live_interactive(&self) -> bool {
+        !self.captures_input() && !self.invalid_owner
+    }
+    pub(crate) fn width_needs_refresh(&self, width: f64) -> bool {
+        (self.width < 600.0) != (width < 600.0)
+    }
 
-    #[allow(clippy::indexing_slicing, clippy::expect_used, reason = "validated nonempty scope/source bijection; scope commands check bounds before assignment")]
+    #[allow(
+        clippy::indexing_slicing,
+        clippy::expect_used,
+        reason = "validated nonempty scope/source bijection; scope commands check bounds before assignment"
+    )]
     fn source(&self) -> &HistorySourceRegistration {
         let key = self.registration.definition.scopes[self.active_scope].key;
-        self.registration.sources.iter().find(|source| source.scope() == key).expect("validated scope")
+        self.registration
+            .sources
+            .iter()
+            .find(|source| source.scope() == key)
+            .expect("validated scope")
     }
     pub(crate) fn validate(&self) -> Result<(), HistoryRegistrationError> {
         if self.invalid_owner {
@@ -215,7 +259,9 @@ impl HistoryHost {
         self.review = None;
         self.review_request = None;
         self.controller = None;
-        if let Some(files) = &mut self.files { files.suspend(); }
+        if let Some(files) = &mut self.files {
+            files.suspend();
+        }
         self.before.preview = None;
         self.after.preview = None;
         self.selected.clear();
@@ -227,10 +273,17 @@ impl HistoryHost {
         self.rebuild_toolbar();
         true
     }
-    pub(crate) fn preserve_captured_focus(&mut self, captured: Option<crate::widget::layout::CompositionFocus>) {
-        if self.saved_focus.is_none() { self.saved_focus = captured; }
+    pub(crate) fn preserve_captured_focus(
+        &mut self,
+        captured: Option<crate::widget::layout::CompositionFocus>,
+    ) {
+        if self.saved_focus.is_none() {
+            self.saved_focus = captured;
+        }
     }
-    pub(crate) fn take_returning_focus(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
+    pub(crate) fn take_returning_focus(
+        &mut self,
+    ) -> Option<crate::widget::layout::CompositionFocus> {
         self.returning_live = false;
         self.saved_focus.take()
     }
@@ -251,10 +304,28 @@ impl HistoryHost {
         } else {
             self.cursor
         };
-        let pointer = matches!(event, WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } | WindowEvent::Touch(_));
-        if pointer && !self.rect.contains(point) { return false; }
-        if self.embedded && matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)) && !self.keyboard_active { return false; }
-        if self.captures_input() { return true; }
+        let pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(_)
+        );
+        if pointer && !self.rect.contains(point) {
+            return false;
+        }
+        if self.embedded
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+            && !self.keyboard_active
+        {
+            return false;
+        }
+        if self.captures_input() {
+            return true;
+        }
         match event {
             WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
@@ -346,26 +417,71 @@ impl HistoryHost {
         }
     }
     pub(crate) fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
-        if self.invalid_owner { return false; }
-        if self.assets.has_results() { return true; }
-        if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source() {
-            if source.target().map(|target|target.binding)!=self.observed_file_binding || source.wants_open() || self.files.as_ref().is_some_and(super::files_session::FileController::has_results) || self.retired_files.iter().any(super::files_session::FileController::has_results) { return true; }
+        if self.invalid_owner {
+            return false;
         }
-        if self.open_requested.get() || !self.commands.borrow().is_empty() || (self.width < 600.0) != (width < 600.0) { return true; }
-        let selected: Vec<_> = self.timeline.selection().and_then(|(start, end)| self.timeline.entries().get(start..=end))
-            .map(|entries| entries.iter().map(|entry| entry.id).collect()).unwrap_or_default();
-        if !selected.is_empty() && selected != self.selected { return true; }
-        if matches!(self.source(),HistorySourceRegistration::CheckedFiles { .. }) { return false; }
-        let Ok(document) = self.source().document(doc) else { return true; };
-        self.controller.as_ref().is_some_and(|controller| super::sorted_heads(document.base_heads()) != controller.observed_live_heads)
+        if self.assets.has_results() {
+            return true;
+        }
+        if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source() {
+            if source.target().map(|target| target.binding) != self.observed_file_binding
+                || source.wants_open()
+                || self
+                    .files
+                    .as_ref()
+                    .is_some_and(super::files_session::FileController::has_results)
+                || self
+                    .retired_files
+                    .iter()
+                    .any(super::files_session::FileController::has_results)
+            {
+                return true;
+            }
+        }
+        if self.open_requested.get()
+            || !self.commands.borrow().is_empty()
+            || (self.width < 600.0) != (width < 600.0)
+        {
+            return true;
+        }
+        let selected: Vec<_> = self
+            .timeline
+            .selection()
+            .and_then(|(start, end)| self.timeline.entries().get(start..=end))
+            .map(|entries| entries.iter().map(|entry| entry.id).collect())
+            .unwrap_or_default();
+        if !selected.is_empty() && selected != self.selected {
+            return true;
+        }
+        if matches!(
+            self.source(),
+            HistorySourceRegistration::CheckedFiles { .. }
+        ) {
+            return false;
+        }
+        let Ok(document) = self.source().document(doc) else {
+            return true;
+        };
+        self.controller.as_ref().is_some_and(|controller| {
+            super::sorted_heads(document.base_heads()) != controller.observed_live_heads
+        })
     }
-    pub(crate) fn review_is_open(&self) -> bool { self.review.is_some() }
-    pub(crate) fn review_layout_node(&self) -> Option<NodeId> { self.review_node }
+    pub(crate) fn review_is_open(&self) -> bool {
+        self.review.is_some()
+    }
+    pub(crate) fn review_layout_node(&self) -> Option<NodeId> {
+        self.review_node
+    }
     pub(crate) fn observe_pointer(&mut self, event: &WindowEvent, scale: f64) {
-        if let WindowEvent::CursorMoved { position, .. } = event { self.cursor = Point::new(position.x / scale, position.y / scale); }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.cursor = Point::new(position.x / scale, position.y / scale);
+        }
     }
 
-    #[allow(clippy::too_many_lines, reason = "one ordered refresh reconciles source, controller, immutable canvases and toolbar")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered refresh reconciles source, controller, immutable canvases and toolbar"
+    )]
     pub(crate) fn refresh(&mut self, doc: &AutoCommit) {
         if self.invalid_owner {
             return;
@@ -374,32 +490,68 @@ impl HistoryHost {
             .controller
             .as_ref()
             .is_some_and(HistoryController::has_live_updates);
-        let target_changed=self.reconcile_file_target();
+        let target_changed = self.reconcile_file_target();
         let mut changed = target_changed;
         if self.open_requested.replace(false) {
             self.open = !self.open;
             self.returning_live = !self.open;
-            if !self.open { self.close_files_presentation(); }
+            if !self.open {
+                self.close_files_presentation();
+            }
             changed = true;
         }
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
             // These callbacks were produced by the superseded presentation.
-            if target_changed && matches!(command,Command::Review(_) | Command::FileParent(_) | Command::FileUndo | Command::FileRedo | Command::FileCheck | Command::FileRetry | Command::FileRefresh) { continue; }
+            if target_changed
+                && matches!(
+                    command,
+                    Command::Review(_)
+                        | Command::FileParent(_)
+                        | Command::FileUndo
+                        | Command::FileRedo
+                        | Command::FileCheck
+                        | Command::FileRetry
+                        | Command::FileRefresh
+                )
+            {
+                continue;
+            }
             changed = true;
             match command {
                 Command::Review(command) => {
-                    if matches!(command,review::ReviewCommand::Cancel) {
-                        if let Some(files)=&mut self.files { files.cancel_review(); self.review=None; }
+                    if matches!(command, review::ReviewCommand::Cancel) {
+                        if let Some(files) = &mut self.files {
+                            files.cancel_review();
+                            self.review = None;
+                        }
                     }
                     self.review_request = Some(command);
-                },
-                Command::FileParent(parent) => { if let Some(files)=&mut self.files { if let Some(version)=files.selected() { files.select(version,Some(parent)); } } }
+                }
+                Command::FileParent(parent) => {
+                    if let Some(files) = &mut self.files {
+                        if let Some(version) = files.selected() {
+                            files.select(version, Some(parent));
+                        }
+                    }
+                }
                 Command::FileUndo => self.review_file_compensation(false),
                 Command::FileRedo => self.review_file_compensation(true),
-                Command::FileCheck => { if let Some(files)=&mut self.files { files.check_result(); } }
-                Command::FileRetry => { if let Some(files)=&mut self.files { files.retry(); } }
-                Command::FileRefresh => { if let Some(files)=&mut self.files { files.load(); } }
+                Command::FileCheck => {
+                    if let Some(files) = &mut self.files {
+                        files.check_result();
+                    }
+                }
+                Command::FileRetry => {
+                    if let Some(files) = &mut self.files {
+                        files.retry();
+                    }
+                }
+                Command::FileRefresh => {
+                    if let Some(files) = &mut self.files {
+                        files.load();
+                    }
+                }
                 Command::Live => {
                     self.close_files_presentation();
                     self.review = None;
@@ -420,7 +572,9 @@ impl HistoryHost {
                     if let Some(preview) = &mut self.canvas_mut().preview {
                         preview.navigate(if matches!(command, Command::NextPage) {
                             super::PreviewNavigation::NextPage
-                        } else { super::PreviewNavigation::PreviousPage });
+                        } else {
+                            super::PreviewNavigation::PreviousPage
+                        });
                     }
                 }
                 Command::Activity => self.activity_page = true,
@@ -433,31 +587,42 @@ impl HistoryHost {
                     self.activity_page = false;
                 }
                 Command::Scope(index) => {
-                    if index != self.active_scope && index < self.registration.definition.scopes.len() {
+                    if index != self.active_scope
+                        && index < self.registration.definition.scopes.len()
+                    {
                         self.review = None;
                         self.review_request = None;
                         self.active_scope = index;
                         self.assets.cancel();
-                    self.selected.clear();
+                        self.selected.clear();
                         self.timeline.set_selection(None);
                         self.before.preview = None;
                         self.after.preview = None;
                         self.activity_page = false;
                         self.controller = None;
                         match self.source() {
-                            HistorySourceRegistration::HostDocument { resource, .. } | HistorySourceRegistration::OwnedDocument { resource, .. } => {
+                            HistorySourceRegistration::HostDocument { resource, .. }
+                            | HistorySourceRegistration::OwnedDocument { resource, .. } => {
                                 if let Ok(document) = self.source().document(doc) {
-                                    self.controller = HistoryController::new(resource.clone(), &document).ok();
+                                    self.controller =
+                                        HistoryController::new(resource.clone(), &document).ok();
                                 }
                             }
-                            HistorySourceRegistration::Unversioned { reason, .. } => self.unavailable = Text::new(reason),
-                            HistorySourceRegistration::CheckedFiles { .. } => self.close_files_presentation(),
+                            HistorySourceRegistration::Unversioned { reason, .. } => {
+                                self.unavailable = Text::new(reason)
+                            }
+                            HistorySourceRegistration::CheckedFiles { .. } => {
+                                self.close_files_presentation()
+                            }
                         }
                     }
                 }
             }
         }
-        if matches!(self.source(),HistorySourceRegistration::CheckedFiles { .. }) {
+        if matches!(
+            self.source(),
+            HistorySourceRegistration::CheckedFiles { .. }
+        ) {
             self.refresh_files(changed);
             return;
         }
@@ -469,7 +634,10 @@ impl HistoryHost {
             .and_then(|(start, end)| self.timeline.entries().get(start..=end))
             .map(|entries| entries.iter().map(|entry| entry.id).collect())
             .unwrap_or_default();
-        let Ok(document) = self.source().document(doc) else { self.invalidate_owner(); return; };
+        let Ok(document) = self.source().document(doc) else {
+            self.invalidate_owner();
+            return;
+        };
         if let Some(controller) = &mut self.controller {
             let _ = controller.refresh(&document);
             if selected != self.selected
@@ -508,18 +676,29 @@ impl HistoryHost {
             .on_click(move || queue.borrow_mut().push_back(command))
     }
     fn preview_page_toolbar(&self, mut toolbar: Column) -> Column {
-    if let Some(preview) = &self.canvas().preview {
-        let pages = preview.accessibility().pages;
-        if pages.len() > 1 {
-            let current = preview.view().page;
-            let label = pages.iter().find(|(id, _)| Some(id) == current.as_ref())
-                .map_or("Page", |(_, title)| title.as_str());
-            toolbar = toolbar.push(Box::new(Text::new(label)))
-                .push(Box::new(Row::new()
-                    .push(Box::new(self.command_button("history-previous-page", "Previous page", Command::PreviousPage)))
-                    .push(Box::new(self.command_button("history-next-page", "Next page", Command::NextPage)))));
+        if let Some(preview) = &self.canvas().preview {
+            let pages = preview.accessibility().pages;
+            if pages.len() > 1 {
+                let current = preview.view().page;
+                let label = pages
+                    .iter()
+                    .find(|(id, _)| Some(id) == current.as_ref())
+                    .map_or("Page", |(_, title)| title.as_str());
+                toolbar = toolbar.push(Box::new(Text::new(label))).push(Box::new(
+                    Row::new()
+                        .push(Box::new(self.command_button(
+                            "history-previous-page",
+                            "Previous page",
+                            Command::PreviousPage,
+                        )))
+                        .push(Box::new(self.command_button(
+                            "history-next-page",
+                            "Next page",
+                            Command::NextPage,
+                        ))),
+                ));
+            }
         }
-    }
         toolbar
     }
 
@@ -584,8 +763,21 @@ impl HistoryHost {
             } else {
                 "Historical: After"
             })));
-            if self.registration.definition.scopes.get(self.active_scope).is_some_and(|scope| scope.content_schema.is_some() || matches!(scope.presentation,HistoryPresentation::CheckedFiles { .. })) {
-                compare = compare.push(Box::new(self.command_button("history-restore", "Restore…", Command::Review(review::ReviewCommand::Open))));
+            if self
+                .registration
+                .definition
+                .scopes
+                .get(self.active_scope)
+                .is_some_and(|scope| {
+                    scope.content_schema.is_some()
+                        || matches!(scope.presentation, HistoryPresentation::CheckedFiles { .. })
+                })
+            {
+                compare = compare.push(Box::new(self.command_button(
+                    "history-restore",
+                    "Restore…",
+                    Command::Review(review::ReviewCommand::Open),
+                )));
             }
             if self.width < 600.0 {
                 toolbar = toolbar.push(Box::new(header)).push(Box::new(compare));
@@ -608,15 +800,23 @@ impl HistoryHost {
         if self.registration.definition.scopes.len() > 1 {
             let mut scopes = Row::new();
             for (index, scope) in self.registration.definition.scopes.iter().enumerate() {
-                let mut button = self.command_button(&format!("history-scope-{}", scope.key), scope.title, Command::Scope(index));
-                if index == self.active_scope { button = button.primary(); }
+                let mut button = self.command_button(
+                    &format!("history-scope-{}", scope.key),
+                    scope.title,
+                    Command::Scope(index),
+                );
+                if index == self.active_scope {
+                    button = button.primary();
+                }
                 scopes = scopes.push(Box::new(button));
             }
             toolbar = toolbar.push(Box::new(scopes));
         }
         toolbar = self.files_toolbar(toolbar);
         if let Some(status) = &self.sync_status {
-            toolbar = toolbar.push(Box::new(Text::new(status).with_live(crate::a11y::Politeness::Polite)));
+            toolbar = toolbar.push(Box::new(
+                Text::new(status).with_live(crate::a11y::Politeness::Polite),
+            ));
         }
         self.toolbar = toolbar;
     }

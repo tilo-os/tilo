@@ -1,6 +1,9 @@
 //! Shared coordinator for framework surfaces retained inside tiles. Visitors
 //! never retain widget references across a topology change.
-#[allow(clippy::wildcard_imports, reason = "private implementation module shares its enclosing host types")]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
 use super::*;
 use crate::{bound_dispatch::BoundNodeMap, widget::Widget};
 use std::collections::HashMap;

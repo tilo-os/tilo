@@ -240,7 +240,10 @@ impl ExportDialog {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "export painting needs the render context, window bounds, sorted contact store and pointer position"
+    )]
     pub(crate) fn draw(
         &self,
         scene: &mut Scene,

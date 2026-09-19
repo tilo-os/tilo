@@ -1523,7 +1523,9 @@ fn apply_quick_settings_effect(
             let profile = match args.text("profile") {
                 Some("saver") => crate::shell::quick_settings::actions::PowerProfile::Saver,
                 Some("balanced") => crate::shell::quick_settings::actions::PowerProfile::Balanced,
-                Some("performance") => crate::shell::quick_settings::actions::PowerProfile::Performance,
+                Some("performance") => {
+                    crate::shell::quick_settings::actions::PowerProfile::Performance
+                }
                 _ => return Err(ActionError::Refused("invalid power profile".into())),
             };
             actions.set_power_profile(profile)

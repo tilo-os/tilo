@@ -28,10 +28,10 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_metrics::renderer_type_size;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
 use crate::presence::PresenceCtx;
 use crate::selection::SelectionModel;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{Metrics, Spacing};
@@ -2000,7 +2000,10 @@ fn draw_button(
     // stays visually locked to the retained widget and every converted app.
     let face = crate::widget::ButtonFace::new(rect, label)
         .radius(f64::from(theme.tokens.radii.md))
-        .text_size(renderer_type_size(text_renderer, theme.tokens.typography.scale.sm))
+        .text_size(renderer_type_size(
+            text_renderer,
+            theme.tokens.typography.scale.sm,
+        ))
         .weight(crate::text_render::TextWeight::Regular)
         .hovered(is_hover)
         .focused(is_focused)

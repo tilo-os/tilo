@@ -1,7 +1,7 @@
 use super::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::permissions::UserId;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use vello::{
@@ -198,7 +198,10 @@ impl PresenceCtx {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "peer caret painting combines render context with collaborator identity, display name and caret bounds"
+    )]
     pub fn draw_peer_caret_labeled(
         &self,
         scene: &mut Scene,
@@ -270,7 +273,10 @@ impl PresenceCtx {
     /// a hover or a roster lookup. Mirrors
     /// [`Self::draw_peer_caret_labeled`] — one chip design for every "this
     /// is where that person is" affordance.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "labeled peer outlines share render context with collaborator identity, name, object bounds and corner radius"
+    )]
     pub fn draw_peer_outline_labeled(
         &self,
         scene: &mut Scene,
@@ -310,7 +316,10 @@ impl PresenceCtx {
     /// `Logo_Bug.png` into one named `Ada_Bug.png`. On an object too narrow to
     /// hold both, the chip stays within the object rather than escaping it —
     /// covering a name is recoverable, pointing at the wrong clip is not.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "bounded peer labels need render context, collaborator identity and name, object geometry and clipping bounds"
+    )]
     pub fn draw_peer_outline_labeled_within(
         &self,
         scene: &mut Scene,
@@ -956,7 +965,10 @@ fn draw_name_chip_in(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "name-chip painting shares render context with collaborator color, label and the object anchor coordinates"
+)]
 fn draw_name_chip(
     scene: &mut Scene,
     theme: &Theme,
@@ -2345,14 +2357,21 @@ mod tests {
             let mut tr = TextRenderer::new();
             tr.set_text_scale(scale);
             let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-            let (_, label_h) = tr.measure("Alice", renderer_type_size(&tr, pill_label_size(&theme)), None);
+            let (_, label_h) = tr.measure(
+                "Alice",
+                renderer_type_size(&tr, pill_label_size(&theme)),
+                None,
+            );
             assert!(
                 (pill_h - (f64::from(label_h) + PILL_PAD_Y * 2.0)).abs() < 1e-6,
                 "at {scale}x the pill is {pill_h} tall around a {label_h} label"
             );
             let (_, chip_h) = chip_size(&theme, &mut tr, "Alice");
-            let (_, chip_label_h) =
-                tr.measure("Alice", renderer_type_size(&tr, theme.tokens.typography.scale.xs), None);
+            let (_, chip_label_h) = tr.measure(
+                "Alice",
+                renderer_type_size(&tr, theme.tokens.typography.scale.xs),
+                None,
+            );
             assert!(
                 (chip_h - (f64::from(chip_label_h) + CHIP_PAD_Y * 2.0)).abs() < 1e-6,
                 "at {scale}x the chip is {chip_h} tall around a {chip_label_h} label"
@@ -2406,7 +2425,10 @@ mod tests {
             renderer_type_size(&tr, pill_label_size(&theme)),
             None,
         );
-        assert!(tw2 > tw * 1.5, "the 2x label ({tw2}) must be about twice the 1x label ({tw})");
+        assert!(
+            tw2 > tw * 1.5,
+            "the 2x label ({tw2}) must be about twice the 1x label ({tw})"
+        );
         let (pw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
         assert!(
             (pw2 - (f64::from(tw2) + PILL_PAD_X * 4.0)).abs() < 1e-6,

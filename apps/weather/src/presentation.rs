@@ -141,7 +141,10 @@ pub(crate) fn draw_saved_place(
     );
 }
 /// The place identity used by both the live detail header and frozen detail.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "place identity painting combines scene resources and theme with saved-location text, origin and available width"
+)]
 pub(crate) fn draw_identity(
     scene: &mut Scene,
     tr: &mut TextRenderer,

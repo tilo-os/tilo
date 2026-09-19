@@ -1126,7 +1126,10 @@ impl TypstApp {
 
     // ----- drawing --------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Toolbar pill painting combines render context, bounds, label, selected state, and the action for its hit region."
+    )]
     fn paint_pill(
         &mut self,
         scene: &mut Scene,
@@ -1385,7 +1388,10 @@ impl TypstApp {
     /// Draw the `‹ [name] ›` document switcher starting at `x`. `max_chip` caps
     /// the name chip width (the name is elided to fit). Returns the x just past
     /// the group.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Document switcher painting combines render context, position, available chip width, and document-index visibility."
+    )]
     fn draw_doc_switcher(
         &mut self,
         scene: &mut Scene,
@@ -1479,7 +1485,10 @@ impl TypstApp {
     /// A two-segment Edit / Preview toggle, centred in the toolbar when the
     /// centre lies inside `[min_x0, max_x1]`, otherwise clamped into that span
     /// so it never overlaps the clusters on either side. Returns its rect.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The view toggle needs render context, vertical position, and the free horizontal span between toolbar clusters."
+    )]
     fn draw_view_switch(
         &mut self,
         scene: &mut Scene,
@@ -1547,7 +1556,10 @@ impl TypstApp {
     /// A "Problems" pill placed from its right edge at `rx`. `long` uses the
     /// full "Problems (n)" label; otherwise a compact count badge. Returns the
     /// left edge just past the pill.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Problems pill painting combines render context, right-edge/top placement, and the full-label versus count-only mode."
+    )]
     fn draw_problems_pill(
         &mut self,
         scene: &mut Scene,
@@ -1591,7 +1603,10 @@ impl TypstApp {
 
     /// Paint one segment of a segmented control (no rounded outline of its own;
     /// the container draws that).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Segment painting combines render context, bounds, label, active state, and the action registered for hit testing."
+    )]
     fn paint_segment(
         &mut self,
         scene: &mut Scene,

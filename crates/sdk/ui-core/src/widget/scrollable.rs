@@ -1316,20 +1316,36 @@ impl Widget for Scrollable {
                 }
                 for (index, child) in widget.children().into_iter().enumerate() {
                     path.push(index);
-                    if let Some(found) = focused(child, path) { return Some(found); }
+                    if let Some(found) = focused(child, path) {
+                        return Some(found);
+                    }
                     path.pop();
                 }
                 None
             }
-            let focus = self.child.as_ref().and_then(|child| focused(child.as_ref(), &mut Vec::new()));
+            let focus = self
+                .child
+                .as_ref()
+                .and_then(|child| focused(child.as_ref(), &mut Vec::new()));
             let path = focus.as_ref().map(|(path, _)| path.clone());
             if path != self.last_focus_path {
                 self.last_focus_path = path;
                 if let Some((_, rect)) = focus {
-                    self.scroll_into_view(px(rect.x0-self.rect.x0)+self.offset_x,
-                        px(rect.y0-self.rect.y0)+self.offset_y,px(rect.width()),px(rect.height()));
+                    self.scroll_into_view(
+                        px(rect.x0 - self.rect.x0) + self.offset_x,
+                        px(rect.y0 - self.rect.y0) + self.offset_y,
+                        px(rect.width()),
+                        px(rect.height()),
+                    );
                     if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
-                        child.apply_layout(taffy, node, Point::new(self.rect.x0-f64::from(self.offset_x),self.rect.y0-f64::from(self.offset_y)));
+                        child.apply_layout(
+                            taffy,
+                            node,
+                            Point::new(
+                                self.rect.x0 - f64::from(self.offset_x),
+                                self.rect.y0 - f64::from(self.offset_y),
+                            ),
+                        );
                     }
                 }
             }
@@ -1622,7 +1638,11 @@ impl Widget for Scrollable {
     fn next_wake_deadline(&self) -> Option<Instant> {
         self.fade_start_deadline_at(Instant::now())
             .into_iter()
-            .chain(self.child.as_ref().and_then(|child| child.next_wake_deadline()))
+            .chain(
+                self.child
+                    .as_ref()
+                    .and_then(|child| child.next_wake_deadline()),
+            )
             .min()
     }
 
@@ -2209,20 +2229,57 @@ mod tests {
         let mut input = TextInput::from_state(&LocalState::new(String::new())).with_id("last");
         input.set_focus(true);
         let mut column = Column::new().with_intrinsic_height();
-        for _ in 0..15 { column=column.push(Box::new(Text::new("Spacer row"))); }
-        column=column.push(Box::new(input));
-        let mut scroll=Scrollable::new_vertical().with_height(150.0).with_focus_reveal().with_child(Box::new(column));
-        let theme=Theme::dark();let mut tree=TaffyTree::<()>::new();let mut nodes=HashMap::new();let mut text=TextRenderer::new();
-        let node=scroll.build_layout(&mut tree,&theme,&mut nodes);
-        tree.compute_layout_with_measure(node,Size {width:taffy::AvailableSpace::Definite(400.0),height:taffy::AvailableSpace::Definite(150.0)},|known,available,node,_,_| {
-            nodes.get(&node).map(|p|unsafe{(**p).measure(known,available,&mut text)}).unwrap_or(Size::ZERO)
-        }).unwrap();
-        scroll.apply_layout(&tree,node,Point::ZERO);
-        assert!(scroll.offset_y()>0.0,"keyboard focus below viewport must be revealed");
-        let rect=scroll.child.as_ref().unwrap().children().last().unwrap().get_rect();
-        assert!(rect.y0>=scroll.rect.y0 && rect.y1<=scroll.rect.y1+0.5,"focused input must be visible: {rect:?}");
-        scroll.set_offset_y(0.0);scroll.apply_layout(&tree,node,Point::ZERO);
-        assert_eq!(scroll.offset_y(),0.0,"manual scrolling must not snap back to unchanged focus");
+        for _ in 0..15 {
+            column = column.push(Box::new(Text::new("Spacer row")));
+        }
+        column = column.push(Box::new(input));
+        let mut scroll = Scrollable::new_vertical()
+            .with_height(150.0)
+            .with_focus_reveal()
+            .with_child(Box::new(column));
+        let theme = Theme::dark();
+        let mut tree = TaffyTree::<()>::new();
+        let mut nodes = HashMap::new();
+        let mut text = TextRenderer::new();
+        let node = scroll.build_layout(&mut tree, &theme, &mut nodes);
+        tree.compute_layout_with_measure(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::Definite(150.0),
+            },
+            |known, available, node, _, _| {
+                nodes
+                    .get(&node)
+                    .map(|p| unsafe { (**p).measure(known, available, &mut text) })
+                    .unwrap_or(Size::ZERO)
+            },
+        )
+        .unwrap();
+        scroll.apply_layout(&tree, node, Point::ZERO);
+        assert!(
+            scroll.offset_y() > 0.0,
+            "keyboard focus below viewport must be revealed"
+        );
+        let rect = scroll
+            .child
+            .as_ref()
+            .unwrap()
+            .children()
+            .last()
+            .unwrap()
+            .get_rect();
+        assert!(
+            rect.y0 >= scroll.rect.y0 && rect.y1 <= scroll.rect.y1 + 0.5,
+            "focused input must be visible: {rect:?}"
+        );
+        scroll.set_offset_y(0.0);
+        scroll.apply_layout(&tree, node, Point::ZERO);
+        assert_eq!(
+            scroll.offset_y(),
+            0.0,
+            "manual scrolling must not snap back to unchanged focus"
+        );
     }
 
     fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
@@ -2883,10 +2940,19 @@ mod tests {
         assert!(s.needs_redraw(), "activity must still paint the thumb");
         s.bar_visible_last_draw.set(true);
         s.mark_drawn();
-        assert!(!s.needs_animation_frame(), "opaque hold must not pump frames");
+        assert!(
+            !s.needs_animation_frame(),
+            "opaque hold must not pump frames"
+        );
         assert!(!s.needs_redraw(), "unchanged opaque thumb needs no damage");
-        assert!(!s.needs_terminal_fade_frame(), "hold is not an expired fade");
-        assert_eq!(s.next_wake_deadline(), Some(activity + Duration::from_millis(900)));
+        assert!(
+            !s.needs_terminal_fade_frame(),
+            "hold is not an expired fade"
+        );
+        assert_eq!(
+            s.next_wake_deadline(),
+            Some(activity + Duration::from_millis(900))
+        );
     }
 
     #[test]
@@ -2907,7 +2973,10 @@ mod tests {
         assert!(!s.fade_in_progress_at(fade_end));
         assert!(s.needs_terminal_fade_frame_at(fade_end));
         s.last_activity = Some(start + Duration::from_millis(50));
-        assert_eq!(s.fade_start_deadline_at(start + Duration::from_millis(50)), Some(fade_start + Duration::from_millis(50)));
+        assert_eq!(
+            s.fade_start_deadline_at(start + Duration::from_millis(50)),
+            Some(fade_start + Duration::from_millis(50))
+        );
         s.focused = true;
         assert_eq!(s.fade_start_deadline_at(start), None);
         s.focused = false;
@@ -2926,26 +2995,37 @@ mod tests {
         let mut outer = vertical(1200.0);
         outer.last_activity = Some(now);
         outer.child = Some(Box::new(child));
-        assert_eq!(outer.next_wake_deadline(), Some(now + Duration::from_millis(800)));
+        assert_eq!(
+            outer.next_wake_deadline(),
+            Some(now + Duration::from_millis(800))
+        );
     }
 
     #[test]
     fn opaque_hold_removal_preserves_independent_momentum_demand() {
         let mut s = vertical(1200.0);
         s.fling(0.0, 120.0);
-        assert!(s.needs_animation_frame(), "momentum must not depend on scrollbar opacity");
+        assert!(
+            s.needs_animation_frame(),
+            "momentum must not depend on scrollbar opacity"
+        );
         let mut doc = AutoCommit::new();
         // Match the admitted primary-frame lifecycle: update runs even when
         // the prior frame consumed all ordinary dirty flags.
         for _ in 0..240 {
-            if !s.needs_animation_frame() { break; }
+            if !s.needs_animation_frame() {
+                break;
+            }
             s.update(&mut doc, &automerge::ROOT);
             s.sync(&mut doc, &automerge::ROOT);
             s.mark_drawn();
         }
         assert!(s.offset_y() > 0.0, "the demanded frames advance content");
         assert_eq!(s.momentum_speed(), 0.0);
-        assert!(!s.needs_animation_frame(), "settled momentum must stop the pump");
+        assert!(
+            !s.needs_animation_frame(),
+            "settled momentum must stop the pump"
+        );
     }
 
     #[test]

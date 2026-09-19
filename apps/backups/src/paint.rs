@@ -198,7 +198,10 @@ const PILL_PAD_Y: f64 = 3.0;
 /// callers can lay out chips left-to-right. The pill is vertically centred on
 /// `cy`; its height comes from the label the renderer will paint, so it grows
 /// with the accessibility text scale instead of clipping the glyphs.
-#[allow(clippy::too_many_arguments)] // one arg per independent knob; see `text` above.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The pill painter takes its scene, text renderer, transform, position, label size, and foreground/background colors independently."
+)] // one arg per independent knob; see `text` above.
 pub fn pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,

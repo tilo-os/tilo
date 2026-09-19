@@ -10,7 +10,6 @@
 //! header and chip height in the calendar is solved through [`line_h`] and
 //! [`at_least_whole`], never through a private `size × 1.25`.
 
-
 /// Height of one line of `size`-pt text at the renderer's `text_scale`.
 ///
 /// The clamp matches `TextRenderer::set_text_scale`, so a theme scale the

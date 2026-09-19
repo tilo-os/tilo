@@ -26,8 +26,14 @@ impl PreviewCanvas {
     pub(super) fn install(&mut self, result: Result<Box<dyn HistoryPreview>, String>) {
         self.status = None;
         match result {
-            Ok(preview) => { self.preview = Some(preview); self.error = None; }
-            Err(error) => { self.preview = None; self.error = Some(error); }
+            Ok(preview) => {
+                self.preview = Some(preview);
+                self.error = None;
+            }
+            Err(error) => {
+                self.preview = None;
+                self.error = Some(error);
+            }
         }
     }
     pub(super) fn new() -> Self {
@@ -79,7 +85,10 @@ impl Widget for PreviewCanvas {
             (f64::from(layout.size.width), f64::from(layout.size.height)),
         );
     }
-    #[allow(clippy::arithmetic_side_effects, reason = "floating point display geometry is non-authoritative and does not overflow integers")]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "floating point display geometry is non-authoritative and does not overflow integers"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -98,8 +107,14 @@ impl Widget for PreviewCanvas {
             }
         }
         if let Some(message) = self.error.as_ref().or(self.status.as_ref()) {
-            text.draw_text(scene, message, 16.0, theme.text_primary,
-                transform * Affine::translate((self.rect.x0 + 16.0, self.rect.y0 + 20.0)), None);
+            text.draw_text(
+                scene,
+                message,
+                16.0,
+                theme.text_primary,
+                transform * Affine::translate((self.rect.x0 + 16.0, self.rect.y0 + 20.0)),
+                None,
+            );
         }
     }
     fn handle_event(
@@ -138,12 +153,15 @@ impl Widget for PreviewCanvas {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Document).with_name(
-                self.error.clone().or_else(|| self.status.clone()).unwrap_or_else(|| {
-                    self.preview.as_ref().map_or_else(
-                        || "Historical content unavailable".into(),
-                        |preview| preview.accessibility().description,
-                    )
-                }),
+                self.error
+                    .clone()
+                    .or_else(|| self.status.clone())
+                    .unwrap_or_else(|| {
+                        self.preview.as_ref().map_or_else(
+                            || "Historical content unavailable".into(),
+                            |preview| preview.accessibility().description,
+                        )
+                    }),
             ),
         )
     }

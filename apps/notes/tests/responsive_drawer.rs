@@ -216,8 +216,12 @@ fn scaled_drawer_stays_inside_a_narrow_window() {
     let theme = Theme::dark().with_text_scale(2.0);
     let window_w: u16 = 480;
 
-    let (taffy, child) = settle_layout_with_theme(&mut app, &mut state, window_w, 900, &theme).unwrap();
-    assert!(app.built_narrow_for_test(), "480px at 2× is a drawer layout");
+    let (taffy, child) =
+        settle_layout_with_theme(&mut app, &mut state, window_w, 900, &theme).unwrap();
+    assert!(
+        app.built_narrow_for_test(),
+        "480px at 2× is a drawer layout"
+    );
     let btn = app.menu_btn_center_for_test();
     dispatch(
         &mut app,

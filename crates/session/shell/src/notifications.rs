@@ -1103,7 +1103,10 @@ impl NotificationService {
     ///
     /// Args (freedesktop spec): `app_name s`, `replaces_id u`, `app_icon s`,
     /// `summary s`, `body s`, `actions as`, `hints a{sv}`, `expire_timeout i`. Returns the assigned id `u`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The D-Bus Notify method preserves the freedesktop argument signature and receives the message header to authenticate its sender."
+    )]
     async fn notify(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,

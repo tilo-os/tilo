@@ -185,10 +185,10 @@ pub(super) use retained_parts;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{Manual, ResourceOperationStart, FormSection};
+    use crate::widget::{FormSection, Manual, ResourceOperationStart};
     use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
-    use tilo_actions::{InvocationId, OperationKind};
     use std::{cell::RefCell, rc::Rc};
+    use tilo_actions::{InvocationId, OperationKind};
     use vello::kurbo::Point;
 
     struct MutableAdmission {

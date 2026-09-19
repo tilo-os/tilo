@@ -30,9 +30,9 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::renderer_type_size;
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
@@ -514,7 +514,9 @@ impl Autocomplete {
         let detail_size =
             renderer_font_size(tokens.typography.scale.sm, text_renderer.text_scale());
         let rendered_text_height = f64::from(text_renderer.measure(&s.label, text_size, None).1);
-        let rendered_detail_height = s.detail.as_ref().map_or(0.0, |detail| f64::from(text_renderer.measure(detail, detail_size, None).1));
+        let rendered_detail_height = s.detail.as_ref().map_or(0.0, |detail| {
+            f64::from(text_renderer.measure(detail, detail_size, None).1)
+        });
         let large_text = self.text_scale >= 1.5;
         let icon_px = ICON_PX * self.text_scale.min(1.5);
         let mut x = row.x0 + ROW_PAD_X;

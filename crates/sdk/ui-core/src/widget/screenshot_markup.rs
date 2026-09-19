@@ -747,7 +747,13 @@ impl Widget for ScreenshotMarkup {
             None,
             TextWeight::Regular,
         );
-        surface::shadow(scene, transform, canvas_frame, 8.0, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            canvas_frame,
+            8.0,
+            &theme.tokens.elevation.e3,
+        );
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -778,7 +784,13 @@ impl Widget for ScreenshotMarkup {
             transform,
             &self.rect,
         );
-        surface::shadow(scene, transform, self.toolbar, 26.0, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            self.toolbar,
+            26.0,
+            &theme.tokens.elevation.e3,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1004,7 +1016,8 @@ impl Widget for ScreenshotMarkup {
             .into_iter()
             .find(|(_, rect)| rect.contains(self.cursor))
             .filter(|(id, _)| {
-                !(*id == "tool" && self.tool_picker_open || *id == "colors" && self.color_picker_open)
+                !(*id == "tool" && self.tool_picker_open
+                    || *id == "colors" && self.color_picker_open)
             })
             && let Some(label) = match id {
                 "cancel" => Some("Close"),

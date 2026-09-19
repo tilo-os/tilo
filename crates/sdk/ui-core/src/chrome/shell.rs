@@ -11,9 +11,9 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape};
 use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
 use crate::color_compat::ColorCompat;
-use crate::tokens::colors::HAIRLINE_MIN_DELTA;
 use crate::theme::Theme;
 use crate::tokens::Colors;
+use crate::tokens::colors::HAIRLINE_MIN_DELTA;
 
 /// Opacity shared by every [`ChromeRole::Bar`] and [`ChromeRole::Panel`]
 /// surface — kept opaque because nothing here can blur a *backdrop* (vello
@@ -221,9 +221,8 @@ pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) ->
 /// the ground by the hairline threshold, else the first ladder step that does.
 fn lift_on(colors: &Colors, ground: Color) -> Color {
     use crate::a11y::relative_luminance;
-    let registers = |c: Color| {
-        (relative_luminance(c) - relative_luminance(ground)).abs() >= HAIRLINE_MIN_DELTA
-    };
+    let registers =
+        |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs() >= HAIRLINE_MIN_DELTA;
     let base_lift = colors.lift(1.0);
     if registers(base_lift) {
         return base_lift;
@@ -860,9 +859,15 @@ mod tests {
             for (ground_name, ground) in grounds {
                 let delta = |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
                 let active = selection_tier_on(&theme, SelectionState::active(true), ground).fill;
-                let hover = selection_tier_on(&theme, SelectionState::new(false, true, false), ground).fill;
-                let idle = selection_tier_on(&theme, SelectionState::new(false, false, false), ground).fill;
-                assert_eq!(idle.components[3], 0.0, "{name}/{ground_name}: idle is transparent");
+                let hover =
+                    selection_tier_on(&theme, SelectionState::new(false, true, false), ground).fill;
+                let idle =
+                    selection_tier_on(&theme, SelectionState::new(false, false, false), ground)
+                        .fill;
+                assert_eq!(
+                    idle.components[3], 0.0,
+                    "{name}/{ground_name}: idle is transparent"
+                );
                 assert!(
                     delta(active) >= HAIRLINE_MIN_DELTA,
                     "{name}/{ground_name}: active lift must register on its ground (Δ {:.4})",

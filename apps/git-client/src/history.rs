@@ -138,7 +138,10 @@ impl HistoryView {
     /// Draw the commit list with graph. Returns the row rects so the app
     /// can hit-test selection. `selected` is the index of the highlighted
     /// commit.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Commit graph painting needs render context, viewport, repository and graph data, selection, and scroll offset."
+    )]
     pub fn draw_list(
         scene: &mut Scene,
         tr: &mut TextRenderer,

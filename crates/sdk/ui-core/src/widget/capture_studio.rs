@@ -2923,7 +2923,13 @@ impl CaptureStudio {
             CaptureMode::Screenshot => colors.accent[4],
             CaptureMode::Pip => colors.semantic.info,
         };
-        surface::shadow(scene, transform, pill, pill.height() / 2.0, &theme.tokens.elevation.e3);
+        surface::shadow(
+            scene,
+            transform,
+            pill,
+            pill.height() / 2.0,
+            &theme.tokens.elevation.e3,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -3714,7 +3720,11 @@ impl CaptureStudio {
             transform,
             pill,
             radius,
-            &theme.tokens.elevation.e3.with_alpha_scaled(background_alpha),
+            &theme
+                .tokens
+                .elevation
+                .e3
+                .with_alpha_scaled(background_alpha),
         );
         scene.fill(
             Fill::NonZero,
@@ -6578,7 +6588,9 @@ mod tests {
         for scale in [1.0_f32, 2.0] {
             // A matched host: the theme's type steps carry the scale the
             // renderer is set to, so captions paint at 2x, not 4x (X1).
-            let theme = Theme::dark().with_reduce_motion(true).with_text_scale(scale);
+            let theme = Theme::dark()
+                .with_reduce_motion(true)
+                .with_text_scale(scale);
             let mut s = CaptureStudio::default();
             s.rect = Rect::new(0.0, 0.0, 1400.0, 900.0);
             s.open();
@@ -6730,8 +6742,12 @@ mod tests {
         reason = "probe coordinates are non-negative pixel positions inside the test surface"
     )]
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) =
-            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
         crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
     }
 
@@ -6792,7 +6808,14 @@ mod tests {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            Widget::draw(&mut s, &mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            Widget::draw(
+                &mut s,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+            );
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -6834,14 +6857,26 @@ mod tests {
             let s1 = f64::from(theme.tokens.spacing.s1);
             for pair in s.mode_rects().windows(2) {
                 let gap = pair[1].x0 - pair[0].x1;
-                assert!(gap >= s1 - 1e-9, "{}: mode buttons {gap} px apart", theme.name);
+                assert!(
+                    gap >= s1 - 1e-9,
+                    "{}: mode buttons {gap} px apart",
+                    theme.name
+                );
             }
             for pair in s.source_rects().windows(2) {
                 let gap = pair[1].x0 - pair[0].x1;
-                assert!(gap >= s1 - 1e-9, "{}: source buttons {gap} px apart", theme.name);
+                assert!(
+                    gap >= s1 - 1e-9,
+                    "{}: source buttons {gap} px apart",
+                    theme.name
+                );
             }
             let (mode, source) = (s.mode_group_rect(), s.source_group_rect());
-            assert!(source.x0 - mode.x1 >= s1 - 1e-9, "{}: groups touch", theme.name);
+            assert!(
+                source.x0 - mode.x1 >= s1 - 1e-9,
+                "{}: groups touch",
+                theme.name
+            );
         }
     }
 }

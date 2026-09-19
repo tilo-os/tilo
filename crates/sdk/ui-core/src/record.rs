@@ -1476,20 +1476,32 @@ impl RecordStore {
     /// Schedule this already committed History result through its existing writer.
     /// Do not sweep or close unrelated owners' unfinished edits.
     pub(crate) fn schedule_committed_history(&self, id: &RecordId) {
-        let Ok(mut set) = self.0.try_borrow_mut() else { return; };
-        let Some(slot) = set.open.get_mut(id) else { return; };
+        let Ok(mut set) = self.0.try_borrow_mut() else {
+            return;
+        };
+        let Some(slot) = set.open.get_mut(id) else {
+            return;
+        };
         if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut())
-            && doc.pending_ops() == 0 {
+            && doc.pending_ops() == 0
+        {
             saver.request(doc);
         }
     }
 
     /// Captured storage identity for History; never samples ambient launch scope.
-    pub(crate) fn history_namespace(&self, id: &RecordId) -> Result<(Option<PathBuf>, String, String), RecordOpenError> {
+    pub(crate) fn history_namespace(
+        &self,
+        id: &RecordId,
+    ) -> Result<(Option<PathBuf>, String, String), RecordOpenError> {
         let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
-        let storage = set.canonical_root.clone().or_else(|| parked.autosave.as_ref()
-            .map(|save| save.document_path().to_path_buf()));
+        let storage = set.canonical_root.clone().or_else(|| {
+            parked
+                .autosave
+                .as_ref()
+                .map(|save| save.document_path().to_path_buf())
+        });
         Ok((storage, set.package_id.clone(), set.home.clone()))
     }
     /// Explicit immutable identity only; legacy and memory stores have no canonical namespace.
@@ -1597,13 +1609,26 @@ impl RecordStore {
 
     /// Close/retry one actual owner without settling another record's edit.
     pub(crate) fn try_flush_record(&self, id: &RecordId) -> Result<(), String> {
-        let mut set = self.0.try_borrow_mut().map_err(|_| "record store is busy".to_string())?;
+        let mut set = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| "record store is busy".to_string())?;
         let canonical = set.canonical_root.is_some();
-        let slot = set.open.get_mut(id).ok_or_else(|| format!("{id}: record is not open"))?;
-        let doc = slot.doc.as_mut().ok_or_else(|| format!("{id}: record is busy"))?;
-        let Some(saver) = &mut slot.autosave else { return Ok(()); };
+        let slot = set
+            .open
+            .get_mut(id)
+            .ok_or_else(|| format!("{id}: record is not open"))?;
+        let doc = slot
+            .doc
+            .as_mut()
+            .ok_or_else(|| format!("{id}: record is busy"))?;
+        let Some(saver) = &mut slot.autosave else {
+            return Ok(());
+        };
         if canonical && saver.last_error().is_some() {
-            saver.try_restart_canonical().map_err(|error| format!("{id}: {error}"))?;
+            saver
+                .try_restart_canonical()
+                .map_err(|error| format!("{id}: {error}"))?;
             slot.action_state.commit_for_save(doc);
             saver.request_checkpoint(doc);
         } else {
@@ -1758,7 +1783,10 @@ impl RecordStore {
     /// Existing-only admission for presentation owners. Loads a saved graph
     /// without seeding missing content. Package-global records retain the
     /// existing explicit one-room migration claim and their original history.
-    pub(crate) fn open_existing_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
+    pub(crate) fn open_existing_record_checked(
+        &self,
+        want: &RecordCheckout,
+    ) -> Result<(), RecordOpenError> {
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
         if set.canonical_root.is_some() {
             return set.try_open_record_with_recovery(want, false).map(|_| ());
@@ -1847,7 +1875,10 @@ impl RecordStore {
                 },
             );
         }
-        let slot = set.open.get(&want.id).ok_or(RecordOpenError::MissingRecord)?;
+        let slot = set
+            .open
+            .get(&want.id)
+            .ok_or(RecordOpenError::MissingRecord)?;
         let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
         // Legacy in-memory owners legitimately have no workspace. Match that
         // captured namespace exactly; do not manufacture a canonical scope.
@@ -1855,7 +1886,8 @@ impl RecordStore {
         if identity(doc).is_none_or(|found| found.id != want.id || found.kind != want.kind)
             || want.kind.as_str().is_empty()
             || home(doc).as_deref() != Some(set.home.as_str())
-            || room_scope(doc).as_deref() != expected_scope {
+            || room_scope(doc).as_deref() != expected_scope
+        {
             return Err(RecordOpenError::IdentityMismatch);
         }
         Ok(())

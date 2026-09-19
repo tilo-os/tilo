@@ -323,47 +323,95 @@ pub(crate) struct CompositionFocus {
 }
 impl CompositionFocus {
     fn key(widget: &dyn Widget) -> Option<String> {
-        widget.test_id().map(|id| format!("named:{id}"))
-            .or_else(|| widget.accessibility().and_then(|access| access.semantic_key)
-                .map(|key| format!("semantic:{key}")))
+        widget
+            .test_id()
+            .map(|id| format!("named:{id}"))
+            .or_else(|| {
+                widget
+                    .accessibility()
+                    .and_then(|access| access.semantic_key)
+                    .map(|key| format!("semantic:{key}"))
+            })
     }
     /// Recover focus from the retained tree after a structural mutation. No
     /// pointer from the previous layout is read; owner custody follows the
     /// same component/legacy boundaries as the next admitted topology.
     pub(crate) fn capture_live(root: &dyn Widget) -> Option<Self> {
-        fn walk(widget: &dyn Widget,
+        fn walk(
+            widget: &dyn Widget,
             binding: Option<crate::bound_dispatch::CallbackBinding>,
             legacy: Option<crate::history_mode::HistoryOwner>,
             focused_ancestor: bool,
             nodes: &mut Vec<(CompositionFocus, bool)>,
         ) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else { return; };
+            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
+                return;
+            };
             let reset = widget.resets_callback_binding();
             let own_binding = widget.callback_binding();
             let own_legacy = widget.history_owner();
-            let legacy = if own_binding.is_some() || reset { None } else { own_legacy.or(legacy) };
-            if legacy.as_ref().is_some_and(|owner| owner.validate().is_err()) { return; }
-            let binding = if reset { own_binding } else { own_binding.or(binding) };
+            let legacy = if own_binding.is_some() || reset {
+                None
+            } else {
+                own_legacy.or(legacy)
+            };
+            if legacy
+                .as_ref()
+                .is_some_and(|owner| owner.validate().is_err())
+            {
+                return;
+            }
+            let binding = if reset {
+                own_binding
+            } else {
+                own_binding.or(binding)
+            };
             let focused = widget.is_focusable() && widget.is_enabled() && widget.is_focused();
-            nodes.push((CompositionFocus { ambiguous: false, key: CompositionFocus::key(widget),
-                binding: binding.clone(), legacy: legacy.clone(), state: widget.get_state() },
-                focused && !focused_ancestor));
-            widget.for_each_child(&mut |child| walk(child, binding.clone(), legacy.clone(),
-                focused_ancestor || focused, nodes));
+            nodes.push((
+                CompositionFocus {
+                    ambiguous: false,
+                    key: CompositionFocus::key(widget),
+                    binding: binding.clone(),
+                    legacy: legacy.clone(),
+                    state: widget.get_state(),
+                },
+                focused && !focused_ancestor,
+            ));
+            widget.for_each_child(&mut |child| {
+                walk(
+                    child,
+                    binding.clone(),
+                    legacy.clone(),
+                    focused_ancestor || focused,
+                    nodes,
+                )
+            });
         }
         let mut nodes = Vec::new();
         walk(root, None, None, false, &mut nodes);
-        let mut targets = nodes.iter().enumerate().filter(|(_, (_, focused))| *focused);
+        let mut targets = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, focused))| *focused);
         let index = targets.next()?.0;
-        if targets.next().is_some() { return None; }
+        if targets.next().is_some() {
+            return None;
+        }
         let (mut focus, _) = nodes.remove(index);
         let key = focus.key.as_ref()?;
-        focus.ambiguous = nodes.iter().any(|(other, _)| other.key.as_ref() == Some(key)
-            && match (&focus.binding, &other.binding) {
-                (Some(a), Some(b)) => a.same_component(b), (None, None) => true, _ => false,
-            } && match (&focus.legacy, &other.legacy) {
-                (Some(a), Some(b)) => a.same_owner(b), (None, None) => true, _ => false,
-            });
+        focus.ambiguous = nodes.iter().any(|(other, _)| {
+            other.key.as_ref() == Some(key)
+                && match (&focus.binding, &other.binding) {
+                    (Some(a), Some(b)) => a.same_component(b),
+                    (None, None) => true,
+                    _ => false,
+                }
+                && match (&focus.legacy, &other.legacy) {
+                    (Some(a), Some(b)) => a.same_owner(b),
+                    (None, None) => true,
+                    _ => false,
+                }
+        });
         Some(focus)
     }
 
@@ -373,11 +421,12 @@ impl CompositionFocus {
             (None, None) => true,
             _ => false,
         };
-        component && match (&self.legacy, bindings.legacy_for(node)) {
-            (Some(a), Some(b)) => a.same_owner(&b),
-            (None, None) => true,
-            _ => false,
-        }
+        component
+            && match (&self.legacy, bindings.legacy_for(node)) {
+                (Some(a), Some(b)) => a.same_owner(&b),
+                (None, None) => true,
+                _ => false,
+            }
     }
     /// # Safety
     /// The caller exclusively owns the live tree described by both maps.
@@ -402,19 +451,35 @@ impl CompositionFocus {
         // Runners may observe a focused leaf after an editor focused both
         // itself and that leaf. Preserve the uniquely named aggregate path,
         // so replacing/splitting the leaf cannot retarget a generic text key.
-        let aggregates: Vec<_> = nodes.keys().copied().filter(|&candidate| {
-            candidate != node && focus.same_owner(bindings, candidate) && unsafe {
-                crate::bound_dispatch::inspect_bound_node(bindings, nodes, candidate, |widget| {
-                    widget.test_id().is_some() && widget.is_focusable() && widget.is_focused()
-                        && bindings.is_descendant(node, candidate)
-                }).unwrap_or(false)
-            }
-        }).collect();
+        let aggregates: Vec<_> = nodes
+            .keys()
+            .copied()
+            .filter(|&candidate| {
+                candidate != node
+                    && focus.same_owner(bindings, candidate)
+                    && unsafe {
+                        crate::bound_dispatch::inspect_bound_node(
+                            bindings,
+                            nodes,
+                            candidate,
+                            |widget| {
+                                widget.test_id().is_some()
+                                    && widget.is_focusable()
+                                    && widget.is_focused()
+                                    && bindings.is_descendant(node, candidate)
+                            },
+                        )
+                        .unwrap_or(false)
+                    }
+            })
+            .collect();
         if let [aggregate] = aggregates.as_slice() {
-            let _ = unsafe { crate::bound_dispatch::inspect_bound_node(bindings, nodes, *aggregate, |widget| {
-                focus.key = Self::key(widget);
-                state_node = *aggregate;
-            }) };
+            let _ = unsafe {
+                crate::bound_dispatch::inspect_bound_node(bindings, nodes, *aggregate, |widget| {
+                    focus.key = Self::key(widget);
+                    state_node = *aggregate;
+                })
+            };
         } else if aggregates.len() > 1 {
             focus.ambiguous = true;
         }
@@ -428,7 +493,8 @@ impl CompositionFocus {
                     // SAFETY: the same exclusive admitted tree is still live.
                     unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                            focus.same_owner(bindings, node) && Self::key(widget).as_ref() == Some(key)
+                            focus.same_owner(bindings, node)
+                                && Self::key(widget).as_ref() == Some(key)
                         })
                     }
                     .unwrap_or(false)
@@ -439,8 +505,12 @@ impl CompositionFocus {
         }
         if !focus.ambiguous {
             focus.state = unsafe {
-                crate::bound_dispatch::inspect_bound_node(bindings, nodes, state_node, |widget| widget.get_state())
-            }.ok().flatten();
+                crate::bound_dispatch::inspect_bound_node(bindings, nodes, state_node, |widget| {
+                    widget.get_state()
+                })
+            }
+            .ok()
+            .flatten();
         }
         Some(focus)
     }
@@ -455,18 +525,31 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
-        let focused: Vec<_> = nodes.keys().copied().filter(|&node| {
-            allowed.is_none_or(|order| order.contains(&node)) && unsafe {
-                crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                    widget.is_focusable() && widget.is_enabled() && widget.is_focused()
-                }).unwrap_or(false)
-            }
-        }).collect();
+        let focused: Vec<_> = nodes
+            .keys()
+            .copied()
+            .filter(|&node| {
+                allowed.is_none_or(|order| order.contains(&node))
+                    && unsafe {
+                        crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                            widget.is_focusable() && widget.is_enabled() && widget.is_focused()
+                        })
+                        .unwrap_or(false)
+                    }
+            })
+            .collect();
         let mut candidates = focused.iter().copied().filter(|&candidate| {
-            let owner = Self { ambiguous: false, key: None, state: None,
-                binding: bindings.binding_for(candidate), legacy: bindings.legacy_for(candidate) };
-            focused.iter().all(|&node| owner.same_owner(bindings, node)
-                && (node == candidate || bindings.is_descendant(node, candidate)))
+            let owner = Self {
+                ambiguous: false,
+                key: None,
+                state: None,
+                binding: bindings.binding_for(candidate),
+                legacy: bindings.legacy_for(candidate),
+            };
+            focused.iter().all(|&node| {
+                owner.same_owner(bindings, node)
+                    && (node == candidate || bindings.is_descendant(node, candidate))
+            })
         });
         let unique = candidates.next()?;
         candidates.next().is_none().then_some(unique)
@@ -489,11 +572,10 @@ impl CompositionFocus {
                 // SAFETY: the caller owns the exact admitted tree.
                 unsafe {
                     crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                        !self.ambiguous && self.same_owner(bindings, node)
+                        !self.ambiguous
+                            && self.same_owner(bindings, node)
                             && match &self.key {
-                                Some(key) => {
-                                    Self::key(widget).as_ref() == Some(key)
-                                }
+                                Some(key) => Self::key(widget).as_ref() == Some(key),
                                 None => false,
                             }
                     })
@@ -520,13 +602,25 @@ impl CompositionFocus {
         // either member can clear the other, so only blur unrelated controls.
         // Relationships come from the freshly admitted layout, including
         // child delegates omitted from retained-widget traversal.
-        let related: std::collections::HashSet<_> = target.into_iter().flat_map(|target| {
-            nodes.keys().copied().filter(|&node| self.same_owner(bindings, node)
-                && (node == target || bindings.is_descendant(node, target)
-                    || bindings.is_descendant(target, node))).collect::<Vec<_>>()
-        }).collect();
+        let related: std::collections::HashSet<_> = target
+            .into_iter()
+            .flat_map(|target| {
+                nodes
+                    .keys()
+                    .copied()
+                    .filter(|&node| {
+                        self.same_owner(bindings, node)
+                            && (node == target
+                                || bindings.is_descendant(node, target)
+                                || bindings.is_descendant(target, node))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         for &node in nodes.keys() {
-            if related.contains(&node) { continue; }
+            if related.contains(&node) {
+                continue;
+            }
             // SAFETY: same exclusive live-tree ownership, no topology changes.
             let _ = unsafe {
                 mutate_bound_node(bindings, nodes, node, |widget| {
@@ -551,10 +645,14 @@ impl CompositionFocus {
         }
         if let Some(node) = target {
             // Restore the selected control last: its setter may focus a child.
-            let _ = unsafe { mutate_bound_node(bindings, nodes, node, |widget| {
-                widget.set_focus(true);
-                if let Some(state) = &self.state { widget.set_state(state); }
-            }) };
+            let _ = unsafe {
+                mutate_bound_node(bindings, nodes, node, |widget| {
+                    widget.set_focus(true);
+                    if let Some(state) = &self.state {
+                        widget.set_state(state);
+                    }
+                })
+            };
         }
         target
     }
@@ -570,35 +668,79 @@ pub(crate) struct AnonymousFocusProbe {
 #[cfg(test)]
 impl AnonymousFocusProbe {
     pub fn new(state: &str) -> Self {
-        Self { focused: true, enabled: true, state: state.into(), builds: 0 }
+        Self {
+            focused: true,
+            enabled: true,
+            state: state.into(),
+            builds: 0,
+        }
     }
 }
 #[cfg(test)]
 impl Widget for AnonymousFocusProbe {
-    fn name(&self) -> &str { "AnonymousFocusProbe" }
+    fn name(&self) -> &str {
+        "AnonymousFocusProbe"
+    }
     fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-    fn build_layout(&mut self, tree: &mut TaffyTree<()>, _: &crate::Theme,
-        nodes: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        _: &crate::Theme,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
         // Change allocation so stale NodeId reuse cannot accidentally pass.
         self.builds += 1;
-        for _ in 0..self.builds { tree.new_leaf(taffy::Style::default()).unwrap(); }
+        for _ in 0..self.builds {
+            tree.new_leaf(taffy::Style::default()).unwrap();
+        }
         let node = tree.new_leaf(taffy::Style::default()).unwrap();
         nodes.insert(node, self as *mut dyn Widget);
         node
     }
     fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(&mut self, _: &mut vello::Scene, _: vello::kurbo::Affine,
-        _: &mut TextRenderer, _: &crate::Theme, _: &crate::PresenceCtx) {}
-    fn get_rect(&self) -> vello::kurbo::Rect { vello::kurbo::Rect::ZERO }
-    fn handle_event(&mut self, _: &winit::event::WindowEvent, _: f64,
-        _: &winit::event::Modifiers, _: &mut automerge::AutoCommit, _: &automerge::ObjId,
-        _: &mut bool, _: &mut Option<NodeId>, _: NodeId, _: &TaffyTree<()>) {}
-    fn is_focusable(&self) -> bool { true }
-    fn is_enabled(&self) -> bool { self.enabled }
-    fn is_focused(&self) -> bool { self.focused }
-    fn set_focus(&mut self, focused: bool) { self.focused = focused; }
-    fn get_state(&self) -> Option<String> { Some(self.state.clone()) }
-    fn set_state(&mut self, state: &str) { self.state = state.into(); }
+    fn draw(
+        &mut self,
+        _: &mut vello::Scene,
+        _: vello::kurbo::Affine,
+        _: &mut TextRenderer,
+        _: &crate::Theme,
+        _: &crate::PresenceCtx,
+    ) {
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::ZERO
+    }
+    fn handle_event(
+        &mut self,
+        _: &winit::event::WindowEvent,
+        _: f64,
+        _: &winit::event::Modifiers,
+        _: &mut automerge::AutoCommit,
+        _: &automerge::ObjId,
+        _: &mut bool,
+        _: &mut Option<NodeId>,
+        _: NodeId,
+        _: &TaffyTree<()>,
+    ) {
+    }
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+    fn get_state(&self) -> Option<String> {
+        Some(self.state.clone())
+    }
+    fn set_state(&mut self, state: &str) {
+        self.state = state.into();
+    }
 }
 
 #[cfg(test)]
@@ -686,7 +828,10 @@ mod tests {
     fn authored_extents_resolve_by_their_sizing() {
         let text = AuthoredExtent::text(760.0);
         let icon = AuthoredExtent::icon(86.0);
-        assert_eq!((text.resolve(&Theme::dark()), icon.resolve(&Theme::dark())), (760.0, 86.0));
+        assert_eq!(
+            (text.resolve(&Theme::dark()), icon.resolve(&Theme::dark())),
+            (760.0, 86.0)
+        );
         let two = Theme::dark().with_text_scale(2.0);
         assert_eq!((text.resolve(&two), icon.resolve(&two)), (1520.0, 86.0));
         let small = Theme::dark().with_text_scale(0.75);
@@ -707,16 +852,23 @@ mod tests {
         assert_eq!(text_control_height(34.0, &stock), 34.0);
         assert_eq!(text_control_height(36.0, &stock), 36.0);
 
-        let line_1x = f64::from(TextStyle::new(stock.tokens.typography.scale.base).line_height_px());
+        let line_1x =
+            f64::from(TextStyle::new(stock.tokens.typography.scale.base).line_height_px());
         let two = Theme::dark().with_text_scale(2.0);
         let line_2x = f64::from(TextStyle::new(two.tokens.typography.scale.base).line_height_px());
-        assert!((line_2x - 2.0 * line_1x).abs() < 1e-3, "the theme's body line doubles");
+        assert!(
+            (line_2x - 2.0 * line_1x).abs() < 1e-3,
+            "the theme's body line doubles"
+        );
         let grown = text_control_height(34.0, &two);
         assert!(
             (grown - (line_2x + (34.0 - line_1x))).abs() < 1e-6,
             "34 px at 1× becomes the 2× line plus the same padding, got {grown}"
         );
-        assert!(grown > 34.0 && grown < 68.0, "grows by the line, not by the whole scale");
+        assert!(
+            grown > 34.0 && grown < 68.0,
+            "grows by the line, not by the whole scale"
+        );
 
         let smaller = Theme::dark().with_text_scale(0.75);
         assert_eq!(
@@ -726,7 +878,10 @@ mod tests {
         );
 
         let dense = Theme::dark().with_ui_scale(1.5);
-        assert!((text_control_height(34.0, &dense) - 51.0).abs() < 1e-6, "ui_scale scales the whole control");
+        assert!(
+            (text_control_height(34.0, &dense) - 51.0).abs() < 1e-6,
+            "ui_scale scales the whole control"
+        );
     }
 
     #[test]
@@ -852,15 +1007,27 @@ mod tests {
         let mut nodes = HashMap::new();
         let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
         let mut bindings = BoundNodeMap::new();
-        unsafe { bindings.rebuild(&old, &tree, root, &nodes); }
+        unsafe {
+            bindings.rebuild(&old, &tree, root, &nodes);
+        }
         let focus = unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) };
-        assert!(focus.is_none(), "anonymous state must never be captured for transfer");
-        nodes.clear(); bindings.clear();
+        assert!(
+            focus.is_none(),
+            "anonymous state must never be captured for transfer"
+        );
+        nodes.clear();
+        bindings.clear();
         drop(old);
         let mut replacement = AnonymousFocusProbe::new("replacement selection");
         let root = replacement.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-        unsafe { bindings.rebuild(&replacement, &tree, root, &nodes); }
-        if let Some(focus) = focus { unsafe { focus.restore(&nodes, &bindings, None); } }
+        unsafe {
+            bindings.rebuild(&replacement, &tree, root, &nodes);
+        }
+        if let Some(focus) = focus {
+            unsafe {
+                focus.restore(&nodes, &bindings, None);
+            }
+        }
         assert_eq!(replacement.state, "replacement selection");
         assert!(replacement.focused);
     }
@@ -874,16 +1041,25 @@ mod tests {
         let root = one.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
         let mut bindings = BoundNodeMap::new();
         assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
-        unsafe { bindings.rebuild(&one, &tree, root, &nodes); }
-        assert_eq!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }, Some(root));
+        unsafe {
+            bindings.rebuild(&one, &tree, root, &nodes);
+        }
+        assert_eq!(
+            unsafe { CompositionFocus::current(&nodes, &bindings, None) },
+            Some(root)
+        );
         assert!(unsafe { CompositionFocus::current(&nodes, &bindings, Some(&[])) }.is_none());
         one.enabled = false;
         assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
-        nodes.clear(); bindings.clear();
-        let mut siblings = Column::new().push(Box::new(AnonymousFocusProbe::new("a")))
+        nodes.clear();
+        bindings.clear();
+        let mut siblings = Column::new()
+            .push(Box::new(AnonymousFocusProbe::new("a")))
             .push(Box::new(AnonymousFocusProbe::new("b")));
         let root = siblings.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-        unsafe { bindings.rebuild(&siblings, &tree, root, &nodes); }
+        unsafe {
+            bindings.rebuild(&siblings, &tree, root, &nodes);
+        }
         assert!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }.is_none());
     }
 
@@ -896,19 +1072,35 @@ mod tests {
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            let selected = if capture_leaf { tree.children(root).unwrap()[0] } else { root };
+            let selected = if capture_leaf {
+                tree.children(root).unwrap()[0]
+            } else {
+                root
+            };
             let mut bindings = BoundNodeMap::new();
-            unsafe { bindings.rebuild(&editor, &tree, root, &nodes); }
-            let focus = unsafe { CompositionFocus::capture(Some(selected), &nodes, &bindings) }.unwrap();
-            nodes.clear(); bindings.clear();
+            unsafe {
+                bindings.rebuild(&editor, &tree, root, &nodes);
+            }
+            let focus =
+                unsafe { CompositionFocus::capture(Some(selected), &nodes, &bindings) }.unwrap();
+            nodes.clear();
+            bindings.clear();
             editor = BlockEditor::from_markdown("first\n\nsecond");
             editor.set_focus(true);
             let root = editor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            unsafe { bindings.rebuild(&editor, &tree, root, &nodes); }
-            assert_eq!(unsafe { focus.restore(&nodes, &bindings, None) }, Some(root));
+            unsafe {
+                bindings.rebuild(&editor, &tree, root, &nodes);
+            }
+            assert_eq!(
+                unsafe { focus.restore(&nodes, &bindings, None) },
+                Some(root)
+            );
             assert!(editor.is_focused());
             assert!(editor.blocks()[0].line.is_focused());
-            assert_eq!(unsafe { CompositionFocus::current(&nodes, &bindings, None) }, Some(root));
+            assert_eq!(
+                unsafe { CompositionFocus::current(&nodes, &bindings, None) },
+                Some(root)
+            );
         }
     }
 
@@ -920,14 +1112,22 @@ mod tests {
         let mut nodes = HashMap::new();
         let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
         let mut bindings = BoundNodeMap::new();
-        unsafe { bindings.rebuild(&old, &tree, root, &nodes); }
+        unsafe {
+            bindings.rebuild(&old, &tree, root, &nodes);
+        }
         let focus = unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
-        nodes.clear(); bindings.clear();
+        nodes.clear();
+        bindings.clear();
         let mut rebuilt = EditableLabel::new("Title").with_id("note_title");
         rebuilt.begin_edit();
         let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-        unsafe { bindings.rebuild(&rebuilt, &tree, root, &nodes); }
-        assert_eq!(unsafe { focus.restore(&nodes, &bindings, None) }, Some(root));
+        unsafe {
+            bindings.rebuild(&rebuilt, &tree, root, &nodes);
+        }
+        assert_eq!(
+            unsafe { focus.restore(&nodes, &bindings, None) },
+            Some(root)
+        );
         assert!(rebuilt.is_editing());
         assert_eq!(rebuilt.take_outcome(), crate::widget::EditOutcome::None);
     }
@@ -942,16 +1142,23 @@ mod tests {
             let mut nodes = HashMap::new();
             let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
             let mut bindings = BoundNodeMap::new();
-            unsafe { bindings.rebuild(&old, &tree, root, &nodes); }
-            let focus = unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
-            nodes.clear(); bindings.clear();
+            unsafe {
+                bindings.rebuild(&old, &tree, root, &nodes);
+            }
+            let focus =
+                unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
+            nodes.clear();
+            bindings.clear();
             let mut rebuilt = Column::new();
             if duplicate {
-                rebuilt = rebuilt.push(Box::new(BlockEditor::from_markdown("one")))
+                rebuilt = rebuilt
+                    .push(Box::new(BlockEditor::from_markdown("one")))
                     .push(Box::new(BlockEditor::from_markdown("two")));
             }
             let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
-            unsafe { bindings.rebuild(&rebuilt, &tree, root, &nodes); }
+            unsafe {
+                bindings.rebuild(&rebuilt, &tree, root, &nodes);
+            }
             assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
             assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
         }

@@ -472,7 +472,14 @@ impl SlashMenu {
         }
     }
 
-    fn draw_empty_hint(&self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, font_size: f32) {
+    fn draw_empty_hint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        font_size: f32,
+    ) {
         let rect = self.rect();
         let tokens = &theme.tokens;
         // Empty-state hint when the filter matches nothing.

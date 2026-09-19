@@ -32,8 +32,8 @@ use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle, TextWrapMode};
-use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::theme::Theme;
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::{ActionEmitter, Scrollable, TaffyTreeExt, Widget};
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
@@ -90,13 +90,19 @@ fn resolved_styles(
     let typography = &theme.tokens.typography.scale;
     (
         text_renderer.renderer_input_style(
-            &TextStyle::new(typography.xl).with_wrap_mode(TextWrapMode::WordOrGlyph).with_align(ParagraphAlign::Center),
+            &TextStyle::new(typography.xl)
+                .with_wrap_mode(TextWrapMode::WordOrGlyph)
+                .with_align(ParagraphAlign::Center),
         ),
         text_renderer.renderer_input_style(
-            &TextStyle::new(typography.sm).with_wrap_mode(TextWrapMode::WordOrGlyph).with_align(ParagraphAlign::Center),
+            &TextStyle::new(typography.sm)
+                .with_wrap_mode(TextWrapMode::WordOrGlyph)
+                .with_align(ParagraphAlign::Center),
         ),
         text_renderer.renderer_input_style(
-            &TextStyle::new(typography.sm).with_wrap_mode(TextWrapMode::WordOrGlyph).with_align(ParagraphAlign::Center),
+            &TextStyle::new(typography.sm)
+                .with_wrap_mode(TextWrapMode::WordOrGlyph)
+                .with_align(ParagraphAlign::Center),
         ),
     )
 }
@@ -247,13 +253,26 @@ fn paint_empty_state(
             let mut candidate_style = original.clone();
             candidate_style.size *= factor;
             let candidate_metrics = measure_metrics(
-                text_renderer, metrics.gap, f64::from(theme.tokens.spacing.s2),
-                rect.width(), title, message, action_label,
-                &candidate_style, &message_style, &action_style,
+                text_renderer,
+                metrics.gap,
+                f64::from(theme.tokens.spacing.s2),
+                rect.width(),
+                title,
+                message,
+                action_label,
+                &candidate_style,
+                &message_style,
+                &action_style,
             );
-            let candidate_fit = Fit::choose(rect.height(), Parts {
-                icon: icon.is_some(), message: true, action: action_label.is_some(),
-            }, candidate_metrics);
+            let candidate_fit = Fit::choose(
+                rect.height(),
+                Parts {
+                    icon: icon.is_some(),
+                    message: true,
+                    action: action_label.is_some(),
+                },
+                candidate_metrics,
+            );
             if candidate_fit.message {
                 title_style = candidate_style;
                 metrics = candidate_metrics;
@@ -342,10 +361,11 @@ fn paint_empty_state(
             label,
             // Ink chosen against the accent fill (rest and hover), so the
             // label reads on a light theme's accent too.
-            theme
-                .tokens
-                .colors
-                .ink_on_any(&[bg, theme.accent_primary], Color::WHITE, ON_FILL_MIN_CONTRAST),
+            theme.tokens.colors.ink_on_any(
+                &[bg, theme.accent_primary],
+                Color::WHITE,
+                ON_FILL_MIN_CONTRAST,
+            ),
             translated(transform, cx - f64::from(metrics.inner_width) / 2.0, ty),
             Some(metrics.inner_width),
             &action_style,
@@ -552,7 +572,10 @@ impl EmptyState {
     /// Call [`Self::minimum_essential_height`] first when the supplied pane can
     /// be physically shorter than the title and action; that parent must own
     /// scrolling, and a wholly offscreen action produces no false hit target.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate empty-state painting combines paint context and pane bounds with icon, title, message, action label and hover"
+    )]
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,
@@ -662,7 +685,10 @@ impl Widget for EmptyState {
             .total
             .max(220.0)
         };
-        #[allow(clippy::cast_possible_truncation, reason = "Taffy uses f32 layout sizes; measured text geometry is intentionally rounded to that precision")]
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "Taffy uses f32 layout sizes; measured text geometry is intentionally rounded to that precision"
+        )]
         let height = intrinsic_height as f32;
         taffy::Size {
             width: measured_width,

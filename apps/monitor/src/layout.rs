@@ -429,7 +429,11 @@ mod tests {
                     .clamp(1, 8)
                     .min(n);
                 assert!(g.cols <= cap, "n={n} w={w}: {g:?} exceeds width cap {cap}");
-                assert_eq!(g.rows, n.div_ceil(cap), "n={n} w={w}: row count is width-derived");
+                assert_eq!(
+                    g.rows,
+                    n.div_ceil(cap),
+                    "n={n} w={w}: row count is width-derived"
+                );
                 assert!(g.cells() >= n, "n={n} w={w}: {g:?} seats every core");
                 assert!(
                     (g.cols - 1) * g.rows < n,

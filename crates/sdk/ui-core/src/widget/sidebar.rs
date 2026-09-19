@@ -1096,19 +1096,35 @@ mod tests {
         let mut plain = authored();
         plain.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
         assert_eq!(plain.layout(), SplitLayout::Docked);
-        assert_eq!(plain.sidebar_rect().width(), 240.0, "authored geometry until scaled");
         assert_eq!(
-            (plain.resolved_breakpoint(), plain.resolved_overlay_width(), plain.resolved_rail_width()),
+            plain.sidebar_rect().width(),
+            240.0,
+            "authored geometry until scaled"
+        );
+        assert_eq!(
+            (
+                plain.resolved_breakpoint(),
+                plain.resolved_overlay_width(),
+                plain.resolved_rail_width()
+            ),
             (760.0, 320.0, 56.0)
         );
 
         let mut large = authored();
         large.scale_for(&Theme::dark().with_text_scale(2.0));
         assert_eq!(
-            (large.resolved_breakpoint(), large.resolved_docked_width(), large.resolved_overlay_width()),
+            (
+                large.resolved_breakpoint(),
+                large.resolved_docked_width(),
+                large.resolved_overlay_width()
+            ),
             (1520.0, 480.0, 640.0)
         );
-        assert_eq!(large.resolved_rail_width(), 56.0, "an icon rail never grows with the text");
+        assert_eq!(
+            large.resolved_rail_width(),
+            56.0,
+            "an icon rail never grows with the text"
+        );
         large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
         assert_eq!(
             large.layout(),
@@ -1118,25 +1134,42 @@ mod tests {
         large.open();
         large.snap(true);
         large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
-        assert_eq!(large.sidebar_rect().width(), 640.0, "the overlay drawer lays out at the resolved width");
+        assert_eq!(
+            large.sidebar_rect().width(),
+            640.0,
+            "the overlay drawer lays out at the resolved width"
+        );
 
         let mut smaller = authored();
         smaller.scale_for(&Theme::dark().with_text_scale(0.75));
-        assert_eq!(smaller.resolved_docked_width(), 240.0, "text never shrinks a pane");
+        assert_eq!(
+            smaller.resolved_docked_width(),
+            240.0,
+            "text never shrinks a pane"
+        );
 
         let mut dense = authored();
         dense.scale_for(&Theme::dark().with_ui_scale(1.5));
-        assert!((dense.resolved_rail_width() - 84.0).abs() < 1e-9, "ui_scale grows the rail too");
+        assert!(
+            (dense.resolved_rail_width() - 84.0).abs() < 1e-9,
+            "ui_scale grows the rail too"
+        );
         assert!((dense.resolved_breakpoint() - 1140.0).abs() < 1e-9);
 
         // A docked icon rail (firewall / backups) keeps its width at 2× text,
         // and a per-frame setter keeps the sizing its builder chose.
-        let mut glyphs = SidebarDrawer::new().icon_docked_width(56.0).overlay_width(288.0);
+        let mut glyphs = SidebarDrawer::new()
+            .icon_docked_width(56.0)
+            .overlay_width(288.0);
         glyphs.scale_for(&Theme::dark().with_text_scale(2.0));
         assert_eq!(glyphs.resolved_docked_width(), 56.0);
         assert_eq!(glyphs.resolved_overlay_width(), 576.0);
         glyphs.set_docked_width(64.0);
-        assert_eq!(glyphs.resolved_docked_width(), 64.0, "still an icon rail after a setter");
+        assert_eq!(
+            glyphs.resolved_docked_width(),
+            64.0,
+            "still an icon rail after a setter"
+        );
     }
 
     #[test]

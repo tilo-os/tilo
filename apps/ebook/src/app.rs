@@ -6760,7 +6760,10 @@ impl BooksApp {
     /// A filled accent button with a centred label (and an optional leading `+`),
     /// the single primary action on a screen. Pushes a hit for `action`.
     // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "button painting passes the render context, bounds, label, optional plus icon and action for its hit target"
+    )]
     fn accent_button(
         &mut self,
         scene: &mut Scene,
@@ -6810,7 +6813,10 @@ impl BooksApp {
     /// A compact shared numeric control. Lays out right-to-left from `right_x`;
     /// returns the left edge it consumed so every font row stays aligned.
     // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "numeric control painting combines the shared render context with its right edge, center, value and field identity"
+    )]
     fn size_stepper(
         &mut self,
         scene: &mut Scene,
@@ -6865,7 +6871,10 @@ impl BooksApp {
 
     /// A text pill (used for segmented controls + tags). Returns its width.
     // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pill painting combines render context, position, height, typography, active state and optional hit action"
+    )]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/h/w/c are the standard transform/geometry/colours names shared by \
@@ -7013,7 +7022,10 @@ impl BooksApp {
     /// Top bar: title + book count, and the primary "Open book" action
     /// (always present — a way in that doesn't depend on any folder).
     /// Returns the button's left edge, so shelf controls can lay out from it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "library header painting combines render context and palette with its bounds and book count"
+    )]
     fn draw_library_header(
         &mut self,
         scene: &mut Scene,
@@ -7542,7 +7554,10 @@ impl BooksApp {
     /// title in serif display, author along the base). Returns whether the
     /// title is already shown on the cover (a real cover isn't relabelled
     /// below it).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "cover painting uses the render context, book metadata and both cover bounds and component dimensions"
+    )]
     fn draw_book_cover_art(
         &mut self,
         scene: &mut Scene,
@@ -7633,7 +7648,10 @@ impl BooksApp {
     }
 
     /// The "Shared"/"Local" badge overlaid at the cover's top-right.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "sharing badge painting combines render context with cover position, width and sharing state"
+    )]
     fn draw_shared_badge(
         scene: &mut Scene,
         t: Affine,
@@ -7765,7 +7783,10 @@ impl BooksApp {
     /// The Share/Remove affordance cluster over the cover foot, shown on
     /// hover only (pushed after the whole-card hit, so they win the click
     /// where they overlap it).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "hover actions combine render context, cover geometry, book identity and sharing state for matching hit targets"
+    )]
     fn draw_book_card_hover_actions(
         &mut self,
         scene: &mut Scene,
@@ -7828,7 +7849,10 @@ impl BooksApp {
     }
 
     /// The trailing "Add books" tile: opens the host file picker.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "add-book tile painting combines the shared render context with the shelf position and cover dimensions"
+    )]
     fn draw_add_book_card(
         &mut self,
         scene: &mut Scene,
@@ -8239,7 +8263,10 @@ impl BooksApp {
     /// composer, comment overlay, and reading-settings popover. Restores
     /// `self.layout`/`self.library`/`self.annotations`, taken at the top of
     /// [`Self::draw_reader`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "footer painting consumes the reader caches alongside palette, page geometry, mode and selection anchor before restoring them"
+    )]
     fn draw_reader_footer_and_chrome(
         &mut self,
         scene: &mut Scene,
@@ -8688,7 +8715,10 @@ impl BooksApp {
     /// Draw each reading column with the page-turn slide/fade applied, and
     /// aggregate the first selected band's screen position and the open
     /// comment overlay's on-page bounds across all panes.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "column painting passes layout, annotations, typography, selection and page geometry through the shared render context"
+    )]
     fn draw_reader_columns(
         &mut self,
         scene: &mut Scene,
@@ -8784,7 +8814,10 @@ impl BooksApp {
     /// Draw one reading column: margins, selection/highlight bands (rebuilds
     /// `sel_runs`), and glyphs. Returns the first selected band's screen
     /// `(x, y)` and the open comment overlay's highlight bounds, if any.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pane painting shares layout, annotations, typography and selection context across bands, markers and glyphs"
+    )]
     fn draw_pane(
         &mut self,
         scene: &mut Scene,
@@ -8850,7 +8883,10 @@ impl BooksApp {
     }
 
     /// Note-comment bands and bookmark glyphs, drawn behind the text.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "note bands need chapter annotations, page palette and pane geometry alongside the scene and transform"
+    )]
     fn draw_pane_note_bands(
         scene: &mut Scene,
         t: Affine,
@@ -8932,7 +8968,10 @@ impl BooksApp {
     /// band's screen anchor, the open comment overlay's on-page bounds, and
     /// the topmost band per highlight group (for the draggable margin
     /// markers drawn after).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "selection bands combine layout, annotations, typography and pane geometry while collecting selection and comment bounds"
+    )]
     fn draw_pane_selection_bands(
         &mut self,
         scene: &mut Scene,
@@ -9001,7 +9040,10 @@ impl BooksApp {
     /// of each run inside the live selection / a ranged highlight. Pure
     /// measurement — the bands themselves are drawn by the caller once the
     /// full span per highlight is known.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "run measurement needs typography, block and line geometry, annotation ranges and mutable selection span outputs"
+    )]
     fn draw_pane_line_runs(
         &mut self,
         tr: &mut TextRenderer,
@@ -9103,7 +9145,10 @@ impl BooksApp {
     /// Selection + ranged-highlight bands for one visible line: rebuilds its
     /// `sel_runs` (and `page_first_doc`/`page_last_doc`), then draws the
     /// highlight band(s) and the live-selection band for the line.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "line bands share typography and pane geometry while updating highlight groups, selection anchors and comment bounds"
+    )]
     fn draw_pane_line_bands(
         &mut self,
         scene: &mut Scene,
@@ -9217,7 +9262,10 @@ impl BooksApp {
 
     /// Block decorations (Quote rule, Separator line, inline math, list
     /// bullets) and every run's glyphs, on top of the bands.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "glyph painting uses layout, typography, palette and pane bounds with an explicit narrow-page clipping policy"
+    )]
     fn draw_pane_glyphs(
         scene: &mut Scene,
         t: Affine,
@@ -9333,7 +9381,10 @@ impl BooksApp {
 
     /// Every run's glyphs for one block: an inline-mono background chip when
     /// needed, structured math, or shaped text.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "block run painting combines the shared render context with typography, palette, pane coordinates and the laid-out block"
+    )]
     fn draw_pane_block_runs(
         scene: &mut Scene,
         t: Affine,
@@ -9412,7 +9463,10 @@ impl BooksApp {
 
     /// A floating toolbar shown while a paragraph is selected: highlight
     /// colours + Note, reachable at any width even with the rail collapsed.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "selection toolbar painting uses render context, chrome colors, paper bounds and the selected text anchor"
+    )]
     fn draw_selection_hud(
         &mut self,
         scene: &mut Scene,
@@ -9529,7 +9583,10 @@ impl BooksApp {
     /// Paint the contents + annotations rails: either docked (flush, page
     /// already inset) or an overlay flap over the page behind a dimming
     /// scrim. The shared [`FlapState`] kernel supplies `reveal`/`slide`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "rail painting combines render context and chrome colors with the library and reader body bounds"
+    )]
     fn draw_rails(
         &mut self,
         scene: &mut Scene,
@@ -9592,7 +9649,10 @@ impl BooksApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "reader top-bar painting shares render context, library metadata and chrome colors across its title and controls"
+    )]
     fn draw_reader_topbar(
         &mut self,
         scene: &mut Scene,
@@ -9659,7 +9719,10 @@ impl BooksApp {
     /// The centre title (+ author, when it fits), clamped between the left
     /// controls and the right cluster and ellipsised rather than colliding
     /// with either on a narrow window.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "centered title painting uses book metadata and measured control widths to avoid both top-bar button clusters"
+    )]
     fn draw_reader_topbar_title(
         &self,
         scene: &mut Scene,
@@ -9727,7 +9790,10 @@ impl BooksApp {
     /// ("Aa") pill — relocated off the removed bottom strip so typography
     /// stays one tap away. Opens the same type/spacing/theme popover, with
     /// the same active state + hit target.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "right top-bar controls share render context and measured icon, bookmark and settings-label geometry"
+    )]
     fn draw_reader_topbar_right(
         &mut self,
         scene: &mut Scene,
@@ -9999,7 +10065,10 @@ impl BooksApp {
     /// draggable pseudo-scrollbar: wheel, touchpad and screen-reader focus
     /// remain the consistent interaction model, while the thumb preserves
     /// orientation in a large table of contents or annotation history.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scrollbar painting needs track bounds, current and maximum scroll, and viewport and content heights"
+    )]
     fn draw_rail_scrollbar(
         scene: &mut Scene,
         t: Affine,
@@ -10030,7 +10099,10 @@ impl BooksApp {
 
     /// `panel_x0` is the rail's left edge — `r.x1 - NOTES_W` when docked, or a
     /// slid position when it floats as an overlay flap from the right.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "notes rail painting shares render context and chrome colors with its animated panel edge and vertical bounds"
+    )]
     fn draw_notes(
         &mut self,
         scene: &mut Scene,
@@ -10116,7 +10188,10 @@ impl BooksApp {
     }
 
     /// "ANNOTATIONS" title + the count badge.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "annotation header painting uses render context and chrome colors with the rail origin and annotation count"
+    )]
     fn draw_notes_header(
         scene: &mut Scene,
         t: Affine,
@@ -10181,7 +10256,10 @@ impl BooksApp {
 
     /// "+ Note on selection" action row. Returns its y (the list starts
     /// below it).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "add-note row painting combines render context and chrome colors with the rail edges and header position"
+    )]
     fn draw_notes_add_row(
         &mut self,
         scene: &mut Scene,
@@ -10236,7 +10314,10 @@ impl BooksApp {
     }
 
     /// Paint one measured annotation card in the virtual notes list.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "annotation card painting shares render context and chrome colors with measured list bounds and annotation content"
+    )]
     fn draw_note_card(
         &mut self,
         scene: &mut Scene,
@@ -10338,7 +10419,10 @@ impl BooksApp {
 
     /// Colour dot / bookmark glyph + kind label + chapter/paragraph locator,
     /// and the always-visible delete button.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "annotation header painting combines render context and card bounds with the annotation identity, kind and location"
+    )]
     fn draw_note_card_header(
         &mut self,
         scene: &mut Scene,
@@ -10404,7 +10488,10 @@ impl BooksApp {
         self.push_hit(pointer_target(del, theme), Action::Delete(a.id));
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "note body painting needs excerpt and note text, their width and measured excerpt height alongside render context"
+    )]
     fn draw_note_card_body(
         scene: &mut Scene,
         t: Affine,
@@ -10584,7 +10671,10 @@ impl BooksApp {
     /// The underline-indicator tab bar. Wide layouts stay on one line; narrow
     /// or large-text layouts use a bounded two-by-two grid so every tab remains
     /// fully visible and touchable instead of clipping at the viewport edge.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "settings tab painting shares render context and chrome colors with the settings bounds and tab-row position"
+    )]
     fn draw_settings_tabs(
         &mut self,
         scene: &mut Scene,
@@ -10771,7 +10861,10 @@ impl BooksApp {
 
     /// The Library settings pane: manage the folders watched for new books,
     /// the secondary way in ("Open a book" stays primary).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "library settings painting passes render context and chrome colors through the folder-list origin, width and cursor"
+    )]
     fn draw_library_settings(
         &mut self,
         scene: &mut Scene,
@@ -10842,7 +10935,10 @@ impl BooksApp {
 
     /// The empty state: an explanation card + the primary "Open a book"
     /// action (no folder picker — the watch list grows from books you open).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "empty library settings painting combines render context and chrome colors with the explanatory card bounds"
+    )]
     fn draw_library_settings_empty(
         &mut self,
         scene: &mut Scene,
@@ -10891,7 +10987,10 @@ impl BooksApp {
 
     /// One row per candidate folder: name, resolved path, and its watch
     /// toggle. Returns the y just below the last row.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "watched-folder rows combine render context and chrome colors with list geometry and candidate folder paths"
+    )]
     fn draw_watched_folder_rows(
         &mut self,
         scene: &mut Scene,
@@ -10977,7 +11076,10 @@ impl BooksApp {
         y
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "font manager painting passes render context and chrome colors through the pane origin, width and row cursor"
+    )]
     fn draw_fonts_manager(
         &mut self,
         scene: &mut Scene,
@@ -11026,7 +11128,10 @@ impl BooksApp {
     /// The default-font dropdown control: label + box showing the current
     /// default's name in its own face. Returns `(y_below, dropdown_bottom)`
     /// — `dropdown_bottom` anchors the flyout menu.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "default-font dropdown painting needs render context, pane geometry, available fonts and the selected font identity"
+    )]
     fn draw_default_font_dropdown(
         &mut self,
         scene: &mut Scene,
@@ -11120,7 +11225,10 @@ impl BooksApp {
 
     /// One font row: name (or its rename editor), kind label, and the right
     /// control cluster. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "font row painting combines render context and chrome colors with row geometry and the font entry"
+    )]
     fn draw_font_row(
         &mut self,
         scene: &mut Scene,
@@ -11164,7 +11272,10 @@ impl BooksApp {
     /// Name rendered in its own face. When renaming, the real inline editor
     /// (a `ui::EditableLabel` over a `TextInput`) takes over the slot;
     /// otherwise a pencil affordance invites a tap to rename.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "font name painting needs render context, row bounds and the font entry to align its rename editor with controls"
+    )]
     fn draw_font_row_name(
         &mut self,
         scene: &mut Scene,
@@ -11232,7 +11343,10 @@ impl BooksApp {
     /// delete column so every row's size control lines up (built-ins
     /// reserve the column but draw nothing in it): delete (custom fonts
     /// only), size stepper, and the quick-settings visibility toggle.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "font controls share render context and row geometry with the font entry for deletion, size and visibility actions"
+    )]
     fn draw_font_row_controls(
         &mut self,
         scene: &mut Scene,
@@ -11316,7 +11430,10 @@ impl BooksApp {
     }
 
     /// "+ Add a system font" pill. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "add-font button painting uses the shared render context and row origin while returning the next row position"
+    )]
     fn draw_add_font_button(
         &mut self,
         scene: &mut Scene,
@@ -11350,7 +11467,10 @@ impl BooksApp {
     }
 
     /// The default-font dropdown list, floating under the dropdown control.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "default-font menu painting combines render context, dropdown bounds, available fonts and the selected identity"
+    )]
     fn draw_default_font_menu(
         &mut self,
         scene: &mut Scene,
@@ -11406,7 +11526,10 @@ impl BooksApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "color-scheme manager painting shares render context and chrome colors with the pane origin, width and row cursor"
+    )]
     fn draw_schemes_manager(
         &mut self,
         scene: &mut Scene,
@@ -11489,7 +11612,10 @@ impl BooksApp {
 
     /// One colour-scheme row: swatches, name/status, and the right action
     /// cluster. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "color-scheme row painting combines render context and row geometry with the scheme data and its actions"
+    )]
     fn draw_scheme_row(
         &mut self,
         scene: &mut Scene,
@@ -11603,7 +11729,10 @@ impl BooksApp {
 
     /// Scheme name (skipped while its inline rename editor is active) and
     /// the Built-in/In use/Custom status label.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scheme labels use render context, label position, selection and rename state alongside the scheme metadata"
+    )]
     fn draw_scheme_name_and_status(
         scene: &mut Scene,
         t: Affine,
@@ -11651,7 +11780,10 @@ impl BooksApp {
     /// Right cluster, laid out right-to-left: enable switch, then the
     /// actions (Duplicate / Edit / delete — Edit and delete only for
     /// custom schemes). Returns the x just left of the cluster.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scheme action painting combines render context and row geometry with the scheme identity and capabilities"
+    )]
     fn draw_scheme_actions(
         &mut self,
         scene: &mut Scene,
@@ -11733,7 +11865,10 @@ impl BooksApp {
 
     /// Name click: rename (custom) / apply (built-in), bounded before the
     /// right cluster. When renaming, the inline editor fills the slot.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scheme name interaction shares render context, bounded name geometry, rename state and the scheme apply action"
+    )]
     fn draw_scheme_name_interaction(
         &mut self,
         scene: &mut Scene,
@@ -11831,7 +11966,10 @@ impl BooksApp {
 
     /// "EDIT SCHEME" title + the scheme name (or its inline rename editor).
     /// Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scheme editor title painting needs render context, editor bounds and scheme identity for the inline rename target"
+    )]
     fn draw_scheme_editor_title(
         &mut self,
         scene: &mut Scene,
@@ -11884,7 +12022,10 @@ impl BooksApp {
 
     /// "COLOURS" section: one swatch per scheme slot, each opening the
     /// colour picker. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scheme swatch painting combines render context, editor bounds and scheme identity with the editable color slots"
+    )]
     fn draw_scheme_editor_swatches(
         &mut self,
         scene: &mut Scene,
@@ -11942,7 +12083,10 @@ impl BooksApp {
 
     /// "PREVIEW" section: a mock reading card rendered in the scheme's own
     /// palette. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "scheme preview painting uses render context and section bounds with the scheme palette being previewed"
+    )]
     fn draw_scheme_editor_preview(
         scene: &mut Scene,
         t: Affine,

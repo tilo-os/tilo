@@ -1138,18 +1138,23 @@ impl App {
         let history = component.history.take();
         let mut root = Box::new(crate::widget::BoundAppWidget { component });
         if let Some(registration) = &history
-            && let Err(error) = registration.validate_root(root.as_ref()) {
-            return Err(root.component.setup_error(crate::launch::LaunchError::Operation(error.to_string())));
+            && let Err(error) = registration.validate_root(root.as_ref())
+        {
+            return Err(root
+                .component
+                .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
         }
         let mut app = Self::from_scoped_parts_with_inputs(scope, State::new(), root, || inputs);
         if let Some(registration) = history
-            && let Err(error) = app.install_history(registration) {
-                app.close_components();
-                return Err(crate::launch::LaunchError::ComponentSetup {
-                    source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
-                    record: binding.checkout, records: binding.records,
-                    reports: app.take_component_close_reports(),
-                });
+            && let Err(error) = app.install_history(registration)
+        {
+            app.close_components();
+            return Err(crate::launch::LaunchError::ComponentSetup {
+                source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
+                record: binding.checkout,
+                records: binding.records,
+                reports: app.take_component_close_reports(),
+            });
         }
         Ok(app)
     }
@@ -1206,10 +1211,27 @@ impl App {
             crate::bound_dispatch::mutate_bound_node(&self.bindings, &self.node_map, node, callback)
         }
     }
-    fn dispatch_semantic_node<R>(&mut self, node: NodeId, action: &crate::a11y::Action, callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R) -> Result<R, String> {
+    fn dispatch_semantic_node<R>(
+        &mut self,
+        node: NodeId,
+        action: &crate::a11y::Action,
+        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
+    ) -> Result<R, String> {
         let author = self.local_author.clone();
         // SAFETY: the runner exclusively owns the unchanged admitted tree.
-        unsafe { crate::bound_dispatch::invoke_bound_semantic_node(&self.bindings, &self.node_map, node, &mut self.state.doc, &self.state.root, action, &self.permission_ctx, &author, callback) }
+        unsafe {
+            crate::bound_dispatch::invoke_bound_semantic_node(
+                &self.bindings,
+                &self.node_map,
+                node,
+                &mut self.state.doc,
+                &self.state.root,
+                action,
+                &self.permission_ctx,
+                &author,
+                callback,
+            )
+        }
     }
     fn dispatch_node<R>(
         &mut self,
@@ -1281,20 +1303,29 @@ impl App {
     /// launchers construct under their installed wake scope, then install History.
     /// # Errors
     /// Refuses invalid or mismatched managed owner registrations.
-    pub fn from_managed_root(state: State, root: crate::history_mode::ManagedRoot) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
+    pub fn from_managed_root(
+        state: State,
+        root: crate::history_mode::ManagedRoot,
+    ) -> Result<Self, crate::history_mode::HistoryRegistrationError> {
         root.history.validate_root(root.widget.as_ref())?;
         let mut app = Self::new(state, root.widget);
         app.install_history(root.history)?;
         Ok(app)
     }
 
-    pub(crate) fn install_history(&mut self, registration: crate::history_mode::HistoryRegistration) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+    pub(crate) fn install_history(
+        &mut self,
+        registration: crate::history_mode::HistoryRegistration,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         let _entry = self.enter_wake_scope();
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
-        self.history = Some(Box::new(crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)?));
+        self.history = Some(Box::new(crate::history_mode::host::HistoryHost::new(
+            registration,
+            &self.state.doc,
+        )?));
         #[cfg(any(test, feature = "test-support"))]
         {
             self.controlled_installed_history_definition = Some(controlled_definition);
@@ -4360,13 +4391,19 @@ impl App {
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same door/lifecycle as every other caller.
     fn dispatch_control_invocations(&mut self) -> usize {
-        if self.history.as_ref().is_some_and(|history| history.captures_input()) {
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.captures_input())
+        {
             self.discard_history_local_intents();
             return 0;
         }
         // Embedded History refresh discards only its own hidden live queue.
         // Defer sibling work until this input frame ends without consuming it.
-        if self.framework_input.get() { return 0; }
+        if self.framework_input.get() {
+            return 0;
+        }
         let mut dispatched = self.dispatch_history_controls();
         let bound = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
         if let Some(error) = bound.error {
@@ -4625,7 +4662,8 @@ impl App {
             .filter(|cache| {
                 cache.key == key && cache.permission_generation == permission_generation
             })
-            .and_then(|cache| cache.resources.clone()).unwrap_or_default();
+            .and_then(|cache| cache.resources.clone())
+            .unwrap_or_default();
         resources.extend(self.history_local_resources());
         let cached_open_resources = {
             self.open_resource_search_cache
@@ -6138,7 +6176,11 @@ impl App {
             } => {
                 self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
             }
-            CollabEvent::ScrollbackBatch { ops, decrypted_payloads, .. } => {
+            CollabEvent::ScrollbackBatch {
+                ops,
+                decrypted_payloads,
+                ..
+            } => {
                 self.apply_document_scrollback(ops, &decrypted_payloads);
             }
             CollabEvent::FollowChanged { peer_id } => match peer_id {
@@ -6281,7 +6323,12 @@ impl App {
             None
         }
 
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()) { self.update_history_focus_order(); return; }
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        {
+            self.update_history_focus_order();
+            return;
+        }
         self.focusable_order.clear();
         let Some(root) = self.root_node else { return };
 
@@ -6419,7 +6466,14 @@ impl App {
 
     /// Unique admitted node visits keep child reports and requests off shell history.
     fn service_history(&mut self) -> bool {
-        if self.framework_input.get() || self.history.as_ref().is_some_and(|history| history.captures_input()) { return false; }
+        if self.framework_input.get()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.captures_input())
+        {
+            return false;
+        }
         // SAFETY: App exclusively owns this stable live layout for the sweep.
         let mut changed = unsafe {
             crate::undo::record_dispatched_action_bound(
@@ -6455,7 +6509,14 @@ impl App {
                         .ok()
                         .flatten()
                 } else if let Some(owner) = self.bindings.legacy_for(node) {
-                    crate::bound_dispatch::legacy_history_request(&owner, request, &self.permission_ctx, &self.local_author).ok().flatten()
+                    crate::bound_dispatch::legacy_history_request(
+                        &owner,
+                        request,
+                        &self.permission_ctx,
+                        &self.local_author,
+                    )
+                    .ok()
+                    .flatten()
                 } else {
                     match request {
                         crate::undo::UndoRequest::Undo => {
@@ -6470,7 +6531,8 @@ impl App {
             }
             // The former eager status read flushed open transactions whenever
             // history existed. Preserve that boundary without deriving labels.
-            if binding.is_none() && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+            if binding.is_none()
+                && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
                 && (self.state.can_undo_as(Some(&self.local_author))
                     || self.state.can_redo_as(Some(&self.local_author)))
             {
@@ -6484,9 +6546,13 @@ impl App {
                 .or_else(|| self.bindings.legacy_status(node, &self.local_author));
             let embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
             let mut status = || {
-                bound_status
-                    .clone()
-                    .unwrap_or_else(|| if embedded { self.state.undo_status_snapshot(Some(&self.local_author)) } else { self.state.undo_status(Some(&self.local_author)) })
+                bound_status.clone().unwrap_or_else(|| {
+                    if embedded {
+                        self.state.undo_status_snapshot(Some(&self.local_author))
+                    } else {
+                        self.state.undo_status(Some(&self.local_author))
+                    }
+                })
             };
             // SAFETY: the same unique admitted node remains live and exclusive.
             let _ = unsafe {
@@ -6517,7 +6583,14 @@ impl App {
     }
 
     fn commit_action(&mut self) {
-        if self.framework_input.get() || self.history.as_ref().is_some_and(|history| history.captures_input()) { return; }
+        if self.framework_input.get()
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.captures_input())
+        {
+            return;
+        }
         if self.service_history() {
             self.needs_sync = true;
             self.layout_dirty = true;
@@ -6855,8 +6928,18 @@ impl App {
         let _entry = self.enter_wake_scope();
         let exported = self.bindings.exported_nodes(&self.node_map);
         if let Some(history) = &self.history {
-            let resources = if history.live_interactive() { self.collect_declared_resources() } else { vec![] };
-            return crate::accesskit_bridge::build_presentation_with_resources_bound(&self.history_presentation_roots(), &exported.nodes, exported.focus(self.focused_node), scale, &resources);
+            let resources = if history.live_interactive() {
+                self.collect_declared_resources()
+            } else {
+                vec![]
+            };
+            return crate::accesskit_bridge::build_presentation_with_resources_bound(
+                &self.history_presentation_roots(),
+                &exported.nodes,
+                exported.focus(self.focused_node),
+                scale,
+                &resources,
+            );
         }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
@@ -6897,7 +6980,10 @@ impl App {
     /// refusal; synthetic children additionally carry an opaque stable target
     /// produced by that widget. If a retained widget declines, `Action::Focus`
     /// moves keyboard focus and activation returns click coordinates.
-    #[allow(clippy::too_many_lines, reason = "one ordered native accessibility door preserves existing resource, semantic and pointer fallback precedence")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered native accessibility door preserves existing resource, semantic and pointer fallback precedence"
+    )]
     pub fn dispatch_a11y_action(
         &mut self,
         target: accesskit::NodeId,
@@ -6911,7 +6997,14 @@ impl App {
         self.refresh_control_action_availability();
         // A retained AT id is operable only while the exact target is exported
         // in the current presentation; hidden resources cannot bypass chrome.
-        if !self.build_a11y_tree_update(1.0).nodes.iter().any(|(id, _)| *id == target) { return None; }
+        if !self
+            .build_a11y_tree_update(1.0)
+            .nodes
+            .iter()
+            .any(|(id, _)| *id == target)
+        {
+            return None;
+        }
         let argument = match action {
             Action::Activate | Action::ToggleCheck => Some(None),
             Action::SetValue(value) => Some(Some(value.as_str())),
@@ -6950,14 +7043,13 @@ impl App {
 
         let exported = self.bindings.exported_nodes(&self.node_map);
         let resolved = if self.history.is_some() {
-         self.history_presentation_roots().into_iter().find_map(|root| exported.resolve(root, target))?
+            self.history_presentation_roots()
+                .into_iter()
+                .find_map(|root| exported.resolve(root, target))?
         } else {
-         self
-            .with_native_presentation(|root, _, _, _| {
-                exported.resolve(root, target)
-            })
-            .ok()
-            .flatten()?
+            self.with_native_presentation(|root, _, _, _| exported.resolve(root, target))
+                .ok()
+                .flatten()?
         };
         let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
             A11yTarget::Root => return None,
@@ -6969,9 +7061,21 @@ impl App {
                 semantic_target,
             } => (owner, key_path, ordinal_path, semantic_target, true),
         };
-        let framework = crate::history_mode::embedded::owns_node(self.root_widget.as_ref(), taffy_id, &self.taffy) || self.history.as_ref().is_some_and(|history| history.owns_node(taffy_id, &self.taffy));
-        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(&self.framework_input, framework || self.bindings.owns_document(taffy_id));
-        if framework { self.suspend_history_focus(Some(taffy_id)); }
+        let framework = crate::history_mode::embedded::owns_node(
+            self.root_widget.as_ref(),
+            taffy_id,
+            &self.taffy,
+        ) || self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.owns_node(taffy_id, &self.taffy));
+        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
+            &self.framework_input,
+            framework || self.bindings.owns_document(taffy_id),
+        );
+        if framework {
+            self.suspend_history_focus(Some(taffy_id));
+        }
         let handled = self
             .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
@@ -6986,7 +7090,10 @@ impl App {
         if handled {
             if matches!(action, Action::Focus)
                 || (matches!(action, Action::SetSelection { .. })
-                    && self.inspect_node(taffy_id, |widget| widget.is_focused()).unwrap_or(false)) {
+                    && self
+                        .inspect_node(taffy_id, |widget| widget.is_focused())
+                        .unwrap_or(false))
+            {
                 self.set_focused_node(Some(taffy_id));
             }
             // `Widget::perform_action` is deliberately the same path as a
@@ -6998,7 +7105,11 @@ impl App {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout_dirty = true;
-            if framework { self.refresh_framework_history(self.last_layout_logical.map_or(900.0, |size| size.0)); }
+            if framework {
+                self.refresh_framework_history(
+                    self.last_layout_logical.map_or(900.0, |size| size.0),
+                );
+            }
             return None;
         }
 
@@ -7199,8 +7310,8 @@ impl App {
                     // native accessibility. Resolve only current admissions;
                     // an expired alias must never fall back to a raw layout id.
                     let exported = self.bindings.exported_nodes(&self.node_map);
-                    let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) =
-                        exported.resolve(
+                    let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported
+                        .resolve(
                             self.root_widget.as_ref(),
                             accesskit::NodeId(taffy_raw.saturating_add(1)),
                         )
@@ -7369,7 +7480,11 @@ impl App {
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
-        if self.autofocus_on_structure_change && !self.focus_trap_active && self.history.is_none() && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()) {
+        if self.autofocus_on_structure_change
+            && !self.focus_trap_active
+            && self.history.is_none()
+            && !crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        {
             if focus_reset {
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
@@ -7413,20 +7528,40 @@ impl App {
     #[must_use]
     /// # Panics
     /// Fails closed if the host storage lifetime counter is exhausted.
-    #[allow(clippy::expect_used, reason = "storage identity must fail closed rather than wrap and admit an old owner")]
+    #[allow(
+        clippy::expect_used,
+        reason = "storage identity must fail closed rather than wrap and admit an old owner"
+    )]
     pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
-        self.autosave_generation = self.autosave_generation.checked_add(1).expect("autosave generation exhausted");
+        self.autosave_generation = self
+            .autosave_generation
+            .checked_add(1)
+            .expect("autosave generation exhausted");
         if let Some(history) = &mut self.history {
-            self.node_map.clear(); self.bindings.clear(); self.focused_node = None;
-            history.invalidate_owner(); self.structure_dirty = true;
+            self.node_map.clear();
+            self.bindings.clear();
+            self.focused_node = None;
+            history.invalidate_owner();
+            self.structure_dirty = true;
         }
         self.autosave = Some(autosave);
         self
     }
-    pub(crate) fn history_storage_generation(&self) -> u64 { self.autosave_generation }
-    pub(crate) fn install_app_state_history(&mut self, definition: &'static crate::history_mode::HistoryDefinition) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        if self.records.is_some() { return Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner); }
-        let registration = crate::history_mode::HistoryRegistration::installed_app_state(definition, self.autosave.as_ref(), uuid::Uuid::new_v4())?;
+    pub(crate) fn history_storage_generation(&self) -> u64 {
+        self.autosave_generation
+    }
+    pub(crate) fn install_app_state_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        if self.records.is_some() {
+            return Err(crate::history_mode::HistoryRegistrationError::UnsupportedOwner);
+        }
+        let registration = crate::history_mode::HistoryRegistration::installed_app_state(
+            definition,
+            self.autosave.as_ref(),
+            uuid::Uuid::new_v4(),
+        )?;
         self.install_history(registration)
     }
 
@@ -7486,7 +7621,10 @@ impl App {
     ///
     /// # Panics
     /// Panics if the document generation counter is exhausted, refusing identity reuse.
-    #[allow(clippy::expect_used, reason = "exhausted document generation must fail closed rather than reuse custody")]
+    #[allow(
+        clippy::expect_used,
+        reason = "exhausted document generation must fail closed rather than reuse custody"
+    )]
     #[must_use]
     pub fn with_records(
         mut self,
@@ -7494,10 +7632,16 @@ impl App {
         room_index: automerge::AutoCommit,
     ) -> Self {
         let _entry = self.enter_wake_scope();
-        self.autosave_generation = self.autosave_generation.checked_add(1).expect("document generation exhausted");
+        self.autosave_generation = self
+            .autosave_generation
+            .checked_add(1)
+            .expect("document generation exhausted");
         if let Some(history) = &mut self.history {
-            self.node_map.clear(); self.bindings.clear(); self.focused_node = None;
-            history.invalidate_owner(); self.structure_dirty = true;
+            self.node_map.clear();
+            self.bindings.clear();
+            self.focused_node = None;
+            history.invalidate_owner();
+            self.structure_dirty = true;
         }
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
@@ -7524,7 +7668,10 @@ impl App {
     ///
     /// # Panics
     /// Panics if the document generation counter is exhausted, refusing identity reuse.
-    #[allow(clippy::expect_used, reason = "exhausted document generation must fail closed rather than reuse custody")]
+    #[allow(
+        clippy::expect_used,
+        reason = "exhausted document generation must fail closed rather than reuse custody"
+    )]
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
         let Some(set) = self.records.as_mut() else {
@@ -7540,10 +7687,16 @@ impl App {
         );
         match switched {
             Some(id) => {
-                self.autosave_generation = self.autosave_generation.checked_add(1).expect("document generation exhausted");
+                self.autosave_generation = self
+                    .autosave_generation
+                    .checked_add(1)
+                    .expect("document generation exhausted");
                 if let Some(history) = &mut self.history {
-                    self.node_map.clear(); self.bindings.clear(); self.focused_node = None;
-                    history.invalidate_owner(); self.structure_dirty = true;
+                    self.node_map.clear();
+                    self.bindings.clear();
+                    self.focused_node = None;
+                    history.invalidate_owner();
+                    self.structure_dirty = true;
                 }
                 self.state.rebase_outbound();
                 // Preserve the launcher's unqualified route for the room
@@ -7638,8 +7791,7 @@ impl App {
             if let Err(error) = flush_widget_owned_persistence(
                 self.root_widget.as_mut(),
                 &mut self.component_close_reports,
-            )
-            {
+            ) {
                 tracing::error!(%error, "widget-owned persistence failed during shutdown");
                 eprintln!("tilo: notebook save failed during shutdown: {error}");
             }
@@ -7697,7 +7849,9 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
-        if self.history.is_none() { self.enable_document_history_chrome(); }
+        if self.history.is_none() {
+            self.enable_document_history_chrome();
+        }
         let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
         #[cfg(target_os = "macos")]
         if std::env::var("QOS_PROFILE_WINDOW_NO_ACTIVATE").as_deref() == Ok("1") {
@@ -7719,7 +7873,10 @@ impl App {
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
-        #[allow(clippy::panic, reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario")]
+        #[allow(
+            clippy::panic,
+            reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"
+        )]
         let native_scenario = crate::native_scenario::load_from_env()
             .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
         assert!(
@@ -7830,33 +7987,56 @@ mod occlusion_probe_event_tests {
         };
         assert!(render_probe_event(&pointer));
         let mut retry = crate::render_thread::retry::RenderRetryState::default();
-        assert!(!retry.request_probe(), "ordinary pointer motion adds no redraw");
+        assert!(
+            !retry.request_probe(),
+            "ordinary pointer motion adds no redraw"
+        );
         retry.admitted();
         retry.observe(FrameOutcome::Occluded, Instant::now());
-        assert!(retry.request_probe(), "pointer interaction wakes a blocked surface");
-        for event in [WindowEvent::Occluded(false), WindowEvent::Focused(true),
-            WindowEvent::Resized(winit::dpi::PhysicalSize::new(800,600))] {
+        assert!(
+            retry.request_probe(),
+            "pointer interaction wakes a blocked surface"
+        );
+        for event in [
+            WindowEvent::Occluded(false),
+            WindowEvent::Focused(true),
+            WindowEvent::Resized(winit::dpi::PhysicalSize::new(800, 600)),
+        ] {
             assert!(render_probe_event(&event));
         }
-        for event in [WindowEvent::RedrawRequested, WindowEvent::Occluded(true), WindowEvent::Focused(false)] {
-            assert!(!render_probe_event(&event), "worker redraws must not bypass backoff");
+        for event in [
+            WindowEvent::RedrawRequested,
+            WindowEvent::Occluded(true),
+            WindowEvent::Focused(false),
+        ] {
+            assert!(
+                !render_probe_event(&event),
+                "worker redraws must not bypass backoff"
+            );
         }
     }
 }
 
 fn render_probe_event(event: &WindowEvent) -> bool {
-    matches!(event,
-        WindowEvent::Occluded(false) | WindowEvent::Focused(true)
-        | WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
-        | WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. }
-        | WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. }
-        | WindowEvent::Touch(_) | WindowEvent::Ime(_) | WindowEvent::DroppedFile(_))
+    matches!(
+        event,
+        WindowEvent::Occluded(false)
+            | WindowEvent::Focused(true)
+            | WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. }
+            | WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::Touch(_)
+            | WindowEvent::Ime(_)
+            | WindowEvent::DroppedFile(_)
+    )
 }
 
 fn auxiliary_redraw_allowed(render: Option<&RenderThreadHandle>) -> bool {
     render.is_none_or(|render| {
-        !render.buffers.redraw_deferred()
-            && render.retry.allows(Instant::now())
+        !render.buffers.redraw_deferred() && render.retry.allows(Instant::now())
     })
 }
 
@@ -8195,24 +8375,40 @@ fn draw_frame_content(
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
     if let Some(history) = &mut app.history {
-        history.draw(scene, transform, &mut app.text_renderer, &app.theme, &app.presence_ctx);
+        history.draw(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
     }
-    if app.history.as_ref().is_none_or(|history| history.live_visible()) && app.history_layout.is_none_or(|layout| layout.app_visible) {
-    app.root_widget.native_view_frame_start();
-    app.root_widget.draw_with_presence(
-        scene,
-        transform,
-        &mut app.text_renderer,
-        &app.theme,
-        &app.presence_ctx,
-        &app.permission_ctx,
-    );
+    if app
+        .history
+        .as_ref()
+        .is_none_or(|history| history.live_visible())
+        && app.history_layout.is_none_or(|layout| layout.app_visible)
+    {
+        app.root_widget.native_view_frame_start();
+        app.root_widget.draw_with_presence(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+            &app.permission_ctx,
+        );
     }
     app.presence_ctx.pop_viewport(prev_vp);
     // Widgets whose visual extent escapes their layout box (an open
     // `Dropdown`, a popover) composite above every later-drawn sibling here.
     // No-op by default.
-    if app.history.as_ref().is_none_or(|history| history.live_visible()) && app.history_layout.is_none_or(|layout| layout.app_visible) {
+    if app
+        .history
+        .as_ref()
+        .is_none_or(|history| history.live_visible())
+        && app.history_layout.is_none_or(|layout| layout.app_visible)
+    {
         app.root_widget.draw_overlay(
             scene,
             transform,
@@ -8497,7 +8693,11 @@ fn run_layout_pass(
                 // Anonymous retained widgets keep their own state. Resolve a
                 // current admitted focus path; the old NodeId is invalid here.
                 app.focused_node = unsafe {
-                    CompositionFocus::current(&app.node_map, &app.bindings, Some(&app.focusable_order))
+                    CompositionFocus::current(
+                        &app.node_map,
+                        &app.bindings,
+                        Some(&app.focusable_order),
+                    )
                 };
             }
             current_root = app
@@ -8551,12 +8751,21 @@ fn run_layout_pass(
     // NativeView measurement is independent of platform attachment. Mount only
     // the successfully settled tree; mount publishes its retained geometry.
     if (structure_rebuilt || recomposed)
-        && app.history.as_ref().is_none_or(|history| history.live_interactive())
+        && app
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_interactive())
         && let Some(host) = native_host
     {
         app.root_widget.mount_native_views(host);
     }
-    if app.history.as_ref().is_some_and(|history| !history.live_interactive()) { app.root_widget.unmount_native_views(); }
+    if app
+        .history
+        .as_ref()
+        .is_some_and(|history| !history.live_interactive())
+    {
+        app.root_widget.unmount_native_views();
+    }
     app.last_layout_logical = Some(logical);
     app.layout_dirty = false;
     if must_compute || recomposed {
@@ -8698,10 +8907,15 @@ fn create_window_render_prepared(
     };
     // After this, every GPU call happens on its render worker.
     let window_id = window.id();
-    let render = spawn_render_thread(render_cx, surface, renderer, Arc::new(move || {
-        // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
-        let _ = proxy.send_event(UserEvent::RenderReady(window_id));
-    }))?;
+    let render = spawn_render_thread(
+        render_cx,
+        surface,
+        renderer,
+        Arc::new(move || {
+            // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
+            let _ = proxy.send_event(UserEvent::RenderReady(window_id));
+        }),
+    )?;
     tilo_startup_metrics::mark("window-render-context-done");
     Ok(render)
 }
@@ -8781,7 +8995,11 @@ impl AppHandler {
                 }
             }
         }
-        self.render = Some(create_window_render(window, false, self.a11y_proxy.clone())?);
+        self.render = Some(create_window_render(
+            window,
+            false,
+            self.a11y_proxy.clone(),
+        )?);
         Ok(())
     }
 
@@ -8942,14 +9160,21 @@ impl AppHandler {
         };
         while let Ok(outcome) = render.frame_complete.try_recv() {
             match outcome {
-                FrameOutcome::Presented | FrameOutcome::Reconfigured | FrameOutcome::Skipped | FrameOutcome::Occluded => {
+                FrameOutcome::Presented
+                | FrameOutcome::Reconfigured
+                | FrameOutcome::Skipped
+                | FrameOutcome::Occluded => {
                     render.retry.observe(outcome, Instant::now());
                 }
                 FrameOutcome::SurfaceGone => return false,
             }
         }
-        match crate::render_thread::prepare_frame(&mut render.retry, &mut render.buffers, Instant::now()) {
-            Ok(true) => {},
+        match crate::render_thread::prepare_frame(
+            &mut render.retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
+            Ok(true) => {}
             Ok(false) => return true,
             Err(_) => return false,
         }
@@ -9316,14 +9541,21 @@ impl AppHandler {
         };
         while let Ok(outcome) = render.frame_complete.try_recv() {
             match outcome {
-                FrameOutcome::Presented | FrameOutcome::Reconfigured | FrameOutcome::Skipped | FrameOutcome::Occluded => {
+                FrameOutcome::Presented
+                | FrameOutcome::Reconfigured
+                | FrameOutcome::Skipped
+                | FrameOutcome::Occluded => {
                     render.retry.observe(outcome, Instant::now());
                 }
                 FrameOutcome::SurfaceGone => return false,
             }
         }
-        match crate::render_thread::prepare_frame(&mut render.retry, &mut render.buffers, Instant::now()) {
-            Ok(true) => {},
+        match crate::render_thread::prepare_frame(
+            &mut render.retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
+            Ok(true) => {}
             Ok(false) => return true,
             Err(_) => return false,
         }
@@ -9435,10 +9667,18 @@ impl AppHandler {
     }
 
     fn visible_auxiliary_needs_shared_root(&self) -> bool {
-        self.floating_windows.iter().any(|surface| !surface.suspended
-            && surface.render.as_ref().is_none_or(|render| !render.retry.known_occluded()))
-            || self.audience_presentation.as_ref().is_some_and(|audience|
-                audience.render.as_ref().is_none_or(|render| !render.retry.known_occluded()))
+        self.floating_windows.iter().any(|surface| {
+            !surface.suspended
+                && surface
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.known_occluded())
+        }) || self.audience_presentation.as_ref().is_some_and(|audience| {
+            audience
+                .render
+                .as_ref()
+                .is_none_or(|render| !render.retry.known_occluded())
+        })
     }
 
     /// Split out of `window_event`'s `RedrawRequested` arm (`clippy::too_many_lines`).
@@ -9479,7 +9719,9 @@ impl AppHandler {
             tilo_startup_metrics::mark("first-redraw-init-render-done");
         }
         let visible_sibling = self.visible_auxiliary_needs_shared_root();
-        if visible_sibling { self.primary_retry.keep_shared_cadence(Instant::now()); }
+        if visible_sibling {
+            self.primary_retry.keep_shared_cadence(Instant::now());
+        }
         let Some(render) = self.render.as_mut() else {
             return;
         };
@@ -9492,10 +9734,18 @@ impl AppHandler {
             match outcome {
                 FrameOutcome::Presented => {
                     self.last_primary_frame_presented = self.primary_frames_completed;
-                    self.primary_retry.observe_for_shared_root(outcome, Instant::now(), visible_sibling);
+                    self.primary_retry.observe_for_shared_root(
+                        outcome,
+                        Instant::now(),
+                        visible_sibling,
+                    );
                 }
                 FrameOutcome::Reconfigured | FrameOutcome::Skipped | FrameOutcome::Occluded => {
-                    self.primary_retry.observe_for_shared_root(outcome, Instant::now(), visible_sibling);
+                    self.primary_retry.observe_for_shared_root(
+                        outcome,
+                        Instant::now(),
+                        visible_sibling,
+                    );
                 }
                 FrameOutcome::SurfaceGone => {
                     surface_gone = true;
@@ -9551,7 +9801,11 @@ impl AppHandler {
         }
         // Do not consume sync/layout/dirty state unless a finite render buffer
         // is available. Worker completion wakes this window if admission defers.
-        match crate::render_thread::prepare_frame(&mut self.primary_retry, &mut render.buffers, Instant::now()) {
+        match crate::render_thread::prepare_frame(
+            &mut self.primary_retry,
+            &mut render.buffers,
+            Instant::now(),
+        ) {
             Ok(true) => {}
             Ok(false) => return,
             Err(_) => {
@@ -9800,7 +10054,7 @@ impl AppHandler {
 
         let mut native_main_stages = (self.native_input_origin.is_some()
             && crate::render_thread::timing::enabled())
-            .then(MainStages::default);
+        .then(MainStages::default);
         record_main_stage(&mut native_main_stages, MainStage::BeforeProfilerCommit);
 
         // Folds in any `handle_event` time banked since last frame.
@@ -9818,13 +10072,18 @@ impl AppHandler {
                         // Capture after drawing: layout may clamp scroll state.
                         // Input-time effects alone cannot prove the frame used it.
                         "state": app.native_input_snapshot(),
-                    })
+                    }),
                 );
             }
         } else {
             record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
         }
-        crate::webview::frame_trace::finish_scene(app.profiler.as_ref().and_then(|p| p.history().back()).map(|sample| sample.frame));
+        crate::webview::frame_trace::finish_scene(
+            app.profiler
+                .as_ref()
+                .and_then(|p| p.history().back())
+                .map(|sample| sample.frame),
+        );
         record_main_stage(&mut native_main_stages, MainStage::AfterNativeFrameLog);
 
         if app.debug_mode {
@@ -9913,7 +10172,7 @@ impl AppHandler {
                     "redraw_enter_us": entered.duration_since(origin).as_micros(),
                     "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
                     "submit_attempt_us": origin.elapsed().as_micros(),
-                })
+                }),
             );
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
@@ -9927,19 +10186,23 @@ impl AppHandler {
         );
         if let Some(bounds) = send_bounds {
             crate::native_scenario::log::emit_json(
-                "qos-native-send", serde_json::json!({
-                "cpu_frame_id": send_cpu_frame_id,
-                "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
-                "before_host_lo_s": bounds.before.map(|b| b.lo_s),
-                "before_host_hi_s": bounds.before.map(|b| b.hi_s),
-                "after_host_lo_s": bounds.after.map(|b| b.lo_s),
-                "after_host_hi_s": bounds.after.map(|b| b.hi_s),
-                "send_ok": send_result.is_ok(),
-            }));
+                "qos-native-send",
+                serde_json::json!({
+                    "cpu_frame_id": send_cpu_frame_id,
+                    "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                    "before_host_lo_s": bounds.before.map(|b| b.lo_s),
+                    "before_host_hi_s": bounds.before.map(|b| b.hi_s),
+                    "after_host_lo_s": bounds.after.map(|b| b.lo_s),
+                    "after_host_hi_s": bounds.after.map(|b| b.hi_s),
+                    "send_ok": send_result.is_ok(),
+                }),
+            );
         }
         if let Some(stages) = native_main_stages {
             crate::native_scenario::log::emit_json(
-                "qos-native-main-stages", stages.row(send_cpu_frame_id));
+                "qos-native-main-stages",
+                stages.row(send_cpu_frame_id),
+            );
         }
         if send_result.is_err() {
             tracing::error!("ui-render thread receiver closed; exiting");
@@ -10003,7 +10266,10 @@ impl AppHandler {
         let event = other;
         let app = &mut self.app;
         let history_input = app.history_controls_event(&event, window.scale_factor());
-        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(&app.framework_input, history_input);
+        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
+            &app.framework_input,
+            history_input,
+        );
         let detected_interaction = if self.dispatching_touch_pointer {
             None
         } else {
@@ -10191,7 +10457,9 @@ impl AppHandler {
                     let current_focus_idx = app
                         .focused_node
                         .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                    let owned_target = app.focused_node.is_some_and(|node| app.bindings.owns_document(node));
+                    let owned_target = app
+                        .focused_node
+                        .is_some_and(|node| app.bindings.owns_document(node));
                     let entry = if let Some(binding) = app
                         .focused_node
                         .and_then(|node| app.bindings.binding_for(node))
@@ -10200,8 +10468,18 @@ impl AppHandler {
                             .history_request(&mut app.state.doc, request)
                             .ok()
                             .flatten()
-                    } else if let Some(owner) = app.focused_node.and_then(|node| app.bindings.legacy_for(node)) {
-                        crate::bound_dispatch::legacy_history_request(&owner, request, &app.permission_ctx, &app.local_author).ok().flatten()
+                    } else if let Some(owner) = app
+                        .focused_node
+                        .and_then(|node| app.bindings.legacy_for(node))
+                    {
+                        crate::bound_dispatch::legacy_history_request(
+                            &owner,
+                            request,
+                            &app.permission_ctx,
+                            &app.local_author,
+                        )
+                        .ok()
+                        .flatten()
                     } else {
                         match request {
                             crate::undo::UndoRequest::Undo => app.state.undo_as(
@@ -10612,24 +10890,54 @@ impl AppHandler {
     ) {
         let _entry = self.app.enter_wake_scope();
         if render_probe_event(&event) {
-            let auxiliary_event = self.floating_windows.iter().any(|surface| surface.window.id() == window_id)
-                || self.audience_presentation.as_ref().is_some_and(|audience| audience.window.id() == window_id);
+            let auxiliary_event = self
+                .floating_windows
+                .iter()
+                .any(|surface| surface.window.id() == window_id)
+                || self
+                    .audience_presentation
+                    .as_ref()
+                    .is_some_and(|audience| audience.window.id() == window_id);
             if auxiliary_event && self.primary_retry.request_probe() {
-                if let Some(primary) = &self.window { primary.request_redraw(); }
-            }
-
-            if self.window.as_ref().is_some_and(|window| window.id() == window_id) {
-                if self.primary_retry.request_probe() {
-                    if let Some(window) = &self.window { window.request_redraw(); }
+                if let Some(primary) = &self.window {
+                    primary.request_redraw();
                 }
             }
-            if let Some(surface) = self.floating_windows.iter_mut().find(|surface| surface.window.id() == window_id) {
-                if surface.render.as_mut().is_some_and(|render| render.retry.request_probe()) {
+
+            if self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+            {
+                if self.primary_retry.request_probe() {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
+            }
+            if let Some(surface) = self
+                .floating_windows
+                .iter_mut()
+                .find(|surface| surface.window.id() == window_id)
+            {
+                if surface
+                    .render
+                    .as_mut()
+                    .is_some_and(|render| render.retry.request_probe())
+                {
                     surface.window.request_redraw();
                 }
             }
-            if let Some(audience) = self.audience_presentation.as_mut().filter(|audience| audience.window.id() == window_id) {
-                if audience.render.as_mut().is_some_and(|render| render.retry.request_probe()) {
+            if let Some(audience) = self
+                .audience_presentation
+                .as_mut()
+                .filter(|audience| audience.window.id() == window_id)
+            {
+                if audience
+                    .render
+                    .as_mut()
+                    .is_some_and(|render| render.retry.request_probe())
+                {
                     audience.window.request_redraw();
                 }
             }
@@ -10776,16 +11084,14 @@ impl AppHandler {
             self.dispatching_touch_pointer = false;
         }
         match event {
-            WindowEvent::CloseRequested => {
-                match self.app.root_widget.on_window_close_requested() {
-                    crate::widget::WindowCloseAdmission::Allow => event_loop.exit(),
-                    crate::widget::WindowCloseAdmission::Defer => {
-                        self.app.needs_sync = true;
-                        self.app.layout_dirty = true;
-                        window.request_redraw();
-                    }
+            WindowEvent::CloseRequested => match self.app.root_widget.on_window_close_requested() {
+                crate::widget::WindowCloseAdmission::Allow => event_loop.exit(),
+                crate::widget::WindowCloseAdmission::Defer => {
+                    self.app.needs_sync = true;
+                    self.app.layout_dirty = true;
+                    window.request_redraw();
                 }
-            }
+            },
             WindowEvent::Resized(_size) => {
                 // Handled lazily on the worker via the next `RenderRequest`'s
                 // dimensions; main only needs to drive a redraw.
@@ -10870,7 +11176,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             "physical_height": size.height,
                             "pointer_passthrough": self.native_input_pointer_passthrough,
                             "input_route_isolation": self.native_input_route_isolation,
-                        })
+                        }),
                     );
                 }
                 self.native_input_origin.get_or_insert(packet.origin);
@@ -10890,7 +11196,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         "dispatch_host_lo_s": dispatch_host.map(|bounds| bounds.lo_s),
                         "dispatch_host_hi_s": dispatch_host.map(|bounds| bounds.hi_s),
                         "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
-                    })
+                    }),
                 );
                 effect_before = self
                     .app
@@ -10968,7 +11274,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
                             let app_ref: &mut App = &mut self.app;
-                            adapter.update_if_active(|| crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale)));
+                            adapter.update_if_active(|| {
+                                crate::accesskit_bridge::native_tree_update(
+                                    app_ref.build_a11y_tree_update(scale),
+                                )
+                            });
                         }
                         window.request_redraw();
                     }
@@ -11012,7 +11322,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 "qos-native-effect",
                 serde_json::json!({
                     "id": id, "before": before, "after": self.app.native_input_snapshot(),
-                })
+                }),
             );
         }
     }
@@ -11063,7 +11373,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         #[cfg(target_os = "linux")]
         let window_attributes = {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("TILO_PACKAGE_ID").or_else(|_| std::env::var("QOS_PACKAGE_ID")).ok();
+            let package_id = std::env::var("TILO_PACKAGE_ID")
+                .or_else(|_| std::env::var("QOS_PACKAGE_ID"))
+                .ok();
             let app_id = resolve_app_id(
                 self.app.window_app_id.as_deref().or(package_id.as_deref()),
                 std::env::current_exe()
@@ -11218,13 +11530,25 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let auxiliary_retry_due =
             auxiliary_retry_at.is_some_and(|deadline| deadline <= Instant::now());
         let retry_now = Instant::now();
-        let primary_blocked_until = self.primary_retry.occlusion_blocked(retry_now)
-            .then(|| self.primary_retry.deadline()).flatten();
+        let primary_blocked_until = self
+            .primary_retry
+            .occlusion_blocked(retry_now)
+            .then(|| self.primary_retry.deadline())
+            .flatten();
         let any_render_available = primary_blocked_until.is_none()
-            || self.floating_windows.iter().any(|surface| !surface.suspended
-                && surface.render.as_ref().is_none_or(|render| !render.retry.occlusion_blocked(retry_now)))
-            || self.audience_presentation.as_ref().is_some_and(|audience|
-                audience.render.as_ref().is_none_or(|render| !render.retry.occlusion_blocked(retry_now)));
+            || self.floating_windows.iter().any(|surface| {
+                !surface.suspended
+                    && surface
+                        .render
+                        .as_ref()
+                        .is_none_or(|render| !render.retry.occlusion_blocked(retry_now))
+            })
+            || self.audience_presentation.as_ref().is_some_and(|audience| {
+                audience
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.occlusion_blocked(retry_now))
+            });
         let retry_at = self.primary_retry.deadline();
         let retry_due = retry_at.is_some_and(|deadline| deadline <= Instant::now());
         let redraw_deferred = self
@@ -11250,7 +11574,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     "name": scenario.name, "steps": scenario.steps.len(),
                     "warmup_steps": scenario.warmup_steps, "interval_us": scenario.interval_us,
                     "event": "started_after_first_worker_presentation",
-                })
+                }),
             );
             let proxy = self.a11y_proxy.clone();
             if let Err(error) = crate::native_scenario::spawn(scenario, move |packet| {
@@ -11260,7 +11584,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }) {
                 crate::native_scenario::log::emit_json(
                     "qos-native-scenario",
-                    serde_json::json!({"event":"failed", "error":error})
+                    serde_json::json!({"event":"failed", "error":error}),
                 );
                 event_loop.exit();
             }
@@ -11357,7 +11681,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     serde_json::json!({
                         "after_cpu_frame": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
                         "at_us": origin.elapsed().as_micros(),
-                    })
+                    }),
                 );
             }
             app.commit_action();
@@ -11464,9 +11788,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // ~60 Hz tick only while something no winit event surfaces on its
         // own needs draining — a live collab socket, or a root still
         // wanting another frame.
-        let awaiting_floating_pixels = self.floating_windows.iter().any(|surface|
-            !surface.suspended && !surface.adopted
-            && surface.render.as_ref().is_none_or(|render| !render.retry.occlusion_blocked(Instant::now())));
+        let awaiting_floating_pixels = self.floating_windows.iter().any(|surface| {
+            !surface.suspended
+                && !surface.adopted
+                && surface
+                    .render
+                    .as_ref()
+                    .is_none_or(|render| !render.retry.occlusion_blocked(Instant::now()))
+        });
         let retry_at = retry_at.into_iter().chain(auxiliary_retry_at).min();
         // Widget deadlines are serviced by sync/redraw. While occluded they can
         // be delayed by at most the 250ms probe cap; independent history, record,
@@ -11482,8 +11811,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             retry_due: retry_due || auxiliary_retry_due,
         };
         match crate::render_thread::retry::next_wake(
-            Instant::now(), primary_blocked_until, any_render_available,
-            demand, scheduled_deadline, retry_at, animation_deadline,
+            Instant::now(),
+            primary_blocked_until,
+            any_render_available,
+            demand,
+            scheduled_deadline,
+            retry_at,
+            animation_deadline,
         ) {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -11792,7 +12126,10 @@ mod pointer_broadcast_tests {
         let root = Box::new(crate::widget::Text::new("t"));
         let mut app = App::new(app_state, root);
         let route = crate::collaboration::RouteSpec::app("snapshot-fixture", uuid::Uuid::new_v4());
-        app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness { route: route.clone(), epoch: uuid::Uuid::new_v4() });
+        app.bound_broker_route_for_test = Some(crate::collaboration::PrimaryRouteWitness {
+            route: route.clone(),
+            epoch: uuid::Uuid::new_v4(),
+        });
         {
             let doc = &mut app.state_mut_for_test().doc;
             let Ok(Some((automerge::Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "m") else {
@@ -12728,17 +13065,25 @@ mod focus_trap_tests {
         use crate::widget::{Column, Container};
         let root = Column::new()
             .push(Box::new(Button::new("background", "Background", None)))
-            .push(Box::new(Container::new().with_focus_trap().with_child(Box::new(TwoKids::new()))));
+            .push(Box::new(
+                Container::new()
+                    .with_focus_trap()
+                    .with_child(Box::new(TwoKids::new())),
+            ));
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
         assert!(app.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
-        assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0,0.0,100.0,100.0))));
-        let first=app.focusable_order[0];let second=app.focusable_order[1];
+        assert!(app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 100.0, 100.0))));
+        let first = app.focusable_order[0];
+        let second = app.focusable_order[1];
         app.set_focused_node(Some(first));
-        assert!(app.focus_tab(false));assert_eq!(app.focused_node,Some(second));
-        assert!(app.focus_tab(false));assert_eq!(app.focused_node,Some(first));
-        assert!(app.focus_tab(true));assert_eq!(app.focused_node,Some(second));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(second));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(first));
+        assert!(app.focus_tab(true));
+        assert_eq!(app.focused_node, Some(second));
     }
 
     #[test]

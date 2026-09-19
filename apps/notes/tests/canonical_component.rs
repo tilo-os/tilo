@@ -30,11 +30,16 @@ fn new_is_empty_schema_ready_and_instances_have_distinct_records() {
 fn existing_rich_record_projects_real_resources_without_writing() {
     fn collect(widget: &dyn Widget, doc: &AutoCommit, resources: &mut Vec<tilo_actions::Resource>) {
         resources.extend(widget.resources(doc));
-        for child in widget.children() { collect(child, doc, resources); }
+        for child in widget.children() {
+            collect(child, doc, resources);
+        }
     }
     fn has_resource(widget: &dyn Widget, doc: &AutoCommit, id: &str) -> bool {
         widget.resource(doc, id).is_some()
-            || widget.children().iter().any(|child| has_resource(*child, doc, id))
+            || widget
+                .children()
+                .iter()
+                .any(|child| has_resource(*child, doc, id))
     }
     let f = LegacyFixture::rich();
     let checkout = imported(&f);
@@ -68,7 +73,11 @@ fn existing_rich_record_projects_real_resources_without_writing() {
     collect(&a, &outer, &mut resources);
     assert!(!resources.is_empty());
     for page in [f.root, f.child, f.empty] {
-        assert!(has_resource(&a, &outer, &notes::actions::page_resource_id(page)));
+        assert!(has_resource(
+            &a,
+            &outer,
+            &notes::actions::page_resource_id(page)
+        ));
     }
     f.records
         .read(&checkout.id, |doc| {

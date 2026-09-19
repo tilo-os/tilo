@@ -2184,43 +2184,43 @@ fn export_failure_details_are_available_to_keyboard_and_screen_readers() {
 }
 
 #[test]
-    fn a_long_export_failure_wraps_above_the_footer_and_buttons() {
-        let (mut app, _doc) = app_sized(1280.0, 800.0);
-        app.presentation.export_open = true;
-        let reason = "The selected encoder rejected the profile because the source contains an unsupported colour space; choose a compatible profile or install an encoder that supports this footage.";
-        app.export_status = ExportStatus::Failed {
-            reason: reason.into(),
-        };
-        // The one layout the event path and the draw pass both resolve from
-        // the current state: the failure lines fill the status slot, which
-        // sits clear of the size line above it and the action row below it.
-        let mut tr = TextRenderer::new();
-        let layout = app.export_layout(&mut tr, &Theme::dark());
-        let ty = layout.type_sizes;
-        let lines = tr.clamp_to_lines(reason, ty.xs, layout.modal.body.width() as f32, 2);
-        assert_eq!(lines.len(), 2, "the long reason occupies the two-line slot");
-        let line_h = f64::from(tr.measure("Hg", ty.xs, None).1);
-        let info_bottom = layout.info_top + f64::from(tr.measure("Hg", ty.sm, None).1);
-        let error_top = layout.status.y0;
-        let error_bottom = layout.status.y0 + 2.0 * line_h;
-        assert!(
-            error_top >= info_bottom,
-            "the wrapped failure overlaps the footer metadata: {error_top} < {info_bottom}"
-        );
-        assert!(
-            error_bottom <= layout.status.y1 + 1e-6,
-            "two failure lines do not fit the status slot: {error_bottom} > {}",
-            layout.status.y1
-        );
-        assert!(
-            layout.status.y1 <= layout.cancel.y0,
-            "the status slot overlaps the footer buttons: {} > {}",
-            layout.status.y1,
-            layout.cancel.y0
-        );
-        // Exercise the real Vello draw pass as well as its layout math.
-        render(&mut app);
-    }
+fn a_long_export_failure_wraps_above_the_footer_and_buttons() {
+    let (mut app, _doc) = app_sized(1280.0, 800.0);
+    app.presentation.export_open = true;
+    let reason = "The selected encoder rejected the profile because the source contains an unsupported colour space; choose a compatible profile or install an encoder that supports this footage.";
+    app.export_status = ExportStatus::Failed {
+        reason: reason.into(),
+    };
+    // The one layout the event path and the draw pass both resolve from
+    // the current state: the failure lines fill the status slot, which
+    // sits clear of the size line above it and the action row below it.
+    let mut tr = TextRenderer::new();
+    let layout = app.export_layout(&mut tr, &Theme::dark());
+    let ty = layout.type_sizes;
+    let lines = tr.clamp_to_lines(reason, ty.xs, layout.modal.body.width() as f32, 2);
+    assert_eq!(lines.len(), 2, "the long reason occupies the two-line slot");
+    let line_h = f64::from(tr.measure("Hg", ty.xs, None).1);
+    let info_bottom = layout.info_top + f64::from(tr.measure("Hg", ty.sm, None).1);
+    let error_top = layout.status.y0;
+    let error_bottom = layout.status.y0 + 2.0 * line_h;
+    assert!(
+        error_top >= info_bottom,
+        "the wrapped failure overlaps the footer metadata: {error_top} < {info_bottom}"
+    );
+    assert!(
+        error_bottom <= layout.status.y1 + 1e-6,
+        "two failure lines do not fit the status slot: {error_bottom} > {}",
+        layout.status.y1
+    );
+    assert!(
+        layout.status.y1 <= layout.cancel.y0,
+        "the status slot overlaps the footer buttons: {} > {}",
+        layout.status.y1,
+        layout.cancel.y0
+    );
+    // Exercise the real Vello draw pass as well as its layout math.
+    render(&mut app);
+}
 
 #[test]
 fn ctrl_s_saves_and_ctrl_shift_s_always_asks_where() {
@@ -2443,90 +2443,90 @@ fn a_cancelled_chooser_clears_the_notice_and_abandons_a_queued_open() {
 }
 
 #[test]
-    fn the_shortcut_sheet_has_room_for_every_shortcut_it_lists() {
-        // The sheet's card was a fixed height with a fixed column split, and
-        // the row loop simply stops drawing when it runs out of card. Adding
-        // the project shortcuts pushed the last two View rows off the bottom —
-        // silently, with no error and no clipped glyph to notice. A sheet that
-        // is missing shortcuts is worse than no sheet, because it is the one
-        // place a user goes to find out what exists.
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let ty = dialog_type(&tr, &theme);
-        let m = HelpMetrics::measure(&mut tr, &theme, ty);
-        let (split, _) = help_columns(true, m);
-        assert!(
-            split > 0 && split < SHORTCUTS.len(),
-            "both columns carry groups"
-        );
+fn the_shortcut_sheet_has_room_for_every_shortcut_it_lists() {
+    // The sheet's card was a fixed height with a fixed column split, and
+    // the row loop simply stops drawing when it runs out of card. Adding
+    // the project shortcuts pushed the last two View rows off the bottom —
+    // silently, with no error and no clipped glyph to notice. A sheet that
+    // is missing shortcuts is worse than no sheet, because it is the one
+    // place a user goes to find out what exists.
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    let ty = dialog_type(&tr, &theme);
+    let m = HelpMetrics::measure(&mut tr, &theme, ty);
+    let (split, _) = help_columns(true, m);
+    assert!(
+        split > 0 && split < SHORTCUTS.len(),
+        "both columns carry groups"
+    );
 
-        // The card is sized from that, and every row must land inside the
-        // body the frame gave it — the one layout the event path and the
-        // draw pass both resolve, not re-derived from the table.
-        let mut app = app_with_sample();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.navigation.help_open = true;
-        let layout = app.help_layout(&mut tr, &theme);
+    // The card is sized from that, and every row must land inside the
+    // body the frame gave it — the one layout the event path and the
+    // draw pass both resolve, not re-derived from the table.
+    let mut app = app_with_sample();
+    app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    app.navigation.help_open = true;
+    let layout = app.help_layout(&mut tr, &theme);
+    assert!(
+        !layout.modal.body_overflows,
+        "a 1280x800 window holds the whole sheet"
+    );
+    assert_eq!(layout.max_scroll, 0.0, "nothing to scroll");
+    render(&mut app);
+    assert_eq!(layout.groups.len(), SHORTCUTS.len());
+    let body = layout.modal.body;
+    let mut columns = std::collections::BTreeSet::new();
+    for ((group, rows), g) in SHORTCUTS.iter().zip(&layout.groups) {
+        columns.insert(g.heading.x0.to_bits());
         assert!(
-            !layout.modal.body_overflows,
-            "a 1280x800 window holds the whole sheet"
+            g.heading.y0 >= body.y0 && g.heading.y1 <= body.y1 + 1e-6,
+            "{group}: the heading falls off the body ({:?} vs {body:?})",
+            g.heading,
         );
-        assert_eq!(layout.max_scroll, 0.0, "nothing to scroll");
-        render(&mut app);
-        assert_eq!(layout.groups.len(), SHORTCUTS.len());
-        let body = layout.modal.body;
-        let mut columns = std::collections::BTreeSet::new();
-        for ((group, rows), g) in SHORTCUTS.iter().zip(&layout.groups) {
-            columns.insert(g.heading.x0.to_bits());
+        assert_eq!(g.rows.len(), rows.len(), "{group}: one band per row");
+        for ((combo, _), row) in rows.iter().zip(&g.rows) {
             assert!(
-                g.heading.y0 >= body.y0 && g.heading.y1 <= body.y1 + 1e-6,
-                "{group}: the heading falls off the body ({:?} vs {body:?})",
-                g.heading,
+                row.y0 >= body.y0 && row.y1 <= body.y1 + 1e-6,
+                "{group} / {combo} falls off the body ({row:?} vs {body:?})",
             );
-            assert_eq!(g.rows.len(), rows.len(), "{group}: one band per row");
-            for ((combo, _), row) in rows.iter().zip(&g.rows) {
-                assert!(
-                    row.y0 >= body.y0 && row.y1 <= body.y1 + 1e-6,
-                    "{group} / {combo} falls off the body ({row:?} vs {body:?})",
-                );
-                assert!(
-                    row.x0 + layout.what_dx < row.x1,
-                    "{group} / {combo}: the description column starts past the row",
-                );
-            }
-        }
-        assert_eq!(columns.len(), 2, "a 1280px sheet lays out two columns");
-
-        // And the sheet a reader hears is the same list, whole — plus the one
-        // extra node the screen has no equivalent element for: the sheet's
-        // "Esc or ? to close" line is an instruction to the eye and a real
-        // Close button to a reader, which is the same affordance, not a
-        // tidier claim.
-        let node = app.a11y_help_sheet();
-        let rows: usize = SHORTCUTS.iter().map(|(_, r)| r.len()).sum();
-        assert_eq!(
-            node.children.len(),
-            SHORTCUTS.len() + rows + 1,
-            "every group, every row, and the close control",
-        );
-        // Nothing is exported that the sheet does not paint.
-        for (group, group_rows) in SHORTCUTS {
             assert!(
-                node.children
-                    .iter()
-                    .any(|n| n.name.as_deref() == Some(group)),
-                "the {group} group reaches a reader",
+                row.x0 + layout.what_dx < row.x1,
+                "{group} / {combo}: the description column starts past the row",
             );
-            for (combo, what) in group_rows.iter() {
-                assert!(
-                    node.children.iter().any(|n| {
-                        n.name.as_deref() == Some(*what) && n.value.as_deref() == Some(*combo)
-                    }),
-                    "{combo} / {what} reaches a reader",
-                );
-            }
         }
     }
+    assert_eq!(columns.len(), 2, "a 1280px sheet lays out two columns");
+
+    // And the sheet a reader hears is the same list, whole — plus the one
+    // extra node the screen has no equivalent element for: the sheet's
+    // "Esc or ? to close" line is an instruction to the eye and a real
+    // Close button to a reader, which is the same affordance, not a
+    // tidier claim.
+    let node = app.a11y_help_sheet();
+    let rows: usize = SHORTCUTS.iter().map(|(_, r)| r.len()).sum();
+    assert_eq!(
+        node.children.len(),
+        SHORTCUTS.len() + rows + 1,
+        "every group, every row, and the close control",
+    );
+    // Nothing is exported that the sheet does not paint.
+    for (group, group_rows) in SHORTCUTS {
+        assert!(
+            node.children
+                .iter()
+                .any(|n| n.name.as_deref() == Some(group)),
+            "the {group} group reaches a reader",
+        );
+        for (combo, what) in group_rows.iter() {
+            assert!(
+                node.children.iter().any(|n| {
+                    n.name.as_deref() == Some(*what) && n.value.as_deref() == Some(*combo)
+                }),
+                "{combo} / {what} reaches a reader",
+            );
+        }
+    }
+}
 
 #[test]
 fn split_shortcut_mutates_the_crdt_timeline() {
@@ -3340,111 +3340,111 @@ fn a_video_clip_dragged_over_an_audio_lane_keeps_its_own_track() {
 // ---- track lock -------------------------------------------------------
 
 #[test]
-    fn the_header_lock_pill_locks_a_track_and_blocks_its_edits() {
-        let (mut app, mut doc) = app_and_doc();
-        let r = app.regions();
-        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let header = app.track_head_rect(&r, &lane);
-        let pill = app.lock_pill_rect(header);
-        assert!(
-            header.contains(pill.center()),
-            "the lock pill sits inside the track header"
-        );
-        assert!(
-            pill.x1 <= app.mute_pill_rect(header).x0,
-            "the lock pill sits clear of the mute pill",
-        );
-        // Click the pill through the real press path.
-        click(&mut app, &mut doc, pill.center().x, pill.center().y);
-        assert!(
-            VideoDoc::load_project(&doc)
-                .track(tid)
-                .map(|t| t.locked)
-                .unwrap_or(false),
-            "the pill wrote the lock to the CRDT",
-        );
-        // A press on a clip of that track selects it but arms no edit drag.
-        let cid = app
-            .project
-            .clips_on(tid)
-            .first()
-            .map(|c| c.id)
-            .expect("a clip on the track");
-        let start_before = app.project.clip(cid).unwrap().start;
-        let cr = clip_screen_rect(&app, &r, cid);
-        move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
-        press(&mut app, &mut doc);
-        assert_eq!(
-            app.selected(),
-            Some(cid),
-            "a locked clip can still be selected"
-        );
-        assert!(
-            app.drag.is_none(),
-            "but no move/trim drag begins on a locked track"
-        );
-        move_to(&mut app, &mut doc, cr.center().x + 90.0, cr.center().y);
-        release(&mut app, &mut doc);
-        assert_eq!(
-            VideoDoc::load_project(&doc).clip(cid).map(|c| c.start),
-            Some(start_before),
-            "dragging a locked clip does not move it",
-        );
-        // Nor do the keyboard edits.
-        dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
-        assert!(
-            VideoDoc::load_project(&doc).clip(cid).is_some(),
-            "Delete does not remove a clip on a locked track",
-        );
-        dispatch(&mut app, &mut doc, char_ev("s"));
-        let after_split = VideoDoc::load_project(&doc);
-        assert_eq!(
-            after_split.clips_on(tid).len(),
-            app.project.clips_on(tid).len(),
-            "S does not split a clip on a locked track",
-        );
-        assert_eq!(
-            after_split.clip(cid).map(|c| c.start),
-            Some(start_before),
-            "and an arrow nudge leaves it alone too",
-        );
-    }
+fn the_header_lock_pill_locks_a_track_and_blocks_its_edits() {
+    let (mut app, mut doc) = app_and_doc();
+    let r = app.regions();
+    let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+    let header = app.track_head_rect(&r, &lane);
+    let pill = app.lock_pill_rect(header);
+    assert!(
+        header.contains(pill.center()),
+        "the lock pill sits inside the track header"
+    );
+    assert!(
+        pill.x1 <= app.mute_pill_rect(header).x0,
+        "the lock pill sits clear of the mute pill",
+    );
+    // Click the pill through the real press path.
+    click(&mut app, &mut doc, pill.center().x, pill.center().y);
+    assert!(
+        VideoDoc::load_project(&doc)
+            .track(tid)
+            .map(|t| t.locked)
+            .unwrap_or(false),
+        "the pill wrote the lock to the CRDT",
+    );
+    // A press on a clip of that track selects it but arms no edit drag.
+    let cid = app
+        .project
+        .clips_on(tid)
+        .first()
+        .map(|c| c.id)
+        .expect("a clip on the track");
+    let start_before = app.project.clip(cid).unwrap().start;
+    let cr = clip_screen_rect(&app, &r, cid);
+    move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
+    press(&mut app, &mut doc);
+    assert_eq!(
+        app.selected(),
+        Some(cid),
+        "a locked clip can still be selected"
+    );
+    assert!(
+        app.drag.is_none(),
+        "but no move/trim drag begins on a locked track"
+    );
+    move_to(&mut app, &mut doc, cr.center().x + 90.0, cr.center().y);
+    release(&mut app, &mut doc);
+    assert_eq!(
+        VideoDoc::load_project(&doc).clip(cid).map(|c| c.start),
+        Some(start_before),
+        "dragging a locked clip does not move it",
+    );
+    // Nor do the keyboard edits.
+    dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
+    assert!(
+        VideoDoc::load_project(&doc).clip(cid).is_some(),
+        "Delete does not remove a clip on a locked track",
+    );
+    dispatch(&mut app, &mut doc, char_ev("s"));
+    let after_split = VideoDoc::load_project(&doc);
+    assert_eq!(
+        after_split.clips_on(tid).len(),
+        app.project.clips_on(tid).len(),
+        "S does not split a clip on a locked track",
+    );
+    assert_eq!(
+        after_split.clip(cid).map(|c| c.start),
+        Some(start_before),
+        "and an arrow nudge leaves it alone too",
+    );
+}
 
 #[test]
-    fn a_locked_lane_refuses_a_bin_drop_and_the_clip_lands_elsewhere() {
-        let (mut app, mut doc) = app_and_doc();
-        let r = app.regions();
-        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let header = app.track_head_rect(&r, &lane);
-        let pill = app.lock_pill_rect(header);
-        click(&mut app, &mut doc, pill.center().x, pill.center().y);
-        let before = app.project.clips_on(tid).len();
-        let (_mid, row) = app
-            .bin_item_rects(&r)
-            .into_iter()
-            .find(|(m, _)| {
-                app.project
-                    .media(*m)
-                    .map(|mm| mm.kind.is_visual())
-                    .unwrap_or(false)
-            })
-            .expect("a visual bin item");
-        move_to(&mut app, &mut doc, row.center().x, row.center().y);
-        press(&mut app, &mut doc);
-        move_to(&mut app, &mut doc, lane.x0 + 200.0, lane.center().y);
-        release(&mut app, &mut doc);
-        let reloaded = VideoDoc::load_project(&doc);
-        assert_eq!(
-            reloaded.clips_on(tid).len(),
-            before,
-            "nothing was added to the locked track",
-        );
-        let placed = app
-            .selected()
-            .and_then(|id| reloaded.clip(id))
-            .expect("it landed somewhere");
-        assert_ne!(placed.track, tid, "and it went to a track that accepts it");
-    }
+fn a_locked_lane_refuses_a_bin_drop_and_the_clip_lands_elsewhere() {
+    let (mut app, mut doc) = app_and_doc();
+    let r = app.regions();
+    let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+    let header = app.track_head_rect(&r, &lane);
+    let pill = app.lock_pill_rect(header);
+    click(&mut app, &mut doc, pill.center().x, pill.center().y);
+    let before = app.project.clips_on(tid).len();
+    let (_mid, row) = app
+        .bin_item_rects(&r)
+        .into_iter()
+        .find(|(m, _)| {
+            app.project
+                .media(*m)
+                .map(|mm| mm.kind.is_visual())
+                .unwrap_or(false)
+        })
+        .expect("a visual bin item");
+    move_to(&mut app, &mut doc, row.center().x, row.center().y);
+    press(&mut app, &mut doc);
+    move_to(&mut app, &mut doc, lane.x0 + 200.0, lane.center().y);
+    release(&mut app, &mut doc);
+    let reloaded = VideoDoc::load_project(&doc);
+    assert_eq!(
+        reloaded.clips_on(tid).len(),
+        before,
+        "nothing was added to the locked track",
+    );
+    let placed = app
+        .selected()
+        .and_then(|id| reloaded.clip(id))
+        .expect("it landed somewhere");
+    assert_ne!(placed.track, tid, "and it went to a track that accepts it");
+}
 
 // ---- multi-selection --------------------------------------------------
 
@@ -3736,23 +3736,23 @@ fn right_clicking_a_clip_opens_a_menu_whose_duplicate_adds_a_clip() {
 }
 
 #[test]
-    fn the_track_menu_lock_entry_locks_the_track() {
-        let (mut app, mut doc) = app_and_doc();
-        let r = app.regions();
-        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let header = app.track_head_rect(&r, &lane);
-        move_to(&mut app, &mut doc, header.x0 + 20.0, header.center().y);
-        right_press(&mut app, &mut doc);
-        assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
-        click_menu_item(&mut app, &mut doc, "Lock track");
-        assert!(
-            VideoDoc::load_project(&doc)
-                .track(tid)
-                .map(|t| t.locked)
-                .unwrap_or(false),
-            "the menu entry locked the track in the CRDT",
-        );
-    }
+fn the_track_menu_lock_entry_locks_the_track() {
+    let (mut app, mut doc) = app_and_doc();
+    let r = app.regions();
+    let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+    let header = app.track_head_rect(&r, &lane);
+    move_to(&mut app, &mut doc, header.x0 + 20.0, header.center().y);
+    right_press(&mut app, &mut doc);
+    assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
+    click_menu_item(&mut app, &mut doc, "Lock track");
+    assert!(
+        VideoDoc::load_project(&doc)
+            .track(tid)
+            .map(|t| t.locked)
+            .unwrap_or(false),
+        "the menu entry locked the track in the CRDT",
+    );
+}
 
 // ---- affordances ------------------------------------------------------
 
@@ -3781,54 +3781,54 @@ fn the_zoom_chip_reports_the_zoom_and_fits_the_project_to_the_window() {
 }
 
 #[test]
-    fn the_pointer_says_what_each_region_does() {
-        use winit::window::CursorIcon;
-        let (mut app, mut doc) = app_and_doc();
-        let r = app.regions();
-        // A bin row can be dragged out.
-        let (_mid, row) = app.bin_item_rects(&r)[0];
-        assert_eq!(app.cursor_shape(row.center()), Some(CursorIcon::Grab));
-        // A clip body grabs; its edges resize.
-        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let cid = app
-            .project
-            .clips_on(tid)
-            .first()
-            .map(|c| c.id)
-            .expect("a clip");
-        let cr = clip_screen_rect(&app, &r, cid);
-        assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::Grab));
-        assert_eq!(
-            app.cursor_shape(Point::new(cr.x0, cr.center().y)),
-            Some(CursorIcon::EwResize)
-        );
-        // Empty lane space is where a marquee starts.
-        assert_eq!(
-            app.cursor_shape(Point::new(r.lanes.x1 - 4.0, cr.center().y)),
-            Some(CursorIcon::Crosshair),
-        );
-        // The ruler scrubs.
-        assert_eq!(
-            app.cursor_shape(r.ruler.center()),
-            Some(CursorIcon::ColResize)
-        );
-        // Buttons are buttons.
-        assert_eq!(
-            app.cursor_shape(r.export_btn.center()),
-            Some(CursorIcon::Pointer)
-        );
-        // A locked track refuses, and says so.
-        let lane = app
-            .lane_rects(&r)
-            .into_iter()
-            .find(|(t, _, _)| *t == tid)
-            .unwrap()
-            .2;
-        let header = app.track_head_rect(&r, &lane);
-        let pill = app.lock_pill_rect(header);
-        click(&mut app, &mut doc, pill.center().x, pill.center().y);
-        assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::NotAllowed));
-    }
+fn the_pointer_says_what_each_region_does() {
+    use winit::window::CursorIcon;
+    let (mut app, mut doc) = app_and_doc();
+    let r = app.regions();
+    // A bin row can be dragged out.
+    let (_mid, row) = app.bin_item_rects(&r)[0];
+    assert_eq!(app.cursor_shape(row.center()), Some(CursorIcon::Grab));
+    // A clip body grabs; its edges resize.
+    let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+    let cid = app
+        .project
+        .clips_on(tid)
+        .first()
+        .map(|c| c.id)
+        .expect("a clip");
+    let cr = clip_screen_rect(&app, &r, cid);
+    assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::Grab));
+    assert_eq!(
+        app.cursor_shape(Point::new(cr.x0, cr.center().y)),
+        Some(CursorIcon::EwResize)
+    );
+    // Empty lane space is where a marquee starts.
+    assert_eq!(
+        app.cursor_shape(Point::new(r.lanes.x1 - 4.0, cr.center().y)),
+        Some(CursorIcon::Crosshair),
+    );
+    // The ruler scrubs.
+    assert_eq!(
+        app.cursor_shape(r.ruler.center()),
+        Some(CursorIcon::ColResize)
+    );
+    // Buttons are buttons.
+    assert_eq!(
+        app.cursor_shape(r.export_btn.center()),
+        Some(CursorIcon::Pointer)
+    );
+    // A locked track refuses, and says so.
+    let lane = app
+        .lane_rects(&r)
+        .into_iter()
+        .find(|(t, _, _)| *t == tid)
+        .unwrap()
+        .2;
+    let header = app.track_head_rect(&r, &lane);
+    let pill = app.lock_pill_rect(header);
+    click(&mut app, &mut doc, pill.center().x, pill.center().y);
+    assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::NotAllowed));
+}
 
 // ---- responsive geometry ---------------------------------------------
 
@@ -3920,76 +3920,76 @@ fn the_scrubber_knob_stays_inside_its_track_at_every_size() {
 /// fixed offsets off the card top, so the filename subtitle and the
 /// RESOLUTION label were drawn through each other.
 #[test]
-    fn the_export_dialog_header_never_collides_with_the_first_section() {
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        for (w, h) in SIZES {
-            let (mut app, _doc) = app_sized(w, h);
-            app.presentation.export_open = true;
-            let l = app.export_layout(&mut tr, &theme);
-            let ty = l.type_sizes;
-            let header_bottom = l.mix_top.map_or(
-                l.filename_top + f64::from(tr.measure("Hg", ty.sm, None).1),
-                |top| top + f64::from(tr.measure("Hg", ty.xs, None).1),
-            );
-            let first_label_top = l.captions[0];
-            assert!(
-                first_label_top >= header_bottom,
-                "{w}x{h}: RESOLUTION starts at {first_label_top} but the header \
+fn the_export_dialog_header_never_collides_with_the_first_section() {
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    for (w, h) in SIZES {
+        let (mut app, _doc) = app_sized(w, h);
+        app.presentation.export_open = true;
+        let l = app.export_layout(&mut tr, &theme);
+        let ty = l.type_sizes;
+        let header_bottom = l.mix_top.map_or(
+            l.filename_top + f64::from(tr.measure("Hg", ty.sm, None).1),
+            |top| top + f64::from(tr.measure("Hg", ty.xs, None).1),
+        );
+        let first_label_top = l.captions[0];
+        assert!(
+            first_label_top >= header_bottom,
+            "{w}x{h}: RESOLUTION starts at {first_label_top} but the header \
                  runs to {header_bottom} — they overlap",
-            );
-            let caption_h = f64::from(tr.measure("Hg", ty.xs, None).1);
-            for (caption, rects) in l.captions.iter().zip([
-                l.resolution.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
-                l.container.iter().map(|(_, r)| *r).collect(),
-                l.fps.iter().map(|(_, r)| *r).collect(),
-            ]) {
-                let first = rects.first().expect("every group offers an option");
-                assert!(
-                    caption + caption_h <= first.y0,
-                    "{w}x{h}: a caption at {caption} runs into its segments at {}",
-                    first.y0,
-                );
-            }
-            // …and the groups still stop before the footer they share the card with.
-            let last = l.fps.last().expect("frame rates are offered").1;
+        );
+        let caption_h = f64::from(tr.measure("Hg", ty.xs, None).1);
+        for (caption, rects) in l.captions.iter().zip([
+            l.resolution.iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+            l.container.iter().map(|(_, r)| *r).collect(),
+            l.fps.iter().map(|(_, r)| *r).collect(),
+        ]) {
+            let first = rects.first().expect("every group offers an option");
             assert!(
-                last.y1 <= l.info_top,
-                "{w}x{h}: the frame-rate row runs into the size estimate",
+                caption + caption_h <= first.y0,
+                "{w}x{h}: a caption at {caption} runs into its segments at {}",
+                first.y0,
             );
         }
+        // …and the groups still stop before the footer they share the card with.
+        let last = l.fps.last().expect("frame rates are offered").1;
+        assert!(
+            last.y1 <= l.info_top,
+            "{w}x{h}: the frame-rate row runs into the size estimate",
+        );
     }
+}
 
 /// The dialog must not offer an action it will refuse. It used to say
 /// "Export needs the GStreamer build" and paint an enabled primary Export
 /// button directly beneath that sentence.
 #[test]
-    fn the_export_button_is_only_offered_when_export_can_actually_run() {
-        let (mut app, mut doc) = app_sized(1280.0, 800.0);
-        app.presentation.export_open = true;
-        // The event path lays the dialog out with the theme of the last
-        // frame, so paint one first.
-        render(&mut app);
-        let mut tr = TextRenderer::new();
-        let l = app.export_layout(&mut tr, &Theme::dark());
-        assert_eq!(
-            app.export_is_offered(),
-            crate::export::unavailable_reason().is_none(),
-            "the offer must track what the export module says it can do",
+fn the_export_button_is_only_offered_when_export_can_actually_run() {
+    let (mut app, mut doc) = app_sized(1280.0, 800.0);
+    app.presentation.export_open = true;
+    // The event path lays the dialog out with the theme of the last
+    // frame, so paint one first.
+    render(&mut app);
+    let mut tr = TextRenderer::new();
+    let l = app.export_layout(&mut tr, &Theme::dark());
+    assert_eq!(
+        app.export_is_offered(),
+        crate::export::unavailable_reason().is_none(),
+        "the offer must track what the export module says it can do",
+    );
+    if !app.export_is_offered() {
+        // Pressing it must do nothing at all — no job, no status change.
+        app.press_export(&mut doc, l.confirm.center());
+        assert!(
+            matches!(app.export_status, ExportStatus::Idle),
+            "a refused Export must not move the status",
         );
-        if !app.export_is_offered() {
-            // Pressing it must do nothing at all — no job, no status change.
-            app.press_export(&mut doc, l.confirm.center());
-            assert!(
-                matches!(app.export_status, ExportStatus::Idle),
-                "a refused Export must not move the status",
-            );
-            assert!(
-                !app.export_running(),
-                "a refused Export must not start a job"
-            );
-        }
+        assert!(
+            !app.export_running(),
+            "a refused Export must not start a job"
+        );
     }
+}
 
 /// A render outlives the dialog that started it — `start_export` clones
 /// the project precisely so the UI thread can keep editing while the
@@ -4443,55 +4443,55 @@ fn unexportable_project() -> Project {
 /// `surfaces.overlay` — the opaque deep-menu surface — as its backdrop, so
 /// the editor vanished behind the dialog instead of dimming.
 #[test]
-    fn the_export_modal_dims_the_editor_rather_than_deleting_it() {
-        for theme in [Theme::dark(), Theme::light()] {
-            let (mut app, _doc) = app_sized(1280.0, 800.0);
-            app.presentation.export_open = true;
-            let r = app.regions();
-            let px = render_pixels(&mut app, 1280, 800, &theme);
-            // The timeline lanes stretch well past the card on both sides.
-            let mut tr = TextRenderer::new();
-            let card = app.export_layout(&mut tr, &theme).modal.card;
-            let left = Rect::new(r.lanes.x0, r.lanes.y0, card.x0 - 8.0, r.lanes.y1);
-            let colours = region_colours(&px, 1280, 800, left);
-            assert!(
-                colours > 2,
-                "the timeline behind the export dialog is a flat slab \
+fn the_export_modal_dims_the_editor_rather_than_deleting_it() {
+    for theme in [Theme::dark(), Theme::light()] {
+        let (mut app, _doc) = app_sized(1280.0, 800.0);
+        app.presentation.export_open = true;
+        let r = app.regions();
+        let px = render_pixels(&mut app, 1280, 800, &theme);
+        // The timeline lanes stretch well past the card on both sides.
+        let mut tr = TextRenderer::new();
+        let card = app.export_layout(&mut tr, &theme).modal.card;
+        let left = Rect::new(r.lanes.x0, r.lanes.y0, card.x0 - 8.0, r.lanes.y1);
+        let colours = region_colours(&px, 1280, 800, left);
+        assert!(
+            colours > 2,
+            "the timeline behind the export dialog is a flat slab \
                  ({colours} distinct colours) — the backdrop erased it",
-            );
-        }
+        );
     }
+}
 
 #[test]
-    fn the_export_dialog_stays_inside_the_window() {
-        // Regression: a fixed 460x360 card hung off both edges of a small
-        // window, putting Cancel and Export outside the surface.
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        for (w, h) in SIZES {
-            let (mut app, _doc) = app_sized(w, h);
-            app.presentation.export_open = true;
-            let l = app.export_layout(&mut tr, &theme);
-            let card = l.modal.card;
+fn the_export_dialog_stays_inside_the_window() {
+    // Regression: a fixed 460x360 card hung off both edges of a small
+    // window, putting Cancel and Export outside the surface.
+    let mut tr = TextRenderer::new();
+    let theme = Theme::dark();
+    for (w, h) in SIZES {
+        let (mut app, _doc) = app_sized(w, h);
+        app.presentation.export_open = true;
+        let l = app.export_layout(&mut tr, &theme);
+        let card = l.modal.card;
+        assert!(
+            card.x0 >= app.rect.x0 && card.x1 <= app.rect.x1,
+            "the export card fits horizontally at {w}x{h}: {card:?}",
+        );
+        assert!(
+            card.y0 >= app.rect.y0 && card.y1 <= app.rect.y1,
+            "the export card fits vertically at {w}x{h}: {card:?}",
+        );
+        for (name, btn) in [("cancel", l.cancel), ("confirm", l.confirm)] {
             assert!(
-                card.x0 >= app.rect.x0 && card.x1 <= app.rect.x1,
-                "the export card fits horizontally at {w}x{h}: {card:?}",
+                btn.x0 >= app.rect.x0
+                    && btn.x1 <= app.rect.x1
+                    && btn.y0 >= app.rect.y0
+                    && btn.y1 <= app.rect.y1,
+                "the {name} button is on screen at {w}x{h}: {btn:?}",
             );
-            assert!(
-                card.y0 >= app.rect.y0 && card.y1 <= app.rect.y1,
-                "the export card fits vertically at {w}x{h}: {card:?}",
-            );
-            for (name, btn) in [("cancel", l.cancel), ("confirm", l.confirm)] {
-                assert!(
-                    btn.x0 >= app.rect.x0
-                        && btn.x1 <= app.rect.x1
-                        && btn.y0 >= app.rect.y0
-                        && btn.y1 <= app.rect.y1,
-                    "the {name} button is on screen at {w}x{h}: {btn:?}",
-                );
-            }
         }
     }
+}
 
 #[test]
 fn the_topbar_buttons_never_collide_with_other_topbar_content() {
@@ -5335,44 +5335,44 @@ fn an_import_carries_an_unknown_frame_rate_as_unknown() {
 }
 
 #[test]
-    fn pasting_after_its_track_is_locked_lands_on_a_track_that_accepts_it() {
-        let (mut app, mut doc) = app_and_doc();
-        let r = app.regions();
-        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
-        let cid = app
-            .project
-            .clips_on(tid)
-            .first()
-            .map(|c| c.id)
-            .expect("a clip");
-        let cr = clip_screen_rect(&app, &r, cid);
-        click(&mut app, &mut doc, cr.center().x, cr.center().y);
-        release(&mut app, &mut doc);
-        assert!(
-            key_press(&mut app, &mut doc, "c", true),
-            "Ctrl+C is handled"
-        );
-        // Lock the source track, then paste.
-        let header = app.track_head_rect(&r, &lane);
-        let pill = app.lock_pill_rect(header);
-        click(&mut app, &mut doc, pill.center().x, pill.center().y);
-        app.playhead = 2.0;
-        assert!(
-            key_press(&mut app, &mut doc, "v", true),
-            "Ctrl+V is handled"
-        );
-        let reloaded = VideoDoc::load_project(&doc);
-        let new_id = app.selected().expect("something was pasted");
-        let pasted = reloaded
-            .clip(new_id)
-            .expect("the pasted clip is in the CRDT");
-        assert_ne!(pasted.track, tid, "the paste avoided the locked track");
-        assert_eq!(
-            reloaded.track(pasted.track).map(|t| t.kind),
-            Some(TrackKind::Video),
-            "and still landed on a video track",
-        );
-    }
+fn pasting_after_its_track_is_locked_lands_on_a_track_that_accepts_it() {
+    let (mut app, mut doc) = app_and_doc();
+    let r = app.regions();
+    let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+    let cid = app
+        .project
+        .clips_on(tid)
+        .first()
+        .map(|c| c.id)
+        .expect("a clip");
+    let cr = clip_screen_rect(&app, &r, cid);
+    click(&mut app, &mut doc, cr.center().x, cr.center().y);
+    release(&mut app, &mut doc);
+    assert!(
+        key_press(&mut app, &mut doc, "c", true),
+        "Ctrl+C is handled"
+    );
+    // Lock the source track, then paste.
+    let header = app.track_head_rect(&r, &lane);
+    let pill = app.lock_pill_rect(header);
+    click(&mut app, &mut doc, pill.center().x, pill.center().y);
+    app.playhead = 2.0;
+    assert!(
+        key_press(&mut app, &mut doc, "v", true),
+        "Ctrl+V is handled"
+    );
+    let reloaded = VideoDoc::load_project(&doc);
+    let new_id = app.selected().expect("something was pasted");
+    let pasted = reloaded
+        .clip(new_id)
+        .expect("the pasted clip is in the CRDT");
+    assert_ne!(pasted.track, tid, "the paste avoided the locked track");
+    assert_eq!(
+        reloaded.track(pasted.track).map(|t| t.kind),
+        Some(TrackKind::Video),
+        "and still landed on a video track",
+    );
+}
 
 #[test]
 fn right_click_bin_item_opens_menu_and_delete_removes_media_from_crdt() {
@@ -6243,103 +6243,103 @@ fn the_history_buttons_are_dead_until_the_host_says_otherwise() {
 }
 
 #[test]
-    fn pressing_undo_asks_the_host_only_when_there_is_something_to_undo() {
-        let (mut app, mut doc) = app_and_doc();
-        let r = app.regions();
-        let (_, rect) = app.history_buttons(&r)[0];
-        click(&mut app, &mut doc, rect.center().x, rect.center().y);
-        assert_eq!(
-            app.take_undo_request(),
-            None,
-            "with nothing to undo the button raises no request at all",
-        );
-        // Once the host says there is, the same press does.
-        app.set_undo_status(&mut || ui::UndoStatus {
-            can_undo: true,
-            undo_summary: Some("2 fields".into()),
-            ..Default::default()
-        });
-        click(&mut app, &mut doc, rect.center().x, rect.center().y);
-        assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
-        assert_eq!(
-            app.take_undo_request(),
-            None,
-            "and the request is taken once"
-        );
-        // Redo is still unavailable, and its button still refuses.
-        let (_, redo) = app.history_buttons(&r)[1];
-        click(&mut app, &mut doc, redo.center().x, redo.center().y);
-        assert_eq!(app.take_undo_request(), None, "redo is separately gated");
-    }
+fn pressing_undo_asks_the_host_only_when_there_is_something_to_undo() {
+    let (mut app, mut doc) = app_and_doc();
+    let r = app.regions();
+    let (_, rect) = app.history_buttons(&r)[0];
+    click(&mut app, &mut doc, rect.center().x, rect.center().y);
+    assert_eq!(
+        app.take_undo_request(),
+        None,
+        "with nothing to undo the button raises no request at all",
+    );
+    // Once the host says there is, the same press does.
+    app.set_undo_status(&mut || ui::UndoStatus {
+        can_undo: true,
+        undo_summary: Some("2 fields".into()),
+        ..Default::default()
+    });
+    click(&mut app, &mut doc, rect.center().x, rect.center().y);
+    assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
+    assert_eq!(
+        app.take_undo_request(),
+        None,
+        "and the request is taken once"
+    );
+    // Redo is still unavailable, and its button still refuses.
+    let (_, redo) = app.history_buttons(&r)[1];
+    click(&mut app, &mut doc, redo.center().x, redo.center().y);
+    assert_eq!(app.take_undo_request(), None, "redo is separately gated");
+}
 
 /// The accessibility node must report `disabled` exactly when the verb is
 /// unavailable, and must not be focusable then: undoing the last action
 /// empties the stack under the control the user is standing on, and a
 /// focus ring left on a dead button is how that reads wrong.
 #[test]
-    fn the_undo_node_reports_disabled_exactly_when_it_cannot_act() {
-        let (mut app, _doc) = app_and_doc();
-        let find = |app: &VideoEditorApp, name: &str| {
-            fn walk(n: &AccessNode, name: &str, out: &mut Option<AccessNode>) {
-                if n.name.as_deref() == Some(name) {
-                    *out = Some(n.clone());
-                }
-                for k in &n.children {
-                    walk(k, name, out);
-                }
+fn the_undo_node_reports_disabled_exactly_when_it_cannot_act() {
+    let (mut app, _doc) = app_and_doc();
+    let find = |app: &VideoEditorApp, name: &str| {
+        fn walk(n: &AccessNode, name: &str, out: &mut Option<AccessNode>) {
+            if n.name.as_deref() == Some(name) {
+                *out = Some(n.clone());
             }
-            let mut found = None;
-            walk(&app.a11y_transport(), name, &mut found);
-            found.unwrap_or_else(|| panic!("{name} is in the transport tree"))
-        };
+            for k in &n.children {
+                walk(k, name, out);
+            }
+        }
+        let mut found = None;
+        walk(&app.a11y_transport(), name, &mut found);
+        found.unwrap_or_else(|| panic!("{name} is in the transport tree"))
+    };
 
-        let node = find(&app, "Undo");
-        assert!(node.state.disabled, "an empty history disables the node");
-        assert!(!node.state.focusable, "and takes it out of the focus order");
-        assert_eq!(
-            node.description.clone().unwrap_or_default(),
-            "Nothing to undo",
-            "the reader hears the honest reason, not a described action",
-        );
+    let node = find(&app, "Undo");
+    assert!(node.state.disabled, "an empty history disables the node");
+    assert!(!node.state.focusable, "and takes it out of the focus order");
+    assert_eq!(
+        node.description.clone().unwrap_or_default(),
+        "Nothing to undo",
+        "the reader hears the honest reason, not a described action",
+    );
 
-        app.set_undo_status(&mut || ui::UndoStatus {
-            can_undo: true,
-            undo_summary: Some("2 fields".into()),
-            ..Default::default()
-        });
-        let node = find(&app, "Undo");
-        assert!(!node.state.disabled);
-        assert!(node.state.focusable);
-        let d = node.description.clone().unwrap_or_default().to_string();
-        assert!(
-            d.contains("2 fields"),
-            "and hears what it would revert: {d:?}"
-        );
-        // Redo has not become available just because undo did.
-        assert!(find(&app, "Redo").state.disabled);
-    }
+    app.set_undo_status(&mut || ui::UndoStatus {
+        can_undo: true,
+        undo_summary: Some("2 fields".into()),
+        ..Default::default()
+    });
+    let node = find(&app, "Undo");
+    assert!(!node.state.disabled);
+    assert!(node.state.focusable);
+    let d = node.description.clone().unwrap_or_default().to_string();
+    assert!(
+        d.contains("2 fields"),
+        "and hears what it would revert: {d:?}"
+    );
+    // Redo has not become available just because undo did.
+    assert!(find(&app, "Redo").state.disabled);
+}
 
 #[test]
-    fn activating_the_undo_node_raises_the_same_request_a_click_does() {
-        let (mut app, _doc) = app_and_doc();
-        app.set_undo_status(&mut || ui::UndoStatus {
-            can_undo: true,
-            ..Default::default()
-        });
-        let key = ui::a11y::hash_key(&ui::UndoRequest::Undo.verb());
-        assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
-        assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
-        // With the history empty again the same activation refuses.
-        app.set_undo_status(&mut || ui::UndoStatus::empty());
-        assert!(!app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
-        assert_eq!(app.take_undo_request(), None);
-        // And the transport's own buttons still work, so the new key lookup
-        // has not shadowed them.
-        let play = ui::a11y::hash_key(&2usize);
-        let before = app.playback.playing;
-        assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[play]));
-        assert_ne!(app.playback.playing, before, "play/pause still activates");
-    }
+fn activating_the_undo_node_raises_the_same_request_a_click_does() {
+    let (mut app, _doc) = app_and_doc();
+    app.set_undo_status(&mut || ui::UndoStatus {
+        can_undo: true,
+        ..Default::default()
+    });
+    let key = ui::a11y::hash_key(&ui::UndoRequest::Undo.verb());
+    assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
+    assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
+    // With the history empty again the same activation refuses.
+    app.set_undo_status(&mut || ui::UndoStatus::empty());
+    assert!(!app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
+    assert_eq!(app.take_undo_request(), None);
+    // And the transport's own buttons still work, so the new key lookup
+    // has not shadowed them.
+    let play = ui::a11y::hash_key(&2usize);
+    let before = app.playback.playing;
+    assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[play]));
+    assert_ne!(app.playback.playing, before, "play/pause still activates");
+}
 
 /// The whole point of gating these two sections' controls: an unkeyed,
 /// unmasked clip must not carry ten sliders that do nothing, and the
@@ -10287,55 +10287,55 @@ fn a_capture_of_the_mixer_is_the_same_capture_twice() {
 /// about what is drawn — a predicate that returned the right answer into a
 /// draw that ignored it would pass every other kind of test.
 #[test]
-    fn a_picture_lane_is_metered_only_when_its_footage_carries_sound() {
-        let theme = Theme::dark();
-        let (w, h) = (1100u32, 760u32);
-        let (mut app, mut doc) = app_and_doc();
-        app.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+fn a_picture_lane_is_metered_only_when_its_footage_carries_sound() {
+    let theme = Theme::dark();
+    let (w, h) = (1100u32, 760u32);
+    let (mut app, mut doc) = app_and_doc();
+    app.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
 
-        let r = app.regions();
-        let (tid, _, lane) = app
-            .lane_rects(&r)
-            .into_iter()
-            .find(|(_, kind, _)| *kind == TrackKind::Video)
-            .expect("the sample timeline has a picture lane");
-        let header = app.track_head_rect(&r, &lane);
-        let strip = app.track_meter_rect(header);
-        // The head only, never the lane: turning the sound on also asks for a
-        // waveform, and a waveform lands on the *clip*. Comparing the whole
-        // row would be reading one change as the other.
-        let mid: Vec<crate::model::MediaId> =
-            app.project.clips_on(tid).iter().map(|c| c.media).collect();
-        assert!(!mid.is_empty(), "the lane has footage on it");
+    let r = app.regions();
+    let (tid, _, lane) = app
+        .lane_rects(&r)
+        .into_iter()
+        .find(|(_, kind, _)| *kind == TrackKind::Video)
+        .expect("the sample timeline has a picture lane");
+    let header = app.track_head_rect(&r, &lane);
+    let strip = app.track_meter_rect(header);
+    // The head only, never the lane: turning the sound on also asks for a
+    // waveform, and a waveform lands on the *clip*. Comparing the whole
+    // row would be reading one change as the other.
+    let mid: Vec<crate::model::MediaId> =
+        app.project.clips_on(tid).iter().map(|c| c.media).collect();
+    assert!(!mid.is_empty(), "the lane has footage on it");
 
-        let silent = render_pixels(&mut app, w, h, &theme);
-        let again = render_pixels(&mut app, w, h, &theme);
-        let noise = frame_diff(&crop(&silent, w, strip), &crop(&again, w, strip), w);
-        assert!(
-            noise.0 == 0,
-            "the meter strip has to be still before a change to it can be \
+    let silent = render_pixels(&mut app, w, h, &theme);
+    let again = render_pixels(&mut app, w, h, &theme);
+    let noise = frame_diff(&crop(&silent, w, strip), &crop(&again, w, strip), w);
+    assert!(
+        noise.0 == 0,
+        "the meter strip has to be still before a change to it can be \
              read: {}",
-            noise.1,
-        );
+        noise.1,
+    );
 
-        for m in &mut app.project.media {
-            if mid.contains(&m.id) {
-                m.has_audio = true;
-            }
+    for m in &mut app.project.media {
+        if mid.contains(&m.id) {
+            m.has_audio = true;
         }
-        for m in mid {
-            app.dispatch_media(&mut doc, m);
-        }
-        app.sync(&mut doc, &automerge::ROOT);
-        let heard = render_pixels(&mut app, w, h, &theme);
-        let lit = frame_diff(&crop(&silent, w, strip), &crop(&heard, w, strip), w);
-        assert!(
-            lit.0 > 0,
-            "footage that is heard has to be metered, and the lane's head is \
-             where its meter is drawn: {}",
-            lit.1,
-        );
     }
+    for m in mid {
+        app.dispatch_media(&mut doc, m);
+    }
+    app.sync(&mut doc, &automerge::ROOT);
+    let heard = render_pixels(&mut app, w, h, &theme);
+    let lit = frame_diff(&crop(&silent, w, strip), &crop(&heard, w, strip), w);
+    assert!(
+        lit.0 > 0,
+        "footage that is heard has to be metered, and the lane's head is \
+             where its meter is drawn: {}",
+        lit.1,
+    );
+}
 
 /// How many pixels differ between two frames, and whereabouts.
 ///
@@ -10510,70 +10510,85 @@ fn crop(rgba: &[u8], fw: u32, rect: Rect) -> Vec<u8> {
 }
 
 #[test]
-    fn the_export_dialog_answers_a_click_the_frame_after_the_shortcut_opened_it() {
-        let (mut app, mut doc) = app_sized(1280.0, 800.0);
-        // One frame with the dialog closed, so the editor knows its theme.
-        render(&mut app);
-        assert!(!app.presentation.export_open);
-        assert!(key_press(&mut app, &mut doc, "e", true), "Ctrl+E opens the dialog");
-        assert!(app.presentation.export_open);
-        let mut tr = TextRenderer::new();
-        let l = app.export_layout(&mut tr, &Theme::dark());
-        let (wanted, rect) = l.resolution[2];
-        assert_ne!(app.export.resolution, wanted, "the fixture starts elsewhere");
-        click(&mut app, &mut doc, rect.center().x, rect.center().y);
-        assert_eq!(
-            app.export.resolution, wanted,
-            "the click on an option the frame has not painted yet still lands"
-        );
-        // And a resize between the shortcut and the click moves the target
-        // with it: the layout follows the rect, not a painted frame.
-        app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
-        let l = app.export_layout(&mut tr, &Theme::dark());
-        let (wanted, rect) = l.container[1];
-        click(&mut app, &mut doc, rect.center().x, rect.center().y);
-        assert_eq!(app.export.container, wanted);
-    }
+fn the_export_dialog_answers_a_click_the_frame_after_the_shortcut_opened_it() {
+    let (mut app, mut doc) = app_sized(1280.0, 800.0);
+    // One frame with the dialog closed, so the editor knows its theme.
+    render(&mut app);
+    assert!(!app.presentation.export_open);
+    assert!(
+        key_press(&mut app, &mut doc, "e", true),
+        "Ctrl+E opens the dialog"
+    );
+    assert!(app.presentation.export_open);
+    let mut tr = TextRenderer::new();
+    let l = app.export_layout(&mut tr, &Theme::dark());
+    let (wanted, rect) = l.resolution[2];
+    assert_ne!(
+        app.export.resolution, wanted,
+        "the fixture starts elsewhere"
+    );
+    click(&mut app, &mut doc, rect.center().x, rect.center().y);
+    assert_eq!(
+        app.export.resolution, wanted,
+        "the click on an option the frame has not painted yet still lands"
+    );
+    // And a resize between the shortcut and the click moves the target
+    // with it: the layout follows the rect, not a painted frame.
+    app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+    let l = app.export_layout(&mut tr, &Theme::dark());
+    let (wanted, rect) = l.container[1];
+    click(&mut app, &mut doc, rect.center().x, rect.center().y);
+    assert_eq!(app.export.container, wanted);
+}
 
 #[test]
-    fn ctrl_e_does_not_open_the_export_dialog_under_the_shortcut_sheet() {
-        let (mut app, mut doc) = app_sized(1280.0, 800.0);
-        app.navigation.help_open = true;
-        assert!(
-            key_press(&mut app, &mut doc, "e", true),
-            "the sheet swallows the key"
-        );
-        assert!(!app.presentation.export_open, "nothing opens under the sheet");
-        assert!(app.navigation.help_open, "and the sheet stays");
-        assert!(key_press(&mut app, &mut doc, "?", false));
-        assert!(!app.navigation.help_open, "? still closes it");
-    }
+fn ctrl_e_does_not_open_the_export_dialog_under_the_shortcut_sheet() {
+    let (mut app, mut doc) = app_sized(1280.0, 800.0);
+    app.navigation.help_open = true;
+    assert!(
+        key_press(&mut app, &mut doc, "e", true),
+        "the sheet swallows the key"
+    );
+    assert!(
+        !app.presentation.export_open,
+        "nothing opens under the sheet"
+    );
+    assert!(app.navigation.help_open, "and the sheet stays");
+    assert!(key_press(&mut app, &mut doc, "?", false));
+    assert!(!app.navigation.help_open, "? still closes it");
+}
 
 #[test]
-    fn a_disabled_export_button_offers_no_pointer() {
-        use winit::window::CursorIcon;
-        let (mut app, _doc) = app_and_doc();
-        app.presentation.export_open = true;
-        app.project = unexportable_project();
-        let dest = scratch("cursor-export").join("never-written.mp4");
-        app.begin_export_to(dest);
-        assert!(!app.export_is_offered(), "a render in flight disables Export");
-        render(&mut app);
-        let mut tr = TextRenderer::new();
-        let l = app.export_layout(&mut tr, &Theme::dark());
+fn a_disabled_export_button_offers_no_pointer() {
+    use winit::window::CursorIcon;
+    let (mut app, _doc) = app_and_doc();
+    app.presentation.export_open = true;
+    app.project = unexportable_project();
+    let dest = scratch("cursor-export").join("never-written.mp4");
+    app.begin_export_to(dest);
+    assert!(
+        !app.export_is_offered(),
+        "a render in flight disables Export"
+    );
+    render(&mut app);
+    let mut tr = TextRenderer::new();
+    let l = app.export_layout(&mut tr, &Theme::dark());
+    assert_eq!(
+        app.cursor_shape(l.confirm.center()),
+        Some(CursorIcon::Default),
+        "no pointer over a disabled Export"
+    );
+    assert_eq!(
+        app.cursor_shape(l.cancel.center()),
+        Some(CursorIcon::Pointer),
+        "Cancel is live and says so"
+    );
+    app.export_job = None;
+    app.export_status = ExportStatus::Idle;
+    if app.export_is_offered() {
         assert_eq!(
             app.cursor_shape(l.confirm.center()),
-            Some(CursorIcon::Default),
-            "no pointer over a disabled Export"
+            Some(CursorIcon::Pointer)
         );
-        assert_eq!(
-            app.cursor_shape(l.cancel.center()),
-            Some(CursorIcon::Pointer),
-            "Cancel is live and says so"
-        );
-        app.export_job = None;
-        app.export_status = ExportStatus::Idle;
-        if app.export_is_offered() {
-            assert_eq!(app.cursor_shape(l.confirm.center()), Some(CursorIcon::Pointer));
-        }
     }
+}

@@ -243,9 +243,7 @@ impl Metrics {
             .map(|(zone, specs)| {
                 let ws = specs
                     .iter()
-                    .map(|(caption, value, _)| {
-                        w(tr, caption, 9.0).max(w(tr, value, 13.0)) + 20.0
-                    })
+                    .map(|(caption, value, _)| w(tr, caption, 9.0).max(w(tr, value, 13.0)) + 20.0)
                     .collect();
                 (*zone, ws)
             })
@@ -353,7 +351,11 @@ fn stat_chip_specs(z: &Zone) -> Vec<(&'static str, String, ChipTone)> {
         z.interfaces.join(", ")
     };
     let mut chips = vec![
-        ("target", z.target.short().to_string(), ChipTone::Target(z.target)),
+        (
+            "target",
+            z.target.short().to_string(),
+            ChipTone::Target(z.target),
+        ),
         ("services", z.services.len().to_string(), ChipTone::Primary),
         ("allow rules", allow.to_string(), ChipTone::Success),
         ("deny rules", deny.to_string(), ChipTone::Danger),
@@ -823,7 +825,11 @@ impl FirewallApp {
         let panic_w = if narrow { m.panic_w_narrow } else { m.panic_w };
         l.panic_btn = Rect::new(rx - panic_w, by - half, rx, by + half);
         rx = l.panic_btn.x0 - 8.0;
-        let enable_w = if narrow { m.enable_w_narrow } else { m.enable_w };
+        let enable_w = if narrow {
+            m.enable_w_narrow
+        } else {
+            m.enable_w
+        };
         l.enable_pill = Rect::new(rx - enable_w, by - half, rx, by + half);
         by
     }
@@ -3370,7 +3376,18 @@ impl FirewallApp {
             paint::label_v(tr, scene, t, "TARGET", 10.0, hc, cols.text, hy0, hh, 200.0);
             paint::label_v(tr, scene, t, "PROTO", 10.0, hc, cols.proto, hy0, hh, 80.0);
             paint::label_v(tr, scene, t, "ACTION", 10.0, hc, cols.action, hy0, hh, 80.0);
-            paint::label_v(tr, scene, t, "SOURCE", 10.0, hc, cols.source, hy0, hh, 160.0);
+            paint::label_v(
+                tr,
+                scene,
+                t,
+                "SOURCE",
+                10.0,
+                hc,
+                cols.source,
+                hy0,
+                hh,
+                160.0,
+            );
             paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
         }
         // The caption rule is derived against the table it sits in and inset
@@ -3776,7 +3793,12 @@ impl FirewallApp {
                 } else {
                     row.x0 + 10.0
                 },
-                row.y0 + if compact { 5.0 } else { self.metrics.svc_detail_top },
+                row.y0
+                    + if compact {
+                        5.0
+                    } else {
+                        self.metrics.svc_detail_top
+                    },
                 if compact {
                     row.width() - 180.0
                 } else {
@@ -4369,7 +4391,9 @@ mod tests {
         );
         assert!((wide.layout.summary.height() - SUMMARY_H).abs() < 1e-6);
         assert!(
-            chips.iter().all(|c| c.x1 <= wide.layout.summary.x1 - 16.0 + 1e-6),
+            chips
+                .iter()
+                .all(|c| c.x1 <= wide.layout.summary.x1 - 16.0 + 1e-6),
             "chips stay inside the card"
         );
 
@@ -4395,7 +4419,9 @@ mod tests {
         );
         assert!(phone.layout.summary.height() < 188.0);
         assert!(
-            chips.iter().all(|c| c.x1 <= phone.layout.summary.x1 - 16.0 + 1e-6),
+            chips
+                .iter()
+                .all(|c| c.x1 <= phone.layout.summary.x1 - 16.0 + 1e-6),
             "wrapped chips never run off the card's right edge"
         );
         // Everything below the card follows it.
@@ -4436,12 +4462,18 @@ mod tests {
         assert!(m.ctrl_h > CTRL_H && m.header_h > HEADER_H && m.rule_row_h > RULE_ROW_H);
         let l = &two.layout;
         assert!(!l.narrow);
-        assert!(l.form.height() > FORM_H, "form grows with its control bands");
+        assert!(
+            l.form.height() > FORM_H,
+            "form grows with its control bands"
+        );
         // Header controls fit their labels and stay inside the header band.
         for b in [l.enable_pill, l.panic_btn, l.apply_btn] {
             assert!(b.y0 >= l.header.y0 && b.y1 <= l.header.y1);
         }
-        assert!(l.enable_pill.width() > 92.0, "the enable pill widens for its 2× label");
+        assert!(
+            l.enable_pill.width() > 92.0,
+            "the enable pill widens for its 2× label"
+        );
         // Form: line 1 clears the title band, line 2 clears line 1, the status
         // band clears line 2, and nothing leaves the card.
         let title_h = f64::from(tr.measure("Hg", 13.0, None).1);
@@ -4462,7 +4494,10 @@ mod tests {
         assert!(l.narrow);
         assert!(l.kind_seg[0].y0 >= l.form.y0 + stacked.metrics.form_title_h_narrow - 1e-6);
         assert!(l.service_sel.y0.max(l.port_field.y0) >= l.kind_seg[0].y1);
-        assert!(l.source_field.y0 >= l.port_field.y1.max(l.service_sel.y1) + stacked.metrics.form_source_gap - 1e-6);
+        assert!(
+            l.source_field.y0
+                >= l.port_field.y1.max(l.service_sel.y1) + stacked.metrics.form_source_gap - 1e-6
+        );
         assert!(l.add_btn.y0 >= l.source_field.y1 && l.add_btn.y1 <= l.form.y1 + 1e-6);
     }
 

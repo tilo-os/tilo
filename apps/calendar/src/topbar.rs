@@ -110,7 +110,10 @@ impl Topbar {
         self.view_rect
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The calendar bar combines render context with the current view, anchor date, and pointer for action hit regions."
+    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -228,7 +231,10 @@ impl Topbar {
         today.x1 + 14.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "View and new-event controls share render context, current view, pointer position, and the measured bar center."
+    )]
     fn draw_actions(
         &mut self,
         scene: &mut Scene,
@@ -329,7 +335,10 @@ impl Topbar {
         new_event.x0 - 12.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Period title fitting needs render context, view and anchor date, vertical alignment, and the available title span."
+    )]
     fn draw_title(
         &self,
         scene: &mut Scene,

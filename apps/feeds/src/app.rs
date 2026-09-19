@@ -2800,7 +2800,10 @@ impl FeedsApp {
     /// `ToggleGroup` face (HIG §8: never hand-roll a control) over rects this
     /// popover owns: equal-width segments an `s2` apart across `band`, each
     /// registered as a settings hit.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The settings segment painter combines render context and band geometry with labels, selection, and hit actions."
+    )]
     fn seg_row(
         &mut self,
         scene: &mut Scene,

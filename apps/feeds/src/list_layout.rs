@@ -182,7 +182,10 @@ mod tests {
     fn one_line_title_sits_directly_above_its_meta_line() {
         let row = Rect::new(0.0, 100.0, 400.0, 188.0);
         let l = article_row_layout(row, &metrics(1.0));
-        assert!(approx(l.meta_y - (l.title_y + 18.75), 4.0), "related gap is the small gap");
+        assert!(
+            approx(l.meta_y - (l.title_y + 18.75), 4.0),
+            "related gap is the small gap"
+        );
         // The block is centred: equal space above the title and below the meta.
         let above = l.title_y - row.y0;
         let below = row.y1 - (l.meta_y + 15.625);
@@ -211,7 +214,10 @@ mod tests {
         // The authored 1× line box the layout pass uses before paint is the
         // toolkit's own answer for a 12 px line, so pre-paint and painted
         // geometry agree.
-        assert!(approx(TIME_LINE_H_1X, ui::text_metrics::line_height_px(12.0, 1.0)));
+        assert!(approx(
+            TIME_LINE_H_1X,
+            ui::text_metrics::line_height_px(12.0, 1.0)
+        ));
     }
 
     #[test]
@@ -224,10 +230,17 @@ mod tests {
             let l = article_row_layout(row, &metrics(lines));
             let time_bottom = l.time_y + TIME_LINE_H_1X;
             let star_top = l.star_cy - STAR_BOX_1X / 2.0;
-            assert!(approx(star_top - time_bottom, TRAILING_GAP), "{lines} line(s): gap {}", star_top - time_bottom);
+            assert!(
+                approx(star_top - time_bottom, TRAILING_GAP),
+                "{lines} line(s): gap {}",
+                star_top - time_bottom
+            );
             let block_top = l.time_y;
             let block_bottom = l.star_cy + STAR_BOX_1X / 2.0;
-            assert!(approx(block_top - row.y0, row.y1 - block_bottom), "column centred on the row");
+            assert!(
+                approx(block_top - row.y0, row.y1 - block_bottom),
+                "column centred on the row"
+            );
         }
     }
 
@@ -244,7 +257,10 @@ mod tests {
         let (time_y, star_cy) = trailing_column(row, &trailing);
         assert!(approx((star_cy - 7.0) - (time_y + 30.0), TRAILING_GAP));
         let s = star_rect(row, STAR_HIT_SIZE, STAR_RIGHT_PAD, star_cy);
-        assert!(s.y0 >= row.y0 && s.y1 <= row.y1, "hit rect inside the row: {s:?}");
+        assert!(
+            s.y0 >= row.y0 && s.y1 <= row.y1,
+            "hit rect inside the row: {s:?}"
+        );
     }
 
     #[test]
@@ -299,7 +315,10 @@ mod tests {
         let a = Rect::new(256.0, 100.0, 656.0, 188.0);
         let b = Rect::new(256.0, 188.0, 656.0, 276.0);
         let (ra, rb) = (row_semantic_bounds(a), row_semantic_bounds(b));
-        assert!(rb.y0 - ra.y1 > 0.0, "a gap, not a shared edge: {ra:?} {rb:?}");
+        assert!(
+            rb.y0 - ra.y1 > 0.0,
+            "a gap, not a shared edge: {ra:?} {rb:?}"
+        );
         assert!(approx(ra.x0, 257.0), "past the divider column");
         assert!(approx(ra.x1, a.x1));
     }
@@ -313,6 +332,9 @@ mod tests {
         assert!(approx(s.height(), 32.0));
         assert!(approx(s.center().y, star_cy));
         assert!(approx(s.x1, row.x1 - 8.0));
-        assert!(s.y0 >= row.y0 && s.y1 <= row.y1, "hit rect inside the row: {s:?}");
+        assert!(
+            s.y0 >= row.y0 && s.y1 <= row.y1,
+            "hit rect inside the row: {s:?}"
+        );
     }
 }

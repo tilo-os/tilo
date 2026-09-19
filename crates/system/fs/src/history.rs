@@ -148,7 +148,12 @@ pub(crate) struct HistoryCandidate {
 }
 
 impl HistoryLease<'_> {
-    pub fn resolve(&mut self, record_id: FileRecordId, conflict_id: Uuid, resolution: ConflictResolution) -> Result<bool, HistoryError> {
+    pub fn resolve(
+        &mut self,
+        record_id: FileRecordId,
+        conflict_id: Uuid,
+        resolution: ConflictResolution,
+    ) -> Result<bool, HistoryError> {
         let current = &mut *self.state;
         let record = current
             .records
@@ -193,7 +198,6 @@ impl HistoryLease<'_> {
         persist(self.path, &next)?;
         *current = next;
         Ok(true)
-    
     }
     pub fn record_conflict(&mut self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
         conflict.validate()?;
@@ -219,10 +223,11 @@ impl HistoryLease<'_> {
         persist(self.path, &next)?;
         *current = next;
         Ok(true)
-    
     }
-    pub fn prepare_versions(&self, versions: &[FileVersionV1]) -> Result<HistoryCandidate, HistoryError> {
-
+    pub fn prepare_versions(
+        &self,
+        versions: &[FileVersionV1],
+    ) -> Result<HistoryCandidate, HistoryError> {
         for version in versions {
             version.validate()?;
         }
@@ -260,7 +265,10 @@ impl HistoryLease<'_> {
             record.versions.insert(version.id, version.clone());
             appended.push(true);
         }
-        Ok(HistoryCandidate { state: next, appended })
+        Ok(HistoryCandidate {
+            state: next,
+            appended,
+        })
     }
 
     pub fn install(&mut self, candidate: HistoryCandidate) -> Result<Vec<bool>, HistoryError> {
@@ -277,13 +285,19 @@ impl HistoryLease<'_> {
     }
 
     pub fn snapshot(&self, record_id: FileRecordId) -> Option<RecordHistorySnapshot> {
-        self.state.records.get(&record_id).map(|record| snapshot(record_id, record))
+        self.state
+            .records
+            .get(&record_id)
+            .map(|record| snapshot(record_id, record))
     }
 }
 
 impl FileHistoryStore {
     pub(crate) fn lease(&self) -> Result<HistoryLease<'_>, HistoryError> {
-        Ok(HistoryLease { path: &self.path, state: self.state.lock().map_err(|_| HistoryError::StatePoisoned)? })
+        Ok(HistoryLease {
+            path: &self.path,
+            state: self.state.lock().map_err(|_| HistoryError::StatePoisoned)?,
+        })
     }
 
     /// Open and fully validate a durable history store, recovering only from a

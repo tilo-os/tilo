@@ -998,7 +998,10 @@ struct CellState {
 }
 
 /// Draw a rounded "button" cell (used for both keys and toolbar items).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keyboard cells combine render context with bounds, optional icon, label, interaction state, and key-specific font scaling."
+)]
 fn draw_cell(
     scene: &mut Scene,
     transform: Affine,
@@ -1096,7 +1099,10 @@ fn draw_cell(
 /// Draw one suggestion chip: a pill with the word, themed by state. The `top`
 /// (best / auto-inserted) chip is accented; the rest are neutral. All colours
 /// come from theme tokens.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Suggestion chips combine render context with bounds and word plus independent hover, press, and best-suggestion states."
+)]
 fn draw_suggestion_chip(
     scene: &mut Scene,
     transform: Affine,

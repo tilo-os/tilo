@@ -698,7 +698,11 @@ impl QuickFS {
         namespace_path: std::path::PathBuf,
     ) -> Result<Self, crate::record_publisher::RecordPublisherError> {
         if let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history) {
-            publisher.repository().restore_admission_fences(&*journal.lock().map_err(|_| crate::record_publisher::RecordPublisherError::PublicationUnavailable)?)?;
+            publisher
+                .repository()
+                .restore_admission_fences(&*journal.lock().map_err(|_| {
+                    crate::record_publisher::RecordPublisherError::PublicationUnavailable
+                })?)?;
             let sync = self.sync.clone();
             publisher.recover_replacement_transactions(
                 &mut journal
@@ -715,7 +719,12 @@ impl QuickFS {
                 },
             )?;
         }
-        self.recover_legacy_restores(&mut *journal.lock().map_err(|_| crate::record_publisher::RecordPublisherError::PublicationUnavailable)?, &namespace_path)?;
+        self.recover_legacy_restores(
+            &mut *journal.lock().map_err(|_| {
+                crate::record_publisher::RecordPublisherError::PublicationUnavailable
+            })?,
+            &namespace_path,
+        )?;
         self.replacement_transactions = Some(ReplacementTransactionRuntime {
             journal,
             namespace_path,
@@ -1509,12 +1518,21 @@ impl QuickFS {
             }
             None => Vec::new(),
         };
-        if qdoc::Document::load(&data).is_ok() { return Err(libc::ENOTSUP); }
+        if qdoc::Document::load(&data).is_ok() {
+            return Err(libc::ENOTSUP);
+        }
         let current_hash = self.ns().hash_for(ino);
-        if let Some(hash) = current_hash.filter(|hash| Some(collab_types::ContentHash(*hash.as_bytes())) != version.content_hash) {
-            let hydrator = self.hydrator.clone(); let runtime = hydrator.runtime_handle.clone();
-            let current = tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash,0,u64::MAX))).map_err(|_| EIO)?;
-            if qdoc::Document::load(&current).is_ok() { return Err(libc::ENOTSUP); }
+        if let Some(hash) = current_hash.filter(|hash| {
+            Some(collab_types::ContentHash(*hash.as_bytes())) != version.content_hash
+        }) {
+            let hydrator = self.hydrator.clone();
+            let runtime = hydrator.runtime_handle.clone();
+            let current =
+                tokio::task::block_in_place(|| runtime.block_on(hydrator.read(hash, 0, u64::MAX)))
+                    .map_err(|_| EIO)?;
+            if qdoc::Document::load(&current).is_ok() {
+                return Err(libc::ENOTSUP);
+            }
         }
         let restored_hash = self.write_content_blocking(&data).map_err(|_| EIO)?;
         if restored_hash.map(|hash| *hash.as_bytes()) != version.content_hash.map(|hash| hash.0) {
@@ -4999,7 +5017,10 @@ impl Filesystem for QuickFS {
             return;
         }
         if name.to_str() == Some(collab_types::files::CHECKED_HISTORY_RESTORE_XATTR) {
-            match self.checked_restore_xattr(ino.0, value) { Ok(()) => reply.ok(), Err(errno) => reply.error(to_errno(errno)) }
+            match self.checked_restore_xattr(ino.0, value) {
+                Ok(()) => reply.ok(),
+                Err(errno) => reply.error(to_errno(errno)),
+            }
             return;
         }
         if name.to_str() == Some(crate::syncstate::AVAILABILITY_CONTROL_XATTR) {
@@ -5086,32 +5107,67 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        if let Some(name) = name.to_str().filter(|name| name.starts_with(collab_types::files::HISTORY_READ_XATTR)) {
+        if let Some(name) = name
+            .to_str()
+            .filter(|name| name.starts_with(collab_types::files::HISTORY_READ_XATTR))
+        {
             use collab_types::files::{FileHistoryReadQueryV1 as Query, FileHistoryReadResponseV1};
-            let query = match Query::parse_xattr(name) { Ok(query) => query, Err(error) => { reply.error(to_errno(history_read::errno(error))); return; } };
-            if let Query::Preview { frontier, version_id } = query {
+            let query = match Query::parse_xattr(name) {
+                Ok(query) => query,
+                Err(error) => {
+                    reply.error(to_errno(history_read::errno(error)));
+                    return;
+                }
+            };
+            if let Query::Preview {
+                frontier,
+                version_id,
+            } = query
+            {
                 match self.read_file_history_preview_at_frontier(ino.0, frontier, version_id) {
                     Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
                     Err(error) => reply.error(to_errno(history_read::errno(error))),
                 }
             } else {
-                let response = FileHistoryReadResponseV1 { schema_version: 1, result: self.read_file_history(ino.0, query) };
+                let response = FileHistoryReadResponseV1 {
+                    schema_version: 1,
+                    result: self.read_file_history(ino.0, query),
+                };
                 match serde_json::to_vec(&response) {
-                    Ok(bytes) if bytes.len() <= collab_types::files::MAX_HISTORY_READ_BYTES => reply_xattr_bytes(reply, &bytes, size),
+                    Ok(bytes) if bytes.len() <= collab_types::files::MAX_HISTORY_READ_BYTES => {
+                        reply_xattr_bytes(reply, &bytes, size)
+                    }
                     _ => reply.error(to_errno(EIO)),
                 }
             }
             return;
         }
         if name.to_str() == Some(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR) {
-            let projection = collab_types::files::CheckedHistoryReviewResponseV1 { schema_version: 1, result: self.checked_history_review(ino.0) };
-            match serde_json::to_vec(&projection) { Ok(bytes) => reply_xattr_bytes(reply, &bytes, size), Err(_) => reply.error(to_errno(EIO)) }
+            let projection = collab_types::files::CheckedHistoryReviewResponseV1 {
+                schema_version: 1,
+                result: self.checked_history_review(ino.0),
+            };
+            match serde_json::to_vec(&projection) {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(_) => reply.error(to_errno(EIO)),
+            }
             return;
         }
-        if let Some(id) = name.to_str().and_then(|name| name.strip_prefix(collab_types::files::CHECKED_HISTORY_RESULT_XATTR_PREFIX)) {
-            let Ok(id) = uuid::Uuid::parse_str(id) else { reply.error(to_errno(EINVAL)); return; };
-            let projection = collab_types::files::CheckedHistoryResponseV1 { schema_version: 1, outcome: self.checked_history_result(ino.0, id) };
-            match serde_json::to_vec(&projection) { Ok(bytes) => reply_xattr_bytes(reply, &bytes, size), Err(_) => reply.error(to_errno(EIO)) }
+        if let Some(id) = name.to_str().and_then(|name| {
+            name.strip_prefix(collab_types::files::CHECKED_HISTORY_RESULT_XATTR_PREFIX)
+        }) {
+            let Ok(id) = uuid::Uuid::parse_str(id) else {
+                reply.error(to_errno(EINVAL));
+                return;
+            };
+            let projection = collab_types::files::CheckedHistoryResponseV1 {
+                schema_version: 1,
+                outcome: self.checked_history_result(ino.0, id),
+            };
+            match serde_json::to_vec(&projection) {
+                Ok(bytes) => reply_xattr_bytes(reply, &bytes, size),
+                Err(_) => reply.error(to_errno(EIO)),
+            }
             return;
         }
         if let Some(version) = name
@@ -5405,8 +5461,12 @@ impl Filesystem for QuickFS {
             buf.extend_from_slice(crate::history::HISTORY_CONTROL_XATTR.as_bytes());
             buf.push(0);
             if self.replacement_transactions.is_some() {
-                buf.extend_from_slice(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes()); buf.push(0);
-                buf.extend_from_slice(collab_types::files::CHECKED_HISTORY_RESTORE_XATTR.as_bytes()); buf.push(0);
+                buf.extend_from_slice(collab_types::files::CHECKED_HISTORY_REVIEW_XATTR.as_bytes());
+                buf.push(0);
+                buf.extend_from_slice(
+                    collab_types::files::CHECKED_HISTORY_RESTORE_XATTR.as_bytes(),
+                );
+                buf.push(0);
             }
         }
         if ino.0 == crate::namespace::ROOT_INO && self.share_control_path.is_some() {

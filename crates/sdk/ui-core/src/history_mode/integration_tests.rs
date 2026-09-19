@@ -1460,28 +1460,65 @@ pub(crate) struct TopLegacyFixture {
 impl TopLegacyFixture {
     pub(crate) fn new() -> Self {
         let directories = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
-        let mut owners = directories.each_ref().map(|directory| crate::record::RecordOwners::new(directory.path().to_path_buf()));
+        let mut owners = directories
+            .each_ref()
+            .map(|directory| crate::record::RecordOwners::new(directory.path().to_path_buf()));
         let store = owners[0].open(RESTORABLE.app_id, "top-level").unwrap();
         let replacement = owners[1].open(RESTORABLE.app_id, "top-level").unwrap();
-        let checkout = crate::record::RecordCheckout::new(crate::RecordId::for_tab(813), crate::record::RecordKind::new("note"));
+        let checkout = crate::record::RecordCheckout::new(
+            crate::RecordId::for_tab(813),
+            crate::record::RecordKind::new("note"),
+        );
         for record in [&store, &replacement] {
-            record.reserve_record(&checkout).unwrap().initialize(|doc| { doc.put(ROOT, "body", "live").unwrap(); Ok(()) }).unwrap();
+            record
+                .reserve_record(&checkout)
+                .unwrap()
+                .initialize(|doc| {
+                    doc.put(ROOT, "body", "live").unwrap();
+                    Ok(())
+                })
+                .unwrap();
         }
-        let mut tile = Box::new(crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(TileEditor(
-            crate::widget::TextInput::from_document_string("body").with_id("owned-editor").with_accessible_name("owned editor"),
-        )))));
+        let mut tile = Box::new(crate::widget::TileHost::new(
+            crate::widget::TileContent::App(Box::new(TileEditor(
+                crate::widget::TextInput::from_document_string("body")
+                    .with_id("owned-editor")
+                    .with_accessible_name("owned editor"),
+            ))),
+        ));
         tile.bind_record(store.clone(), checkout.clone());
-        let source = HistorySourceRegistration::owned("document", RESTORABLE.app_id, tile.history_owner().unwrap()).unwrap();
+        let source = HistorySourceRegistration::owned(
+            "document",
+            RESTORABLE.app_id,
+            tile.history_owner().unwrap(),
+        )
+        .unwrap();
         let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
-        Self { store, replacement, checkout, tile, registration, _owners: owners, _directories: directories }
+        Self {
+            store,
+            replacement,
+            checkout,
+            tile,
+            registration,
+            _owners: owners,
+            _directories: directories,
+        }
     }
 }
-pub(crate) fn legacy_body(store: &crate::RecordStore, checkout: &crate::record::RecordCheckout) -> String {
+pub(crate) fn legacy_body(
+    store: &crate::RecordStore,
+    checkout: &crate::record::RecordCheckout,
+) -> String {
     use automerge::ReadDoc;
-    store.read_checked(&checkout.id, |doc| {
-        let (value, object) = doc.get(ROOT, "body").unwrap().unwrap();
-        value.to_str().map(str::to_owned).unwrap_or_else(|| doc.text(object).unwrap())
-    }).unwrap()
+    store
+        .read_checked(&checkout.id, |doc| {
+            let (value, object) = doc.get(ROOT, "body").unwrap().unwrap();
+            value
+                .to_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| doc.text(object).unwrap())
+        })
+        .unwrap()
 }
 
 #[test]
@@ -1489,39 +1526,125 @@ fn round1_top_level_frame_history_preserves_legacy_custody_and_stale_at_refusal(
     use crate::permissions::*;
     let mut fixture = TopLegacyFixture::new();
     let tile_pointer = std::ptr::from_mut(fixture.tile.as_mut());
-    let mut driver = Driver::from_managed_root(State::new(), ManagedRoot::new(fixture.tile, fixture.registration), (900, 650)).unwrap();
+    let mut driver = Driver::from_managed_root(
+        State::new(),
+        ManagedRoot::new(fixture.tile, fixture.registration),
+        (900, 650),
+    )
+    .unwrap();
     let allowed = PermissionContext::permissive();
     driver.set_permission_ctx(allowed.clone());
-    driver.state_mut().doc.put(ROOT, "unfinished outer", "pending").unwrap();
-    let outer = (driver.state_mut().doc.base_heads(), driver.state_mut().doc.pending_ops());
-    let before = fixture.store.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap();
+    driver
+        .state_mut()
+        .doc
+        .put(ROOT, "unfinished outer", "pending")
+        .unwrap();
+    let outer = (
+        driver.state_mut().doc.base_heads(),
+        driver.state_mut().doc.pending_ops(),
+    );
+    let before = fixture
+        .store
+        .read_history(&fixture.checkout.id, |_, history| history.revision())
+        .unwrap();
     let target = driver.a11y_node_named("owned editor").unwrap();
-    driver.perform_a11y_action(target, &crate::a11y::Action::SetValue("owned edit".into())).unwrap();
-    assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit", "top-level chrome must retain the actual legacy owner");
-    assert_eq!((driver.state_mut().doc.base_heads(), driver.state_mut().doc.pending_ops()), outer);
-    assert_eq!(fixture.store.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap(), before+1);
-    driver.set_permission_ctx(PermissionContext::from_capabilities(Actor::person(None, LOCAL_USER), vec![]));
-    assert!(driver.perform_a11y_action(target, &crate::a11y::Action::SetValue("denied".into())).is_err());
+    driver
+        .perform_a11y_action(target, &crate::a11y::Action::SetValue("owned edit".into()))
+        .unwrap();
+    assert_eq!(
+        legacy_body(&fixture.store, &fixture.checkout),
+        "owned edit",
+        "top-level chrome must retain the actual legacy owner"
+    );
+    assert_eq!(
+        (
+            driver.state_mut().doc.base_heads(),
+            driver.state_mut().doc.pending_ops()
+        ),
+        outer
+    );
+    assert_eq!(
+        fixture
+            .store
+            .read_history(&fixture.checkout.id, |_, history| history.revision())
+            .unwrap(),
+        before + 1
+    );
+    driver.set_permission_ctx(PermissionContext::from_capabilities(
+        Actor::person(None, LOCAL_USER),
+        vec![],
+    ));
+    assert!(
+        driver
+            .perform_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()))
+            .is_err()
+    );
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
     driver.set_permission_ctx(allowed);
     // Exclusive runner owns this retained box, with no borrowed node/widget refs.
-    unsafe { (*tile_pointer).bind_record(fixture.replacement.clone(), fixture.checkout.clone()); }
+    unsafe {
+        (*tile_pointer).bind_record(fixture.replacement.clone(), fixture.checkout.clone());
+    }
     driver.relayout();
     assert_ne!(driver.a11y_node_named("owned editor"), Some(target));
-    assert!(driver.perform_a11y_action(target, &crate::a11y::Action::SetValue("stale".into())).is_err());
+    assert!(
+        driver
+            .perform_a11y_action(target, &crate::a11y::Action::SetValue("stale".into()))
+            .is_err()
+    );
     assert_eq!(legacy_body(&fixture.replacement, &fixture.checkout), "live");
     // Owner replacement invalidates the old registration; install its actual new witness.
     let owner = unsafe { (*tile_pointer).history_owner().unwrap() };
-    driver.install_history(HistoryRegistration::new(&RESTORABLE, vec![HistorySourceRegistration::owned("document", RESTORABLE.app_id, owner).unwrap()]).unwrap()).unwrap();
+    driver
+        .install_history(
+            HistoryRegistration::new(
+                &RESTORABLE,
+                vec![
+                    HistorySourceRegistration::owned("document", RESTORABLE.app_id, owner).unwrap(),
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
     let fresh = driver.a11y_node_named("owned editor").unwrap();
     assert_ne!(fresh, target);
-    assert!(driver.perform_a11y_action(target, &crate::a11y::Action::SetValue("stale allowed".into())).is_err());
-    let replacement_revision = fixture.replacement.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap();
-    driver.perform_a11y_action(fresh, &crate::a11y::Action::SetValue("replacement edit".into())).unwrap();
-    assert_eq!(legacy_body(&fixture.replacement, &fixture.checkout), "replacement edit");
+    assert!(
+        driver
+            .perform_a11y_action(
+                target,
+                &crate::a11y::Action::SetValue("stale allowed".into())
+            )
+            .is_err()
+    );
+    let replacement_revision = fixture
+        .replacement
+        .read_history(&fixture.checkout.id, |_, history| history.revision())
+        .unwrap();
+    driver
+        .perform_a11y_action(
+            fresh,
+            &crate::a11y::Action::SetValue("replacement edit".into()),
+        )
+        .unwrap();
+    assert_eq!(
+        legacy_body(&fixture.replacement, &fixture.checkout),
+        "replacement edit"
+    );
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit");
-    assert_eq!(fixture.replacement.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap(), replacement_revision+1);
-    assert_eq!((driver.state_mut().doc.base_heads(), driver.state_mut().doc.pending_ops()), outer);
+    assert_eq!(
+        fixture
+            .replacement
+            .read_history(&fixture.checkout.id, |_, history| history.revision())
+            .unwrap(),
+        replacement_revision + 1
+    );
+    assert_eq!(
+        (
+            driver.state_mut().doc.base_heads(),
+            driver.state_mut().doc.pending_ops()
+        ),
+        outer
+    );
 }
 
 thread_local! {

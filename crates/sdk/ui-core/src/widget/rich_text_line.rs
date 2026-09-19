@@ -441,15 +441,31 @@ impl RichTextLine {
             boundaries.dedup();
             for endpoints in boundaries.windows(2) {
                 let &[start, end] = endpoints else { continue };
-                let Some(slice) = text.get(start..end) else { continue };
-                let syntax = self.transient_colors.iter().rev()
+                let Some(slice) = text.get(start..end) else {
+                    continue;
+                };
+                let syntax = self
+                    .transient_colors
+                    .iter()
+                    .rev()
                     .find(|color| color.range.start <= start && color.range.end >= end)
-                    .and_then(|color| self.transient_rgb.get(color.role as usize).copied().flatten());
+                    .and_then(|color| {
+                        self.transient_rgb
+                            .get(color.role as usize)
+                            .copied()
+                            .flatten()
+                    });
                 let color = if segment.code || segment.link.is_some() || segment.external_link {
                     self.accent_rgb
-                } else { syntax };
-                attributes.spans.push(RichSpan::new(slice)
-                    .bold(segment.bold).italic(segment.italic).color(color));
+                } else {
+                    syntax
+                };
+                attributes.spans.push(
+                    RichSpan::new(slice)
+                        .bold(segment.bold)
+                        .italic(segment.italic)
+                        .color(color),
+                );
             }
             if segment.underline {
                 attributes.underlines.push(range);
@@ -471,10 +487,17 @@ impl RichTextLine {
         let color = theme.tokens.colors.accent[5];
         self.accent_rgb = Some([color.r(), color.g(), color.b()]);
         let colors = &theme.tokens.colors;
-        self.transient_rgb = [colors.accent[6], colors.accent[7], colors.semantic.info,
-            colors.semantic.success, colors.semantic.warning, colors.text_dim,
-            colors.semantic.danger, colors.neutral[7]]
-            .map(|color| Some([color.r(), color.g(), color.b()]));
+        self.transient_rgb = [
+            colors.accent[6],
+            colors.accent[7],
+            colors.semantic.info,
+            colors.semantic.success,
+            colors.semantic.warning,
+            colors.text_dim,
+            colors.semantic.danger,
+            colors.neutral[7],
+        ]
+        .map(|color| Some([color.r(), color.g(), color.b()]));
         self.refresh_attributes();
     }
 
@@ -633,8 +656,6 @@ impl Widget for RichTextLine {
         self.inner.apply_layout_external(rect);
     }
 
-
-
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -646,7 +667,9 @@ impl Widget for RichTextLine {
         self.prepare_attributes(theme);
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
-        if self.wrap { self.draw_wrapped_mark_decorations(scene, transform, theme); }
+        if self.wrap {
+            self.draw_wrapped_mark_decorations(scene, transform, theme);
+        }
     }
 
     fn handle_event(
@@ -1352,17 +1375,36 @@ mod tests {
     fn user_rich_mark_edit_emits_one_dirty_edge_but_projection_and_pending_marks_do_not() {
         let mut line = RichTextLine::new().with_text("text");
         let mut doc = AutoCommit::new();
-        assert!(Widget::perform_action(line.inner_mut(), &crate::a11y::Action::SetSelection { anchor: 0, focus: 4 }, &mut doc, &automerge::ROOT));
+        assert!(Widget::perform_action(
+            line.inner_mut(),
+            &crate::a11y::Action::SetSelection {
+                anchor: 0,
+                focus: 4
+            },
+            &mut doc,
+            &automerge::ROOT
+        ));
         let _ = line.take_dirty(); // Selection has its own presentation edge.
         line.toggle_mark(Mark::Bold);
         assert_eq!(line.take_dirty().as_deref(), Some("text"));
         assert!(line.take_dirty().is_none());
         line.set_marks(Vec::new());
         assert!(line.take_dirty().is_none());
-        assert!(Widget::perform_action(line.inner_mut(), &crate::a11y::Action::SetSelection { anchor: 4, focus: 4 }, &mut doc, &automerge::ROOT));
+        assert!(Widget::perform_action(
+            line.inner_mut(),
+            &crate::a11y::Action::SetSelection {
+                anchor: 4,
+                focus: 4
+            },
+            &mut doc,
+            &automerge::ROOT
+        ));
         let _ = line.take_dirty(); // Selection has its own presentation edge.
         line.toggle_mark(Mark::Bold);
-        assert!(line.take_dirty().is_none(), "pending typing style changes no content yet");
+        assert!(
+            line.take_dirty().is_none(),
+            "pending typing style changes no content yet"
+        );
     }
 
     #[test]

@@ -200,7 +200,9 @@ pub(crate) fn prepare_frame<T>(
     buffers: &mut BufferPool<T>,
     now: std::time::Instant,
 ) -> Result<bool, mpsc::TryRecvError> {
-    if !retry.allows(now) || !buffers.prepare()? { return Ok(false); }
+    if !retry.allows(now) || !buffers.prepare()? {
+        return Ok(false);
+    }
     retry.admitted();
     Ok(true)
 }
@@ -294,7 +296,8 @@ pub fn spawn_render_thread(
             let mut target_valid = false;
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             loop {
-                let (message, receive_bounds) = timing::around(native_timing.is_some(), || rx.recv());
+                let (message, receive_bounds) =
+                    timing::around(native_timing.is_some(), || rx.recv());
                 let before_receive = receive_bounds.and_then(|bounds| bounds.before);
                 let received = receive_bounds.and_then(|bounds| bounds.after);
                 let Ok(msg) = message else { break };
@@ -329,10 +332,15 @@ pub fn spawn_render_thread(
                 let worker_timing =
                     present_origin.map(|origin| (origin, std::time::Instant::now()));
                 if let Some(observer) = native_timing {
-                    timing::handoff::received(&mut handoff, frame_ix, cpu_frame_id,
-                        before_receive, received, |row| observer.log_native_handoff(row));
+                    timing::handoff::received(
+                        &mut handoff,
+                        frame_ix,
+                        cpu_frame_id,
+                        before_receive,
+                        received,
+                        |row| observer.log_native_handoff(row),
+                    );
                 }
-
 
                 // Resize on the worker so main never touches wgpu state after
                 // spawn — simpler than an explicit Resize variant, and keeps
@@ -398,7 +406,11 @@ pub fn spawn_render_thread(
                     presentation.as_ref(),
                 );
                 let render_host_end = native_timing.and_then(|_| timing::capture());
-                timing::handoff::set(&mut handoff, timing::handoff::Stage::RenderEnd, render_host_end);
+                timing::handoff::set(
+                    &mut handoff,
+                    timing::handoff::Stage::RenderEnd,
+                    render_host_end,
+                );
                 let render_duration = render_start.map(|start| start.elapsed());
                 if let Some(observer) = native_timing {
                     observer.log_native_worker(
@@ -441,7 +453,10 @@ pub fn spawn_render_thread(
                 let _ = outcome_tx.send(outcome);
                 timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterOutcomeSend);
                 notify_render_completion(&waiting, wake.as_ref(), outcome);
-                timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterCompletionNotify);
+                timing::handoff::record(
+                    &mut handoff,
+                    timing::handoff::Stage::AfterCompletionNotify,
+                );
                 if outcome == FrameOutcome::SurfaceGone {
                     break;
                 }
@@ -1092,64 +1107,151 @@ mod admission_tests {
         use automerge::transaction::Transactable;
         // The primary is the sole owner of this retained root's update/sync;
         // auxiliary painting observes its Text projection rather than syncing.
-        struct Root { text: crate::widget::Text, pending: Option<&'static str> }
+        struct Root {
+            text: crate::widget::Text,
+            pending: Option<&'static str>,
+        }
         impl Widget for Root {
             fn update(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) -> bool {
-                if let Some(value) = self.pending.take() { doc.put(path, "label", value).unwrap(); true } else { false }
+                if let Some(value) = self.pending.take() {
+                    doc.put(path, "label", value).unwrap();
+                    true
+                } else {
+                    false
+                }
             }
-            fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) { self.text.sync(doc, path); }
-            fn build_layout(&mut self, tree: &mut taffy::TaffyTree<()>, theme: &crate::Theme, map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>) -> taffy::NodeId { self.text.build_layout(tree, theme, map) }
-            fn apply_layout(&mut self, tree: &taffy::TaffyTree<()>, node: taffy::NodeId, offset: vello::kurbo::Point) { self.text.apply_layout(tree, node, offset); }
-            fn draw(&mut self, scene: &mut Scene, transform: vello::kurbo::Affine, renderer: &mut crate::text_render::TextRenderer, theme: &crate::Theme, presence: &crate::presence::PresenceCtx) { self.text.draw(scene, transform, renderer, theme, presence); }
-            fn handle_event(&mut self, event: &winit::event::WindowEvent, scale: f64, modifiers: &winit::event::Modifiers, doc: &mut automerge::AutoCommit, path: &automerge::ObjId, handled: &mut bool, focus: &mut Option<taffy::NodeId>, node: taffy::NodeId, tree: &taffy::TaffyTree<()>) { self.text.handle_event(event, scale, modifiers, doc, path, handled, focus, node, tree); }
-            fn get_rect(&self) -> Rect { self.text.get_rect() }
-            fn name(&self) -> &'static str { "shared-projection" }
-            fn accessibility(&self) -> Option<crate::a11y::AccessNode> { self.text.accessibility() }
+            fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+                self.text.sync(doc, path);
+            }
+            fn build_layout(
+                &mut self,
+                tree: &mut taffy::TaffyTree<()>,
+                theme: &crate::Theme,
+                map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+            ) -> taffy::NodeId {
+                self.text.build_layout(tree, theme, map)
+            }
+            fn apply_layout(
+                &mut self,
+                tree: &taffy::TaffyTree<()>,
+                node: taffy::NodeId,
+                offset: vello::kurbo::Point,
+            ) {
+                self.text.apply_layout(tree, node, offset);
+            }
+            fn draw(
+                &mut self,
+                scene: &mut Scene,
+                transform: vello::kurbo::Affine,
+                renderer: &mut crate::text_render::TextRenderer,
+                theme: &crate::Theme,
+                presence: &crate::presence::PresenceCtx,
+            ) {
+                self.text.draw(scene, transform, renderer, theme, presence);
+            }
+            fn handle_event(
+                &mut self,
+                event: &winit::event::WindowEvent,
+                scale: f64,
+                modifiers: &winit::event::Modifiers,
+                doc: &mut automerge::AutoCommit,
+                path: &automerge::ObjId,
+                handled: &mut bool,
+                focus: &mut Option<taffy::NodeId>,
+                node: taffy::NodeId,
+                tree: &taffy::TaffyTree<()>,
+            ) {
+                self.text.handle_event(
+                    event, scale, modifiers, doc, path, handled, focus, node, tree,
+                );
+            }
+            fn get_rect(&self) -> Rect {
+                self.text.get_rect()
+            }
+            fn name(&self) -> &'static str {
+                "shared-projection"
+            }
+            fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+                self.text.accessibility()
+            }
         }
-        let mut root = Root { text: crate::widget::Text::from_document_string("label"), pending: Some("initial") };
+        let mut root = Root {
+            text: crate::widget::Text::from_document_string("label"),
+            pending: Some("initial"),
+        };
         let mut doc = automerge::AutoCommit::new();
         root.update(&mut doc, &automerge::ROOT);
         root.sync(&mut doc, &automerge::ROOT);
         let now = std::time::Instant::now();
         let mut retry = retry::RenderRetryState::default();
-        for _ in 0..8 { retry.observe(FrameOutcome::Occluded, now); }
+        for _ in 0..8 {
+            retry.observe(FrameOutcome::Occluded, now);
+        }
         let (tx, rx) = mpsc::sync_channel(2);
         let mut buffers = BufferPool::new(rx, Arc::new(AtomicBool::new(false)));
-        for (index, value) in ["animation tick", "auxiliary input"].into_iter().enumerate() {
+        for (index, value) in ["animation tick", "auxiliary input"]
+            .into_iter()
+            .enumerate()
+        {
             let tick = now + retry::FRAME_INTERVAL * (index as u32 + 1);
-            retry.observe_for_shared_root(FrameOutcome::Occluded, tick - retry::FRAME_INTERVAL, true);
+            retry.observe_for_shared_root(
+                FrameOutcome::Occluded,
+                tick - retry::FRAME_INTERVAL,
+                true,
+            );
             tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
             root.pending = Some(value);
             let admitted_at = if index == 1 {
                 assert!(retry.known_occluded());
-                assert!(retry.request_probe(), "auxiliary input also probes the shared primary");
+                assert!(
+                    retry.request_probe(),
+                    "auxiliary input also probes the shared primary"
+                );
                 tick - retry::FRAME_INTERVAL
-            } else { tick };
+            } else {
+                tick
+            };
             if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
                 assert!(root.update(&mut doc, &automerge::ROOT));
                 root.sync(&mut doc, &automerge::ROOT);
                 let _ = buffers.recv().unwrap();
             }
-            assert_eq!(root.accessibility().unwrap().name.as_deref(), Some(value),
-                "visible sibling must observe each shared update, not a 250ms-old projection");
+            assert_eq!(
+                root.accessibility().unwrap().name.as_deref(),
+                Some(value),
+                "visible sibling must observe each shared update, not a 250ms-old projection"
+            );
         }
-        for _ in 0..8 { retry.observe_for_shared_root(FrameOutcome::Occluded, now, true); }
-        assert!(retry.known_occluded(), "a sibling must not erase primary occlusion history");
+        for _ in 0..8 {
+            retry.observe_for_shared_root(FrameOutcome::Occluded, now, true);
+        }
+        assert!(
+            retry.known_occluded(),
+            "a sibling must not erase primary occlusion history"
+        );
         retry.observe_for_shared_root(FrameOutcome::Occluded, now, false);
-        assert_eq!(retry.deadline(), Some(now + std::time::Duration::from_millis(250)));
+        assert_eq!(
+            retry.deadline(),
+            Some(now + std::time::Duration::from_millis(250))
+        );
     }
 
     #[test]
     fn occlusion_admission_preserves_dirty_payload_and_probe_until_buffers_return() {
         let now = std::time::Instant::now();
         let mut retry = retry::RenderRetryState::default();
-        for _ in 0..8 { retry.observe(FrameOutcome::Occluded, now); }
+        for _ in 0..8 {
+            retry.observe(FrameOutcome::Occluded, now);
+        }
         let (tx, rx) = mpsc::sync_channel(2);
         let waiting = Arc::new(AtomicBool::new(false));
         let mut pool = BufferPool::new(rx, waiting.clone());
         tx.send(("scene", vec![1, 2, 3])).unwrap();
         assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert!(!pool.redraw_deferred(), "occlusion must not arm a false buffer wait");
+        assert!(
+            !pool.redraw_deferred(),
+            "occlusion must not arm a false buffer wait"
+        );
         retry.request_probe();
         retry.observe(FrameOutcome::Occluded, now); // Older completion drained after input.
         assert!(prepare_frame(&mut retry, &mut pool, now).unwrap());
@@ -1157,7 +1259,10 @@ mod admission_tests {
         retry.observe(FrameOutcome::Occluded, now);
         retry.request_probe();
         assert!(!prepare_frame(&mut retry, &mut pool, now).unwrap());
-        assert!(retry.allows(now), "buffer deferral must preserve explicit probe");
+        assert!(
+            retry.allows(now),
+            "buffer deferral must preserve explicit probe"
+        );
         tx.send(("latest dirty scene", vec![4, 5])).unwrap();
         notify_render_completion(&waiting, &|| {}, FrameOutcome::Occluded);
         retry.observe(FrameOutcome::Occluded, now);

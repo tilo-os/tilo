@@ -9,7 +9,6 @@ fn malformed_fixture(doc: &mut AutoCommit) {
         .unwrap();
 }
 
-
 fn fixture() -> (AutoCommit, automerge::ChangeHash, String) {
     let mut d = AutoCommit::new();
     let mut s = crate::seed::starter_library().remove(0);
@@ -81,4 +80,6 @@ fn shared_navigation_reaches_other_historical_entries_at_both_widths() {
     assert_page_round_trip(&mut d, &first, &second);
 }
 
-fn test_root() -> Box<dyn ui::widget::Widget> { crate::app_root() }
+fn test_root() -> Box<dyn ui::widget::Widget> {
+    crate::app_root()
+}

@@ -727,8 +727,9 @@ impl Presentation {
         draw_presenter_current(
             scene, transform, text, theme, frame, colors, palette, current, &m,
         );
-        let next =
-            draw_presenter_next(scene, transform, text, theme, frame, colors, palette, right, &m);
+        let next = draw_presenter_next(
+            scene, transform, text, theme, frame, colors, palette, right, &m,
+        );
         draw_presenter_notes(scene, transform, text, frame, colors, right, body, next, &m);
         draw_presenter_footer(scene, transform, text, frame, colors, palette, outer, &m);
     }
@@ -771,8 +772,12 @@ impl Presentation {
         // and is elided rather than running under the clock.
         let right_w = f64::from(clock_width).max(f64::from(position_width));
         let title_w = (frame.rect.width() - 2.0 * outer - right_w - m.s4).max(0.0);
-        let title =
-            text.elide_to_width_weighted(&frame.deck.title, FONT_TITLE, title_w as f32, TextWeight::Bold);
+        let title = text.elide_to_width_weighted(
+            &frame.deck.title,
+            FONT_TITLE,
+            title_w as f32,
+            TextWeight::Bold,
+        );
         text.draw_text_weighted(
             scene,
             &title,
@@ -944,7 +949,10 @@ fn draw_progress(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Current-slide painting combines render context, presentation content, chrome colors, slide palette, and presenter geometry."
+)]
 fn draw_presenter_current(
     scene: &mut Scene,
     transform: Affine,
@@ -965,8 +973,12 @@ fn draw_presenter_current(
         None,
         TextWeight::Semibold,
     );
-    let destination =
-        fit_slide_top(Rect::new(area.x0, area.y0 + m.caption_adv(), area.x1, area.y1));
+    let destination = fit_slide_top(Rect::new(
+        area.x0,
+        area.y0 + m.caption_adv(),
+        area.x1,
+        area.y1,
+    ));
     chrome::fill_rrect(
         scene,
         transform,
@@ -999,7 +1011,10 @@ fn draw_presenter_current(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Next-slide painting combines render context, deck position, chrome colors, slide palette, and presenter geometry."
+)]
 fn draw_presenter_next(
     scene: &mut Scene,
     transform: Affine,
@@ -1063,7 +1078,10 @@ fn draw_presenter_next(
     destination
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Speaker-note painting uses scene/transform/text, slide content and colors, adjacent panel bounds, and caption metrics."
+)]
 fn draw_presenter_notes(
     scene: &mut Scene,
     transform: Affine,
@@ -1131,8 +1149,7 @@ fn draw_presenter_footer(
         &hints,
         FONT_FOOTER,
         colors.text_dim,
-        transform
-            * Affine::translate((frame.rect.x0 + outer, m.footer_text_top(frame.rect.y1))),
+        transform * Affine::translate((frame.rect.x0 + outer, m.footer_text_top(frame.rect.y1))),
         None,
         TextWeight::Regular,
     );

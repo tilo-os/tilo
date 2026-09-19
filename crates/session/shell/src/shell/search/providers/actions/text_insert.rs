@@ -174,7 +174,6 @@ pub fn apply(st: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ReadDoc as _;
     use crate::shell::chrome_state::Chrome;
     use crate::shell::notes_app::BODY_KEY;
     use crate::shell::search::action_api::ArgValue;
@@ -183,6 +182,7 @@ mod tests {
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
     };
     use crate::shell::tab_documents::tab_body;
+    use automerge::ReadDoc as _;
     use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
     use std::sync::Arc;

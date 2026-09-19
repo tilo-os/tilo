@@ -448,8 +448,16 @@ impl CalculatorApp {
         } else {
             draw::fill_rrect(scene, t, self.rad_rect, 8.0, c.accent[5]);
         }
-        let rad_col = if self.model.deg { c.text_dim } else { on_accent };
-        let deg_col = if self.model.deg { on_accent } else { c.text_dim };
+        let rad_col = if self.model.deg {
+            c.text_dim
+        } else {
+            on_accent
+        };
+        let deg_col = if self.model.deg {
+            on_accent
+        } else {
+            c.text_dim
+        };
         draw::text_in(
             scene,
             tr,
@@ -2299,7 +2307,10 @@ mod tests {
             &PresenceCtx::empty(),
         );
         let labels = app.topbar_labels;
-        assert!(labels.full > 0.0 && labels.toggle > 0.0, "labels measured: {labels:?}");
+        assert!(
+            labels.full > 0.0 && labels.toggle > 0.0,
+            "labels measured: {labels:?}"
+        );
         let seg_label = if app.seg_short {
             labels.short
         } else {

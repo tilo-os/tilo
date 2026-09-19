@@ -400,7 +400,10 @@ impl Invalidation {
     }
 }
 
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "recovery mode, backup verification/acknowledgement, modal entry points and presentation preferences are separate state flags"
+)]
 pub struct OnboardingView {
     flow: Onboarding,
     context: OnboardingContext,
@@ -1482,7 +1485,10 @@ impl OnboardingView {
         )
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the connect page keeps recovery warnings, nearby-device status/actions and encrypted-backup inputs in one composition"
+    )]
     fn connect(&self, theme: &Theme) -> Box<dyn Widget> {
         let compact = self.rect.height() <= 540.0;
         let path = TextInput::new(Vec::new())
@@ -1628,7 +1634,10 @@ impl OnboardingView {
         Box::new(body.push(Box::new(Card::new(Box::new(list)))))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the backup page keeps identity-creation errors and current or restored backup-verification feedback in one composition"
+    )]
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
@@ -2788,7 +2797,10 @@ impl Widget for OnboardingView {
         self.draw_picker(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "onboarding forwards the Widget event, CRDT, focus and layout context to its picker and composed child controls"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -4222,7 +4234,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the fixture crosses identity pages and error states with laptop sizes, text scaling and high contrast to check action alignment"
+    )]
     fn host_identity_actions_stay_visible_and_aligned_at_supported_laptop_sizes() {
         let scenarios: &[(&[&str], &[&str], bool)] = &[
             (

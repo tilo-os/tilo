@@ -405,7 +405,10 @@ impl Slider {
             for (r, col) in [
                 (
                     knob_radius + 4.0,
-                    crate::tokens::colors::Colors::hairline_on(unfilled, crate::chrome::HAIRLINE_ALPHA),
+                    crate::tokens::colors::Colors::hairline_on(
+                        unfilled,
+                        crate::chrome::HAIRLINE_ALPHA,
+                    ),
                 ),
                 (
                     knob_radius + 2.0,

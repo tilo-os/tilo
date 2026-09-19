@@ -20,9 +20,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::text_metrics::renderer_type_size;
 use crate::icons::Icon;
 use crate::platform::{DialogActionOrder, PlatformConventions};
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::button::{Button, ButtonFace, ButtonStyle};

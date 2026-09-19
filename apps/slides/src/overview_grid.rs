@@ -64,7 +64,12 @@ impl OverviewGrid {
     }
 
     pub(crate) fn geometry(&self, window: Rect, count: usize) -> (Rect, Vec<(usize, Rect)>, f64) {
-        let area = Rect::new(window.x0, window.y0 + self.header_h.get(), window.x1, window.y1);
+        let area = Rect::new(
+            window.x0,
+            window.y0 + self.header_h.get(),
+            window.x1,
+            window.y1,
+        );
         let pad = PAD;
         let gap = 26.0;
         let avail_w = (area.width() - 2.0 * pad).max(200.0);
@@ -119,7 +124,10 @@ impl OverviewGrid {
             .map(|(index, _)| index)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The overview paints deck thumbnails using window bounds, current-slide selection, slide palette, and image store beside render context."
+    )]
     pub(crate) fn draw(
         &self,
         scene: &mut Scene,

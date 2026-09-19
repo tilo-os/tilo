@@ -218,7 +218,10 @@ impl InviteAcceptScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The invite screen forwards the Widget event, scale, modifiers, CRDT path, handled/focus outputs, node, and layout to its URL input."
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -273,8 +276,7 @@ impl InviteAcceptScreen {
                     forward(&mut self.url, handled);
                     claim_focus = true;
                     *handled = true;
-                }
-                else if self.decline_rect.contains(self.last_cursor) {
+                } else if self.decline_rect.contains(self.last_cursor) {
                     self.decline();
                     *handled = true;
                     return ScreenOutcome::Back;
@@ -434,13 +436,7 @@ impl InviteAcceptScreen {
             rows.gap(sp.s1);
             expires = Some(rows.row(line_height(text_renderer, theme, Role::Caption)));
         } else if let Some((text, role)) = self.status_text() {
-            status = Some(rows.row(paragraph_height(
-                text_renderer,
-                theme,
-                role,
-                &text,
-                width,
-            )));
+            status = Some(rows.row(paragraph_height(text_renderer, theme, role, &text, width)));
         }
         let error = self.accept_error.as_deref().map(|err| {
             rows.gap(sp.s3);
@@ -755,7 +751,10 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_eq!(s.url(), url, "the value landed in the shared field");
-        assert!(s.parsed().is_none(), "not yet re-read: no layout pass has run");
+        assert!(
+            s.parsed().is_none(),
+            "not yet re-read: no layout pass has run"
+        );
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map = HashMap::new();
         let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -769,7 +768,10 @@ mod tests {
             )
             .expect("layout");
         s.apply_layout(&taffy, node, Point::ORIGIN);
-        assert!(s.parsed().is_some(), "the layout pass re-parsed the edited link");
+        assert!(
+            s.parsed().is_some(),
+            "the layout pass re-parsed the edited link"
+        );
         let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
         assert_eq!(ids, vec![URL_INPUT_ID]);
         assert!(

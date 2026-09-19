@@ -108,7 +108,12 @@ impl HistoryPreview for LibraryPreview {
         {
             let y = self.bounds.y0 - self.view.scroll.1;
             let (x0, x1) = (self.bounds.x0 + inset, self.bounds.x1 - inset);
-            let row = Rect::new(x0, y + inset, x1, y + inset + f64::from(crate::widgets::ROW_H));
+            let row = Rect::new(
+                x0,
+                y + inset,
+                x1,
+                y + inset + f64::from(crate::widgets::ROW_H),
+            );
             crate::widgets::ThemeRow::from_spec(s, true).draw_snapshot(scene, t, tr, theme, row);
             self.specimen.set_spec(s);
             let height = f64::from(self.specimen.narrow_intrinsic_height(theme.text_scale));

@@ -187,7 +187,10 @@ impl ExpandModal {
     /// One labelled input row per placeholder, or a "no variables" note
     /// when the snippet has none. Records `field_rects` for hit-testing
     /// and returns the y cursor for the next section.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Placeholder rows need render context, panel bounds, padding, and the incoming vertical cursor to place inputs and record their hits."
+    )]
     fn draw_fields(
         &mut self,
         scene: &mut Scene,
@@ -224,7 +227,13 @@ impl ExpandModal {
                 row_y + 30.0,
             );
             let focused = i == self.focused;
-            ui::surface::card(scene, t, input, f64::from(theme.tokens.radii.md), c.surfaces.base);
+            ui::surface::card(
+                scene,
+                t,
+                input,
+                f64::from(theme.tokens.radii.md),
+                c.surfaces.base,
+            );
             if focused {
                 draw::stroke_round(
                     scene,
@@ -267,7 +276,10 @@ impl ExpandModal {
     }
 
     /// The live "PREVIEW" panel: the substituted body, syntax-highlighted.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The substituted snippet preview needs render context, panel bounds, padding, and the vertical cursor left by the variable fields."
+    )]
     fn draw_preview(
         &self,
         scene: &mut Scene,
@@ -296,7 +308,13 @@ impl ExpandModal {
 
         // Preview card with highlighted, substituted body.
         let card = Rect::new(panel.x0 + pad, y, panel.x1 - pad, panel.y1 - 72.0);
-        ui::surface::card(scene, t, card, f64::from(theme.tokens.radii.md), c.neutral[0]);
+        ui::surface::card(
+            scene,
+            t,
+            card,
+            f64::from(theme.tokens.radii.md),
+            c.neutral[0],
+        );
         let preview = self.preview();
         let mut cy = card.y0 + 12.0;
         for line in preview.lines() {
@@ -374,7 +392,10 @@ impl ExpandModal {
     }
 
     /// Route a window event. Returns the modal's lifecycle outcome.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Snippet fields forward event, scale, pointer, modifiers, CRDT path, focus output, node, and layout into their shared text inputs."
+    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,

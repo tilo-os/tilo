@@ -356,8 +356,10 @@ const CHROME_BORDER_BASELINE: &str = "tests/chrome_declared_border_baseline.txt"
 fn declared_border_patterns() -> Vec<(&'static str, Regex, &'static str)> {
     vec![(
         "declared_border",
-        Regex::new(r"\.border_standard\b|\.border_strong\b|overlay_border_strong|colors\.neutral\[")
-            .unwrap(),
+        Regex::new(
+            r"\.border_standard\b|\.border_strong\b|overlay_border_strong|colors\.neutral\[",
+        )
+        .unwrap(),
         "declared border/ramp token on a chrome surface (HIG §9.5) — derive the edge with \
          ui::surface::{edge_on, card, separator} or ui::chrome::{panel_border, \
          chrome_hairline, selection_tier}",
@@ -375,7 +377,10 @@ fn declared_border_pattern_matches_the_shapes_it_names() {
         "c.overlay_border_strong",
         "colors.neutral[3]",
     ] {
-        assert!(re.is_match(hit), "{hit:?} is a declared edge and must match");
+        assert!(
+            re.is_match(hit),
+            "{hit:?} is a declared edge and must match"
+        );
     }
     for miss in [
         "theme.border_focus",
@@ -384,7 +389,10 @@ fn declared_border_pattern_matches_the_shapes_it_names() {
         "ui::surface::edge_on(fill)",
         "let neutral = colors.text_dim;",
     ] {
-        assert!(!re.is_match(miss), "{miss:?} is not a declared edge and must not match");
+        assert!(
+            !re.is_match(miss),
+            "{miss:?} is not a declared edge and must not match"
+        );
     }
 }
 
@@ -405,7 +413,10 @@ fn declared_borders_in_chrome_do_not_grow() {
         }
     }
     walk(&repository.join("crates/session/shell/src"), &mut files);
-    assert!(!files.is_empty(), "chrome edge audit found no files to scan");
+    assert!(
+        !files.is_empty(),
+        "chrome edge audit found no files to scan"
+    );
     files.sort();
 
     let patterns = declared_border_patterns();

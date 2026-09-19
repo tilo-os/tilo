@@ -2151,15 +2151,14 @@ fn folder_status_and_details_adapt_to_phone_geometry() {
     assert!(layout.close.is_some_and(|rect| rect.width() >= 32.0));
 }
 
-
 #[test]
 fn edited_content_effect_stores_and_returns_the_exact_transformed_png() {
     let original = pixels::Rgba::new(
         3,
         2,
         vec![
-            1, 10, 0, 255, 2, 10, 0, 255, 3, 10, 0, 255, 1, 20, 0, 255, 2, 20, 0, 255, 3, 20,
-            0, 255,
+            1, 10, 0, 255, 2, 10, 0, 255, 3, 10, 0, 255, 1, 20, 0, 255, 2, 20, 0, 255, 3, 20, 0,
+            255,
         ],
     )
     .expect("asymmetric source");
@@ -2255,7 +2254,6 @@ fn edited_content_effect_stores_and_returns_the_exact_transformed_png() {
     );
 }
 
-
 #[test]
 fn justified_timeline_preserves_aspects_and_never_crosses_a_day() {
     let item = |id: &str, day: &str, aspect_ratio| TimelinePhoto {
@@ -2306,7 +2304,6 @@ fn justified_timeline_preserves_aspects_and_never_crosses_a_day() {
     );
 }
 
-
 #[test]
 fn edited_content_effect_rejects_missing_or_misdirected_source_bytes() {
     let missing = "f".repeat(64);
@@ -2345,7 +2342,6 @@ fn edited_content_effect_rejects_missing_or_misdirected_source_bytes() {
         );
     }
 }
-
 
 #[test]
 fn density_reanchors_the_same_first_photo() {
@@ -2404,7 +2400,6 @@ fn density_reanchors_the_same_first_photo() {
     assert!((restored.y - screen_y).abs() < 0.001);
 }
 
-
 #[test]
 fn date_index_boundaries_are_chronological_and_mark_year_changes() {
     let item = |id: &str, day: &str| TimelinePhoto {
@@ -2438,7 +2433,6 @@ fn date_index_boundaries_are_chronological_and_mark_year_changes() {
     assert_eq!(timeline_date_label(&markers[1].0), "Dec 31, 2025");
 }
 
-
 #[test]
 fn toolbar_capsules_and_status_band_contain_their_text_at_any_scale() {
     assert_eq!(btn_h(1.0), BTN_H, "1× keeps the authored capsule");
@@ -2460,7 +2454,6 @@ fn toolbar_capsules_and_status_band_contain_their_text_at_any_scale() {
     // Icon-only items stay square at every scale.
     assert_eq!(item_width(Face::IconOnly, "", btn_h(2.0)), btn_h(2.0));
 }
-
 
 #[test]
 fn metadata_sheet_footer_never_covers_a_focused_field() {
@@ -2554,7 +2547,6 @@ fn metadata_sheet_footer_never_covers_a_focused_field() {
         }
     }
 }
-
 
 #[test]
 fn library_card_actions_share_one_edge_inset() {

@@ -427,7 +427,9 @@ fn spawn_frame_reader(
 }
 
 fn take_supervisor_child(slot: &Mutex<Option<std::process::Child>>) -> Option<std::process::Child> {
-    slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
 }
 
 fn supervise_child(
@@ -659,8 +661,7 @@ impl ChromiumEngine {
         let (ready_tx, ready_rx) = sync_channel(1);
         let writer_shared = shared.clone();
         let writer_routes = routes.clone();
-        if let Err(error) = spawn_command_writer(stdin, rx, writer_shared, writer_routes)
-        {
+        if let Err(error) = spawn_command_writer(stdin, rx, writer_shared, writer_routes) {
             tx.close();
             let _ = child.kill();
             let _ = child.wait();
@@ -668,9 +669,16 @@ impl ChromiumEngine {
         }
         let reader_shared = shared.clone();
         let reader_routes = routes;
-        if let Err(error) = spawn_frame_reader(stdout, reader_shared, reader_routes, download_events, ready_tx) {
+        if let Err(error) = spawn_frame_reader(
+            stdout,
+            reader_shared,
+            reader_routes,
+            download_events,
+            ready_tx,
+        ) {
             tx.close();
-            let _ = child.kill(); let _ = child.wait();
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(error.to_string());
         }
         if let Err(error) = ready_rx.recv_timeout(Duration::from_secs(20)) {
@@ -694,7 +702,12 @@ impl ChromiumEngine {
                     supervisor_queue.close();
                     return;
                 };
-                supervise_child(child, &supervisor_shared, &supervisor_queue, supervisor_private_root.as_deref());
+                supervise_child(
+                    child,
+                    &supervisor_shared,
+                    &supervisor_queue,
+                    supervisor_private_root.as_deref(),
+                );
             });
         let supervisor = match supervisor {
             Ok(supervisor) => supervisor,
@@ -725,8 +738,12 @@ impl ChromiumEngine {
 
 impl WebViewEngine for ChromiumEngine {
     fn create_tab(&self) -> Result<super::SharedEngine, String> {
-        let waker = self.shared.waker.lock()
-            .map_err(|_| "Tab wake callback unavailable")?.clone();
+        let waker = self
+            .shared
+            .waker
+            .lock()
+            .map_err(|_| "Tab wake callback unavailable")?
+            .clone();
         let mut routes = self
             .runtime
             .routes
@@ -768,7 +785,12 @@ impl WebViewEngine for ChromiumEngine {
         // The old composition already retained the same Arc-backed pixels.
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
-        self.shared.open_tabs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain(..).collect()
+        self.shared
+            .open_tabs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect()
     }
 
     fn supports_native_filtering(&self) -> bool {
@@ -868,7 +890,10 @@ impl Drop for ChromiumEngine {
         // Reserve native capacity until OnBeforeClose acknowledges destruction.
         // A dead route cannot receive events, but still counts against the bound.
         let retire = {
-            let mut routes = self.runtime.routes.lock()
+            let mut routes = self
+                .runtime
+                .routes
+                .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(route) = routes.get_mut(&self.tab) {
                 *route = Weak::new();
@@ -969,8 +994,11 @@ fn wire_u64(value: &Value) -> Option<u64> {
     {
         return None;
     }
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss,
-        reason = "finite integral value is checked in the exclusive u64 range above")]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "finite integral value is checked in the exclusive u64 range above"
+    )]
     let integer = number as u64;
     Some(integer)
 }
@@ -993,7 +1021,10 @@ fn valid_site_event(value: &Value, event: &str) -> bool {
         && if event == "site_result" {
             value["success"].is_boolean()
                 && value["action"].as_str().is_some_and(|s| {
-                    matches!(s, "status" | "clear" | "revoke" | "enable" | "disable" | "reload")
+                    matches!(
+                        s,
+                        "status" | "clear" | "revoke" | "enable" | "disable" | "reload"
+                    )
                 })
                 && value["message"].as_str().is_some_and(|s| s.len() <= 1024)
         } else {
@@ -1130,10 +1161,13 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 && wire_u64(&value["total"]).is_some()
         }
         "download_runtime" => {
-            ["admitted", "detached"].iter().all(|key| {
-                value[*key].as_u64().is_some_and(|count| count <= 32)
-            }) && value["accepting"].is_boolean()
-                && value["error"].as_str().is_some_and(|error| error.len() <= 1024)
+            ["admitted", "detached"]
+                .iter()
+                .all(|key| value[*key].as_u64().is_some_and(|count| count <= 32))
+                && value["accepting"].is_boolean()
+                && value["error"]
+                    .as_str()
+                    .is_some_and(|error| error.len() <= 1024)
         }
         "ready" => text("cef_version") && text("chromium_version"),
         "open_tab" => {
@@ -1195,7 +1229,10 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && origin.len() <= 8192
                 && *generation > 0
                 && *generation <= 9_007_199_254_740_991
-                && matches!(action.as_str(), "clear" | "revoke" | "enable" | "disable" | "reload")
+                && matches!(
+                    action.as_str(),
+                    "clear" | "revoke" | "enable" | "disable" | "reload"
+                )
         }
         WebViewCommand::ContextMenuAction { id, command } => {
             *id > 0 && i32::try_from(*id).is_ok() && i32::try_from(*command).is_ok()
@@ -1208,7 +1245,10 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             *request_id > 0 && i32::try_from(*request_id).is_ok()
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
-            *request_id > 0 && i32::try_from(*request_id).is_ok() && *id > 0 && i32::try_from(*id).is_ok()
+            *request_id > 0
+                && i32::try_from(*request_id).is_ok()
+                && *id > 0
+                && i32::try_from(*id).is_ok()
         }
         WebViewCommand::RequestMediaElementById { element_id, .. } => element_id.len() <= 256,
         WebViewCommand::PermissionDecision { id, .. }
@@ -1329,7 +1369,9 @@ impl CommandQueue {
 
 fn decode_event(value: &Value) -> Option<WebViewEvent> {
     Some(match value["event"].as_str()? {
-        "credential_result" => WebViewEvent::CredentialResult(super::CredentialReply::decode(value)?),
+        "credential_result" => {
+            WebViewEvent::CredentialResult(super::CredentialReply::decode(value)?)
+        }
         "closed" => WebViewEvent::TabClosed,
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
@@ -1345,7 +1387,12 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             items: value["items"]
                 .as_array()?
                 .iter()
-                .map(|item| Some((u32::try_from(item["id"].as_u64()?).ok()?, item["label"].as_str()?.into())))
+                .map(|item| {
+                    Some((
+                        u32::try_from(item["id"].as_u64()?).ok()?,
+                        item["label"].as_str()?.into(),
+                    ))
+                })
                 .collect::<Option<Vec<_>>>()?,
         },
         "find_result" => WebViewEvent::FindResult {
@@ -1434,7 +1481,9 @@ fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
     if input.len() > encoded_limit {
         return None;
     }
-    let output = base64::engine::general_purpose::STANDARD.decode(input).ok()?;
+    let output = base64::engine::general_purpose::STANDARD
+        .decode(input)
+        .ok()?;
     (output.len() <= limit).then_some(output)
 }
 
@@ -1528,7 +1577,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::StartDownload { .. }
         | WebViewCommand::SetDownloadDestination { .. }
         | WebViewCommand::CancelDownload { .. }
-        | WebViewCommand::SetContentFilter(_) | WebViewCommand::SetContentFilters { .. } => {
+        | WebViewCommand::SetContentFilter(_)
+        | WebViewCommand::SetContentFilters { .. } => {
             return None;
         }
         WebViewCommand::RequestMediaElement { .. }

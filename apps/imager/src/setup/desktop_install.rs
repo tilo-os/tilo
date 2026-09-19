@@ -347,7 +347,13 @@ mod transaction_core {
 }
 
 #[cfg(any(target_os = "linux", all(test, unix)))]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "Linux installer adapters are compiled for Unix tests even when their production entry points are unavailable"
+    )
+)]
 mod native {
     use super::super::desktop_catalog::DesktopRelease;
     use super::super::desktop_probe::{

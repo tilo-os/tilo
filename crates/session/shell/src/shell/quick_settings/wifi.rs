@@ -309,7 +309,8 @@ mod tests {
         let actions = RecordingActions::default();
         // The pane reserves its hotspot card before discovery rows; prepare
         // the same geometry that `handle_click` will use.
-        pane.list.layout_from(panel, 2, QuickSettingsWifiPane::LIST_TOP);
+        pane.list
+            .layout_from(panel, 2, QuickSettingsWifiPane::LIST_TOP);
         assert_eq!(
             pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
             WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)

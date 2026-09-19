@@ -1571,8 +1571,7 @@ impl VideoPlayer {
         let track_x1 = if let Some((text, width)) = shown {
             let time_x0 = time_x1 - f64::from(width);
             let top = mid_y - f64::from(time.height) * 0.5;
-            self.time_label_rect =
-                Rect::new(time_x0, top, time_x1, top + f64::from(time.height));
+            self.time_label_rect = Rect::new(time_x0, top, time_x1, top + f64::from(time.height));
             text_renderer.draw_text(
                 scene,
                 &text,
@@ -4132,7 +4131,8 @@ mod tests {
             vp.time_label_rect
         );
         assert!(
-            (vp.time_label_rect.center().y - vp.controls_bar_rect(&Theme::dark()).center().y).abs() < 1e-6,
+            (vp.time_label_rect.center().y - vp.controls_bar_rect(&Theme::dark()).center().y).abs()
+                < 1e-6,
             "the label left the bar's centre line"
         );
     }
@@ -4213,8 +4213,12 @@ mod tests {
         reason = "probe coordinates are non-negative pixel positions inside a small test surface"
     )]
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) =
-            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
         crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
     }
 

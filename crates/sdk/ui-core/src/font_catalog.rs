@@ -63,7 +63,10 @@ pub struct FontCatalogError {
 }
 
 impl FontCatalogError {
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "The error constructor accepts owned diagnostics and string literals and stores their formatted message."
+    )]
     fn at(path: impl Into<PathBuf>, problem: impl ToString) -> Self {
         Self {
             path: path.into(),
@@ -158,7 +161,10 @@ impl FontCatalog {
     }
 
     // Injection is private, synchronous, and per-call: no test changes a global.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Catalog loading keeps manifest/hash/face validation, system-font filtering, and canonical-family checks in one sequence."
+    )]
     fn load_with_system(
         &self,
         discover: impl FnOnce(&mut fontdb::Database),
@@ -308,7 +314,10 @@ fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
 }
 
 #[cfg(not(windows))]
-#[allow(clippy::large_stack_arrays)]
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "A single fixed 64 KiB stack buffer bounds memory while streaming each font into SHA-256."
+)]
 fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
     let mut file = std::fs::File::open(path).map_err(|e| FontCatalogError::at(path, e))?;
     let mut hash = Sha256::new();

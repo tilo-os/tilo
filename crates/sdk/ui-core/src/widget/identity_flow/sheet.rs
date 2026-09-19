@@ -383,7 +383,11 @@ impl Sheet {
     /// The action button at `index` in the spec's order; `Rect::ZERO` when
     /// the spec had none there.
     pub(super) fn action(&self, index: usize) -> Rect {
-        self.layout.actions.get(index).copied().unwrap_or(Rect::ZERO)
+        self.layout
+            .actions
+            .get(index)
+            .copied()
+            .unwrap_or(Rect::ZERO)
     }
 
     /// Height of a control in the body — the same height the action row's
@@ -429,7 +433,8 @@ impl Sheet {
 /// Height one line of `role` occupies, measured with the style it is drawn
 /// in — never a literal, so a text-scale theme grows the row with the text.
 pub(super) fn line_height(text_renderer: &mut TextRenderer, theme: &Theme, role: Role) -> f64 {
-    let (_, h) = text_renderer.measure_weighted("Ag", role.size(theme, text_renderer), None, role.weight());
+    let (_, h) =
+        text_renderer.measure_weighted("Ag", role.size(theme, text_renderer), None, role.weight());
     f64::from(h)
 }
 
@@ -726,7 +731,13 @@ pub(super) fn wrap_chars(
 /// (raised fill, active fill and the two-pixel focus edge while focused,
 /// `radii.md`) so a code cell reads as the same control as the fields
 /// around it while the digit inside is a plain-chrome [`TextInput`].
-pub(super) fn paint_cell(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, focused: bool) {
+pub(super) fn paint_cell(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    focused: bool,
+) {
     let colors = &theme.tokens.colors;
     let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
     let fill = if focused {
@@ -953,7 +964,8 @@ mod tests {
                 sheet.body().height()
             );
             assert!(
-                card.width() <= MODAL_MAX_WIDTH.max(FORM_SHEET_WIDTH) * f64::from(theme.text_scale) + 0.5,
+                card.width()
+                    <= MODAL_MAX_WIDTH.max(FORM_SHEET_WIDTH) * f64::from(theme.text_scale) + 0.5,
                 "{name}: card wider than the sheet maximum"
             );
         }
@@ -1026,7 +1038,10 @@ mod tests {
         let mut scroll = BodyScroll::default();
         let placed = scroll.place(body, 500.0, 34.0);
         assert_eq!(scroll.max(), 300.0);
-        assert_eq!(placed.y0, body.y0, "unscrolled rows start at the body's top");
+        assert_eq!(
+            placed.y0, body.y0,
+            "unscrolled rows start at the body's top"
+        );
         assert_eq!(placed.height(), 500.0);
 
         assert!(scroll.wheel(&MouseScrollDelta::LineDelta(0.0, -2.0)));
@@ -1077,14 +1092,18 @@ mod tests {
             ((a, b), rows.bottom())
         };
         let mut scroll_a = BodyScroll::default();
-        let from_layout =
-            with_layout_renderer(&theme, |tr| resolve(VIEWPORT, &spec, &mut scroll_a, tr, &theme, plan));
+        let from_layout = with_layout_renderer(&theme, |tr| {
+            resolve(VIEWPORT, &spec, &mut scroll_a, tr, &theme, plan)
+        });
         let mut frame = TextRenderer::new();
         let mut scroll_b = BodyScroll::default();
         let from_frame = resolve(VIEWPORT, &spec, &mut scroll_b, &mut frame, &theme, plan);
         assert_eq!(from_layout.plan, from_frame.plan);
         assert_eq!(from_layout.sheet.layout.card, from_frame.sheet.layout.card);
-        assert_eq!(from_layout.plan.1.height(), from_layout.sheet.action(0).height());
+        assert_eq!(
+            from_layout.plan.1.height(),
+            from_layout.sheet.action(0).height()
+        );
     }
 
     #[test]
@@ -1094,7 +1113,10 @@ mod tests {
         let token: String = "QOSINVITEBASE32".repeat(12);
         let width = 240.0;
         let lines = wrap_chars(&mut tr, &theme, Role::Value, &token, width);
-        assert!(lines.len() > 1, "a 180-character token needs more than one line");
+        assert!(
+            lines.len() > 1,
+            "a 180-character token needs more than one line"
+        );
         for line in &lines {
             let (w, _) = measure(&mut tr, &theme, Role::Value, line, None);
             assert!(w <= width + 0.01, "line {line:?} is {w} wide for {width}");
@@ -1116,10 +1138,16 @@ mod tests {
         let (o4, _) = grid.cell(4, &theme);
         assert_eq!(o0.x0, area.x0);
         assert_eq!(o0.y0, area.y0);
-        assert_eq!(w0.x0, o0.x1, "the word starts where its ordinal column ends");
+        assert_eq!(
+            w0.x0, o0.x1,
+            "the word starts where its ordinal column ends"
+        );
         assert!(w0.x1 < o1.x0, "a word stops short of the next column");
         assert!((o1.x0 - o0.x0 - area.width() / 4.0).abs() < 1e-9);
-        assert!((o4.y0 - o0.y0 - row_h).abs() < 1e-9, "row 2 is one row down");
+        assert!(
+            (o4.y0 - o0.y0 - row_h).abs() < 1e-9,
+            "row 2 is one row down"
+        );
         assert_eq!(w1.height(), row_h);
     }
 
@@ -1149,17 +1177,29 @@ mod tests {
         let row = Rect::new(100.0, 200.0, 620.0, 234.0);
         place_field(&mut input, row, &tr, &theme);
         assert_eq!(Widget::get_rect(&input), row);
-        assert!(!input.is_plain(), "a field keeps the shared widget's chrome");
+        assert!(
+            !input.is_plain(),
+            "a field keeps the shared widget's chrome"
+        );
 
         let mut digit = TextInput::local();
         let side = code_cell_side(&mut tr, &theme);
-        assert!((side - f64::from(theme.tokens.spacing.s12)).abs() < 1e-9, "at 1× the cell is s12");
+        assert!(
+            (side - f64::from(theme.tokens.spacing.s12)).abs() < 1e-9,
+            "at 1× the cell is s12"
+        );
         let cell = Rect::new(100.0, 300.0, 100.0 + side, 300.0 + side);
         place_code_cell(&mut digit, cell, &mut tr, &theme);
         let r = Widget::get_rect(&digit);
         assert!(digit.is_plain(), "the cell frame is painted by paint_cell");
-        assert!((r.center().x - cell.center().x).abs() < 1e-9, "digit centred on its cell");
-        assert!(r.x0 > cell.x0 && r.x1 < cell.x1, "digit widget stays inside the cell");
+        assert!(
+            (r.center().x - cell.center().x).abs() < 1e-9,
+            "digit centred on its cell"
+        );
+        assert!(
+            r.x0 > cell.x0 && r.x1 < cell.x1,
+            "digit widget stays inside the cell"
+        );
         assert_eq!((r.y0, r.y1), (cell.y0, cell.y1));
     }
 
@@ -1207,6 +1247,9 @@ mod tests {
         let mut tr2 = TextRenderer::new();
         tr2.set_text_scale(1.5);
         let big = line_height(&mut tr2, &Theme::dark().with_text_scale(1.5), Role::Value);
-        assert!(big > one, "a 1.5× renderer must measure a taller line ({one} → {big})");
+        assert!(
+            big > one,
+            "a 1.5× renderer must measure a taller line ({one} → {big})"
+        );
     }
 }

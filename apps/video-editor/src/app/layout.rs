@@ -62,7 +62,11 @@ impl VideoEditorApp {
         let topbar_edge = TOPBAR_EDGE * self.chrome_scale();
         let topbar_gap = TOPBAR_GAP * self.chrome_scale();
         let topbar_compact = self.topbar_is_compact();
-        let command_w = if topbar_compact { topbar_target } else { TOPBAR_BTN_W };
+        let command_w = if topbar_compact {
+            topbar_target
+        } else {
+            TOPBAR_BTN_W
+        };
         let export_btn = Rect::new(
             r.x1 - topbar_edge - command_w,
             topbar_y,
@@ -97,7 +101,12 @@ impl VideoEditorApp {
             export_btn.x0 - topbar_gap
         };
         let import_btn = Rect::new(
-            import_right - if topbar_compact { topbar_target } else { TOPBAR_BTN_W },
+            import_right
+                - if topbar_compact {
+                    topbar_target
+                } else {
+                    TOPBAR_BTN_W
+                },
             topbar_y,
             import_right,
             topbar_y + topbar_target,

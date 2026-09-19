@@ -187,7 +187,13 @@ impl PinnedDirectory {
     }
 }
 
-#[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
+#[cfg_attr(
+    not(windows),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "Windows rejects reparse points and cloud placeholders; other platforms retain the same fallible validation interface."
+    )
+)]
 pub(super) fn reject_windows_placeholder(metadata: &Metadata) -> io::Result<()> {
     #[cfg(windows)]
     {

@@ -689,13 +689,7 @@ impl WorkspaceSettings {
         // Sidebar surface reads distinct from the right pane — a quiet lift
         // measured against the ground (HIG §9.2/§9.3), never a ramp slot —
         // separated by a derived hairline rather than a declared border.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.lift(0.35),
-            None,
-            &sidebar,
-        );
+        scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &sidebar);
         let border_x = sidebar.x1 - 0.5;
         let border = Rect::new(border_x, sidebar.y0, border_x + 1.0, sidebar.y1);
         scene.fill(

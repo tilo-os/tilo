@@ -1,5 +1,8 @@
 //! Host-owned asynchronous requests. Preview renderers receive frozen bytes only.
-#[allow(clippy::wildcard_imports, reason = "private implementation module shares its enclosing host types")]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
 use super::*;
 use crate::history_mode::{
     HistoricalAssetRequest, HistoricalAssetResponse, HistorySnapshot, assets::AssetResponseKey,
@@ -32,8 +35,12 @@ impl AssetSession {
         }
     }
     pub(super) fn cancel(&mut self) {
-        if let Some(next) = self.generation.checked_add(1) { self.generation = next; }
-        else { self.host = uuid::Uuid::new_v4(); self.generation = 0; }
+        if let Some(next) = self.generation.checked_add(1) {
+            self.generation = next;
+        } else {
+            self.host = uuid::Uuid::new_v4();
+            self.generation = 0;
+        }
         self.expected = [None, None];
         self.snapshots = [None, None];
         self.requested = false;
@@ -56,12 +63,16 @@ impl HistoryHost {
         let resource = match self.source() {
             HistorySourceRegistration::HostDocument { resource, .. }
             | HistorySourceRegistration::OwnedDocument { resource, .. } => resource.clone(),
-            HistorySourceRegistration::Unversioned { .. } | HistorySourceRegistration::CheckedFiles { .. } => return,
+            HistorySourceRegistration::Unversioned { .. }
+            | HistorySourceRegistration::CheckedFiles { .. } => return,
         };
         if !self.assets.requested && self.assets.snapshots.iter().any(Option::is_some) {
             self.assets.requested = true;
-            for ((canvas, snapshot), expected) in [&mut self.before, &mut self.after].into_iter()
-                .zip(self.assets.snapshots.iter().cloned()).zip(self.assets.expected.iter_mut()) {
+            for ((canvas, snapshot), expected) in [&mut self.before, &mut self.after]
+                .into_iter()
+                .zip(self.assets.snapshots.iter().cloned())
+                .zip(self.assets.expected.iter_mut())
+            {
                 let Some(snapshot) = snapshot else {
                     continue;
                 };
@@ -94,13 +105,12 @@ impl HistoryHost {
         let completions = self.assets.pending.get_mut().drain(..).collect::<Vec<_>>();
         for (key, result) in completions {
             let index = usize::from(key.side != PreviewSide::Before);
-            let Some(expected) = self.assets.expected.get_mut(index) else { continue; };
+            let Some(expected) = self.assets.expected.get_mut(index) else {
+                continue;
+            };
             // The request's host, generation, exact owner namespace, side and
             // immutable heads must still match. No result can retarget itself.
-            if expected.as_ref() != Some(&key)
-                || key.resource != resource
-                || self.invalid_owner
-            {
+            if expected.as_ref() != Some(&key) || key.resource != resource || self.invalid_owner {
                 continue;
             }
             *expected = None;
@@ -143,7 +153,12 @@ mod tests {
         let old_key = AssetResponseKey {
             host: original_host,
             generation: u64::MAX,
-            resource: crate::history_mode::HistoryResource::new("profile", "room", "app", crate::RecordId::for_tab(1)),
+            resource: crate::history_mode::HistoryResource::new(
+                "profile",
+                "room",
+                "app",
+                crate::RecordId::for_tab(1),
+            ),
             side: PreviewSide::After,
             heads: vec![],
         };

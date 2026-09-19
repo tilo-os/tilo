@@ -33,9 +33,9 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
 use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
 use crate::widget::merge_strategy::{Alternative, ConflictKind};
 
@@ -475,7 +475,13 @@ fn draw_card(
     // is resolved against the colour it is painted on (the `Button` primary
     // convention: white ink stepped until it clears the fill).
     let fill = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
-    scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &btn_shape);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &btn_shape,
+    );
     let btn_text_size = text_size_sm;
     let (bw, bh) = text_renderer.measure(content.button_label, btn_text_size, None);
     text_renderer.draw_text(

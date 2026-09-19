@@ -440,7 +440,10 @@ impl TimelineInteraction {
         hits
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Header painting combines render context, visible days, column geometry, and the header action hit list."
+    )]
     fn draw_headers(
         scene: &mut Scene,
         transform: Affine,
@@ -529,7 +532,10 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The time grid needs render context, visible days, viewport bounds, and measured hour/gutter geometry."
+    )]
     fn draw_grid(
         &self,
         scene: &mut Scene,
@@ -599,7 +605,10 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Event painting combines render context, day/event data, timeline and clipping geometry, and action hit regions."
+    )]
     fn draw_events(
         &self,
         scene: &mut Scene,
@@ -695,7 +704,10 @@ impl TimelineInteraction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The drag preview uses render context, visible days and events, viewport bounds, and measured timeline geometry."
+    )]
     fn draw_drag_ghost(
         &self,
         scene: &mut Scene,

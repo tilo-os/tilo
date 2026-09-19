@@ -1537,7 +1537,10 @@ fn stroke_round(scene: &mut Scene, t: Affine, r: Rect, radius: f64, color: Color
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "weighted text painting passes render context alongside content, size, color, coordinates and weight"
+)]
 fn text_w(
     tr: &mut TextRenderer,
     scene: &mut Scene,
@@ -1561,7 +1564,10 @@ fn text_w(
 }
 
 /// Center text vertically within a box and left-align at `x`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "vertical text alignment shares render context and typography with the label position and containing box"
+)]
 fn text_vc(
     tr: &mut TextRenderer,
     scene: &mut Scene,

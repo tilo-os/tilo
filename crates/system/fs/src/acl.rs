@@ -425,7 +425,9 @@ pub struct AclHandle {
 }
 
 impl AclHandle {
-    pub(crate) fn admission_lease(&self) -> Result<std::sync::RwLockReadGuard<'_, WorkspaceAcl>, ()> {
+    pub(crate) fn admission_lease(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, WorkspaceAcl>, ()> {
         self.acl.read().map_err(|_| ())
     }
 

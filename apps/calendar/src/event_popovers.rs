@@ -286,7 +286,10 @@ impl EventPopovers {
         *handled = true;
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "popover painting combines the shared render context with panel anchors, pointer state and calendar choices"
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,

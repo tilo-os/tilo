@@ -1037,7 +1037,7 @@ fn export_home_peer(
 /// Join a workspace as a durable, serving peer without a FUSE mount. The
 /// normal workspace router keeps the supplied live capability policy in front
 /// of its blob provider, so a home peer never becomes an unenforced source.
-#[allow(clippy::too_many_lines)]
+
 async fn replica(config_path: PathBuf) -> Result<()> {
     let config_text = std::fs::read_to_string(&config_path)
         .with_context(|| format!("read home-peer bundle {}", config_path.display()))?;
@@ -1076,7 +1076,10 @@ async fn replica(config_path: PathBuf) -> Result<()> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The home-peer lifecycle keeps authority setup, record reconciliation, hydration, durable checkpointing, and readiness publication in order."
+)]
 async fn replica_workspace(
     bundle: HomePeerBundle,
     index: usize,
@@ -1294,7 +1297,10 @@ fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] 
     *blake3::hash(&bytes).as_bytes()
 }
 
-#[allow(clippy::too_many_lines)] // Linear CLI assembly keeps resource lifetimes explicit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Serving assembles certified transport, ACLs, durable record services, namespace recovery, and mount task lifetimes in one ordered lifecycle."
+)] // Linear CLI assembly keeps resource lifetimes explicit.
 async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
@@ -1321,7 +1327,11 @@ async fn serve(
     let mut record_services = open_record_services(cache_dir.as_deref(), share_authority.clone())?;
     if let Some(records) = record_services.as_mut() {
         if let Some((journal, _)) = &replacement_transactions {
-            records.repository.restore_admission_fences(&*journal.lock().map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?)?;
+            records.repository.restore_admission_fences(
+                &*journal
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?,
+            )?;
         }
         records.availability.clone_from(&availability);
     }
@@ -1782,7 +1792,10 @@ fn initialize_owner_record_authority(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)] // Linear CLI assembly keeps resource lifetimes explicit.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Joining a workspace keeps ticket validation, certified transport, record recovery, synchronization, mounting, and final persistence in order."
+)] // Linear CLI assembly keeps resource lifetimes explicit.
 async fn mount(
     mount_point: PathBuf,
     ticket: String,
@@ -1815,7 +1828,11 @@ async fn mount(
     let mut record_services = open_record_services(cache_dir.as_deref(), share_authority.clone())?;
     if let Some(records) = record_services.as_mut() {
         if let Some((journal, _)) = &replacement_transactions {
-            records.repository.restore_admission_fences(&*journal.lock().map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?)?;
+            records.repository.restore_admission_fences(
+                &*journal
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("transaction journal poisoned"))?,
+            )?;
         }
         records.availability.clone_from(&availability);
     }
@@ -1990,7 +2007,10 @@ impl SharedCredential {
     }
 }
 
-#[allow(clippy::too_many_lines)] // Shared-mount bootstrap is one ordered trust sequence.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Exact-record mounting keeps credential checks, snapshot validation, scoped namespace projection, refresh tasks, and mount cleanup in one trust sequence."
+)] // Shared-mount bootstrap is one ordered trust sequence.
 async fn mount_share(
     mount_point: PathBuf,
     credential: SharedCredential,
@@ -2481,7 +2501,10 @@ impl SharedFetchError {
     }
 }
 
-#[allow(clippy::significant_drop_tightening)] // Registry update and persistence are one mutation.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "The availability guard spans reading the prior version, clearing stale replica evidence, and persisting the replacement record."
+)] // Registry update and persistence are one mutation.
 fn track_shared_revision(
     availability: Option<&Arc<Mutex<fs::AvailabilityRegistry>>>,
     revision: collab_types::ContentRevisionV1,
@@ -2539,7 +2562,10 @@ async fn refresh_host_replica_observation(
     Ok(())
 }
 
-#[allow(clippy::significant_drop_tightening)] // The complete projection is namespace-atomic.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "The namespace guard covers record creation, signed revision and thumbnail projection, incremental save, and exact-share scope validation."
+)] // The complete projection is namespace-atomic.
 fn apply_shared_snapshot(
     namespace: &Arc<Mutex<Namespace>>,
     history: &FileHistoryStore,
@@ -2772,7 +2798,7 @@ fn open_history(cache_dir: Option<&Path>) -> Result<Option<Arc<FileHistoryStore>
 
 /// Atomically persist the namespace document and retain bounded known-good
 /// generations. A damaged primary is never overwritten by the live daemon.
-#[allow(clippy::significant_drop_tightening)] // Durable replacement is serialized with mutations.
+
 fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
     if let Err(error) = persist_namespace_generation(namespace, path) {
         eprintln!("namespace persist to {} failed: {error}", path.display());
@@ -2782,7 +2808,10 @@ fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
 /// Atomically persist one exact namespace generation and return its digest.
 /// A full-replica readiness proof is only published after this succeeds, so a
 /// ready NAS can always reopen the same namespace after a power loss.
-#[allow(clippy::significant_drop_tightening)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "The namespace lock must cover durable replacement so concurrent writers cannot reuse the process-scoped atomic-file temporary path."
+)]
 fn persist_namespace_generation(
     namespace: &Arc<Mutex<Namespace>>,
     path: &Path,
@@ -2873,7 +2902,11 @@ async fn open_namespace_mount(
 }
 
 /// Mount the FUSE filesystem and run until interrupted (or the mount exits).
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // CLI assembly mirrors independent mount options.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "Mount setup wires independent sync, ACL, storage, history, sharing, recovery, and readiness services before supervising FUSE shutdown."
+)] // CLI assembly mirrors independent mount options.
 async fn run_mount(
     checked_history_workspace: uuid::Uuid,
     mount_point: PathBuf,
@@ -2908,7 +2941,8 @@ async fn run_mount(
     let storage_availability = availability.clone();
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
-    let fs = QuickFS::new(namespace, hydrator, heuristics).with_checked_history_workspace(checked_history_workspace);
+    let fs = QuickFS::new(namespace, hydrator, heuristics)
+        .with_checked_history_workspace(checked_history_workspace);
     let fs = if allow_legacy_record_migration {
         fs
     } else {

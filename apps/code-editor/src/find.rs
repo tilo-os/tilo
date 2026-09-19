@@ -661,7 +661,10 @@ impl Widget for FindBar {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The Widget event contract supplies input, CRDT state, handled/focus outputs, and layout routing to the find controls."
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,

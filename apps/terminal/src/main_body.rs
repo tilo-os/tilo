@@ -4210,7 +4210,10 @@ impl TerminalWidget {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "A terminal run needs render context, text and cell attributes, grid position, font choice/size, and the terminal palette."
+    )]
     fn draw_run(
         &self,
         scene: &mut Scene,

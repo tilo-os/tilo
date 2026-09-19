@@ -1031,18 +1031,33 @@ pub(crate) fn execute_resource_operation(
             context = context.enriched_by(ambient);
         }
         let before = typed_action_before(doc);
-        let applied = if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
-            Some(tilo_actions::apply_local_with_context(
-                doc, action.as_ref(), encoded, Some(actor.as_bytes()), context,
-            ).map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?)
-        } else {
-            match tilo_actions::dispatch_by_with_context(
-                doc, action.as_ref(), encoded, transport, Some(actor.as_bytes()), context,
-            ).map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))? {
-                tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
-                tilo_actions::Dispatched::SubmittedToHost(_) => None,
-            }
-        };
+        let applied =
+            if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
+                Some(
+                    tilo_actions::apply_local_with_context(
+                        doc,
+                        action.as_ref(),
+                        encoded,
+                        Some(actor.as_bytes()),
+                        context,
+                    )
+                    .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?,
+                )
+            } else {
+                match tilo_actions::dispatch_by_with_context(
+                    doc,
+                    action.as_ref(),
+                    encoded,
+                    transport,
+                    Some(actor.as_bytes()),
+                    context,
+                )
+                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
+                {
+                    tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
+                    tilo_actions::Dispatched::SubmittedToHost(_) => None,
+                }
+            };
         if let Some(before) = before {
             let after = doc.get_heads();
             report_typed_action(doc, before, after);
@@ -1050,7 +1065,12 @@ pub(crate) fn execute_resource_operation(
         if let Some(envelope) = applied {
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
-            widget.document_action_applied(&envelope.action, &envelope.base_change_hashes(), doc, path);
+            widget.document_action_applied(
+                &envelope.action,
+                &envelope.base_change_hashes(),
+                doc,
+                path,
+            );
         }
         crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
     } else {
@@ -2195,23 +2215,43 @@ pub(crate) fn restore_legacy_history(
     checkout: &RecordCheckout,
     admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
     prepared: &crate::history_mode::restore::PreparedContentRestore,
-) -> Result<crate::state::owned_restore::OwnedActionReceipt, crate::state::owned_restore::OwnedRestoreError> {
+) -> Result<
+    crate::state::owned_restore::OwnedActionReceipt,
+    crate::state::owned_restore::OwnedRestoreError,
+> {
     use crate::state::owned_restore::{OwnedContentAction, OwnedRestoreError, same_frontier};
-    store.open_existing_record_checked(checkout)
+    store
+        .open_existing_record_checked(checkout)
         .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?;
-    store.with_action_state(&checkout.id, |doc, history, state| {
-        if state.pending.as_ref().is_some_and(|pending| !same_frontier(&pending.before, &doc.base_heads())) {
-            return Err(OwnedRestoreError::UnfinishedActionBoundary);
-        }
-        let next = state.generation.and_then(|value| value.checked_add(1)).ok_or(OwnedRestoreError::GenerationExhausted)?;
-        let receipt = OwnedContentAction::begin_clean(doc, history, prepared.current_heads(), admitted, None)?.apply_restore(prepared)?;
-        if receipt.changed {
-            state.generation = Some(next);
-            state.pending = None;
-            state.statuses.clear();
-        }
-        Ok(receipt)
-    }).map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?
+    store
+        .with_action_state(&checkout.id, |doc, history, state| {
+            if state
+                .pending
+                .as_ref()
+                .is_some_and(|pending| !same_frontier(&pending.before, &doc.base_heads()))
+            {
+                return Err(OwnedRestoreError::UnfinishedActionBoundary);
+            }
+            let next = state
+                .generation
+                .and_then(|value| value.checked_add(1))
+                .ok_or(OwnedRestoreError::GenerationExhausted)?;
+            let receipt = OwnedContentAction::begin_clean(
+                doc,
+                history,
+                prepared.current_heads(),
+                admitted,
+                None,
+            )?
+            .apply_restore(prepared)?;
+            if receipt.changed {
+                state.generation = Some(next);
+                state.pending = None;
+                state.statuses.clear();
+            }
+            Ok(receipt)
+        })
+        .map_err(|error| OwnedRestoreError::Bound(BoundDispatchError::Record(error)))?
 }
 /// Admission metadata for precisely one live widget/Taffy layout.
 #[derive(Default)]
@@ -2226,25 +2266,38 @@ impl BoundNodeMap {
     /// Current admitted layout ancestry, including structural non-widget nodes.
     pub(crate) fn is_descendant(&self, mut node: NodeId, ancestor: NodeId) -> bool {
         while let Some(parent) = self.parents.get(&node) {
-            if *parent == ancestor { return true; }
+            if *parent == ancestor {
+                return true;
+            }
             node = *parent;
         }
         false
     }
     pub(crate) fn binding_for(&self, node: NodeId) -> Option<CallbackBinding> {
-        self.nodes.get(&node).filter(|node| !node.inactive).and_then(|node| node.binding.clone())
+        self.nodes
+            .get(&node)
+            .filter(|node| !node.inactive)
+            .and_then(|node| node.binding.clone())
     }
     pub(crate) fn legacy_for(&self, node: NodeId) -> Option<crate::history_mode::HistoryOwner> {
         self.nodes.get(&node).and_then(|entry| entry.legacy.clone())
     }
-    pub(crate) fn legacy_status(&self, node: NodeId, author: &UserId) -> Option<crate::undo::UndoStatus> {
+    pub(crate) fn legacy_status(
+        &self,
+        node: NodeId,
+        author: &UserId,
+    ) -> Option<crate::undo::UndoStatus> {
         let owner = self.legacy_for(node)?;
         owner.validate().ok()?;
         let (store, checkout) = owner.store_checkout();
-        store.with_history(&checkout.id, |doc, history| crate::undo::status_snapshot(doc, history, Some(author)))
+        store.with_history(&checkout.id, |doc, history| {
+            crate::undo::status_snapshot(doc, history, Some(author))
+        })
     }
     pub(crate) fn owns_document(&self, node: NodeId) -> bool {
-        self.nodes.get(&node).is_some_and(|entry| entry.binding.is_some() || entry.legacy.is_some())
+        self.nodes
+            .get(&node)
+            .is_some_and(|entry| entry.binding.is_some() || entry.legacy.is_some())
     }
     pub fn new() -> Self {
         Self::default()
@@ -2266,7 +2319,9 @@ impl BoundNodeMap {
         nodes: &HashMap<NodeId, *mut dyn Widget>,
     ) {
         // SAFETY: the public contract covers the single ownership/presentation root.
-        unsafe { self.rebuild_with_retained_root(root, None, taffy, layout_root, nodes); }
+        unsafe {
+            self.rebuild_with_retained_root(root, None, taffy, layout_root, nodes);
+        }
     }
 
     /// Collect custody from a separately retained live root while inheriting
@@ -2306,25 +2361,48 @@ impl BoundNodeMap {
         taffy: &TaffyTree<()>,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
     ) {
-        fn collect(widget: &dyn Widget, boundaries: &mut HashMap<NodeId, crate::history_mode::HistoryOwner>, inactive: &mut std::collections::HashSet<NodeId>) {
-            if let Some(node) = widget.inactive_callback_boundary() { inactive.insert(node); }
-            if let Some((node, owner)) = widget.legacy_callback_boundary() { boundaries.insert(node, owner); }
-            for child in widget.children() { collect(child, boundaries, inactive); }
+        fn collect(
+            widget: &dyn Widget,
+            boundaries: &mut HashMap<NodeId, crate::history_mode::HistoryOwner>,
+            inactive: &mut std::collections::HashSet<NodeId>,
+        ) {
+            if let Some(node) = widget.inactive_callback_boundary() {
+                inactive.insert(node);
+            }
+            if let Some((node, owner)) = widget.legacy_callback_boundary() {
+                boundaries.insert(node, owner);
+            }
+            for child in widget.children() {
+                collect(child, boundaries, inactive);
+            }
         }
         self.clear();
         let mut boundaries = HashMap::new();
         let mut inactive_boundaries = std::collections::HashSet::new();
-        for (root, _) in roots { collect(*root, &mut boundaries, &mut inactive_boundaries); }
-        if let Some(retained) = retained { collect(retained, &mut boundaries, &mut inactive_boundaries); }
-        let mut pending: Vec<_> = roots.iter().map(|(root, layout_root)| (*layout_root, root.callback_binding(), None, false)).collect();
+        for (root, _) in roots {
+            collect(*root, &mut boundaries, &mut inactive_boundaries);
+        }
+        if let Some(retained) = retained {
+            collect(retained, &mut boundaries, &mut inactive_boundaries);
+        }
+        let mut pending: Vec<_> = roots
+            .iter()
+            .map(|(root, layout_root)| (*layout_root, root.callback_binding(), None, false))
+            .collect();
         while let Some((node, inherited, inherited_legacy, inherited_inactive)) = pending.pop() {
             let inactive = inherited_inactive || inactive_boundaries.contains(&node);
             let mut legacy = boundaries.get(&node).cloned().or(inherited_legacy);
             let binding = if let Some(&pointer) = nodes.get(&node) {
                 // SAFETY: rebuild's owner guarantees all admitted pointers are live.
                 let widget = unsafe { &*pointer };
-                let binding = if widget.resets_callback_binding() { None } else { widget.callback_binding().or(inherited) };
-                if binding.is_some() || widget.resets_callback_binding() { legacy = None; }
+                let binding = if widget.resets_callback_binding() {
+                    None
+                } else {
+                    widget.callback_binding().or(inherited)
+                };
+                if binding.is_some() || widget.resets_callback_binding() {
+                    legacy = None;
+                }
                 self.nodes.insert(
                     node,
                     BoundNode {
@@ -2383,7 +2461,9 @@ pub unsafe fn invoke_bound_node<R>(
     if !std::ptr::eq(admitted.pointer, *pointer) {
         return Err(BoundDispatchError::MissingNode);
     }
-    if admitted.inactive { return Err(BoundDispatchError::MissingNode); }
+    if admitted.inactive {
+        return Err(BoundDispatchError::MissingNode);
+    }
     if let Some(binding) = &admitted.binding {
         binding.with_document(outer, |document, root| {
             // SAFETY: admission and lifetime were checked before this dereference;
@@ -2394,9 +2474,15 @@ pub unsafe fn invoke_bound_node<R>(
             result
         })
     } else if let Some(owner) = &admitted.legacy {
-        owner.validate().map_err(|_| BoundDispatchError::ClosedLifetime)?;
+        owner
+            .validate()
+            .map_err(|_| BoundDispatchError::ClosedLifetime)?;
         let (store, checkout) = owner.store_checkout();
-        store.with_checked(&checkout.id, |doc| callback(unsafe { &mut **pointer }, doc, &ROOT)).map_err(BoundDispatchError::Record)
+        store
+            .with_checked(&checkout.id, |doc| {
+                callback(unsafe { &mut **pointer }, doc, &ROOT)
+            })
+            .map_err(BoundDispatchError::Record)
     } else {
         // Explicitly admitted unbound widgets preserve the outer document.
         Ok(callback(unsafe { &mut **pointer }, outer, outer_root))
@@ -2427,7 +2513,11 @@ impl BoundNodeMap {
         if !std::ptr::eq(admitted.pointer, *pointer) {
             return Err(BoundDispatchError::MissingNode);
         }
-        if let Some(owner) = &admitted.legacy { owner.validate().map_err(|_| BoundDispatchError::ClosedLifetime)?; }
+        if let Some(owner) = &admitted.legacy {
+            owner
+                .validate()
+                .map_err(|_| BoundDispatchError::ClosedLifetime)?;
+        }
         Ok(admitted)
     }
 }
@@ -2462,7 +2552,9 @@ pub(crate) unsafe fn mutate_bound_node<R>(
     callback: impl FnOnce(&mut dyn Widget) -> R,
 ) -> Result<R, BoundDispatchError> {
     let admitted = bindings.admitted(nodes, node)?;
-    if admitted.inactive { return Err(BoundDispatchError::MissingNode); }
+    if admitted.inactive {
+        return Err(BoundDispatchError::MissingNode);
+    }
     let _entry = admitted
         .binding
         .as_ref()
@@ -2491,24 +2583,41 @@ mod owned_restore_tests;
 /// Remote delivery is not a local action. A physical or logical edit must be
 /// finished by its existing owner; the network queue never commits it.
 pub(crate) fn merge_remote_owned_document(
-    store: &RecordStore, checkout: &RecordCheckout, mutation: &collab_types::DocumentMutation,
+    store: &RecordStore,
+    checkout: &RecordCheckout,
+    mutation: &collab_types::DocumentMutation,
 ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
     use crate::history_mode::routes::RemoteApplyError;
-    store.open_existing_record_checked(checkout).map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
-    store.with_action_state(&checkout.id, |doc, history, state| {
-        if doc.pending_ops() != 0 || state.pending.as_ref().is_some_and(|pending| !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())) { return Ok(None); }
-        let next = state.generation.and_then(|value| value.checked_add(1)).ok_or_else(|| RemoteApplyError::Unavailable("document generation exhausted".into()))?;
-        let changed = crate::history_mode::routes::merge_committed(doc, mutation)?;
-        if changed {
-            // A clean continuation marker is not unfinished typing. Retire it
-            // after the merge so a later local burst starts at the remote heads.
-            state.pending = None;
-            history.rebase(doc);
-            state.statuses.clear();
-            state.generation = Some(next);
-        }
-        Ok(Some(changed))
-    }).map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?
+    store
+        .open_existing_record_checked(checkout)
+        .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
+    store
+        .with_action_state(&checkout.id, |doc, history, state| {
+            if doc.pending_ops() != 0
+                || state.pending.as_ref().is_some_and(|pending| {
+                    !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
+                })
+            {
+                return Ok(None);
+            }
+            let next = state
+                .generation
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| {
+                    RemoteApplyError::Unavailable("document generation exhausted".into())
+                })?;
+            let changed = crate::history_mode::routes::merge_committed(doc, mutation)?;
+            if changed {
+                // A clean continuation marker is not unfinished typing. Retire it
+                // after the merge so a later local burst starts at the remote heads.
+                state.pending = None;
+                history.rebase(doc);
+                state.statuses.clear();
+                state.generation = Some(next);
+            }
+            Ok(Some(changed))
+        })
+        .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?
 }
 
 /// Legacy semantic delivery retains the actual record and ordinary `UndoLog`.
@@ -2516,108 +2625,238 @@ pub(crate) fn merge_remote_owned_document(
 /// at execution and finish exactly one addressed record action, never outer `State`.
 /// # Safety
 /// Same stable, exclusive tree contract as `invoke_bound_node`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Semantic dispatch requires tree bindings and node map, outer document/path, action authority and author, plus the admitted widget callback."
+)]
 pub(crate) unsafe fn invoke_bound_semantic_node<R>(
-    bindings: &BoundNodeMap, nodes: &HashMap<NodeId, *mut dyn Widget>, node: NodeId,
-    outer: &mut AutoCommit, outer_root: &ObjId,
-    action: &crate::a11y::Action, authority: &crate::permissions::PermissionContext, author: &UserId,
+    bindings: &BoundNodeMap,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    node: NodeId,
+    outer: &mut AutoCommit,
+    outer_root: &ObjId,
+    action: &crate::a11y::Action,
+    authority: &crate::permissions::PermissionContext,
+    author: &UserId,
     callback: impl FnOnce(&mut dyn Widget, &mut AutoCommit, &ObjId) -> R,
 ) -> Result<R, String> {
     use crate::a11y::Action;
-    let admitted = bindings.admitted(nodes, node).map_err(|error| format!("{error:?}"))?;
-    if admitted.inactive { return Err("This live control is hidden by History.".into()); }
-    let effect = matches!(action, Action::Activate | Action::ToggleCheck | Action::Increment | Action::Decrement | Action::SetValue(_));
+    let admitted = bindings
+        .admitted(nodes, node)
+        .map_err(|error| format!("{error:?}"))?;
+    if admitted.inactive {
+        return Err("This live control is hidden by History.".into());
+    }
+    let effect = matches!(
+        action,
+        Action::Activate
+            | Action::ToggleCheck
+            | Action::Increment
+            | Action::Decrement
+            | Action::SetValue(_)
+    );
     let Some(owner) = admitted.legacy.as_ref().filter(|_| effect) else {
-        return unsafe { invoke_bound_node(bindings, nodes, node, outer, outer_root, callback) }.map_err(|error| format!("{error:?}"));
+        return unsafe { invoke_bound_node(bindings, nodes, node, outer, outer_root, callback) }
+            .map_err(|error| format!("{error:?}"));
     };
     let app = authorize_legacy_owner(owner, authority, author)?;
     let (store, checkout) = owner.store_checkout();
     let pointer = admitted.pointer;
-    let context = tilo_actions::ActionContext::for_resource("Edit", checkout.id.as_str(), "document", "Document").with_app(&app, &app);
-    let (result, changed) = store.with_action_state(&checkout.id, |doc, history, state| {
-        if state.pending.is_some() { return Err("The document has an unfinished owned action.".to_owned()); }
-        let next = state.generation.and_then(|generation| generation.checked_add(1)).ok_or("document generation exhausted")?;
-        if history.revision() == u64::MAX { return Err("document history exhausted".into()); }
-        let before = (doc.base_heads(), doc.pending_ops());
-        let widget = unsafe { &mut *pointer };
-        let result = callback(widget, doc, &ROOT);
-        let _ = widget.take_committed_action();
-        let changed = (doc.base_heads(), doc.pending_ops()) != before
-            && history.commit_action_authored_with_message(doc, None, widget.get_state(), Some(author.clone()), context.change_message());
-        if changed {
-            state.generation = Some(next);
-            state.statuses.clear();
-            widget.on_commit();
-        }
-        Ok((result, changed))
-    }).map_err(|error| error.to_string())??;
-    if changed { store.schedule_committed_history(&checkout.id); }
+    let context = tilo_actions::ActionContext::for_resource(
+        "Edit",
+        checkout.id.as_str(),
+        "document",
+        "Document",
+    )
+    .with_app(&app, &app);
+    let (result, changed) = store
+        .with_action_state(&checkout.id, |doc, history, state| {
+            if state.pending.is_some() {
+                return Err("The document has an unfinished owned action.".to_owned());
+            }
+            let next = state
+                .generation
+                .and_then(|generation| generation.checked_add(1))
+                .ok_or("document generation exhausted")?;
+            if history.revision() == u64::MAX {
+                return Err("document history exhausted".into());
+            }
+            let before = (doc.base_heads(), doc.pending_ops());
+            let widget = unsafe { &mut *pointer };
+            let result = callback(widget, doc, &ROOT);
+            let _ = widget.take_committed_action();
+            let changed = (doc.base_heads(), doc.pending_ops()) != before
+                && history.commit_action_authored_with_message(
+                    doc,
+                    None,
+                    widget.get_state(),
+                    Some(author.clone()),
+                    context.change_message(),
+                );
+            if changed {
+                state.generation = Some(next);
+                state.statuses.clear();
+                widget.on_commit();
+            }
+            Ok((result, changed))
+        })
+        .map_err(|error| error.to_string())??;
+    if changed {
+        store.schedule_committed_history(&checkout.id);
+    }
     Ok(result)
 }
 
-fn authorize_legacy_owner(owner: &crate::history_mode::HistoryOwner, authority: &crate::permissions::PermissionContext, author: &UserId) -> Result<String, String> {
+fn authorize_legacy_owner(
+    owner: &crate::history_mode::HistoryOwner,
+    authority: &crate::permissions::PermissionContext,
+    author: &UserId,
+) -> Result<String, String> {
     use crate::permissions::{CapDecision, Principal, ResourceRef, Verb};
     owner.validate().map_err(|error| error.to_string())?;
     let (store, checkout) = owner.store_checkout();
-    let (_, app, _) = store.history_namespace(&checkout.id).map_err(|error| error.to_string())?;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_| "execution time unavailable")?.as_secs();
+    let (_, app, _) = store
+        .history_namespace(&checkout.id)
+        .map_err(|error| error.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "execution time unavailable")?
+        .as_secs();
     let current = authority.clone().at_unix_time(now);
-    let mapped = current.actor().principals.contains(&author.principal()) || current.actor().principals.contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
-    if !mapped || app.is_empty() || current.decide(&ResourceRef::App(app.clone()), Verb::Write) != CapDecision::Allow {
+    let mapped = current.actor().principals.contains(&author.principal())
+        || current
+            .actor()
+            .principals
+            .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
+    if !mapped
+        || app.is_empty()
+        || current.decide(&ResourceRef::App(app.clone()), Verb::Write) != CapDecision::Allow
+    {
         return Err("You do not have permission to edit this document.".into());
     }
     if let Some(path) = checkout.id.file_path()
-        && current.decide(&ResourceRef::FsPath(path.to_string_lossy().into_owned()), Verb::Write) != CapDecision::Allow {
+        && current.decide(
+            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
+            Verb::Write,
+        ) != CapDecision::Allow
+    {
         return Err("You do not have permission to edit this file.".into());
     }
     Ok(app)
 }
 
-pub(crate) fn legacy_history_request(owner: &crate::history_mode::HistoryOwner, request: crate::undo::UndoRequest, authority: &crate::permissions::PermissionContext, author: &UserId) -> Result<Option<crate::state::UndoEntry>, String> {
+pub(crate) fn legacy_history_request(
+    owner: &crate::history_mode::HistoryOwner,
+    request: crate::undo::UndoRequest,
+    authority: &crate::permissions::PermissionContext,
+    author: &UserId,
+) -> Result<Option<crate::state::UndoEntry>, String> {
     authorize_legacy_owner(owner, authority, author)?;
     let (store, checkout) = owner.store_checkout();
-    let result = store.with_action_state(&checkout.id, |doc, history, state| {
-        if state.pending.is_some() { return Err("The document has an unfinished owned action.".to_owned()); }
-        let next = state.generation.and_then(|generation| generation.checked_add(1)).ok_or("document generation exhausted")?;
-        if matches!(request, crate::undo::UndoRequest::Undo) && doc.pending_ops() != 0 { history.commit_action_authored(doc, None, None, Some(author.clone())); }
-        let result = match request {
-            crate::undo::UndoRequest::Undo => history.undo_as(doc, Some(author), None, None),
-            crate::undo::UndoRequest::Redo => history.redo_as(doc, Some(author), None, None),
-        };
-        if result.is_some() { state.generation = Some(next); state.statuses.clear(); }
-        Ok(result)
-    }).map_err(|error| error.to_string())??;
-    if result.is_some() { store.schedule_committed_history(&checkout.id); }
+    let result = store
+        .with_action_state(&checkout.id, |doc, history, state| {
+            if state.pending.is_some() {
+                return Err("The document has an unfinished owned action.".to_owned());
+            }
+            let next = state
+                .generation
+                .and_then(|generation| generation.checked_add(1))
+                .ok_or("document generation exhausted")?;
+            if matches!(request, crate::undo::UndoRequest::Undo) && doc.pending_ops() != 0 {
+                history.commit_action_authored(doc, None, None, Some(author.clone()));
+            }
+            let result = match request {
+                crate::undo::UndoRequest::Undo => history.undo_as(doc, Some(author), None, None),
+                crate::undo::UndoRequest::Redo => history.redo_as(doc, Some(author), None, None),
+            };
+            if result.is_some() {
+                state.generation = Some(next);
+                state.statuses.clear();
+            }
+            Ok(result)
+        })
+        .map_err(|error| error.to_string())??;
+    if result.is_some() {
+        store.schedule_committed_history(&checkout.id);
+    }
     Ok(result)
 }
 
 /// # Safety
 /// Caller owns the exact stable node map exclusively, as for `invoke_bound_node`.
-pub(crate) unsafe fn drain_legacy_node_action(bindings: &BoundNodeMap, nodes: &HashMap<NodeId, *mut dyn Widget>, node: NodeId, authority: &crate::permissions::PermissionContext, author: &UserId) -> Result<bool, String> {
-    let admitted = bindings.admitted(nodes, node).map_err(|error| format!("{error:?}"))?;
-    if admitted.inactive { return Ok(false); }
-    let Some(owner) = &admitted.legacy else { return Ok(false); };
+pub(crate) unsafe fn drain_legacy_node_action(
+    bindings: &BoundNodeMap,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    node: NodeId,
+    authority: &crate::permissions::PermissionContext,
+    author: &UserId,
+) -> Result<bool, String> {
+    let admitted = bindings
+        .admitted(nodes, node)
+        .map_err(|error| format!("{error:?}"))?;
+    if admitted.inactive {
+        return Ok(false);
+    }
+    let Some(owner) = &admitted.legacy else {
+        return Ok(false);
+    };
     let app = authorize_legacy_owner(owner, authority, author)?;
     let (store, checkout) = owner.store_checkout();
     let pointer = admitted.pointer;
-    let changed = store.with_action_state(&checkout.id, |doc, history, state| {
-        if state.pending.is_some() { return Err("The document has an unfinished owned action.".to_owned()); }
-        let next = state.generation.and_then(|generation| generation.checked_add(1)).ok_or("document generation exhausted")?;
-        let widget = unsafe { &mut *pointer };
-        let bracket = widget.take_committed_action();
-        let requested = widget.needs_commit();
-        if bracket.is_none() && !requested { return Ok(false); }
-        let changed = if let Some(before) = bracket {
-            history.record_committed_action_authored(doc, before, None, widget.get_state(), Some(author.clone()))
-        } else {
-            let context = widget.take_commit_context().unwrap_or_else(|| tilo_actions::ActionContext::for_resource("Edit", checkout.id.as_str(), "document", "Document").with_app(&app, &app));
-            history.commit_action_authored_with_message(doc, None, widget.get_state(), Some(author.clone()), context.change_message())
-        };
-        if changed { state.generation = Some(next); state.statuses.clear(); }
-        if requested { widget.on_commit(); }
-        Ok(changed)
-    }).map_err(|error| error.to_string())??;
-    if changed { store.schedule_committed_history(&checkout.id); }
+    let changed = store
+        .with_action_state(&checkout.id, |doc, history, state| {
+            if state.pending.is_some() {
+                return Err("The document has an unfinished owned action.".to_owned());
+            }
+            let next = state
+                .generation
+                .and_then(|generation| generation.checked_add(1))
+                .ok_or("document generation exhausted")?;
+            let widget = unsafe { &mut *pointer };
+            let bracket = widget.take_committed_action();
+            let requested = widget.needs_commit();
+            if bracket.is_none() && !requested {
+                return Ok(false);
+            }
+            let changed = if let Some(before) = bracket {
+                history.record_committed_action_authored(
+                    doc,
+                    before,
+                    None,
+                    widget.get_state(),
+                    Some(author.clone()),
+                )
+            } else {
+                let context = widget.take_commit_context().unwrap_or_else(|| {
+                    tilo_actions::ActionContext::for_resource(
+                        "Edit",
+                        checkout.id.as_str(),
+                        "document",
+                        "Document",
+                    )
+                    .with_app(&app, &app)
+                });
+                history.commit_action_authored_with_message(
+                    doc,
+                    None,
+                    widget.get_state(),
+                    Some(author.clone()),
+                    context.change_message(),
+                )
+            };
+            if changed {
+                state.generation = Some(next);
+                state.statuses.clear();
+            }
+            if requested {
+                widget.on_commit();
+            }
+            Ok(changed)
+        })
+        .map_err(|error| error.to_string())??;
+    if changed {
+        store.schedule_committed_history(&checkout.id);
+    }
     Ok(changed)
 }
 

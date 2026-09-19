@@ -489,7 +489,10 @@ impl Widget for Column {
     // `.any` would short-circuit and skip `take_structure_dirty()` on later
     // children once one reports dirty, leaving their flags uncleared --
     // the non-short-circuiting `.fold` below is required, not incidental.
-    #[allow(clippy::unnecessary_fold)]
+    #[allow(
+        clippy::unnecessary_fold,
+        reason = "Every child must clear its structure-dirty flag; a short-circuiting any would leave later children dirty."
+    )]
     fn take_structure_dirty(&mut self) -> bool {
         // Forward to every child; fold over the full set so each child's
         // flag is cleared even if an earlier one already reported dirty.

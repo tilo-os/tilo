@@ -1489,16 +1489,25 @@ mod tests {
     fn custom_theme_spacing_is_built_inside_the_usable_band() {
         let too_dense = quiet_ocean(8.0, 2.0);
         let too_loose = quiet_ocean(8.0, 64.0);
-        assert!(too_dense.validate().is_ok(), "the schema contract is unchanged");
+        assert!(
+            too_dense.validate().is_ok(),
+            "the schema contract is unchanged"
+        );
         assert!(too_loose.validate().is_ok());
         let dense = Theme::from_custom_spec(&too_dense).unwrap();
         let loose = Theme::from_custom_spec(&too_loose).unwrap();
         assert_eq!(dense.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
-        assert_eq!(dense.tokens.spacing.s1, CustomThemeSpec::SPACING_PX_MIN / 3.0);
+        assert_eq!(
+            dense.tokens.spacing.s1,
+            CustomThemeSpec::SPACING_PX_MIN / 3.0
+        );
         assert_eq!(loose.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MAX);
         assert_eq!(loose.padding_standard, CustomThemeSpec::SPACING_PX_MAX);
         let inside = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
-        assert_eq!(inside.tokens.spacing.s3, 17.0, "a value inside the band is untouched");
+        assert_eq!(
+            inside.tokens.spacing.s3, 17.0,
+            "a value inside the band is untouched"
+        );
         assert!(
             Theme::from_custom_spec(&quiet_ocean(8.0, 1.0)).is_none(),
             "below the schema minimum is still rejected, not clamped"
@@ -1519,7 +1528,12 @@ mod tests {
         );
         assert_eq!(Theme::dark().with_ui_scale(1.5).responsive_scale(), 1.5);
         assert!(
-            (Theme::dark().with_ui_scale(1.5).with_text_scale(2.0).responsive_scale() - 3.0).abs()
+            (Theme::dark()
+                .with_ui_scale(1.5)
+                .with_text_scale(2.0)
+                .responsive_scale()
+                - 3.0)
+                .abs()
                 < 1e-9,
             "ui and text growth compose"
         );

@@ -1484,7 +1484,10 @@ impl Widget for AgentModelsPane {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The Widget event contract forwards input, CRDT state, focus/handled outputs, and layout to the composed settings pane."
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,

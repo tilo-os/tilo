@@ -21,10 +21,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use collab_types::ChannelId;
 
-use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -436,7 +436,10 @@ impl ChannelBrowser {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let pill_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
+        let pill_text_size = renderer_type_size(
+            text_renderer,
+            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        );
         // Chip quiet (HIG §9.5): raised rest fill under an edge derived from
         // it; selected: solid accent with ink chosen against it, no edge.
         let (active_fill, _) = crate::surface::chip_colors(theme, true);
@@ -509,7 +512,10 @@ impl ChannelBrowser {
     /// row's identity. Role chip and time/badge are split into their own
     /// helpers below to keep this under clippy's line budget; neither
     /// reads `self`, so both are associated functions.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Channel rows combine render context with row bounds, channel metadata, selection state, and time for their activity display."
+    )]
     fn draw_row(
         scene: &mut Scene,
         transform: Affine,
@@ -747,7 +753,10 @@ impl ChannelBrowser {
             None,
             &band,
         );
-        let text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
+        let text_size = renderer_type_size(
+            text_renderer,
+            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        );
         let cy = f64::midpoint(header_rect.y0, header_rect.y1);
         let header_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
@@ -791,7 +800,10 @@ impl ChannelBrowser {
             sheet_surface(theme),
         );
 
-        let chip_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 2.0).max(9.0));
+        let chip_text_size = renderer_type_size(
+            text_renderer,
+            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
+        );
         // Key caps are quiet chips: raised fill under an edge derived from it.
         let (chip_body, chip_border) = crate::surface::chip_colors(theme, false);
         let dim = theme.tokens.colors.text_dim;
@@ -1401,8 +1413,12 @@ mod tests {
         reason = "probe coordinates are non-negative pixel positions inside the test surface"
     )]
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) =
-            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
         crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
     }
 

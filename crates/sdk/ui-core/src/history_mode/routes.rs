@@ -21,7 +21,9 @@ pub(crate) enum RemoteApplyError {
     Unavailable(String),
 }
 impl RemoteApplyError {
-    pub(crate) fn is_invalid_mutation(&self) -> bool { matches!(self, Self::InvalidMutation(_)) }
+    pub(crate) fn is_invalid_mutation(&self) -> bool {
+        matches!(self, Self::InvalidMutation(_))
+    }
 }
 
 pub(crate) fn merge_committed(
@@ -29,14 +31,15 @@ pub(crate) fn merge_committed(
     mutation: &DocumentMutation,
 ) -> Result<bool, RemoteApplyError> {
     if doc.pending_ops() != 0 {
-        return Err(RemoteApplyError::Unavailable("Finish the current edit before receiving remote changes".into()));
+        return Err(RemoteApplyError::Unavailable(
+            "Finish the current edit before receiving remote changes".into(),
+        ));
     }
     // Decode into a clone first so malformed incremental data cannot partly
     // mutate the real owner. Merge preserves actor, causal history and identity.
     let mut incoming = match mutation {
-        DocumentMutation::Snapshot(bytes) => {
-            AutoCommit::load(bytes).map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?
-        }
+        DocumentMutation::Snapshot(bytes) => AutoCommit::load(bytes)
+            .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?,
         DocumentMutation::Incremental(bytes) => {
             // Automerge's incremental loader intentionally accepts a valid
             // prefix on partial parse errors. Strict standalone loading checks
@@ -108,8 +111,13 @@ impl PendingRemote {
         true
     }
     pub(crate) fn recover_snapshot(&mut self, mutation: DocumentMutation) -> bool {
-        let DocumentMutation::Snapshot(bytes) = &mutation else { return false; };
-        if bytes.len() > MAX_PENDING_BYTES || !self.queue.is_empty() || AutoCommit::load(bytes).is_err() {
+        let DocumentMutation::Snapshot(bytes) = &mutation else {
+            return false;
+        };
+        if bytes.len() > MAX_PENDING_BYTES
+            || !self.queue.is_empty()
+            || AutoCommit::load(bytes).is_err()
+        {
             return false;
         }
         // Retain the failure and publication stop until the valid snapshot is
@@ -123,7 +131,8 @@ impl PendingRemote {
         self.pop();
         // A malformed item discovered while an overflow is outstanding must
         // not weaken its requirement for a newly received recovery snapshot.
-        if self.failure.is_none() || self.invalid_mutation_pending || self.recovery_snapshot_pending {
+        if self.failure.is_none() || self.invalid_mutation_pending || self.recovery_snapshot_pending
+        {
             self.failure = Some(reason);
             self.invalid_mutation_pending = true;
         }
@@ -132,7 +141,9 @@ impl PendingRemote {
     pub(crate) fn pop_applied(&mut self) {
         // A snapshot already admitted behind bad bytes can also recover once
         // actually merged. Never clear overflow merely by draining an old item.
-        if (self.invalid_mutation_pending || self.recovery_snapshot_pending) && matches!(self.front(), Some(DocumentMutation::Snapshot(_))) {
+        if (self.invalid_mutation_pending || self.recovery_snapshot_pending)
+            && matches!(self.front(), Some(DocumentMutation::Snapshot(_)))
+        {
             self.failure = None;
             self.invalid_mutation_pending = false;
             self.recovery_snapshot_pending = false;
@@ -182,7 +193,8 @@ impl OwnerDocumentRoutes {
     ) -> Vec<RouteSpec> {
         fn collect(root: &dyn Widget, owners: &mut Vec<HistoryOwner>) {
             if let Some(owner) = root.history_owner()
-                && !owners.iter().any(|existing| existing.same_owner(&owner)) {
+                && !owners.iter().any(|existing| existing.same_owner(&owner))
+            {
                 owners.push(owner);
             }
             for child in root.children() {
@@ -255,23 +267,34 @@ mod round1_tests {
     #[test]
     fn round1_bad_front_does_not_relax_overflow_recovery_or_lose_queued_bytes() {
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "value", "snapshot").unwrap(); doc.commit();
+        doc.put(automerge::ROOT, "value", "snapshot").unwrap();
+        doc.commit();
         let snapshot = DocumentMutation::Snapshot(doc.save());
         let mut queue = PendingRemote::default();
         assert!(queue.push(DocumentMutation::Snapshot(vec![1])));
-        for _ in 1..MAX_PENDING_ITEMS { assert!(queue.push(snapshot.clone())); }
+        for _ in 1..MAX_PENDING_ITEMS {
+            assert!(queue.push(snapshot.clone()));
+        }
         assert!(!queue.push(snapshot.clone()));
         let overflow = queue.failure.clone();
         queue.quarantine_invalid_front("invalid front".into());
         assert_eq!(queue.failure, overflow);
-        assert_eq!(queue.queue.len(), MAX_PENDING_ITEMS-1);
-        while !queue.is_empty() { queue.pop_applied(); }
+        assert_eq!(queue.queue.len(), MAX_PENDING_ITEMS - 1);
+        while !queue.is_empty() {
+            queue.pop_applied();
+        }
         assert_eq!(queue.bytes, 0);
-        assert_eq!(queue.failure, overflow, "old accepted snapshots cannot satisfy a later overflow");
+        assert_eq!(
+            queue.failure, overflow,
+            "old accepted snapshots cannot satisfy a later overflow"
+        );
         assert!(!queue.recover_snapshot(DocumentMutation::Snapshot(vec![1])));
         assert_eq!(queue.failure, overflow);
         assert!(queue.recover_snapshot(snapshot));
-        assert_eq!(queue.failure, overflow, "valid recovery remains pending until successful merge");
+        assert_eq!(
+            queue.failure, overflow,
+            "valid recovery remains pending until successful merge"
+        );
         queue.pop_applied();
         assert!(queue.failure.is_none());
         assert_eq!(queue.bytes, 0);
@@ -284,10 +307,14 @@ mod round2_tests {
     #[test]
     fn round2_refused_traffic_also_retires_recovery_by_an_older_queued_snapshot() {
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "snapshot", "accepted before failure").unwrap(); doc.commit();
+        doc.put(automerge::ROOT, "snapshot", "accepted before failure")
+            .unwrap();
+        doc.commit();
         let heads = doc.base_heads();
         let snapshot = DocumentMutation::Snapshot(doc.save());
-        doc.put(automerge::ROOT, "later", "not covered by older snapshot").unwrap(); doc.commit();
+        doc.put(automerge::ROOT, "later", "not covered by older snapshot")
+            .unwrap();
+        doc.commit();
         let delta = DocumentMutation::Incremental(doc.save_after(&heads));
         let fresh = DocumentMutation::Snapshot(doc.save());
         let mut queue = PendingRemote::default();
@@ -298,7 +325,10 @@ mod round2_tests {
         // unavailable owner may still leave it queued when later traffic arrives.
         assert!(!queue.admit(delta));
         queue.pop_applied();
-        assert!(queue.failure.is_some(), "the older queued S cannot cover a later refused message");
+        assert!(
+            queue.failure.is_some(),
+            "the older queued S cannot cover a later refused message"
+        );
         assert!(queue.admit(fresh));
         queue.pop_applied();
         assert!(queue.failure.is_none());

@@ -794,7 +794,10 @@ pub fn draw_markers(
 /// a larger disc bearing a white category pictogram and (past the label
 /// threshold) a name plate. The selected POI is enlarged with an accent halo and
 /// always labelled.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "POI painting combines render context, map projection, visible records, selection, palette and clipping bounds"
+)]
 pub fn draw_pois(
     scene: &mut Scene,
     t: Affine,
@@ -852,7 +855,10 @@ pub fn draw_pois(
     scene.pop_layer();
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "POI marker painting needs render context, projected position, record, palette, display flags and clipping bounds"
+)]
 fn draw_poi_dot(
     scene: &mut Scene,
     t: Affine,

@@ -367,8 +367,24 @@ impl Widget for DiffView {
 
         // --- Column headers ---
         let header_h = self.metrics.header_h;
-        draw_header(scene, transform, tr, theme, left_col, &self.left_label, header_h);
-        draw_header(scene, transform, tr, theme, right_col, &self.right_label, header_h);
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            left_col,
+            &self.left_label,
+            header_h,
+        );
+        draw_header(
+            scene,
+            transform,
+            tr,
+            theme,
+            right_col,
+            &self.right_label,
+            header_h,
+        );
 
         // Divider between columns.
         scene.stroke(
@@ -564,9 +580,7 @@ impl DiffView {
     fn block_rect(&self, block: &crate::model::ChangeBlock) -> Rect {
         let m = self.metrics;
         let top = self.rect.y0 + m.header_h + block.first_row as f64 * m.row_h - self.scroll_y;
-        let bottom = self.rect.y0
-            + m.header_h
-            + block.last_row.saturating_add(1) as f64 * m.row_h
+        let bottom = self.rect.y0 + m.header_h + block.last_row.saturating_add(1) as f64 * m.row_h
             - self.scroll_y;
         Rect::new(
             self.rect.x0,
@@ -629,8 +643,8 @@ impl DiffView {
             &clip,
         );
         let first = (self.scroll_y / m.row_h).floor() as usize;
-        let last = (first + (self.body_height() / m.row_h).ceil() as usize + 2)
-            .min(self.model.rows.len());
+        let last =
+            (first + (self.body_height() / m.row_h).ceil() as usize + 2).min(self.model.rows.len());
         for index in first..last {
             let Some(row) = self.model.rows.get(index) else {
                 continue;
@@ -719,7 +733,16 @@ impl DiffView {
 
             // Gutter numbers.
             draw_gutter_number(scene, transform, tr, theme, left_col.x0, y, row.left_no, m);
-            draw_gutter_number(scene, transform, tr, theme, right_col.x0, y, row.right_no, m);
+            draw_gutter_number(
+                scene,
+                transform,
+                tr,
+                theme,
+                right_col.x0,
+                y,
+                row.right_no,
+                m,
+            );
 
             // Change glyph in the left gutter margin between number and text.
             let glyph = match row.kind {
@@ -862,7 +885,10 @@ impl DiffView {
 }
 
 /// Draw a column header bar with its label.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "column headers combine paint context with column bounds, label and measured header height"
+)]
 fn draw_header(
     scene: &mut Scene,
     transform: Affine,
@@ -903,7 +929,10 @@ fn draw_header(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "gutter rows combine paint context and position with an optional line number and measured row/gutter dimensions"
+)]
 fn draw_gutter_number(
     scene: &mut Scene,
     transform: Affine,

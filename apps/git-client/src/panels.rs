@@ -174,7 +174,14 @@ impl PanelsView {
     ) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, rect, c.surfaces.raised);
-        draw::hline(scene, t, rect.y1, rect.x0, rect.x1, draw::edge(c.surfaces.raised));
+        draw::hline(
+            scene,
+            t,
+            rect.y1,
+            rect.x0,
+            rect.x1,
+            draw::edge(c.surfaces.raised),
+        );
 
         // Ahead/behind for the head branch.
         let head = model.branches.iter().find(|b| b.is_head);

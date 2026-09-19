@@ -308,7 +308,10 @@ impl ChangesColumn {
     /// (area + index). `message` is the live commit message; `caret` shows
     /// a blinking caret when the box is focused. Returns hit regions for
     /// click routing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "changes painting combines render context, repository data, viewport, selection, scroll and commit message"
+    )]
     pub fn draw(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -423,7 +426,10 @@ impl ChangesColumn {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "change-section painting shares render context, file and staging data, row metrics and accumulated hit regions"
+    )]
     fn section(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -744,7 +750,10 @@ impl ChangesColumn {
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "commit-box painting combines render context and repository data with the message, layout metrics and hit regions"
+    )]
     fn commit_box(
         scene: &mut Scene,
         tr: &mut TextRenderer,

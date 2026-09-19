@@ -5880,9 +5880,9 @@ impl WordProcessorWidget {
                 .insert(item.label, TOOLBAR_MODEL.item_w(f64::from(width)));
             label_h = label_h.max(f64::from(height));
         }
-        self.toolbar_row_height = TOOLBAR_MODEL.row_h(label_h, self.zoom.height()).max(
-            chrome::toolbar::metrics(num::f32_of_f64(self.text_scale)).row_height,
-        );
+        self.toolbar_row_height = TOOLBAR_MODEL
+            .row_h(label_h, self.zoom.height())
+            .max(chrome::toolbar::metrics(num::f32_of_f64(self.text_scale)).row_height);
         let tb_h = self.toolbar_height(full.width());
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
@@ -12675,7 +12675,8 @@ impl WordProcessorWidget {
         let full = self.toolbar_button_specs(false);
         let mut widths: Vec<f64> = full.iter().map(|(_, item)| item.width).collect();
         let mut starts: Vec<bool> = full.iter().map(|(_, item)| item.group_start).collect();
-        widths.push((swatch_reserve_width() + ZOOM_SWATCH_GAP) * self.text_scale + self.zoom.width());
+        widths
+            .push((swatch_reserve_width() + ZOOM_SWATCH_GAP) * self.text_scale + self.zoom.width());
         starts.push(true);
         pack_toolbar_rows(&widths, &starts, width, self.text_scale).len() > 1
     }
@@ -12690,7 +12691,10 @@ impl WordProcessorWidget {
             specs.retain(|(action, _)| matches!(action, ToolAction::NewMenu | ToolAction::More));
             for (_, item) in &mut specs {
                 item.width = (58.0 * self.text_scale).max(
-                    self.toolbar_label_widths.get(&item.label).copied().unwrap_or(0.0),
+                    self.toolbar_label_widths
+                        .get(&item.label)
+                        .copied()
+                        .unwrap_or(0.0),
                 );
             }
         }

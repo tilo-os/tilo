@@ -5433,7 +5433,10 @@ impl ContactsApp {
     /// The birthday calendar popup: month/year header with prev/next
     /// chevrons, the weekday header row, and every day cell (hover +
     /// selected-day highlight).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the birthday popup combines paint context and anchor bounds with the displayed year and month"
+    )]
     fn draw_popup_calendar(
         &self,
         scene: &mut Scene,
@@ -6066,7 +6069,10 @@ pub(crate) fn detail_section(
     *y += 22.0 * scale;
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "contact fields combine paint context, column bounds and a running vertical cursor with separate label and value text"
+)]
 pub(crate) fn detail_field(
     scene: &mut Scene,
     t: Affine,
@@ -6305,7 +6311,10 @@ fn selection_pill(row: Rect, sp: &Spacing) -> Rect {
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "menu items combine paint context and row bounds with their label, hover and selection state"
+)]
 fn menu_item(
     scene: &mut Scene,
     t: Affine,
@@ -8841,7 +8850,10 @@ impl ContactsApp {
         self.search.is_focused() || self.form.as_ref().is_some_and(EditForm::any_focused)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "input forwarding preserves the widget event, scale, modifiers, CRDT location, handled flag and layout context"
+    )]
     fn forward_event_to_inputs(
         &mut self,
         event: &WindowEvent,
@@ -8884,7 +8896,10 @@ impl ContactsApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "click routing keeps the CRDT location, modifiers, handled flag and layout context available to the selected affordance"
+    )]
     /// Route a click to whichever affordance is under the cursor. Split into
     /// per-region helpers purely for length; the guard order (and thus which
     /// affordance wins when rects overlap) is unchanged from one flat
@@ -9389,7 +9404,10 @@ impl ContactsApp {
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "caret placement forwards the CRDT location, modifiers and layout context to the focused shared text input"
+    )]
     fn forward_press_to_focused_input(
         &mut self,
         state: &mut AutoCommit,
@@ -9918,7 +9936,10 @@ impl ContactsApp {
     /// Route a keypress. Split into per-concern helpers purely for length;
     /// the guard order (which chord wins) is unchanged from one flat
     /// function.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "key routing needs the full widget event context to dispatch shortcuts and forward unconsumed events to text inputs"
+    )]
     fn handle_key(
         &mut self,
         ke: &KeyEvent,

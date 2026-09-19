@@ -948,23 +948,57 @@ mod tests {
         let mut view = WebView::new(engine.clone());
         view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
         let frame = crate::webview::Frame {
-            trace_id: Some(101), rgba: Arc::new(vec![255; 16 * 16 * 4]), width: 16, height: 16,
+            trace_id: Some(101),
+            rgba: Arc::new(vec![255; 16 * 16 * 4]),
+            width: 16,
+            height: 16,
         };
         crate::webview::frame_trace::take_for_test();
         for available in [Some(frame), None] {
             *engine.frames().lock().unwrap() = available;
             let mut scene = Scene::new();
-            view.draw(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), &PresenceCtx::default());
-            assert!(scene.encoding().draw_tags.contains(&vello_encoding::DrawTag::IMAGE));
-            assert_eq!(crate::webview::frame_trace::take_for_test(), (vec![101], false));
+            view.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
+            );
+            assert!(
+                scene
+                    .encoding()
+                    .draw_tags
+                    .contains(&vello_encoding::DrawTag::IMAGE)
+            );
+            assert_eq!(
+                crate::webview::frame_trace::take_for_test(),
+                (vec![101], false)
+            );
         }
         *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
-            trace_id: Some(102), rgba: Arc::new(vec![255; 8 * 8 * 4]), width: 8, height: 8,
+            trace_id: Some(102),
+            rgba: Arc::new(vec![255; 8 * 8 * 4]),
+            width: 8,
+            height: 8,
         });
         let mut scene = Scene::new();
-        view.draw(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), &PresenceCtx::default());
-        assert!(!scene.encoding().draw_tags.contains(&vello_encoding::DrawTag::IMAGE));
-        assert_eq!(crate::webview::frame_trace::take_for_test(), (vec![], false));
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert!(
+            !scene
+                .encoding()
+                .draw_tags
+                .contains(&vello_encoding::DrawTag::IMAGE)
+        );
+        assert_eq!(
+            crate::webview::frame_trace::take_for_test(),
+            (vec![], false)
+        );
     }
 
     #[test]
@@ -973,29 +1007,46 @@ mod tests {
         let mut view = WebView::new(engine.clone());
         view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
         *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
-            trace_id: Some(201), rgba: Arc::new(vec![255; 16 * 16 * 4]), width: 16, height: 16,
+            trace_id: Some(201),
+            rgba: Arc::new(vec![255; 16 * 16 * 4]),
+            width: 16,
+            height: 16,
         });
-        let mut root = crate::widget::Column::new().push(Box::new(
-            crate::widget::Row::new().push(Box::new(view)),
-        ));
+        let mut root = crate::widget::Column::new()
+            .push(Box::new(crate::widget::Row::new().push(Box::new(view))));
         crate::webview::frame_trace::take_for_test();
         for pass in 0..3 {
             if pass == 1 {
                 *engine.frames().lock().unwrap() = None;
             } else if pass == 2 {
                 *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
-                    trace_id: Some(202), rgba: Arc::new(vec![128; 16 * 16 * 4]), width: 16, height: 16,
+                    trace_id: Some(202),
+                    rgba: Arc::new(vec![128; 16 * 16 * 4]),
+                    width: 16,
+                    height: 16,
                 });
             }
             let mut scene = Scene::new();
             root.draw_with_presence(
-                &mut scene, Affine::IDENTITY, &mut TextRenderer::new(),
-                &Theme::dark(), &PresenceCtx::default(),
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &PresenceCtx::default(),
                 &crate::permissions::PermissionContext::permissive(),
             );
-            assert!(scene.encoding().draw_tags.contains(&vello_encoding::DrawTag::IMAGE));
+            assert!(
+                scene
+                    .encoding()
+                    .draw_tags
+                    .contains(&vello_encoding::DrawTag::IMAGE)
+            );
             let expected = if pass == 2 { vec![202] } else { vec![201] };
-            assert_eq!(crate::webview::frame_trace::take_for_test(), (expected, false), "pass {pass}");
+            assert_eq!(
+                crate::webview::frame_trace::take_for_test(),
+                (expected, false),
+                "pass {pass}"
+            );
         }
     }
 

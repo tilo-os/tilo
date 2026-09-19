@@ -256,7 +256,10 @@ pub(super) fn text(
 ) {
     tr.draw_text(scene, s, size, color, tf * Affine::translate((x, y)), None);
 }
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Weighted text painting combines scene/renderer/transform with content, size, color, origin, and weight."
+)]
 pub(super) fn text_w(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -1064,7 +1067,6 @@ pub(super) fn nice_tick(px_per_sec: f64) -> f64 {
     600.0
 }
 
-
 pub(super) fn type_size(tr: &TextRenderer, px: f32) -> f32 {
     tr.renderer_input_style(&TextStyle::new(px)).size
 }
@@ -1091,10 +1093,7 @@ pub(super) fn modal_layout_with_stacking_actions(
 ) -> ModalLayout {
     let spec = spec.clone().body_height(body_height);
     let mut layout = ModalFrame::layout(viewport, &spec, tr, theme);
-    let overflows = layout
-        .actions
-        .iter()
-        .any(|r| r.x0 < layout.body.x0 - 0.5);
+    let overflows = layout.actions.iter().any(|r| r.x0 < layout.body.x0 - 0.5);
     if !overflows || layout.actions.len() < 2 {
         return layout;
     }

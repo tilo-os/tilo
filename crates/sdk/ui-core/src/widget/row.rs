@@ -464,7 +464,10 @@ impl Widget for Row {
     // `.any` would short-circuit and skip `take_structure_dirty()` on later
     // children once one reports dirty, leaving their flags uncleared --
     // the non-short-circuiting `.fold` below is required, not incidental.
-    #[allow(clippy::unnecessary_fold)]
+    #[allow(
+        clippy::unnecessary_fold,
+        reason = "The fold must visit every child to drain every structure-dirty flag; any would stop after the first dirty child."
+    )]
     fn take_structure_dirty(&mut self) -> bool {
         self.children
             .iter_mut()

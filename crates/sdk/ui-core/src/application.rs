@@ -372,8 +372,13 @@ impl AppComponent {
     /// This metadata carries no new authority and follows native/headless/tile mounts.
     /// # Errors
     /// Refuses missing, stale or foreign document custody and invalid scope metadata.
-    pub fn register_document_history(&mut self, definition: &'static crate::history_mode::HistoryDefinition) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        use crate::history_mode::{HistoryOwner, HistoryPresentation, HistoryRegistration, HistorySourceRegistration};
+    pub fn register_document_history(
+        &mut self,
+        definition: &'static crate::history_mode::HistoryDefinition,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        use crate::history_mode::{
+            HistoryOwner, HistoryPresentation, HistoryRegistration, HistorySourceRegistration,
+        };
         let owner = HistoryOwner::component(self.callback_binding());
         let sources = definition
             .scopes
@@ -401,9 +406,14 @@ impl AppComponent {
     /// its owners. The destination runner validates the complete settled tree.
     /// # Errors
     /// Refuses invalid registrations or a bundle belonging to another application.
-    pub fn register_history(&mut self, registration: crate::history_mode::HistoryRegistration) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+    pub fn register_history(
+        &mut self,
+        registration: crate::history_mode::HistoryRegistration,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         registration.validate()?;
-        if registration.definition.app_id != self.context.app_id { return Err(crate::history_mode::HistoryRegistrationError::ForeignSource); }
+        if registration.definition.app_id != self.context.app_id {
+            return Err(crate::history_mode::HistoryRegistrationError::ForeignSource);
+        }
         self.history = Some(registration);
         Ok(())
     }
@@ -877,7 +887,8 @@ impl ComponentCloseReport {
             match &self.record_retry_target {
                 Some(id) => records.try_flush_record(id),
                 None => records.try_flush(),
-            }.inspect_err(|error| self.record_error = Some(error.clone()))?;
+            }
+            .inspect_err(|error| self.record_error = Some(error.clone()))?;
             self.record_retry = None;
             self.record_retry_target = None;
             self.record_error = None;

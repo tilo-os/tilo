@@ -10996,16 +10996,26 @@ impl PhotosApp {
         let visible_days = self
             .timeline_projection
             .visible_days(self.timeline_scroll_y, viewport_height);
+        // Visible geometry can move beyond the queued thumbnail window before
+        // the next sync. Resolve identities from the full authored snapshot.
+        let photo_images: HashMap<_, _> = self
+            .observed_content
+            .iter()
+            .flat_map(|content| &content.library.photos)
+            .map(|photo| (photo.id.as_str(), &photo.image))
+            .collect();
         let visible_items: Vec<_> = if large_text && self.metadata_editor {
             Vec::new()
         } else {
             self.timeline_projection
                 .visible_photos(self.timeline_scroll_y, viewport_height)
                 .into_iter()
-                .map(|entry| {
-                    (
+                .filter_map(|entry| {
+                    let image = photo_images.get(entry.photo.id.as_str())?;
+                    Some((
                         LibraryItem {
                             id: entry.photo.id.clone(),
+                            thumbnail_key: thumbnail_key(image),
                             name: entry.photo.name.clone(),
                             favorite: entry.photo.favorite,
                             captured_at: entry.photo.day.clone(),
@@ -11016,7 +11026,7 @@ impl PhotosApp {
                         },
                         timeline_left + entry.x,
                         top + entry.y,
-                    )
+                    ))
                 })
                 .collect()
         };
@@ -11094,10 +11104,7 @@ impl PhotosApp {
                 None,
                 &preview,
             );
-            if let Some(image) = self
-                .library_thumbnails
-                .get(self.thumbnail_resource_keys.get(id).unwrap_or(id))
-            {
+            if let Some(image) = self.library_thumbnails.get(&item.thumbnail_key) {
                 let scale = (preview.width() / f64::from(image.width))
                     .min(preview.height() / f64::from(image.height));
                 let drawn_w = f64::from(image.width) * scale;
@@ -11114,9 +11121,7 @@ impl PhotosApp {
                 // skeleton tells the difference between "arriving" and an
                 // unavailable source without fabricating a thumbnail or
                 // covering the gallery in a repeated generic image glyph.
-                let unavailable = self
-                    .thumbnail_unavailable
-                    .contains(self.thumbnail_resource_keys.get(id).unwrap_or(id));
+                let unavailable = self.thumbnail_unavailable.contains(&item.thumbnail_key);
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -16824,6 +16829,63 @@ mod history_reconcile_tests {
     }
 
     #[test]
+    fn newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window() {
+        let mut doc = AutoCommit::new();
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..80 {
+            let mut photo = crate::model::LibraryPhoto::from_image(
+                OpenImage::from_path(&format!("missing-timeline-{index}.png"), 30, 20)
+                    .with_content(format!("{index:064x}")),
+            );
+            photo.captured_at = Some(format!("2026-{:02}-{:02}", 1 + index / 28, 1 + index % 28));
+            library.photos.push(photo);
+        }
+        let target = library.photos[2].clone();
+        PhotosDoc::set_library(&mut doc, &library);
+        let mut app = PhotosApp::new();
+        app.show_library();
+        app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
+        app.view_timeline(
+            &doc,
+            Some(&crate::actions::TimelineAnchor::Day {
+                day: target.captured_at.clone().unwrap(),
+            }),
+        )
+        .unwrap();
+        let mut text = TextRenderer::new();
+        let mut missing = Scene::new();
+        app.draw_library(
+            &mut missing,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
+        assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
+        app.library_thumbnails.insert(
+            thumbnail_key(&target.image),
+            to_peniko(&crate::shots_pattern(30, 20)),
+        );
+        let mut hydrated = Scene::new();
+        app.draw_library(
+            &mut hydrated,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
+        assert_eq!(
+            hydrated.encoding().resources.patches.len(),
+            missing.encoding().resources.patches.len() + 1,
+            "the production painter records the cached immutable image even before it enters the queued thumbnail window"
+        );
+    }
+
+    #[test]
     fn changed_target_invalidates_metadata_draft_before_input_but_unrelated_change_preserves_it() {
         let (mut app, mut doc, id) = setup();
         let mut lib = PhotosDoc::library(&doc);
@@ -16855,7 +16917,11 @@ mod history_reconcile_tests {
     #[test]
     fn changed_second_batch_photo_invalidates_the_whole_metadata_draft() {
         let (mut app, mut doc, first) = setup();
-        let second = crate::model::LibraryPhoto::from_image(OpenImage::from_path("second-missing.png", 4, 3));
+        let second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            "second-missing.png",
+            4,
+            3,
+        ));
         let second_id = second.id.clone();
         let mut library = PhotosDoc::library(&doc);
         library.photos.push(second);
@@ -16866,9 +16932,15 @@ mod history_reconcile_tests {
         library.photos[1].tags = vec!["remote edit".into()];
         PhotosDoc::set_library(&mut doc, &library);
         app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
-        assert!(!app.metadata_editor, "a changed non-first batch target invalidates the draft before input");
+        assert!(
+            !app.metadata_editor,
+            "a changed non-first batch target invalidates the draft before input"
+        );
         app.save_metadata_editor(&mut doc);
-        assert_eq!(PhotosDoc::library(&doc).photo(&second_id).unwrap().tags, vec!["remote edit"]);
+        assert_eq!(
+            PhotosDoc::library(&doc).photo(&second_id).unwrap().tags,
+            vec!["remote edit"]
+        );
     }
 
     #[test]

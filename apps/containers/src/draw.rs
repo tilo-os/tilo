@@ -104,7 +104,8 @@ pub fn separator(scene: &mut Scene, x0: f64, x1: f64, y: f64, surface: Color) {
 /// panels goes through this once, so the scale is applied exactly one time;
 /// passing the token straight in painted 40px glyphs for a 20px token at 200%.
 pub fn px(tr: &TextRenderer, token_size: f32) -> f32 {
-    tr.renderer_input_style(&RendererStyle::new(token_size)).size
+    tr.renderer_input_style(&RendererStyle::new(token_size))
+        .size
 }
 
 /// Measured `(width, height)` of `s` at a theme token size, in logical pixels.
@@ -253,7 +254,12 @@ pub fn status_pill(
     let rect = Rect::new(origin.x, origin.y, origin.x + width, origin.y + height);
     // A tinted chip is edged in its own hue so it reads as a closed shape on
     // both themes; a translucent fill alone dissolves into a raised ground.
-    fill_round(scene, rect, height / 2.0, with_alpha(color, TINT_FILL_ALPHA));
+    fill_round(
+        scene,
+        rect,
+        height / 2.0,
+        with_alpha(color, TINT_FILL_ALPHA),
+    );
     stroke_round(
         scene,
         rect.inset(-0.5),
@@ -281,7 +287,12 @@ pub fn status_pill(
 /// The width [`status_pill`] will paint for `label`, so a caller can decide
 /// whether the pill fits before committing to that layout.
 pub fn status_pill_width(tr: &mut TextRenderer, theme: &Theme, label: &str) -> f64 {
-    let (tw, _) = measure(tr, label, theme.tokens.typography.scale.sm, TextWeight::Medium);
+    let (tw, _) = measure(
+        tr,
+        label,
+        theme.tokens.typography.scale.sm,
+        TextWeight::Medium,
+    );
     PILL_PAD_X * 2.0 + PILL_DOT_R * 2.0 + PILL_DOT_GAP + f64::from(tw)
 }
 
@@ -301,7 +312,13 @@ pub fn chip(
     let width = pad_x * 2.0 + f64::from(tw);
     let rect = Rect::new(origin.x, origin.y, origin.x + width, origin.y + height);
     fill_round(scene, rect, 4.0, with_alpha(accent, TINT_FILL_ALPHA));
-    stroke_round(scene, rect.inset(-0.5), 3.5, 1.0, with_alpha(accent, TINT_EDGE_ALPHA));
+    stroke_round(
+        scene,
+        rect.inset(-0.5),
+        3.5,
+        1.0,
+        with_alpha(accent, TINT_EDGE_ALPHA),
+    );
     let ty = rect.center().y - f64::from(th) / 2.0;
     text(
         scene,
@@ -607,7 +624,10 @@ mod tests {
             );
         }
         let (measured_w, _) = measure(&mut tr, "Containers", token, TextWeight::Semibold);
-        assert!((painted_w - measured_w).abs() < 0.01, "measure and paint agree");
+        assert!(
+            (painted_w - measured_w).abs() < 0.01,
+            "measure and paint agree"
+        );
         // And the unscaled renderer is untouched: a 14px token stays 14px.
         let plain = TextRenderer::new();
         assert!((px(&plain, 14.0) - 14.0).abs() < 0.01);
@@ -678,6 +698,9 @@ mod tests {
         );
         // Fill, edge stroke, dot, glyph run: the stroke is the second path.
         let paths = scene.encoding().n_paths;
-        assert!(paths >= 3, "pill paints a fill, an edge and a dot ({paths} paths)");
+        assert!(
+            paths >= 3,
+            "pill paints a fill, an edge and a dot ({paths} paths)"
+        );
     }
 }

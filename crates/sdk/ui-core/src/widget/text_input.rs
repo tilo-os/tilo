@@ -1581,7 +1581,10 @@ impl TextInput {
     /// with `a <= b <= nchars`. The `.get`/`unwrap_or` fallbacks below exist
     /// so a future change to this invariant degrades gracefully instead of
     /// panicking; they are not expected to trigger.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "paragraph wrapping takes the byte range, font and wrap metrics, hard-break flag and running y/visual-line outputs"
+    )]
     fn wrap_paragraph(
         &self,
         tr: &mut TextRenderer,
@@ -1711,7 +1714,9 @@ impl TextInput {
     }
 
     fn refresh_layout_epoch(&mut self, renderer: &TextRenderer) {
-        if self.shaped_layout_epoch.as_ref()
+        if self
+            .shaped_layout_epoch
+            .as_ref()
             .is_none_or(|epoch| !Arc::ptr_eq(epoch, renderer.layout_epoch()))
         {
             self.single_layout = None;
@@ -7493,31 +7498,64 @@ mod tests {
 
     #[test]
     fn multiline_reuse_refreshes_unchanged_paragraphs_after_font_generation() {
-        let mut input = TextInput::local().multiline(true)
+        let mut input = TextInput::local()
+            .multiline(true)
             .with_initial_value("first\nWWW iii unchanged");
         let mut tr = TextRenderer::new();
         tr.font_system = crate::font_catalog::fixture_font_system();
         let theme = Theme::dark();
         let style = input.multiline_style(theme.text_scale);
         input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
-        let before = input.single_layout.as_ref().unwrap().caret_geometry(input.text.len());
-        tr.font_system.db_mut().set_sans_serif_family(crate::text_render::UI_MONOSPACE_FAMILY);
+        let before = input
+            .single_layout
+            .as_ref()
+            .unwrap()
+            .caret_geometry(input.text.len());
+        tr.font_system
+            .db_mut()
+            .set_sans_serif_family(crate::text_render::UI_MONOSPACE_FAMILY);
         tr.bump_generation();
         // No edit must also refresh cached geometry when fonts change.
         input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
-        let fresh = RichTextLayout::shape_styled(&mut tr.font_system,
-            &input.highlighted_display_spans(&theme), &style, Some(300.0),
-            TextAlign::Left, vec![], vec![]);
-        let after = input.single_layout.as_ref().unwrap().caret_geometry(input.text.len());
-        assert_ne!(before, fresh.caret_geometry(input.text.len()), "fixture fonts must differ");
+        let fresh = RichTextLayout::shape_styled(
+            &mut tr.font_system,
+            &input.highlighted_display_spans(&theme),
+            &style,
+            Some(300.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        let after = input
+            .single_layout
+            .as_ref()
+            .unwrap()
+            .caret_geometry(input.text.len());
+        assert_ne!(
+            before,
+            fresh.caret_geometry(input.text.len()),
+            "fixture fonts must differ"
+        );
         assert_eq!(after, fresh.caret_geometry(input.text.len()));
         input.text.insert(0, 'x');
         input.ensure_shaped_layout(&mut tr, &theme, &style, 300.0);
-        let fresh = RichTextLayout::shape_styled(&mut tr.font_system,
-            &input.highlighted_display_spans(&theme), &style, Some(300.0),
-            TextAlign::Left, vec![], vec![]);
-        assert_eq!(input.single_layout.as_ref().unwrap().caret_geometry(input.text.len()),
-            fresh.caret_geometry(input.text.len()));
+        let fresh = RichTextLayout::shape_styled(
+            &mut tr.font_system,
+            &input.highlighted_display_spans(&theme),
+            &style,
+            Some(300.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
+        assert_eq!(
+            input
+                .single_layout
+                .as_ref()
+                .unwrap()
+                .caret_geometry(input.text.len()),
+            fresh.caret_geometry(input.text.len())
+        );
     }
 
     #[test]
@@ -7562,13 +7600,31 @@ mod tests {
                 input.set_preserve_unfocused_scroll(preserve);
                 input.rect = Rect::new(0., 0., 300., 100.);
                 input.is_focused = false;
-                if !shaped { input.lines = (0..80).map(|i| VisualLine { start: i*18, end: i*18+17, hard_break: true, y: i as f64*20., char_x: vec![] }).collect(); }
+                if !shaped {
+                    input.lines = (0..80)
+                        .map(|i| VisualLine {
+                            start: i * 18,
+                            end: i * 18 + 17,
+                            hard_break: true,
+                            y: i as f64 * 20.,
+                            char_x: vec![],
+                        })
+                        .collect();
+                }
                 input.scroll_y = 60.;
-                if shaped { input.update_ml_scroll(0.,20.,1600.); } else { input.update_ml_body_scroll(20.); }
-                assert_eq!(input.scroll_y, if preserve {60.} else {0.});
-                input.rect = Rect::new(0.,0.,400.,140.);
-                if shaped { input.update_ml_scroll(0.,20.,1600.); } else { input.update_ml_body_scroll(20.); }
-                assert_eq!(input.scroll_y, if preserve {60.} else {0.});
+                if shaped {
+                    input.update_ml_scroll(0., 20., 1600.);
+                } else {
+                    input.update_ml_body_scroll(20.);
+                }
+                assert_eq!(input.scroll_y, if preserve { 60. } else { 0. });
+                input.rect = Rect::new(0., 0., 400., 140.);
+                if shaped {
+                    input.update_ml_scroll(0., 20., 1600.);
+                } else {
+                    input.update_ml_body_scroll(20.);
+                }
+                assert_eq!(input.scroll_y, if preserve { 60. } else { 0. });
                 assert!(!input.is_focused);
             }
         }
@@ -7771,7 +7827,10 @@ mod tests {
         }
         assert_eq!(band_height(&Theme::dark()), Dimension::length(40.0));
         let scaled_line = f64::from(FONT_SIZE * LINE_HEIGHT_RATIO) * 2.0;
-        assert_eq!(scaled_line, 40.0, "2× base line fills the shipped band exactly");
+        assert_eq!(
+            scaled_line, 40.0,
+            "2× base line fills the shipped band exactly"
+        );
         #[allow(clippy::cast_possible_truncation, reason = "small test constant")]
         let expected = (scaled_line + ML_PAD_Y * 2.0) as f32;
         assert_eq!(

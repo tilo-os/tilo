@@ -909,15 +909,32 @@ fn unfocused_field_shows_its_start_while_the_focused_field_follows_the_caret() {
     let rect = Rect::new(0.0, 0.0, 120.0, 40.0);
     field.set_rect(rect, &mut tr);
     field.park_caret_at_end();
-    assert!(field.overflows(), "the fixture formula must be wider than the field");
+    assert!(
+        field.overflows(),
+        "the fixture formula must be wider than the field"
+    );
 
     let mut scene = Scene::new();
-    field.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, theme.text_primary, true);
+    field.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        theme.text_primary,
+        true,
+    );
     assert!(
         field.scroll.x > 0.0,
         "a focused field scrolls to keep its caret in view"
     );
-    field.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, theme.text_primary, false);
+    field.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        theme.text_primary,
+        false,
+    );
     assert!(
         field.scroll.x.abs() < f64::EPSILON,
         "a field that just lost focus shows the formula from its start"
@@ -928,14 +945,28 @@ fn unfocused_field_shows_its_start_while_the_focused_field_follows_the_caret() {
     // the offset (clamped) instead of chasing the parked caret or snapping
     // back to the start.
     field.scroll_by(30.0, 0.0);
-    field.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, theme.text_primary, false);
+    field.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        theme.text_primary,
+        false,
+    );
     assert!(
         (field.scroll.x - 30.0).abs() < f64::EPSILON,
         "an unfocused field keeps its wheel scroll, got {}",
         field.scroll.x
     );
     // Regaining focus resumes following the caret at the formula's end.
-    field.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, theme.text_primary, true);
+    field.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        theme.text_primary,
+        true,
+    );
     let (max_x, _) = field.scroll_bounds();
     assert!(
         (field.scroll.x - max_x).abs() < f64::EPSILON,

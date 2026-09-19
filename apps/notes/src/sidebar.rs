@@ -32,16 +32,16 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::Widget;
+use ui::chrome::GLOW_ALPHA;
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
 use ui::presence::{PresenceCtx, PresenceKey};
+use ui::surface::{edge_on, edge_outline};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::colors::Colors;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::drag::{DragController, ListMetrics};
-use ui::chrome::GLOW_ALPHA;
-use ui::surface::{edge_on, edge_outline};
-use ui::tokens::colors::Colors;
 use ui::widget::{Chip, ChipLead, ChipStyle, TextInput};
 
 use crate::model::{PageId, Workspace};
@@ -1417,7 +1417,6 @@ impl NoteTreeView {
         let text_y =
             row_rect.y0 + (self.row_height() - line_h(ROW_TEXT_SIZE, self.text_scale)) / 2.0;
 
-
         if row.has_children {
             let glyph = if self.expanded.contains(&row.id) {
                 "\u{25BC}" // ▼
@@ -2314,7 +2313,10 @@ mod tests {
         assert!((b.y0 - a.y1 - f64::from(tokens.spacing.s1)).abs() < 1e-9);
         assert!((a.x0 - ROW_PILL_MARGIN).abs() < 1e-9);
         assert!((240.0 - a.x1 - ROW_PILL_MARGIN).abs() < 1e-9);
-        assert!(a.y0 > 0.0 && a.y1 < ROW_HEIGHT, "the pill stays inside its row band");
+        assert!(
+            a.y0 > 0.0 && a.y1 < ROW_HEIGHT,
+            "the pill stays inside its row band"
+        );
     }
 
     /// The selected page's fill is a contrast step off the raised sidebar on
@@ -2328,9 +2330,17 @@ mod tests {
             let lifted = selection_fill_on_raised(&theme);
             assert!(edge_delta(lifted, raised) > 0.0, "{}", theme.name);
             if theme.name != "High Contrast" {
-                assert!(edge_delta(lifted, raised) >= HAIRLINE_MIN_DELTA, "{}", theme.name);
+                assert!(
+                    edge_delta(lifted, raised) >= HAIRLINE_MIN_DELTA,
+                    "{}",
+                    theme.name
+                );
             }
-            assert!(edge_delta(edge_on(lifted), lifted) >= HAIRLINE_MIN_DELTA, "{}", theme.name);
+            assert!(
+                edge_delta(edge_on(lifted), lifted) >= HAIRLINE_MIN_DELTA,
+                "{}",
+                theme.name
+            );
         }
     }
 

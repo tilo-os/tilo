@@ -1,5 +1,8 @@
 //! Host-owned asynchronous file sessions. Only frozen values cross into renderers.
-use super::checked_files::{FileHistorySnapshot, FileHistoryTarget, FileRestoreSession, FileHistoryTransport, FileHistoricalContent};
+use super::checked_files::{
+    FileHistoricalContent, FileHistorySnapshot, FileHistoryTarget, FileHistoryTransport,
+    FileRestoreSession,
+};
 use collab_types::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
     CheckedHistoryRequestV1 as Request, FileHistoryReadErrorV1 as Error,
@@ -39,7 +42,10 @@ struct Completion {
     key: Key,
     reply: Reply,
 }
-#[allow(clippy::struct_excessive_bools, reason = "preview/review notifications, live-update policy and asynchronous lifecycle flags can coexist")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "preview/review notifications, live-update policy and asynchronous lifecycle flags can coexist"
+)]
 pub(super) struct FileController {
     pub target: FileHistoryTarget,
     key: Key,
@@ -256,7 +262,17 @@ impl FileController {
         self.preview_changed = true;
         self.review_changed = true;
     }
-    fn apply_activity(&mut self, result: Result<(Scope, Vec<FileVersionV1>, Option<collab_types::ContentRevisionV1>), Error>) {
+    fn apply_activity(
+        &mut self,
+        result: Result<
+            (
+                Scope,
+                Vec<FileVersionV1>,
+                Option<collab_types::ContentRevisionV1>,
+            ),
+            Error,
+        >,
+    ) {
         self.refreshing = false;
         let now = std::time::Instant::now();
         self.next_poll = now.checked_add(Duration::from_secs(2)).unwrap_or(now);
@@ -283,14 +299,12 @@ impl FileController {
                 self.versions = versions;
                 self.current_revision = current_revision;
                 if self.after.is_none() {
-                    self.message =
-                        format!("{} immutable versions", self.versions.len());
+                    self.message = format!("{} immutable versions", self.versions.len());
                 }
             }
             Ok(_) => {
                 self.hide();
-                self.message =
-                    "File binding changed; reopen History for the current file".into();
+                self.message = "File binding changed; reopen History for the current file".into();
             }
             Err(error) => {
                 if error == Error::NotVisible {

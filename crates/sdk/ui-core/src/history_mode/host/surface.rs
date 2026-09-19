@@ -1,6 +1,10 @@
 //! Layout and input routing for chrome plus a borrowed presentation slot.
 //! Live ownership/lifecycle traversal stays entirely with the runner.
-use super::{HistoryHost, Widget, TaffyTree, Theme, HashMap, NodeId, Dimension, TaffyTreeExt, Style, FlexDirection, Size, Point, WindowEvent, AutoCommit, ObjId, Rect, Scene, Affine, TextRenderer, PresenceCtx};
+use super::{
+    Affine, AutoCommit, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, ObjId, Point,
+    PresenceCtx, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer, Theme, Widget,
+    WindowEvent,
+};
 
 impl HistoryHost {
     pub(crate) fn build_composition(
@@ -126,9 +130,17 @@ impl HistoryHost {
             live.apply_layout(tree, node, self.body_origin(tree));
         }
     }
-    pub(crate) fn live_layout_node(&self) -> Option<NodeId> { self.live_node }
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::trivially_copy_pass_by_ref, reason = "event router forwards borrowed modifiers to the Widget event contract")]
+    pub(crate) fn live_layout_node(&self) -> Option<NodeId> {
+        self.live_node
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "History routing forwards the Widget input, CRDT, focus/handled, and layout context to chrome or the live child."
+    )]
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "event router forwards borrowed modifiers to the Widget event contract"
+    )]
     pub(crate) fn route_event(
         &mut self,
         live: &mut dyn Widget,
@@ -238,7 +250,9 @@ impl Widget for HistoryHost {
         tree: &TaffyTree<()>,
     ) {
         if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
-            panel.dialog.handle_event(event, scale, mods, doc, path, handled, focus, node, tree);
+            panel
+                .dialog
+                .handle_event(event, scale, mods, doc, path, handled, focus, node, tree);
             *handled = true;
             return;
         }
@@ -262,7 +276,9 @@ impl Widget for HistoryHost {
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        if let Some(panel) = &self.review { return vec![&panel.dialog]; }
+        if let Some(panel) = &self.review {
+            return vec![&panel.dialog];
+        }
         let mut children: Vec<&dyn Widget> = vec![&self.toolbar];
         if self.show_timeline() {
             if self.controller.is_some() || self.files.is_some() {

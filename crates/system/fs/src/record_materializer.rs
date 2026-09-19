@@ -132,7 +132,11 @@ impl RecordMaterializer {
     // Reconciliation intentionally keeps the journal guard across the atomic
     // durable coordinator call; splitting the bounded replay phases would
     // obscure their required ordering.
-    #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "Replay phases stay ordered, and the journal guard remains held through durable transaction coordination before reconciliation advances."
+    )]
     pub fn reconcile_repository(
         &self,
         repository: &RecordRepository,
@@ -415,7 +419,10 @@ impl RecordMaterializer {
 
     // Keep the exhaustive operation projection in one match so every accepted
     // operation has one visible fail-closed namespace/history policy.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The operation match keeps record binding checks and each metadata, revision, history, conflict, and transaction projection policy together."
+    )]
     fn apply_exact(
         &self,
         record_id: FileRecordId,
@@ -699,21 +706,21 @@ impl RecordMutationSink for RecordMaterializer {
             self.apply_exact(scope.record_id, envelope, snapshot, Some(repository))
         };
         result.map_err(|error| match error {
-                RecordMaterializerError::WrongWorkspace
-                | RecordMaterializerError::BindingMismatch
-                | RecordMaterializerError::InvalidEnvelope
-                | RecordMaterializerError::MissingConvergedMetadata
-                | RecordMaterializerError::MissingConvergedContentRevision
-                | RecordMaterializerError::UnknownOrTombstonedRecord(_)
-                | RecordMaterializerError::NotAFile
-                | RecordMaterializerError::HistoryRejected
-                | RecordMaterializerError::TransactionRejected => RecordMutationSinkError::Rejected,
-                RecordMaterializerError::NamespaceUnavailable
-                | RecordMaterializerError::HistoryUnavailable
-                | RecordMaterializerError::TransactionRecoveryUnavailable => {
-                    RecordMutationSinkError::Unavailable
-                }
-            })
+            RecordMaterializerError::WrongWorkspace
+            | RecordMaterializerError::BindingMismatch
+            | RecordMaterializerError::InvalidEnvelope
+            | RecordMaterializerError::MissingConvergedMetadata
+            | RecordMaterializerError::MissingConvergedContentRevision
+            | RecordMaterializerError::UnknownOrTombstonedRecord(_)
+            | RecordMaterializerError::NotAFile
+            | RecordMaterializerError::HistoryRejected
+            | RecordMaterializerError::TransactionRejected => RecordMutationSinkError::Rejected,
+            RecordMaterializerError::NamespaceUnavailable
+            | RecordMaterializerError::HistoryUnavailable
+            | RecordMaterializerError::TransactionRecoveryUnavailable => {
+                RecordMutationSinkError::Unavailable
+            }
+        })
     }
 
     fn reconcile_repository(
@@ -1363,7 +1370,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // End-to-end restart recovery scenario.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The recovery fixture commits version, revision, and metadata without projections, then checks startup repair and idempotent history replay."
+    )] // End-to-end restart recovery scenario.
     fn startup_reconciliation_heals_committed_but_unprojected_operations() {
         use crate::record_replication::{RecordAction, RecordAuthorizer};
         use crate::record_repository::{RecordRepository, RecordRepositoryKey};
@@ -1500,7 +1510,10 @@ mod tests {
     /// persisted independently with the same signed prepare+commit pair, and
     /// the materializer runs after every received stream batch.
     #[test]
-    #[allow(clippy::too_many_lines)] // Both participant orders and restart phases.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The scenario covers both participant delivery orders, restart after one durable participant, recovery failure/retry, and exact replay."
+    )] // Both participant orders and restart phases.
     fn remote_replacement_transaction_materializes_only_after_both_participants_in_either_order() {
         use crate::record_replication::{RecordAction, RecordAuthorizer};
         use crate::record_repository::{RecordRepository, RecordRepositoryKey};
@@ -2000,7 +2013,10 @@ mod tests {
         }
     }
 
-    #[allow(clippy::too_many_lines)] // Shared end-to-end merge/restart scenario helper.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The shared UTF-8 and Automerge merge fixture checks exact revision projection, history resolution, journal cleanup, and restart replay."
+    )] // Shared end-to-end merge/restart scenario helper.
     fn remote_completed_merge_case(codec: ConflictMergeCodecV1) {
         use crate::record_replication::{RecordAction, RecordAuthorizer};
         use crate::record_repository::{RecordRepository, RecordRepositoryKey};

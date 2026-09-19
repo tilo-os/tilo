@@ -670,8 +670,12 @@ mod tests {
         reason = "probe coordinates are non-negative pixel positions inside the test surface"
     )]
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) =
-            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
         crate::a11y::relative_luminance(vello::peniko::Color::from_rgb8(r, g, b))
     }
 
@@ -702,7 +706,10 @@ mod tests {
             let theme = theme.with_reduce_motion(true);
             let mut mounted = view_from("");
             let last = mounted.len() - 1;
-            let (w, h) = (margin * 2.0 + 360.0, margin * 2.0 + mounted.desired_height());
+            let (w, h) = (
+                margin * 2.0 + 360.0,
+                margin * 2.0 + mounted.desired_height(),
+            );
             if let Some(png) = ux1x_out(&theme, "search_results.png") {
                 mounted.set_cursor(0);
                 mounted.hover = Some(last);

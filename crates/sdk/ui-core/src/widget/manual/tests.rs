@@ -1,6 +1,6 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
-use crate::widget::{Button, Column, Field, Form, Row, FormSection, Text, TextInput};
+use crate::widget::{Button, Column, Field, Form, FormSection, Row, Text, TextInput};
 
 fn find<'a>(node: &'a InspectionNode, id: &str) -> &'a InspectionNode {
     fn search<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {

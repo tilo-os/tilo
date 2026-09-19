@@ -362,13 +362,24 @@ impl PlacesSidebar {
         } = visual;
         let tokens = &theme.tokens;
         let radius = f64::from(tokens.radii.md);
-        let pill = Rect::new(rect.x0, rect.y0 + PILL_INSET_Y, rect.x1, rect.y1 - PILL_INSET_Y);
+        let pill = Rect::new(
+            rect.x0,
+            rect.y0 + PILL_INSET_Y,
+            rect.x1,
+            rect.y1 - PILL_INSET_Y,
+        );
         if ghost {
             // The dragged favourite is genuinely off the surface (HIG §9.3):
             // it casts the Panel shadow and reads as a raised card with its
             // derived edge, not as an accent wash.
             panel_shadow(scene, transform, pill, radius, theme, 1.0);
-            ui::surface::card(scene, transform, pill, radius, tokens.colors.surfaces.raised);
+            ui::surface::card(
+                scene,
+                transform,
+                pill,
+                radius,
+                tokens.colors.surfaces.raised,
+            );
         } else if active || hovered {
             // The chosen place is a lift, never an accent fill (HIG §9.3).
             let tier = selection_tier(theme, SelectionState::new(active, hovered, false));
@@ -532,7 +543,10 @@ impl Widget for PlacesSidebar {
         self.draw_drag_ghost(scene, transform, tr, theme);
     }
 
-    #[allow(clippy::too_many_lines)] // Central event dispatcher keeps gesture state transitions ordered.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one event dispatcher keeps keyboard focus, pointer capture and favourite drag transitions in order"
+    )] // Central event dispatcher keeps gesture state transitions ordered.
     fn handle_event(
         &mut self,
         event: &WindowEvent,

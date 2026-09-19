@@ -13,8 +13,7 @@ use ui::theme::Theme;
 use crate::shell::quick_settings::BtDevice;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
 use crate::shell::quick_settings::drill_in::{
-    CONTROL_INSET, DrillInList, GLYPH, STATUS_DOT, trailing_dot_center,
-    trailing_status_glyph,
+    CONTROL_INSET, DrillInList, GLYPH, STATUS_DOT, trailing_dot_center, trailing_status_glyph,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]

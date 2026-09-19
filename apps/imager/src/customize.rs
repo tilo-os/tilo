@@ -625,7 +625,10 @@ impl CustomizePanel {
 
     // ---- drawing ----------------------------------------------------------
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Text painting passes scene and renderer plus content, size, color, origin, wrapping width, and weight."
+    )]
     fn txt(
         tr: &mut TextRenderer,
         scene: &mut Scene,
@@ -690,7 +693,10 @@ impl CustomizePanel {
     }
 
     /// Draw + hit-forward one text field (box + label + the shared input glyphs).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Field painting combines render context and presence with field identity, bounds, and its caption."
+    )]
     fn draw_field(
         &mut self,
         scene: &mut Scene,
@@ -762,7 +768,10 @@ impl CustomizePanel {
     }
 
     /// Render the whole panel into `content` for the given profile snapshot.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Panel painting combines render context and presence with content bounds, the profile snapshot, and target kind."
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -803,7 +812,10 @@ impl CustomizePanel {
     }
 
     /// The IDENTITY section: hostname, name, username and time zone.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Identity fields share render context and presence while their captions and input bounds come from panel geometry."
+    )]
     fn draw_identity_fields(
         &mut self,
         scene: &mut Scene,
@@ -869,7 +881,10 @@ impl CustomizePanel {
 
     /// The REGION section contains the last host-side preference. Security,
     /// storage target and destructive choices are completed on the device.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Region fields share render context and presence with the label origin and keyboard/filesystem geometry."
+    )]
     fn draw_region_and_options(
         &mut self,
         scene: &mut Scene,
@@ -946,7 +961,10 @@ impl CustomizePanel {
     /// Route a winit event into the panel. Text edits and toggles dispatch
     /// their [`ImagerAction`] through `host`; the returned [`CzResponse`] tells
     /// the host whether the event was consumed and whether export was asked for.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Panel event routing carries widget input/state/layout, action dispatch, profile data, and target/content context."
+    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -999,7 +1017,10 @@ impl CustomizePanel {
 
     /// Track the pointer and forward it to a focused field so drag-selection
     /// tracks along.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Pointer routing needs physical coordinates and scale plus the focused field geometry and Widget event context."
+    )]
     fn handle_cursor_moved(
         &mut self,
         event: &WindowEvent,
@@ -1043,7 +1064,10 @@ impl CustomizePanel {
 
     /// A left click: focus a field and forward the press for caret placement,
     /// dispatch a toggle, request export, or (on empty space) drop focus.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Click routing combines Widget event context with field geometry, the profile snapshot, and action dispatch."
+    )]
     fn handle_left_click(
         &mut self,
         event: &WindowEvent,
@@ -1129,7 +1153,10 @@ impl CustomizePanel {
 
     /// A key press while a field is focused: Enter/Escape blur it, anything
     /// else routes to the input and dispatches its fresh value.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Key routing uses the key and Widget event context, focused-field geometry, and action host to publish edited values."
+    )]
     fn handle_key_event(
         &mut self,
         event: &WindowEvent,
@@ -1231,7 +1258,10 @@ impl CustomizePanel {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Field focus forwards the triggering event with field identity/bounds and Widget CRDT/layout context for caret placement."
+    )]
     fn focus_field(
         &mut self,
         f: CzField,

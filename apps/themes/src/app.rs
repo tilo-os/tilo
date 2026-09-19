@@ -222,7 +222,7 @@ impl ThemesApp {
                 .with_icon(icon)
                 .with_size(TOPBAR_CONTROL_H, TOPBAR_CONTROL_H)
                 .tooltip(name)
-                .on_click(move || toggle_request.set(true))
+                .on_view(move || toggle_request.set(true))
         };
         let gallery_toggle = gallery_toggle_button(Icon::Menu, "Show themes");
         let gallery_toggle_hidden = gallery_toggle_button(Icon::X, "Hide themes");
@@ -1832,7 +1832,10 @@ impl Widget for ThemesApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Widget event routing forwards the event, scale, modifiers, CRDT state, focus outputs and layout context"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,

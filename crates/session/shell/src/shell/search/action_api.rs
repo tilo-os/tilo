@@ -133,7 +133,10 @@ impl ActionCatalog {
     /// Fan `query` out to `registry` under `scope`, then apply `visibility`.
     /// An empty `query` returns every provider's default set (score 0), so
     /// a caller can list the full surface without guessing a needle.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "catalog queries need registry, query scope and active provider alongside chrome, CRDT location and visibility policy"
+    )]
     pub fn build(
         registry: &SearchRegistry,
         query: &str,
@@ -167,7 +170,10 @@ impl ActionCatalog {
     /// providers use this path to retain the page that originally disclosed
     /// an opaque id while rechecking its current route and authority at
     /// invocation time.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "exact resolution keeps provider/resource identity and query context separate from chrome, CRDT location and visibility policy"
+    )]
     pub fn build_exact(
         registry: &SearchRegistry,
         provider: &str,
@@ -206,7 +212,10 @@ impl ActionCatalog {
         Self { results, visible }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "resource resolution keeps its address and query context separate from chrome, CRDT location and visibility policy"
+    )]
     pub fn build_for_resource(
         registry: &SearchRegistry,
         resource: &ResourceRef,

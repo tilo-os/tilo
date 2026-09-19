@@ -297,7 +297,10 @@ impl RecoveryVerifyScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The recovery screen forwards the Widget event context, CRDT path, handled/focus outputs, node, and layout to its verification fields."
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -1011,11 +1014,18 @@ mod tests {
         let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
         let leaves = taffy.children(node).unwrap();
         assert_eq!(leaves.len(), 3, "one node per blank");
-        assert_eq!(leaves[0], s.slot_nodes[1].unwrap(), "first Tab stop is word 12");
+        assert_eq!(
+            leaves[0],
+            s.slot_nodes[1].unwrap(),
+            "first Tab stop is word 12"
+        );
         assert_eq!(leaves[1], s.slot_nodes[0].unwrap());
         assert_eq!(leaves[2], s.slot_nodes[2].unwrap());
         for leaf in &leaves {
-            assert!(node_map.contains_key(leaf), "every blank is registered for the host");
+            assert!(
+                node_map.contains_key(leaf),
+                "every blank is registered for the host"
+            );
         }
         assert!(
             s.children().iter().all(|c| c.is_focusable()),

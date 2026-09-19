@@ -45,7 +45,10 @@ fn clock(headless: bool) -> SystemTime {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Example channel fixtures vary space/color, relative activity, unread count, pin state, and collaborator role."
+)]
 fn ch(
     now: SystemTime,
     name: &str,
@@ -84,11 +87,47 @@ pub fn run(args: &[String]) {
     // counts. Matches the shape the shell will produce in Phase 5
     // once the wheel-disc auto-promote algorithm runs.
     let entries = vec![
-        ch(now, "engineering", "Company", 220.0, 5, 12, true, Some("Editor")),
-        ch(now, "design", "Company", 220.0, 25, 0, false, Some("Editor")),
+        ch(
+            now,
+            "engineering",
+            "Company",
+            220.0,
+            5,
+            12,
+            true,
+            Some("Editor"),
+        ),
+        ch(
+            now,
+            "design",
+            "Company",
+            220.0,
+            25,
+            0,
+            false,
+            Some("Editor"),
+        ),
         ch(now, "ops", "Company", 220.0, 90, 3, false, Some("Owner")),
-        ch(now, "marketing", "Company", 220.0, 240, 0, false, Some("Viewer")),
-        ch(now, "standup", "Company", 220.0, 8, 1, false, Some("Editor")),
+        ch(
+            now,
+            "marketing",
+            "Company",
+            220.0,
+            240,
+            0,
+            false,
+            Some("Viewer"),
+        ),
+        ch(
+            now,
+            "standup",
+            "Company",
+            220.0,
+            8,
+            1,
+            false,
+            Some("Editor"),
+        ),
         ch(now, "journal", "Personal", 30.0, 60, 0, true, None),
         ch(now, "recipes", "Personal", 30.0, 720, 0, false, None),
         ch(now, "reading-list", "Personal", 30.0, 1440, 5, false, None),

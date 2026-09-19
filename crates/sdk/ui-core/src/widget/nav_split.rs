@@ -1646,7 +1646,12 @@ mod tests {
                 Box::new(Text::new("content")),
             )
             .with_mode(SplitMode::AlwaysDocked);
-            lay_out_with(&mut ns, &Theme::dark().with_text_scale(scale), 1200.0, 600.0);
+            lay_out_with(
+                &mut ns,
+                &Theme::dark().with_text_scale(scale),
+                1200.0,
+                600.0,
+            );
             ns.content.get_rect().height()
         };
         let one = height_at(1.0);
@@ -1680,7 +1685,11 @@ mod tests {
         lay_out(&mut icons, 1200.0, 600.0);
         assert_eq!((list.breakpoint(), list.sidebar_width()), (760.0, 300.0));
         assert_eq!((icons.breakpoint(), icons.sidebar_width()), (760.0, 86.0));
-        assert_eq!(list.layout_mode(), SplitLayout::Docked, "1× is the authored geometry");
+        assert_eq!(
+            list.layout_mode(),
+            SplitLayout::Docked,
+            "1× is the authored geometry"
+        );
 
         let two = Theme::dark().with_text_scale(2.0);
         let (mut list, mut icons) = (text_sized(), rail());
@@ -1699,7 +1708,12 @@ mod tests {
         );
 
         let mut small = text_sized();
-        lay_out_with(&mut small, &Theme::dark().with_text_scale(0.75), 1200.0, 600.0);
+        lay_out_with(
+            &mut small,
+            &Theme::dark().with_text_scale(0.75),
+            1200.0,
+            600.0,
+        );
         assert_eq!(
             (small.breakpoint(), small.sidebar_width()),
             (760.0, 300.0),

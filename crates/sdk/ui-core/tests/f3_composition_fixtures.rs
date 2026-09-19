@@ -441,18 +441,31 @@ fn data_table_header_and_rows_centre_text_and_scale_once() {
         let header_h = band(TABLE_HEADER_H, sm, f64::from(theme.tokens.spacing.s3));
         let row_h = band(TABLE_ROW_H, sm, f64::from(theme.tokens.spacing.s1));
         if scale == 1.0 {
-            assert_eq!(header_h, TABLE_HEADER_H, "1x header band is the pinned default");
+            assert_eq!(
+                header_h, TABLE_HEADER_H,
+                "1x header band is the pinned default"
+            );
             assert_eq!(row_h, TABLE_ROW_H, "1x row band is the authored height");
         } else {
             assert!(header_h > TABLE_HEADER_H && row_h > TABLE_ROW_H);
         }
         // First column only: the sort glyph lives at the column's trailing edge.
-        let header = Rect::new(table.x0 + 4.0, table.y0, table.x0 + 180.0, table.y0 + header_h);
+        let header = Rect::new(
+            table.x0 + 4.0,
+            table.y0,
+            table.x0 + 180.0,
+            table.y0 + header_h,
+        );
         let header_label = ink(&cap.image, header);
         header_ink.push(header_label);
         assert_centered("header label", header_label, header, 1.0);
         assert_has_air("header label", header_label, header);
-        let arrow = Rect::new(table.x0 + 180.0, table.y0, table.x0 + 220.0, table.y0 + header_h);
+        let arrow = Rect::new(
+            table.x0 + 180.0,
+            table.y0,
+            table.x0 + 220.0,
+            table.y0 + header_h,
+        );
         assert_centered("sort glyph", ink(&cap.image, arrow), arrow, 2.0);
         // The first two rows: if the rows had stayed 24 px at 2x, the second
         // probe would straddle two rows' text and neither would centre.
@@ -487,7 +500,12 @@ fn tree_view_rows_centre_labels_and_scale_once() {
         } else {
             assert!(row_h > TREE_ROW_H && disclosure_w > TREE_DISCLOSURE_W);
         }
-        let row = Rect::new(tree.x0 + disclosure_w, tree.y0, tree.x0 + 200.0, tree.y0 + row_h);
+        let row = Rect::new(
+            tree.x0 + disclosure_w,
+            tree.y0,
+            tree.x0 + 200.0,
+            tree.y0 + row_h,
+        );
         let root_label = ink(&cap.image, row);
         label_ink.push(root_label);
         assert_centered("root label", root_label, row, 1.0);
@@ -557,12 +575,22 @@ fn search_results_centre_single_line_titles_and_scale_once() {
         assert_has_air("two-line block", block, second);
         // Third row: "Calculator", after two two-line rows and two headers.
         let row_y0 = second_y0 + two_line + header_h;
-        let row = Rect::new(view.x0 + SEARCH_TEXT_X, row_y0, view.x0 + 300.0, row_y0 + one_line);
+        let row = Rect::new(
+            view.x0 + SEARCH_TEXT_X,
+            row_y0,
+            view.x0 + 300.0,
+            row_y0 + one_line,
+        );
         let title = ink(&cap.image, row);
         title_ink.push(title);
         assert_centered("single-line title", title, row, 1.0);
         assert_has_air("single-line title", title, row);
-        let icon = Rect::new(view.x0 + 20.0, row_y0, view.x0 + SEARCH_TEXT_X, row_y0 + one_line);
+        let icon = Rect::new(
+            view.x0 + 20.0,
+            row_y0,
+            view.x0 + SEARCH_TEXT_X,
+            row_y0 + one_line,
+        );
         assert_centered("row icon", ink(&cap.image, icon), icon, 1.5);
     }
     assert_scaled_once("search title", title_ink[0], title_ink[1]);
@@ -740,7 +768,11 @@ fn conflict_surfaces_centre_the_title_and_scale_once() {
     let mut title_ink = Vec::new();
     for scale in [1.0, 2.0] {
         // The window grows with the modal so the whole picker stays in frame.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the fixture scale is exactly 1 or 2, so the viewport height is the nonnegative integer 400 or 800"
+        )]
         let viewport_h = (400.0 * scale) as u32;
         let cap = capture("conflict", conflict(scale), (820, viewport_h), scale);
         let snapshot = cap.harness.inspection();
@@ -844,15 +876,27 @@ fn conflict_surfaces_keep_a_visible_chip_edge_in_both_themes() {
 
         // The banner fill, sampled on its centre line in the empty band
         // between the label and the chips.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the banner is laid out inside the 820x400 fixture; flooring its nonnegative center selects the sample pixel"
+        )]
         let (mid_x, mid_y) = (banner.center().x as u32, banner.center().y as u32);
         let fill = luma(cap.image.get_pixel(mid_x, mid_y).0);
         // The trailing chip ends inside the banner's 8 px padding; three
         // pixels further in is inside the chip's own horizontal padding, so
         // the column holds only the chip's edge and face, never a glyph.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the 820-pixel-wide fixture banner leaves this inset chip column nonnegative; flooring selects a raster column"
+        )]
         let x = (banner.x1 - 8.0 - 3.0) as u32;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the fixture banner lies within the 400-pixel image; flooring its nonnegative edges selects the interior scan rows"
+        )]
         let (y0, y1) = (banner.y0 as u32 + 1, banner.y1 as u32 - 1);
         let best = (y0..y1)
             .map(|y| (luma(cap.image.get_pixel(x, y).0) - fill).abs())

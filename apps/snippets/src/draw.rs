@@ -59,7 +59,10 @@ pub fn stroke_line(scene: &mut Scene, t: Affine, a: Point, b: Point, width: f64,
 }
 
 /// Draw a single line of text at `(x, y)` (y is the top of the line).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "text painting forwards scene resources, string, origin, size, color and weight to the shared text renderer"
+)]
 pub fn text(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -83,7 +86,10 @@ pub fn text(
 }
 
 /// Draw monospace text (used by the body preview / highlighter).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "monospace painting forwards scene resources, string, origin, size, color and weight to the shared text renderer"
+)]
 pub fn mono(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -136,7 +142,12 @@ pub fn mono_fit(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String
     if budget == 0 {
         return String::new();
     }
-    let mut out: String = s.chars().take(budget - 1).collect::<String>().trim_end().to_string();
+    let mut out: String = s
+        .chars()
+        .take(budget - 1)
+        .collect::<String>()
+        .trim_end()
+        .to_string();
     out.push('…');
     out
 }
@@ -166,7 +177,10 @@ pub fn line_growth(tr: &mut TextRenderer, size: f32) -> f64 {
 
 /// Draw a small filled pill (rounded capsule) with a centred label.
 /// Returns the pill's outer rect so callers can lay the next pill out.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "pill painting combines scene resources, label, position and height with font size and foreground/background colors"
+)]
 pub fn pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,

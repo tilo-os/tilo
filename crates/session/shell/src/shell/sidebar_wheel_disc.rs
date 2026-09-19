@@ -4167,7 +4167,10 @@ mod tests {
     /// neighbours.
     #[test]
     fn a_name_that_fits_nowhere_is_elided_at_the_persons_text_size() {
-        let mut d = mk(&["Home", "Quarterly planning retrospective for the platform group"]);
+        let mut d = mk(&[
+            "Home",
+            "Quarterly planning retrospective for the platform group",
+        ]);
         layout_into_slot(&mut d, live_slot());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
@@ -4177,8 +4180,14 @@ mod tests {
             None,
             "the fixture name must overflow every step for this test to mean anything"
         );
-        assert_eq!(d.active_chip_height(1, chip_w, &theme, &mut tr), SECTOR_CHIP_H_MIN);
-        assert_eq!(d.inactive_chip_height(chip_w, &theme, &mut tr), SECTOR_CHIP_H_MIN);
+        assert_eq!(
+            d.active_chip_height(1, chip_w, &theme, &mut tr),
+            SECTOR_CHIP_H_MIN
+        );
+        assert_eq!(
+            d.inactive_chip_height(chip_w, &theme, &mut tr),
+            SECTOR_CHIP_H_MIN
+        );
         assert_eq!(
             Chip::label_size_for_height(SECTOR_CHIP_H_MIN, &theme),
             theme.tokens.typography.scale.sm,
@@ -4213,7 +4222,10 @@ mod tests {
                 "spoke {idx} must be elided at the person's size, not the family size"
             );
         }
-        assert_eq!(d.inactive_chip_height(chip_w, &theme, &mut tr), SECTOR_CHIP_H_MIN);
+        assert_eq!(
+            d.inactive_chip_height(chip_w, &theme, &mut tr),
+            SECTOR_CHIP_H_MIN
+        );
     }
 
     /// Every workspace on the disc is a named, bounded semantic target,
@@ -4232,14 +4244,20 @@ mod tests {
         assert_eq!(node.children.len(), d.spokes.len() + 1);
         for (idx, spoke) in d.spokes.iter().enumerate() {
             let child = &node.children[idx];
-            assert_eq!(child.name.as_deref(), Some(format!("Switch to {}", spoke.text).as_str()));
+            assert_eq!(
+                child.name.as_deref(),
+                Some(format!("Switch to {}", spoke.text).as_str())
+            );
             assert_ne!(
                 child.name.as_deref(),
                 Some(spoke.text.as_str()),
                 "a sector must not publish the bare workspace name — the overview's row does"
             );
             let placed = d.spoke_hit_rects[idx];
-            assert!(placed.area() > 0.0, "spoke {idx} is on the band at the live slot");
+            assert!(
+                placed.area() > 0.0,
+                "spoke {idx} is on the band at the live slot"
+            );
             assert_eq!(
                 child.bounds.map(ui::AccessBounds::to_rect),
                 Some(placed),
@@ -4248,7 +4266,10 @@ mod tests {
             assert_eq!(child.state.selected, idx == d.active_idx);
             assert!(!child.state.hidden);
         }
-        let add = node.children.last().expect("the add button is the trailing child");
+        let add = node
+            .children
+            .last()
+            .expect("the add button is the trailing child");
         assert_eq!(add.name.as_deref(), Some("Add a workspace"));
         assert_eq!(add.bounds.map(ui::AccessBounds::to_rect), Some(d.plus_rect));
 
@@ -4263,13 +4284,12 @@ mod tests {
         assert_eq!(d.synthetic_accessibility_rect(&[3]), Some(d.plus_rect));
         let mut doc = automerge::AutoCommit::new();
         let path = automerge::ROOT.clone();
-        assert!(d.perform_semantic_action(
-            "wheel:workspace:2",
-            &Action::Activate,
-            &mut doc,
-            &path
-        ));
-        assert_eq!(d.selected_idx(), 2, "activating the third sector chooses it");
+        assert!(d.perform_semantic_action("wheel:workspace:2", &Action::Activate, &mut doc, &path));
+        assert_eq!(
+            d.selected_idx(),
+            2,
+            "activating the third sector chooses it"
+        );
         assert!(
             !d.perform_semantic_action("wheel:workspace:9", &Action::Activate, &mut doc, &path),
             "a stale address is refused, never guessed"
@@ -4279,6 +4299,10 @@ mod tests {
             "a stale key is refused, never guessed"
         );
         assert!(d.perform_action_at(&Action::Activate, &[1], &mut doc, &path));
-        assert_eq!(d.selected_idx(), 1, "the key-path route reaches the same sectors");
+        assert_eq!(
+            d.selected_idx(),
+            1,
+            "the key-path route reaches the same sectors"
+        );
     }
 }

@@ -326,7 +326,8 @@ impl Graph3dScreen {
         // The prefix slot and the header band follow the labels as this frame
         // paints them, so the field never starts under `y =` and the first
         // card never starts under the subtitle at any text scale.
-        self.prefix_w = draw::measure_w(tr, PREFIX_LABEL, 14.0, TextWeight::Medium).max(PREFIX_W_1X);
+        self.prefix_w =
+            draw::measure_w(tr, PREFIX_LABEL, 14.0, TextWeight::Medium).max(PREFIX_W_1X);
         self.header_h = Self::header_band(tr).2;
         for field in &mut self.fields {
             field.set_text_scale(text_scale);
@@ -479,7 +480,14 @@ impl Graph3dScreen {
         // background + surfaces
         draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
         self.draw_surfaces(scene, t, theme, model);
-        draw::stroke_rrect(scene, t, self.canvas, 0.0, ui::surface::edge_on(c.neutral[0]), 1.0);
+        draw::stroke_rrect(
+            scene,
+            t,
+            self.canvas,
+            0.0,
+            ui::surface::edge_on(c.neutral[0]),
+            1.0,
+        );
 
         // Collapsed overlay: only a floating toggle over the plot.
         if self.panel == Rect::ZERO {
@@ -552,7 +560,12 @@ impl Graph3dScreen {
             Align::Left,
             TextWeight::Semibold,
         );
-        let sub = Rect::new(self.panel.x0 + 16.0, head.y1, self.panel.x1 - 16.0, head.y1 + sub_h);
+        let sub = Rect::new(
+            self.panel.x0 + 16.0,
+            head.y1,
+            self.panel.x1 - 16.0,
+            head.y1 + sub_h,
+        );
         draw::text_in(
             scene,
             tr,
@@ -750,7 +763,12 @@ impl Graph3dScreen {
             Align::Left,
             TextWeight::Regular,
         );
-        let l2 = Rect::new(info.x0 + 12.0, l1.y1 + 2.0, info.x1 - 12.0, l1.y1 + 2.0 + line_h);
+        let l2 = Rect::new(
+            info.x0 + 12.0,
+            l1.y1 + 2.0,
+            info.x1 - 12.0,
+            l1.y1 + 2.0 + line_h,
+        );
         draw::text_in(
             scene,
             tr,

@@ -96,7 +96,9 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         super::providers::actions::shell_action_contract(id).permission
     };
     match permission {
-        tilo_actions::PermissionRequirement::None | tilo_actions::PermissionRequirement::Read => None,
+        tilo_actions::PermissionRequirement::None | tilo_actions::PermissionRequirement::Read => {
+            None
+        }
         tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
         tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
         tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),

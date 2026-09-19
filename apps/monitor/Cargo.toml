@@ -33,7 +33,7 @@ taffy.workspace = true
 sysinfo.workspace = true
 
 [dev-dependencies]
-ui-test-support = { package = "ui", path = "../../crates/sdk/ui-core", features = ["test-support"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

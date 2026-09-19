@@ -205,7 +205,8 @@ fn legacy_reset_delete_and_native_precedence_keep_other_records_and_one_undo() {
         let legacy = serde_json::to_string(&[one.clone(), two]).unwrap();
         crate::doc::put_text(&mut state.doc, &ROOT, "catalog", &legacy);
         let before = state.doc.get_heads();
-        tilo_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action)).unwrap();
+        tilo_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action))
+            .unwrap();
         state.record_committed_action(before.clone(), None, None);
         assert_eq!(state.doc.get_changes(&before).len(), 1);
         assert_eq!(
@@ -321,7 +322,11 @@ fn library_panel_paints_a_visible_derived_edge_in_dark_and_light() {
 
         let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/ux1x/a3/themes/after")
-            .join(if theme.name.to_ascii_lowercase().contains("light") { "light" } else { "dark" })
+            .join(if theme.name.to_ascii_lowercase().contains("light") {
+                "light"
+            } else {
+                "dark"
+            })
             .join("history-panel.png");
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);

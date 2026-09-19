@@ -157,7 +157,11 @@ mod tests {
     #[test]
     fn growth_and_authored_heights_keep_the_one_x_design_exact() {
         assert_eq!(line_growth(14.0, 1.0), 0.0);
-        assert_eq!(line_growth(14.0, 0.75), 0.0, "smaller text never shrinks a design");
+        assert_eq!(
+            line_growth(14.0, 0.75),
+            0.0,
+            "smaller text never shrinks a design"
+        );
         assert!(line_growth(14.0, 2.0) > 17.0);
         assert_eq!(authored_h(28.0, &[13.0], 1.0), 28.0);
         assert_eq!(authored_h(74.0, &[26.0, 13.0], 1.0), 74.0);

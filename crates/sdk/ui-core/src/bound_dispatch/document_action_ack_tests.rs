@@ -1,7 +1,7 @@
 use super::*;
 use automerge::{ReadDoc, transaction::Transactable};
-use tilo_actions::{Action, ActionError, ActionTransport, ExecutionLocus};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{Action, ActionError, ActionTransport, ExecutionLocus};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Write {

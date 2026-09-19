@@ -32,8 +32,8 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height,
-    paint_cell, paint_qr, paint_text, paragraph_height, resolve, with_layout_renderer,
+    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_cell,
+    paint_qr, paint_text, paragraph_height, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
@@ -360,7 +360,10 @@ impl AddDeviceHostScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "screen event handling preserves the Widget event contract, including CRDT, focus and layout parameters"
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -544,7 +547,9 @@ impl Widget for AddDeviceHostScreen {
 
         sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
         sheet.clip_body(scene, transform);
-        if let Some(qr) = &self.qr { paint_qr(scene, transform, text_renderer, theme, qr, plan.qr) } else {
+        if let Some(qr) = &self.qr {
+            paint_qr(scene, transform, text_renderer, theme, qr, plan.qr)
+        } else {
             paint_cell(scene, transform, theme, plan.qr, false);
             paint_text(
                 scene,

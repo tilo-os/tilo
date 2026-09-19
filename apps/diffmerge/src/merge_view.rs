@@ -1472,7 +1472,10 @@ fn draw_header(
 
 /// Draw a list of code lines starting at `(x0, y)`, highlighted, one per
 /// measured row pitch.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "code-line painting combines paint context, column origin, source lines and measured row pitch"
+)]
 fn draw_lines(
     scene: &mut Scene,
     transform: Affine,

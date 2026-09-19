@@ -23,7 +23,9 @@ use ui::State;
 use ui::headless::{FrameHarness, InspectionNode};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Avatar, Breadcrumb, Chip, ChipLead, ChipStyle, Column, Element, ShortcutRecorder};
+use ui::widget::{
+    Avatar, Breadcrumb, Chip, ChipLead, ChipStyle, Column, Element, ShortcutRecorder,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
@@ -164,7 +166,11 @@ fn retained_widgets() -> Vec<(&'static str, fn() -> Element, f64)> {
             2.0,
         ),
         // Initials are 0.4× the disc the app laid out: geometry, not type.
-        ("Avatar", || Box::new(Avatar::from_initials("AB", 40.0)), 1.0),
+        (
+            "Avatar",
+            || Box::new(Avatar::from_initials("AB", 40.0)),
+            1.0,
+        ),
     ]
 }
 
@@ -205,7 +211,10 @@ fn glyph_sizes(scale: f32, paint: &Painter) -> Vec<f32> {
         .iter()
         .map(|run| run.font_size)
         .collect();
-    assert!(!sizes.is_empty(), "the painter encoded no glyph runs at {scale}x");
+    assert!(
+        !sizes.is_empty(),
+        "the painter encoded no glyph runs at {scale}x"
+    );
     sizes
 }
 
@@ -296,10 +305,18 @@ fn immediate_mode_painters_encode_glyphs_at_the_text_scale_once() {
 fn renderer_type_size_is_the_size_only_twin_of_renderer_input_style() {
     let mut tr = TextRenderer::new();
     tr.set_text_scale(2.0);
-    let resolved = Theme::dark().with_text_scale(2.0).tokens.typography.scale.base;
+    let resolved = Theme::dark()
+        .with_text_scale(2.0)
+        .tokens
+        .typography
+        .scale
+        .base;
     let via_style = tr
         .renderer_input_style(&ui::text_render::TextStyle::new(resolved))
         .size;
-    assert_eq!(ui::text_metrics::renderer_type_size(&tr, resolved), via_style);
+    assert_eq!(
+        ui::text_metrics::renderer_type_size(&tr, resolved),
+        via_style
+    );
     assert_eq!(ui::text_metrics::renderer_type_size(&tr, resolved), 14.0);
 }

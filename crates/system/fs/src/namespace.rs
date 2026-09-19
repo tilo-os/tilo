@@ -337,18 +337,28 @@ impl Namespace {
 
     /// Complete visible register operation IDs for a record and its ancestor
     /// bindings. IDs retain same-value/ABA changes and losing concurrent values.
-    pub(crate) fn checked_record_frontier(&self, ino: u64) -> Option<Vec<(String, String, Vec<String>)>> {
+    pub(crate) fn checked_record_frontier(
+        &self,
+        ino: u64,
+    ) -> Option<Vec<(String, String, Vec<String>)>> {
         let mut id = self.ino_to_id.get(&ino)?.clone();
         let mut seen = std::collections::BTreeSet::new();
         let mut frontier = Vec::new();
         while id != ROOT_ID {
-            if !seen.insert(id.clone()) { return None; }
+            if !seen.insert(id.clone()) {
+                return None;
+            }
             let node = self.node(&id)?;
             let mut keys = self.doc.keys(&node).collect::<Vec<_>>();
             keys.sort();
             for key in keys {
-                let mut operations = self.doc.get_all(&node, &key).ok()?.into_iter()
-                    .map(|(_, operation)| operation.to_string()).collect::<Vec<_>>();
+                let mut operations = self
+                    .doc
+                    .get_all(&node, &key)
+                    .ok()?
+                    .into_iter()
+                    .map(|(_, operation)| operation.to_string())
+                    .collect::<Vec<_>>();
                 operations.sort();
                 frontier.push((id.clone(), key, operations));
             }
@@ -449,7 +459,12 @@ impl Namespace {
     }
     /// Isolate a durable restore candidate from subsequent changes by the live
     /// namespace actor. This is projection identity, never certified authorship.
-    pub(crate) fn begin_restore_projection(&mut self, workspace: uuid::Uuid, record: FileRecordId, intent: uuid::Uuid) -> automerge::ActorId {
+    pub(crate) fn begin_restore_projection(
+        &mut self,
+        workspace: uuid::Uuid,
+        record: FileRecordId,
+        intent: uuid::Uuid,
+    ) -> automerge::ActorId {
         let original = self.doc.get_actor().clone();
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"qos.namespace.restore-projection.v1\0");
@@ -457,7 +472,9 @@ impl Namespace {
         hasher.update(record.0.as_bytes());
         hasher.update(intent.as_bytes());
         hasher.update(original.to_bytes());
-        self.doc.set_actor(automerge::ActorId::from(hasher.finalize().as_bytes().as_slice()));
+        self.doc.set_actor(automerge::ActorId::from(
+            hasher.finalize().as_bytes().as_slice(),
+        ));
         original
     }
 
@@ -1162,13 +1179,27 @@ impl Namespace {
     ) -> Result<Option<Vec<u8>>, TransactionProjectionError> {
         match transaction.manifest.operation {
             collab_types::FileMutationOperationV1::RestoreContent { prior_revision, .. } => {
-                transaction.verify().map_err(|_| TransactionProjectionError::InvalidTransaction)?;
-                let participant = transaction.manifest.participants.first().ok_or(TransactionProjectionError::InvalidTransaction)?;
-                let revision = participant.proposed_content_revision.ok_or(TransactionProjectionError::InvalidTransaction)?;
-                let ino = self.ensure_ino_for_record_id(participant.record_id).ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
+                transaction
+                    .verify()
+                    .map_err(|_| TransactionProjectionError::InvalidTransaction)?;
+                let participant = transaction
+                    .manifest
+                    .participants
+                    .first()
+                    .ok_or(TransactionProjectionError::InvalidTransaction)?;
+                let revision = participant
+                    .proposed_content_revision
+                    .ok_or(TransactionProjectionError::InvalidTransaction)?;
+                let ino = self
+                    .ensure_ino_for_record_id(participant.record_id)
+                    .ok_or(TransactionProjectionError::UnknownOrDuplicateRecord)?;
                 let current = self.content_revision_for(ino);
-                if current == Some(revision) { return Ok(None); }
-                if current != Some(prior_revision) { return Err(TransactionProjectionError::PreconditionFailed); }
+                if current == Some(revision) {
+                    return Ok(None);
+                }
+                if current != Some(prior_revision) {
+                    return Err(TransactionProjectionError::PreconditionFailed);
+                }
                 if !self.set_content_revision(ino, &revision, transaction.manifest.timestamp_ms) {
                     return Err(TransactionProjectionError::ContentProjectionFailed);
                 }
@@ -1501,7 +1532,10 @@ impl Namespace {
         Ok(Some(self.save_incremental()))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Replacement projection keeps signature/participant checks, replay detection, namespace preconditions, rename, and revision installation in order."
+    )]
     fn apply_replacement_transaction_in_place(
         &mut self,
         transaction: &FileMutationTransactionV1,
@@ -2708,9 +2742,6 @@ mod tests {
         Hash::from([b; 32])
     }
 
-    // This end-to-end scenario intentionally exercises every durable phase of
-    // a two-record replacement transaction and its idempotent replay.
-    #[allow(clippy::too_many_lines)]
     #[test]
     fn root_is_inode_one_and_listable() {
         let mut ns = Namespace::new("a").unwrap();
@@ -2770,7 +2801,10 @@ mod tests {
 
     // This scenario intentionally covers every durable phase and replay of a
     // two-record replacement transaction in one linear assertion trace.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The signed two-record fixture verifies source replacement, victim tombstoning, emitted namespace delta, and idempotent replay together."
+    )]
     #[test]
     fn complete_replacement_transaction_moves_source_tombstones_victim_and_replays() {
         use collab_types::{

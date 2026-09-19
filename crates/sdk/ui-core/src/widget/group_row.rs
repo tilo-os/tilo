@@ -1806,7 +1806,10 @@ impl Widget for GroupRow {
         // `fold` rather than `any`: must not short-circuit, every child
         // has to clear its own flag too.
         let own = std::mem::take(&mut self.structure_dirty);
-        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
+        #[allow(
+            clippy::unnecessary_fold,
+            reason = "Every group must clear its structure-dirty flag even when an earlier group already reported a change."
+        )] // see comment above: must not short-circuit
         let children = self
             .groups
             .iter_mut()

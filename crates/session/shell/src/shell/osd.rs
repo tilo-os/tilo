@@ -226,7 +226,14 @@ impl Osd {
         if let Some(bar) = stack.bar {
             draw_level_bar(scene, transform, bar, theme, self);
         }
-        draw_caption(scene, transform, stack.caption, theme, text_renderer, &caption);
+        draw_caption(
+            scene,
+            transform,
+            stack.caption,
+            theme,
+            text_renderer,
+            &caption,
+        );
 
         if faded {
             scene.pop_layer();
@@ -271,7 +278,11 @@ impl OsdStack {
             bar
         });
         let caption = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + caption_h);
-        Self { glyph, bar, caption }
+        Self {
+            glyph,
+            bar,
+            caption,
+        }
     }
 }
 
@@ -572,7 +583,11 @@ mod tests {
         let viewport = Rect::new(0.0, 0.0, 640.0, 360.0);
         let mut scene = Scene::new();
         Osd::brightness(0.5).draw(&mut scene, Affine::IDENTITY, &mut tr, &large, viewport, 1.0);
-        assert_eq!(tr.text_scale(), 2.0, "the pass restores the renderer's scale");
+        assert_eq!(
+            tr.text_scale(),
+            2.0,
+            "the pass restores the renderer's scale"
+        );
         // What the pass painted with: the theme's `sm` on a 1× renderer.
         let caption = Osd::brightness(0.5).caption();
         let mut at_pass = TextRenderer::new();
@@ -601,8 +616,8 @@ mod tests {
     /// is the Panel ground, whatever the palette.
     #[test]
     fn osd_review_fixtures_are_written() {
-        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../target/ui-review/s2-r2/osd");
+        let out =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/ui-review/s2-r2/osd");
         let (w, h) = (640_u32, 360_u32);
         let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         let mut renderer = review_offscreen::OffscreenRenderer::new(w, h);
@@ -621,7 +636,14 @@ mod tests {
                 let mut text = TextRenderer::new();
                 text.set_text_scale(scale);
                 let mut scene = Scene::new();
-                osd.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, viewport, 1.0);
+                osd.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    viewport,
+                    1.0,
+                );
                 let path = out.join(format!("{name}-{kind}.png"));
                 let ground = theme.tokens.colors.surfaces.base;
                 renderer.render_png(&scene, ground, &path);
@@ -646,8 +668,15 @@ mod tests {
         clippy::cast_sign_loss,
         reason = "probe points are inside a positive viewport"
     )]
-    fn assert_pixel_is(rgba: &[u8], width: u32, at: Point, expected: vello::peniko::Color, what: &str) {
-        let (r, g, b, _) = review_offscreen::OffscreenRenderer::sample(rgba, width, at.x as u32, at.y as u32);
+    fn assert_pixel_is(
+        rgba: &[u8],
+        width: u32,
+        at: Point,
+        expected: vello::peniko::Color,
+        what: &str,
+    ) {
+        let (r, g, b, _) =
+            review_offscreen::OffscreenRenderer::sample(rgba, width, at.x as u32, at.y as u32);
         let e = expected.to_rgba8();
         let close = |a: u8, b: u8| a.abs_diff(b) <= 2;
         assert!(

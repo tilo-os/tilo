@@ -167,7 +167,9 @@ fn lay_out(
         }
         let weight = ToolbarMetrics::label_weight(item.cue);
         let (lw, lh) = tr.measure_weighted(&item.label, metrics.label_size, None, weight);
-        let bh = metrics.button_height(f64::from(lh)).min(rect.height().max(f64::from(lh)));
+        let bh = metrics
+            .button_height(f64::from(lh))
+            .min(rect.height().max(f64::from(lh)));
         out.push(ItemLayout {
             rect: Rect::new(x, cy - bh / 2.0, x + item.width, cy + bh / 2.0),
             label_w: f64::from(lw),
@@ -266,10 +268,14 @@ pub fn draw(
 ) -> Vec<Rect> {
     let metrics = metrics(tr.text_scale());
     let scale = metrics.row_height / TOOLBAR_HEIGHT;
-    let items: Vec<_> = items.iter().cloned().map(|mut item| {
-        item.width *= scale;
-        item
-    }).collect();
+    let items: Vec<_> = items
+        .iter()
+        .cloned()
+        .map(|mut item| {
+            item.width *= scale;
+            item
+        })
+        .collect();
     draw_with_metrics(scene, transform, tr, theme, rect, &items, &metrics)
 }
 
@@ -449,18 +455,37 @@ mod tests {
         assert!((laid[0].x0 - (rect.x0 + m.leading_pad)).abs() < 1e-9);
         let mut x = rect.x0 + m.leading_pad;
         for (item, r) in items.iter().zip(&laid) {
-            let sep = if item.group_start { m.separator_advance } else { 0.0 };
-            assert!((r.x0 - (x + sep)).abs() < 1e-9, "{} starts after its separator", item.label);
+            let sep = if item.group_start {
+                m.separator_advance
+            } else {
+                0.0
+            };
+            assert!(
+                (r.x0 - (x + sep)).abs() < 1e-9,
+                "{} starts after its separator",
+                item.label
+            );
             assert!((r.width() - item.width).abs() < 1e-9);
-            assert!((r.height() - m.button_min_height).abs() < 1e-9, "1× labels fit the minimum");
-            assert!((r.center().y - rect.center().y).abs() < 1e-9, "buttons centre on the row");
+            assert!(
+                (r.height() - m.button_min_height).abs() < 1e-9,
+                "1× labels fit the minimum"
+            );
+            assert!(
+                (r.center().y - rect.center().y).abs() < 1e-9,
+                "buttons centre on the row"
+            );
             x += m.item_advance(item.width, item.group_start);
         }
         // The used width the packer sums is where the next item would start.
         assert!((x - (laid[3].x1 + m.item_gap)).abs() < 1e-9);
         // The literal model the hosts mirrored: 14 / 6 / 34 / 15.
         assert_eq!(
-            (m.leading_pad, m.item_gap, m.separator_advance, m.button_min_height),
+            (
+                m.leading_pad,
+                m.item_gap,
+                m.separator_advance,
+                m.button_min_height
+            ),
             (14.0, 6.0, 14.0, 34.0)
         );
         assert!((m.label_size - 15.0).abs() < f32::EPSILON);

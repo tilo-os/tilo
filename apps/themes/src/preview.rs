@@ -109,7 +109,11 @@ impl<'t> SpecimenLayout<'t> {
     /// value. `new` and `minimum_pane_height` share this rule so the pane a
     /// specimen is allocated always matches the specimen drawn in it.
     fn geometry_scale(scale: f64) -> f64 {
-        if scale.is_finite() { scale.max(1.0) } else { 1.0 }
+        if scale.is_finite() {
+            scale.max(1.0)
+        } else {
+            1.0
+        }
     }
 
     /// The pane height that contains the complete specimen at `scale`,
@@ -245,7 +249,13 @@ impl PreviewPane {
         }
     }
 
-    pub(crate) fn draw_snapshot(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, rect: Rect) {
+    pub(crate) fn draw_snapshot(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        rect: Rect,
+    ) {
         self.rect = rect;
         self.draw_specimen(scene, t, tr);
     }
@@ -304,8 +314,7 @@ impl PreviewPane {
             clippy::cast_possible_truncation,
             reason = "the specimen height is a small logical-pixel value representable by f32"
         )]
-        let height =
-            SpecimenLayout::minimum_pane_height(&self.theme, f64::from(text_scale)) as f32;
+        let height = SpecimenLayout::minimum_pane_height(&self.theme, f64::from(text_scale)) as f32;
         height
     }
 
@@ -396,7 +405,10 @@ impl Widget for PreviewPane {
         Some("preview_pane")
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The read-only preview implements the full Widget event contract even though it consumes no input."
+    )]
     fn handle_event(
         &mut self,
         _e: &WindowEvent,
@@ -666,13 +678,7 @@ impl PreviewPane {
                     // face under `DISABLED_ALPHA`), so rest and disabled are
                     // two looks; the edge fades with the face by design.
                     let disabled = ui::widget::DISABLED_ALPHA;
-                    draw::fill_rrect(
-                        scene,
-                        t,
-                        r,
-                        layout.radius,
-                        Self::alpha(th.bg_app, disabled),
-                    );
+                    draw::fill_rrect(scene, t, r, layout.radius, Self::alpha(th.bg_app, disabled));
                     draw::stroke_rrect(
                         scene,
                         t,
@@ -744,7 +750,16 @@ impl PreviewPane {
             s(9.0),
             control_ink,
         );
-        draw::text(tr, scene, t, "On", 12.0, th.text_dim, tg.x1 + s(8.0), y + s(5.0));
+        draw::text(
+            tr,
+            scene,
+            t,
+            "On",
+            12.0,
+            th.text_dim,
+            tg.x1 + s(8.0),
+            y + s(5.0),
+        );
         // Checkbox (checked)
         let cbx = cx + s(110.0);
         let cb = Rect::new(cbx, y + s(2.0), cbx + s(20.0), y + s(22.0));

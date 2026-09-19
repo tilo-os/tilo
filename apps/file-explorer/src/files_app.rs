@@ -4078,7 +4078,11 @@ impl FileExplorerWidget {
         ))
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "modal painting keeps scene, transform, text and theme together while deriving geometry and hit targets in one pass"
+    )]
     // Drawing the modal as one routine keeps geometry, focus, and action hit
     // targets derived from the same bounded panel state.
     #[allow(

@@ -256,6 +256,9 @@ pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
+pub use history_mode::{
+    HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
+};
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
 pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
@@ -268,9 +271,6 @@ pub use widget::history_group::{
 };
 pub use widget::history_scrubber::HistoryScrubber;
 pub use widget::name_field::{NameField, NameFieldOutcome};
-pub use history_mode::{
-    HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
-};
 // Re-exported so an app reaches the whole history stack through `ui::`
 // without knowing the module layout.
 pub use history_source::groups as history_groups;

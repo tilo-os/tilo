@@ -1036,7 +1036,10 @@ impl BackupsApp {
     /// the x just past the label, so the tab strip can centre in the
     /// remaining gap. Split out of [`Self::draw_top_bar`] to keep it under
     /// the line budget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the top-bar cluster uses paint context, bar bounds, center line and narrow mode to place the drawer toggle and source tally"
+    )]
     fn draw_top_bar_left_cluster(
         &mut self,
         scene: &mut Scene,
@@ -1082,7 +1085,10 @@ impl BackupsApp {
     /// The view segmented-tab control, centred between the left cluster and
     /// the backup button, with per-tab width clamped so all tabs always fit.
     /// Split out of [`Self::draw_top_bar`] to keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "tab placement uses paint context and the center line plus the available gap between the left cluster and backup button"
+    )]
     fn draw_top_bar_tabs(
         &mut self,
         scene: &mut Scene,
@@ -2006,7 +2012,10 @@ impl BackupsApp {
     }
 
     /// The "All sources" aggregate row.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the aggregate source row uses paint context, rail bounds, a running vertical cursor and selection state"
+    )]
     fn draw_source_row(
         &mut self,
         scene: &mut Scene,
@@ -2769,7 +2778,10 @@ impl BackupsApp {
     /// One source card: icon + path + kind, the cadence/snapshots/protected
     /// stats, health + next-run, and the enable toggle. Split out of
     /// [`Self::draw_sources_view`] to keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "source cards combine paint context, responsive card geometry and source data for their header, stats and footer"
+    )]
     fn draw_source_card(
         &mut self,
         scene: &mut Scene,
@@ -2837,7 +2849,10 @@ impl BackupsApp {
     /// The health dot, next-run label, and enable toggle at the bottom of a
     /// source card. Split out of [`Self::draw_source_card`] to keep it under
     /// the line budget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the source footer combines paint context, card geometry and source health, next-run and enabled state"
+    )]
     fn draw_source_card_footer(
         &mut self,
         scene: &mut Scene,
@@ -2894,7 +2909,10 @@ impl BackupsApp {
     /// The single compact stats line shown for a source card at narrow
     /// widths. Split out of [`Self::draw_source_card`] to keep it under the
     /// line budget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "compact source stats need paint context, card alignment, source details and catalog snapshot totals"
+    )]
     fn draw_source_card_stats_narrow(
         scene: &mut Scene,
         t: Affine,
@@ -3058,7 +3076,10 @@ impl BackupsApp {
     /// One narrow-layout recent-activity row: status dot, when + size on top,
     /// the action beneath. Split out of [`Self::draw_recent_activity`] to
     /// keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "compact activity rows combine paint context and row position with snapshot status, time and action labels"
+    )]
     fn draw_recent_activity_row_narrow(
         scene: &mut Scene,
         t: Affine,
@@ -3113,7 +3134,10 @@ impl BackupsApp {
     /// One wide-layout recent-activity row: status dot, when, action, dest,
     /// status label, size. Split out of [`Self::draw_recent_activity`] to
     /// keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "wide activity rows combine paint context and row geometry with snapshot data, time and action labels"
+    )]
     fn draw_recent_activity_row_wide(
         &self,
         scene: &mut Scene,
@@ -3311,7 +3335,10 @@ impl BackupsApp {
     }
 
     /// The full repository card: a big capacity ring plus used/free figures.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the repository card combines paint context and bounds with destination capacity data and selection state"
+    )]
     fn draw_dest_card_tall(
         scene: &mut Scene,
         t: Affine,
@@ -3831,7 +3858,10 @@ impl BackupsApp {
     /// One retention-class row: focus highlight, dot + label + unit, and the
     /// -/value/+ stepper. Split out of [`Self::draw_schedules_editor_rows`]
     /// to keep it under the line budget.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "retention rows combine paint context and panel position with the policy field and its current value"
+    )]
     fn draw_schedules_editor_row(
         &mut self,
         scene: &mut Scene,
@@ -4098,7 +4128,10 @@ impl BackupsApp {
         }
     }
 
-    #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "stepper painting takes paint context, button bounds, glyph and hit action so hover and hit registration agree"
+    )] // see `draw_source_row` above.
     fn draw_stepper(
         &mut self,
         scene: &mut Scene,
@@ -4262,7 +4295,10 @@ impl BackupsApp {
     /// A non-interactive contents preview. The restore engine currently
     /// restores whole snapshots, so these rows intentionally are not selectable
     /// and never imply a per-file restore capability.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the snapshot preview keeps paint context, tree bounds and snapshot contents explicit"
+    )]
     fn draw_restore_contents(
         scene: &mut Scene,
         t: Affine,
@@ -4320,7 +4356,10 @@ impl BackupsApp {
     /// One informational row in the snapshot preview. It deliberately has no
     /// hover, selection, hit target, or checkbox because recovery is all-or-
     /// nothing at this engine boundary.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "preview rows combine paint context and row geometry with file metadata for depth, icon and label"
+    )]
     fn draw_restore_content_row(
         scene: &mut Scene,
         t: Affine,

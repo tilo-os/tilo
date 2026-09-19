@@ -312,7 +312,11 @@ impl VideoEditorApp {
                         theme,
                         rect,
                         4.0,
-                        ui::chrome::SelectionState::new(false, rect.contains(self.last_mouse), false),
+                        ui::chrome::SelectionState::new(
+                            false,
+                            rect.contains(self.last_mouse),
+                            false,
+                        ),
                     );
                     let g = 11.0;
                     let box_ = Rect::new(
@@ -1127,7 +1131,16 @@ impl VideoEditorApp {
             }
         }
         if l.crop_label_y > 0.0 {
-            text(scene, tr, tf, "Crop", label_size, c.text_dim, x0, l.crop_label_y);
+            text(
+                scene,
+                tr,
+                tf,
+                "Crop",
+                label_size,
+                c.text_dim,
+                x0,
+                l.crop_label_y,
+            );
         }
         if l.anchor_label_y > 0.0 {
             text(
@@ -1232,7 +1245,16 @@ impl VideoEditorApp {
                     n => format!("{} — this lane, {n} other clips", t.name),
                 };
                 let words = elide_at(&words, (x1 - x0) as f32, label_size, tr);
-                text(scene, tr, tf, &words, label_size, c.text_dim, x0, l.mix_track_y);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &words,
+                    label_size,
+                    c.text_dim,
+                    x0,
+                    l.mix_track_y,
+                );
             }
             if let Some(meter) = l.mix_meter {
                 draw_level_meter(

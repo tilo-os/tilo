@@ -3155,7 +3155,10 @@ impl ChatApp {
     /// when empty) and centred on that same line, so a short draft, its caret
     /// and the placeholder line up with the buttons instead of hugging the
     /// top edge; a long draft fills the box, which itself grows with the text.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The composer painter needs draft geometry, send/focus state, the focus action, attachment visibility, and the hit-target output."
+    )]
     pub(crate) fn draw_input_box(
         paint: PaintContext<'_>,
         rect: Rect,

@@ -5178,7 +5178,9 @@ mod tests {
         use automerge::transaction::Transactable;
         let broker = FakeBroker {
             captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
-            op_backlog: vec![], presence_backlog: vec![], context_backlog: vec![],
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
             scrollback_response: None,
         };
         let (fd, captures, _thread) = stand_up_fake_broker(broker);
@@ -5193,19 +5195,50 @@ mod tests {
         document.put(automerge::ROOT, "body", "after").unwrap();
         document.commit();
         let delta = document.save_after(&heads);
-        manager.send_to_route(route.clone(), CollabRequest::document_snapshot(snapshot.clone()));
-        manager.send_to_route(route.clone(), CollabRequest::document_incremental(delta.clone()));
-        assert!(wait_until(|| captures.lock().unwrap().signed_ops.len() == 2, Duration::from_secs(2)), "both raw requests reach SDK signed RPC");
+        manager.send_to_route(
+            route.clone(),
+            CollabRequest::document_snapshot(snapshot.clone()),
+        );
+        manager.send_to_route(
+            route.clone(),
+            CollabRequest::document_incremental(delta.clone()),
+        );
+        assert!(
+            wait_until(
+                || captures.lock().unwrap().signed_ops.len() == 2,
+                Duration::from_secs(2)
+            ),
+            "both raw requests reach SDK signed RPC"
+        );
         let captured = captures.lock().unwrap();
-        assert!(captured.joined.iter().any(|(channel, _)| channel == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
+        assert!(captured.joined.iter().any(|(channel, _)| channel
+            == &channel_key::format("actual-owner", &workspace.to_string(), "tab:qualified")));
         for (index, bytes) in captured.signed_ops.iter().enumerate() {
             let envelope: SignedOp = postcard::from_bytes(bytes).unwrap();
-            collab_types::validate_document_payload_route("actual-owner", &workspace.to_string(), "tab:qualified", &envelope).unwrap();
-            assert!(envelope.encryption.is_none(), "harness route is explicitly unencrypted");
-            let expected = if index == 0 { collab_types::DocumentMutation::Snapshot(snapshot.clone()) }
-                else { collab_types::DocumentMutation::Incremental(delta.clone()) };
-            assert_eq!(collab_types::DocumentMutation::decode(&envelope.payload).unwrap(), expected);
-            assert_ne!(envelope.signature, collab_types::Signature::from_bytes([0; 64]));
+            collab_types::validate_document_payload_route(
+                "actual-owner",
+                &workspace.to_string(),
+                "tab:qualified",
+                &envelope,
+            )
+            .unwrap();
+            assert!(
+                envelope.encryption.is_none(),
+                "harness route is explicitly unencrypted"
+            );
+            let expected = if index == 0 {
+                collab_types::DocumentMutation::Snapshot(snapshot.clone())
+            } else {
+                collab_types::DocumentMutation::Incremental(delta.clone())
+            };
+            assert_eq!(
+                collab_types::DocumentMutation::decode(&envelope.payload).unwrap(),
+                expected
+            );
+            assert_ne!(
+                envelope.signature,
+                collab_types::Signature::from_bytes([0; 64])
+            );
         }
     }
 

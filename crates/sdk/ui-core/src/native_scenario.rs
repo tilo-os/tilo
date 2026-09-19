@@ -90,7 +90,11 @@ impl Scenario {
                 ));
             }
         }
-        deadline(Instant::now(), self.interval_us, self.steps.len().saturating_sub(1))?;
+        deadline(
+            Instant::now(),
+            self.interval_us,
+            self.steps.len().saturating_sub(1),
+        )?;
         Ok(())
     }
 }

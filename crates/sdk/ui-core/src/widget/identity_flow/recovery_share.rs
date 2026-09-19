@@ -26,8 +26,8 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid,
-    check_box_rect, paint_check_row, paint_text, paragraph_height, resolve, with_layout_renderer,
+    Align, BodyScroll, GRID_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, WordGrid, check_box_rect,
+    paint_check_row, paint_text, paragraph_height, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
 use crate::widget::modal_frame::ModalAction;
@@ -186,7 +186,10 @@ impl RecoveryShareScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "recovery-share handling mirrors the host's Widget event signature while returning the screen transition"
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -627,7 +630,10 @@ mod tests {
             )
             .expect("layout");
         s.apply_layout(&taffy, node, Point::ORIGIN);
-        assert!(s.scroll.max() > 0.0, "24 words at 2× do not fit an 800 px window");
+        assert!(
+            s.scroll.max() > 0.0,
+            "24 words at 2× do not fit an 800 px window"
+        );
         let actions = Rect::new(
             s.copy_rect.x0.min(s.continue_rect.x0),
             s.copy_rect.y0.min(s.continue_rect.y0),
@@ -643,7 +649,10 @@ mod tests {
         assert!(s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height));
         while s.scroll.key(&Key::Named(NamedKey::PageDown), s.body_height) {}
         s.apply_layout(&taffy, node, Point::ORIGIN);
-        assert!(s.ack_hit_rect.area() > 0.0, "scrolled to the end, the row is a target");
+        assert!(
+            s.ack_hit_rect.area() > 0.0,
+            "scrolled to the end, the row is a target"
+        );
         assert!(s.ack_hit_rect.intersect(actions).is_zero_area());
         assert!(s.ack_hit_rect.y1 <= s.continue_rect.y0);
     }

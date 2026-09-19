@@ -1487,7 +1487,10 @@ fn kind_color(theme: &Theme, kind: TargetKind) -> Color {
 // Drawing primitives
 // =========================================================================
 impl ImagerApp {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Text painting passes scene and renderer plus content, size, color, origin, wrapping width, and weight."
+    )]
     fn txt(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1510,7 +1513,10 @@ impl ImagerApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Right-aligned text needs scene and renderer, content and typography, and the right edge and line top."
+    )]
     fn txt_right(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1535,7 +1541,10 @@ impl ImagerApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Centered text needs scene and renderer, content and typography, and the horizontal center and line top."
+    )]
     fn txt_center(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1727,7 +1736,10 @@ impl ImagerApp {
 
     /// `s` centred on `cx`, its line box centred in the band
     /// `band_y0 ..= band_y0 + band_h`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Band-centered text combines scene and renderer, content and typography, horizontal center, and vertical band bounds."
+    )]
     fn txt_center_v(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1745,7 +1757,10 @@ impl ImagerApp {
 
     /// `s` right-aligned at `right`, its line box centred in the band
     /// `band_y0 ..= band_y0 + band_h`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Right-aligned band text combines scene and renderer, content and typography, right edge, and vertical band bounds."
+    )]
     fn txt_right_v(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -1764,7 +1779,10 @@ impl ImagerApp {
     /// A kind badge (`qOS`, `ISO`, `USB`): the toolkit [`Badge`], as wide as
     /// its label needs, filling the band `top ..= top + band_h` from `x`.
     /// Returns the badge's rect so the text column can follow it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "A measured source-kind badge needs render context, its origin and band height, label, and semantic fill color."
+    )]
     fn kind_badge(
         scene: &mut Scene,
         t: Affine,
@@ -1785,7 +1803,10 @@ impl ImagerApp {
 
     /// A paragraph centred on `cx` while it fits `max_w`, wrapped as a
     /// left-aligned block of that width once it does not.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Paragraph painting needs scene and renderer, content and typography, center/top coordinates, and the wrapping width."
+    )]
     fn txt_para_centered(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -3136,7 +3157,10 @@ impl ImagerApp {
 
     /// One release row: selection badge, name, channel/size/location, and the
     /// "installable" tag. Returns its bottom edge.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Release row painting combines render context, content bounds and row position, release data, and its selection index."
+    )]
     fn draw_release_row(
         &self,
         scene: &mut Scene,
@@ -3494,7 +3518,10 @@ impl ImagerApp {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Drive card painting combines render context and card bounds with the drive data and selection/hover index."
+    )]
     fn draw_drive_card(
         &self,
         scene: &mut Scene,
@@ -5644,7 +5671,10 @@ impl ImagerApp {
     /// The Customize step's delegated handling. Returns `true` when the panel
     /// consumed the event, so the caller stops before the wizard chrome below
     /// ever sees it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Customize routing forwards input, CRDT state, wizard layout, and the widget node/tree to the shared panel."
+    )]
     fn handle_customize_event(
         &mut self,
         event: &WindowEvent,

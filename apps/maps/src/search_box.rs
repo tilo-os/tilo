@@ -338,7 +338,12 @@ impl SearchBox {
         let pad = f64::from(sp.s2);
         let n = self.results.len().min(MAX_RESULTS);
         let top = overlay.rect.y1 + f64::from(sp.s2);
-        let card = Rect::new(x, top, x + w, top + pad * 2.0 + n as f64 * row_pitch - row_gap);
+        let card = Rect::new(
+            x,
+            top,
+            x + w,
+            top + pad * 2.0 + n as f64 * row_pitch - row_gap,
+        );
         draw::card(scene, transform, card, 12.0, c.surfaces.raised);
         self.targets.push((card, SearchHit::Consume));
 

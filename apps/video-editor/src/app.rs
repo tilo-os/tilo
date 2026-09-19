@@ -30,7 +30,8 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
+    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, ModalAction, ModalFrame,
+    ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
 };
 
 use crate::actions::{
@@ -66,9 +67,9 @@ mod project_workflow;
 mod scenario;
 mod selection;
 mod timeline_paint;
+use crate::layout::{self as chrome_layout, S1, S2, S3};
 use inspector_layout::InspectorLayout;
 use layout::Regions;
-use crate::layout::{self as chrome_layout, S1, S2, S3};
 use paint::*;
 use scenario::ShotLifecycle;
 pub use scenario::ShotScenario;
@@ -1789,7 +1790,13 @@ impl VideoEditorApp {
     /// wide.  Treating only the latter as compact left the scaled labels to
     /// run into one another.
     fn topbar_is_compact(&self) -> bool {
-        self.rect.width() < TOPBAR_COMPACT_BREAKPOINT.max(2.0 * TOPBAR_EDGE + 3.0 * TOPBAR_BTN_W + 2.0 * TOPBAR_TOUCH_TARGET + 4.0 * TOPBAR_GAP)
+        self.rect.width()
+            < TOPBAR_COMPACT_BREAKPOINT.max(
+                2.0 * TOPBAR_EDGE
+                    + 3.0 * TOPBAR_BTN_W
+                    + 2.0 * TOPBAR_TOUCH_TARGET
+                    + 4.0 * TOPBAR_GAP,
+            )
             || (self.text_scale > 1.25 && self.rect.width() / self.text_scale < 800.0)
     }
 
@@ -2053,7 +2060,12 @@ impl VideoEditorApp {
     /// The clip flag inside it: what is clicked to walk the overloads.
     fn clip_flag_rect(&self, r: &Regions) -> Rect {
         let m = chrome_layout::master_strip(self.master_strip_rect(r));
-        Rect::new(m.readout.x1 - 52.0, m.readout.y0, m.readout.x1, m.readout.y1)
+        Rect::new(
+            m.readout.x1 - 52.0,
+            m.readout.y0,
+            m.readout.x1,
+            m.readout.y1,
+        )
     }
 
     /// The lane's level meter, along the foot of its head.
@@ -2081,17 +2093,25 @@ impl VideoEditorApp {
     /// the last lane: `(kind, rect)` for a Video and an Audio add.
     fn add_track_buttons(&self, r: &Regions) -> Vec<(TrackKind, Rect)> {
         let lanes = self.lane_rects(r);
-        let y = lanes
-            .last()
-            .map_or(r.gutter.y0 + S2, |(_, _, l)| l.y1 + S2);
+        let y = lanes.last().map_or(r.gutter.y0 + S2, |(_, _, l)| l.y1 + S2);
         if y + (ADD_TRACK_H * self.chrome_scale()) > r.timeline.y1 {
             return Vec::new();
         }
         // Two related buttons in one footer: `S2` between them and to the
         // gutter's edges, the same step the bin's rows keep.
         let w = (r.gutter.width() - S2 * 3.0) / 2.0;
-        let vbtn = Rect::new(r.gutter.x0 + S2, y, r.gutter.x0 + S2 + w, y + (ADD_TRACK_H * self.chrome_scale()));
-        let abtn = Rect::new(vbtn.x1 + S2, y, vbtn.x1 + S2 + w, y + (ADD_TRACK_H * self.chrome_scale()));
+        let vbtn = Rect::new(
+            r.gutter.x0 + S2,
+            y,
+            r.gutter.x0 + S2 + w,
+            y + (ADD_TRACK_H * self.chrome_scale()),
+        );
+        let abtn = Rect::new(
+            vbtn.x1 + S2,
+            y,
+            vbtn.x1 + S2 + w,
+            y + (ADD_TRACK_H * self.chrome_scale()),
+        );
         vec![(TrackKind::Video, vbtn), (TrackKind::Audio, abtn)]
     }
 
@@ -2280,7 +2300,12 @@ impl VideoEditorApp {
         let mut y = r.bin.y0 + self.bin_list_top() - self.bin_scroll;
         for mid in self.bin_order() {
             let inset = 8.0 * self.bin_ui_scale();
-            let rect = Rect::new(r.bin.x0 + inset, y, r.bin.x1 - inset, y + row_h - S2 * self.bin_ui_scale());
+            let rect = Rect::new(
+                r.bin.x0 + inset,
+                y,
+                r.bin.x1 - inset,
+                y + row_h - S2 * self.bin_ui_scale(),
+            );
             out.push((mid, rect));
             y += row_h;
         }
@@ -5633,7 +5658,14 @@ impl VideoEditorApp {
         let seg = |n: usize, y: f64| -> Vec<Rect> {
             let w = (x1 - x0 + s1) / n as f64;
             (0..n)
-                .map(|i| Rect::new(x0 + i as f64 * w, y, x0 + (i as f64 + 1.0) * w - s1, y + seg_h))
+                .map(|i| {
+                    Rect::new(
+                        x0 + i as f64 * w,
+                        y,
+                        x0 + (i as f64 + 1.0) * w - s1,
+                        y + seg_h,
+                    )
+                })
                 .collect()
         };
         let mut captions = [0.0; 3];
@@ -8674,7 +8706,8 @@ impl VideoEditorApp {
             body.x0,
             body.y0,
             body.x1,
-            l.footer_hint.map_or(body.y1, |hint| hint - f64::from(theme.tokens.spacing.s2)),
+            l.footer_hint
+                .map_or(body.y1, |hint| hint - f64::from(theme.tokens.spacing.s2)),
         );
         scene.push_layer(
             Fill::NonZero,
@@ -8995,16 +9028,7 @@ impl VideoEditorApp {
                     bar.y1,
                 );
                 fill_rrect(scene, tf, c.accent[5], f, radius);
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    "Rendering…",
-                    ty.xs,
-                    dim,
-                    x0,
-                    bar.y1 + s1,
-                );
+                text(scene, tr, tf, "Rendering…", ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {
                 let done = elide_at(&format!("Done: {path}"), width, ty.xs, tr);
@@ -9061,7 +9085,6 @@ impl VideoEditorApp {
 #[cfg(test)]
 mod tests;
 
-
 impl VideoEditorApp {
     fn track_head_rect(&self, r: &Regions, lane: &Rect) -> Rect {
         chrome_layout::track_head_card(r.gutter, lane)
@@ -9094,8 +9117,8 @@ impl VideoEditorApp {
         let two_col = self.rect.width() / scale >= HELP_TWO_COLUMN_MIN_W;
         let (split, tallest) = help_columns(two_col, m);
         let content_h = line_sm + s3 + tallest;
-        let mut spec =
-            ModalSpec::new("Keyboard shortcuts").body_height(content_h / f64::from(theme.text_scale));
+        let mut spec = ModalSpec::new("Keyboard shortcuts")
+            .body_height(content_h / f64::from(theme.text_scale));
         if two_col {
             spec = spec.max_width(HELP_CARD_W);
         }
@@ -9176,12 +9199,27 @@ mod chrome_geometry_tests;
 impl VideoEditorApp {
     fn track_head_layout(&self, header: Rect) -> chrome_layout::TrackHead {
         let scale = self.chrome_scale();
-        let mut head = chrome_layout::track_head(Rect::new(0.0, 0.0, header.width() / scale, header.height() / scale));
-        let place = |rect: Rect| Rect::new(header.x0 + rect.x0 * scale,
-            header.y0 + rect.y0 * scale, header.x0 + rect.x1 * scale, header.y0 + rect.y1 * scale);
-        head.card = place(head.card); head.name = place(head.name);
-        head.mute = place(head.mute); head.lock = place(head.lock); head.solo = place(head.solo);
-        head.kind = place(head.kind); head.meter = place(head.meter);
+        let mut head = chrome_layout::track_head(Rect::new(
+            0.0,
+            0.0,
+            header.width() / scale,
+            header.height() / scale,
+        ));
+        let place = |rect: Rect| {
+            Rect::new(
+                header.x0 + rect.x0 * scale,
+                header.y0 + rect.y0 * scale,
+                header.x0 + rect.x1 * scale,
+                header.y0 + rect.y1 * scale,
+            )
+        };
+        head.card = place(head.card);
+        head.name = place(head.name);
+        head.mute = place(head.mute);
+        head.lock = place(head.lock);
+        head.solo = place(head.solo);
+        head.kind = place(head.kind);
+        head.meter = place(head.meter);
         head
     }
 }

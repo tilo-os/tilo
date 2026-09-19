@@ -448,7 +448,10 @@ impl NearbyTransferStore {
     ///
     /// # Errors
     /// Returns an error for invalid/mismatched manifests, quota, or durable I/O failure.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Incoming transfers bind source and request IDs to name, kind, byte length, content hash, and the timestamp used for expiry."
+    )]
     pub fn begin_incoming(
         &mut self,
         id: [u8; 16],
@@ -1545,7 +1548,9 @@ fn capability_entries(root: &File) -> Result<Vec<(PathBuf, bool)>, String> {
         let stream = unsafe { libc::fdopendir(fd) };
         if stream.is_null() {
             let error = io::Error::last_os_error();
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
             return Err(error.to_string());
         }
         struct DirectoryStream(*mut libc::DIR);
@@ -1694,7 +1699,8 @@ fn extract_capability_archive(source: &Path, root: &File, name: &str) -> Result<
                     &directory,
                     path.parent().unwrap_or(Path::new("")),
                 )?;
-                let leaf = path.file_name()
+                let leaf = path
+                    .file_name()
                     .ok_or_else(|| "archive path is not portable".to_string())?;
                 let mut output = create_capability_file(&parent, leaf).map_err(display)?;
                 io::copy(&mut item, &mut output).map_err(display)?;

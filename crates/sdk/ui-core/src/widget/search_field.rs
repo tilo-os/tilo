@@ -294,9 +294,8 @@ impl Widget for SearchField {
         // the whole row and pushed every later sibling to zero width (the
         // F2-16 shape recorded against `Dropdown`). The floor keeps the two
         // gutters plus two pointer targets of text, so it cannot vanish.
-        let min_width = ICON_GUTTER
-            + CLEAR_GUTTER
-            + 2.0 * f64::from(theme.tokens.metrics.min_pointer_target);
+        let min_width =
+            ICON_GUTTER + CLEAR_GUTTER + 2.0 * f64::from(theme.tokens.metrics.min_pointer_target);
         let node = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
@@ -352,7 +351,13 @@ impl Widget for SearchField {
         let focused = self.input.is_focused();
         let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
         let pill_fill = theme.tokens.colors.surfaces.raised;
-        scene.fill(vello::peniko::Fill::NonZero, transform, pill_fill, None, &pill);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            pill_fill,
+            None,
+            &pill,
+        );
         // Rest edge derived from the pill (HIG §9.5); focus keeps `border_focus`.
         let border = if focused {
             theme.border_focus

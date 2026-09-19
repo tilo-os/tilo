@@ -68,7 +68,10 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum RenameState { Current, Conflict }
+enum RenameState {
+    Current,
+    Conflict,
+}
 
 pub struct Gallery {
     rows: Vec<ThemeRow>,
@@ -175,16 +178,19 @@ impl Gallery {
         // Refresh clean cached names, but keep an unfinished local rename
         // when History or another writer changes the same canonical name.
         if selected_custom {
-            let name = specs.iter().find(|s| s.id == selected)
-                .map(|s| s.name.clone()).unwrap_or_default();
+            let name = specs
+                .iter()
+                .find(|s| s.id == selected)
+                .map(|s| s.name.clone())
+                .unwrap_or_default();
             if self.seeded_id.as_deref() != Some(selected) {
                 self.name_input.set_text(&name);
                 self.edited_name = None;
                 self.rename_state = RenameState::Current;
                 self.seeded_id = Some(selected.to_string());
             } else if self.canonical_name != name {
-                let dirty = self.edited_name.is_some()
-                    || self.name_input.value() != self.canonical_name;
+                let dirty =
+                    self.edited_name.is_some() || self.name_input.value() != self.canonical_name;
                 if dirty && self.name_input.value() != name {
                     self.rename_state = RenameState::Conflict;
                     self.edited_name = None;
@@ -215,7 +221,11 @@ impl Gallery {
     }
 
     pub fn take_edited_name(&mut self) -> Option<String> {
-        if self.rename_state == RenameState::Conflict { None } else { self.edited_name.take() }
+        if self.rename_state == RenameState::Conflict {
+            None
+        } else {
+            self.edited_name.take()
+        }
     }
 
     /// Stage a local inline-name edit. Used by the app's headless interaction
@@ -228,7 +238,9 @@ impl Gallery {
 
     /// A conflicting local rename needs a deliberate commit or cancel.
     pub(crate) fn resolve_name_conflict(&mut self, key: &Key) -> bool {
-        if self.rename_state != RenameState::Conflict { return false; }
+        if self.rename_state != RenameState::Conflict {
+            return false;
+        }
         match key {
             Key::Named(NamedKey::Enter) => {
                 self.edited_name = Some(self.name_input.value().to_string());
@@ -246,7 +258,9 @@ impl Gallery {
     }
 
     #[cfg(test)]
-    pub(crate) fn displayed_name(&self) -> &str { self.name_input.value() }
+    pub(crate) fn displayed_name(&self) -> &str {
+        self.name_input.value()
+    }
 
     /// Open the actions menu for the selected row — used by the `--shots`
     /// renderer to capture the menu without a live right-click.
@@ -400,9 +414,14 @@ impl Widget for Gallery {
         // header is just the functional theme count, and the list flows up into
         // the reclaimed space.
         if self.rename_state == RenameState::Conflict {
-            tr.draw_text(scene, NAME_CONFLICT_HINT, 11., theme.text_dim,
+            tr.draw_text(
+                scene,
+                NAME_CONFLICT_HINT,
+                11.,
+                theme.text_dim,
                 t * Affine::translate((self.rect.x0 + f64::from(PAD), self.rect.y0 + 3.)),
-                Some((self.rect.width() - 2. * f64::from(PAD)) as f32));
+                Some((self.rect.width() - 2. * f64::from(PAD)) as f32),
+            );
         } else {
             // The count is the theme's small type, handed to the renderer once
             // (the theme size already carries the text scale).
@@ -442,7 +461,10 @@ impl Widget for Gallery {
         self.menu.draw(scene, t, tr, theme, p);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The Widget event contract supplies scale, modifiers, CRDT state/path, handled and focus outputs, node, and layout to menu and rename input."
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -568,8 +590,8 @@ impl Widget for Gallery {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        (self.rename_state == RenameState::Conflict).then(|| ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-            .with_name(NAME_CONFLICT_HINT))
+        (self.rename_state == RenameState::Conflict)
+            .then(|| ui::a11y::AccessNode::new(ui::a11y::Role::Group).with_name(NAME_CONFLICT_HINT))
     }
 
     fn name(&self) -> &'static str {

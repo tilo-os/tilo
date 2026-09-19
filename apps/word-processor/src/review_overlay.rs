@@ -199,7 +199,11 @@ impl ReviewOverlay {
         }
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "comment painting keeps text measurement, card geometry and reply hit targets together with the render context and labels"
+    )]
     fn draw_comment(
         &mut self,
         scene: &mut Scene,
@@ -361,7 +365,10 @@ impl ReviewOverlay {
         card_top + card_h + CARD_GAP
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "reply-button painting needs render context, card geometry, remaining row width, comment identity and measured labels"
+    )]
     fn draw_comment_reply_button(
         &mut self,
         scene: &mut Scene,
@@ -479,7 +486,10 @@ impl ReviewOverlay {
         button
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "change-card painting combines render context, document anchor, card stack position and change identity"
+    )]
     fn draw_change(
         &mut self,
         scene: &mut Scene,

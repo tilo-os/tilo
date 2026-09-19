@@ -20,7 +20,9 @@ use vello::{
 };
 use winit::event::WindowEvent;
 
-fn resource() -> tilo_actions::Resource { resource_for("live", "fixture.export") }
+fn resource() -> tilo_actions::Resource {
+    resource_for("live", "fixture.export")
+}
 fn resource_for(id: &str, operation: &str) -> tilo_actions::Resource {
     tilo_actions::Resource::new(id, "fixture", "Live owner").with_action(
         tilo_actions::ActionSpec::operation(
@@ -54,7 +56,11 @@ impl Widget for LiveOwner {
         "Live owner"
     }
     fn test_id(&self) -> Option<&str> {
-        Some(if self.resource_id == "live" { "live-owner" } else { self.resource_id })
+        Some(if self.resource_id == "live" {
+            "live-owner"
+        } else {
+            self.resource_id
+        })
     }
     fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
         self.text.sync(doc, path);
@@ -99,9 +105,15 @@ impl Widget for LiveOwner {
     ) {
         self.local_events.set(self.local_events.get() + 1);
     }
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> { self.bracket.borrow_mut().take() }
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> { self.undo_request.take() }
-    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) { self.collab_events.set(self.collab_events.get()+1); }
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.bracket.borrow_mut().take()
+    }
+    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
+        self.undo_request.take()
+    }
+    fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {
+        self.collab_events.set(self.collab_events.get() + 1);
+    }
     fn handle_local_undo_request(&mut self, _: crate::undo::UndoRequest) -> bool {
         self.local_events.set(self.local_events.get() + 1);
         true
@@ -124,7 +136,9 @@ impl Widget for LiveOwner {
         _: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if type_id != self.type_id { return Ok(None); }
+        if type_id != self.type_id {
+            return Ok(None);
+        }
         self.starts.set(self.starts.get() + 1);
         self.active = Some(invocation);
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
@@ -157,7 +171,8 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     let completions = Rc::new(Cell::new(0));
     let local_events = Rc::new(Cell::new(0));
     let owner = LiveOwner {
-        resource_id: "live", type_id: "fixture.export",
+        resource_id: "live",
+        type_id: "fixture.export",
         text: Text::new("Live owner"),
         emitter: emitter.clone(),
         starts: starts.clone(),
@@ -165,7 +180,8 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
         completions: completions.clone(),
         local_events: local_events.clone(),
         collab_events: Rc::new(Cell::new(0)),
-        bracket: Rc::new(RefCell::new(None)), undo_request: Rc::new(Cell::new(None)),
+        bracket: Rc::new(RefCell::new(None)),
+        undo_request: Rc::new(Cell::new(None)),
         active: None,
     };
     let mut state = State::new();
@@ -225,7 +241,6 @@ fn preview_discards_unadmitted_local_intents_but_polls_an_already_admitted_effec
     assert!(local_events.get() > events, "normal live input resumes");
 }
 
-
 pub(crate) struct EffectProbe {
     pub(crate) root: Box<dyn crate::widget::AppWidget>,
     pub(crate) emitter: Rc<RefCell<ActionEmitter<()>>>,
@@ -240,19 +255,48 @@ pub(crate) fn native_effect_probe_parts(id: &'static str, operation: &'static st
     let starts = Rc::new(Cell::new(0));
     let finish = Rc::new(Cell::new(false));
     let completions = Rc::new(Cell::new(0));
-    let emitter = Rc::new(RefCell::new(ActionEmitter::new(tilo_actions::ActionBinding::unit_for(&resource_for(id, operation), "export").unwrap())));
+    let emitter = Rc::new(RefCell::new(ActionEmitter::new(
+        tilo_actions::ActionBinding::unit_for(&resource_for(id, operation), "export").unwrap(),
+    )));
     let collab_events = Rc::new(Cell::new(0));
-    let bracket = Rc::new(RefCell::new(None)); let undo_request = Rc::new(Cell::new(None));
+    let bracket = Rc::new(RefCell::new(None));
+    let undo_request = Rc::new(Cell::new(None));
     let root = Box::new(LiveOwner {
-        resource_id: id, type_id: operation, bracket: bracket.clone(), undo_request: undo_request.clone(),
-        text: Text::new(id), emitter: emitter.clone(), starts: starts.clone(), finish: finish.clone(),
-        completions: completions.clone(), collab_events: collab_events.clone(), local_events: Rc::new(Cell::new(0)), active: None,
+        resource_id: id,
+        type_id: operation,
+        bracket: bracket.clone(),
+        undo_request: undo_request.clone(),
+        text: Text::new(id),
+        emitter: emitter.clone(),
+        starts: starts.clone(),
+        finish: finish.clone(),
+        completions: completions.clone(),
+        collab_events: collab_events.clone(),
+        local_events: Rc::new(Cell::new(0)),
+        active: None,
     });
-    EffectProbe { root, emitter, starts, finish, completions, collab_events, bracket, undo_request }
+    EffectProbe {
+        root,
+        emitter,
+        starts,
+        finish,
+        completions,
+        collab_events,
+        bracket,
+        undo_request,
+    }
 }
 impl crate::widget::AppWidget for LiveOwner {
-    fn app_kind(&self) -> crate::widget::AppKind { crate::widget::AppKind::Editor }
-    fn app_title(&self) -> &str { "Live effect probe" }
-    fn app_icon(&self) -> crate::widget::IconDescriptor { crate::widget::IconDescriptor::Glyph("P") }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> { None }
+    fn app_kind(&self) -> crate::widget::AppKind {
+        crate::widget::AppKind::Editor
+    }
+    fn app_title(&self) -> &str {
+        "Live effect probe"
+    }
+    fn app_icon(&self) -> crate::widget::IconDescriptor {
+        crate::widget::IconDescriptor::Glyph("P")
+    }
+    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
+        None
+    }
 }

@@ -1191,7 +1191,11 @@ mod tests {
             let ground = ui::chrome::shell::panel_ground(&theme);
             let floor = theme.tokens.colors.lift(0.35);
             for (what, edge, fill) in [
-                ("panel border", ui::chrome::shell::panel_border(&theme), ground),
+                (
+                    "panel border",
+                    ui::chrome::shell::panel_border(&theme),
+                    ground,
+                ),
                 ("mode cell / device row", ui::surface::edge_on(floor), floor),
             ] {
                 let delta = ui::surface::edge_delta(edge, fill);

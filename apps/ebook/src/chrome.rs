@@ -210,7 +210,11 @@ pub fn bar_edge(scene: &mut Scene, t: Affine, fill: Color, x0: f64, x1: f64, y: 
 pub fn rail(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, edge_x: f64) {
     let fill = theme.tokens.colors.surfaces.base;
     scene.fill(Fill::NonZero, t, fill, None, &rect);
-    let x0 = if edge_x >= rect.x1 - 0.5 { edge_x - 1.0 } else { edge_x };
+    let x0 = if edge_x >= rect.x1 - 0.5 {
+        edge_x - 1.0
+    } else {
+        edge_x
+    };
     scene.fill(
         Fill::NonZero,
         t,
@@ -268,7 +272,9 @@ mod tests {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let c = &theme.tokens.colors;
             let base = relative_luminance(c.surfaces.base);
-            let dist = |state: SelectionState| (relative_luminance(c.lift(floor_ramp(state))) - base).abs();
+            let dist = |state: SelectionState| {
+                (relative_luminance(c.lift(floor_ramp(state))) - base).abs()
+            };
             let idle = dist(SelectionState::default());
             let hover = dist(SelectionState::new(false, true, false));
             let active = dist(SelectionState::active(true));

@@ -1,5 +1,5 @@
 use automerge::transaction::{CommitOptions, Transactable};
-use automerge::{ActorId, AutoCommit, ReadDoc, ROOT};
+use automerge::{ActorId, AutoCommit, ROOT, ReadDoc};
 use tilo_actions::{ActionContext, ActionFacet};
 
 use super::*;

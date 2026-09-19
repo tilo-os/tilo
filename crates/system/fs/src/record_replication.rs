@@ -387,16 +387,24 @@ struct RevisionStamp {
 
 impl BindingStamp {
     fn for_binding(binding: &FileBindingV1, sequence: u64) -> Self {
-        Self { observed_at_ms: binding.observed_at_ms, sequence,
-            person: *binding.actor.person.as_bytes(), device: *binding.actor.device.as_bytes() }
+        Self {
+            observed_at_ms: binding.observed_at_ms,
+            sequence,
+            person: *binding.actor.person.as_bytes(),
+            device: *binding.actor.device.as_bytes(),
+        }
     }
 }
 
 impl RevisionStamp {
     fn for_version(version: &FileVersionV1, actor: FileActor, sequence: u64) -> Self {
-        Self { timestamp_ms: version.timestamp_ms,
-            person: *actor.person.as_bytes(), device: *actor.device.as_bytes(),
-            version: *version.id.0.as_bytes(), sequence }
+        Self {
+            timestamp_ms: version.timestamp_ms,
+            person: *actor.person.as_bytes(),
+            device: *actor.device.as_bytes(),
+            version: *version.id.0.as_bytes(),
+            sequence,
+        }
     }
 }
 
@@ -412,12 +420,24 @@ impl RecordReplica {
         let binding = &participant.proposed_binding;
         let stamp = BindingStamp::for_binding(binding, commit_sequence);
         if participant.role != collab_types::FileMutationParticipantRoleV1::RestoreContent
-            && self.binding.as_ref().is_none_or(|(current, _)| stamp > *current) {
+            && self
+                .binding
+                .as_ref()
+                .is_none_or(|(current, _)| stamp > *current)
+        {
             self.binding = Some((stamp, binding.clone()));
         }
         if let Some(revision) = participant.proposed_content_revision {
-            let stamp = RevisionStamp::for_version(&participant.proposed_version, participant.proposed_version.actor, commit_sequence);
-            if self.content_revision.as_ref().is_none_or(|(current, _)| stamp > *current) {
+            let stamp = RevisionStamp::for_version(
+                &participant.proposed_version,
+                participant.proposed_version.actor,
+                commit_sequence,
+            );
+            if self
+                .content_revision
+                .as_ref()
+                .is_none_or(|(current, _)| stamp > *current)
+            {
                 self.content_revision = Some((stamp, revision));
             }
         }
@@ -488,7 +508,10 @@ impl RecordReplica {
 
     // Keep the exhaustive authenticated operation state machine together so a
     // newly added operation cannot bypass common sequence bookkeeping.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the exhaustive authenticated operation state machine shares sequence validation and final sequence bookkeeping"
+    )]
     fn apply_verified(
         &mut self,
         envelope: &RecordEnvelopeV1,
@@ -1434,7 +1457,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Convergence matrix is intentionally one scenario.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture compares both signed resolution arrival orders and checks that conflict and visible content converge"
+    )] // Convergence matrix is intentionally one scenario.
     fn concurrent_resolution_proposals_converge_independent_of_arrival_order() {
         let (first_key, first_actor, record, mut auth) = fixture();
         let (second_key, second_device) = generate_keypair();

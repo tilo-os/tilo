@@ -106,7 +106,10 @@ pub struct Series<'a> {
 /// `max` is the y-axis ceiling; pass the data's own max (with headroom)
 /// for unbounded units like network throughput, or a fixed `100.0` for a
 /// percentage chart. `axis_hi`/`axis_lo` are right-aligned tick labels.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "area charts combine paint context and bounds with title, series, numeric ceiling and formatted axis labels"
+)]
 pub fn area_chart(
     scene: &mut Scene,
     t: Affine,
@@ -219,7 +222,10 @@ pub fn area_chart(
 /// A radial ring gauge. `frac` is 0..=1; draws a track ring plus an arc
 /// that sweeps clockwise from 12 o'clock, with a big value and a small
 /// caption centred inside.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "ring gauges combine paint context, center/radius/thickness, fraction and color with value and caption text"
+)]
 pub fn ring_gauge(
     scene: &mut Scene,
     t: Affine,
@@ -292,7 +298,10 @@ pub fn ring_gauge(
 /// A labelled horizontal bar gauge. `rect` covers the label row + the
 /// track; the label sits on the first line, the value is right-aligned,
 /// and the fill bar is drawn along the bottom of `rect`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "bar gauges combine paint context and bounds with fraction, fill color, label and formatted value"
+)]
 pub fn bar_gauge(
     scene: &mut Scene,
     t: Affine,
@@ -326,13 +335,7 @@ pub fn bar_gauge(
     );
     let bar_h = 8.0;
     let track = Rect::new(rect.x0, rect.y1 - bar_h, rect.x1, rect.y1);
-    fill_rrect(
-        scene,
-        t,
-        track,
-        bar_h / 2.0,
-        inner_rule(theme, 56),
-    );
+    fill_rrect(scene, t, track, bar_h / 2.0, inner_rule(theme, 56));
     let frac = f64::from(frac.clamp(0.0, 1.0));
     if frac > 0.0 {
         let fill = Rect::new(

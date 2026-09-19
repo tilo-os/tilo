@@ -674,7 +674,10 @@ impl AppShell {
 
 /// Free function (not a method) so it borrows none of `AppShell`'s fields —
 /// the caller keeps a live `&mut` on the child.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the free painter takes child, render, presence and permission inputs separately to avoid borrowing AppShell during a child borrow"
+)]
 fn paint_child(
     w: &mut dyn Widget,
     scene: &mut Scene,
@@ -1159,22 +1162,47 @@ mod tests {
         let mut large = authored();
         lay_with(&mut large, &two, 1000.0, 600.0);
         assert_eq!((large.breakpoint(), large.sidebar_width()), (1440.0, 528.0));
-        assert_eq!(large.layout, ShellLayout::Narrow, "1000 px at 2× is a 500 px window at 1×");
+        assert_eq!(
+            large.layout,
+            ShellLayout::Narrow,
+            "1000 px at 2× is a 500 px window at 1×"
+        );
         let grown = crate::widget::text_control_height(CTRL_H, &two);
         assert!(grown > CTRL_H && grown < 2.0 * CTRL_H);
-        assert_eq!(large.ctrl_h, grown, "the search slot grows with the body line");
-        assert_eq!(large.back_btn, 34.0, "the icon-only Back button is not text-sized");
+        assert_eq!(
+            large.ctrl_h, grown,
+            "the search slot grows with the body line"
+        );
+        assert_eq!(
+            large.back_btn, 34.0,
+            "the icon-only Back button is not text-sized"
+        );
         assert!(
             (search_rect(&large).height() - grown).abs() <= 0.5,
             "the slot style carries the grown height (taffy rounds to whole pixels): {} vs {grown}",
             search_rect(&large).height()
         );
 
-        let mut defaults = AppShell::new(Box::new(Text::new("nav")), Box::new(Text::new("content")));
-        lay_with(&mut defaults, &Theme::dark().with_ui_scale(1.5), 1400.0, 600.0);
-        assert!((defaults.breakpoint() - 1080.0).abs() < 1e-6, "compact_breakpoint at ui 1.5");
-        assert!((defaults.sidebar_width() - 396.0).abs() < 1e-6, "264 authored × ui 1.5");
-        assert!((defaults.back_btn - 51.0).abs() < 1e-6, "the Back button follows ui_scale");
+        let mut defaults =
+            AppShell::new(Box::new(Text::new("nav")), Box::new(Text::new("content")));
+        lay_with(
+            &mut defaults,
+            &Theme::dark().with_ui_scale(1.5),
+            1400.0,
+            600.0,
+        );
+        assert!(
+            (defaults.breakpoint() - 1080.0).abs() < 1e-6,
+            "compact_breakpoint at ui 1.5"
+        );
+        assert!(
+            (defaults.sidebar_width() - 396.0).abs() < 1e-6,
+            "264 authored × ui 1.5"
+        );
+        assert!(
+            (defaults.back_btn - 51.0).abs() < 1e-6,
+            "the Back button follows ui_scale"
+        );
         assert!((defaults.pad - 18.0).abs() < 1e-6, "s3 at ui 1.5");
     }
 

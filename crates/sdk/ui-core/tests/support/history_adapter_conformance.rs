@@ -247,8 +247,16 @@ fn normal_autosave_fresh_reopen_retains_graph_and_restored_content() {
         } else {
             let before = state.doc.base_heads();
             test_root().sync(&mut state.doc, &state.root);
-            assert_eq!(state.doc.base_heads(), before, "fresh production startup retains the graph");
-            assert_eq!(state.doc.pending_ops(), 0, "fresh startup does not rewrite restored content");
+            assert_eq!(
+                state.doc.base_heads(),
+                before,
+                "fresh production startup retains the graph"
+            );
+            assert_eq!(
+                state.doc.pending_ops(),
+                0,
+                "fresh startup does not rewrite restored content"
+            );
             verify_restored(&state.doc);
             let selected =
                 std::fs::read_to_string(saver.document_path().with_extension("selected"))
@@ -330,7 +338,10 @@ fn pending_live_edits_survive_preview_and_refuse_restore() {
     );
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "the shared conformance include offers pagination assertions that not every app adapter calls"
+)]
 fn assert_page_round_trip(driver: &mut ui::headless::Driver, first: &str, second: &str) {
     for width in [390, 1000] {
         driver.resize((width, 750)).unwrap();

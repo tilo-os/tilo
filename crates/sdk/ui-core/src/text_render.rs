@@ -782,7 +782,10 @@ pub trait TextLayoutEngine {
         style: &TextStyle,
     ) -> (f32, f32);
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "A layout engine needs renderer/scene, text and layout constraints, style, color, and the destination transform."
+    )]
     fn draw(
         &mut self,
         renderer: &mut TextRenderer,
@@ -1253,7 +1256,12 @@ struct InkBoundsPen {
     invalid: bool,
 }
 
-fn outline_ink_bounds(font: &Font, glyph_id: u16, size: f32, coords: &[vello::NormalizedCoord]) -> Option<Rect> {
+fn outline_ink_bounds(
+    font: &Font,
+    glyph_id: u16,
+    size: f32,
+    coords: &[vello::NormalizedCoord],
+) -> Option<Rect> {
     use skrifa::instance::{NormalizedCoord, Size};
     use skrifa::outline::DrawSettings;
     use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
@@ -1841,7 +1849,10 @@ impl TextRenderer {
     /// Draw `text` with explicit weight + italic + optional monospace family
     /// override, used by [`crate::widget::RichTextLine`] to paint inline-mark
     /// spans. Pair with [`Self::measure_styled`] for accurate measurement.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Styled span painting exposes content, size/weight/italic/family, color, transform, and wrapping width alongside the scene."
+    )]
     pub fn draw_text_styled(
         &mut self,
         scene: &mut Scene,
@@ -1868,7 +1879,10 @@ impl TextRenderer {
 
     /// Draw `text` shaped in an explicit [`FontChoice`] family (serif / a
     /// named installed family / …) with a weight and italic flag.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Explicit-font painting exposes content, family and typography, color, transform, and wrapping width alongside the scene."
+    )]
     pub fn draw_text_font(
         &mut self,
         scene: &mut Scene,
@@ -1889,7 +1903,10 @@ impl TextRenderer {
     }
 
     /// Measure `text` shaped in an explicit [`FontChoice`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Font measurement mirrors the text, size, wrapping width, weight, italic flag, and family accepted by font painting."
+    )]
     pub fn measure_font(
         &mut self,
         text: &str,
@@ -1950,7 +1967,10 @@ impl TextRenderer {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Weighted text painting takes scene/content plus size, color, transform, wrapping width, and typographic weight."
+    )]
     pub fn draw_text_weighted(
         &mut self,
         scene: &mut Scene,
@@ -2286,7 +2306,10 @@ impl TextRenderer {
             return false;
         };
         let shift = layout.baseline_at(layout.glyph_global_byte(run.line_i, first.start));
-        #[allow(clippy::float_cmp, reason = "batching requires exactly equal glyph sizes, not approximately equal sizes")]
+        #[allow(
+            clippy::float_cmp,
+            reason = "batching requires exactly equal glyph sizes, not approximately equal sizes"
+        )]
         let uniform = run.glyphs.iter().all(|glyph| {
             glyph.font_id == first.font_id
                 && glyph.font_weight == first.font_weight
@@ -2414,7 +2437,10 @@ impl TextRenderer {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Glyph submission needs scene, face and glyph batch, size/color, transform/baseline, font variations, and clip bounds."
+    )]
     fn flush_glyphs(
         &mut self,
         scene: &mut Scene,
@@ -2470,7 +2496,10 @@ impl TextRenderer {
             .draw(StyleRef::Fill(vello::peniko::Fill::NonZero), vello_glyphs);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Glyph culling needs font identity and variations, glyphs and size, baseline/transform, and the device-space clip."
+    )]
     fn glyph_batch_outside(
         &mut self,
         font: &Font,
@@ -2482,8 +2511,14 @@ impl TextRenderer {
         transform: Affine,
         clip: Rect,
     ) -> bool {
-        #[allow(clippy::cast_possible_truncation, reason = "the narrowing is intentional to reject transforms that overflow f32")]
-        let transform_finite = transform.as_coeffs().iter().all(|v| v.is_finite() && (*v as f32).is_finite());
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the narrowing is intentional to reject transforms that overflow f32"
+        )]
+        let transform_finite = transform
+            .as_coeffs()
+            .iter()
+            .all(|v| v.is_finite() && (*v as f32).is_finite());
         if ![clip.x0, clip.y0, clip.x1, clip.y1]
             .iter()
             .all(|v| v.is_finite())

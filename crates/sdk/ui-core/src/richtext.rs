@@ -278,7 +278,10 @@ impl RichTextLayout {
     /// (headings); `underlines` are byte ranges to underline; `align` sets
     /// horizontal alignment. `line_height_mult` scales the line advance
     /// (1.0 = default spacing).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Rich-text shaping accepts spans, block typography, width and alignment, decoration ranges, and line spacing beside the font system."
+    )]
     pub fn shape(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -313,7 +316,7 @@ impl RichTextLayout {
     /// plain application text. This is the preferred entry point for editors
     /// and custom widgets: font family, weight, size, and leading remain one
     /// value from measurement through painting.
-    #[allow(clippy::too_many_arguments)]
+
     pub fn shape_styled(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -323,7 +326,9 @@ impl RichTextLayout {
         underlines: Vec<(usize, usize)>,
         strikes: Vec<(usize, usize)>,
     ) -> Self {
-        Self::shape_styled_reusing(fs, spans, style, max_width, align, underlines, strikes, None)
+        Self::shape_styled_reusing(
+            fs, spans, style, max_width, align, underlines, strikes, None,
+        )
     }
 
     /// Reuse unchanged paragraphs from this renderer's previous layout.
@@ -445,22 +450,41 @@ impl RichTextLayout {
             return;
         }
         let same = |a: &BufferLine, b: &BufferLine| {
-            a.text() == b.text() && a.ending() == b.ending()
-                && a.attrs_list() == b.attrs_list() && a.align() == b.align()
+            a.text() == b.text()
+                && a.ending() == b.ending()
+                && a.attrs_list() == b.attrs_list()
+                && a.align() == b.align()
         };
-        let prefix = buffer.lines.iter().zip(&previous.lines)
-            .take_while(|(a, b)| same(a, b)).count();
-        let suffix = buffer.lines.iter().skip(prefix).rev()
+        let prefix = buffer
+            .lines
+            .iter()
+            .zip(&previous.lines)
+            .take_while(|(a, b)| same(a, b))
+            .count();
+        let suffix = buffer
+            .lines
+            .iter()
+            .skip(prefix)
+            .rev()
             .zip(previous.lines.iter().skip(prefix).rev())
-            .take_while(|(a, b)| same(a, b)).count();
+            .take_while(|(a, b)| same(a, b))
+            .count();
         let mut old_lines = previous.lines.into_iter();
         let mut new_lines = buffer.lines.iter_mut();
-        for (old, new) in old_lines.by_ref().take(prefix).zip(new_lines.by_ref().take(prefix)) {
+        for (old, new) in old_lines
+            .by_ref()
+            .take(prefix)
+            .zip(new_lines.by_ref().take(prefix))
+        {
             *new = old;
         }
         // Both iterators now exclude the common prefix, so a fully unchanged
         // document cannot reuse a paragraph twice when walking the suffix.
-        for (old, new) in old_lines.rev().take(suffix).zip(new_lines.rev().take(suffix)) {
+        for (old, new) in old_lines
+            .rev()
+            .take(suffix)
+            .zip(new_lines.rev().take(suffix))
+        {
             *new = old;
         }
     }
@@ -915,21 +939,49 @@ mod tests {
         let mut fs = crate::font_catalog::fixture_font_system();
         let style = crate::text_render::TextStyle::new(16.0);
         let initial = "first paragraph\nunchanged שלום world\nlast line\n";
-        let old = RichTextLayout::shape_styled(&mut fs, &[RichSpan::new(initial)], &style,
-            Some(180.0), TextAlign::Left, vec![], vec![]);
+        let old = RichTextLayout::shape_styled(
+            &mut fs,
+            &[RichSpan::new(initial)],
+            &style,
+            Some(180.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
         let retained = old.buffer.lines[1].layout_opt().unwrap().as_ptr();
         let edited = "xfirst paragraph\nunchanged שלום world\nlast line\n";
-        let reused = RichTextLayout::shape_styled_reusing(&mut fs, &[RichSpan::new(edited)],
-            &style, Some(180.0), TextAlign::Left, vec![], vec![], Some(old));
-        assert_eq!(retained, reused.buffer.lines[1].layout_opt().unwrap().as_ptr(),
-            "unchanged paragraph must retain its shaped layout allocation");
-        let fresh = RichTextLayout::shape_styled(&mut fs, &[RichSpan::new(edited)], &style,
-            Some(180.0), TextAlign::Left, vec![], vec![]);
+        let reused = RichTextLayout::shape_styled_reusing(
+            &mut fs,
+            &[RichSpan::new(edited)],
+            &style,
+            Some(180.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+            Some(old),
+        );
+        assert_eq!(
+            retained,
+            reused.buffer.lines[1].layout_opt().unwrap().as_ptr(),
+            "unchanged paragraph must retain its shaped layout allocation"
+        );
+        let fresh = RichTextLayout::shape_styled(
+            &mut fs,
+            &[RichSpan::new(edited)],
+            &style,
+            Some(180.0),
+            TextAlign::Left,
+            vec![],
+            vec![],
+        );
         assert_eq!(reused.width(), fresh.width());
         assert_eq!(reused.height(), fresh.height());
         for byte in edited.char_indices().map(|(i, _)| i).chain([edited.len()]) {
             assert_eq!(reused.caret_geometry(byte), fresh.caret_geometry(byte));
-            assert_eq!(reused.selection_rects(0, byte), fresh.selection_rects(0, byte));
+            assert_eq!(
+                reused.selection_rects(0, byte),
+                fresh.selection_rects(0, byte)
+            );
         }
     }
 
@@ -943,42 +995,88 @@ mod tests {
             "new paragraph\nalpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n",
             "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é",
             "alpha beta gamma\nשלום changed text\nemoji 👩‍💻 é\n\n",
-            "", "one\r\ntwo\nthree", "one\nthree",
+            "",
+            "one\r\ntwo\nthree",
+            "one\nthree",
         ];
         let mut previous = None;
         for (index, text) in texts.into_iter().cycle().take(32).enumerate() {
             let mut style = base.clone();
-            if index >= 8 { style.size = 20.0; }
-            if index >= 16 { style.letter_spacing = 0.6; style.italic = true; }
-            if index >= 24 { style.wrap_mode = crate::text_render::TextWrapMode::Balance; }
+            if index >= 8 {
+                style.size = 20.0;
+            }
+            if index >= 16 {
+                style.letter_spacing = 0.6;
+                style.italic = true;
+            }
+            if index >= 24 {
+                style.wrap_mode = crate::text_render::TextWrapMode::Balance;
+            }
             let width = if index % 3 == 0 { 90.0 } else { 180.0 };
-            let align = if index % 5 == 0 { TextAlign::Right } else { TextAlign::Left };
+            let align = if index % 5 == 0 {
+                TextAlign::Right
+            } else {
+                TextAlign::Left
+            };
             let split = text.find('\n').unwrap_or(text.len());
-            let spans = [RichSpan::new(&text[..split]).bold(index % 2 == 0)
-                .background(Some([20, 30, 40])), RichSpan::new(&text[split..])];
-            let reused = RichTextLayout::shape_styled_reusing(&mut fs, &spans, &style,
-                Some(width), align, vec![(0, split)], vec![], previous);
-            let fresh = RichTextLayout::shape_styled(&mut fs, &spans, &style,
-                Some(width), align, vec![(0, split)], vec![]);
+            let spans = [
+                RichSpan::new(&text[..split])
+                    .bold(index % 2 == 0)
+                    .background(Some([20, 30, 40])),
+                RichSpan::new(&text[split..]),
+            ];
+            let reused = RichTextLayout::shape_styled_reusing(
+                &mut fs,
+                &spans,
+                &style,
+                Some(width),
+                align,
+                vec![(0, split)],
+                vec![],
+                previous,
+            );
+            let fresh = RichTextLayout::shape_styled(
+                &mut fs,
+                &spans,
+                &style,
+                Some(width),
+                align,
+                vec![(0, split)],
+                vec![],
+            );
             assert_eq!(reused.width(), fresh.width(), "case {index}");
             assert_eq!(reused.height(), fresh.height(), "case {index}");
             assert_eq!(reused.backgrounds, fresh.backgrounds);
             assert_eq!(reused.logical_line_origins(), fresh.logical_line_origins());
             // Compare full glyph layouts, not only overall dimensions.
             for (a, b) in reused.buffer.lines.iter().zip(&fresh.buffer.lines) {
-                assert_eq!(format!("{:?}", a.layout_opt()), format!("{:?}", b.layout_opt()));
+                assert_eq!(
+                    format!("{:?}", a.layout_opt()),
+                    format!("{:?}", b.layout_opt())
+                );
             }
             for byte in text.char_indices().map(|(i, _)| i).chain([text.len()]) {
                 for affinity in [TextAffinity::Before, TextAffinity::After] {
                     let position = TextPosition::with_affinity(byte, affinity);
                     let actual = reused.caret_geometry_at(position);
-                    assert_eq!(actual, fresh.caret_geometry_at(position), "case {index} byte {byte}");
-                    assert_eq!(reused.hit_position(actual.0, actual.1 + actual.2 / 2.0),
-                        fresh.hit_position(actual.0, actual.1 + actual.2 / 2.0));
-                    assert_eq!(reused.visual_motion_position(position, true),
-                        fresh.visual_motion_position(position, true));
+                    assert_eq!(
+                        actual,
+                        fresh.caret_geometry_at(position),
+                        "case {index} byte {byte}"
+                    );
+                    assert_eq!(
+                        reused.hit_position(actual.0, actual.1 + actual.2 / 2.0),
+                        fresh.hit_position(actual.0, actual.1 + actual.2 / 2.0)
+                    );
+                    assert_eq!(
+                        reused.visual_motion_position(position, true),
+                        fresh.visual_motion_position(position, true)
+                    );
                 }
-                assert_eq!(reused.selection_rects(0, byte), fresh.selection_rects(0, byte));
+                assert_eq!(
+                    reused.selection_rects(0, byte),
+                    fresh.selection_rects(0, byte)
+                );
             }
             previous = Some(reused);
         }
@@ -996,13 +1094,22 @@ mod tests {
         let geometry = shaped.caret_geometry(0);
         assert_eq!(geometry.0, 0.0);
         let visited = CARET_STOP_RUNS.with(std::cell::Cell::get);
-        assert!(visited <= 2, "caret search segmented {visited} unrelated paragraphs");
+        assert!(
+            visited <= 2,
+            "caret search segmented {visited} unrelated paragraphs"
+        );
     }
 
     #[test]
     fn caret_geometry_matches_full_scan_for_all_byte_affinity_boundaries() {
-        for text in ["", "alpha beta gamma\nnext\n", "a\r\nb\rc", "שלום mixed العربية\n👩‍💻 é\n",
-            "ภาษาไทยทดสอบ\nខ្មែរ", "soft\u{ad}hyphen word\n\n"] {
+        for text in [
+            "",
+            "alpha beta gamma\nnext\n",
+            "a\r\nb\rc",
+            "שלום mixed العربية\n👩‍💻 é\n",
+            "ภาษาไทยทดสอบ\nខ្មែរ",
+            "soft\u{ad}hyphen word\n\n",
+        ] {
             for width in [30.0, 180.0] {
                 let shaped = layout(text, width);
                 for byte in 0..=text.len() + 1 {
@@ -1013,13 +1120,21 @@ mod tests {
                         'scan: for run in shaped.buffer.layout_runs() {
                             for (x, stop) in shaped.caret_stops(&run) {
                                 let geometry = (x, run.line_top, run.line_height);
-                                if stop == position { exact = Some(geometry); break 'scan; }
-                                if stop.byte == position.byte && fallback.is_none() { fallback = Some(geometry); }
+                                if stop == position {
+                                    exact = Some(geometry);
+                                    break 'scan;
+                                }
+                                if stop.byte == position.byte && fallback.is_none() {
+                                    fallback = Some(geometry);
+                                }
                             }
                         }
                         let expected = exact.or(fallback).unwrap_or((0.0, 0.0, shaped.line_height));
-                        assert_eq!(shaped.caret_geometry_at(TextPosition::with_affinity(byte, affinity)),
-                            expected, "text {text:?}, width {width}, byte {byte}, affinity {affinity:?}");
+                        assert_eq!(
+                            shaped.caret_geometry_at(TextPosition::with_affinity(byte, affinity)),
+                            expected,
+                            "text {text:?}, width {width}, byte {byte}, affinity {affinity:?}"
+                        );
                     }
                 }
             }

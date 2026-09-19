@@ -248,7 +248,11 @@ pub(crate) struct AuthoredSnapshot {
 pub(crate) fn authored_snapshot(doc: &AutoCommit) -> AuthoredSnapshot {
     AuthoredSnapshot {
         merged: MergeDoc::has_merged(doc).then(|| MergeDoc::merged_text(doc)),
-        resolutions: doc.get(ROOT, "resolutions").ok().flatten().map(|_| MergeDoc::resolutions(doc)),
+        resolutions: doc
+            .get(ROOT, "resolutions")
+            .ok()
+            .flatten()
+            .map(|_| MergeDoc::resolutions(doc)),
         session: MergeDoc::session(doc),
     }
 }

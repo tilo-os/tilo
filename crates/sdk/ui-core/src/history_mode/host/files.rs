@@ -1,8 +1,11 @@
 //! Checked Files uses the same retained chrome, timeline, canvases and dialog.
-use super::{HistoryHost, HistorySourceRegistration, Text, PreviewSide, HistoryPresentation, PreviewView, review, Column, Row, Command};
-use std::fmt::Write as _;
+use super::{
+    Column, Command, HistoryHost, HistoryPresentation, HistorySourceRegistration, PreviewSide,
+    PreviewView, Row, Text, review,
+};
 use crate::history_mode::{checked_files::FilePreviewInput, files_session::FileController};
 use collab_types::{FileVersionId, files::CheckedHistoryOperationV1 as Operation};
+use std::fmt::Write as _;
 
 impl HistoryHost {
     pub(super) fn close_files_presentation(&mut self) {
@@ -381,7 +384,6 @@ fn version_label(provenance: &collab_types::FileProvenance) -> &'static str {
     }
 }
 
-
 fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
     files
         .versions
@@ -389,10 +391,13 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
         .map(|version| {
             let person = version.actor.person.as_bytes();
             let identity: String =
-                person.iter().take(6).fold(String::with_capacity(12), |mut label, byte| {
-                    let _ = write!(label, "{byte:02x}");
-                    label
-                });
+                person
+                    .iter()
+                    .take(6)
+                    .fold(String::with_capacity(12), |mut label, byte| {
+                        let _ = write!(label, "{byte:02x}");
+                        label
+                    });
             let author = if person.iter().all(|b| *b == 0) {
                 "Unknown author".to_owned()
             } else {
@@ -427,8 +432,8 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
     use crate::history_mode::HistoryRegistration;
+    use automerge::AutoCommit;
     fn test_host() -> HistoryHost {
         fn preview(
             _: FilePreviewInput,

@@ -2221,7 +2221,7 @@ fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
 
 /// One pill in the search card's filter band, shared by the kind chips
 /// and the "All" reset chip.
-#[allow(clippy::too_many_arguments)]
+
 /// One filter chip: a Selector (HIG §9.1) whose body is its selection tier
 /// (§9.3 — idle transparent, hover `lift(0.5)`, chosen `lift(1.0)` with a
 /// hairline and inner glow) and whose label is ink chosen against whatever
@@ -5897,7 +5897,9 @@ impl ShellOverlayHost {
     /// launch/exit is silent — the window is the feedback). Returns whether
     /// anything was posted, so the caller can mark the frame dirty.
     pub(crate) fn drain_launch_events(&mut self) -> bool {
-        if self.desktop_controls.is_explicit() { return false; }
+        if self.desktop_controls.is_explicit() {
+            return false;
+        }
         use crate::shell::launcher::LaunchEventKind;
         // Expiry is independent of new launcher events: a daemonising parent
         // can exit and never produce another event or window.
@@ -6073,7 +6075,9 @@ impl ShellOverlayHost {
     /// tab counts — what settles it is the app's first frame or placeholder
     /// card, whichever shows first, handing over to the window's own place.
     pub(crate) fn retire_notices_for_opened_windows(&self) -> bool {
-        if self.desktop_controls.is_explicit() { return false; }
+        if self.desktop_controls.is_explicit() {
+            return false;
+        }
         let pending = crate::shell::catalogue::pending_notices();
         if pending.is_empty() {
             return false;
@@ -8396,7 +8400,10 @@ impl ShellOverlayHost {
     // No production caller routes a selection here, so `/invite` and
     // `/connect` are inert even under --enable-peer-sync. Kept as the
     // only definition of what those commands do; tests pin the contract.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Tests exercise this palette command contract while production palette selection has no caller for this dispatcher."
+    )]
     pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
         // Peer-sync rows enqueue an action for the compositor to drain
         // (Iroh stays on the runtime thread) rather than mutating
@@ -10089,7 +10096,10 @@ impl ShellOverlayHost {
     /// sees it: the file picker (genuinely modal — a D-Bus call is
     /// parked on the answer), an in-flight peer-sync token prompt, and
     /// the projection sheet.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Modal routing forwards event, scale, modifiers, CRDT document/path, and handled/focus outputs to the file picker and projection sheet."
+    )]
     fn route_modal_absorbing_overlays(
         &mut self,
         event: &WindowEvent,
@@ -10495,7 +10505,10 @@ impl ShellOverlayHost {
     /// `pump_permission_prompt` drains `pending_choice` next tick.
     /// Gated on the prompt's rect so its hit zone doesn't swallow
     /// clicks outside the bar.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Permission prompts receive event, scale, modifiers, CRDT document/path, and handled/focus outputs after the pointer bounds check."
+    )]
     fn route_permission_prompt_event(
         &mut self,
         event: &WindowEvent,
@@ -10612,8 +10625,12 @@ impl ShellOverlayHost {
             return;
         }
         match if self.desktop_controls.is_explicit() {
-            config.validate().map_err(|error| std::io::Error::other(format!("{error:?}")))
-        } else { config.save() } {
+            config
+                .validate()
+                .map_err(|error| std::io::Error::other(format!("{error:?}")))
+        } else {
+            config.save()
+        } {
             Ok(()) => {
                 self.shortcut_config = config;
                 self.shortcut_rebind = None;
@@ -10693,8 +10710,12 @@ impl ShellOverlayHost {
             return;
         }
         match if self.desktop_controls.is_explicit() {
-            candidate.validate().map_err(|error| std::io::Error::other(format!("{error:?}")))
-        } else { candidate.save() } {
+            candidate
+                .validate()
+                .map_err(|error| std::io::Error::other(format!("{error:?}")))
+        } else {
+            candidate.save()
+        } {
             Ok(()) => {
                 self.shortcut_config = candidate;
                 self.shortcut_rebind = None;
@@ -13567,12 +13588,17 @@ impl ShellOverlayHost {
             self.qs_actions.as_ref(),
         );
         match commit {
-            Some(SliderCommit::Brightness(value_pct)) => crate::shell::quick_settings::actions::log_qs_result(
-                "set_brightness",
-                actions.set_brightness(value_pct),
-            ),
+            Some(SliderCommit::Brightness(value_pct)) => {
+                crate::shell::quick_settings::actions::log_qs_result(
+                    "set_brightness",
+                    actions.set_brightness(value_pct),
+                )
+            }
             Some(SliderCommit::Volume(value_pct)) => {
-                crate::shell::quick_settings::actions::log_qs_result("set_volume", actions.set_volume(value_pct))
+                crate::shell::quick_settings::actions::log_qs_result(
+                    "set_volume",
+                    actions.set_volume(value_pct),
+                )
             }
             None => return false,
         }
@@ -13691,7 +13717,10 @@ impl ShellOverlayHost {
         }
     }
     /// Shells out to the OS for changes returned by the root component.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Each pending network, airplane, hotspot, mobile, night-light, and power-profile change is an independent optional action."
+    )]
     fn dispatch_quick_settings_toggle_actions(
         &self,
         pending_wifi: Option<bool>,
@@ -13716,10 +13745,7 @@ impl ShellOverlayHost {
             );
         }
         if let Some(v) = pending_wired {
-            crate::shell::quick_settings::actions::log_qs_result(
-                "set_wired",
-                actions.set_wired(v),
-            );
+            crate::shell::quick_settings::actions::log_qs_result("set_wired", actions.set_wired(v));
         }
         if let Some(v) = pending_airplane {
             crate::shell::quick_settings::actions::log_qs_result(
@@ -14100,7 +14126,10 @@ impl ShellOverlayHost {
     /// Palette-owned input, ahead of the sidebar/content dispatch: kind
     /// chips, a click on a result row, keyboard Enter, then everything
     /// else the palette widget itself wants (typing, arrow selection).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Palette routing needs the Widget event context and CRDT path plus handled/focus outputs and the palette child/layout for forwarding."
+    )]
     fn route_palette_event(
         &mut self,
         event: &WindowEvent,
@@ -14211,7 +14240,10 @@ impl ShellOverlayHost {
     /// content dispatch, then the horizontal-wheel fallback that steps
     /// focus along the strip (the same step Super+Left/Right takes;
     /// 0.5 rejects trackpad noise).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Sidebar/content routing shares the Widget event context, CRDT path, handled/focus outputs, child nodes, and layout tree."
+    )]
     fn dispatch_pointer_and_content_event(
         &mut self,
         event: &WindowEvent,
@@ -19238,7 +19270,10 @@ impl ShellOverlayHost {
     /// `right_x`, centred on `cy`. `ground` must match the surface behind
     /// the stack — the separator ring is a hole punched in the face below.
     /// An absent member stays at reduced opacity rather than disappearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Member-face stacks use render context, right edge and centerline, roster and identity colors, and the ground color for separator rings."
+    )]
     fn draw_face_stack(
         scene: &mut Scene,
         transform: Affine,
@@ -19329,7 +19364,10 @@ impl ShellOverlayHost {
     }
 
     /// One room row in the "go to" list.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Room rows combine render context and bounds with workspace index, room metadata, and selected state."
+    )]
     fn draw_overview_room_row(
         &self,
         scene: &mut Scene,

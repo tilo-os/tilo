@@ -23,8 +23,8 @@ use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -892,7 +892,10 @@ impl HistoryScrubber {
     }
 
     /// Used for every button so styling stays uniform.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Scrubber button painting combines render context, bounds and label, hover state, and primary/neutral styling."
+    )]
     fn draw_button(
         scene: &mut Scene,
         transform: Affine,
@@ -1114,7 +1117,10 @@ impl HistoryScrubber {
             Some(s)
         });
         let budget = pop.width() - 12.0;
-        let head_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
+        let head_size = renderer_type_size(
+            text_renderer,
+            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        );
         // The floor of the type scale, not three points under `sm`.
         let sub_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
         let colors = &theme.tokens.colors;
@@ -1858,8 +1864,12 @@ mod version_tests {
         reason = "probe coordinates are non-negative pixel positions inside the test surface"
     )]
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) =
-            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
         crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
     }
 

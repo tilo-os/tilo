@@ -182,8 +182,14 @@ mod tests {
     fn a_wide_pill_on_a_narrow_sidebar_stacks_under_the_title() {
         let l = sidebar_header_layout(&spec(180.0, Some((120.0, 18.0))));
         let pill = l.pill.expect("pill shown");
-        assert!(approx(pill.x0, l.title_x), "stacked pill shares the title's left edge");
-        assert!(pill.y0 >= l.title_y + 20.0, "pill sits below the title line");
+        assert!(
+            approx(pill.x0, l.title_x),
+            "stacked pill shares the title's left edge"
+        );
+        assert!(
+            pill.y0 >= l.title_y + 20.0,
+            "pill sits below the title line"
+        );
         assert!(l.header.y1 >= pill.y1, "header band includes the pill row");
         assert!(approx(l.title_max_w, 180.0 - 16.0 - 12.0));
     }

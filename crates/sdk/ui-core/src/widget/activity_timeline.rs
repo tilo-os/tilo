@@ -26,8 +26,8 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -421,7 +421,10 @@ impl ActivityTimeline {
 
     /// Use selection/inspection without offering metadata or direct revert actions.
     #[must_use]
-    pub fn with_preview_selection(mut self) -> Self { self.preview_selection = true; self }
+    pub fn with_preview_selection(mut self) -> Self {
+        self.preview_selection = true;
+        self
+    }
 
     pub fn with_entries(entries: Vec<HistoryEntry>) -> Self {
         let mut s = Self::new();
@@ -839,7 +842,9 @@ impl ActivityTimeline {
     }
 
     pub fn begin_naming_group_at_row(&mut self, i: usize) -> bool {
-        if self.preview_selection { return false; }
+        if self.preview_selection {
+            return false;
+        }
         if self.on_name_group.is_none() {
             return false;
         }
@@ -2124,7 +2129,12 @@ impl ActivityTimeline {
 
         // Two veto conditions on the chip: op-class non-revertibility, and a
         // redaction — we never offer "revert" across a redaction boundary.
-        if !self.preview_selection && self.on_revert.is_some() && is_hovered && entry.is_revertible() && !is_redacted_row {
+        if !self.preview_selection
+            && self.on_revert.is_some()
+            && is_hovered
+            && entry.is_revertible()
+            && !is_redacted_row
+        {
             let chip_h = ROW_HEIGHT - 16.0;
             let chip_rect = Rect::new(
                 row.x1 - self.revert_chip_w() - 6.0,
@@ -2188,7 +2198,11 @@ impl ActivityTimeline {
             naming,
             title_x,
             title_size,
-            if self.preview_selection { row.x1 + 8.0 } else { self.group_chip_rects_full(row, rg).left_edge(row.x1) },
+            if self.preview_selection {
+                row.x1 + 8.0
+            } else {
+                self.group_chip_rects_full(row, rg).left_edge(row.x1)
+            },
         );
 
         // Line two: who and how much, plus — right-aligned — when. Stacked
@@ -2262,7 +2276,14 @@ impl ActivityTimeline {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            wash(surface, if is_hovered { WASH_BAND_HOVER } else { WASH_HOVER }),
+            wash(
+                surface,
+                if is_hovered {
+                    WASH_BAND_HOVER
+                } else {
+                    WASH_HOVER
+                },
+            ),
             None,
             &shape,
         );
@@ -2464,7 +2485,13 @@ impl ActivityTimeline {
     /// document actions sit together. `[Undo]` only allocates when a host
     /// installed [`ActivityTimeline::on_undo_band`].
     fn group_chip_rects_full(&self, row: Rect, rg: &RowGroup) -> GroupChips {
-        if self.preview_selection { return GroupChips { name: Rect::ZERO, undo: None, restore: None }; }
+        if self.preview_selection {
+            return GroupChips {
+                name: Rect::ZERO,
+                undo: None,
+                restore: None,
+            };
+        }
         let chip_h = 20.0;
         let cy = row.y0 + 15.0;
         let narrow = self.rect.width() < NARROW_WIDTH;
@@ -2511,7 +2538,10 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
+        let chip_text_size = renderer_type_size(
+            text_renderer,
+            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        );
 
         // Chip quiet (HIG §9.5): raised rest fill under a derived edge (added
         // where the chip is painted); selected: solid accent with ink chosen
@@ -3685,8 +3715,12 @@ mod tests {
         reason = "probe coordinates are non-negative pixel positions inside the test surface"
     )]
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) =
-            crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
         crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
     }
 

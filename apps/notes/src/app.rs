@@ -607,7 +607,9 @@ impl NotesApp {
         legacy_fixture_storage: Option<LegacyFixtureStorage>,
     ) -> Self {
         let canonical = legacy_fixture_storage.is_none();
-        let workspace_asset_root = legacy_fixture_storage.as_ref().map(|legacy| legacy.root.clone());
+        let workspace_asset_root = legacy_fixture_storage
+            .as_ref()
+            .map(|legacy| legacy.root.clone());
         let search_provider = crate::search_provider::NoteSearchProvider::new(&workspace);
 
         let mut app = Self {

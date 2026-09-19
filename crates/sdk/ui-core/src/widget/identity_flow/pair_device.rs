@@ -40,9 +40,9 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::identity_flow::sheet::{
-    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, code_cell_side,
-    edited, line_height, paint_cell, paint_text, paragraph_height, place_code_cell, place_field,
-    resolve, with_layout_renderer,
+    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, code_cell_side, edited,
+    line_height, paint_cell, paint_text, paragraph_height, place_code_cell, place_field, resolve,
+    with_layout_renderer,
 };
 use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
@@ -82,7 +82,12 @@ pub const PAYLOAD_INPUT_ID: &str = "identity_pair_payload";
 fn digit_cells() -> [TextInput; CODE_LEN] {
     std::array::from_fn(|i| {
         TextInput::local()
-            .with_id(CODE_CELL_IDS.get(i).copied().unwrap_or("identity_pair_code"))
+            .with_id(
+                CODE_CELL_IDS
+                    .get(i)
+                    .copied()
+                    .unwrap_or("identity_pair_code"),
+            )
             .with_accessible_name(format!("Pairing code digit {}", i.saturating_add(1)))
             .with_char_filter(|c: char| c.is_ascii_digit())
     })
@@ -273,12 +278,7 @@ impl PairDeviceScreen {
         taffy: &TaffyTree<()>,
     ) {
         for i in 0..CODE_LEN {
-            let node = self
-                .cell_nodes
-                .get(i)
-                .copied()
-                .flatten()
-                .unwrap_or(node_id);
+            let node = self.cell_nodes.get(i).copied().flatten().unwrap_or(node_id);
             if let Some(cell) = self.cells.get_mut(i) {
                 cell.handle_event(
                     event,
@@ -324,11 +324,7 @@ impl PairDeviceScreen {
             .enumerate()
         {
             if edited(cell, last) && landed.is_none() {
-                let digits: Vec<char> = cell
-                    .value()
-                    .chars()
-                    .filter(char::is_ascii_digit)
-                    .collect();
+                let digits: Vec<char> = cell.value().chars().filter(char::is_ascii_digit).collect();
                 if !digits.is_empty() {
                     landed = Some((i, digits));
                 }
@@ -526,7 +522,10 @@ impl PairDeviceScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "pairing screen routing forwards the Widget event, CRDT state, focus outputs and layout to its input fields"
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -689,8 +688,17 @@ impl PairDeviceScreen {
         for (cell, rect) in self.cells.iter_mut().zip(resolved.plan.boxes.iter()) {
             place_code_cell(cell, *rect, text_renderer, theme);
         }
-        place_field(&mut self.payload, resolved.plan.payload, text_renderer, theme);
-        for (slot, rect) in self.code_box_rects.iter_mut().zip(resolved.plan.boxes.iter()) {
+        place_field(
+            &mut self.payload,
+            resolved.plan.payload,
+            text_renderer,
+            theme,
+        );
+        for (slot, rect) in self
+            .code_box_rects
+            .iter_mut()
+            .zip(resolved.plan.boxes.iter())
+        {
             *slot = BodyScroll::visible(body, *rect);
         }
         self.payload_rect = BodyScroll::visible(body, resolved.plan.payload);
@@ -1111,11 +1119,19 @@ mod tests {
         let (taffy, node) = ev::scratch_node();
         let mut doc = AutoCommit::new();
         let mut s = PairDeviceScreen::new();
-        assert_eq!(s.focused_cell(), Some(0), "the screen opens with the first cell focused");
+        assert_eq!(
+            s.focused_cell(),
+            Some(0),
+            "the screen opens with the first cell focused"
+        );
 
         send(&mut s, &ev::char("9"), &mut doc, &taffy, node);
         assert_eq!(s.code_string(), "9-----");
-        assert_eq!(s.focused_cell(), Some(1), "a digit moves on to the next cell");
+        assert_eq!(
+            s.focused_cell(),
+            Some(1),
+            "a digit moves on to the next cell"
+        );
 
         send(&mut s, &ev::char("x"), &mut doc, &taffy, node);
         assert_eq!(s.code_string(), "9-----", "a cell admits digits only");
@@ -1132,7 +1148,11 @@ mod tests {
         );
         s.settle(None);
         assert_eq!(s.code_string(), "92468-");
-        assert_eq!(s.focused_cell(), Some(1), "the layout pass never moves focus");
+        assert_eq!(
+            s.focused_cell(),
+            Some(1),
+            "the layout pass never moves focus"
+        );
 
         // A selection change is not an edit: nothing spreads, nothing moves.
         Widget::perform_action(
@@ -1144,13 +1164,25 @@ mod tests {
             &mut doc,
             &automerge::ROOT,
         );
-        send(&mut s, &ev::cursor_at(Point::new(5.0, 5.0)), &mut doc, &taffy, node);
+        send(
+            &mut s,
+            &ev::cursor_at(Point::new(5.0, 5.0)),
+            &mut doc,
+            &taffy,
+            node,
+        );
         assert_eq!(s.code_string(), "92468-");
         assert_eq!(s.focused_cell(), Some(1), "a SetSelection is not an edit");
 
         // Moving the caret inside a filled cell and typing still replaces
         // its digit rather than appending a second one.
-        send(&mut s, &ev::named(NamedKey::ArrowRight), &mut doc, &taffy, node);
+        send(
+            &mut s,
+            &ev::named(NamedKey::ArrowRight),
+            &mut doc,
+            &taffy,
+            node,
+        );
         send(&mut s, &ev::named(NamedKey::End), &mut doc, &taffy, node);
         send(&mut s, &ev::char("5"), &mut doc, &taffy, node);
         assert_eq!(
@@ -1176,7 +1208,13 @@ mod tests {
         assert_eq!(s.focused_cell(), Some(4));
 
         s.focus_cell(5, &mut None);
-        send(&mut s, &ev::named(NamedKey::Backspace), &mut doc, &taffy, node);
+        send(
+            &mut s,
+            &ev::named(NamedKey::Backspace),
+            &mut doc,
+            &taffy,
+            node,
+        );
         assert_eq!(
             s.code_string(),
             "9540--",

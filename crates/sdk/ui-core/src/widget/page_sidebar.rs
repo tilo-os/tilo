@@ -20,9 +20,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -392,7 +392,11 @@ impl PageSidebar {
         self.count = count;
         self.current = current.min(count.saturating_sub(1));
 
-        let header_h = if self.draw_panel { self.m.header_h } else { 0.0 };
+        let header_h = if self.draw_panel {
+            self.m.header_h
+        } else {
+            0.0
+        };
         let add_h = if self.show_add {
             self.m.add_h + self.m.add_margin
         } else {
@@ -432,7 +436,12 @@ impl PageSidebar {
     }
 
     fn list_metrics(&self) -> ListMetrics {
-        ListMetrics::uniform(self.list_top - self.scroll, self.thumb_h, self.m.gap, self.count)
+        ListMetrics::uniform(
+            self.list_top - self.scroll,
+            self.thumb_h,
+            self.m.gap,
+            self.count,
+        )
     }
 
     /// The un-shifted screen rect of thumbnail `i` this frame.
@@ -581,15 +590,15 @@ impl PageSidebar {
         actions.push(MenuAction::Delete);
 
         // Height: one separator sits before Delete.
-        let h = count_f64(actions.len()) * self.m.menu_row_h + self.m.menu_sep_h + 2.0 * self.m.menu_pad;
-        let x0 = at
-            .x
-            .min(self.rect.x1 - self.m.menu_w - self.m.menu_row_inset)
-            .max(self.rect.x0 + self.m.menu_row_inset);
-        let y0 = at
-            .y
-            .min(self.rect.y1 - h - self.m.menu_row_inset)
-            .max(self.rect.y0 + self.m.menu_row_inset);
+        let h = count_f64(actions.len()) * self.m.menu_row_h
+            + self.m.menu_sep_h
+            + 2.0 * self.m.menu_pad;
+        let x0 =
+            at.x.min(self.rect.x1 - self.m.menu_w - self.m.menu_row_inset)
+                .max(self.rect.x0 + self.m.menu_row_inset);
+        let y0 =
+            at.y.min(self.rect.y1 - h - self.m.menu_row_inset)
+                .max(self.rect.y0 + self.m.menu_row_inset);
         let rect = Rect::new(x0, y0, x0 + self.m.menu_w, y0 + h);
 
         let mut items = Vec::new();
@@ -785,7 +794,10 @@ impl PageSidebar {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "page slot painting passes render context, page index and bounds to the thumbnail callback and selection decoration"
+    )]
     fn draw_slot<F>(
         &self,
         scene: &mut Scene,
@@ -1045,7 +1057,13 @@ mod tests {
                 themed.menu_pad,
                 themed.menu_row_inset
             ),
-            (d.add_margin, d.menu_row_h, d.menu_sep_h, d.menu_pad, d.menu_row_inset)
+            (
+                d.add_margin,
+                d.menu_row_h,
+                d.menu_sep_h,
+                d.menu_pad,
+                d.menu_row_inset
+            )
         );
         assert_eq!(themed.menu_w, d.menu_w);
         assert_eq!(themed.add_h, f64::from(theme.tokens.metrics.bar_height));

@@ -1,5 +1,5 @@
 use super::*;
-use crate::widget::{Button, Field, Form, Manual, MeasureConstraint, FormSection, TextInput};
+use crate::widget::{Button, Field, Form, FormSection, Manual, MeasureConstraint, TextInput};
 
 #[test]
 fn manual_and_mixed_hosts_preserve_focus_selection_and_authored_clicks_on_resize() {
@@ -11,7 +11,9 @@ fn manual_and_mixed_hosts_preserve_focus_selection_and_authored_clicks_on_resize
             .with_accessible_name("Name");
         input.set_text("Alex Morgan");
         let child: Box<dyn Widget> = if mode == 1 {
-            Box::new(Form::new().section(FormSection::new("Profile").field(Field::new("Name", input))))
+            Box::new(
+                Form::new().section(FormSection::new("Profile").field(Field::new("Name", input))),
+            )
         } else {
             Box::new(input)
         };
@@ -50,7 +52,9 @@ fn manual_and_mixed_hosts_preserve_focus_selection_and_authored_clicks_on_resize
         .child(child)
         .child(Box::new(Button::new("save", "Save", Some("saved"))));
         let root: Box<dyn Widget> = if mode == 2 {
-            Box::new(Form::new().section(FormSection::new("Automatic parent").content(Box::new(root))))
+            Box::new(
+                Form::new().section(FormSection::new("Automatic parent").content(Box::new(root))),
+            )
         } else {
             Box::new(root)
         };
@@ -136,7 +140,9 @@ fn manual_policy_input_moves_clean_same_viewport_frame_without_replacing_childre
             .with_accessible_name("Name");
         input.set_text("Alex Morgan");
         let child: Box<dyn Widget> = if mode == 1 {
-            Box::new(Form::new().section(FormSection::new("Profile").field(Field::new("Name", input))))
+            Box::new(
+                Form::new().section(FormSection::new("Profile").field(Field::new("Name", input))),
+            )
         } else {
             Box::new(input)
         };

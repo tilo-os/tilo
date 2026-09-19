@@ -2000,9 +2000,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         let mut measured = false;
         for (row_index, height) in row_heights {
             if let Some(key) = self.row_identity_at(row_index) {
-                measured |= self
-                    .viewport
-                    .measure(row_index, key, height.max(row_floor));
+                measured |= self.viewport.measure(row_index, key, height.max(row_floor));
             }
         }
         if columns_changed {

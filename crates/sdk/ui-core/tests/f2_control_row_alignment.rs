@@ -21,8 +21,8 @@ use ui::presence::PathSegment;
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, Checkbox, Chip, Container, Dropdown, NumberInput, Row, SearchField, TextInput,
-    Toggle, ToggleGroup, Widget,
+    Button, Checkbox, Chip, Container, Dropdown, NumberInput, Row, SearchField, TextInput, Toggle,
+    ToggleGroup, Widget,
 };
 use vello::kurbo::Rect;
 
@@ -40,7 +40,11 @@ const FLUID_SLOT_WIDTH: f32 = 220.0;
 const CONTROL_IDS: [&str; 5] = ["save", "toggle", "checkbox", "dropdown", "text_input"];
 
 fn slot(control: Box<dyn Widget>) -> Box<dyn Widget> {
-    Box::new(Container::new().with_width(FLUID_SLOT_WIDTH).with_child(control))
+    Box::new(
+        Container::new()
+            .with_width(FLUID_SLOT_WIDTH)
+            .with_child(control),
+    )
 }
 
 fn fixture_row() -> Box<dyn Widget> {
@@ -236,7 +240,11 @@ fn every_control_kind_in_one_row_shares_the_centre_line_at_one_and_two_x() {
     for (name, theme, viewport) in [
         ("dark", Theme::dark(), (1200, 200)),
         ("light", Theme::light(), (1200, 200)),
-        ("dark @ 2× text", Theme::dark().with_text_scale(2.0), (1800, 260)),
+        (
+            "dark @ 2× text",
+            Theme::dark().with_text_scale(2.0),
+            (1800, 260),
+        ),
     ] {
         let harness = FrameHarness::new_with_theme(State::new(), dense_row(), viewport, theme);
         let rects = rects_for(&DENSE_IDS, &harness.targets());
@@ -298,8 +306,16 @@ fn default_buttons_hold_their_label_at_two_x_and_stay_120_by_40_at_one_x() {
         (rects[0].1, rects[1].1)
     };
     let (save, delete) = at(1.0);
-    assert_eq!((save.width(), save.height()), (120.0, 40.0), "1× default: {save:?}");
-    assert_eq!((delete.width(), delete.height()), (120.0, 40.0), "1× outlined: {delete:?}");
+    assert_eq!(
+        (save.width(), save.height()),
+        (120.0, 40.0),
+        "1× default: {save:?}"
+    );
+    assert_eq!(
+        (delete.width(), delete.height()),
+        (120.0, 40.0),
+        "1× outlined: {delete:?}"
+    );
 
     let (save, delete) = at(2.0);
     let scaled_line = 14.0 * 2.0 * 1.25;
@@ -308,7 +324,11 @@ fn default_buttons_hold_their_label_at_two_x_and_stay_120_by_40_at_one_x() {
         "2× default height {} must exceed the {scaled_line} px label line",
         save.height()
     );
-    assert_eq!(save.height(), delete.height(), "both default buttons share one height");
+    assert_eq!(
+        save.height(),
+        delete.height(),
+        "both default buttons share one height"
+    );
     assert!(save.width() >= 120.0 && delete.width() >= 120.0);
 }
 
