@@ -209,3 +209,53 @@ test('a status without semantics retains the last tree for keyboard routing whil
   assert.equal(hostCore.overlayKeyboardRoute(hostCore.retainedWidget(state),{key:'ArrowDown'},false,true),'native');
   assert.equal(hostCore.retainedWidget(undefined),undefined,'before the first status nothing is retained');
 });
+
+test('ownership invalidation forgets held keys without releasing into the next owner',()=>{
+ const events=[];const keys=hostCore.createKeyboardForwarder({route:hostCore.keyboardRoute,dispatch:type=>events.push(type)});
+ const owner={},event={key:'Enter',preventDefault(){}};
+ keys.keydown(owner,event,false);assert.equal(typeof keys.invalidate,'function');keys.invalidate();
+ keys.keyup(owner,event);keys.blur(owner);assert.deepEqual(events,['keydown']);
+});
+
+const ownership=(sequence='9007199254740993',activation='1',owner='writer',ime={x:1,y:2,height:20})=>({sequence,activation,owner,ime});
+test('input capability rejects changed exact counters, inactive and replacement mounts',()=>{
+ let value=ownership(),active=true,changes=0;
+ assert.equal(typeof hostCore.createInputScope,'function');
+ const scope=hostCore.createInputScope({read:()=>JSON.stringify(value),active:()=>active,onChange:()=>changes++});
+ const first=scope.capture();assert.equal(scope.valid(first),true);
+ value=ownership('9007199254740992');assert.equal(scope.valid(first),false);assert.equal(changes,1);
+ const second=scope.capture();active=false;assert.equal(scope.valid(second),false);
+});
+test('only latest accepted activation hands off, using fresh IME and external focus epoch',async()=>{
+ let value=ownership(),epoch=0,active=true;const focused=[];
+ assert.equal(typeof hostCore.createInputScope,'function');assert.equal(typeof hostCore.createFocusHandoff,'function');
+ const scope=hostCore.createInputScope({read:()=>JSON.stringify(value),active:()=>active});
+ const handoff=hostCore.createFocusHandoff({scope,epoch:()=>epoch,focus:state=>focused.push(state.ime?'editor':'canvas')});
+ let before=scope.capture();value=ownership('2','2');const first=handoff.complete(before,epoch);
+ before=scope.capture();value=ownership('3','3','calculator',null);const second=handoff.complete(before,epoch);
+ await Promise.all([first,second]);assert.deepEqual(focused,['canvas']);
+ before=scope.capture();value=ownership('4','4');const outside=handoff.complete(before,epoch);epoch++;await outside;assert.deepEqual(focused,['canvas']);
+ before=scope.capture();value=ownership('5','5');const pointer=handoff.complete(before,epoch);value=ownership('6','5');await pointer;assert.deepEqual(focused,['canvas']);
+ before=scope.capture();value=ownership('7','6');const disposed=handoff.complete(before,epoch);active=false;await disposed;assert.deepEqual(focused,['canvas']);
+});
+test('canceled hidden composition ignores late end and input, then new composition works',()=>{
+ let value=ownership();const delivered=[];
+ assert.equal(typeof hostCore.createInputScope,'function');assert.equal(typeof hostCore.createCompositionSession,'function');
+ const scope=hostCore.createInputScope({read:()=>JSON.stringify(value),active:()=>true});
+ const session=hostCore.createCompositionSession({scope,send:(...args)=>delivered.push(args),clear:()=>{}});
+ session.start();session.update('old');value=ownership('2','2','chat');
+ session.end('old');assert.equal(session.blocks({inputType:'insertText',data:'old'}),true);
+ assert.deepEqual(delivered,[['start',''],['preedit','old']]);
+ session.start();session.update('new');session.end('new');assert.deepEqual(delivered.slice(2),[['start',''],['preedit','new'],['preedit',''],['commit','new']]);
+});
+
+test('suspension permanently revokes input captured before resume',()=>{
+ let active=true;const scope=hostCore.createInputScope({read:()=>JSON.stringify(ownership()),active:()=>active});const before=scope.capture();
+ active=false;assert.equal(scope.capture(),null);active=true;assert.equal(scope.valid(before),false);assert.equal(scope.valid(scope.capture()),true);
+});
+test('canceled composition stays revoked across tasks until a new session',async()=>{
+ let value=ownership();const scope=hostCore.createInputScope({read:()=>JSON.stringify(value),active:()=>true});
+ const session=hostCore.createCompositionSession({scope,send:()=>{},clear:()=>{}});session.start();value=ownership('2','2');session.end('old');
+ assert.equal(session.blocks({inputType:'insertText',data:'old'}),true);await new Promise(resolve=>setTimeout(resolve,5));
+ assert.equal(session.blocks({inputType:'insertText',data:'new'}),true);session.start();assert.equal(session.composing,true);
+});

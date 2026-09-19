@@ -11,7 +11,7 @@ function domOffset(value,index){
   }
   return value.length;
 }
-export function semanticBridge(root,invoke,report,shortcuts) {
+export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
   const elements=new Map();
   const recoverySurfaces=new Set();
   const recoveries=new Map();
@@ -36,6 +36,24 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     host.setAttribute('aria-activedescendant',element.id);
     host.setAttribute('aria-owns',[previousOwns,element.id].filter(Boolean).join(' '));
   }
+  function authorized(element){return element.qosState.active&&elements.get(element.qosState.key)===element&&(!inputScope||inputScope.owns(element.qosOwnerPath));}
+  function currentComposition(element){
+    const state=element.qosState;
+    if(state.compositionScope&&!inputScope.valid(state.compositionScope)){state.composing=false;state.compositionScope=null;state.canceledComposition=true;state.compositionBase=null;restoreCanonical(element);replaceCanceledEditor(element);}
+    return !state.canceledComposition;
+  }
+  function replaceCanceledEditor(element){
+    const state=element.qosState;
+    if(!state.active||elements.get(state.key)!==element)return;
+    const next=createElement(true,state.key,element.qosRole);
+    for(const name of element.getAttributeNames())if(name!=='id')next.setAttribute(name,element.getAttribute(name));
+    next.style.cssText=element.style.cssText;next.tabIndex=element.tabIndex;next.disabled=element.disabled;next.readOnly=element.readOnly;
+    next.route=element.route;next.qosRole=element.qosRole;next.qosAncestors=element.qosAncestors;next.qosOwnerPath=element.qosOwnerPath;
+    Object.assign(next.qosState,state,{composing:false,compositionScope:null,compositionBase:null,canceledComposition:false,suppressInput:null});
+    state.active=false;element.route=undefined;elements.set(state.key,next);restoreCanonical(next);
+    const focused=document.activeElement===element;element.replaceWith(next);
+    if(focused&&authorized(next)){next.qosState.reconcilingFocus=true;try{next.focus({preventScroll:true});}finally{next.qosState.reconcilingFocus=false;}}
+  }
   function act(element,action,value='',anchor=0,focus=0){
     const state=element.qosState;
     if(!state?.active||elements.get(state.key)!==element||!element.route){
@@ -53,6 +71,7 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     return [graphemeIndex(value,element.selectionStart??0),graphemeIndex(value,element.selectionEnd??0)];
   }
   function dispatchSelection(element){
+    if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return false;}
     const range=selection(element);
     if(element.qosState.lastSelection?.[0]===range[0]&&element.qosState.lastSelection?.[1]===range[1])return true;
     if(!act(element,'selection','',range[0],range[1]))return false;
@@ -65,6 +84,7 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     [element.scrollLeft,element.scrollTop]=scroll;
   }
   function dispatchValue(element){
+    if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return false;}
     if(!act(element,'value',element.value)){restoreCanonical(element);return false;}
     element.qosState.canonicalValue=element.value;
     element.qosState.lastSelection=null;
@@ -140,7 +160,7 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     element.qosEditable=editable;
     element.qosState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false};
     element.addEventListener('focus',()=>{
-      if(!element.qosState.reconcilingFocus&&act(element,'focus'))pendingFocus={key,remainingSnapshots:1};
+      if(!element.qosState.reconcilingFocus&&act(element,'focus')){inputScope?.capture();pendingFocus={key,remainingSnapshots:1};}
     });
     element.addEventListener('click',event=>{
       if(event.target!==element)return;
@@ -156,12 +176,16 @@ export function semanticBridge(root,invoke,report,shortcuts) {
       element.addEventListener('keydown',event=>{
         const state=element.qosState;
         if(!state.active||elements.get(state.key)!==element||!element.route||state.disabled||state.readOnly||document.activeElement!==element)return;
-        shortcuts?.keydown?.(element,event,state.composing,undefined,()=>act(element,'focus'));
+        currentComposition(element);
+        if(!event.isComposing&&!state.composing)state.canceledComposition=false;
+        if(!authorized(element)||state.canceledComposition){event.preventDefault();restoreCanonical(element);return;}
+        shortcuts?.keydown?.(element,event,state.composing,undefined,()=>inputScope&&!inputScope.capture()?.legacy?authorized(element):act(element,'focus'));
       });
-      element.addEventListener('keyup',event=>shortcuts?.keyup?.(element,event));
-      element.addEventListener('blur',()=>shortcuts?.blur?.(element));
+      element.addEventListener('keyup',event=>{if(authorized(element))shortcuts?.keyup?.(element,event);});
+      element.addEventListener('blur',()=>{if(authorized(element))shortcuts?.blur?.(element);});
       element.addEventListener('input',event=>{
         const state=element.qosState;
+        if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return;}
         if(state.composing||event.isComposing)return;
         if(state.suppressInput===element.value){state.suppressInput=null;return;}
         state.suppressInput=null;dispatchValue(element);
@@ -172,10 +196,17 @@ export function semanticBridge(root,invoke,report,shortcuts) {
       });
       element.addEventListener('compositionstart',()=>{
         const state=element.qosState;
+        if(!authorized(element)){state.canceledComposition=true;restoreCanonical(element);return;}
+        state.compositionScope=inputScope?.capture();state.canceledComposition=false;
         state.composing=true;state.compositionBase=element.value;state.suppressInput=null;
       });
       element.addEventListener('compositionend',event=>{
-        const state=element.qosState;state.composing=false;
+        const state=element.qosState;
+        if(!authorized(element)||!currentComposition(element)){
+          state.composing=false;state.compositionScope=null;state.compositionBase=null;state.canceledComposition=true;restoreCanonical(element);
+          replaceCanceledEditor(element);return;
+        }
+        state.composing=false;state.compositionScope=null;
         if(state.canonicalValue!==state.compositionBase){
           const retained=retainedComposition(state.compositionBase,element.value,event.data);
           restoreCanonical(element);
@@ -210,6 +241,7 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     function semantic(node,owner,parent,index,identity,ancestry,ownerPath){
       const key=JSON.stringify([identity,node.semantic_key??node.action_target??index]);live.add(key);
       let element=elements.get(key);
+      if(element?.qosEditable&&!currentComposition(element))element=elements.get(key);
       const editable=['TextInput','MultilineTextInput'].includes(node.role);
       if(element&&element.qosEditable!==editable){
         shortcuts?.blur?.(element);element.qosState.active=false;element.route=undefined;element.remove();elements.delete(key);element=undefined;
@@ -278,8 +310,10 @@ export function semanticBridge(root,invoke,report,shortcuts) {
     // The runner's exact current inspection path disambiguates those owners.
     // Explicit null is authoritative no-owner; only omitted legacy metadata
     // may fall back to independently retained local focus.
-    const ownedCandidates=focusedCandidates.filter(element=>element.qosOwnerPath===snapshot.keyboard_focus_owner);
-    const candidates=snapshot.keyboard_focus_owner!==undefined?ownedCandidates:focusedCandidates;
+    const ownership=inputScope?.capture();
+    const keyboardOwner=inputScope&&!ownership?.legacy?(ownership?.owner??null):snapshot.keyboard_focus_owner;
+    const ownedCandidates=focusedCandidates.filter(element=>element.qosOwnerPath===keyboardOwner);
+    const candidates=keyboardOwner!==undefined?ownedCandidates:focusedCandidates;
     canonicalFocus=candidates.find(candidate=>!candidates.some(other=>other.qosAncestors.includes(candidate.qosState.key)));
 
     const active=document.activeElement;

@@ -7,6 +7,8 @@ class Element {
   setAttribute(name,value){this.attributes.set(name,String(value));}
   removeAttribute(name){this.attributes.delete(name);}
   getAttribute(name){return this.attributes.get(name)??null;}
+  getAttributeNames(){return [...this.attributes.keys()];}
+  replaceWith(next){const parent=this.parentNode;parent.children[parent.children.indexOf(this)]=next;next.parentNode=parent;this.parentNode=null;if(document.activeElement===this)document.activeElement=document.body;}
   addEventListener(name,listener){const listeners=this.listeners.get(name)??[];listeners.push(listener);this.listeners.set(name,listeners);}
   dispatchEvent(event){event.target??=this;event.currentTarget=this;for(const listener of this.listeners.get(event.type)??[])listener(event);if(event.bubbles&&!event.cancelBubble)this.parentNode?.dispatchEvent(event);return !event.defaultPrevented;}
   setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
@@ -541,4 +543,70 @@ test('a throttled status sequence leaves the accessibility DOM untouched until t
   assert.equal(document.activeElement,editor);
   assert.deepEqual(calls,[],'catching up never dispatches actions back to the runtime');
   bridge.close();
+});
+
+test('retained outgoing semantic editor cannot refocus or edit after ownership changes before a snapshot',()=>{
+ let current={sequence:'1',activation:'1',owner:'chat'};const calls=[],keys=[];
+ const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence,owns:path=>current.owner===path};
+ const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{}, {keydown:(_el,e,_c,_m,authorize)=>{if(authorize())keys.push(e.key);}},scope);
+ bridge.update(snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true},text_selection:{anchor:5,focus:5}}));
+ const editor=root.children[0];document.activeElement=editor;
+ current={sequence:'2',activation:'2',owner:'calculator'};
+ editor.dispatchEvent(event('keydown',{key:'Enter'}));editor.value='leaked';editor.dispatchEvent(event('input'));editor.setSelectionRange(0,0);editor.dispatchEvent(event('select'));
+ assert.deepEqual(calls,[]);assert.deepEqual(keys,[]);assert.equal(editor.value,'saved');
+});
+test('semantic composition revoked by activation drains silently and a new owner session works',()=>{
+ let current={sequence:'1',activation:'1',owner:'chat'};const calls=[];
+ const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence,owns:path=>current.owner===path};
+ const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{},undefined,scope);
+ bridge.update(snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true}}));const editor=root.children[0];document.activeElement=editor;
+ editor.dispatchEvent(event('compositionstart'));editor.value='saved old';current={sequence:'2',activation:'2',owner:'other'};
+ editor.dispatchEvent(event('compositionend',{data:'old'}));editor.dispatchEvent(event('input'));assert.deepEqual(calls,[]);assert.equal(editor.value,'saved');assert.equal(root.children.length,1);
+ current={sequence:'3',activation:'3',owner:'chat'};const fresh=root.children[0];fresh.dispatchEvent(event('compositionstart'));fresh.value='saved new';fresh.dispatchEvent(event('compositionend',{data:'new'}));assert.equal(calls[0][2],'value');assert.equal(calls[0][3],'saved new');
+});
+
+test('a fresh key gesture resumes semantic editing after same-owner activation cancels composition',()=>{
+ let current={sequence:'1',activation:'1',owner:'chat'};const keys=[];
+ const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence,owns:path=>current.owner===path};
+ const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},{keydown:(_el,e,_c,_m,authorize)=>{if(authorize())keys.push(e.key);}},scope);
+ bridge.update(snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true}}));const editor=root.children[0];document.activeElement=editor;
+ editor.dispatchEvent(event('compositionstart'));current={sequence:'2',activation:'2',owner:'chat'};editor.dispatchEvent(event('compositionend',{data:'old'}));
+ root.children[0].dispatchEvent(event('keydown',{key:'Enter'}));assert.deepEqual(keys,['Enter']);
+});
+test('fresh ownership prevents a stale semantic snapshot from restoring outgoing DOM focus',()=>{
+ let current={sequence:'2',activation:'2',owner:null};const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence,owns:path=>current.owner===path};
+ const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},undefined,scope);document.activeElement=document.body;
+ bridge.update({...snapshot({role:'TextInput',value:'old',state:{focusable:true,focused:true}}),keyboard_focus_owner:'chat'});
+ assert.equal(document.activeElement,document.body);
+});
+test('drained semantic composition cancellation permits fresh soft-keyboard input',async()=>{
+ let current={sequence:'1',activation:'1',owner:'chat'};const calls=[];const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence,owns:path=>current.owner===path};
+ const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{},undefined,scope);
+ bridge.update(snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true}}));const editor=root.children[0];document.activeElement=editor;
+ editor.dispatchEvent(event('compositionstart'));current={sequence:'2',activation:'2',owner:'chat'};editor.dispatchEvent(event('compositionend',{data:'old'}));editor.dispatchEvent(event('input'));assert.deepEqual(calls,[]);
+ await new Promise(resolve=>setTimeout(resolve,5));const fresh=root.children[0];fresh.value='saved new';fresh.dispatchEvent(event('input',{inputType:'insertText',data:'new'}));assert.equal(calls[0]?.[3],'saved new');
+});
+test('revoked semantic DOM lifetime rejects delayed tails after same-owner reselection and away/back',async()=>{
+ for(const away of [false,true]){
+  let current={sequence:'1',activation:'1',owner:'chat'};const calls=[];const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence,owns:path=>current.owner===path};
+  const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{},undefined,scope);
+  bridge.update(snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true}}));const old=root.children[0];document.activeElement=old;old.dispatchEvent(event('compositionstart'));
+  if(away)current={sequence:'2',activation:'2',owner:'other'};
+  current={sequence:away?'3':'2',activation:away?'3':'2',owner:'chat'};
+  old.value='saved same';old.dispatchEvent(event('compositionend',{data:'same'}));await new Promise(resolve=>setTimeout(resolve,5));old.value='saved same';old.dispatchEvent(event('input',{data:'same'}));assert.deepEqual(calls,[]);
+  const fresh=root.children[0];assert.notEqual(fresh,old);fresh.value='saved same';fresh.dispatchEvent(event('input',{inputType:'insertText',data:'same'}));assert.equal(calls[0]?.[3],'saved same');
+ }
+});
+test('snapshot cancellation reconciles focus onto the replacement semantic editor',()=>{
+ let current={sequence:'1',activation:'1',owner:'chat'};const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence,owns:path=>current.owner===path};
+ const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{},undefined,scope);
+ const view={...snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true,focused:true}}),keyboard_focus_owner:'chat'};
+ bridge.update(view);const old=root.children[0];document.activeElement=old;old.dispatchEvent(event('compositionstart'));current={sequence:'2',activation:'2',owner:'chat'};bridge.update(view);
+ assert.notEqual(root.children[0],old);assert.equal(document.activeElement,root.children[0]);assert.equal(root.children[0].dataset.qosFocused,'true');
+});
+test('retired semantic editors reject focus, selection and keyboard release callbacks',()=>{
+ let current={sequence:'1',activation:'1',owner:'chat'};const calls=[],keys=[];const scope={capture:()=>({...current}),valid:s=>s.sequence===current.sequence,owns:path=>current.owner===path};
+ const root=new Element('div');const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{},{keyup:()=>keys.push('up'),blur:()=>keys.push('blur')},scope);
+ bridge.update(snapshot({role:'TextInput',value:'saved',action_target:'draft',state:{focusable:true}}));const old=root.children[0];old.dispatchEvent(event('compositionstart'));current={sequence:'2',activation:'2',owner:'chat'};old.dispatchEvent(event('compositionend',{data:'old'}));
+ for(const type of ['focus','select','keyup','blur'])old.dispatchEvent(event(type,{key:'Enter'}));assert.deepEqual(calls,[]);assert.deepEqual(keys,[]);
 });

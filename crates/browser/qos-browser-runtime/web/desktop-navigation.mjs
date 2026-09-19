@@ -1,5 +1,5 @@
 /** Mount-owned projection: no DOM lookup, transport mutation or polling timer. */
-export function createDesktopNavigation({snapshot,revision,dispatch,search,globalSearch,focusSearch=()=>{},awaitTerminal,active}) {
+export function createDesktopNavigation({snapshot,revision,dispatch,search,globalSearch,focusSearch=()=>{},captureSelect=()=>undefined,completeSelect=()=>{},awaitTerminal,active}) {
  const parse=()=>{const next=JSON.parse(snapshot());next.capabilities={...next.capabilities,close:Boolean(awaitTerminal&&next.capabilities?.close),globalSearch:Boolean(globalSearch&&next.capabilities?.globalSearch)};return next;};
  const sameRoute=(a,b)=>a?.workspace===b?.workspace&&a?.strip===b?.strip&&a?.group===b?.group&&a?.tab===b?.tab;
  const routeKey=route=>JSON.stringify([route?.workspace,route?.strip,route?.group,route?.tab]);
@@ -39,7 +39,8 @@ export function createDesktopNavigation({snapshot,revision,dispatch,search,globa
      }catch(error){pendingCloses.delete(key);reject(error);}
      refresh();return promise;
     }
-    if(command.kind==='global-search'){openGlobalSearch(command.generation,command.query??'');}else if(command.kind==='commands'){if(!search)throw Error('Command search unavailable');search(command.generation,command.query);}else dispatch(JSON.stringify(command));refresh();return Promise.resolve();
+    const beforeSelect=command.kind==='select'?captureSelect():undefined;
+    if(command.kind==='global-search'){openGlobalSearch(command.generation,command.query??'');}else if(command.kind==='commands'){if(!search)throw Error('Command search unavailable');search(command.generation,command.query);}else dispatch(JSON.stringify(command));refresh();return command.kind==='select'?Promise.resolve(completeSelect(beforeSelect)).then(()=>{}):Promise.resolve();
    }catch(error){return Promise.reject(error);}
   },
  };

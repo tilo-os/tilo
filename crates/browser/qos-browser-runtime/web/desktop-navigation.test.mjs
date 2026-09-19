@@ -204,3 +204,14 @@ test('retained desktop errors cancel only the pending request that encounters a 
  const g=await focusFixture();g.focus.accepted(g.focus.begin(g.command,g.state));
  g.focus.errors(['new failure']);g.focus.update(g.open());assert.deepEqual(g.events,[]);
 });
+
+test('Select completion waits for scoped handoff and rejects stale or failed dispatch first',async()=>{
+ let finish;const completions=[];let rejected=false;
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify({generation:'g'}),revision:()=>1,active:()=>true,
+  captureSelect:()=>({sequence:'before'}),completeSelect:before=>{completions.push(before);return new Promise(resolve=>{finish=resolve;});},dispatch:()=>{if(rejected)throw Error('modal');}});
+ let settled=false;const result=nav.controller.dispatch({kind:'select',generation:'g'}).then(()=>{settled=true;});
+ await Promise.resolve();assert.equal(settled,false);assert.deepEqual(completions,[{sequence:'before'}]);finish();await result;
+ await nav.controller.dispatch({kind:'pan',generation:'g'});assert.equal(completions.length,1);
+ await assert.rejects(nav.controller.dispatch({kind:'select',generation:'stale'}),/Stale/);
+ rejected=true;await assert.rejects(nav.controller.dispatch({kind:'select',generation:'g'}),/modal/);assert.equal(completions.length,1);
+});

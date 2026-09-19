@@ -87,6 +87,7 @@ export function createKeyboardForwarder({route,dispatch,publishModifiers=()=>{},
       forwarded.delete(key);event.preventDefault();dispatch('keyup',event);return true;
     },
     blur:release,
+    invalidate(){forwarded.clear();currentOwner=undefined;},
   };
 }
 export function beforeInputRoute(event,composing) {
@@ -120,3 +121,50 @@ export function overlayKeyboardRoute(widget,...args) {
 /** Statuses omit the semantics tree when it is unchanged or throttled; the retained tree stays authoritative until a status carries a new one. */
 export function retainStatus(previous,next){return {...previous,...next};}
 export function retainedWidget(state){return state?.semantics?.root?.widget;}
+
+/** A capability belongs to one mount and one authoritative runtime input sequence. */
+export function createInputScope({read,active,onChange=()=>{}}) {
+  let mount={},previous;
+  function capture(){
+    if(!active()){if(previous){previous=undefined;mount={};onChange(null);}return null;}
+    const raw=read?.();
+    const value=raw?JSON.parse(raw):{sequence:'legacy',activation:'legacy',owner:null,legacy:true};
+    if(typeof value.sequence!=='string'||typeof value.activation!=='string'||!(value.owner===null||typeof value.owner==='string'))return null;
+    const next={...value,mount};
+    const changed=previous&&(previous.sequence!==next.sequence||previous.activation!==next.activation||previous.owner!==next.owner);
+    previous=next;
+    if(changed)onChange(next);
+    return next;
+  }
+  function valid(saved){const next=capture();return Boolean(saved&&next&&saved.mount===mount&&saved.sequence===next.sequence&&saved.activation===next.activation&&saved.owner===next.owner);}
+  return {capture,valid,owns(owner){const next=capture();return Boolean(next&&(next.legacy||next.owner===owner));}};
+}
+
+/** Only an explicitly observed local activation can queue a browser focus transfer. */
+export function createFocusHandoff({scope,epoch,focus}) {
+  let serial=0;
+  return {complete(before,externalEpoch=epoch()){
+    const after=scope.capture();
+    if(!before||!after||after.legacy||before.activation===after.activation)return Promise.resolve(false);
+    const request=++serial;
+    return Promise.resolve().then(()=>{
+      if(request!==serial||epoch()!==externalEpoch||!scope.valid(after))return false;
+      focus(scope.capture());return true;
+    });
+  }};
+}
+
+/** A revoked native IME session never expires; the host replaces its DOM editor. */
+export function createCompositionSession({scope,send,clear}) {
+  let session=null,canceled=false;
+  function cancel(){const hadSession=Boolean(session);if(hadSession){session=null;canceled=true;}clear();return hadSession;}
+  function valid(){if(session&&!scope.valid(session))cancel();return Boolean(session);}
+  return {
+    cancel,
+    get composing(){return valid();},
+    start(){const next=scope.capture();if(!next||(!next.legacy&&next.owner===null))return false;session=next;canceled=false;send('start','');return true;},
+    update(text){if(valid())send('preedit',text);},
+    end(text){if(!valid()){clear();return false;}send('preedit','');send('commit',text);session=null;canceled=true;clear();return true;},
+    blocks(event){valid();return canceled||Boolean(session)||event.isComposing||event.inputType==='insertCompositionText';},
+  };
+}

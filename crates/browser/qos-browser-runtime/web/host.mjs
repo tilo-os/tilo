@@ -5,7 +5,8 @@ import {bindDesktopCommands} from './desktop-command-bridge.mjs';
 import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
-import {MountRegistry,beforeInputRoute,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
+import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
+
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {settleComponentClose,recoverableClose} from './close-recovery.mjs';
@@ -24,7 +25,7 @@ export async function mountDesktop(target,options={}) {
   canvas.style.cssText='display:block;width:100%;height:100%;outline:none;touch-action:none;';
   // Native focus may scroll hidden semantic controls; it must not move the canvas viewport.
   const surface=document.createElement('div');surface.className='qos-host';surface.style.cssText='position:relative;width:100%;height:100%;overflow:clip';
-  const editor=document.createElement('textarea');editor.setAttribute('aria-label','qOS focused text editor');editor.tabIndex=-1;editor.autocomplete='off';editor.autocapitalize='off';editor.spellcheck=false;
+  let editor=document.createElement('textarea');editor.setAttribute('aria-label','qOS focused text editor');editor.tabIndex=-1;editor.autocomplete='off';editor.autocapitalize='off';editor.spellcheck=false;
   editor.style.cssText='position:absolute;opacity:0.01;width:2px;height:20px;padding:0;border:0;resize:none;pointer-events:none';
   const accessibility=document.createElement('div');accessibility.setAttribute('aria-label','qOS application');accessibility.style.cssText='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);';
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
@@ -43,24 +44,59 @@ export async function mountDesktop(target,options={}) {
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
   delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;
-  let semanticKeys,actionPalette,desktopCommands,navigation;
+  let semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,navigation,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
+  const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
+    hiddenKeys?.invalidate();semanticKeys?.invalidate();const canceled=composition?.cancel();composing=false;editor.value='';pasteShift=false;
+    if(canceled)replaceEditor();
+  }});
+  const handoff=createFocusHandoff({scope:inputScope,epoch:()=>externalFocusEpoch,focus:state=>{
+    (state.ime?editor:canvas).focus({preventScroll:true});
+  }});
+  function observeLocalActivation(){
+    const gesture=localActivationGesture;
+    if(!gesture)return;
+    if(!active()||gesture.epoch!==externalFocusEpoch){localActivationGesture=undefined;return;}
+    const current=inputScope.capture();
+    if(current&&current.activation!==gesture.scope.activation){localActivationGesture=undefined;void handoff.complete(gesture.scope,gesture.epoch);}
+  }
   const semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
-    keydown:(...args)=>active()&&semanticKeys?.keydown(...args),
-    keyup:(...args)=>active()&&semanticKeys?.keyup(...args),
-    blur:owner=>{if(active())semanticKeys?.blur(owner);},
-  });
+    keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},
+    keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
+    blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
+  },inputScope);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
-  function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
+  const editorListeners=[];
+  function onEditor(type,fn,opts={}){
+    const guarded=event=>{inputScope.capture();if(event.currentTarget!==editor){event.preventDefault();return;}fn(event);};
+    editorListeners.push([type,guarded,opts]);on(editor,type,guarded,opts);
+  }
+  function newComposition(){return createCompositionSession({scope:inputScope,send:(kind,text)=>runtime.ime(id,kind,text),clear:()=>{editor.value='';composing=false;}});}
+  function replaceEditor(restoreFocus=true){
+    const old=editor,focused=restoreFocus&&document.activeElement===old;
+    editor=old.cloneNode(false);editor.value='';
+    for(const [type,fn,opts] of editorListeners)on(editor,type,fn,opts);
+    composition=newComposition();old.replaceWith(editor);
+    if(focused){const scope=inputScope.capture();if(scope)(scope.legacy||scope.ime?editor:canvas).focus({preventScroll:true});}
+  }
+  function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
   function update(raw){
     if(closed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
+    if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
+      desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
+      runtimeReady=true;
+    }
+    inputScope.capture();
+    navigation?.refresh();
+
     if(desktopCommands)void desktopCommands.pump();
     if(actionPalette){
       const request=runtime.take_caller_action(id);
       if(request)void actionPalette.submit(JSON.parse(request)).catch(error=>{if(active())report({actionError:String(error)});});
     }
     lastState=retainStatus(lastState,state);report(state);
-    if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
+    if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
+
     if(state.phase==='presented'){surface.inert=false;editor.disabled=false;}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
@@ -69,10 +105,12 @@ export async function mountDesktop(target,options={}) {
     navigationFocus.errors(state.desktopErrors??[]);
     if(state.phase==='presented'&&navigation)navigationFocus.update(navigation.controller.getSnapshot());
     if(state.semantics)semantic.update(state.semantics);
-    if(state.ime){
-      editor.style.left=`${state.ime.x}px`;editor.style.top=`${state.ime.y}px`;editor.style.height=`${Math.max(1,state.ime.height)}px`;
+    const ownership=inputScope.capture(),ime=ownership?.legacy?state.ime:ownership?.ime;
+    if(ime){
+      editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
       if(document.activeElement===canvas)editor.focus({preventScroll:true});
     }else if(document.activeElement===editor){canvas.focus({preventScroll:true});}
+    observeLocalActivation();
     if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();}
   }
   const assets=createAssetRecovery({active,report,
@@ -164,39 +202,70 @@ export async function mountDesktop(target,options={}) {
       config.record=found?.record;
     }
     id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));
-    const publishModifiers=event=>runtime.modifiers(id,...modifierSnapshot(event));
-    const clearModifiers=()=>runtime.modifiers(id,false,false,false,false);
+    inputScope.capture();
+    const publishModifiers=event=>{if(inputScope.capture())runtime.modifiers(id,...modifierSnapshot(event));};
+    const clearModifiers=()=>{if(inputScope.capture())runtime.modifiers(id,false,false,false,false);};
+    for(const type of ['pointerdown','focusin','keydown'])on(document,type,event=>{if(!surface.contains(event.target))externalFocusEpoch++;},{capture:true});
+    // Search accepts results inside Rust. Only a local surface gesture may
+    // authorize that activation. A later status may complete the gesture, but
+    // cannot create one or outlive a subsequent outside-focus gesture.
+    for(const type of ['pointerdown','pointerup','click','keydown','keyup','input'])on(surface,type,()=>{
+      const scope=inputScope.capture();if(scope)localActivationGesture={scope,epoch:externalFocusEpoch};
+      queueMicrotask(observeLocalActivation);
+    },{capture:true});
     for(const node of [canvas,editor]){
-      on(node,'keydown',event=>{
+      const bind=node===editor?onEditor:(type,fn,opts)=>on(node,type,fn,opts);
+      bind('keydown',event=>{
+        inputScope.capture();
         if(active())publishModifiers(event);
         if(!composing&&(event.ctrlKey||event.metaKey)&&['v','c','x'].includes(event.key.toLowerCase())){pasteShift=event.shiftKey;event.stopImmediatePropagation();}
       },{capture:true});
-      on(node,'keyup',event=>{if(active())publishModifiers(event);},{capture:true});
-      for(const kind of ['paste','copy','cut'])on(node,kind,event=>{
-        if(!active()||!event.clipboardData||composing)return;
+      bind('keyup',event=>{if(active())publishModifiers(event);},{capture:true});
+      for(const kind of ['paste','copy','cut'])bind(kind,event=>{
+        const scope=inputScope.capture();
+        if(!scope||!event.clipboardData||composing||!inputScope.valid(scope))return;
         try{if(kind==='paste'&&!event.clipboardData.getData('text/plain')){event.preventDefault();report({clipboard:'empty or unsupported clipboard payload'});return;}const completed=runtime.clipboard_event(id,kind,event.clipboardData,pasteShift);event.preventDefault();report({lastInput:kind,clipboard:completed?'completed in trusted DOM event':'unavailable or no selection'});}
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
     const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,event));
-    const hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
+    hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
     semanticKeys=createKeyboardForwarder({route:(...args)=>overlayKeyboardRoute(retainedWidget(lastState),...args),mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
+
     const hiddenKeyOwner={};
     const dispatchCanvasKey=key=>{canvas.dispatchEvent(new KeyboardEvent('keydown',{key}));canvas.dispatchEvent(new KeyboardEvent('keyup',{key}));};
-    on(editor,'keydown',event=>{
+    onEditor('keydown',event=>{
+      inputScope.capture();if(!active())return;
       hiddenKeys.keydown(hiddenKeyOwner,event,composing);
     });
-    on(editor,'keyup',event=>hiddenKeys.keyup(hiddenKeyOwner,event));
-    on(editor,'compositionstart',()=>{composing=true;runtime.ime(id,'start','');report({lastInput:'compositionstart'});});
-    on(editor,'compositionupdate',event=>{runtime.ime(id,'preedit',event.data);});
-    on(editor,'compositionend',event=>{runtime.ime(id,'preedit','');runtime.ime(id,'commit',event.data);composing=false;editor.value='';report({lastInput:'compositioncommit'});});
-    on(editor,'beforeinput',event=>{const route=beforeInputRoute(event,composing);if(route.kind==='ignore')return;event.preventDefault();if(route.kind==='commit'){runtime.ime(id,'commit',route.text);editor.value='';report({lastInput:'beforeinput'});}else if(route.kind==='key'){dispatchCanvasKey(route.key);report({lastInput:'beforeinput-key'});}});
-    on(editor,'focus',()=>{canvas.dispatchEvent(new FocusEvent('focus'));if(active())runtime.ime(id,'start','');});
-    on(editor,'blur',()=>{if(active()){if(composing){runtime.ime(id,'preedit','');composing=false;report({lastInput:'compositioncancel'});}hiddenKeys.blur(hiddenKeyOwner);runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));}});
-    on(canvas,'blur',()=>{if(active())clearModifiers();});
+    onEditor('keyup',event=>{inputScope.capture();if(active())hiddenKeys.keyup(hiddenKeyOwner,event);});
+    composition=newComposition();
+    onEditor('compositionstart',()=>{composing=composition.start();if(composing)report({lastInput:'compositionstart'});});
+    onEditor('compositionupdate',event=>composition.update(event.data));
+    onEditor('compositionend',event=>{if(composition.end(event.data))report({lastInput:'compositioncommit'});composing=false;if(event.currentTarget===editor)replaceEditor();});
+    onEditor('beforeinput',event=>{
+      const scope=inputScope.capture();
+      if(scope&&composition.composing)return;
+      if(!scope||composition.blocks(event)){event.preventDefault();return;}
+      const route=beforeInputRoute(event,composing);if(route.kind==='ignore')return;event.preventDefault();
+      if(!inputScope.valid(scope))return;
+      if(route.kind==='commit'){runtime.ime(id,'commit',route.text);editor.value='';report({lastInput:'beforeinput'});}
+      else if(route.kind==='key'){dispatchCanvasKey(route.key);report({lastInput:'beforeinput-key'});}
+    });
+    onEditor('input',()=>{if(!composition.composing)editor.value='';});
+    let editorFocusScope,canvasFocusScope;
+    onEditor('focus',()=>{editorFocusScope=inputScope.capture();if(!editorFocusScope)return;canvas.dispatchEvent(new FocusEvent('focus'));runtime.ime(id,'start','');});
+    onEditor('blur',()=>{
+      if(!inputScope.valid(editorFocusScope))return;
+      if(composition.composing){runtime.ime(id,'preedit','');composition.cancel();composing=false;replaceEditor(false);report({lastInput:'compositioncancel'});}
+      hiddenKeys.blur(hiddenKeyOwner);runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));
+    });
+    on(canvas,'focus',()=>{canvasFocusScope=inputScope.capture();});
+    on(canvas,'blur',()=>{if(inputScope.valid(canvasFocusScope))clearModifiers();});
     // Throttled statuses omit the tree; assistive technology entering the surface gets the complete current tree at once.
     const requestSemantics=()=>{if(active())runtime.request_semantics?.(id);};
     on(accessibility,'focusin',event=>{if(!accessibility.contains(event.relatedTarget))requestSemantics();});
+
     on(canvas,'pointerdown',()=>report({lastInput:'pointer'}));
     on(canvas,'wheel',event=>{
       if(event.deltaMode===2){event.preventDefault();const [x,y]=wheelPixels(event.deltaX,event.deltaY,2,canvas.clientWidth,canvas.clientHeight);canvas.dispatchEvent(new WheelEvent('wheel',{deltaX:-x,deltaY:-y,deltaMode:0,ctrlKey:event.ctrlKey,shiftKey:event.shiftKey}));}
@@ -212,7 +281,8 @@ export async function mountDesktop(target,options={}) {
         const request=navigationFocus.begin(JSON.parse(command),navigation.controller.getSnapshot());
         try{const result=runtime.desktop_navigate(id,command);navigationFocus.accepted(request);return result;}
         catch(error){navigationFocus.failed(request);throw error;}
-      },search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>canvas.focus({preventScroll:true}),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
+      },search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>{inputScope.capture();canvas.focus({preventScroll:true});},captureSelect:()=>({scope:inputScope.capture(),epoch:externalFocusEpoch}),completeSelect:before=>handoff.complete(before.scope,before.epoch),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
+
       // Cloud's toolbar is a sibling of the renderer in its Desktop section.
       // Scope the listener to that mounted desktop; other page editors stay native.
       const shortcutScope=target.closest('section[aria-label="Desktop"]')??target;
@@ -223,7 +293,8 @@ export async function mountDesktop(target,options={}) {
       options.onNavigation?.(navigation.controller);
     }
     return {navigation: navigation?.controller,retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
-      state:()=>lastState,canvas,editor,semantics:accessibility,requestSemantics,
+      state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
+
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args)};
   }catch(error){registry.remove(token);await cleanup();throw error;}
