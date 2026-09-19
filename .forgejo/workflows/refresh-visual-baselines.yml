@@ -41,12 +41,14 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
 
-      - name: Prepare headless runtime and compiler cache
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Prepare headless runtime
         run: |
           test -r "$VK_DRIVER_FILES"
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
-          bash tools/ci/sccache.sh prepare
 
       - name: Render canonical visual baselines
         env:
