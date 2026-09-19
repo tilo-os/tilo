@@ -10043,6 +10043,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
         )]
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::ActiveEventLoopExtMacOS;
+            if let Err(error) = event_loop.set_quit_request_window(Some(window.id())) {
+                crate::diag!("tilo: cannot protect application Quit: {error}");
+                event_loop.exit();
+                return;
+            }
+        }
         tilo_startup_metrics::mark("primary-window-created");
         // Some backends only honour the icon post-creation; a no-op on
         // Wayland compositors that source it from the app_id instead.
@@ -10267,7 +10276,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         match event {
             WindowEvent::CloseRequested => {
-                if self.app.request_close() && self.app.finish_close_if_ready() {
+                if self.app.admit_native_close_request() {
                     event_loop.exit();
                 } else {
                     window.request_redraw();

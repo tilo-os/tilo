@@ -151,6 +151,7 @@ declare_class!(
         #[method(windowWillClose:)]
         fn window_will_close(&self, _: Option<&AnyObject>) {
             trace_scope!("windowWillClose:");
+            self.ivars().app_delegate.quit_window_destroyed(self.id());
             // `setDelegate:` retains the previous value and then autoreleases it
             autoreleasepool(|_| {
                 // Since El Capitan, we need to be careful that delegate methods can't

@@ -489,6 +489,21 @@ impl MonitorHandleExtMacOS for MonitorHandle {
 
 /// Additional methods on [`ActiveEventLoop`] that are specific to macOS.
 pub trait ActiveEventLoopExtMacOS {
+    /// Route ordinary application Quit (including Command-Q and the Quit menu)
+    /// to this live window's `CloseRequested` event. AppKit termination is
+    /// cancelled; the application may save, keep editing, or call `exit`.
+    /// Requests are deferred and coalesced until delivery. Only register the
+    /// primary application window, never a popup or presentation window.
+    ///
+    /// `None` preserves normal AppKit termination. Closing the target or exiting
+    /// the event loop clears it and invalidates queued requests. An invalid or
+    /// already closed window returns `ExternalError::Ignored` without changing
+    /// the current registration. Forced process termination is not intercepted.
+    fn set_quit_request_window(
+        &self,
+        target: Option<crate::window::WindowId>,
+    ) -> Result<(), crate::error::ExternalError>;
+
     /// Hide the entire application. In most applications this is typically triggered with
     /// Command-H.
     fn hide_application(&self);
@@ -504,6 +519,13 @@ pub trait ActiveEventLoopExtMacOS {
 }
 
 impl ActiveEventLoopExtMacOS for ActiveEventLoop {
+    fn set_quit_request_window(
+        &self,
+        target: Option<crate::window::WindowId>,
+    ) -> Result<(), crate::error::ExternalError> {
+        self.p.set_quit_request_window(target.map(|id| id.0))
+    }
+
     fn hide_application(&self) {
         self.p.hide_application()
     }
