@@ -13266,6 +13266,10 @@ impl ShellOverlayHost {
             if self.add_workspace_rect.area() > 0.0 && self.add_workspace_rect.contains(p) {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
+                    // Creation switches to the new workspace. Release the
+                    // overview's input grab in the same transaction so the
+                    // first navigation gesture reaches that workspace.
+                    st.overlays.overview = false;
                     // Mirrors the wheel-disc slot: both create
                     // affordances seed "Untitled".
                     st.add_workspace("Untitled");
