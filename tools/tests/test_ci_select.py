@@ -45,6 +45,11 @@ class SelectorTests(unittest.TestCase):
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
         self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "qdoc", "pkg", "collab-types"})
         self.assertFalse(plan["full"])
+        self.assertEqual(set(plan["tested"]), {"base", "qdoc", "pkg", "collab-types"})
+        self.assertEqual(len(plan["matrix"]["include"]), 1)
+        row = plan["matrix"]["include"][0]
+        self.assertEqual(row["arch"], "x86_64")
+        self.assertEqual(set(row["test_packages"].split()[1::2]), set(plan["tested"]))
 
     def test_leaf_change_does_not_select_dependencies(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 2)
@@ -191,7 +196,7 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
 
     def test_each_selected_package_runs_once_on_each_native_architecture(self) -> None:
-        plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
+        plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2, force_full=True)
         rows = plan["matrix"]["include"]
         self.assertEqual({row["arch"] for row in rows}, {"x86_64", "aarch64"})
         for arch, runner in ci_select.NATIVE_RUNNERS.items():
@@ -200,6 +205,29 @@ class SelectorTests(unittest.TestCase):
             names = " ".join(row["packages"] for row in native).split()[1::2]
             self.assertEqual(sorted(names), plan["selected"])
             self.assertEqual(len(native), plan["shard_count"])
+            tested = " ".join(row["test_packages"] for row in native).split()[1::2]
+            self.assertEqual(sorted(tested), plan["selected"])
+
+    def test_dependency_and_unknown_inputs_keep_full_x86_feedback(self) -> None:
+        for changes in [["Cargo.lock"], ["apps/deleted/src/lib.rs"]]:
+            with self.subTest(changes=changes):
+                plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+                self.assertTrue(plan["full"])
+                self.assertEqual(plan["tested"], plan["selected"])
+                self.assertEqual(plan["selected_count"], plan["workspace_count"])
+                self.assertEqual([row["arch"] for row in plan["matrix"]["include"]], ["x86_64"])
+
+    def test_unknown_inputs_retain_existing_contract_test_fallback(self) -> None:
+        for changes in [["unknown-input"], []]:
+            plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+            self.assertEqual(set(plan["tested"]), ci_select.ALWAYS_PACKAGES)
+            self.assertTrue(plan["rust_required"])
+
+    def test_package_manifest_change_checks_dependants_and_tests_owner(self) -> None:
+        plan = ci_select.make_plan(self.metadata, self.root, ["base/Cargo.toml"], 2)
+        self.assertIn("leaf", plan["selected"])
+        self.assertIn("base", plan["tested"])
+        self.assertNotIn("leaf", plan["tested"])
 
     def test_cost_threshold_adds_shards_only_when_useful(self) -> None:
         packages, _ = ci_select.package_maps(self.metadata, self.root)

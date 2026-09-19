@@ -60,7 +60,6 @@
 "tilo-launcher" = 4   # 2.8 MB
 "tilo-loadclient" = 1   # 0.7 MB
 "tilo-pkg" = 14   # 12.1 MB
-"tilo-power" = 1   # 0.3 MB
 "tilo-registry-server" = 4   # 2.8 MB
 "tilo-relay" = 16   # 13.8 MB
 "tilo-relay-admin" = 2   # 1.0 MB

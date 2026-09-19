@@ -13,7 +13,15 @@ concurrency:
 
 jobs:
   complete:
-    runs-on: runner
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     container:
       # Visual goldens are meaningful only when fonts, Mesa and the software
@@ -25,7 +33,7 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     env:
       CARGO_HOME: /cargo-home
-      CARGO_BUILD_JOBS: "4"
+      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
       CARGO_INCREMENTAL: "0"
       # Keep dev and test fingerprints compatible. The all-target check and
       # example links can then reuse dependencies emitted by nextest instead
@@ -35,7 +43,7 @@ jobs:
       CARGO_TERM_COLOR: never
       SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
       WGPU_BACKEND: vulkan
-      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.${{ matrix.arch }}.json
       WGPU_ADAPTER_NAME: llvmpipe
       XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
       # Keep this identical to the nextest gpu-golden override. These tests
@@ -57,6 +65,7 @@ jobs:
 
       - name: Prepare runtime and cache metrics
         run: |
+          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
           test -r "$VK_DRIVER_FILES"
           mkdir -p "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"

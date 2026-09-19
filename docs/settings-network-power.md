@@ -39,9 +39,10 @@ met.
 ## Power
 
 Tilo leaves CPU governor and Intel/AMD P-state EPP ownership exclusively with
-power-profiles-daemon. The legacy polling `tilo-power.service` is not enabled:
-two privileged writers racing over cpufreq sysfs would make the selected user
-profile unreliable and can hurt both frame pacing and battery life.
+power-profiles-daemon. The legacy polling `tilo-power.service` and its unused
+daemon were removed: two privileged writers racing over cpufreq sysfs would
+make the selected user profile unreliable and can hurt both frame pacing and
+battery life.
 
 - Settings enumerates every kernel battery and UPS for a truthful overview.
   The primary battery additionally exposes cycles and health when the driver

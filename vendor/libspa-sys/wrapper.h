@@ -50,7 +50,11 @@
 #endif
 #include <spa/param/audio/format-utils.h>
 #include <spa/param/audio/format.h>
+// Newer PipeWire splits layout definitions into this header. Include it for
+// generated inline wrappers when available; Fedora 42 supplies layout.h only.
+#if __has_include(<spa/param/audio/layout-types.h>)
 #include <spa/param/audio/layout-types.h>
+#endif
 #if PW_CHECK_VERSION(0,3,34)
 #include <spa/param/audio/iec958.h>
 #endif
@@ -73,7 +77,10 @@
 #include <spa/param/video/type-info.h>
 
 #include <spa/pod/builder.h>
+// PipeWire versions before the pod header split keep these in pod.h.
+#if __has_include(<spa/pod/body.h>)
 #include <spa/pod/body.h>
+#endif
 #include <spa/pod/command.h>
 #include <spa/pod/compare.h>
 #include <spa/pod/dynamic.h>
