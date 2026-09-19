@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import unittest
 
 
@@ -35,12 +36,23 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "release/app-collections.toml", ".cargo/config.toml", "tools/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
-        self.write("bin/cargo", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FIXTURE_CARGO_LOG\"\n")
+        self.write("bin/cargo", """#!/usr/bin/env python3
+import json, os, pathlib, sys, tomllib
+arch = os.environ['FIXTURE_ARCH']
+config = tomllib.loads(pathlib.Path('.cargo/config.toml').read_text())
+key = f'cfg(all(target_arch = "{arch}", target_os = "linux"))'
+expected = config['target'][key]['rustflags']
+actual = os.environ['CARGO_ENCODED_RUSTFLAGS'].split(chr(31))
+assert actual == expected, (actual, expected)
+with open(os.environ['FIXTURE_CARGO_LOG'], 'a') as log:
+    log.write(json.dumps({'args': sys.argv[1:], 'flags': actual}) + '\\n')
+""")
         self.write("bin/rustc", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_STDLIB\"\n")
         self.write("bin/uname", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_ARCH\"\n")
         self.write("stdlib/libstd-fixture.so", "fixture standard library")
         self.write("os/scripts/build-thin-apps.sh", """#!/bin/bash
 set -euo pipefail
+cargo build --locked --profile thin-app -p runtime-dylib -p calculator
 mkdir -p target/thin-app
 python3 - <<'ELF'
 import os, pathlib
@@ -146,12 +158,45 @@ exit 99
         self.assertFalse(list((self.root / "dist/app-release/qpkg").glob("*.qpkg")))
 
     def test_unrecorded_compiler_override_fails_before_build(self):
-        self.env.update(FIXTURE_ARCH="x86_64", RUSTFLAGS="-C target-cpu=native")
-        result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
-                                env=self.env, text=True, capture_output=True, timeout=60)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("RUSTFLAGS overrides", result.stderr)
-        self.assertFalse((self.root / "cargo.log").exists())
+        for key, value in (("RUSTFLAGS", "-C target-cpu=native"),
+                           ("CARGO_ENCODED_RUSTFLAGS", "-C\x1ftarget-cpu=native"),
+                           ("CARGO_BUILD_TARGET", "aarch64-unknown-linux-gnu")):
+            with self.subTest(key=key):
+                env = dict(self.env, FIXTURE_ARCH="x86_64", **{key: value})
+                result = subprocess.run(["bash", "dist/apps/package-apps.sh"], cwd=self.root,
+                                        env=env, text=True, capture_output=True, timeout=60)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{key} overrides", result.stderr)
+                self.assertFalse((self.root / "cargo.log").exists())
+
+    def test_edited_cpu_and_feature_policy_is_rejected_by_actual_helper(self):
+        config = self.root / ".cargo/config.toml"
+        original = config.read_text()
+        for arch, cpu in (("x86_64", "x86-64-v3"), ("aarch64", "generic")):
+            for replacement in ('"-C", "target-cpu=native",',
+                                f'"-C", "target-cpu={cpu}", "-C", "target-feature=+aes",'):
+                with self.subTest(arch=arch, replacement=replacement):
+                    config.write_text(original.replace(f'"-C", "target-cpu={cpu}",', replacement))
+                    result = subprocess.run([
+                        "python3", "tools/app_package_isa.py", "flags", "--root", str(self.root),
+                        "--arch", arch], cwd=self.root, env=self.env,
+                        text=True, capture_output=True, timeout=10)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("unaudited", result.stderr)
+                    self.assertEqual(result.stdout, "")
+
+    def test_encoded_output_retains_every_audited_target_flag(self):
+        config = tomllib.loads((self.root / ".cargo/config.toml").read_text())
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch):
+                result = self.command("python3", "tools/app_package_isa.py", "flags",
+                                      "--root", str(self.root), "--arch", arch)
+                flags = result.stdout.removesuffix("\n").split("\x1f")
+                key = f'cfg(all(target_arch = "{arch}", target_os = "linux"))'
+                self.assertEqual(flags, config["target"][key]["rustflags"])
+                for required in ("force-frame-pointers=yes", "relro-level=full",
+                                 "link-arg=-Wl,-z,noexecstack", "--remap-path-prefix=/build=."):
+                    self.assertIn(required, flags)
 
     def test_native_outputs_survive_actual_upload_selection_and_collection_assembly(self):
         for architecture in ("x86_64", "aarch64"):
@@ -162,6 +207,9 @@ exit 99
                 self.assertIn("binary_bytes=64", result.stdout)
                 self.assertIn("packed app=calculator output=", result.stdout)
                 self.assertIn("qpkg_bytes=64 limit=5242880", result.stdout)
+                calls = [json.loads(line) for line in (self.root / "cargo.log").read_text().splitlines()]
+                self.assertTrue(any("--release" in call["args"] for call in calls))
+                self.assertTrue(any("thin-app" in call["args"] for call in calls))
                 out = self.root / "dist/app-release"
                 artifact = self.root / "download" / architecture
                 artifact.mkdir(parents=True)
