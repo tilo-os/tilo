@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -893,6 +894,8 @@ pub struct WordProcessorWidget {
     /// Heads for which the body order and non-body snapshot data were loaded.
     /// Avoids re-materializing on every paint of an unchanged document.
     materialized_heads: Vec<ChangeHash>,
+    /// A pending transaction has no committed head and may later be rolled back.
+    materialized_pending: bool,
     /// Page-header block sequence (drawn in every page's top-margin band). A
     /// `page-number` field marker is substituted with the page number per page.
     header: Vec<BlockView>,
@@ -1117,6 +1120,7 @@ impl WordProcessorWidget {
             body_order: Vec::new(),
             body_window_start: 0,
             materialized_heads: Vec::new(),
+            materialized_pending: false,
             header: Vec::new(),
             footer: Vec::new(),
             laid: Vec::new(),
@@ -2608,8 +2612,12 @@ impl WordProcessorWidget {
         let Some(c) = self.inner.containers.as_ref() else {
             return;
         };
-        let heads = state.get_heads();
-        let changed = self.materialized_heads != heads;
+        // Rendering must not close a typing transaction. Pending edits have no
+        // committed head, so refresh while they exist and once after they leave
+        // (including rollback); the host alone chooses the commit boundary.
+        let heads = state.base_heads();
+        let pending = state.pending_ops() > 0;
+        let changed = self.materialized_heads != heads || pending || self.materialized_pending;
         if changed {
             self.body_order = qdoc::model::blocks_in_order(state, c);
         }
@@ -2630,6 +2638,7 @@ impl WordProcessorWidget {
                 qdoc::model::materialize_changes(state, c),
             );
             self.materialized_heads = heads;
+            self.materialized_pending = pending;
         }
         let ids = self.body_order.get(start..end).unwrap_or(&[]);
         self.blocks = qdoc::model::materialize_blocks(state, c, ids);
