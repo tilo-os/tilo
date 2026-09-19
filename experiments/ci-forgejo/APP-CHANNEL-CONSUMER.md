@@ -225,7 +225,36 @@ source SHA and compatible immutable builder image. The existing publisher keys,
 allowed app ISA and Python adapter pin remain part of the same policy. There is no
 new per-PR input, service or author-agent instruction.
 
-Platform tooling maintenance produces each bundle from already-built native tools:
+Platform tooling maintenance can use a manual native producer or bundle
+already-built tools.
+
+The manual-only `canonical-verifier-bundle.yml` workflow now prepares those tools
+on native x86-64 and ARM64 workers. Platform maintenance dispatches it at a reviewed
+verifier source revision, optionally supplying a qualified immutable builder index.
+The workflow resolves one index for both lanes, checks the checkout SHA and native
+architecture, restores shared Cargo downloads, and builds only `pkg-cli` and
+`runtime-bundle` with the committed lockfile. The optional compiler cache affects
+speed, not correctness. No app fleet or OS image is built.
+
+Each lane checks that both CLIs start with `--help`, produces the bundle twice and
+requires byte-identical archives/descriptors. The artifact
+`canonical-verifiers-ARCH-SOURCE_SHA` retains only `ARCH.tar.gz` and
+`ARCH.tar.descriptor.json` for 14 days. These are unpublished platform candidates:
+the descriptor URL is the intended eventual content-addressed location, not an
+upload receipt. Archive determinism for fixed binaries does not establish compiler
+reproducibility; `--help` establishes native loading, not package/signature semantics.
+Independent canonical verification of representative app/runtime artifacts on both
+lanes remains required before the platform publisher uploads and approves policy.
+
+This workflow has no push/PR/schedule trigger, package upload, signing credential or
+trust-policy promotion. It reuses the existing registry pull/resolution credential;
+native build steps receive no new secret. Run it once per reviewed verifier version
+or builder-compatibility change, preserve accepted artifacts before expiry, and let
+the platform owner publish/promote the descriptors centrally. Application authors
+do not supply per-build verifier hashes. The workflow has not yet been dispatched
+or natively qualified by this change.
+
+To package already-built native tools manually:
 
 ```sh
 python3 tools/canonical_verifier_bundle.py produce \
