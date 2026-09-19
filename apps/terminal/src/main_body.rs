@@ -588,6 +588,8 @@ pub struct TerminalWidget {
     /// the chosen row's label ourselves (mirrors `TextInput`).
     context_menu: ContextMenu,
     find_menu_index: Option<usize>,
+    menu_effects: HashMap<usize, ui::widget::ActionEmitter<()>>,
+    allowed_menu_actions: Option<HashSet<ui::tilo_actions::ActionAddress>>,
     /// Cursor position cached on every `CursorMoved` so the press arm
     /// can hit-test without receiving a fresh position. Logical coords
     /// (post scale-factor divide), matching `text_input`'s convention.
@@ -793,6 +795,8 @@ impl TerminalWidget {
             select_to_copy: false,
             context_menu: ContextMenu::new(),
             find_menu_index: None,
+            menu_effects: HashMap::new(),
+            allowed_menu_actions: None,
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             last_padding_x: 4.0,
@@ -1080,16 +1084,18 @@ impl TerminalWidget {
                 });
             }
         }
-        if let Ok(spec) = ActionSpec::operation(
-            "copy-visible",
-            "Copy visible output",
-            OperationKind::Effect,
-            "terminal.control",
-            &"copy-visible",
-        ) {
-            transcript
-                .actions
-                .push(spec.privileged().retry_policy(RetryPolicy::AtMostOnce));
+        for (id, label) in [
+            ("copy-visible", "Copy visible output"),
+            ("copy-selection", "Copy selected output"),
+            ("select-all", "Select all output"),
+        ] {
+            if let Ok(spec) =
+                ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
+            {
+                transcript
+                    .actions
+                    .push(spec.privileged().retry_policy(RetryPolicy::AtMostOnce));
+            }
         }
         transcript.children.extend(
             self.visible_link_ids()
@@ -1149,6 +1155,7 @@ impl TerminalWidget {
         for (id, label) in [
             ("interrupt", "Interrupt process"),
             ("clear", "Clear screen"),
+            ("paste", "Paste"),
         ] {
             if let Ok(spec) =
                 ActionSpec::operation(id, label, OperationKind::Effect, "terminal.control", &id)
@@ -1210,6 +1217,10 @@ impl TerminalWidget {
                             .with_position(position, action_count)
                             .with_state(AccessState {
                                 focusable: true,
+                                disabled: self
+                                    .menu_effects
+                                    .get(&index)
+                                    .is_some_and(|effect| !effect.is_available()),
                                 ..Default::default()
                             }),
                     )
@@ -1486,6 +1497,10 @@ impl TerminalWidget {
     #[cfg(test)]
     pub fn context_menu_rect(&self) -> Rect {
         Widget::get_rect(&self.context_menu)
+    }
+    #[cfg(test)]
+    pub fn context_menu_find_rect(&self) -> Option<Rect> {
+        self.context_menu.item_rect(self.find_menu_index?)
     }
     /// Force a viewport scrollback offset for tests that exercise
     /// `selected_text` over a `grid` larger than the visible viewport.
@@ -1912,8 +1927,12 @@ impl TerminalWidget {
     /// input; otherwise newlines are normalised to carriage returns (what
     /// the Enter key sends). Pasting snaps the viewport to the live bottom.
     pub fn paste(&mut self, text: &str) {
+        let _ = self.try_paste(text);
+    }
+
+    fn try_paste(&mut self, text: &str) -> Result<(), String> {
         if text.is_empty() {
-            return;
+            return Err("there is no text to paste".into());
         }
         let mut out = Vec::new();
         if self.modes.bracketed_paste {
@@ -1924,8 +1943,9 @@ impl TerminalWidget {
             let normalised = text.replace("\r\n", "\r").replace('\n', "\r");
             out.extend_from_slice(normalised.as_bytes());
         }
-        self.write_input(&out);
+        self.try_write_input(&out)?;
         self.scroll_offset = 0;
+        Ok(())
     }
 
     /// Assign `rect` and, if the cell grid dimensions changed, reflow the
@@ -2127,6 +2147,32 @@ const HISTORY_TRIM_SLACK: usize = 256;
 const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.menu_effects
+            .values_mut()
+            .find_map(ui::widget::ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        for (index, emitter) in &self.menu_effects {
+            let id = format!("terminal.menu:{}:{index}", self.pane_id);
+            bindings.retain(|binding| binding.control_id != id);
+            bindings.push(emitter.metadata(id));
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
+    ) {
+        self.allowed_menu_actions = Some(allowed.clone());
+        for emitter in self.menu_effects.values_mut() {
+            emitter.refresh_availability(allowed);
+        }
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("terminal")
     }
@@ -2248,12 +2294,30 @@ impl Widget for TerminalWidget {
             "terminal.control" => match (kind, value.as_str()) {
                 (OperationKind::Effect, "interrupt") => self.try_write_input(&[0x03])?,
                 (OperationKind::Effect, "clear") => self.try_write_input(&[0x0c])?,
+                (OperationKind::Effect, "paste") => {
+                    let text = clipboard_paste().ok_or("clipboard text is unavailable")?;
+                    self.try_paste(&text)?;
+                }
+                (OperationKind::Effect, "copy-selection") => {
+                    let text = self
+                        .selected_text()
+                        .filter(|text| !text.is_empty())
+                        .ok_or("there is no selected terminal output to copy")?;
+                    if !ui::text_selection::try_clipboard_copy(&text) {
+                        return Err(
+                            "the system clipboard did not accept selected terminal output".into(),
+                        );
+                    }
+                }
+                (OperationKind::Effect, "select-all") => self.select_all_output(),
                 (OperationKind::Effect, "copy-visible") => {
                     let visible = self.current_visible_text();
                     if visible.trim().is_empty() {
                         return Err("there is no visible terminal output to copy".to_string());
                     }
-                    clipboard_copy(&visible);
+                    if !ui::text_selection::try_clipboard_copy(&visible) {
+                        return Err("the system clipboard did not accept terminal output".into());
+                    }
                 }
                 (OperationKind::View, "history-top") => self.scroll_to_top(),
                 (OperationKind::View, "history-live") => self.scroll_to_bottom(),
@@ -4683,6 +4747,7 @@ impl TerminalWidget {
             self.selection = None;
         } else if let Some(text) = self.selected_text()
             && !text.is_empty()
+            && self.may_publish_selection()
         {
             clipboard_copy_primary(&text);
             if self.select_to_copy {
@@ -4768,15 +4833,18 @@ impl TerminalWidget {
     fn open_context_menu_at_cursor(&mut self) {
         let has_selection = self.selected_text().is_some_and(|t| !t.is_empty());
         let mut menu = ContextMenu::new();
+        self.menu_effects.clear();
+        let session = self.session_resource();
+        let transcript = self.transcript_resource();
         if has_selection {
-            menu.push(MenuItem::action("Copy", || {}));
+            self.push_menu_effect(&mut menu, "Copy", &transcript, "copy-selection");
         }
-        menu.push(MenuItem::action("Paste", || {}));
+        self.push_menu_effect(&mut menu, "Paste", &session, "paste");
         menu.push(MenuItem::separator());
         if !self.grid_is_blank() {
-            menu.push(MenuItem::action("Select all output", || {}));
+            self.push_menu_effect(&mut menu, "Select all output", &transcript, "select-all");
         }
-        menu.push(MenuItem::action("Clear screen", || {}));
+        self.push_menu_effect(&mut menu, "Clear screen", &session, "clear");
         self.find_menu_index = Some(menu.items().len());
         menu.push(MenuItem::action(
             ui::i18n::I18nManager::lookup("terminal-find-scrollback", None),
@@ -4808,6 +4876,35 @@ impl TerminalWidget {
         self.context_menu = menu;
     }
 
+    /// Bind effectful rows to their exported contract. Selection only queues
+    /// an intent; the host supplies current permissions and confirmation.
+    fn push_menu_effect(
+        &mut self,
+        menu: &mut ContextMenu,
+        label: &str,
+        resource: &Resource,
+        action_id: &str,
+    ) {
+        let Some(spec) = resource.actions.iter().find(|spec| spec.id == action_id) else {
+            tracing::error!(
+                action_id,
+                "terminal menu action is missing its resource contract"
+            );
+            return;
+        };
+        match ui::tilo_actions::ActionBinding::new(resource, spec, |()| serde_json::Map::new()) {
+            Ok(binding) => {
+                let mut emitter = ui::widget::ActionEmitter::new(binding);
+                if let Some(allowed) = &self.allowed_menu_actions {
+                    emitter.refresh_availability(allowed);
+                }
+                self.menu_effects.insert(menu.items().len(), emitter);
+                menu.push(MenuItem::action(label, || {}));
+            }
+            Err(error) => tracing::error!(%error, action_id, "terminal menu binding failed"),
+        }
+    }
+
     /// Open the terminal's shared context menu at a host-owned logical
     /// position. This is useful for embedders that route a context-menu
     /// gesture themselves (touch long-press, keyboard invocation, or a custom
@@ -4818,6 +4915,12 @@ impl TerminalWidget {
     }
 
     fn activate_context_menu_item(&mut self, index: usize) {
+        if let Some(emitter) = self.menu_effects.get_mut(&index) {
+            if let Err(error) = emitter.emit(()) {
+                tracing::warn!(%error, "terminal menu action could not be queued");
+            }
+            return;
+        }
         if self.find_menu_index == Some(index) {
             self.open_find();
             return;
@@ -4829,25 +4932,20 @@ impl TerminalWidget {
             .and_then(MenuItem::label)
             .map(str::to_owned);
         match label.as_deref() {
-            Some("Copy") => {
-                if let Some(text) = self.selected_text()
-                    && !text.is_empty()
-                {
-                    clipboard_copy(&text);
-                }
-            }
-            Some("Paste") => {
-                if let Some(text) = clipboard_paste() {
-                    self.paste(&text);
-                }
-            }
-            Some("Select all output") => self.select_all_output(),
-            Some("Clear screen") => self.write_input(&[0x0c]),
             Some("Copy on select: On" | "Copy on select: Off") => {
                 self.select_to_copy = !self.select_to_copy;
             }
             _ => {}
         }
+    }
+
+    fn may_publish_selection(&self) -> bool {
+        self.allowed_menu_actions.as_ref().is_none_or(|allowed| {
+            allowed.contains(&ui::tilo_actions::ActionAddress::new(
+                self.terminal_transcript_target(),
+                "copy-selection",
+            ))
+        })
     }
 
     fn select_all_output(&mut self) {
@@ -4868,6 +4966,7 @@ impl TerminalWidget {
         });
         if let Some(text) = self.selected_text()
             && !text.is_empty()
+            && self.may_publish_selection()
         {
             clipboard_copy_primary(&text);
         }
