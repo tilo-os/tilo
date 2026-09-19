@@ -1,6 +1,6 @@
 # Nonpublishing app packaging adapter
 
-Prepared from main `5ade281b0`; not pushed, dispatched or activated. This reuses
+Consolidated with main through `f6acde7bb`; not dispatched or activated. This reuses
 `app_packaging_coordinator.Store`, transactions, intent-before-POST protocol and
 latest-pending state machine. There is no second queue implementation or service.
 The private fixture adapter and its ten regression tests remain supported.
@@ -78,12 +78,22 @@ not bind run ID or builder digest; the adapter's artifact retrieval must bind
 those to the already matched run before calling it. Its publication `bind(...)`
 operation is not used in this nonpublishing mode.
 
-The current production `publish=false` job emits selected build receipts, not
-the independently verified final merged collection. Do not substitute those
-self-produced JSON files for this callback. A nonpublishing final-assembly/replay
-stage or separately authenticated artifact retrieval remains necessary. Verify
-all architecture receipts, exact bytes and persisted input identities before
-returning the proof. Receipt/source claims alone are insufficient.
+This branch includes `assemble_verified_apps.py` and a guarded nonpublishing
+final-assembly job. Changed apps must come from the current build; only unselected
+apps may be reused from the exact verified baseline. The final collection is
+canonically verified again and retained with its receipt and assembly provenance.
+This does not install the controller's independent acceptance callback. That
+callback must authenticate artifacts and bind current job attempts, source,
+builder and scope before replaying verification for every architecture.
+Candidate receipt or provenance claims alone are insufficient.
+
+Read-only live API checks on 2026-09-19 confirmed the jobs endpoint's array
+response and `attempt`, `task_id`, `handle`, `repo_id`, `run_id` fields; artifact
+listing also returns an array with run identity, expiry and byte size. Fetching
+artifact 34748's ZIP returned HTTP 200 without a redirect using an operator
+credential. Built-in workflow-token access to historical artifacts and the
+new plan artifact's run/attempt binding still need live qualification. The
+operator probe does not establish either permission or end-to-end acceptance.
 
 The first verified build has no baseline and selects the whole collection.
 Subsequent compatible default-collection builds use the prior **verified packaging** source and the
@@ -130,7 +140,7 @@ baseline does not claim a downloadable release has been published.
    Keep publication and qualification states separate. Observe monotonically
    sequenced eligible committed sources; no scheduler is installed here.
 5. Enable the repository variable and external policy only for an explicitly
-   bounded, capacity-approved qualification; prove full-SHA input handling and
+   bounded qualification through normal scheduler admission; prove full-SHA input handling and
    artifact verification live. Reconcile uncertain dispatches before any repeat.
    Default production activation and routine publication remain disabled.
 
