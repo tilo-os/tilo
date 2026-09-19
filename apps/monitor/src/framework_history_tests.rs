@@ -28,12 +28,109 @@ fn managed_driver_for(root: Box<dyn Widget>) -> ui::headless::Driver {
         }],
     )
     .unwrap();
-    ui::headless::Driver::from_managed_root(
+    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+        "en-US",
+    );
+    let renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
+    ui::headless::Driver::from_managed_root_with_controlled_inputs(
         ui::State::new(),
         ManagedRoot::new(root, registration),
         (1_000, 750),
+        ui::Theme::dark(),
+        renderer,
+        ui::permissions::UserId("monitor-custody-author".into()),
     )
     .unwrap()
+}
+
+struct CustodyDeniedMonitorRoot {
+    child: Box<dyn Widget>,
+    denied: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl Widget for CustodyDeniedMonitorRoot {
+    fn name(&self) -> &'static str {
+        "CustodyDeniedMonitorRoot"
+    }
+
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        self.child.document_history_definition()
+    }
+
+    fn sync(&mut self, doc: &mut AutoCommit, path: &automerge::ObjId) {
+        self.child.sync(doc, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &ui::Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        self.child.build_layout(tree, theme, nodes)
+    }
+
+    fn apply_layout(
+        &mut self,
+        tree: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        self.child.apply_layout(tree, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut ui::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        self.child.draw(scene, transform, text, theme, presence);
+    }
+
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.child.get_rect()
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &automerge::ObjId,
+        handled: &mut bool,
+        focus: &mut Option<taffy::NodeId>,
+        node: taffy::NodeId,
+        tree: &taffy::TaffyTree<()>,
+    ) {
+        self.child.handle_event(
+            event, scale, modifiers, doc, path, handled, focus, node, tree,
+        );
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![self.child.as_ref()]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.denied.get() {
+            Vec::new()
+        } else {
+            vec![self.child.as_mut()]
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        if self.denied.get() {
+            None
+        } else {
+            self.child.take_control_invocation()
+        }
+    }
 }
 
 fn resource_snapshot(driver: &ui::headless::Driver) -> Vec<(String, String, Vec<String>)> {
@@ -88,15 +185,21 @@ fn semantic_center(inspection: &str, name: &str) -> (f64, f64) {
 }
 
 #[test]
-fn production_root_declares_monitor_history() {
-    let definition = crate::app_root()
+fn controlled_inert_root_type_declares_monitor_history_without_provider_reads() {
+    crate::sampler::reset_provider_read_count();
+    let definition = offline_root()
         .document_history_definition()
-        .expect("production Monitor root declares History");
+        .expect("controlled Monitor root type declares History");
     assert_eq!(definition.app_id, "dev.tilo.monitor");
     assert!(std::ptr::eq(
         definition,
         std::ptr::addr_of!(crate::framework_history::HISTORY)
     ));
+    assert_eq!(
+        crate::sampler::provider_read_count(),
+        0,
+        "controlled History declaration evidence must not read native providers"
+    );
 }
 
 #[test]
@@ -210,6 +313,79 @@ fn pending_kill_confirmation_survives_history_and_signals_the_exact_process_once
 
     driver.relayout();
     assert_eq!(probe.attempts().len(), 1, "settlement cannot replay");
+}
+
+#[test]
+fn control_custody_monitor_unreachable_private_route_seals_e_suppresses_hidden_kill_and_refresh_and_runs_f()
+ {
+    crate::sampler::reset_provider_read_count();
+    let probe = crate::sampler::SignalProbe::default();
+    let (app, pid, started_at, arm, refresh_attempts) =
+        crate::MonitorApp::history_test_controlled_root(probe.clone());
+    let denied = std::rc::Rc::new(std::cell::Cell::new(false));
+    let root = CustodyDeniedMonitorRoot {
+        child: Box::new(app),
+        denied: denied.clone(),
+    };
+    let mut driver = managed_driver_for(Box::new(root));
+
+    arm.set(Some(crate::app::HistoryControlArm::Kill(pid)));
+    driver.relayout();
+    denied.set(true);
+    driver.click_named("history-open").unwrap();
+    let sealed = driver.pending_history_controls();
+    assert_eq!(
+        sealed.len(),
+        1,
+        "mounted custody seals generation-bound Kill E"
+    );
+    assert_eq!(
+        sealed[0].invocation.address,
+        ui::tilo_actions::ActionAddress::new(format!("process:{pid}:started:{started_at}"), "kill",)
+    );
+    assert!(sealed[0].invocation.arguments.is_empty());
+
+    arm.set(Some(crate::app::HistoryControlArm::Kill(pid)));
+    driver.relayout();
+    arm.set(Some(crate::app::HistoryControlArm::Refresh));
+    driver.relayout();
+    assert_eq!(
+        driver.pending_history_controls().len(),
+        1,
+        "hidden Kill and recovery Refresh H are absent from saved output"
+    );
+    assert!(probe.attempts().is_empty(), "E/H capture sends no signal");
+
+    driver.click_named("history-open").unwrap();
+    assert_eq!(
+        driver.pending_history_controls().len(),
+        1,
+        "hidden H attempts do not reappear after returning live"
+    );
+    denied.set(false);
+    driver.send(&winit::event::WindowEvent::Focused(true));
+    driver
+        .perform_semantic_named(
+            "monitor_app",
+            Some(&format!("monitor.process:{pid}:started:{started_at}:stop")),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    assert_eq!(
+        probe.attempts(),
+        vec![crate::sampler::SignalAttempt {
+            pid,
+            started_at,
+            kind: crate::sampler::StopKind::Term,
+        }],
+        "fresh ordinary Stop F signals the exact generation once"
+    );
+    assert_eq!(
+        refresh_attempts.get(),
+        0,
+        "E, hidden Kill/Refresh H, return, and fresh Stop perform no sampler refresh"
+    );
+    assert_eq!(crate::sampler::provider_read_count(), 0);
 }
 
 #[test]

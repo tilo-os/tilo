@@ -466,7 +466,7 @@ pub struct CommandPalette {
     /// Native palette rows enqueue an inert address+arguments request here.
     /// The application host re-resolves it against the fresh resource tree,
     /// exactly like a bound Button; the palette never executes app code.
-    action_invocation: Option<ControlInvocation>,
+    action_invocation: crate::control_custody::ControlHolder,
     /// Skip the built-in fuzzy filter when `true`, for provider hosts whose
     /// pre-matched result set should show verbatim.
     bypass_fuzzy: bool,
@@ -527,7 +527,9 @@ impl CommandPalette {
             arg_state: None,
             direct_argument: false,
             outcome: None,
-            action_invocation: None,
+            action_invocation: crate::control_custody::ControlHolder::new(
+                crate::control_custody::ControlProducerDiscipline::ReplaceOne,
+            ),
             bypass_fuzzy: false,
             hide_filter_strip: false,
             host_filter_strip: false,
@@ -578,7 +580,7 @@ impl CommandPalette {
         self.arg_state = None;
         self.direct_argument = false;
         self.outcome = None;
-        self.action_invocation = None;
+        self.action_invocation.clear();
         self.cursor = 0;
         self.rebuild();
     }
@@ -630,7 +632,7 @@ impl CommandPalette {
         self.set_entries(vec![entry]);
         self.is_focused = true;
         self.outcome = None;
-        self.action_invocation = None;
+        self.action_invocation.clear();
         self.direct_argument = true;
         self.arg_state = Some(ArgState {
             entry_id: id,
@@ -843,7 +845,8 @@ impl CommandPalette {
             if let (Some(name), Some(value)) = (&entry.action_argument, argument) {
                 arguments.insert(name.clone(), serde_json::Value::String(value));
             }
-            self.action_invocation = Some(ControlInvocation { address, arguments });
+            self.action_invocation
+                .emit(ControlInvocation { address, arguments });
             self.outcome = None;
             self.arg_state = None;
             if self.mode == PaletteMode::Commands {
@@ -2046,6 +2049,13 @@ const FILTER_STRIP_HEIGHT: f64 = 36.0;
 const FOOTER_HEIGHT: f64 = 28.0;
 
 impl Widget for CommandPalette {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        let _ = self.action_invocation.install(domain, attachment);
+    }
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
         self.action_invocation.take()
     }

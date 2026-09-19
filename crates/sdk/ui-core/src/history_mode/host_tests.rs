@@ -138,6 +138,10 @@ fn managed_history_button_opens_real_activity_without_invoking_live_effects() {
     );
     driver.click_named("history-open").unwrap();
     assert!(driver.targets().contains_key("activity_timeline"));
+    assert!(
+        driver.inspection_json().unwrap().contains("Send"),
+        "wide Domain activity keeps the live surface beside the timeline"
+    );
     assert_eq!(effects.get(), 0);
     assert_eq!(driver.state_mut().doc.get_heads(), before);
 }
@@ -648,18 +652,176 @@ fn external_history_explains_why_no_versions_exist() {
             content_schema: None,
         }],
     };
+    for viewport in [(390, 650), (900, 650)] {
+        let registration = HistoryRegistration::new(
+            &EXTERNAL,
+            vec![HistorySourceRegistration::Unversioned {
+                scope: "session",
+                reason: "Remote content has no document versions",
+            }],
+        )
+        .unwrap();
+        let live = Column::new().push(Box::new(Button::new(
+            "external-live-marker",
+            "Retained live session",
+            None,
+        )));
+        let mut driver = Driver::from_managed_root(
+            State::new(),
+            ManagedRoot::new(Box::new(live), registration),
+            viewport,
+        )
+        .unwrap();
+        assert!(driver.targets().contains_key("external-live-marker"));
+        driver.click_named("history-open").unwrap();
+        let inspection = driver.inspection_json().unwrap();
+        assert!(inspection.contains("Remote content has no document versions"));
+        assert!(!driver.targets().contains_key("activity_timeline"));
+        assert!(
+            !inspection.contains("Retained live session"),
+            "External History presents only its limitation at {viewport:?}"
+        );
+        driver.click_named("history-open").unwrap();
+        assert!(
+            driver
+                .inspection_json()
+                .unwrap()
+                .contains("Retained live session")
+        );
+    }
+}
+
+fn checked_preview(
+    _: crate::history_mode::checked_files::FilePreviewInput,
+) -> Result<Box<dyn crate::history_mode::HistoryPreview>, String> {
+    Err("no preview selected by the composition test".into())
+}
+
+static CHECKED_COMPOSITION: HistoryDefinition = HistoryDefinition {
+    app_id: "dev.qos.checked-composition-fixture",
+    scopes: &[HistoryScopeDefinition {
+        key: "file",
+        title: "File",
+        presentation: HistoryPresentation::CheckedFiles {
+            create: checked_preview,
+        },
+        content_schema: None,
+    }],
+};
+
+struct CheckedCompositionRoot {
+    inner: Box<dyn Widget>,
+    source: crate::history_mode::checked_files::FileHistorySource,
+}
+
+impl Widget for CheckedCompositionRoot {
+    fn history_registration(
+        &self,
+    ) -> Result<Option<HistoryRegistration>, HistoryRegistrationError> {
+        HistoryRegistration::new(
+            &CHECKED_COMPOSITION,
+            vec![HistorySourceRegistration::CheckedFiles {
+                scope: "file",
+                source: self.source.clone(),
+            }],
+        )
+        .map(Some)
+    }
+
+    fn document_history_definition(&self) -> Option<&'static HistoryDefinition> {
+        Some(&CHECKED_COMPOSITION)
+    }
+
+    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        self.inner.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        self.inner.build_layout(tree, theme, nodes)
+    }
+
+    fn apply_layout(
+        &mut self,
+        tree: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        self.inner.apply_layout(tree, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        self.inner.draw(scene, transform, text, theme, presence);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        handled: &mut bool,
+        focus: &mut Option<taffy::NodeId>,
+        node: taffy::NodeId,
+        tree: &taffy::TaffyTree<()>,
+    ) {
+        self.inner.handle_event(
+            event, scale, modifiers, state, path, handled, focus, node, tree,
+        );
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.inner.children()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.inner.children_mut()
+    }
+
+    fn name(&self) -> &str {
+        "checked-composition-root"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.inner.get_rect()
+    }
+}
+
+#[test]
+fn checked_files_activity_keeps_the_wide_live_surface() {
+    let source = crate::history_mode::checked_files::FileHistorySource::default();
     let registration = HistoryRegistration::new(
-        &EXTERNAL,
-        vec![HistorySourceRegistration::Unversioned {
-            scope: "session",
-            reason: "Remote content has no document versions",
+        &CHECKED_COMPOSITION,
+        vec![HistorySourceRegistration::CheckedFiles {
+            scope: "file",
+            source: source.clone(),
         }],
     )
     .unwrap();
+    let live = CheckedCompositionRoot {
+        inner: Box::new(Column::new().push(Box::new(Button::new(
+            "checked-live-marker",
+            "Retained checked file",
+            None,
+        )))),
+        source,
+    };
     let mut driver = Driver::from_managed_root(
         State::new(),
-        ManagedRoot::new(Box::new(Column::new()), registration),
-        (390, 650),
+        ManagedRoot::new(Box::new(live), registration),
+        (900, 650),
     )
     .unwrap();
     driver.click_named("history-open").unwrap();
@@ -667,9 +829,9 @@ fn external_history_explains_why_no_versions_exist() {
         driver
             .inspection_json()
             .unwrap()
-            .contains("Remote content has no document versions")
+            .contains("Retained checked file"),
+        "wide CheckedFiles activity keeps the live surface beside its controls"
     );
-    assert!(!driver.targets().contains_key("activity_timeline"));
 }
 
 #[test]

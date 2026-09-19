@@ -1,4 +1,6 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
+pub(crate) mod legacy_document;
+
 use crate::permissions::{PermissionContext, UserId};
 use crate::record::{RecordCheckout, RecordOpenError, RecordStore};
 use crate::wake::{WakeHandle, WakeScopeGuard};
@@ -159,10 +161,85 @@ pub(crate) struct DrainedControlInvocations {
 }
 
 pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControlInvocations {
+    let batch = capture_control_invocations(root);
+    DrainedControlInvocations {
+        pending: batch.controls,
+        error: batch.failures.into_iter().next(),
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct BoundControlBatch {
+    pub(crate) visited: Vec<CallbackBinding>,
+    pub(crate) controls: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
+    pub(crate) failures: Vec<BoundDispatchError>,
+}
+
+/// Move every reachable component control while preserving controls captured
+/// before a later owner traversal failure.
+pub(crate) fn capture_control_invocations(root: &mut dyn Widget) -> BoundControlBatch {
+    visit_control_queues(root, true)
+}
+
+/// Retry custody traversal without opening any live queue after History entry.
+pub(crate) fn inspect_control_owners(root: &mut dyn Widget) -> BoundControlBatch {
+    visit_control_queues(root, false)
+}
+
+/// Snapshot the finite binding queues through immutable owner metadata. These
+/// descriptors are sealed before the fallible mutable traversal starts. They
+/// are never matched to later emissions by value or reinserted in a live queue.
+pub(crate) struct ControlQueueSnapshot {
+    /// Retain even empty queues so suspended output can be discarded without
+    /// successfully traversing their mutable owners again.
+    pub(crate) owners: Vec<CallbackBinding>,
+    pub(crate) controls: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
+}
+
+pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot {
+    fn visit(
+        widget: &dyn Widget,
+        seen: &mut Vec<CallbackBinding>,
+        output: &mut Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
+    ) {
+        if let Some(binding) = widget.callback_binding()
+            && !seen.iter().any(|prior| prior.same_component(&binding))
+        {
+            seen.push(binding.clone());
+            for invocation in binding.queued_controls.borrow().iter() {
+                output.push((
+                    BoundActionTarget {
+                        address: BoundActionAddress {
+                            instance_id: binding.instance_id,
+                            address: invocation.address.clone(),
+                        },
+                        binding: binding.clone(),
+                    },
+                    invocation.clone(),
+                ));
+            }
+        }
+        widget.for_each_child(&mut |child| visit(child, seen, output));
+    }
+    let mut output = Vec::new();
+    let mut owners = Vec::new();
+    visit(root, &mut owners, &mut output);
+    ControlQueueSnapshot {
+        owners,
+        controls: output,
+    }
+}
+
+fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch {
     let mut invocations = Vec::new();
+    let mut visited = Vec::new();
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
+        visited.push(binding.clone());
+        if !drain {
+            return None;
+        }
         let queued = binding
             .queued_controls
             .borrow_mut()
@@ -194,16 +271,17 @@ pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControl
         }
         None
     };
-    let error = root
+    let failure = root
         .visit_components(&mut ComponentRequest {
             target: None,
             found: false,
             visit: &mut visit,
         })
         .err();
-    DrainedControlInvocations {
-        pending: invocations,
-        error,
+    BoundControlBatch {
+        visited,
+        controls: invocations,
+        failures: failure.into_iter().collect(),
     }
 }
 
@@ -832,12 +910,22 @@ pub(crate) fn discover_bound_resources(
     doc: &AutoCommit,
     lazy_address: Option<&tilo_actions::ActionAddress>,
 ) -> Result<Vec<BoundResourceSnapshot>, BoundDispatchError> {
+    discover_bound_resources_with_filter(widget, doc, lazy_address, true)
+}
+
+fn discover_bound_resources_with_filter(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    lazy_address: Option<&tilo_actions::ActionAddress>,
+    filtered: bool,
+) -> Result<Vec<BoundResourceSnapshot>, BoundDispatchError> {
     fn visit(
         widget: &dyn Widget,
         doc: &AutoCommit,
         inherited: Option<CallbackBinding>,
         address: Option<&tilo_actions::ActionAddress>,
         snapshots: &mut Vec<BoundResourceSnapshot>,
+        filtered: bool,
     ) -> Result<(), BoundDispatchError> {
         let boundary = widget.callback_binding();
         let binding = boundary.clone().or(inherited);
@@ -856,10 +944,14 @@ pub(crate) fn discover_bound_resources(
                     {
                         resources.push(resource);
                     }
-                    resources
-                        .into_iter()
-                        .filter_map(|resource| filter_resource(binding, resource))
-                        .collect::<Vec<_>>()
+                    if filtered {
+                        resources
+                            .into_iter()
+                            .filter_map(|resource| filter_resource(binding, resource))
+                            .collect()
+                    } else {
+                        resources
+                    }
                 })?;
                 if let Some(snapshot) = snapshots
                     .iter_mut()
@@ -877,13 +969,13 @@ pub(crate) fn discover_bound_resources(
         let mut result = Ok(());
         widget.for_each_child(&mut |child| {
             if result.is_ok() {
-                result = visit(child, doc, binding.clone(), address, snapshots);
+                result = visit(child, doc, binding.clone(), address, snapshots, filtered);
             }
         });
         result
     }
     let mut snapshots = Vec::new();
-    visit(widget, doc, None, lazy_address, &mut snapshots)?;
+    visit(widget, doc, None, lazy_address, &mut snapshots, filtered)?;
     Ok(snapshots)
 }
 
@@ -992,6 +1084,448 @@ pub(crate) fn encode_resource_action(
     }
 }
 
+/// Ordinary confirmation guarantees declared meaning and arguments in the same
+/// owner. Hidden referent continuity is additional evidence, only when the
+/// provider supplied it at emission; this is deliberately not History custody.
+#[derive(Clone, PartialEq)]
+struct OrdinaryConfirmationSnapshot {
+    resource_id: String,
+    resource_kind: String,
+    action_id: String,
+    label: String,
+    description: Option<String>,
+    locus: tilo_actions::ExecutionLocus,
+    kind: tilo_actions::OperationKind,
+    operation_type: Option<String>,
+    contract: tilo_actions::ActionContract,
+    params: Vec<tilo_actions::ActionParam>,
+    input: ControlInputSurface,
+    encoded: tilo_actions::EncodedAction,
+    continuation: Option<tilo_actions::ContinuationEvidence>,
+}
+
+#[derive(Clone)]
+pub(crate) struct OrdinaryConfirmation {
+    pub(crate) target: legacy_document::LocalResourceTarget,
+    pub(crate) address: tilo_actions::ActionAddress,
+    pub(crate) arguments: ControlContinuationArguments,
+    domain: crate::control_custody::WeakControlDomain,
+    snapshot: OrdinaryConfirmationSnapshot,
+    pub(crate) context: tilo_actions::ActionContext,
+}
+
+impl OrdinaryConfirmation {
+    pub(crate) fn prepare(
+        root: &dyn Widget,
+        doc: &AutoCommit,
+        target: legacy_document::LocalResourceTarget,
+        domain: &crate::ControlDomain,
+        address: tilo_actions::ActionAddress,
+        arguments: ControlContinuationArguments,
+    ) -> Result<Self, tilo_actions::DoorError> {
+        if domain.closed() {
+            return Err(Self::stale());
+        }
+        let resources = resources_for_control_target(root, doc, &target, &address)?;
+        let (resource, spec) = unique_control_spec(&resources, &address)?;
+        let context = tilo_actions::ActionContext::for_resource(
+            &spec.label,
+            resource.id.as_str(),
+            &resource.kind,
+            &resource.label,
+        );
+        let snapshot = Self::snapshot(&resources, &address, &arguments)?;
+        Ok(Self {
+            target,
+            address,
+            arguments,
+            domain: domain.downgrade(),
+            snapshot,
+            context,
+        })
+    }
+    fn snapshot(
+        resources: &[tilo_actions::Resource],
+        address: &tilo_actions::ActionAddress,
+        arguments: &ControlContinuationArguments,
+    ) -> Result<OrdinaryConfirmationSnapshot, tilo_actions::DoorError> {
+        let (resource, spec) = unique_control_spec(resources, address)?;
+        let (argument, json) = arguments.as_door_arguments();
+        let encoded = encode_resource_action(resources, address, json, argument)?;
+        Ok(OrdinaryConfirmationSnapshot {
+            resource_id: resource.id.as_str().to_owned(),
+            resource_kind: resource.kind.clone(),
+            action_id: spec.id.clone(),
+            label: spec.label.clone(),
+            description: spec.description.clone(),
+            locus: spec.locus,
+            kind: spec.kind,
+            operation_type: spec.operation_type.clone(),
+            contract: spec.contract.clone(),
+            params: spec.params().to_vec(),
+            input: control_input_surface(spec),
+            encoded,
+            continuation: spec
+                .continuation_identity(tilo_actions::ContinuationQuery::Exact(arguments.query())),
+        })
+    }
+    pub(crate) fn validate_owner(
+        &self,
+        domain: &crate::ControlDomain,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let original = self.domain.upgrade().ok_or_else(Self::stale)?;
+        if original.closed() || domain.closed() || !original.same_owner_incarnation(domain) {
+            return Err(Self::stale());
+        }
+        Ok(())
+    }
+    pub(crate) fn validate(
+        &self,
+        root: &dyn Widget,
+        doc: &AutoCommit,
+        domain: &crate::ControlDomain,
+    ) -> Result<(), tilo_actions::DoorError> {
+        self.validate_owner(domain)?;
+        let resources = resources_for_control_target(root, doc, &self.target, &self.address)?;
+        let mut current = Self::snapshot(&resources, &self.address, &self.arguments)?;
+        // Absence at emission is not retroactively replaced with provider proof.
+        if self.snapshot.continuation.is_none() {
+            current.continuation = None;
+        }
+        if current != self.snapshot {
+            return Err(Self::stale());
+        }
+        Ok(())
+    }
+    fn stale() -> tilo_actions::DoorError {
+        tilo_actions::DoorError::Unavailable {
+            code: "stale_ordinary_confirmation".into(),
+            reason: "The original confirmation request is no longer valid".into(),
+        }
+    }
+    pub(crate) fn encoded(&self) -> &tilo_actions::EncodedAction {
+        &self.snapshot.encoded
+    }
+    pub(crate) fn kind(&self) -> tilo_actions::OperationKind {
+        self.snapshot.kind
+    }
+    pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
+        &self.snapshot.contract.confirmation
+    }
+}
+
+fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
+    match &spec.input {
+        tilo_actions::ActionInput::Immediate(_) => ControlInputSurface::Immediate,
+        tilo_actions::ActionInput::Prompted {
+            prompt,
+            placeholder,
+            collects,
+            ..
+        } => ControlInputSurface::Prompted {
+            prompt: prompt.clone(),
+            placeholder: placeholder.clone(),
+            collects: *collects,
+        },
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct ControlWitness {
+    identity: ControlIdentity,
+    type_id: String,
+    payload: Vec<u8>,
+    confirmation: tilo_actions::ConfirmationPolicy,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum ControlInputSurface {
+    Immediate,
+    Prompted {
+        prompt: String,
+        placeholder: String,
+        collects: tilo_actions::Collects,
+    },
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct ControlIdentity {
+    continuation: tilo_actions::ContinuationEvidence,
+    locus: tilo_actions::ExecutionLocus,
+    kind: tilo_actions::OperationKind,
+    operation_type: Option<String>,
+    risk: tilo_actions::RiskLevel,
+    retry: tilo_actions::RetryPolicy,
+    reversible: bool,
+    execution: tilo_actions::ExecutionMode,
+    discovery: tilo_actions::DiscoveryScope,
+    result: tilo_actions::ResultSpec,
+    tags: Vec<String>,
+    params: Vec<tilo_actions::ActionParam>,
+    input_surface: ControlInputSurface,
+}
+
+impl ControlWitness {
+    pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
+        &self.confirmation
+    }
+    pub(crate) fn identity(&self) -> &ControlIdentity {
+        &self.identity
+    }
+}
+
+#[derive(Clone)]
+pub(crate) enum ControlContinuationArguments {
+    Immediate,
+    Text(String),
+    Json(serde_json::Map<String, serde_json::Value>),
+}
+
+impl ControlContinuationArguments {
+    pub(crate) fn as_door_arguments(
+        &self,
+    ) -> (
+        Option<&str>,
+        Option<&serde_json::Map<String, serde_json::Value>>,
+    ) {
+        match self {
+            Self::Immediate => (None, None),
+            Self::Text(text) => (Some(text), None),
+            Self::Json(json) => (None, Some(json)),
+        }
+    }
+    fn query(&self) -> tilo_actions::ContinuationArguments<'_> {
+        match self {
+            Self::Immediate => tilo_actions::ContinuationArguments::Immediate,
+            Self::Text(value) => tilo_actions::ContinuationArguments::Text(value),
+            Self::Json(arguments) => tilo_actions::ContinuationArguments::Json(arguments),
+        }
+    }
+}
+
+/// Re-resolve one exact custody target and derive inert comparison data.
+/// The returned encoding is never executed.
+pub(crate) fn control_witness(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    target: &legacy_document::LocalResourceTarget,
+    invocation: &tilo_actions::ControlInvocation,
+) -> Result<ControlWitness, tilo_actions::DoorError> {
+    control_witness_with_arguments(
+        root,
+        doc,
+        target,
+        invocation,
+        &ControlContinuationArguments::Json(invocation.arguments.clone()),
+    )
+}
+
+pub(crate) fn control_witness_with_arguments(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    target: &legacy_document::LocalResourceTarget,
+    invocation: &tilo_actions::ControlInvocation,
+    original_arguments: &ControlContinuationArguments,
+) -> Result<ControlWitness, tilo_actions::DoorError> {
+    let resources = resources_for_control_target(root, doc, target, &invocation.address)?;
+    let (resource, spec) = unique_control_spec(&resources, &invocation.address)?;
+    let (argument, arguments) = match original_arguments {
+        ControlContinuationArguments::Immediate => (None, None),
+        ControlContinuationArguments::Text(value) => (Some(value.as_str()), None),
+        ControlContinuationArguments::Json(arguments) => (None, Some(arguments)),
+    };
+    let encoded = encode_resource_action(&resources, &invocation.address, arguments, argument)?;
+    let continuation = spec
+        .continuation_identity(tilo_actions::ContinuationQuery::Exact(
+            original_arguments.query(),
+        ))
+        .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+            code: "unsupported_continuation_identity".into(),
+            reason: "The action provider cannot prove the original target and handler identity"
+                .into(),
+        })?;
+    Ok(ControlWitness {
+        identity: control_identity_from_spec(resource, spec, continuation),
+        type_id: encoded.type_id,
+        payload: encoded.payload,
+        confirmation: spec.contract.confirmation.clone(),
+    })
+}
+
+fn resources_for_control_target(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    target: &legacy_document::LocalResourceTarget,
+    address: &tilo_actions::ActionAddress,
+) -> Result<Vec<tilo_actions::Resource>, tilo_actions::DoorError> {
+    match target {
+        legacy_document::LocalResourceTarget::Component(target) => {
+            if target.address.address != *address {
+                return Err(tilo_actions::DoorError::Unknown(address.clone()));
+            }
+            let snapshots = discover_bound_resources_with_filter(root, doc, Some(address), false)
+                .map_err(|error| BoundActionError::Dispatch(error).into_door())?;
+            let snapshot = snapshots
+                .into_iter()
+                .find(|snapshot| snapshot.binding.same_component(&target.binding))
+                .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+            // Empty and unauthorized declarations still claim their identity.
+            // Check the complete owner forest before presentation filtering.
+            unique_control_spec(&snapshot.resources, address)?;
+            Ok(snapshot
+                .resources
+                .into_iter()
+                .filter_map(|resource| filter_resource(&snapshot.binding, resource))
+                .collect())
+        }
+        legacy_document::LocalResourceTarget::Legacy(target) => {
+            if target.address != *address {
+                return Err(tilo_actions::DoorError::Unknown(address.clone()));
+            }
+            Ok(legacy_document::resolve_legacy_invocation(root, target)?)
+        }
+        legacy_document::LocalResourceTarget::Outer => {
+            let mut resources = Vec::new();
+            collect_unbound_resources(root, doc, &mut resources);
+            if tilo_actions::door::resolve(&resources, address).is_none()
+                && let Some(resource) = resolve_unbound_resource(root, doc, &address.resource)
+            {
+                resources.push(resource);
+            }
+            Ok(resources)
+        }
+    }
+}
+
+fn unique_control_spec<'a>(
+    resources: &'a [tilo_actions::Resource],
+    address: &tilo_actions::ActionAddress,
+) -> Result<(&'a tilo_actions::Resource, &'a tilo_actions::ActionSpec), tilo_actions::DoorError> {
+    fn matches<'a>(
+        resources: &'a [tilo_actions::Resource],
+        address: &tilo_actions::ActionAddress,
+        found: &mut Vec<&'a tilo_actions::Resource>,
+    ) {
+        for resource in resources {
+            if resource.id.as_str() == address.resource {
+                found.push(resource);
+            }
+            matches(&resource.children, address, found);
+        }
+    }
+    let mut found = Vec::new();
+    matches(resources, address, &mut found);
+    let [resource] = found.as_slice() else {
+        return if found.is_empty() {
+            Err(tilo_actions::DoorError::Unknown(address.clone()))
+        } else {
+            Err(tilo_actions::DoorError::Unavailable {
+                code: "ambiguous_action_identity".into(),
+                reason: "More than one declaration in the retained owner claims this address"
+                    .into(),
+            })
+        };
+    };
+    let actions = resource
+        .actions
+        .iter()
+        .filter(|spec| spec.id == address.action)
+        .collect::<Vec<_>>();
+    let [spec] = actions.as_slice() else {
+        return if actions.is_empty() {
+            Err(tilo_actions::DoorError::Unknown(address.clone()))
+        } else {
+            Err(tilo_actions::DoorError::Unavailable {
+                code: "ambiguous_action_identity".into(),
+                reason: "More than one action declaration in the retained resource claims this id"
+                    .into(),
+            })
+        };
+    };
+    Ok((*resource, *spec))
+}
+
+fn control_identity_from_spec(
+    _resource: &tilo_actions::Resource,
+    spec: &tilo_actions::ActionSpec,
+    continuation: tilo_actions::ContinuationEvidence,
+) -> ControlIdentity {
+    let input_surface = control_input_surface(spec);
+    ControlIdentity {
+        continuation,
+        locus: spec.locus,
+        kind: spec.kind,
+        operation_type: spec.operation_type.clone(),
+        risk: spec.contract.risk,
+        retry: spec.contract.retry,
+        reversible: spec.contract.reversible,
+        execution: spec.contract.execution.clone(),
+        discovery: spec.contract.discovery,
+        result: spec.contract.result.clone(),
+        tags: spec.contract.tags.clone(),
+        params: spec.params().to_vec(),
+        input_surface,
+    }
+}
+
+pub(crate) fn control_draft_identity(
+    root: &dyn Widget,
+    doc: &AutoCommit,
+    target: &legacy_document::LocalResourceTarget,
+    address: &tilo_actions::ActionAddress,
+) -> Result<ControlIdentity, tilo_actions::DoorError> {
+    let resources = resources_for_control_target(root, doc, target, address)?;
+    let (resource, spec) = unique_control_spec(&resources, address)?;
+    let continuation = spec
+        .continuation_identity(tilo_actions::ContinuationQuery::Draft)
+        .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+            code: "unsupported_continuation_identity".into(),
+            reason: "The action provider cannot prove a stable draft resolution domain".into(),
+        })?;
+    Ok(control_identity_from_spec(resource, spec, continuation))
+}
+
+/// Canonical Document executor, retaining its actual envelope for owned bookkeeping.
+fn execute_document(
+    doc: &mut AutoCommit,
+    action: &dyn tilo_actions::Action,
+    encoded: tilo_actions::EncodedAction,
+    transport: &mut dyn tilo_actions::ActionTransport,
+    actor: &str,
+    broker_admitted: bool,
+    context: tilo_actions::ActionContext,
+) -> Result<tilo_actions::Dispatched, tilo_actions::DoorError> {
+    let before = typed_action_before(doc);
+    let dispatched =
+        if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
+            tilo_actions::Dispatched::AppliedLocal(
+                tilo_actions::apply_local_with_context(
+                    doc,
+                    action,
+                    encoded,
+                    Some(actor.as_bytes()),
+                    context,
+                )
+                .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?,
+            )
+        } else {
+            tilo_actions::dispatch_by_with_context(
+                doc,
+                action,
+                encoded,
+                transport,
+                Some(actor.as_bytes()),
+                context,
+            )
+            .map_err(|e| tilo_actions::DoorError::Failed(e.to_string()))?
+        };
+    if let Some(before) = before {
+        let after = doc.get_heads();
+        report_typed_action(doc, before, after);
+    }
+    Ok(dispatched)
+}
+
 /// One execution body for bound components and legacy shell roots. Broker
 /// admission and semantic delivery are host concerns surrounding this body.
 #[allow(
@@ -1030,38 +1564,18 @@ pub(crate) fn execute_resource_operation(
         if let Some(ambient) = ambient {
             context = context.enriched_by(ambient);
         }
-        let before = typed_action_before(doc);
-        let applied =
-            if broker_admitted && action.locus() == tilo_actions::ExecutionLocus::ServerPreferred {
-                Some(
-                    tilo_actions::apply_local_with_context(
-                        doc,
-                        action.as_ref(),
-                        encoded,
-                        Some(actor.as_bytes()),
-                        context,
-                    )
-                    .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?,
-                )
-            } else {
-                match tilo_actions::dispatch_by_with_context(
-                    doc,
-                    action.as_ref(),
-                    encoded,
-                    transport,
-                    Some(actor.as_bytes()),
-                    context,
-                )
-                .map_err(|error| tilo_actions::DoorError::Failed(error.to_string()))?
-                {
-                    tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
-                    tilo_actions::Dispatched::SubmittedToHost(_) => None,
-                }
-            };
-        if let Some(before) = before {
-            let after = doc.get_heads();
-            report_typed_action(doc, before, after);
-        }
+        let applied = match execute_document(
+            doc,
+            action.as_ref(),
+            encoded,
+            transport,
+            actor,
+            broker_admitted,
+            context,
+        )? {
+            tilo_actions::Dispatched::AppliedLocal(envelope) => Some(envelope),
+            tilo_actions::Dispatched::SubmittedToHost(_) => None,
+        };
         if let Some(envelope) = applied {
             // Reuse the executor's actual admission frontier: this adds no
             // document loan, commit, replay behavior, or cross-owner traversal.
@@ -1220,7 +1734,7 @@ fn collect_component_resources(
     doc: &AutoCommit,
     resources: &mut Vec<tilo_actions::Resource>,
 ) {
-    if widget.callback_binding().is_some() {
+    if widget.has_separate_document_owner() {
         return;
     }
     resources.extend(widget.resources(doc));
@@ -1240,7 +1754,7 @@ pub(crate) fn resolve_unbound_resource(
     doc: &AutoCommit,
     id: &str,
 ) -> Option<tilo_actions::Resource> {
-    if widget.callback_binding().is_some() {
+    if widget.has_separate_document_owner() {
         return None;
     }
     let mut found = widget.resource(doc, id);
@@ -1259,6 +1773,7 @@ pub struct CallbackBinding {
     pub(crate) closing: Rc<Cell<bool>>,
     pub(crate) registry_owner: std::rc::Weak<()>,
     pub(crate) lifetime_id: uuid::Uuid,
+    pub(crate) control_domain: crate::control_custody::WeakControlDomain,
     pub(crate) queued_controls:
         Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
     #[allow(
@@ -1801,6 +2316,7 @@ pub(crate) fn with_owned_record_action<R>(
         closing: Rc::new(Cell::new(false)),
         registry_owner: Rc::downgrade(&owner),
         lifetime_id: uuid::Uuid::new_v4(),
+        control_domain: crate::control_custody::WeakControlDomain::default(),
         queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
         instance_id,
         app_id: app_id.to_string(),
@@ -2290,9 +2806,11 @@ impl BoundNodeMap {
         let owner = self.legacy_for(node)?;
         owner.validate().ok()?;
         let (store, checkout) = owner.store_checkout();
-        store.with_history(&checkout.id, |doc, history| {
-            crate::undo::status_snapshot(doc, history, Some(author))
-        })
+        store
+            .with_action_state(&checkout.id, |doc, history, _| {
+                crate::undo::status_snapshot(doc, history, Some(author))
+            })
+            .ok()
     }
     pub(crate) fn owns_document(&self, node: NodeId) -> bool {
         self.nodes
@@ -2354,7 +2872,7 @@ impl BoundNodeMap {
         unsafe { self.rebuild_roots_with_retained(roots, None, taffy, nodes) };
     }
 
-    unsafe fn rebuild_roots_with_retained(
+    pub(crate) unsafe fn rebuild_roots_with_retained(
         &mut self,
         roots: &[(&dyn Widget, NodeId)],
         retained: Option<&dyn Widget>,
@@ -2818,6 +3336,16 @@ pub(crate) unsafe fn drain_legacy_node_action(
             if bracket.is_none() && !requested {
                 return Ok(false);
             }
+            // A successful pure resource action may have already recorded the
+            // frontier while an older no-op notification remains on the widget.
+            // Retire that notification without duplicating or rebasing history.
+            if bracket.is_some() && doc.pending_ops() == 0 && history.matches_recorded_frontier(doc)
+            {
+                if requested {
+                    widget.on_commit();
+                }
+                return Ok(false);
+            }
             let changed = if let Some(before) = bracket {
                 history.record_committed_action_authored(
                     doc,
@@ -2863,3 +3391,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
 #[cfg(test)]
 #[path = "bound_dispatch/document_action_ack_tests.rs"]
 mod document_action_ack_tests;
+
+#[cfg(test)]
+#[path = "bound_dispatch/legacy_document_tests.rs"]
+pub(crate) mod legacy_document_tests;

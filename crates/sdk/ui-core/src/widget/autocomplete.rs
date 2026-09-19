@@ -168,9 +168,13 @@ pub struct Autocomplete {
 
 impl Autocomplete {
     pub fn new() -> Self {
+        Self::with_input(TextInput::local())
+    }
+
+    fn with_input(input: TextInput) -> Self {
         Self {
             id: String::new(),
-            input: TextInput::local().with_kind(TextInputKind::Search),
+            input: input.with_kind(TextInputKind::Search),
             suggester: None,
             suggestions: Vec::new(),
             highlight: None,
@@ -185,10 +189,16 @@ impl Autocomplete {
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn new_with_controlled_input(input: TextInput) -> Self {
+        Self::with_input(input)
+    }
+
     #[must_use]
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
-        self.input = std::mem::replace(&mut self.input, TextInput::local()).with_id(id);
+        self.input.set_id(id);
         self
     }
 
@@ -661,6 +671,14 @@ impl Autocomplete {
 }
 
 impl Widget for Autocomplete {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.input.install_control_custody(domain, attachment);
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
 
     fn build_layout(
@@ -1038,6 +1056,27 @@ mod tests {
         );
         assert!(!ac.is_open());
         assert!(!ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+    }
+
+    #[test]
+    fn controlled_autocomplete_with_id_preserves_supplied_input() {
+        let autocomplete = Autocomplete::new_with_controlled_input(
+            TextInput::local_with_language("en_US")
+                .with_spellcheck(false)
+                .with_autocorrect(false)
+                .with_initial_value("sentinel route"),
+        )
+        .with_id("route-search");
+
+        assert_eq!(Widget::test_id(&autocomplete), Some("route-search"));
+        let semantics = Widget::accessibility(&autocomplete).expect("text field semantics");
+        assert_eq!(semantics.semantic_key.as_deref(), Some("route-search"));
+        assert_eq!(semantics.action_target.as_deref(), Some("route-search"));
+        assert_eq!(autocomplete.text(), "sentinel route");
+        assert_eq!(autocomplete.input.spell_language(), "en_US");
+        assert!(!autocomplete.input.spellcheck_enabled());
+        assert!(!autocomplete.input.autocorrect_enabled());
+        assert_eq!(autocomplete.input.kind(), TextInputKind::Search);
     }
 
     fn suggester_paths() -> Autocomplete {

@@ -244,11 +244,14 @@ pub use wayland::VirtualKeyboardInjector;
 /// Live Wayland backend. Kept in a submodule so the protocol plumbing is in one
 /// place; the public type is re-exported above.
 mod wayland {
+    #[cfg(not(target_os = "macos"))]
     use std::os::fd::AsFd;
 
+    #[cfg(not(target_os = "macos"))]
+    use wayland_client::globals::registry_queue_init;
     use wayland_client::{
         Connection, Dispatch, QueueHandle,
-        globals::{GlobalListContents, registry_queue_init},
+        globals::GlobalListContents,
         protocol::{wl_registry, wl_seat},
     };
     use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
@@ -264,6 +267,7 @@ mod wayland {
     const KEY_RELEASED: u32 = 0;
     /// `wl_keyboard.keymap_format` XKB-v1 text format (this protocol declares
     /// the `keymap` arg as a bare `uint` rather than importing the enum).
+    #[cfg(not(target_os = "macos"))]
     const KEYMAP_FORMAT_XKB_V1: u32 = 1;
 
     /// Injects text into the focused surface via a synthetic virtual keyboard.
@@ -338,6 +342,12 @@ mod wayland {
         /// `None` (so the caller degrades to `NullInjector`) if there is no
         /// Wayland display, no `wl_seat`, or the compositor doesn't advertise
         /// `zwp_virtual_keyboard_manager_v1`. Never panics.
+        #[cfg(target_os = "macos")]
+        pub fn new() -> Option<Self> {
+            None
+        }
+
+        #[cfg(not(target_os = "macos"))]
         pub fn new() -> Option<Self> {
             let conn = Connection::connect_to_env().ok()?;
             let (globals, mut queue) = registry_queue_init::<State>(&conn).ok()?;
@@ -391,6 +401,16 @@ mod wayland {
 
         /// Write `keymap_str` to an anonymous, sealed-ish memfd and hand it to
         /// the compositor via `keymap(xkb_v1, fd, size)`.
+        #[cfg(target_os = "macos")]
+        #[allow(
+            clippy::unused_self,
+            reason = "same platform-specific backend method signature"
+        )]
+        fn upload_keymap(&self, _keymap_str: &str) -> Option<()> {
+            None
+        }
+
+        #[cfg(not(target_os = "macos"))]
         fn upload_keymap(&self, keymap_str: &str) -> Option<()> {
             use std::io::{Seek, SeekFrom, Write};
 
@@ -624,6 +644,7 @@ mod tests {
     /// (b) each assigned keycode resolves to exactly the intended keysym. If
     /// this passes, the wire bytes a real compositor receives are correct.
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn generated_keymap_compiles_with_libxkbcommon_and_resolves_keysyms() {
         use xkbcommon::xkb;
 

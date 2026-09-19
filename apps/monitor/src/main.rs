@@ -526,11 +526,11 @@ mod launch_tests {
         let (installed, root) = app.controlled_history_definitions_for_test();
         assert!(std::ptr::eq(
             installed.unwrap(),
-            &monitor::framework_history::HISTORY
+            std::ptr::addr_of!(monitor::framework_history::HISTORY)
         ));
         assert!(std::ptr::eq(
             root.unwrap(),
-            &monitor::framework_history::HISTORY
+            std::ptr::addr_of!(monitor::framework_history::HISTORY)
         ));
         assert!(
             app.build_a11y_tree_update(1.0)
@@ -552,7 +552,7 @@ mod launch_tests {
         assert!(installed.is_none());
         assert!(std::ptr::eq(
             root.unwrap(),
-            &monitor::framework_history::HISTORY
+            std::ptr::addr_of!(monitor::framework_history::HISTORY)
         ));
 
         let foreign = launch_spec_base(inert_root)

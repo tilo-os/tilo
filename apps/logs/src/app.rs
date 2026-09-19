@@ -45,6 +45,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
+use ui::control_custody::RawControlSlot;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
@@ -166,6 +167,11 @@ pub struct LogsApp {
     pending_export: Option<Vec<LogEntry>>,
     #[cfg(test)]
     controlled_export_portal: Option<Box<dyn Fn(PickRequest) -> PortalChannel>>,
+    #[cfg(test)]
+    controlled_journal_loader:
+        Option<Box<dyn FnMut(usize) -> Result<Vec<LogEntry>, crate::journal::JournalLoadError>>>,
+    #[cfg(test)]
+    history_control_arm: Option<std::rc::Rc<std::cell::Cell<Option<&'static str>>>>,
     /// Concise local outcome for the portal write, announced through an a11y
     /// live region. It never includes a chosen path or log contents.
     export_status: Option<String>,
@@ -183,7 +189,7 @@ pub struct LogsApp {
     search_input: TextInput,
     /// Pointer/keyboard controls publish inert resource addresses; the host
     /// re-resolves current availability and permissions before effects run.
-    pending_control_invocation: Option<ControlInvocation>,
+    pending_control_invocation: RawControlSlot,
     /// One-shot deterministic local view seeding used only by the offscreen
     /// shot factory.
     shot_filter: Option<Filter>,
@@ -206,6 +212,18 @@ impl LogsApp {
     /// `false` so we never shell out to `journalctl` during a headless
     /// render.
     pub fn new(entries: Vec<LogEntry>, allow_live: bool) -> Self {
+        Self::build(entries, allow_live, Self::production_search_input())
+    }
+
+    fn production_search_input() -> TextInput {
+        TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Search)
+            .with_id("logs.search")
+            .with_placeholder("Search messages, units…")
+            .with_plain_chrome()
+    }
+
+    fn build(entries: Vec<LogEntry>, allow_live: bool, search_input: TextInput) -> Self {
         let mut app = Self {
             entries,
             units: Vec::new(),
@@ -221,6 +239,10 @@ impl LogsApp {
             pending_export: None,
             #[cfg(test)]
             controlled_export_portal: None,
+            #[cfg(test)]
+            controlled_journal_loader: None,
+            #[cfg(test)]
+            history_control_arm: None,
             export_status: None,
             rect: Rect::ZERO,
             node: None,
@@ -229,12 +251,8 @@ impl LogsApp {
             hover_row: None,
             popup: None,
             focused: true,
-            search_input: TextInput::local()
-                .with_kind(ui::widget::TextInputKind::Search)
-                .with_id("logs.search")
-                .with_placeholder("Search messages, units…")
-                .with_plain_chrome(),
-            pending_control_invocation: None,
+            search_input,
+            pending_control_invocation: RawControlSlot::replace_one(),
             shot_filter: None,
             dirty: true,
             m: Metrics::ONE,
@@ -244,6 +262,59 @@ impl LogsApp {
         };
         app.rebuild_facets();
         app
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_test_with_entries(entries: Vec<LogEntry>, allow_live: bool) -> Self {
+        let input = TextInput::local_with_language("en_US")
+            .with_spellcheck(false)
+            .with_autocorrect(false)
+            .with_kind(ui::widget::TextInputKind::Search)
+            .with_id("logs.search")
+            .with_placeholder("Search messages, units…")
+            .with_plain_chrome();
+        Self::build(entries, allow_live, input)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_test_controlled_root() -> (
+        Self,
+        std::rc::Rc<std::cell::RefCell<Vec<usize>>>,
+        std::rc::Rc<std::cell::Cell<Option<&'static str>>>,
+        std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    ) {
+        let mut app = Self::history_test_with_entries(crate::journal::sample_entries(), true);
+        let attempts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let attempt_log = attempts.clone();
+        app.controlled_journal_loader = Some(Box::new(move |limit| {
+            attempt_log.borrow_mut().push(limit);
+            Ok(crate::journal::sample_entries())
+        }));
+        let arm = std::rc::Rc::new(std::cell::Cell::new(None));
+        app.history_control_arm = Some(arm.clone());
+        let exports = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let export_log = exports.clone();
+        app.set_controlled_export_portal(move |request| {
+            export_log.borrow_mut().push(
+                request
+                    .suggested_name()
+                    .unwrap_or("missing-name")
+                    .to_string(),
+            );
+            ui::portal::inject_for_test(PortalOutcome::Cancelled)
+        });
+        (app, attempts, arm, exports)
+    }
+
+    fn load_journal(
+        &mut self,
+        limit: usize,
+    ) -> Result<Vec<LogEntry>, crate::journal::JournalLoadError> {
+        #[cfg(test)]
+        if let Some(loader) = &mut self.controlled_journal_loader {
+            return loader(limit);
+        }
+        crate::journal::load_live(limit)
     }
 
     /// Construct a live-capable viewer whose initial read failed. Keeping the
@@ -460,7 +531,7 @@ impl LogsApp {
             actions::LogsOperation::Refresh => {
                 self.source_loading = false;
                 if self.allow_live {
-                    match crate::journal::load_live(2000) {
+                    match self.load_journal(2000) {
                         Ok(entries) => {
                             self.entries = entries;
                             self.source_error = None;
@@ -564,7 +635,7 @@ impl LogsApp {
         if action == "refresh" {
             self.source_loading = true;
         }
-        self.pending_control_invocation = Some(ControlInvocation {
+        let _ = self.pending_control_invocation.emit(ControlInvocation {
             address: ActionAddress::new(actions::JOURNAL_RESOURCE_ID, action),
             arguments: serde_json::Map::new(),
         });
@@ -2659,9 +2730,21 @@ impl Widget for LogsApp {
         &[actions::LOGS_OPERATION_TYPE]
     }
 
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        let _ = self
+            .pending_control_invocation
+            .install_custody(domain, attachment);
+        self.search_input
+            .install_control_custody(domain, attachment);
+    }
+
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.pending_control_invocation
-            .take()
+            .take_legacy_compatibility()
             .or_else(|| self.search_input.take_control_invocation())
     }
 
@@ -2699,6 +2782,10 @@ impl Widget for LogsApp {
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+        #[cfg(test)]
+        if let Some(action) = self.history_control_arm.as_ref().and_then(|arm| arm.take()) {
+            self.request_journal_operation(action);
+        }
         // Upgrade old shared documents by removing the transient keys written
         // by previous Logs versions. Nothing below reads or writes view state
         // in the document.
@@ -2714,7 +2801,7 @@ impl Widget for LogsApp {
         // Optional live tail: throttled re-poll, never under --shots.
         if self.allow_live && self.live_tail && self.last_poll.elapsed() >= POLL_INTERVAL {
             self.last_poll = Instant::now();
-            match crate::journal::load_live(2000) {
+            match self.load_journal(2000) {
                 Ok(fresh) => {
                     self.entries = fresh;
                     self.source_error = None;
@@ -3907,5 +3994,22 @@ mod tests {
             ),
             "unavailable local journal access must reject live-tail activation"
         );
+    }
+
+    #[test]
+    fn control_custody_logs_replace_one_copies_empty_descriptor_and_accepts_fresh_after_drain() {
+        let mut app = LogsApp::history_test_with_entries(sample_entries(), true);
+        app.request_journal_operation("refresh");
+        app.request_journal_operation("set-live-tail");
+        let replaced = Widget::take_control_invocation(&mut app).unwrap();
+        assert_eq!(replaced.address.resource, actions::JOURNAL_RESOURCE_ID);
+        assert_eq!(replaced.address.action, "set-live-tail");
+        assert!(replaced.arguments.is_empty());
+        assert!(Widget::take_control_invocation(&mut app).is_none());
+
+        app.request_journal_operation("refresh");
+        let fresh = Widget::take_control_invocation(&mut app).unwrap();
+        assert_eq!(fresh.address.action, "refresh");
+        assert!(fresh.arguments.is_empty());
     }
 }

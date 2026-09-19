@@ -23,14 +23,19 @@
     )
 )]
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
 #[cfg(unix)]
-use std::os::fd::AsRawFd;
+use atomic_file::lease::{AcquireError, FileLease as StoreLease, LeaseMode};
+use atomic_file::{FileIdentity, Privacy, PublishMode, StorageDirectory};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+#[cfg(not(unix))]
+type StoreLease = File;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(not(unix))]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
@@ -121,6 +126,16 @@ pub enum StoreError {
         to: u32,
         message: String,
     },
+}
+
+impl StoreError {
+    /// File publication phase, when this error retains a typed publication failure.
+    pub fn publication_state(&self) -> Option<atomic_file::PublicationState> {
+        match self {
+            Self::Io { source, .. } => atomic_file::publication_state(source),
+            _ => None,
+        }
+    }
 }
 
 fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
@@ -250,7 +265,7 @@ pub struct DocStore {
     /// schema before loading via [`Self::with_schema_version`].
     schema_version: u32,
     /// Held for as long as the store lives; `None` when another instance already owns the lock.
-    lock: Option<File>,
+    lock: Option<StoreLease>,
     /// Heads the file on disk is known to contain; empty until the first load or save.
     persisted: Vec<ChangeHash>,
     /// Why [`DocStore::load_or_new`] handed back an empty document instead of
@@ -258,7 +273,7 @@ pub struct DocStore {
     /// e.g. [`Autosave`] switches itself off when this is set.
     refusal: Option<Refusal>,
     // Shared for legacy stores, exclusive for canonical owners; acquired before the actor.
-    gate: File,
+    gate: StoreLease,
     canonical: Option<CanonicalState>,
     writer_claimed: AtomicBool,
     #[cfg(test)]
@@ -272,14 +287,17 @@ struct TestFaults {
     active_workers: std::sync::atomic::AtomicUsize,
     max_workers: std::sync::atomic::AtomicUsize,
     append_prefix: std::sync::Mutex<Option<usize>>,
+    publication_failure: std::sync::Mutex<Option<atomic_file::test_support::Checkpoint>>,
     sync_failure: std::sync::Mutex<Option<PathBuf>>,
+    #[cfg(unix)]
+    sync_action: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     sync_visits: std::sync::Mutex<Vec<PathBuf>>,
     completion:
         std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 struct CanonicalState {
-    directory: File,
+    directory: StorageDirectory,
     identity: std::sync::Arc<()>,
     accepted: bool,
 }
@@ -288,6 +306,7 @@ struct CanonicalState {
 pub struct CanonicalLoad {
     doc: AutoCommit,
     source_bytes: Vec<u8>,
+    source_identity: FileIdentity,
     repair_bytes: Option<Vec<u8>>,
     identity: std::sync::Arc<()>,
 }
@@ -567,10 +586,11 @@ impl DocStore {
         validate_package_id(package_id)?;
         validate_absolute_directory(directory)?;
         fs::create_dir_all(directory).map_err(|e| io_err("creating canonical directory", e))?;
-        let opened = open_directory(directory, false)
+        let opened = StorageDirectory::open(directory)
             .map_err(|e| io_err("opening canonical directory", e))?;
-        let gate = acquire_gate(&directory.join(CANONICAL_GATE), true)?;
-        let actor = load_or_create_actor(&directory.join(ACTOR_FILE))?;
+        let gate = acquire_canonical_gate(&opened, directory)?;
+        // Construction-only placeholder: configuration/source admission precedes actor I/O.
+        let actor = ActorId::random();
         let mut store = Self {
             package_id: package_id.to_owned(),
             dir: directory.to_path_buf(),
@@ -593,6 +613,11 @@ impl DocStore {
         configure(&mut store);
         store.check_canonical_source()?;
         store.sync_directory_chain()?;
+        store.actor = load_or_create_actor_held(
+            &store.canonical_state()?.directory,
+            &store.dir.join(ACTOR_FILE),
+        )?;
+        store.check_canonical_source()?;
         Ok(store)
     }
 
@@ -696,8 +721,11 @@ impl DocStore {
         recover_partial: bool,
     ) -> Result<Option<CanonicalLoad>, StoreError> {
         self.check_canonical_source()?;
-        let source_bytes = match fs::read(&self.document) {
-            Ok(bytes) => bytes,
+        let (source_bytes, source_identity) = match read_held(
+            &self.canonical_state()?.directory,
+            std::ffi::OsStr::new(DOCUMENT_FILE),
+        ) {
+            Ok(value) => value,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(io_err("reading canonical document", e)),
         };
@@ -726,6 +754,7 @@ impl DocStore {
         Ok(Some(CanonicalLoad {
             doc,
             source_bytes,
+            source_identity,
             repair_bytes,
             identity: self.canonical_state()?.identity.clone(),
         }))
@@ -740,8 +769,12 @@ impl DocStore {
         mut loaded: CanonicalLoad,
     ) -> Result<AutoCommit, StoreError> {
         self.check_canonical_source()?;
+        let current = read_held(
+            &self.canonical_state()?.directory,
+            std::ffi::OsStr::new(DOCUMENT_FILE),
+        );
         if !std::sync::Arc::ptr_eq(&loaded.identity, &self.canonical_state()?.identity)
-            || fs::read(&self.document).ok().as_ref() != Some(&loaded.source_bytes)
+            || !matches!(current, Ok((ref bytes, ref identity)) if bytes == &loaded.source_bytes && identity == &loaded.source_identity)
         {
             return Err(StoreError::SourceChanged {
                 path: self.document.clone(),
@@ -751,16 +784,14 @@ impl DocStore {
         if let Some(bytes) = loaded.repair_bytes {
             self.write_full(&bytes)?;
         } else {
-            let mut options = OpenOptions::new();
-            options.read(true);
-            #[cfg(windows)]
-            options.write(true);
-            options
-                .open(&self.document)
-                .and_then(|f| f.sync_all())
-                .map_err(|e| io_err("syncing accepted document", e))?;
+            commit_existing_file(
+                &self.canonical_state()?.directory,
+                &self.document,
+                &loaded.source_identity,
+            )?;
             self.sync_directory_chain()?;
         }
+        self.check_canonical_source()?;
         loaded.doc.set_actor(self.actor.clone());
         self.persisted = loaded.doc.get_heads();
         if let Some(state) = self.canonical.as_mut() {
@@ -771,17 +802,61 @@ impl DocStore {
 
     fn check_canonical_source(&self) -> Result<(), StoreError> {
         let state = self.canonical_state()?;
-        for (opened, path) in [
-            (&state.directory, self.dir.clone()),
-            (&self.gate, self.dir.join(CANONICAL_GATE)),
-        ] {
-            if !same_file(opened, &path) {
-                return Err(StoreError::SourceChanged { path });
-            }
+        let directory_matches = StorageDirectory::open(&self.dir)
+            .and_then(|d| d.identity())
+            .ok()
+            .zip(state.directory.identity().ok())
+            .is_some_and(|(a, b)| a == b);
+        if !directory_matches {
+            return Err(StoreError::SourceChanged {
+                path: self.dir.clone(),
+            });
+        }
+        if !gate_matches(&self.gate, &state.directory) {
+            return Err(StoreError::SourceChanged {
+                path: self.dir.join(CANONICAL_GATE),
+            });
         }
         Ok(())
     }
 
+    #[cfg(unix)]
+    fn sync_directory_chain(&self) -> Result<(), StoreError> {
+        self.check_canonical_source()?;
+        let operation =
+            || reconcile_existing_directory(&self.dir, &self.canonical_state()?.directory);
+        #[cfg(all(test, unix))]
+        let result = {
+            use atomic_file::test_support::{
+                ProvisionCheckpoint, with_provision_failure, with_provision_observer,
+            };
+            let faults = self.faults.clone();
+            let failure = faults.sync_failure.lock().unwrap().clone();
+            with_provision_observer(
+                move |event| {
+                    if event.checkpoint == ProvisionCheckpoint::BeforeSync {
+                        faults.sync_visits.lock().unwrap().push(event.path.clone());
+                        let action = faults.sync_action.lock().unwrap().take();
+                        if let Some(action) = action {
+                            action();
+                        }
+                    }
+                },
+                || match failure {
+                    Some(path) => {
+                        with_provision_failure(ProvisionCheckpoint::BeforeSync, &path, operation)
+                    }
+                    None => operation(),
+                },
+            )
+        };
+        #[cfg(not(all(test, unix)))]
+        let result = operation();
+        result?;
+        self.check_canonical_source()
+    }
+
+    #[cfg(not(unix))]
     fn sync_directory_chain(&self) -> Result<(), StoreError> {
         self.check_canonical_source()?;
         let physical =
@@ -1122,11 +1197,15 @@ impl DocStore {
         if self.canonical.is_some() {
             self.check_canonical_source()?;
         }
-        let mut f = OpenOptions::new()
-            .create(self.canonical.is_none())
-            .append(true)
-            .open(&self.document)
-            .map_err(|e| io_err(format!("appending to {}", self.document.display()), e))?;
+        let mut f = if let Some(state) = &self.canonical {
+            open_canonical_append(&state.directory, &self.document)
+        } else {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.document)
+        }
+        .map_err(|e| io_err(format!("appending to {}", self.document.display()), e))?;
         #[cfg(test)]
         let injected_prefix = self.faults.append_prefix.lock().unwrap().take();
         #[cfg(test)]
@@ -1142,18 +1221,44 @@ impl DocStore {
             .map_err(|e| io_err(format!("appending to {}", self.document.display()), e))?;
         f.sync_all()
             .map_err(|e| io_err(format!("syncing {}", self.document.display()), e))?;
+        if self.canonical.is_some() {
+            self.check_canonical_source()?;
+        }
         Ok(())
     }
 
     pub(crate) fn write_full(&self, bytes: &[u8]) -> Result<(), StoreError> {
-        if self.canonical.is_some() {
+        let prepared;
+        let directory = if let Some(state) = &self.canonical {
             self.check_canonical_source()?;
+            &state.directory
         } else {
-            fs::create_dir_all(&self.dir)
-                .map_err(|e| io_err(format!("creating {}", self.dir.display()), e))?;
-        }
-        atomic_file::write(&self.document, bytes)
-            .map_err(|e| io_err(format!("writing {}", self.document.display()), e))?;
+            prepared = prepare_legacy_directory(&self.dir)?;
+            &prepared
+        };
+        let publish = || {
+            directory.publish(
+                std::ffi::OsStr::new(DOCUMENT_FILE),
+                bytes,
+                PublishMode::Replace,
+                Privacy::Inherit,
+            )
+        };
+        #[cfg(test)]
+        let failure = self.faults.publication_failure.lock().unwrap().take();
+        #[cfg(test)]
+        let result = match failure {
+            Some(checkpoint) => atomic_file::test_support::with_failure(checkpoint, publish),
+            None => publish(),
+        };
+        #[cfg(not(test))]
+        let result = publish();
+        result.map_err(|e| {
+            io_err(
+                format!("writing {}", self.document.display()),
+                e.into_io_error(),
+            )
+        })?;
         if self.canonical.is_some() {
             self.sync_directory_chain()?;
         }
@@ -1182,6 +1287,7 @@ fn validate_absolute_directory(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+#[cfg(not(unix))]
 fn open_directory(path: &Path, writable: bool) -> io::Result<File> {
     #[cfg(not(windows))]
     let _ = writable;
@@ -1195,53 +1301,189 @@ fn open_directory(path: &Path, writable: bool) -> io::Result<File> {
 }
 
 #[cfg(unix)]
-fn same_file(file: &File, path: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (file.metadata(), fs::metadata(path)) {
-        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
-        _ => false,
-    }
+fn acquire_gate(path: &Path, exclusive: bool) -> Result<StoreLease, StoreError> {
+    let directory = StorageDirectory::open(path.parent().expect("gate parent"))
+        .map_err(|e| io_err("opening gate parent", e))?;
+    acquire_held_gate(&directory, path, exclusive)
 }
-
+#[cfg(unix)]
+fn acquire_held_gate(
+    directory: &StorageDirectory,
+    path: &Path,
+    exclusive: bool,
+) -> Result<StoreLease, StoreError> {
+    directory
+        .try_acquire_lease(
+            path.file_name().expect("gate name"),
+            if exclusive {
+                LeaseMode::Exclusive
+            } else {
+                LeaseMode::Shared
+            },
+        )
+        .map_err(|e| match e {
+            AcquireError::Busy => StoreError::WriterBusy {
+                path: path.to_owned(),
+            },
+            AcquireError::Io(e) => io_err("acquiring canonical gate", e),
+        })
+}
+#[cfg(unix)]
+fn acquire_canonical_gate(
+    directory: &StorageDirectory,
+    path: &Path,
+) -> Result<StoreLease, StoreError> {
+    acquire_held_gate(directory, &path.join(CANONICAL_GATE), true)
+}
+#[cfg(not(unix))]
+fn acquire_canonical_gate(
+    _directory: &StorageDirectory,
+    path: &Path,
+) -> Result<StoreLease, StoreError> {
+    acquire_gate(&path.join(CANONICAL_GATE), true)
+}
+#[cfg(unix)]
+fn gate_matches(gate: &StoreLease, directory: &StorageDirectory) -> bool {
+    let current = directory
+        .open_read(std::ffi::OsStr::new(CANONICAL_GATE), Privacy::Inherit)
+        .and_then(|f| FileIdentity::of(&f));
+    current
+        .ok()
+        .zip(gate.identity().ok())
+        .is_some_and(|(a, b)| a == b)
+}
 #[cfg(windows)]
-fn same_file(file: &File, path: &Path) -> bool {
-    let opened = file.try_clone().and_then(same_file::Handle::from_file);
-    match (opened, same_file::Handle::from_path(path)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
+fn gate_matches(gate: &StoreLease, directory: &StorageDirectory) -> bool {
+    let current = directory
+        .open_read(std::ffi::OsStr::new(CANONICAL_GATE), Privacy::Inherit)
+        .and_then(|file| FileIdentity::of(&file));
+    current
+        .ok()
+        .zip(FileIdentity::of(gate).ok())
+        .is_some_and(|(a, b)| a == b)
 }
-
 #[cfg(not(any(unix, windows)))]
-fn same_file(_file: &File, _path: &Path) -> bool {
+fn gate_matches(_gate: &StoreLease, _directory: &StorageDirectory) -> bool {
     false
 }
 
 #[cfg(unix)]
-fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|e| io_err(format!("opening gate {}", path.display()), e))?;
-    let mode = if exclusive {
-        libc::LOCK_EX
-    } else {
-        libc::LOCK_SH
-    };
-    // SAFETY: the owned file descriptor remains live for this call and the returned lease.
-    if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } != 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::WouldBlock {
-            return Err(StoreError::WriterBusy {
-                path: path.to_path_buf(),
-            });
+fn reconcile_existing_directory(
+    path: &Path,
+    directory: &StorageDirectory,
+) -> Result<(), StoreError> {
+    atomic_file::reconcile_directory(path, directory, Privacy::Inherit).map_err(|e| {
+        if e.source_changed() {
+            StoreError::SourceChanged {
+                path: path.to_owned(),
+            }
+        } else {
+            io_err("committing existing directory chain", e.into_io_error())
         }
-        return Err(io_err("acquiring canonical gate", error));
+    })
+}
+#[cfg(unix)]
+fn prepare_legacy_directory(path: &Path) -> Result<StorageDirectory, StoreError> {
+    atomic_file::provision_directory(path, Privacy::Inherit)
+        .map_err(|e| io_err("preparing legacy directory", e.into_io_error()))
+}
+#[cfg(not(unix))]
+fn prepare_legacy_directory(path: &Path) -> Result<StorageDirectory, StoreError> {
+    fs::create_dir_all(path).map_err(|e| io_err("creating legacy directory", e))?;
+    StorageDirectory::open(path).map_err(|e| io_err("opening legacy directory", e))
+}
+#[cfg(unix)]
+fn commit_existing_file(
+    directory: &StorageDirectory,
+    path: &Path,
+    expected: &FileIdentity,
+) -> Result<(), StoreError> {
+    directory
+        .commit_existing(
+            path.file_name().expect("file name"),
+            expected,
+            Privacy::Inherit,
+        )
+        .map_err(|e| {
+            if e.source_changed() {
+                StoreError::SourceChanged {
+                    path: path.to_owned(),
+                }
+            } else {
+                io_err("committing existing file", e.into_io_error())
+            }
+        })
+}
+#[cfg(not(unix))]
+fn commit_existing_file(
+    _directory: &StorageDirectory,
+    path: &Path,
+    expected: &FileIdentity,
+) -> Result<(), StoreError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    options.write(true);
+    let file = options
+        .open(path)
+        .map_err(|e| io_err("opening accepted document", e))?;
+    if FileIdentity::of(&file).map_err(|e| io_err("identifying accepted document", e))? != *expected
+    {
+        return Err(StoreError::SourceChanged {
+            path: path.to_owned(),
+        });
     }
-    Ok(file)
+    file.sync_all()
+        .map_err(|e| io_err("syncing accepted document", e))
+}
+#[cfg(unix)]
+fn open_canonical_append(directory: &StorageDirectory, path: &Path) -> io::Result<File> {
+    directory.open_append_existing(path.file_name().expect("document name"), Privacy::Inherit)
+}
+#[cfg(not(unix))]
+fn open_canonical_append(_directory: &StorageDirectory, path: &Path) -> io::Result<File> {
+    OpenOptions::new().append(true).open(path)
+}
+fn read_held(
+    directory: &StorageDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<(Vec<u8>, FileIdentity)> {
+    let mut file = directory.open_read(name, Privacy::Inherit)?;
+    let identity = FileIdentity::of(&file)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok((bytes, identity))
+}
+fn load_or_create_actor_held(
+    directory: &StorageDirectory,
+    path: &Path,
+) -> Result<ActorId, StoreError> {
+    let name = path.file_name().expect("actor name");
+    match directory
+        .open_read(name, Privacy::Inherit)
+        .and_then(|mut f| {
+            let mut s = String::new();
+            f.read_to_string(&mut s)?;
+            Ok(s)
+        }) {
+        Ok(s) => {
+            if let Ok(actor) = ActorId::try_from(s.trim()) {
+                return Ok(actor);
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(io_err("reading actor", e)),
+    }
+    let actor = ActorId::random();
+    directory
+        .publish(
+            name,
+            actor.to_hex_string().as_bytes(),
+            PublishMode::Replace,
+            Privacy::Inherit,
+        )
+        .map_err(|e| io_err("writing actor", e.into_io_error()))?;
+    Ok(actor)
 }
 
 #[cfg(windows)]
@@ -1288,6 +1530,7 @@ fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
 /// retained forever: deleting it after a successful import would let a later
 /// room re-import the still-preserved source, while deleting it after a crash
 /// would make recovery non-deterministic.
+#[cfg(not(unix))]
 fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     let Some(name) = marker.file_name().and_then(|name| name.to_str()) else {
         return claim_room_marker(marker, room_key);
@@ -1317,6 +1560,7 @@ fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, St
     claim_room_marker(marker, room_key)
 }
 
+#[cfg(not(unix))]
 fn claim_room_marker(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     match read_claim(marker)? {
         ClaimState::Owner(owner) => return Ok(owner == room_key),
@@ -1338,30 +1582,36 @@ enum ClaimState {
     Owner(String),
 }
 
+#[cfg(not(unix))]
 fn read_claim(marker: &Path) -> Result<ClaimState, StoreError> {
     let bytes = match fs::read(marker) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(ClaimState::Absent),
         Err(error) => return Err(io_err(format!("reading {}", marker.display()), error)),
     };
-    let Ok(text) = std::str::from_utf8(&bytes) else {
-        return Ok(ClaimState::Malformed);
+    Ok(decode_claim(&bytes))
+}
+
+fn decode_claim(bytes: &[u8]) -> ClaimState {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return ClaimState::Malformed;
     };
     let Some(owner) = text.strip_suffix('\n') else {
-        return Ok(ClaimState::Malformed);
+        return ClaimState::Malformed;
     };
     if owner.is_empty() || owner.contains('\n') || owner.contains('\r') {
-        return Ok(ClaimState::Malformed);
+        return ClaimState::Malformed;
     }
     if validate_record_key(owner).is_err() {
-        return Ok(ClaimState::Malformed);
+        return ClaimState::Malformed;
     }
-    Ok(ClaimState::Owner(owner.to_string()))
+    ClaimState::Owner(owner.to_string())
 }
 
 /// Publish a fully durable temp file with a no-replace hard link.  `link(2)`
 /// gives the needed compare-and-create property: even two recovery callers
 /// can never both become owner.
+#[cfg(not(unix))]
 fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     static CLAIM_NONCE: AtomicU64 = AtomicU64::new(0);
     let parent = marker.parent().ok_or_else(|| StoreError::Io {
@@ -1411,6 +1661,132 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
             let _ = fs::remove_file(&temp);
             Err(io_err(format!("claiming {}", marker.display()), error))
         }
+    }
+}
+
+// Unix immutable claims use one held parent throughout both alias operations.
+#[cfg(unix)]
+fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
+    let parent = marker
+        .parent()
+        .ok_or_else(|| io_err("claim parent", io::Error::from(io::ErrorKind::InvalidInput)))?;
+    let directory =
+        StorageDirectory::open(parent).map_err(|e| io_err("opening claim parent", e))?;
+    let legacy = marker
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|n| n.strip_prefix(".tilo-"))
+        .map(|suffix| marker.with_file_name(format!(".qos-{suffix}")));
+    let candidates: Vec<&Path> = legacy
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(std::iter::once(marker))
+        .collect();
+    for candidate in &candidates {
+        let (authority, state) = claim_authority(&directory, candidate)?;
+        let _ = authority;
+        if let ClaimState::Owner(owner) = state {
+            if owner != room_key {
+                return Ok(false);
+            }
+        }
+    }
+    let mut winners = Vec::new();
+    for candidate in &candidates {
+        let (authority, state) = claim_authority(&directory, candidate)?;
+        if let ClaimState::Owner(owner) = &state {
+            if owner != room_key {
+                return Ok(false);
+            }
+        }
+        let expected = if matches!(state, ClaimState::Absent) {
+            match directory.publish(
+                authority.file_name().expect("claim name"),
+                format!("{room_key}\n").as_bytes(),
+                PublishMode::IfAbsent,
+                Privacy::Inherit,
+            ) {
+                Ok(()) => {}
+                Err(error)
+                    if error.state()
+                        == atomic_file::PublicationState::PublishedDurabilityUnknown =>
+                {
+                    error
+                        .retry_commit()
+                        .map_err(|e| io_err("committing room claim", e.into_io_error()))?;
+                }
+                Err(error) if error.state() == atomic_file::PublicationState::NotPublished => {
+                    // The actual winner, not AlreadyExists alone, proves collision.
+                    match read_held(&directory, authority.file_name().expect("claim name")) {
+                        Ok((bytes, _)) => match decode_claim(&bytes) {
+                            ClaimState::Owner(owner) if owner != room_key => return Ok(false),
+                            ClaimState::Owner(_) => {}
+                            _ => {
+                                return Err(io_err(
+                                    "reading complete claim",
+                                    io::Error::from(io::ErrorKind::InvalidData),
+                                ));
+                            }
+                        },
+                        Err(_) => {
+                            return Err(io_err("publishing room claim", error.into_io_error()));
+                        }
+                    }
+                }
+                Err(error) => return Err(io_err("publishing room claim", error.into_io_error())),
+            }
+            read_held(&directory, authority.file_name().expect("claim name"))
+                .map_err(|e| io_err("reading published claim", e))?
+        } else {
+            read_held(&directory, authority.file_name().expect("claim name"))
+                .map_err(|e| io_err("reading existing claim", e))?
+        };
+        match decode_claim(&expected.0) {
+            ClaimState::Owner(owner) if owner == room_key => {}
+            ClaimState::Owner(_) => return Ok(false),
+            _ => {
+                return Err(io_err(
+                    "reading complete claim",
+                    io::Error::from(io::ErrorKind::InvalidData),
+                ));
+            }
+        }
+        // This also handles a fresh invocation after all prior error custody was lost.
+        commit_existing_file(&directory, &authority, &expected.1)?;
+        winners.push((authority, expected));
+    }
+    reconcile_existing_directory(parent, &directory)?;
+    for (authority, (bytes, identity)) in winners {
+        let current = read_held(&directory, authority.file_name().expect("claim name"));
+        if !matches!(current, Ok((ref now, ref id)) if now == &bytes && id == &identity) {
+            return Err(StoreError::SourceChanged { path: authority });
+        }
+    }
+    Ok(true)
+}
+#[cfg(unix)]
+fn claim_authority(
+    directory: &StorageDirectory,
+    path: &Path,
+) -> Result<(PathBuf, ClaimState), StoreError> {
+    let read = |path: &Path| match read_held(directory, path.file_name().expect("claim name")) {
+        Ok((bytes, _)) => Ok(decode_claim(&bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(ClaimState::Absent),
+        Err(e) => Err(io_err("reading claim", e)),
+    };
+    match read(path)? {
+        ClaimState::Malformed => {
+            let recovered = path.with_extension("recovered");
+            let state = read(&recovered)?;
+            if matches!(state, ClaimState::Malformed) {
+                return Err(io_err(
+                    "reading recovered claim",
+                    io::Error::from(io::ErrorKind::InvalidData),
+                ));
+            }
+            Ok((recovered, state))
+        }
+        state => Ok((path.to_owned(), state)),
     }
 }
 
@@ -1486,17 +1862,11 @@ fn stale_sibling(dir: &Path) -> PathBuf {
 /// Take an exclusive, non-blocking `flock` on `path`. `None` when another
 /// process holds it, or (conservatively) when the lock file can't even be created.
 #[cfg(unix)]
-fn acquire_writer_lock(path: &Path) -> Option<File> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-        .ok()?;
-    // SAFETY: `file` owns a live fd for the duration of the call.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-    (rc == 0).then_some(file)
+fn acquire_writer_lock(path: &Path) -> Option<StoreLease> {
+    StorageDirectory::open(path.parent()?)
+        .ok()?
+        .try_acquire_lease(path.file_name()?, LeaseMode::Exclusive)
+        .ok()
 }
 
 /// Windows file sharing is fixed when the handle is opened. Denying every
@@ -1548,6 +1918,350 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
     use tempfile::TempDir;
+
+    #[test]
+    fn canonical_configuration_rejects_source_before_actor_effects() {
+        for gate in [false, true] {
+            let root = TempDir::new().unwrap();
+            let path = root.path().join("store");
+            let moved = root.path().join("moved");
+            let result = DocStore::open_canonical_with("dev.tilo.test", &path, |_| {
+                if gate {
+                    fs::remove_file(path.join(CANONICAL_GATE)).unwrap();
+                } else {
+                    fs::rename(&path, &moved).unwrap();
+                    fs::create_dir(&path).unwrap();
+                }
+            });
+            assert!(matches!(result, Err(StoreError::SourceChanged { .. })));
+            assert!(!path.join(ACTOR_FILE).exists());
+            assert!(!moved.join(ACTOR_FILE).exists());
+        }
+    }
+
+    #[test]
+    fn canonical_accept_rejects_equal_bytes_with_replaced_identity() {
+        let root = TempDir::new().unwrap();
+        let mut store = DocStore::open_canonical_at("dev.tilo.test", root.path()).unwrap();
+        let mut doc = store.new_canonical_document().unwrap();
+        let bytes = doc.save();
+        fs::write(&store.document, &bytes).unwrap();
+        let loaded = store.load_canonical().unwrap().unwrap();
+        fs::rename(&store.document, root.path().join("old")).unwrap();
+        fs::write(&store.document, bytes).unwrap();
+        assert!(matches!(
+            store.accept_canonical(loaded),
+            Err(StoreError::SourceChanged { .. })
+        ));
+        assert!(store.persisted.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_accept_existing_runs_data_and_namespace_barriers() {
+        use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
+        for checkpoint in [
+            ExistingCheckpoint::BeforeDataFlush,
+            ExistingCheckpoint::BeforeNamespaceFlush,
+        ] {
+            let root = TempDir::new().unwrap();
+            let mut store = DocStore::open_canonical_at("dev.tilo.test", root.path()).unwrap();
+            let mut doc = store.new_canonical_document().unwrap();
+            let bytes = doc.save();
+            fs::write(&store.document, &bytes).unwrap();
+            let loaded = store.load_canonical().unwrap().unwrap();
+            let result =
+                with_existing_hooks(Some(checkpoint), |_| {}, || store.accept_canonical(loaded));
+            assert!(result.is_err(), "acceptance must run {checkpoint:?}");
+            assert!(store.persisted.is_empty());
+            assert!(!store.canonical_state().unwrap().accepted);
+            assert_eq!(fs::read(&store.document).unwrap(), bytes);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn matching_room_claim_reconciles_existing_barriers() {
+        use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
+        for checkpoint in [
+            ExistingCheckpoint::BeforeDataFlush,
+            ExistingCheckpoint::BeforeNamespaceFlush,
+        ] {
+            let root = TempDir::new().unwrap();
+            let marker = root.path().join(".tilo-test");
+            fs::write(&marker, b"room-a\n").unwrap();
+            let result = with_existing_hooks(
+                Some(checkpoint),
+                |_| {},
+                || claim_legacy_room_migration(&marker, "room-a"),
+            );
+            assert!(result.is_err(), "matching owner must run {checkpoint:?}");
+            assert_eq!(fs::read(&marker).unwrap(), b"room-a\n");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_shared_reconciliation_source_change_precedes_actor() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("store");
+        let moved = root.path().join("moved");
+        let from = path.clone();
+        let to = moved.clone();
+        let result = DocStore::open_canonical_with("dev.tilo.test", &path, |store| {
+            *store.faults.sync_action.lock().unwrap() = Some(Box::new(move || {
+                fs::rename(&from, &to).unwrap();
+                fs::create_dir(&from).unwrap();
+            }));
+        });
+        assert!(matches!(result, Err(StoreError::SourceChanged { .. })));
+        assert!(!path.join(ACTOR_FILE).exists());
+        assert!(!moved.join(ACTOR_FILE).exists());
+        assert!(!path.join(CANONICAL_GATE).exists());
+    }
+
+    #[test]
+    fn canonical_publication_failure_preserves_owned_phase_and_frontier() {
+        use atomic_file::test_support::{Checkpoint, with_failure};
+        let root = TempDir::new().unwrap();
+        let mut store = DocStore::open_canonical_at("dev.tilo.test", root.path()).unwrap();
+        let mut doc = store.new_canonical_document().unwrap();
+        store.save(&mut doc).unwrap();
+        let old_heads = store.persisted.clone();
+        let old_bytes = fs::read(&store.document).unwrap();
+        doc.put(ROOT, "value", "new").unwrap();
+        let error = with_failure(Checkpoint::BeforePublish, || store.save(&mut doc)).unwrap_err();
+        assert_eq!(
+            error.publication_state(),
+            Some(atomic_file::PublicationState::NotPublished)
+        );
+        assert_eq!(fs::read(&store.document).unwrap(), old_bytes);
+        let error = with_failure(Checkpoint::BeforeCommit, || store.save(&mut doc)).unwrap_err();
+        assert_eq!(
+            error.publication_state(),
+            Some(atomic_file::PublicationState::PublishedDurabilityUnknown)
+        );
+        assert_eq!(store.persisted, old_heads);
+        let visible = AutoCommit::load(&fs::read(&store.document).unwrap()).unwrap();
+        assert_eq!(
+            visible.get(ROOT, "value").unwrap().unwrap().0.to_str(),
+            Some("new")
+        );
+        let StoreError::Io { source, .. } = error else {
+            panic!("owned I/O source required")
+        };
+        let owned = source
+            .into_inner()
+            .unwrap()
+            .downcast::<atomic_file::PublicationError>()
+            .unwrap();
+        owned.retry_commit().unwrap();
+        assert_eq!(
+            store.persisted, old_heads,
+            "native retry alone cannot acknowledge store heads"
+        );
+        store.save(&mut doc).unwrap();
+        assert_eq!(store.persisted, doc.get_heads());
+    }
+
+    #[test]
+    fn canonical_actor_is_after_first_chain_and_recovers_typed_final_failure() {
+        use atomic_file::test_support::{Checkpoint, with_failure, with_observer};
+        let root = TempDir::new().unwrap();
+        let faults = std::sync::Arc::new(TestFaults::default());
+        let observed = faults.clone();
+        let result = with_observer(
+            move |event| {
+                if event.checkpoint == Checkpoint::StageCreated {
+                    assert!(
+                        !observed.sync_visits.lock().unwrap().is_empty(),
+                        "actor must follow the first real chain sweep"
+                    );
+                }
+            },
+            || {
+                with_failure(Checkpoint::BeforeCommit, || {
+                    DocStore::open_canonical_with("dev.tilo.test", root.path(), |store| {
+                        store.faults = faults
+                    })
+                })
+            },
+        );
+        let error = result.err().expect("actor final commit must fail");
+        assert_eq!(
+            error.publication_state(),
+            Some(atomic_file::PublicationState::PublishedDurabilityUnknown)
+        );
+        let actor_bytes = fs::read(root.path().join(ACTOR_FILE)).unwrap();
+        assert!(!actor_bytes.ends_with(b"\n"));
+        drop(error);
+        let store = DocStore::open_canonical_at("dev.tilo.test", root.path()).unwrap();
+        assert_eq!(store.actor.to_hex_string().as_bytes(), actor_bytes);
+        drop(store);
+        fs::write(root.path().join(ACTOR_FILE), [0xff]).unwrap();
+        assert!(matches!(
+            DocStore::open_canonical_at("dev.tilo.test", root.path()),
+            Err(StoreError::Io { .. })
+        ));
+        fs::write(root.path().join(ACTOR_FILE), b"malformed").unwrap();
+        assert!(DocStore::open_canonical_at("dev.tilo.test", root.path()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn room_claim_lost_error_restart_requires_existing_data_and_name_commit() {
+        use atomic_file::test_support::{
+            Checkpoint, ExistingCheckpoint, with_existing_hooks, with_failure, with_failure_on_nth,
+        };
+        for checkpoint in [Checkpoint::BeforeCommit, Checkpoint::AfterPublish] {
+            let root = TempDir::new().unwrap();
+            let marker = root.path().join(".tilo-claim");
+            let error = with_failure(checkpoint, || {
+                claim_legacy_room_migration(&marker, "room-a")
+            })
+            .unwrap_err();
+            assert!(error.publication_state().is_some());
+            drop(error);
+            let old = root.path().join(".qos-claim");
+            assert_eq!(fs::read(&old).unwrap(), b"room-a\n");
+            let identity = FileIdentity::of(&File::open(&old).unwrap()).unwrap();
+            for barrier in [
+                ExistingCheckpoint::BeforeDataFlush,
+                ExistingCheckpoint::BeforeNamespaceFlush,
+            ] {
+                assert!(
+                    with_existing_hooks(
+                        Some(barrier),
+                        |_| {},
+                        || claim_legacy_room_migration(&marker, "room-a")
+                    )
+                    .is_err()
+                );
+                assert_eq!(fs::read(&old).unwrap(), b"room-a\n");
+                assert!(!claim_legacy_room_migration(&marker, "room-b").unwrap());
+            }
+            assert!(claim_legacy_room_migration(&marker, "room-a").unwrap());
+            assert_eq!(
+                FileIdentity::of(&File::open(&old).unwrap()).unwrap(),
+                identity
+            );
+        }
+        let root = TempDir::new().unwrap();
+        let marker = root.path().join(".tilo-claim");
+        assert!(
+            with_failure_on_nth(Checkpoint::BeforeCommit, 1, || claim_legacy_room_migration(
+                &marker, "room-a"
+            ))
+            .unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn room_claim_process_child() {
+        let Some(path) = std::env::var_os("TILO_ROOM_CLAIM_CHILD") else {
+            return;
+        };
+        let room = std::env::var("TILO_ROOM_CLAIM_OWNER").unwrap();
+        let marker = PathBuf::from(path);
+        let operation = || claim_legacy_room_migration(&marker, &room);
+        let result = if let Ok(fault) = std::env::var("TILO_ROOM_CLAIM_FAULT") {
+            use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
+            let checkpoint = match fault.as_str() {
+                "data" => ExistingCheckpoint::BeforeDataFlush,
+                "name" => ExistingCheckpoint::BeforeNamespaceFlush,
+                _ => panic!("unknown child fault"),
+            };
+            with_existing_hooks(Some(checkpoint), |_| {}, operation)
+        } else {
+            operation()
+        };
+        let won = match result {
+            Ok(won) => won,
+            Err(_) if std::env::var_os("TILO_ROOM_CLAIM_FAULT").is_some() => {
+                fs::write(
+                    marker.parent().unwrap().join(format!("{room}.result")),
+                    b"error",
+                )
+                .unwrap();
+                return;
+            }
+            Err(error) => panic!("claim failed: {error}"),
+        };
+        fs::write(
+            marker.parent().unwrap().join(format!("{room}.result")),
+            if won { &b"yes"[..] } else { &b"no"[..] },
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn room_claim_fresh_process_after_lost_error_must_commit_existing_winner() {
+        use atomic_file::test_support::{Checkpoint, with_failure};
+        let root = TempDir::new().unwrap();
+        let marker = root.path().join(".tilo-lost");
+        drop(
+            with_failure(Checkpoint::AfterPublish, || {
+                claim_legacy_room_migration(&marker, "room-a")
+            })
+            .unwrap_err(),
+        );
+        for fault in [Some("data"), Some("name"), None] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "tests::room_claim_process_child", "--nocapture"])
+                .env("TILO_ROOM_CLAIM_CHILD", &marker)
+                .env("TILO_ROOM_CLAIM_OWNER", "room-a")
+                .stdout(std::process::Stdio::null());
+            if let Some(fault) = fault {
+                command.env("TILO_ROOM_CLAIM_FAULT", fault);
+            }
+            assert!(command.status().unwrap().success());
+            assert_eq!(
+                fs::read(root.path().join("room-a.result")).unwrap(),
+                if fault.is_some() {
+                    &b"error"[..]
+                } else {
+                    &b"yes"[..]
+                }
+            );
+            assert_eq!(
+                fs::read(root.path().join(".qos-lost")).unwrap(),
+                b"room-a\n"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn room_claim_process_race_has_one_durable_winner_and_fresh_resume() {
+        let root = TempDir::new().unwrap();
+        let marker = root.path().join(".tilo-race");
+        let spawn = |room: &str| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::room_claim_process_child", "--nocapture"])
+                .env("TILO_ROOM_CLAIM_CHILD", &marker)
+                .env("TILO_ROOM_CLAIM_OWNER", room)
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+        let mut a = spawn("room-a");
+        let mut b = spawn("room-b");
+        assert!(a.wait().unwrap().success());
+        assert!(b.wait().unwrap().success());
+        let a = fs::read(root.path().join("room-a.result")).unwrap() == b"yes";
+        let b = fs::read(root.path().join("room-b.result")).unwrap() == b"yes";
+        assert_ne!(a, b);
+        let winner = if a { "room-a" } else { "room-b" };
+        assert!(spawn(winner).wait().unwrap().success());
+        assert_eq!(
+            fs::read(root.path().join(format!("{winner}.result"))).unwrap(),
+            b"yes"
+        );
+        assert_eq!(fs::read(&marker).unwrap(), format!("{winner}\n").as_bytes());
+    }
 
     /// Point `standalone_state_dir` at a scratch tree. Tests that use this
     /// are `#[serial]` because it mutates process-global environment.

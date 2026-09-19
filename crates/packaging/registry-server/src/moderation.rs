@@ -4,13 +4,10 @@
 //! become public. Rejection intentionally accepts malformed/revoked requests,
 //! preserving their original bytes in an audit record while draining the queue.
 
+use std::fs::OpenOptions;
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[cfg(unix)]
-use std::fs::{File, OpenOptions};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
-
+use atomic_file::lease::{FileLease, LeaseMode};
 use registry_types::{
     EntryAction, EntryChangeRequest, RegistryEntry, VerifyError, verify_change_request,
     verify_entry_signature,
@@ -526,13 +523,13 @@ fn thread_lock(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, Modera
 static PROCESS_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// The in-process mutex cannot serialize the server against a reviewer CLI.
-#[cfg(unix)]
 struct ProcessGuard {
+    // Fields drop in declaration order: release the native lease before the
+    // process mutex admits another same-process transition.
+    _lease: FileLease,
     _process_mutex: std::sync::MutexGuard<'static, ()>,
-    file: File,
 }
 
-#[cfg(unix)]
 impl ProcessGuard {
     fn acquire(storage: &Storage) -> Result<Self, ModerationError> {
         let process_mutex = PROCESS_MUTEX
@@ -549,42 +546,11 @@ impl ProcessGuard {
             .map_err(|e| ModerationError::ProcessLock(format!("open {}: {e}", path.display())))?;
         // Blocking exclusive advisory lock. The lock file is deliberately
         // retained, so a crash releases only the lock—not evidence of state.
-        let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-        if status != 0 {
-            return Err(ModerationError::ProcessLock(format!(
-                "lock {}: {}",
-                path.display(),
-                std::io::Error::last_os_error()
-            )));
-        }
+        let lease = FileLease::acquire(file, LeaseMode::Exclusive)
+            .map_err(|e| ModerationError::ProcessLock(format!("lock {}: {e}", path.display())))?;
         Ok(Self {
+            _lease: lease,
             _process_mutex: process_mutex,
-            file,
-        })
-    }
-}
-
-#[cfg(unix)]
-impl Drop for ProcessGuard {
-    fn drop(&mut self) {
-        let _result = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
-    }
-}
-
-#[cfg(not(unix))]
-struct ProcessGuard {
-    _process_mutex: std::sync::MutexGuard<'static, ()>,
-}
-
-#[cfg(not(unix))]
-impl ProcessGuard {
-    fn acquire(_storage: &Storage) -> Result<Self, ModerationError> {
-        let guard = PROCESS_MUTEX
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .map_err(|_| ModerationError::TransitionLockPoisoned)?;
-        Ok(Self {
-            _process_mutex: guard,
         })
     }
 }
@@ -638,9 +604,69 @@ pub enum ModerationError {
 mod tests {
     use super::*;
     use crate::allowlist::PublisherRow;
+    use atomic_file::lease::{AcquireError, FileLease, LeaseMode};
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
     use registry_types::{RegistryVersion, sign_change_request, sign_entry};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, ExitStatus};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const CHILD_TIMEOUT: Duration = Duration::from_secs(10);
+    const PROCESS_GUARD_ROOT_ENV: &str = "TILO_TEST_PROCESS_GUARD_ROOT";
+    const PROCESS_GUARD_READY_ENV: &str = "TILO_TEST_PROCESS_GUARD_READY";
+    const PROCESS_GUARD_ACQUIRED_ENV: &str = "TILO_TEST_PROCESS_GUARD_ACQUIRED";
+    const PROCESS_GUARD_RELEASE_ENV: &str = "TILO_TEST_PROCESS_GUARD_RELEASE";
+
+    struct ChildCleanup(Child);
+
+    impl Drop for ChildCleanup {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
+    fn env_path(name: &str) -> Option<PathBuf> {
+        std::env::var_os(name).map(PathBuf::from)
+    }
+
+    fn wait_for_path(child: &mut Child, path: &Path) {
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+        loop {
+            if path.exists() {
+                return;
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("child exited before creating {}: {status}", path.display());
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child timed out before creating {}",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_success(child: &mut Child) -> ExitStatus {
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "child failed: {status}");
+                return status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let status = child.wait().unwrap();
+                panic!("child timed out and was terminated: {status}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     fn setup() -> (tempfile::TempDir, ModerationService) {
         let dir = tempfile::tempdir().unwrap();
@@ -679,6 +705,76 @@ mod tests {
                 note: String::new(),
             }],
         }
+    }
+
+    #[test]
+    fn process_guard_child() {
+        let Some(root) = env_path(PROCESS_GUARD_ROOT_ENV) else {
+            let dir = tempfile::tempdir().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            let guard = ProcessGuard::acquire(&storage).unwrap();
+            let _: &FileLease = &guard._lease;
+            return;
+        };
+        let ready = env_path(PROCESS_GUARD_READY_ENV).unwrap();
+        let acquired = env_path(PROCESS_GUARD_ACQUIRED_ENV).unwrap();
+        let release = env_path(PROCESS_GUARD_RELEASE_ENV).unwrap();
+        let storage = Storage::open(root).unwrap();
+        std::fs::write(&ready, b"ready").unwrap();
+        let guard = ProcessGuard::acquire(&storage).unwrap();
+        let _: &FileLease = &guard._lease;
+        std::fs::write(&acquired, b"acquired").unwrap();
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+        while !release.exists() {
+            assert!(Instant::now() < deadline, "parent never released child");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn process_guard_owns_the_moderation_sentinel_until_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let sentinel = storage.moderation_lock_path();
+        let external = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&sentinel)
+            .unwrap();
+        let external = FileLease::acquire(external, LeaseMode::Exclusive).unwrap();
+        let ready = dir.path().join("guard-ready");
+        let acquired = dir.path().join("guard-acquired");
+        let release = dir.path().join("guard-release");
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("moderation::tests::process_guard_child")
+            .arg("--nocapture")
+            .env(PROCESS_GUARD_ROOT_ENV, dir.path())
+            .env(PROCESS_GUARD_READY_ENV, &ready)
+            .env(PROCESS_GUARD_ACQUIRED_ENV, &acquired)
+            .env(PROCESS_GUARD_RELEASE_ENV, &release)
+            .spawn()
+            .unwrap();
+        let mut child = ChildCleanup(child);
+        wait_for_path(&mut child.0, &ready);
+        thread::sleep(Duration::from_millis(150));
+        assert!(!acquired.exists(), "child bypassed moderation.lock");
+        drop(external);
+        wait_for_path(&mut child.0, &acquired);
+
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&sentinel)
+            .unwrap();
+        assert!(matches!(
+            FileLease::try_acquire(contender, LeaseMode::Exclusive),
+            Err(AcquireError::Busy)
+        ));
+        std::fs::write(release, b"release").unwrap();
+        wait_for_success(&mut child.0);
     }
 
     #[test]

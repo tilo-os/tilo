@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+test-support = []
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -34,6 +35,7 @@ taffy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -135,6 +135,7 @@ dependencies = [
  "chacha20poly1305",
  "dirs 6.0.0",
  "getrandom 0.2.17",
+ "libc",
  "private-fs",
  "serde",
  "serde_json",
@@ -516,7 +517,6 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "hex",
  "launcher",
- "libc",
  "pkg",
  "registry-types",
  "reqwest 0.12.28",
@@ -611,8 +611,6 @@ dependencies = [
  "automerge",
  "cli",
  "dirs 6.0.0",
- "libc",
- "same-file",
  "serial_test",
  "tempfile",
  "thiserror 2.0.18",
@@ -999,7 +997,11 @@ dependencies = [
 name = "atomic-file"
 version = "0.1.0"
 dependencies = [
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1102,8 +1104,6 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 [[package]]
 name = "automerge"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2aab56635599ee2e9df28d9ce180c155b8dbcdd96e4c3f62895fc6a44137d328"
 dependencies = [
  "cfg-if",
  "flate2",
@@ -6691,7 +6691,6 @@ dependencies = [
  "cap-std",
  "dirs 6.0.0",
  "libc",
- "qos-ntfs-protocol",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -6701,11 +6700,13 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-folder-service",
  "vello",
  "windows-sys 0.61.2",
  "winit",
  "zbus 4.4.0",
  "zstd",
+ "tilo-install-artifacts",
 ]
 
 [[package]]
@@ -9972,6 +9973,7 @@ dependencies = [
  "automerge",
  "libc",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "swipe",
  "taffy",
@@ -12017,7 +12019,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "libc",
  "pkg",
  "rand 0.8.8",
  "registry-types",
@@ -12442,6 +12443,7 @@ dependencies = [
 name = "runtime-fs"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "blake3",
  "cap-std",
  "capnp",
@@ -12462,6 +12464,7 @@ name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "atomic-file",
  "bounded-command",
  "chacha20poly1305",
  "ed25519-dalek 2.2.0",
@@ -14840,7 +14843,9 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
+ "tilo-folder-service",
  "ui",
+ "tilo-install-artifacts",
 ]
 
 [[package]]
@@ -14951,6 +14956,41 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-dev",
+]
+
+[[package]]
+name = "tilo-install-artifacts"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
+ "dirs 6.0.0",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tilo-folder-service"
+version = "0.1.0"
+dependencies = [
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
+ "dirs 6.0.0",
+ "libc",
+ "qos-ntfs-protocol",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

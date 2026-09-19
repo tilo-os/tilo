@@ -27,7 +27,7 @@ use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
 use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
 use super::import_view::ImportApp;
-#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
 use super::internal_download_flow::InternalDownloadFlow;
 use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
@@ -64,17 +64,17 @@ enum SetupCommand {
     InstallDesktop,
     CancelDesktopDownload,
     RetryDesktop,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     StartInternalDownload,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     PauseInternalDownload,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     ResumeInternalDownload,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     CancelInternalDownload,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     DiscardInternalDownload,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     ReleaseInternalDownload,
     InternalInstallUnavailable,
 }
@@ -123,11 +123,11 @@ pub struct SetupApp {
     import_app: Option<ImportApp>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     internal_download_flow: Option<InternalDownloadFlow>,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     internal_download_error: Option<String>,
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
     internal_download_revision: u64,
 }
 
@@ -177,14 +177,14 @@ impl SetupApp {
     ) -> Self {
         let (worker_tx, worker_rx) = mpsc::channel();
         let desktop_flow = fixture_desktop_flow(capabilities.platform.desktop_session);
-        #[cfg(all(any(target_os = "linux", windows, unix), test))]
+        #[cfg(test)]
         let (internal_download_flow, internal_download_error) = (
             Some(InternalDownloadFlow::unavailable_fixture(
                 capabilities.platform,
             )),
             None,
         );
-        #[cfg(all(any(target_os = "linux", windows), not(test)))]
+        #[cfg(not(test))]
         let (internal_download_flow, internal_download_error) =
             match InternalDownloadFlow::new(capabilities.platform) {
                 Ok(flow) => (Some(flow), None),
@@ -213,11 +213,11 @@ impl SetupApp {
             import_app: None,
             desktop_flow,
             desktop_revision: 0,
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             internal_download_flow,
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             internal_download_error,
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             internal_download_revision: 0,
         }
     }
@@ -433,7 +433,7 @@ impl SetupApp {
                     self.status_is_error = true;
                 }
             },
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             SetupCommand::StartInternalDownload => {
                 let on_full_os_review = {
                     let controller = self.controller.borrow();
@@ -455,7 +455,7 @@ impl SetupApp {
                 };
                 self.apply_internal_command_result(result, "Downloading Tilo…");
             }
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             SetupCommand::PauseInternalDownload => {
                 let result = self
                     .internal_download_flow
@@ -464,7 +464,7 @@ impl SetupApp {
                     .and_then(InternalDownloadFlow::pause);
                 self.apply_internal_command_result(result, "Pausing download…");
             }
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             SetupCommand::ResumeInternalDownload => {
                 let result = self
                     .internal_download_flow
@@ -473,7 +473,7 @@ impl SetupApp {
                     .and_then(InternalDownloadFlow::resume);
                 self.apply_internal_command_result(result, "Downloading Tilo…");
             }
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             SetupCommand::CancelInternalDownload => {
                 let result = self
                     .internal_download_flow
@@ -482,7 +482,7 @@ impl SetupApp {
                     .and_then(InternalDownloadFlow::cancel);
                 self.apply_internal_command_result(result, "Cancelling download…");
             }
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             SetupCommand::DiscardInternalDownload => {
                 let result = self
                     .internal_download_flow
@@ -491,7 +491,7 @@ impl SetupApp {
                     .and_then(InternalDownloadFlow::discard);
                 self.apply_internal_command_result(result, "Discarding unfinished download data…");
             }
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
             SetupCommand::ReleaseInternalDownload => {
                 let result = self
                     .internal_download_flow
@@ -509,7 +509,6 @@ impl SetupApp {
         self.structure_dirty = true;
     }
 
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
     fn apply_internal_command_result(&mut self, result: Result<(), String>, pending: &str) {
         match result {
             Ok(()) => {
@@ -723,7 +722,7 @@ impl SetupApp {
             self.structure_dirty = true;
             changed = true;
         }
-        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
         if let Some(flow) = &mut self.internal_download_flow {
             changed |= flow.poll();
             if self.internal_download_revision != flow.revision() {
@@ -732,7 +731,7 @@ impl SetupApp {
                     self.status.clone_from(&flow.presentation().title);
                     self.status_is_error = matches!(
                         flow.presentation().phase,
-                        Some(super::internal_cache::coordinator::Phase::Failed)
+                        Some(ui::install_artifacts::Phase::Failed)
                     );
                 }
                 self.structure_dirty = true;
@@ -1222,7 +1221,6 @@ impl SetupApp {
         )
     }
 
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
     fn internal_download_card(&self) -> Card {
         let mut content = stack();
         if let Some(flow) = &self.internal_download_flow {
@@ -1397,7 +1395,7 @@ impl SetupApp {
         if plan.experience == Experience::Desktop {
             body = body.push(Box::new(self.desktop_install_card()));
         }
-        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
         if plan.experience == Experience::FullOs {
             body = body.push(Box::new(self.internal_download_card()));
         }
@@ -1944,15 +1942,11 @@ impl Widget for SetupApp {
             || self.picker_rx.is_some()
             || self.desktop_flow.has_pending_operation()
             || {
-                #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+
                 {
                     self.internal_download_flow
                         .as_ref()
                         .is_some_and(InternalDownloadFlow::has_pending_operation)
-                }
-                #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
-                {
-                    false
                 }
             }
     }
@@ -1990,11 +1984,7 @@ mod tests {
 
     use super::*;
     use crate::setup::folders::{FolderScan, SkipReason, SkippedEntry};
-    use crate::setup::internal_bundle;
-    use crate::setup::internal_cache::coordinator::{Phase as InternalPhase, Worker};
-    use crate::setup::internal_download::tests::{Server, response};
     use crate::setup::model::{Capabilities, Experience, FolderMode, HostOs};
-    use std::time::{Duration, Instant};
 
     #[cfg(windows)]
     const TEST_SOURCE_ROOT: &str = r"C:\setup-source";
@@ -2342,10 +2332,49 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(unix)]
+    mod unix_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use tilo_install_artifacts::test_support::{Server, manifest_bytes, manifest_value, response};
+    use ui::install_artifacts::Phase as InternalPhase;
+
+    // Catches startup loading being gated but omitted from the real idle scheduler.
+    #[test]
+    fn preference_loading_keeps_setup_idle_sync_active_until_settled() {
+        let bytes = manifest_bytes(&manifest_value());
+        let server = Server::new(vec![]);
+        let directory = tempfile::tempdir().unwrap();
+        let cache = directory.path().join("cache");
+        let preference = directory.path().join("missing/selection.json");
+        let worker = server.client(&cache, &preference);
+        let mut app = supported_fixture();
+        assert!(!Widget::needs_idle_sync(&app), "other startup work must be settled");
+        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+            app.capabilities.platform, worker, vec![vec![server.selection(&bytes)]], "x86_64",
+        ));
+        assert!(!app.internal_download_flow.as_ref().unwrap().can_start());
+        assert!(Widget::needs_idle_sync(&app), "unsettled preference must request the next idle sync");
+        let mut state = AutoCommit::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // Drive only when the production scheduling contract requests a sync.
+        while Widget::needs_idle_sync(&app) {
+            Widget::sync(&mut app, &mut state, &automerge::ROOT);
+            assert!(Instant::now() < deadline, "preference loading never settled");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(app.internal_download_flow.as_ref().unwrap().can_start());
+        assert!(!app.internal_download_flow.as_ref().unwrap().can_resume());
+        assert!(!Widget::needs_idle_sync(&app));
+        assert!(!preference.parent().unwrap().exists());
+        assert!(!cache.exists());
+        assert!(server.requests().is_empty());
+    }
+
     // Catches a Full qOS button dispatching the Desktop installer instead of the internal worker.
     #[test]
     fn full_os_download_command_routes_to_the_real_internal_worker_only() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let bytes = manifest_bytes(&manifest_value());
         let server = Server::new(vec![
             response(200, "", &bytes),
             response(200, "", &vec![b'E'; 4096]),
@@ -2353,17 +2382,15 @@ mod tests {
         ]);
         let root = tempfile::tempdir().unwrap();
         let preference = tempfile::tempdir().unwrap();
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
+        let worker = server.client(root.path(), &preference.path().join("selection.json"));
         let mut app = supported_fixture();
         app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
             app.capabilities.platform,
-            preference.path().join("selection.json"),
             worker,
-            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
             "x86_64",
         ));
+        app.internal_download_flow.as_mut().unwrap().wait_preference();
         app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
         app.apply_command(SetupCommand::Next);
         app.apply_command(SetupCommand::SetMode(FolderMode::Later));
@@ -2417,12 +2444,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(app.status, "Kept for later");
+        assert_eq!(server.consumptions(), 0, "No staging consumer may run");
     }
 
     // Catches a forged or stale command starting a Full qOS download away from its review.
     #[test]
     fn full_os_download_command_is_refused_outside_full_os_review() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let bytes = manifest_bytes(&manifest_value());
         let server = Server::new(vec![
             response(200, "", &bytes),
             response(200, "", &vec![b'E'; 4096]),
@@ -2430,17 +2458,15 @@ mod tests {
         ]);
         let root = tempfile::tempdir().unwrap();
         let preference = tempfile::tempdir().unwrap();
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
+        let worker = server.client(root.path(), &preference.path().join("selection.json"));
         let mut app = supported_fixture();
         app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
             app.capabilities.platform,
-            preference.path().join("selection.json"),
             worker,
-            vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
             "x86_64",
         ));
+        app.internal_download_flow.as_mut().unwrap().wait_preference();
 
         app.apply_command(SetupCommand::StartInternalDownload);
 
@@ -2455,12 +2481,13 @@ mod tests {
                 .is_some_and(|flow| flow.presentation().phase.is_none())
         );
         assert!(server.requests().is_empty());
+        assert_eq!(server.consumptions(), 0, "No staging consumer may run");
     }
 
     // Catches two routed Start commands replacing the active internal download before recompose.
     #[test]
     fn duplicate_full_os_start_command_is_rejected_without_an_extra_request() {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let bytes = manifest_bytes(&manifest_value());
         let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
         let (continue_tx, continue_rx) = mpsc::sync_channel(0);
         let mut request = 0;
@@ -2483,21 +2510,19 @@ mod tests {
         );
         let root = tempfile::tempdir().unwrap();
         let preference = tempfile::tempdir().unwrap();
-        let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-            Err("Protected staging is unavailable.".into())
-        });
+        let worker = server.client(root.path(), &preference.path().join("selection.json"));
         let mut app = supported_fixture();
         app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
             app.capabilities.platform,
-            preference.path().join("selection.json"),
             worker,
             vec![
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes)],
-                vec![server.release(&bytes)],
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
             ],
             "x86_64",
         ));
+        app.internal_download_flow.as_mut().unwrap().wait_preference();
         app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
         app.apply_command(SetupCommand::Next);
         app.apply_command(SetupCommand::SetMode(FolderMode::Later));
@@ -2532,6 +2557,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(server.requests().len(), 3);
+        assert_eq!(server.consumptions(), 0, "No staging consumer may run");
+    }
+
+    #[test]
+    fn var_home_user_folder_is_accepted() {
+        let mut app = supported_fixture();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
+            result: Ok(FolderScan {
+                source: PathBuf::from("/var/home/qos/Documents"),
+                file_count: 4,
+                bytes: 80,
+                empty_directories: Vec::new(),
+                skipped: Vec::new(),
+            }),
+        });
+
+        assert_eq!(app.controller().folders().len(), 1);
+        assert!(app.status.contains("ready to copy"));
+    }
     }
 
     // Catches treating the setup plan's suggested qOS path as a mounted target
@@ -2761,25 +2806,6 @@ mod tests {
 
         assert!(app.controller().folders().is_empty());
         assert!(app.status.contains("system folder"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn var_home_user_folder_is_accepted() {
-        let mut app = supported_fixture();
-        app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
-            result: Ok(FolderScan {
-                source: PathBuf::from("/var/home/qos/Documents"),
-                file_count: 4,
-                bytes: 80,
-                empty_directories: Vec::new(),
-                skipped: Vec::new(),
-            }),
-        });
-
-        assert_eq!(app.controller().folders().len(), 1);
-        assert!(app.status.contains("ready to copy"));
     }
 
     #[test]

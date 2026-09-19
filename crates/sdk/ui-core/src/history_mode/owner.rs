@@ -13,12 +13,14 @@ use std::{
 pub(crate) struct LegacyHistoryLifetime {
     pub(crate) active: Cell<bool>,
     id: uuid::Uuid,
+    pub(crate) control_domain: crate::ControlDomain,
 }
 impl LegacyHistoryLifetime {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             active: Cell::new(true),
             id: uuid::Uuid::new_v4(),
+            control_domain: crate::control_custody::ControlDomain::new(),
         })
     }
 }
@@ -208,5 +210,11 @@ impl HistoryOwner {
             .map_err(|error| super::routes::RemoteApplyError::Unavailable(error.to_string()))?;
         let (store, checkout) = self.store_checkout();
         crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation)
+    }
+}
+
+impl Drop for LegacyHistoryLifetime {
+    fn drop(&mut self) {
+        self.control_domain.close();
     }
 }

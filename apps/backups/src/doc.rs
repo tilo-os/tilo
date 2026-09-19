@@ -13,9 +13,9 @@
 //! └── "ret_monthly"      (Int)
 //! ```
 //!
-//! Every getter tolerates a missing/foreign-typed key by returning the
-//! seeded default, so a fresh `State::new()` doc (the `--shots` path) reads
-//! cleanly even before [`BackupsDoc::seed`] has run.
+//! Display getters tolerate a missing/foreign-typed key by returning the
+//! authored default. History uses [`BackupsDoc::stored_retention`] so absence,
+//! invalid content, conflicts, and exact stored integers remain distinct.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, Value};
@@ -25,50 +25,40 @@ use crate::model::RetentionPolicy;
 
 pub struct BackupsDoc;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoredRetention {
+    Absent,
+    Int(i64),
+    WrongType,
+    Conflict,
+}
+
 impl BackupsDoc {
-    /// Write the default UI state into the document if (and only if) it has
-    /// not been seeded yet. Idempotent: keys already present are left alone
-    /// so a peer's adopted state is never clobbered.
-    pub fn seed(doc: &mut AutoCommit, root: &ObjId) {
-        let p = RetentionPolicy::default();
-        Self::seed_int(doc, root, "ret_hourly", i64::from(p.hourly));
-        Self::seed_int(doc, root, "ret_daily", i64::from(p.daily));
-        Self::seed_int(doc, root, "ret_weekly", i64::from(p.weekly));
-        Self::seed_int(doc, root, "ret_monthly", i64::from(p.monthly));
-    }
-
-    fn seed_int(doc: &mut AutoCommit, root: &ObjId, key: &str, val: i64) {
-        if Self::get_int(doc, root, key).is_none() {
-            let _ = doc.put(root, key, val);
-        }
-    }
-
     // --- typed scalar readers -------------------------------------------
 
-    fn get_int(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<i64> {
-        match doc.get(root, key) {
-            Ok(Some((Value::Scalar(s), _))) => s.as_ref().to_i64(),
-            _ => None,
+    pub fn stored_retention(doc: &AutoCommit, root: &ObjId, field: PolicyField) -> StoredRetention {
+        let Ok(values) = doc.get_all(root, field.key()) else {
+            return StoredRetention::WrongType;
+        };
+        match values.as_slice() {
+            [] => StoredRetention::Absent,
+            [(Value::Scalar(value), _)] => value
+                .as_ref()
+                .to_i64()
+                .map_or(StoredRetention::WrongType, StoredRetention::Int),
+            [_] => StoredRetention::WrongType,
+            _ => StoredRetention::Conflict,
         }
     }
 
     // --- public typed accessors -----------------------------------------
 
     pub fn policy(doc: &AutoCommit, root: &ObjId) -> RetentionPolicy {
-        let d = RetentionPolicy::default();
         RetentionPolicy {
-            hourly: Self::get_int(doc, root, "ret_hourly")
-                .unwrap_or_else(|| i64::from(d.hourly))
-                .max(0) as u32,
-            daily: Self::get_int(doc, root, "ret_daily")
-                .unwrap_or_else(|| i64::from(d.daily))
-                .max(0) as u32,
-            weekly: Self::get_int(doc, root, "ret_weekly")
-                .unwrap_or_else(|| i64::from(d.weekly))
-                .max(0) as u32,
-            monthly: Self::get_int(doc, root, "ret_monthly")
-                .unwrap_or_else(|| i64::from(d.monthly))
-                .max(0) as u32,
+            hourly: Self::retention(doc, root, PolicyField::Hourly),
+            daily: Self::retention(doc, root, PolicyField::Daily),
+            weekly: Self::retention(doc, root, PolicyField::Weekly),
+            monthly: Self::retention(doc, root, PolicyField::Monthly),
         }
     }
 
@@ -83,9 +73,12 @@ impl BackupsDoc {
             PolicyField::Weekly => d.weekly,
             PolicyField::Monthly => d.monthly,
         });
-        Self::get_int(doc, root, field.key())
-            .unwrap_or(default)
-            .clamp(0, 999) as u32
+        match Self::stored_retention(doc, root, field) {
+            StoredRetention::Int(value) => value.clamp(0, 999) as u32,
+            StoredRetention::Absent | StoredRetention::WrongType | StoredRetention::Conflict => {
+                default as u32
+            }
+        }
     }
 
     /// Set one retention field to an absolute `count`, clamped to `[0, 999]`.
@@ -147,31 +140,7 @@ mod tests {
     use automerge::ROOT;
 
     #[test]
-    fn seed_then_read_defaults() {
-        let mut doc = AutoCommit::new();
-        BackupsDoc::seed(&mut doc, &ROOT);
-        assert_eq!(BackupsDoc::policy(&doc, &ROOT), RetentionPolicy::default());
-    }
-
-    #[test]
-    fn seed_only_creates_durable_policy_fields() {
-        let mut doc = AutoCommit::new();
-        BackupsDoc::seed(&mut doc, &ROOT);
-        for transient in [
-            "view",
-            "sel_source",
-            "sel_snapshot",
-            "sel_dest",
-            "restore_open",
-        ] {
-            assert!(doc.get(&ROOT, transient).unwrap().is_none(), "{transient}");
-        }
-    }
-
-    #[test]
     fn empty_doc_reads_default_without_seed() {
-        // The --shots path syncs against a fresh doc; readers must not panic
-        // and must fall back to defaults before seed runs.
         let doc = AutoCommit::new();
         assert_eq!(BackupsDoc::policy(&doc, &ROOT), RetentionPolicy::default());
     }
@@ -179,7 +148,6 @@ mod tests {
     #[test]
     fn set_retention_clamps_and_round_trips() {
         let mut doc = AutoCommit::new();
-        BackupsDoc::seed(&mut doc, &ROOT);
         // Over-large values clamp to the ceiling; the getter agrees with policy().
         BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Daily, 5000);
         assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), 999);
@@ -196,14 +164,5 @@ mod tests {
         let doc = AutoCommit::new();
         assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), 7);
         assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Hourly), 24);
-    }
-
-    #[test]
-    fn seed_is_idempotent() {
-        let mut doc = AutoCommit::new();
-        BackupsDoc::seed(&mut doc, &ROOT);
-        BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Daily, 42);
-        BackupsDoc::seed(&mut doc, &ROOT); // must not reset a peer's policy
-        assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), 42);
     }
 }

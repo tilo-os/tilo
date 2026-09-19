@@ -41,3 +41,9 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+atomic-file = { path = "../../../crates/system/atomic-file", features = ["test-support"] }

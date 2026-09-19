@@ -210,6 +210,22 @@ impl SecretVault {
     /// Returns a descriptive error when the vault directory or key cannot be
     /// prepared, serialization or encryption fails, or the sealed file cannot
     /// be atomically persisted.
+    #[cfg(unix)]
+    pub fn try_save(&self) -> Result<(), String> {
+        if let Some(error) = &self.load_error {
+            return Err(format!(
+                "vault recovery required; restore access and reopen: {error}"
+            ));
+        }
+        // The extracted storage path keeps the same refusal boundary as the
+        // protected-key path: authenticate existing ciphertext before saving.
+        load_entries(&self.dir, self.custody)?;
+        unix_storage::save(self).map_err(|error| error.to_string())
+    }
+
+    // Transitional non-Unix implementation. Windows namespace-control and
+    // existing-winner durability need their own native contract/qualification.
+    #[cfg(not(unix))]
     pub fn try_save(&self) -> Result<(), String> {
         if let Some(error) = &self.load_error {
             return Err(format!(
@@ -235,6 +251,12 @@ impl SecretVault {
 }
 
 /// Read and authenticate existing entries, distinguishing absence from damage.
+#[cfg(unix)]
+fn load_entries(dir: &Path, custody: SecretCustody) -> Result<BTreeMap<String, Secret>, String> {
+    unix_storage::load(dir, custody).map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
 fn load_entries(dir: &Path, custody: SecretCustody) -> Result<BTreeMap<String, Secret>, String> {
     let blob = match std::fs::read(dir.join("vault.enc")) {
         Ok(blob) => blob,
@@ -252,6 +274,7 @@ fn load_entries(dir: &Path, custody: SecretCustody) -> Result<BTreeMap<String, S
 /// Read the vault key from `dir`, generating + persisting a fresh random one the first time.
 /// `None` only when the key can neither be read nor created. The single point of key
 /// custody — see module docs for the TPM/keyring seam that will replace it.
+#[cfg(not(unix))]
 fn load_or_create_key(dir: &Path, custody: SecretCustody) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     match custody {
         SecretCustody::SecretService => secret_service_key(dir),
@@ -279,6 +302,7 @@ fn secret_service_available() -> bool {
     .is_ok_and(|output| output.status.success())
 }
 
+#[cfg(not(unix))]
 fn secret_service_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     match lookup_secret_service_key() {
         Ok(Some(key)) => return Some(key),
@@ -419,6 +443,7 @@ fn hex_nibble(byte: u8) -> Result<u8, String> {
         .ok_or_else(|| "Secret Service key is not hexadecimal".into())
 }
 
+#[cfg(not(unix))]
 fn local_file_key(dir: &Path) -> Option<Zeroizing<[u8; KEY_LEN]>> {
     let path = dir.join("vault.key");
     match read_key_bytes(&path) {
@@ -513,6 +538,7 @@ fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
 }
 
 /// Keep private-key validation tied to the handle that supplies the bytes.
+#[cfg(any(not(unix), test))]
 fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
     use std::io::Read;
     let mut bytes = Zeroizing::new(Vec::new());
@@ -522,6 +548,8 @@ fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::unix_storage::load_or_create_local_key_for_test as local_file_key;
     use super::*;
 
     #[test]
@@ -895,3 +923,9 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(all(test, unix))]
+mod unix_tests;
+
+#[cfg(unix)]
+mod unix_storage;

@@ -34,12 +34,19 @@ class CatalogSelectionTests(unittest.TestCase):
         for version in (1, 2):
             with self.subTest(version=version):
                 source = self.write(version)
-                destination = self.root / "release-catalog.json"
+                destination = self.root / "crates/packaging/install-artifacts/release-catalog.json"
+                destination.parent.mkdir(parents=True, exist_ok=True)
                 result = subprocess.run([sys.executable, str(SCRIPT), str(self.root),
                                          "--copy-to", str(destination)], capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(destination.read_bytes(), source.read_bytes())
                 source.unlink()
+
+    def test_workflow_embeds_only_the_service_catalog(self):
+        workflow = SCRIPT.parents[2].parent / ".forgejo/workflows/release-imager.yml"
+        source = workflow.read_text()
+        self.assertNotIn("apps/imager/release-catalog.json", source)
+        self.assertEqual(source.count("crates/packaging/install-artifacts/release-catalog.json"), 4)
 
     def test_empty_selection_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
