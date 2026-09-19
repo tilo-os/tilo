@@ -23,6 +23,8 @@ struct QualificationHold {
     deadline: Option<std::time::Instant>,
     expired: bool,
     action_registration: Option<ActionRegistrationHold>,
+    action_attachment_exit:
+        Option<tokio::sync::oneshot::Sender<qos_action_broker::peer_actions::PeerActionAttachmentError>>,
 }
 #[cfg(feature = "test-support")]
 struct ActionRegistrationHold {
@@ -61,8 +63,15 @@ impl QualificationHold {
             }
             return true;
         }
-        if line == "qualification action-registration stop" {
-            self.action_registration = None;
+        if let Some(kind) = line.strip_prefix("qualification action-attachment ") {
+            let exit = match kind {
+                "eof" => qos_action_broker::peer_actions::PeerActionAttachmentError::TransportClosed,
+                "failure" => qos_action_broker::peer_actions::PeerActionAttachmentError::Failed,
+                _ => return false,
+            };
+            if let Some(sender) = self.action_attachment_exit.take() {
+                let _ = sender.send(exit);
+            }
             return true;
         }
         if line == "qualification release" {
@@ -88,6 +97,15 @@ impl QualificationHold {
             .as_mut()
             .and_then(|hold| hold.barrier.take())
     }
+
+    fn replace_action_attachment_exit(
+        &mut self,
+    ) -> tokio::sync::oneshot::Receiver<qos_action_broker::peer_actions::PeerActionAttachmentError>
+    {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.action_attachment_exit = Some(sender);
+        receiver
+    }
 }
 #[cfg(feature = "test-support")]
 impl Drop for QualificationHold {
@@ -103,7 +121,9 @@ pub struct NativeSubscription {
     publication: std::sync::Mutex<crate::publication::PublicationCursor>,
 }
 struct AttachedActions {
-    task: Option<tokio::task::JoinHandle<Result<(), ()>>>,
+    task: Option<tokio::task::JoinHandle<
+        Result<(), qos_action_broker::peer_actions::PeerActionAttachmentError>,
+    >>,
     acknowledged: tokio::sync::watch::Receiver<bool>,
 }
 impl AttachedActions {
@@ -163,6 +183,9 @@ impl NativeSubscription {
         #[cfg(feature = "test-support")] barrier: Option<
             qos_action_broker::peer_actions::ActionRegistrationBarrier,
         >,
+        #[cfg(feature = "test-support")] forced_exit: tokio::sync::oneshot::Receiver<
+            qos_action_broker::peer_actions::PeerActionAttachmentError,
+        >,
     ) -> Result<()> {
         if self.actions.is_some() {
             return Ok(());
@@ -177,17 +200,31 @@ impl NativeSubscription {
         let (acknowledged, readiness) = tokio::sync::watch::channel(false);
         let task = tokio::spawn(async move {
             #[cfg(feature = "test-support")]
-            if let Some(barrier) = barrier {
-                return queue
-                    .serve_with_readiness_and_registration_barrier_for_test(
-                        session,
-                        room,
-                        host,
-                        acknowledged,
-                        barrier,
-                    )
-                    .await;
+            {
+                let serving = async {
+                    if let Some(barrier) = barrier {
+                        queue
+                            .serve_with_readiness_and_registration_barrier_for_test(
+                                session,
+                                room,
+                                host,
+                                acknowledged,
+                                barrier,
+                            )
+                            .await
+                    } else {
+                        queue
+                            .serve_with_readiness(session, room, host, acknowledged)
+                            .await
+                    }
+                };
+                tokio::pin!(serving);
+                return tokio::select! {
+                    result = &mut serving => result,
+                    result = forced_exit => Err(result.unwrap_or(qos_action_broker::peer_actions::PeerActionAttachmentError::Failed)),
+                };
             }
+            #[cfg(not(feature = "test-support"))]
             queue
                 .serve_with_readiness(session, room, host, acknowledged)
                 .await
@@ -480,7 +517,11 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     )?;
     let run_result: Result<()> = async {
     loop {
-        if session.is_none() && reconnect.is_none() && owner.permits_publication() {
+        if session.is_none()
+            && reconnect.is_none()
+            && owner.permits_publication()
+            && action_error.is_none()
+        {
             let _timing = crate::action_timing::Timing::new("subscription_connecting");
             reconnect = Some(host.begin_connection(&owner, delay)?);
         }
@@ -500,24 +541,37 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             if current.actions.is_none() {
                                 #[cfg(feature = "test-support")]
                                 let action_registration_barrier = qualification.take_action_registration_barrier();
+                                #[cfg(feature = "test-support")]
+                                let action_attachment_exit = qualification.replace_action_attachment_exit();
                                 if let Err(problem) = current.attach(
                                     runtime,
                                     owner.peer().room().parse()?,
                                     #[cfg(feature = "test-support")]
                                     action_registration_barrier,
+                                    #[cfg(feature = "test-support")]
+                                    action_attachment_exit,
                                 ) { action_error = Some(problem.to_string()); }
                             }
                         }
                     }
                 }
-                if action_error.is_none() && session.as_ref().is_some_and(|current| current.actions.as_ref().is_some_and(|attached| attached.task.as_ref().is_some_and(|task| task.is_finished()))) {
-                    error = Some("private broker attachment stopped; reconnecting shared session".into());
-                    delay = Duration::ZERO;
-                    if let Some(old) = session.take() { old.close().await; }
+                let attachment_exit = if action_error.is_none() {
+                    if let Some(current) = session.as_mut().filter(|current| current.actions.as_ref().is_some_and(|attached| attached.task.as_ref().is_some_and(|task| task.is_finished()))) {
+                        let mut attached = current.actions.take().expect("finished attachment exists");
+                        Some(attached.task.take().expect("finished attachment task exists").await)
+                    } else { None }
+                } else { None };
+                match attachment_exit {
+                    Some(Ok(Err(qos_action_broker::peer_actions::PeerActionAttachmentError::TransportClosed))) => {
+                        error = Some("private broker transport stopped; reconnecting shared session".into());
+                        if let Some(old) = session.take() { old.close().await; }
+                    }
+                    Some(_) => action_error = Some("private broker attachment stopped; outcome unknown".into()),
+                    None => {}
                 }
                 if action_error.is_some() {
                     *authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))? = None;
-                    if session.as_ref().is_some_and(|s| s.actions.is_some()) { if let Some(old) = session.take() { old.close().await; } }
+                    if let Some(old) = session.take() { old.close().await; }
                 }
             }
             // Replacement keeps bounded durable work pending until its exact
@@ -664,6 +718,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             "armed": hold.barrier.is_some(),
                             "reached": hold.reached.load(std::sync::atomic::Ordering::Acquire),
                         })),
+                        "action_attachment_exit_armed": qualification.action_attachment_exit.is_some(),
                         "publication": {
                             "room_heads": owner.peer().admitted_room().map(|room| room.clone().get_heads().iter().map(ToString::to_string).collect::<Vec<_>>()),
                             "receipts": owner.peer().rows().iter().map(|row| owner.peer().durable_coverage(&row.app_id, &row.record_id)).collect::<Result<Vec<_>, _>>().map_err(anyhow::Error::msg)?,

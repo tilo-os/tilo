@@ -66,6 +66,15 @@ pub struct NativePeerBrokerConfig {
 
 const CAPACITY: usize = 32;
 
+/// Why a native peer's private broker attachment ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PeerActionAttachmentError {
+    /// The shared relay transport ended and may be replaced from durable state.
+    TransportClosed,
+    /// Local validation, custody, capacity, or broker work failed.
+    Failed,
+}
+
 #[derive(Clone, Debug)]
 pub struct PeerActionQueue {
     sender: mpsc::Sender<Request>,
@@ -170,7 +179,7 @@ impl PeerActionQueue {
             .serve_with_readiness_inner(session.clone(), room, host, acknowledged, None)
             .await;
         session.close().await;
-        result
+        result.map_err(|_| ())
     }
 
     /// Serve and report when this exact relay attachment acknowledges the
@@ -182,11 +191,13 @@ impl PeerActionQueue {
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), PeerActionAttachmentError> {
         let result = self
             .serve_with_readiness_inner(session.clone(), room, host, acknowledged, None)
             .await;
-        session.close().await;
+        if result == Err(PeerActionAttachmentError::TransportClosed) {
+            session.close().await;
+        }
         result
     }
 
@@ -198,11 +209,13 @@ impl PeerActionQueue {
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
         barrier: ActionRegistrationBarrier,
-    ) -> Result<(), ()> {
+    ) -> Result<(), PeerActionAttachmentError> {
         let result = self
             .serve_with_readiness_inner(session.clone(), room, host, acknowledged, Some(barrier))
             .await;
-        session.close().await;
+        if result == Err(PeerActionAttachmentError::TransportClosed) {
+            session.close().await;
+        }
         result
     }
 
@@ -214,23 +227,32 @@ impl PeerActionQueue {
         acknowledged: tokio::sync::watch::Sender<bool>,
         #[cfg(feature = "test-support")] barrier: Option<ActionRegistrationBarrier>,
         #[cfg(not(feature = "test-support"))] _barrier: Option<()>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), PeerActionAttachmentError> {
         acknowledged.send_replace(false);
         let readiness = ReadinessReset(acknowledged);
         let ActionMessage::BrokerCatalogue { host: current, .. } =
-            self.request(None, None, None).await?
+            self.request(None, None, None)
+                .await
+                .map_err(|_| PeerActionAttachmentError::Failed)?
         else {
-            return Err(());
+            return Err(PeerActionAttachmentError::Failed);
         };
         if current != host {
-            return Err(());
+            return Err(PeerActionAttachmentError::Failed);
         }
         #[cfg(feature = "test-support")]
         if let Some(barrier) = barrier {
-            barrier.wait().await?;
+            barrier
+                .wait()
+                .await
+                .map_err(|_| PeerActionAttachmentError::Failed)?;
         }
-        session.enable_actions(room).map_err(|_| ())?;
-        session.register_action_broker(room, host).map_err(|_| ())?;
+        session
+            .enable_actions(room)
+            .map_err(|_| PeerActionAttachmentError::TransportClosed)?;
+        session
+            .register_action_broker(room, host)
+            .map_err(|_| PeerActionAttachmentError::TransportClosed)?;
         let mut watches: Vec<(CertifiedAction, qos_actions::InvocationId, ActionMessage)> =
             Vec::new();
         let mut transitions = self.transitions.subscribe();
@@ -239,43 +261,43 @@ impl PeerActionQueue {
             tokio::select! {
                 event = session.recv_certified_action() => match event {
                     Some(CertifiedActionEvent::Delivered(evidence)) => {
-                        if evidence.action().room != room { return Err(()); }
-                        let response = self.request(Some(evidence.clone()), None, None).await?;
-                        send(&session, &evidence, response.clone())?;
+                        if evidence.action().room != room { return Err(PeerActionAttachmentError::Failed); }
+                        let response = self.request(Some(evidence.clone()), None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
+                        send(&session, &evidence, response.clone()).map_err(|_| PeerActionAttachmentError::TransportClosed)?;
                         if let ActionMessage::Observation { invocation, ref update, uncertain, .. } = response {
                             if !uncertain && update.as_ref().is_some_and(|u| !u.is_terminal()) {
                                 if let Some(watch) = watches.iter_mut().find(|(old, id, _)| old.action().source == evidence.action().source && *id == invocation) { *watch = (evidence, invocation, response); }
                                 else if watches.len() < CAPACITY { watches.push((evidence, invocation, response)); }
-                                else { return Err(()); }
+                                else { return Err(PeerActionAttachmentError::Failed); }
                             } else { watches.retain(|(old, id, _)| old.action().source != evidence.action().source || *id != invocation); }
                         }
                     }
                     Some(CertifiedActionEvent::Control(qos_relay::transport_v2::EnvelopeV2::Unavailable { request_id, reason, .. })) => {
                         watches.retain(|(evidence, _, _)| evidence.action().request_id != request_id);
-                        if reason == qos_relay::peer_actions::UnavailableReason::Backpressure { return Err(()); }
+                        if reason == qos_relay::peer_actions::UnavailableReason::Backpressure { return Err(PeerActionAttachmentError::Failed); }
                     },
                     Some(CertifiedActionEvent::Control(control)) => {
                         if registration_acknowledged(&control, room, host) {
                             readiness.0.send_replace(true);
                         }
                     },
-                    None => return Err(()),
+                    None => return Err(PeerActionAttachmentError::TransportClosed),
                 },
                 transition = transitions.recv() => {
-                    let (source, update) = transition.map_err(|_| ())?;
-                    let update = update.ok_or(())?;
+                    let (source, update) = transition.map_err(|_| PeerActionAttachmentError::Failed)?;
+                    let update = update.ok_or(PeerActionAttachmentError::Failed)?;
                     if source.action().room != room { continue; }
                     if let Some((evidence, invocation, previous)) = watches.iter_mut().find(|(evidence, invocation, _)| evidence.action().source == source.action().source && *invocation == update.invocation()) {
                         if let ActionMessage::Observation { update: Some(prior), .. } = previous {
                             if sequence(&update).zip(sequence(prior)).is_some_and(|(next, old)| next <= old) { continue; }
                         }
-                        let response = self.request(Some(evidence.clone()), Some(*invocation), Some(update)).await?;
-                        if response != *previous { send(&session, evidence, response.clone())?; *previous = response; }
+                        let response = self.request(Some(evidence.clone()), Some(*invocation), Some(update)).await.map_err(|_| PeerActionAttachmentError::Failed)?;
+                        if response != *previous { send(&session, evidence, response.clone()).map_err(|_| PeerActionAttachmentError::TransportClosed)?; *previous = response; }
                     }
                     watches.retain(|(_, _, response)| matches!(response, ActionMessage::Observation { update: Some(update), uncertain: false, .. } if !update.is_terminal()));
                 }
                 _ = tick.tick() => {
-                    self.request(None, None, None).await?;
+                    self.request(None, None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
                 }
             }
         }
