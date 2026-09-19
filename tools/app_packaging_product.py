@@ -19,25 +19,25 @@ import tomllib
 import zipfile
 
 import app_packaging_coordinator as core
-from resolve_ci_builder import resolve
+from ci.resolve_builder import resolve
 
 REPO = 'qos/qos'
 WORKFLOW = 'release-apps.yml'
 REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'rust-toolchain.toml', '.cargo/config.toml',
-                  'tools/ci_python.py',
+                  'tools/ci/python.py', 'tools/ci/__init__.py',
                   'tools/app_packaging_product.py', 'tools/app_packaging_coordinator.py',
                   'tools/app_packaging_qualification.py', 'tools/app_release.py',
-                  'tools/app_packaging_plan.py', 'tools/ci_select.py',
+                  'tools/app_packaging_plan.py', 'tools/ci/affected_packages.py',
                   'dist/apps/app-collections.toml',
-                  'tools/resolve_ci_builder.py', 'dist/apps/package-apps.sh',
-                  'os/scripts/build-thin-apps.sh', 'tools/ci_select.py',
+                  'tools/ci/resolve_builder.py', 'dist/apps/package-apps.sh',
+                  'os/scripts/build-thin-apps.sh', 'tools/ci/affected_packages.py',
                   'tools/app_package_isa.py', 'tools/create_app_receipt.py',
                   'tools/assemble_verified_apps.py', 'tools/final_app_receipt.py',
                   'tools/app_channel_manifest.py', 'tools/canonical_app_verifier.py',
                   'dist/apps/assemble-collection.sh', 'tools/assemble_app_collection.py',
-                  'tools/rustc-thin-app-wrapper.sh', 'os/scripts/bake-runtime-bundle.sh',
-                  'os/scripts/verify-elf-hardening.sh', 'tools/ci-sccache.sh',
+                  'tools/ci/rustc-thin-app-wrapper.sh', 'os/scripts/bake-runtime-bundle.sh',
+                  'os/scripts/verify-elf-hardening.sh', 'tools/ci/sccache.sh',
                   '.forgejo/actions/restore-cargo-downloads/action.yml',
                   'tools/canonical_verifier_bundle.py'}
 

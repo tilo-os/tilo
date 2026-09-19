@@ -78,7 +78,7 @@ jobs:
 
       - name: Prepare compiler cache and verify real app subjects
         run: |
-          bash tools/ci-sccache.sh prepare
+          bash tools/ci/sccache.sh prepare
           # The builder-image update and this workflow can race on the first
           # merge that introduces a new subject. Normally these packages are
           # already baked in; this fallback handles that transition.
@@ -97,13 +97,13 @@ jobs:
 
       - name: Build the compositor under test
         run: >-
-          bash tools/ci-measure.sh "legacy app compositor build" --
+          bash tools/ci/measure.sh "legacy app compositor build" --
           bash scripts/ci-run.sh "cargo build (legacy app E2E)" --
           cargo build --locked -p shell --bin shell
 
       - name: Exercise caret retention in real Linux applications
         run: >-
-          bash tools/ci-measure.sh "legacy app caret E2E" --
+          bash tools/ci/measure.sh "legacy app caret E2E" --
           python3 scripts/legacy-app-caret-e2e.py
           --shell target/debug/shell
           --artifacts target/legacy-app-e2e
