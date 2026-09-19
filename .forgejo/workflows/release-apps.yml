@@ -470,6 +470,7 @@ jobs:
           PRIOR_X86_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 || vars.TILO_APP_COLLECTION_SHA256 }}
           PRIOR_ARM64_URL: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
           PRIOR_ARM64_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
           if [[ $GITHUB_REF == refs/tags/* ]]; then
@@ -495,41 +496,29 @@ jobs:
           fi
           owner=${GITHUB_REPOSITORY%%/*}
           package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
-
-          put_immutable() {
-            local file=$1 url=$2 response remote
-            response=$(mktemp "$RUNNER_TEMP/tilo-package-response.XXXXXX")
-            status=$(curl --silent --show-error --retry 3 --retry-all-errors \
-              --output "$response" --write-out '%{http_code}' \
-              --header "Authorization: Bearer $jwt" \
-              --request PUT --upload-file "$file" "$url")
-            case "$status" in
-              200|201|204) echo "published ${file##*/}" ;;
-              409)
-                remote=$(mktemp "$RUNNER_TEMP/tilo-existing-package.XXXXXX")
-                curl --fail --silent --show-error --retry 3 --retry-all-errors \
-                  --header "Authorization: Bearer $jwt" "$url" --output "$remote"
-                cmp --silent "$file" "$remote" || {
-                  printf 'immutable package version conflicts: %s\n' "$url" >&2
-                  exit 1
-                }
-                echo "already published identically: ${file##*/}"
-                ;;
-              *) cat "$response" >&2; exit 1 ;;
-            esac
+          package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
+          [[ $package_public_api == https://*/api/packages/*/generic \
+                && $package_public_api != *'.svc.cluster.local'* ]] || {
+            printf 'TILO_PACKAGE_PUBLIC_BASE_URL must be a public HTTPS generic-package base: %s\n' \
+              "$package_public_api" >&2
+            exit 1
           }
 
           # Every app/version/architecture is independently addressable. A
           # one-app update uploads one qpkg; collection assembly below fetches
           # all unchanged members instead of rebuilding them.
+          upload_manifest="$RUNNER_TEMP/tilo-package-uploads.tsv"
+          : > "$upload_manifest"
           for index in release/*/index.json; do
             while IFS=$'\t' read -r name version file; do
               qpkg="${index%/index.json}/qpkg/$file"
               test -f "$qpkg"
-              put_immutable "$qpkg" \
-                "$package_api/tilo-app-$name/$VERSION/$file"
+              printf '%s\t%s\n' "$qpkg" \
+                "$package_api/tilo-app-$name/$VERSION/$file" >> "$upload_manifest"
             done < <(jq -r '.apps[] | [.name,.version,.file] | @tsv' "$index")
           done
+          TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
+            tools/upload_immutable_packages.sh "$upload_manifest"
 
           [[ -n ${COLLECTION:-} ]] || exit 0
           collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
@@ -553,45 +542,8 @@ jobs:
                 aarch64) prior_url=$PRIOR_ARM64_URL; prior_sha=$PRIOR_ARM64_SHA256 ;;
               esac
             fi
-            if [[ -n $prior_url ]]; then
-              [[ $prior_sha =~ ^[0-9a-fA-F]{64}$ ]]
-              prior="$RUNNER_TEMP/tilo-prior-$arch.tar.gz"
-              prior_dir="$RUNNER_TEMP/tilo-prior-$arch"
-              mkdir -p "$prior_dir"
-              curl --fail --silent --show-error --retry 3 --retry-all-errors \
-                --header "Authorization: Bearer $jwt" "$prior_url" --output "$prior"
-              printf '%s  %s\n' "$prior_sha" "$prior" | sha256sum --check --strict
-              while IFS= read -r member; do
-                if [[ $member == qpkg/ || $member == runtime/ || $member == index.json || $member == SHA256SUMS \
-                      || $member =~ ^qpkg/[A-Za-z0-9][A-Za-z0-9._+-]*\.qpkg$ \
-                      || $member =~ ^runtime(/[A-Za-z0-9][A-Za-z0-9._+-]*)+/?$ ]]; then
-                  continue
-                fi
-                printf 'unexpected prior collection member: %s\n' "$member" >&2
-                exit 1
-              done < <(tar -tzf "$prior")
-              tar --extract --gzip --file "$prior" --directory "$prior_dir" \
-                --no-same-owner --no-same-permissions
-              if find "$prior_dir/qpkg" "$prior_dir/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
-                printf 'prior app collection contains links or special files\n' >&2
-                exit 1
-              fi
-              built_count=$(jq -r '.apps | length' "$index")
-              collection_count=$(jq -r '.catalog | length' "$collection_plan")
-              if (( built_count < collection_count )); then
-                new_manifest=$(find "${index%/index.json}/runtime/tilo-runtime" \
-                  -mindepth 2 -maxdepth 2 -name bundle.toml -type f -print -quit)
-                prior_manifest=$(find "$prior_dir/runtime/tilo-runtime" \
-                  -mindepth 2 -maxdepth 2 -name bundle.toml -type f -print -quit)
-                new_root=$(sed -n 's/^root_hash *= *"\([0-9a-fA-F]\{64\}\)".*/\1/p' "$new_manifest")
-                prior_root=$(sed -n 's/^root_hash *= *"\([0-9a-fA-F]\{64\}\)".*/\1/p' "$prior_manifest")
-                if [[ -z $new_root || ${new_root,,} != ${prior_root,,} ]]; then
-                  printf 'shared runtime changed; the full collection must be rebuilt\n' >&2
-                  exit 1
-                fi
-              fi
-              cp "$prior_dir"/qpkg/*.qpkg "$qpkg_dir/"
-            fi
+            TILO_PACKAGE_TOKEN="$jwt" tools/reuse_prior_app_collection.sh \
+              "$index" "$collection_plan" "$qpkg_dir" "$arch" "$prior_url" "$prior_sha"
             while IFS=$'\t' read -r name version; do
               file="$name-$version-$arch.qpkg"
               built="${index%/index.json}/qpkg/$file"
@@ -612,7 +564,8 @@ jobs:
               dist/apps/assemble-collection.sh
             bundle="$out/tilo-apps-$arch.tar.gz"
             digest_file="$bundle.sha256"
-            bundle_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
+            bundle_upload_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
+            bundle_url="$package_public_api/tilo-app-collections/$VERSION/${bundle##*/}"
             if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
               python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
                 --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
@@ -620,25 +573,35 @@ jobs:
                 --runtime-binary "$verifier_tools/tilo-runtime-bundle" \
                 --source-sha "$GITHUB_SHA" --architecture "$arch"
             fi
-            put_immutable "$bundle" "$bundle_url"
+            bundle_upload="$RUNNER_TEMP/tilo-collection-bundle-$arch.tsv"
+            printf '%s\t%s\n' "$bundle" "$bundle_upload_url" > "$bundle_upload"
+            TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=1 \
+              tools/upload_immutable_packages.sh "$bundle_upload"
+            metadata_uploads="$RUNNER_TEMP/tilo-collection-metadata-$arch.tsv"
+            : > "$metadata_uploads"
             if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
               # A successful PUT alone is not evidence that consumers can read the bytes.
               readback="$RUNNER_TEMP/tilo-upload-readback-$arch.tar.gz"
               curl --fail --silent --show-error --header "Authorization: Bearer $jwt" \
-                "$bundle_url" --output "$readback"
+                "$bundle_upload_url" --output "$readback"
               final_receipt="$out/final-publication-receipt.json"
               python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
                 --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" bind-readback \
                 --receipt "$final_receipt" --receipt-sha256 "$(sha256sum "$final_receipt" | cut -d' ' -f1)" \
                 --downloaded "$readback" --url "$bundle_url" --output "$out/published-receipt.json"
               rm -f "$readback"
-              put_immutable "$out/published-receipt.json" \
-                "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.receipt.json"
-              put_immutable "$out/published-receipt.upload.json" \
-                "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.upload.json"
+              printf '%s\t%s\n' \
+                "$out/published-receipt.json" \
+                "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.receipt.json" \
+                "$out/published-receipt.upload.json" \
+                "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.upload.json" \
+                >> "$metadata_uploads"
             fi
-            put_immutable "$digest_file" \
-              "$package_api/tilo-app-collections/$VERSION/${digest_file##*/}"
+            printf '%s\t%s\n' "$digest_file" \
+              "$package_api/tilo-app-collections/$VERSION/${digest_file##*/}" \
+              >> "$metadata_uploads"
+            TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=3 \
+              tools/upload_immutable_packages.sh "$metadata_uploads"
             if [[ $arch == x86_64 ]]; then
               channel_url=$bundle_url
               channel_sha=$(awk '{print $1}' "$digest_file")
