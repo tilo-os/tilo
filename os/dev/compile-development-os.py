@@ -730,7 +730,7 @@ def retain_compilation(revision, generation, epoch, target, manifest, architectu
     private_files = [PRIVATE / 'cosign.key', PRIVATE / 'owner.key',
                      PRIVATE / 'signer/pcr-signing.key', PRIVATE / 'signer/efi-signing.key',
                      CACHE_SECRETS / 'aws_secret_access_key']
-    command = ['python3', 'os/dev/audit-rootfs-layers.py', '--image-id', image_id]
+    command = ['python3', str(CONTROLLER / 'os/dev/audit-rootfs-layers.py'), '--image-id', image_id]
     for path in private_files:
         command.extend(['--private-file', str(path)])
     audit_result = subprocess.run(command, cwd=REPO, stdout=subprocess.PIPE,

@@ -22,16 +22,10 @@ on:
       - "dist/apps/app-collections.toml"
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
-      - "tools/app_release.py"
-      - "tools/app_package_isa.py"
-      - "tools/app_channel_manifest.py"
-      - "tools/canonical_app_verifier.py"
-      - "tools/create_app_receipt.py"
-      - "tools/final_app_receipt.py"
+      - "tools/apps/**"
       - "tools/canonical_verifier_bundle.py"
       - "tools/assemble_verified_apps.py"
       - "tools/ci/**"
-      - "tools/assemble_app_collection.py"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/release-apps.yml"
@@ -181,7 +175,7 @@ jobs:
               fi
               ;;
           esac
-          python3 -I tools/ci/python.py tools/app_release.py "${args[@]}" | tee app-release-plan.json
+          python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}" | tee app-release-plan.json
           collection=
           case "$GITHUB_REF" in
             refs/tags/apps-v*) collection=${REQUESTED_COLLECTION:-default} ;;
@@ -197,7 +191,7 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ) \
                 || ${REQUESTED_PUBLISH:-false} == true ]]; then
-            matrix=$(python3 -I tools/ci/python.py tools/app_release.py --architecture-matrix \
+            matrix=$(python3 -I tools/ci/python.py tools/apps/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES" \
               --main-architectures "$MAIN_ARCHITECTURES")
@@ -212,7 +206,7 @@ jobs:
             fi
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
-            matrix=$(python3 -I tools/ci/python.py tools/app_release.py --architecture-matrix \
+            matrix=$(python3 -I tools/ci/python.py tools/apps/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES")
             echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -329,7 +323,7 @@ jobs:
         env:
           RECEIPT_ARCH: ${{ matrix.arch }}
         run: |
-          python3 tools/create_app_receipt.py \
+          python3 tools/apps/create_app_receipt.py \
             --collection dist/app-release \
             --pkg-binary target/release/tilo-pkg \
             --runtime-binary target/release/tilo-runtime-bundle \
@@ -390,7 +384,7 @@ jobs:
           baseline="$RUNNER_TEMP/baseline-proof.json"
           printf '%s' "$BASELINE_EVIDENCE" > "$baseline"
           plan="$RUNNER_TEMP/final-collection-plan.json"
-          python3 -I tools/ci/python.py tools/app_release.py --collection "$COLLECTION" > "$plan"
+          python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$plan"
           tools="$RUNNER_TEMP/platform-verifiers"
           python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch \
             --trust-policy "$policy" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
@@ -482,7 +476,7 @@ jobs:
             python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch \
               --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
               --builder-image "$BUILDER_IMAGE" --output "$verifier_tools"
-            python3 -I tools/ci/python.py tools/final_app_receipt.py \
+            python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
               --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" preflight \
               --pkg-binary "$verifier_tools/tilo-pkg" --runtime-binary "$verifier_tools/tilo-runtime-bundle"
           fi
@@ -526,7 +520,7 @@ jobs:
 
           [[ -n ${COLLECTION:-} ]] || exit 0
           collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
-          python3 -I tools/ci/python.py tools/app_release.py --collection "$COLLECTION" > "$collection_plan"
+          python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
           source_epoch=$(git log -1 --format=%ct)
           channel_url=
           channel_sha=
@@ -607,7 +601,7 @@ jobs:
             digest_file="$bundle.sha256"
             bundle_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
             if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
-              python3 -I tools/ci/python.py tools/final_app_receipt.py \
+              python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
                 --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
                 --collection "$out" --pkg-binary "$verifier_tools/tilo-pkg" \
                 --runtime-binary "$verifier_tools/tilo-runtime-bundle" \
@@ -620,7 +614,7 @@ jobs:
               curl --fail --silent --show-error --header "Authorization: Bearer $jwt" \
                 "$bundle_url" --output "$readback"
               final_receipt="$out/final-publication-receipt.json"
-              python3 -I tools/ci/python.py tools/final_app_receipt.py \
+              python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
                 --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" bind-readback \
                 --receipt "$final_receipt" --receipt-sha256 "$(sha256sum "$final_receipt" | cut -d' ' -f1)" \
                 --downloaded "$readback" --url "$bundle_url" --output "$out/published-receipt.json"

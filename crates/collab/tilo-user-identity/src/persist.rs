@@ -67,6 +67,7 @@ fn protect_secret_process() -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
+    const RESOLVE_BENEATH: u64 = 0x08;
     const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
     const RESOLVE_NO_SYMLINKS: u64 = 0x04;
 
@@ -77,26 +78,63 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
         resolve: u64,
     }
 
-    let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+    // Fedora Atomic deliberately exposes /home as a symlink to /var/home.
+    // Resolving an absolute path with RESOLVE_NO_SYMLINKS therefore rejects a
+    // perfectly normal login before it ever reaches Tilo's identity tree.
+    // Anchor at the nearest caller-created identity root. Its direct child
+    // names are fixed by IdentityPaths; resolving the remainder beneath this
+    // descriptor preserves parent-symlink rejection inside Tilo's storage.
+    let (root, relative) = path
+        .ancestors()
+        .zip(path.ancestors().skip(1))
+        .find_map(|(child, parent)| {
+            let name = child.file_name()?.to_str()?;
+            if !matches!(name, "user-identity" | "device-private" | "device") {
+                return None;
+            }
+            Some((parent, path.strip_prefix(parent).ok()?))
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "identity artifact is outside a recognised identity root",
+            )
+        })?;
+    let canonical_root = fs::canonicalize(root)?;
+    let root_path = CString::new(canonical_root.as_os_str().as_bytes()).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "secret-key path contains an embedded NUL byte",
+            "identity root path contains an embedded NUL byte",
         )
     })?;
+    let relative = CString::new(relative.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity artifact path contains an embedded NUL byte",
+        )
+    })?;
+    let parent_flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_DIRECTORY;
+    // SAFETY: root_path is a live NUL-terminated string for this call.
+    let root_fd = unsafe { libc::open(root_path.as_ptr(), parent_flags) };
+    if root_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: libc::open returned an owned descriptor.
+    let root = unsafe { fs::File::from_raw_fd(root_fd) };
     let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .map_err(|_| io::Error::other("open flags are outside the Linux u64 ABI"))?;
     let how = OpenHow {
         flags,
         mode: 0,
-        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
+        resolve: RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
     };
     // SAFETY: path and open_how remain live for this syscall. A successful
     // descriptor is uniquely transferred into File below.
     let descriptor = unsafe {
         libc::syscall(
             libc::SYS_openat2,
-            libc::AT_FDCWD,
-            path.as_ptr(),
+            std::os::fd::AsRawFd::as_raw_fd(&root),
+            relative.as_ptr(),
             &raw const how,
             std::mem::size_of::<OpenHow>(),
         )
@@ -269,7 +307,15 @@ pub fn read_public_key(path: &Path) -> Result<[u8; 32], PersistError> {
 /// accepting a blocking device/FIFO. The byte after `limit` is consumed only
 /// to distinguish an exact-size artifact from an oversized one.
 fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistError> {
-    let file = open_regular_without_symlinks(path)?;
+    let file = open_regular_without_symlinks(path).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            error.kind(),
+            format!(
+                "cannot open authorization artifact {}: {error}",
+                path.display()
+            ),
+        ))
+    })?;
     if !file.metadata()?.is_file() {
         return Err(PersistError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -352,7 +398,12 @@ fn signing_key_from_file(
     #[cfg(windows)]
     let file = private_fs::read(path)?;
     #[cfg(not(windows))]
-    let file = open_regular_without_symlinks(path)?;
+    let file = open_regular_without_symlinks(path).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            error.kind(),
+            format!("cannot open secret key {}: {error}", path.display()),
+        ))
+    })?;
     #[cfg(not(unix))]
     let _ = (forbidden_mode, owner_policy);
     let metadata = file.metadata()?;
@@ -867,13 +918,19 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let tmp = tempfile::tempdir().unwrap();
-        let real = tmp.path().join("pubkey.bin");
-        let link = tmp.path().join("linked-pubkey.bin");
+        let identity_root = tmp.path().join("identity-root");
+        let user_identity = identity_root.join("user-identity");
+        fs::create_dir_all(&user_identity).unwrap();
+        let real = user_identity.join("pubkey.bin");
+        let link = user_identity.join("linked-pubkey.bin");
         fs::write(&real, [7_u8; 32]).unwrap();
         symlink(&real, &link).unwrap();
         assert!(matches!(read_public_key(&link), Err(PersistError::Io(_))));
-        let linked_parent = tmp.path().join("linked-parent");
-        symlink(tmp.path(), &linked_parent).unwrap();
+        let real_parent = identity_root.join("real-parent");
+        fs::create_dir_all(&real_parent).unwrap();
+        fs::write(real_parent.join("pubkey.bin"), [9_u8; 32]).unwrap();
+        let linked_parent = user_identity.join("linked-parent");
+        symlink(&real_parent, &linked_parent).unwrap();
         assert!(matches!(
             read_public_key(&linked_parent.join("pubkey.bin")),
             Err(PersistError::Io(_))
@@ -882,6 +939,24 @@ mod tests {
         write_public_key(&link, &[8_u8; 32]).unwrap();
         assert_eq!(fs::read(&real).unwrap(), [7_u8; 32]);
         assert_eq!(read_public_key(&link).unwrap(), [8_u8; 32]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn authorization_artifact_under_distro_home_symlink_is_readable() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let real_home = tmp.path().join("var/home/alice");
+        let identity = real_home.join(".local/share/tilo/user-identity");
+        fs::create_dir_all(&identity).unwrap();
+        symlink(tmp.path().join("var/home"), tmp.path().join("home")).unwrap();
+        let path = tmp
+            .path()
+            .join("home/alice/.local/share/tilo/user-identity/pubkey.bin");
+        fs::write(&path, [11_u8; 32]).unwrap();
+
+        assert_eq!(read_public_key(&path).unwrap(), [11_u8; 32]);
     }
 
     #[cfg(unix)]

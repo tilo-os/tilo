@@ -1870,6 +1870,7 @@ impl MusicApp {
             self.pb.queue_index = index;
             self.pb.current = Some(id);
             self.pb.playing = true;
+            self.pb.position_ms = 0;
             self.playhead_ms = 0.0;
             self.bound_track = self.pb.current.clone();
         }
@@ -1880,6 +1881,7 @@ impl MusicApp {
             return;
         }
         if self.pb.repeat == RepeatMode::One && auto {
+            self.pb.position_ms = 0;
             self.playhead_ms = 0.0;
             return;
         }
@@ -1925,6 +1927,7 @@ impl MusicApp {
 
     fn previous(&mut self) {
         if self.playhead_ms > 3000.0 {
+            self.pb.position_ms = 0;
             self.playhead_ms = 0.0;
             return;
         }
@@ -1937,6 +1940,7 @@ impl MusicApp {
                 .position(|&i| i == self.pb.queue_index)
                 .unwrap_or(0);
             if pos == 0 {
+                self.pb.position_ms = 0;
                 self.playhead_ms = 0.0;
                 return;
             }
@@ -1947,6 +1951,7 @@ impl MusicApp {
             return;
         }
         if self.pb.queue_index == 0 {
+            self.pb.position_ms = 0;
             self.playhead_ms = 0.0;
             return;
         }

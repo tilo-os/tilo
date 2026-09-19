@@ -161,7 +161,7 @@ impl MapViewport {
 /// marker *means*: activating one always opens the same shared collection,
 /// never whichever photograph happened to be first in a transient bucket.
 #[must_use]
-pub fn clusters(photos: &[LibraryPhoto]) -> Vec<PlaceCluster> {
+pub fn clusters<'a>(photos: impl IntoIterator<Item = &'a LibraryPhoto>) -> Vec<PlaceCluster> {
     let mut grouped = BTreeMap::<String, (String, f64, f64, Vec<String>)>::new();
     for photo in photos {
         let Some(location) = &photo.location else {
