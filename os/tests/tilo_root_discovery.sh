@@ -91,9 +91,7 @@ echo 'ok: target-independent initrd units generated'
 mkdir -p "$work/preflight/predictions"
 printf 'deterministic target UKI bytes' >"$work/preflight/tilo-target.efi"
 printf '7\n' >"$work/generation"
-"$crypto" generate-secure-boot-cert "Tilo preflight test" \
-  "$work/private.pem" "$work/certificate.pem"
-"$crypto" rsa-public-key "$work/private.pem" "$work/public.pem"
+"$crypto" generate-tpm-authority-key "$work/private.pem" "$work/public.pem"
 prediction="$work/preflight/predictions/generation-7.json"
 python3 - "$work/message.bin" <<'PY'
 import struct, sys

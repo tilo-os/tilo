@@ -20,6 +20,13 @@ owner key does not authorize an OS image, PCR policy, or EFI executable. Existin
 `COSIGN_PRIVATE_KEY`/`COSIGN_PASSWORD` secrets do not satisfy the production OS
 workflow's `COSIGN_KEY_REF` requirement.
 
+Development signer provisioning uses `tilo-crypto generate-tpm-authority-key`
+for the PCR/floor authority and the separate
+`generate-secure-boot-cert` command for EFI signing. The former deliberately
+emits RSA-2048, matching the production authority and the key size portable
+across the TPM implementations used by Tilo; a 4096-bit Secure Boot key is not
+an interchangeable TPM authority.
+
 Some historical comments still describe PCR authorization as unused or
 owner-enrollment as the general boot model. The executable checks in
 `os/dev/sign-target-prediction.sh`, `os/usr/libexec/tilo-verified-boot-install-preflight`,

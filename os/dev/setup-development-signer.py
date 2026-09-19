@@ -37,12 +37,9 @@ def provision(directory):
         directory.mkdir(mode=0o700, exist_ok=False)
         # Leave an incomplete identity visibly incomplete if provisioning fails;
         # never silently regenerate keys at an already selected path.
-        pcr_certificate = directory / 'pcr-signing.crt'
-        signer.run([str(crypto), 'generate-secure-boot-cert', 'Tilo Development PCR Signer',
-                    str(directory / 'pcr-signing.key'), str(pcr_certificate)])
-        signer.run([str(crypto), 'rsa-public-key', str(directory / 'pcr-signing.key'),
+        signer.run([str(crypto), 'generate-tpm-authority-key',
+                    str(directory / 'pcr-signing.key'),
                     str(directory / 'tpm2-pcr-signing.public.pem')])
-        pcr_certificate.unlink()
         signer.run([str(crypto), 'generate-secure-boot-cert', 'Tilo Development Test Signer',
                     str(directory / 'efi-signing.key'), str(directory / 'efi-signing.crt')])
         destination = directory / 'signer'

@@ -59,10 +59,8 @@ class SigningSpoolTests(unittest.TestCase):
         (cls.home / 'signer').chmod(0o755)
         (cls.home / 'purpose').write_bytes(spool.signer.PURPOSE)
         crypto = '/usr/local/bin/tilo-crypto'
-        spool.signer.run([crypto, 'generate-secure-boot-cert', 'Throwaway PCR test',
-                          str(cls.home / 'pcr-signing.key'), str(cls.home / 'pcr-signing.crt')])
-        spool.signer.run([crypto, 'rsa-public-key', str(cls.home / 'pcr-signing.key'),
-                          str(cls.home / 'pcr.pub')])
+        spool.signer.run([crypto, 'generate-tpm-authority-key',
+                          str(cls.home / 'pcr-signing.key'), str(cls.home / 'pcr.pub')])
         spool.signer.run([crypto, 'generate-secure-boot-cert', 'Throwaway EFI test',
                           str(cls.home / 'efi-signing.key'), str(cls.home / 'efi-signing.crt')])
 
