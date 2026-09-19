@@ -176,6 +176,7 @@ identity that signed the package:
 tilo-pkg entry \
   --identity /run/secrets/app-publisher.json \
   --action update \
+  --previous-entry current-entry.json \
   --url https://packages.example/immutable/app.qpkg \
   app.qpkg > request.json
 curl --fail --header 'Content-Type: application/json' \
@@ -184,14 +185,16 @@ curl --fail --header 'Content-Type: application/json' \
 
 Use `--action add` for the first version. The command refuses an identity that
 does not match the publisher embedded in the qpkg, so the registry submission
-cannot relabel artifacts signed by another key.
+cannot relabel artifacts signed by another key. Updates require the current
+signed entry and append to its immutable version history; re-running the same
+artifact reproduces the existing entry, while reusing a version/target identity
+for different bytes fails closed.
 
-The current `RegistryVersion` wire shape has no architecture field and the
-catalogue selects the first version. Until that protocol carries target
-selection, the official registry publication lane must advertise one native
-architecture (currently `x86_64`) even if CI retains immutable `aarch64`
-artifacts alongside it. Do not publish a macOS package through this Linux qpkg
-lane.
+Each signed version binds the package root, exact final-file BLAKE3 and size,
+architecture, minimum ISA and runtime ABI. The official registry currently
+accepts only `x86_64`; CI still retains immutable `aarch64` artifacts for the
+future multi-target lane. Do not publish a macOS package through this Linux
+qpkg lane.
 
 ### 6. Moderator workflow
 
@@ -222,6 +225,22 @@ Publish the next bounded-lifetime snapshot from an offline signing environment:
 chmod 0600 /secure/registry-owner.seed
 tilo-registry-server sign-snapshot \
   --owner-key-file /secure/registry-owner.seed \
+  --valid-for-seconds 86400
+```
+
+The production first-party CronJob uses the bounded equivalent below. It
+selects only the explicitly pinned publisher, verifies every selected request
+and package before mutation, records a crash-recoverable batch, approves at
+most 50 requests, and advances the snapshot exactly once. With no matching
+work it exits successfully without changing the sequence.
+
+```text
+tilo-registry-server promote-first-party \
+  --publisher-pubkey "$FIRST_PARTY_PUBLISHER" \
+  --owner-key-file /run/secrets/registry-owner/seed \
+  --reviewer registry-promoter \
+  --reason automated-first-party-promotion \
+  --max-items 50 \
   --valid-for-seconds 86400
 ```
 
