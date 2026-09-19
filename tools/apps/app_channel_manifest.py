@@ -147,6 +147,8 @@ def create_receipt(archive, tree, archive_sha256, source_sha, architecture, poli
             'publication': {'status': 'unpublished'}}
     if canonical_binaries is not None:
         result['verification'].update(backend='canonical-cli-v1', canonical_binaries=verifier.binary_hashes)
+        if 'canonical_bundle' in policy:
+            result['verification']['canonical_bundle'] = policy['canonical_bundle']
     if audit_only:
         result.update(schema='tilo.app-collection-audit/v1', compatibility_issues=compatibility_issues,
                       compatible=not compatibility_issues, cryptographic_integrity_verified=True)
@@ -171,6 +173,13 @@ def validate_receipt(receipt, architecture, policy, require_published=True):
     require(digest(verification['verifier_sha256']) == digest(policy['verifier_sha256']), 'unapproved verifier identity')
     require(verification['package_identity'] == 'blake3-ed25519-signed-root-v1'
             and verification['runtime_identity'] == 'blake3-ed25519-runtime-bundle-v1', 'unsupported verification identity')
+    if 'canonical_verifier_bundles' in policy:
+        bundle = verification.get('canonical_bundle', {})
+        descriptor = policy['canonical_verifier_bundles'].get(bundle.get('architecture'))
+        require(isinstance(descriptor, dict) and bundle.get('sha256') == descriptor.get('sha256')
+                and verification.get('backend') == 'canonical-cli-v1'
+                and verification.get('canonical_binaries') == descriptor.get('canonical_binaries'),
+                'canonical verifier bundle not approved')
     if 'canonical_binaries' in policy:
         require(verification.get('backend') == 'canonical-cli-v1' and verification.get('canonical_binaries') == policy['canonical_binaries'],
                 'canonical verification identity mismatch')
