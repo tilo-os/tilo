@@ -72,3 +72,8 @@ pub fn app_root_shot(scenario: Option<&str>) -> Box<dyn Widget> {
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(DiffMergeApp::new())
 }
+
+#[cfg(test)]
+mod framework_history_tests;
+
+pub mod framework_history;
