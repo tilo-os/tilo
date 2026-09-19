@@ -46,6 +46,8 @@ mod desktop;
 #[cfg(any(target_arch = "wasm32", test))]
 mod desktop_host;
 #[cfg(any(target_arch = "wasm32", test))]
+mod desktop_activity;
+#[cfg(any(target_arch = "wasm32", test))]
 mod desktop_navigation;
 #[cfg(any(target_arch = "wasm32", test))]
 mod system_search;

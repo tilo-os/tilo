@@ -1,4 +1,5 @@
 import {createDesktopNavigation} from './desktop-navigation.mjs';
+import {createNavigationFocus} from './desktop-navigation-focus.mjs';
 import {bindActionPalette} from './action-palette-bridge.mjs';
 import {bindDesktopCommands} from './desktop-command-bridge.mjs';
 import {commitPeerBatches} from './peer-persistence.mjs';
@@ -33,10 +34,12 @@ export async function mountDesktop(target,options={}) {
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
+    if(data.clipboard==='copied'||data.clipboard==='failed'){commandStatus.style.display='block';commandStatus.textContent=data.clipboard==='copied'?'Copied to system clipboard':`Could not copy to system clipboard: ${data.clipboardError??'browser access denied'}`;}
     if(data.desktopCommand){const row=data.desktopCommand;commandStatus.style.display='block';commandStatus.textContent=row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`;}
     if(data.desktopErrors?.length){commandStatus.style.display='block';commandStatus.textContent=`Desktop request unavailable: ${data.desktopErrors.at(-1)}`;}
     options.onStatus?.(data);
   };
+  const navigationFocus=createNavigationFocus({document,surface,canvas,active});
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
   delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;
@@ -50,18 +53,21 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined;}
   function update(raw){
     if(closed||!registry.current(token))return;
-    navigation?.refresh();
+    const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
     if(desktopCommands)void desktopCommands.pump();
     if(actionPalette){
       const request=runtime.take_caller_action(id);
       if(request)void actionPalette.submit(JSON.parse(request)).catch(error=>{if(active())report({actionError:String(error)});});
     }
-    const state=JSON.parse(raw);lastState={...lastState,...state};report(state);
+    lastState={...lastState,...state};report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;}
     if(state.phase==='presented'){surface.inert=false;editor.disabled=false;}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
+    navigation?.refresh();
+    navigationFocus.errors(state.desktopErrors??[]);
+    if(state.phase==='presented'&&navigation)navigationFocus.update(navigation.controller.getSnapshot());
     if(state.semantics)semantic.update(state.semantics);
     if(state.ime){
       editor.style.left=`${state.ime.x}px`;editor.style.top=`${state.ime.y}px`;editor.style.height=`${Math.max(1,state.ime.height)}px`;
@@ -121,7 +127,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      navigation?.close();actionPalette?.close();desktopCommands?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
       surface.remove();
     },
@@ -199,7 +205,11 @@ export async function mountDesktop(target,options={}) {
     if(options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
     if(options.actionsV1)desktopCommands=bindDesktopCommands({actions:options.actionsV1,peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report});
     if(runtime.desktop_navigation_snapshot && runtime.desktop_navigation_snapshot(id)) {
-      navigation=createDesktopNavigation({active,snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>runtime.desktop_navigate(id,command),search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>canvas.focus({preventScroll:true}),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
+      navigation=createDesktopNavigation({active,snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>{
+        const request=navigationFocus.begin(JSON.parse(command),navigation.controller.getSnapshot());
+        try{const result=runtime.desktop_navigate(id,command);navigationFocus.accepted(request);return result;}
+        catch(error){navigationFocus.failed(request);throw error;}
+      },search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>canvas.focus({preventScroll:true}),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
       // Cloud's toolbar is a sibling of the renderer in its Desktop section.
       // Scope the listener to that mounted desktop; other page editors stay native.
       const shortcutScope=target.closest('section[aria-label="Desktop"]')??target;

@@ -6651,9 +6651,9 @@ impl ShellOverlayHost {
             let records = st.records().clone();
             let mut tree = st.tree_mut();
             let local = self.room_records.borrow();
-            self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut tree, &records, &*local);
+                .refresh_records_with_local(&mut *tree, &records, &*local);
         }
         self.refresh_history_narrative();
     }
@@ -6682,9 +6682,9 @@ impl ShellOverlayHost {
             let records = st.records().clone();
             let mut tree = st.tree_mut();
             let local = self.room_records.borrow();
-            self.room_activity.refresh(&mut tree);
+            self.room_activity.refresh(&mut *tree);
             self.room_activity
-                .refresh_records_with_local(&mut tree, &records, &*local);
+                .refresh_records_with_local(&mut *tree, &records, &*local);
             tree.active.raw()
         };
         self.refresh_history_narrative();
@@ -7367,7 +7367,7 @@ impl ShellOverlayHost {
                     scale_factor,
                     &modifiers,
                     cursor,
-                    &mut tree,
+                    &mut *tree,
                     Some(&records),
                 )
             };
@@ -13366,6 +13366,18 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         self.drain_app_host_intents();
+        let view_request = self.chrome.as_ref().and_then(|chrome| chrome.borrow_mut().take_workspace_view_request());
+        if let Some((previous, request)) = view_request {
+            // Finish against the outgoing admission before awareness refreshes
+            // for the destination. A first open must not acknowledge its feed.
+            if self.room_activity_was_open { self.room_activity.finish_view(previous.0); }
+            if let qos_desktop::activity::WorkspaceViewRequest::OpenActivity { view, .. } = request {
+                self.room_activity.set_view(crate::shell::room_activity::ActivityView::CatchUp);
+                self.room_activity.set_view(view);
+                self.room_activity.invalidate();
+            }
+            self.room_activity_was_open = false;
+        }
         // Above the dropdowns, below the palette (which must stay reachable).
         self.refresh_room_activity_awareness();
         // Capture session presence against the latest durable checkpoint even
@@ -23278,6 +23290,21 @@ mod tests {
 
     /// The sheet lays out inside the viewport and derives its rows from the
     /// room document the chrome is actually holding — not from a seeded list.
+    #[test]
+    fn workspace_activity_typed_requests_open_each_view_without_mutating_tree() {
+        use qos_desktop::activity::{ActivityView, WorkspaceViewRequest};
+        let mut h = build_harness();
+        let workspace = h.chrome.borrow().tree().active;
+        let heads = h.chrome.borrow().tree_mut().doc.get_heads();
+        for view in [ActivityView::CatchUp, ActivityView::Explore, ActivityView::Replay] {
+            h.chrome.borrow_mut().request_workspace_view(WorkspaceViewRequest::OpenActivity { workspace, view }).unwrap();
+            paint(&mut h);
+            assert_eq!(h.host.room_activity().view(), view);
+            assert!(!h.host.room_activity().replay_is_playing());
+            assert_eq!(h.chrome.borrow().tree_mut().doc.get_heads(), heads);
+        }
+    }
+
     #[test]
     fn room_activity_sheet_shows_the_live_rooms_history() {
         let mut h = build_harness();

@@ -267,7 +267,7 @@ impl ApplicationHandler<u64> for Runner {
                         }
                         _ => {}
                     }
-                    m.frame.send_host_event(&event);
+                    crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.pending = true;
                     m.window.request_redraw();
                 }
@@ -708,9 +708,9 @@ pub fn semantic(
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.peer_suspended { return Ok(false); }
-        m.frame
-            .perform_semantic_named(path, target.as_deref(), &action)
-            .map_err(error)?;
+        crate::clipboard::during_input(&m.status, || {
+            m.frame.perform_semantic_named(path, target.as_deref(), &action)
+        }).map_err(error)?;
         m.pending = true;
         m.window.request_redraw();
         Ok(true)
@@ -1060,9 +1060,12 @@ pub(crate) fn refresh_peer_mounts(peer:u32){
  let state=crate::peer::desktop_state(peer);let permissions=crate::peer::permissions(peer);
  MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(peer)){
   if let Some(desktop)=&mount.desktop {
+    // A retained document is not a continuing read grant. Withdraw history
+    // until a successful admission is reconciled, including record-level loss.
+    if state.is_err() || permissions.is_err() { desktop.invalidate_history(); }
     if let Ok(permissions)=&permissions{*desktop.permissions.borrow_mut()=permissions.clone();}
     match (&state,&permissions){
-      (Ok(state),Ok(permissions))=>{if let Err(error)=desktop.admit(state,permissions.clone()){desktop.errors.borrow_mut().push(error);}else{mount.peer_suspended=false;}},
+      (Ok(state),Ok(permissions))=>{if let Err(error)=desktop.admit(state,permissions.clone()){desktop.invalidate_history();desktop.errors.borrow_mut().push(error);}else{mount.peer_suspended=false;}},
       (Err(reason),_) if reason.contains("forbidden")||reason.contains("revoked")=>{mount.peer_suspended=true;desktop.errors.borrow_mut().push(reason.clone());},
       (_,Err(reason))=>{mount.peer_suspended=true;desktop.errors.borrow_mut().push(reason.clone());},
       _=>{}

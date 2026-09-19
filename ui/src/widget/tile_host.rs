@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::clock::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
 use vello::peniko::{
     Blob, Color, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format,
 };
@@ -1735,11 +1735,20 @@ impl TileHost {
         } else {
             (EDGE_STROKE_WIDTH, theme.window_edge())
         };
-        let half = edge_width / 2.0;
-        let offset = if self.flush_edges { -half } else { half };
-        let edge = RoundedRect::from_rect(rect.inflate(offset, offset), (radius + offset).max(0.0));
-        scene.stroke(
-            &vello::kurbo::Stroke::new(edge_width),
+        // Fill the border's two contours directly. GPU stroking can leave
+        // solid tiles outside a rounded corner when its top crosses y=0.
+        let outer_offset = if self.flush_edges { 0.0 } else { edge_width };
+        let inner_offset = outer_offset - edge_width;
+        let outer = RoundedRect::from_rect(
+            rect.inflate(outer_offset, outer_offset), radius + outer_offset,
+        );
+        let inner = RoundedRect::from_rect(
+            rect.inflate(inner_offset, inner_offset), (radius + inner_offset).max(0.0),
+        );
+        let mut edge = outer.to_path(0.01);
+        edge.extend(inner.path_elements(0.01));
+        scene.fill(
+            vello::peniko::Fill::EvenOdd,
             transform,
             edge_color,
             None,
@@ -3233,6 +3242,41 @@ mod tests {
                      the card, on ground the shell knows — over app content it \
                      is a constant on an unknown surface",
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn flush_focus_edge_leaves_rounded_corner_cutouts_clear() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::default();
+        let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
+        let mut renderer = OffscreenRenderer::new(256, 256);
+        for right in [62.0, 62.5, 100.0, 120.0] {
+            for top in [0.0, 0.5, 16.0] {
+                let rect = Rect::new(-400.0, top, right, 400.0);
+                let mut host = TileHost::new(TileContent::Stub {
+                    kind: AppKind::Editor,
+                    label: String::new(),
+                });
+                host.rect = rect;
+                host.set_flush_edges(true);
+                host.set_focused(true);
+                let radius = f64::from(theme.tokens.radii.xl);
+                let mut scene = Scene::new();
+                host.draw_edge(&mut scene, Affine::scale(2.0), &theme, radius);
+                let rgba = renderer.render(&scene, ground);
+                for y in 0..px((top + radius) * 2.0) {
+                    for x in px((right - radius) * 2.0)..px(right * 2.0) {
+                        let dx = (f64::from(x) + 0.5) / 2.0 - (right - radius);
+                        let dy = (f64::from(y) + 0.5) / 2.0 - (top + radius);
+                        if dx * dx + dy * dy > (radius + 1.0).powi(2) {
+                            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 256, x, y);
+                            assert_eq!((r, g, b), (0, 255, 0),
+                                "focus paint outside corner: right={right}, top={top}, pixel=({x},{y})");
+                        }
+                    }
+                }
             }
         }
     }

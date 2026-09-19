@@ -6,7 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+qdoc = { path = "../../doc/qdoc" }
 automerge.workspace = true
+blake3.workspace = true
 taffy.workspace = true
 vello.workspace = true
 winit.workspace = true
