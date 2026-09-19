@@ -157,6 +157,24 @@ class CheckpointPersistenceTests(unittest.TestCase):
         self.assertTrue(result['materialized'])
         self.assertFalse(result['signing_authorized'])
 
+    def test_materialize_accepts_loader_checkpoint_with_the_same_guards(self):
+        checkpoint, request, request_metadata = self.prepare_materialization()
+        loader = checkpoint.with_name('loader')
+        checkpoint.rename(loader)
+        receipt = self.spool.document(loader / 'receipt.json')
+        receipt['purpose'] = 'loader'
+        (loader / 'receipt.json').unlink()
+        self.write(loader / 'receipt.json', receipt)
+
+        result = diagnostics.materialize(
+            self.operation, self.run, 'loader', request, self.spool)
+
+        self.assertEqual((loader / 'input.efi').read_bytes(), b'exact unsigned UKI')
+        self.assertEqual(result['purpose'], 'loader')
+        self.assertEqual(
+            self.spool.document(loader / 'materialization.json')['request_id'],
+            request_metadata['request_id'])
+
     def test_materialize_rejects_request_that_differs_from_checkpoint(self):
         checkpoint, request, request_metadata = self.prepare_materialization()
         request_metadata['input_sha256'] = '9' * 64

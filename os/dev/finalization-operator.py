@@ -29,6 +29,7 @@ stage = module('operator_stage', 'stage-finalization-worker.py')
 loader = module('operator_loader', 'verify-development-loader.py')
 HEX = re.compile(r'[0-9a-f]{64}')
 NONCE = re.compile(r'[0-9a-f]{32}')
+EFI_PURPOSES = ('loader', 'live-uki', 'target-uki')
 CONFIG_FIELDS = {'schema', 'request_sha256', 'helper_revision', 'archive_sha256',
                  'tools_image_id', 'hardware_profile', 'initial_free_bytes',
                  'forgejo_host', 'repository', 'dispatch_ref', 'files', 'operator_sha256'}
@@ -391,20 +392,21 @@ def wait_status(operation, c, run_id, attempt, until, timeout, interval, ignore=
         time.sleep(min(interval, remaining))
 
 
-def reuse_loader(old_context, new_context, old_request, request, old_response,
-                 original, incoming, signed, expected_input_sha256):
-    """Pure admission. Rebinding is only for the exact independently selected loader."""
+def reuse_efi(purpose, old_context, new_context, old_request, request, old_response,
+              original, incoming, signed, expected_input_sha256):
+    """Pure admission for an exact checkpoint-selected EFI response."""
+    require(purpose in EFI_PURPOSES, 'unsupported EFI reuse purpose')
     old_request, request = spool.request_metadata(old_request), spool.request_metadata(request)
     require(old_request['context_sha256'] == spool.context(old_context) and
             request['context_sha256'] == spool.context(new_context), 'request context differs')
     immutable = ('schema', 'revision', 'architecture', 'manifest_sha256', 'target', 'image_id')
     require(all(old_context[k] == new_context[k] for k in immutable), 'retained immutable context differs')
-    require(HEX.fullmatch(expected_input_sha256) is not None, 'independent loader digest required')
+    require(HEX.fullmatch(expected_input_sha256) is not None, 'checkpoint EFI digest required')
     require(original == incoming and spool.digest(original) == expected_input_sha256,
-            'independently selected loader bytes differ')
+            'checkpoint-selected EFI bytes differ')
     for metadata in (old_request, request):
         require(metadata['operation'] == 'sign-efi' and metadata['input_sha256'] == expected_input_sha256
-                and metadata['input_bytes'] == len(original), 'request is not selected loader')
+                and metadata['input_bytes'] == len(original), 'request is not selected EFI input')
     fields = {'schema', 'request_id', 'context_sha256', 'operation', 'input_sha256', 'output_sha256', 'output_bytes'}
     require(set(old_response) == fields and all(old_response[k] == old_request[k]
             for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')),
@@ -414,7 +416,40 @@ def reuse_loader(old_context, new_context, old_request, request, old_response,
     return dict(old_response, request_id=request['request_id'], context_sha256=request['context_sha256'])
 
 
-def reuse_response(operation, directory, nonce, old_directory, old_nonce, independent_loader):
+def reuse_loader(old_context, new_context, old_request, request, old_response,
+                 original, incoming, signed, expected_input_sha256):
+    """Compatibility wrapper for pure loader admission."""
+    return reuse_efi('loader', old_context, new_context, old_request, request, old_response,
+                     original, incoming, signed, expected_input_sha256)
+
+
+def checkpoint_input(directory, purpose, context, request, incoming):
+    """Revalidate a materialized checkpoint against its exact fetched request."""
+    checkpoint = spool.private_directory(directory / 'checkpoints' / purpose)
+    receipt = document(checkpoint / 'receipt.json')
+    materialization = document(checkpoint / 'materialization.json')
+    selected = read(checkpoint / 'input.efi', spool.MAX_INPUT)
+    context_sha256 = spool.context(context)
+    expected_materialization = {
+        'schema': 1, 'purpose': purpose, 'request_id': request['request_id'],
+        'context_sha256': context_sha256, 'input_sha256': request['input_sha256'],
+        'input_bytes': request['input_bytes'], 'signing_authorized': False,
+    }
+    require(receipt.get('purpose') == purpose and
+            receipt.get('transport_context_sha256') == context_sha256 and
+            receipt.get('signing_authorized') is False and
+            receipt.get('private_keys_used') is False and
+            receipt.get('input_sha256') == request['input_sha256'] and
+            receipt.get('input_bytes') == request['input_bytes'],
+            'authenticated checkpoint receipt differs')
+    require(materialization == expected_materialization and selected == incoming and
+            len(selected) == request['input_bytes'] and
+            spool.digest(selected) == request['input_sha256'],
+            'checkpoint materialization differs from fetched input')
+    return request['input_sha256']
+
+
+def reuse_response(operation, directory, nonce, old_directory, old_nonce, purpose):
     for value in (nonce, old_nonce):
         require(NONCE.fullmatch(value), 'invalid request ID')
     received, old_received = directory / 'received' / nonce, old_directory / 'received' / old_nonce
@@ -423,11 +458,13 @@ def reuse_response(operation, directory, nonce, old_directory, old_nonce, indepe
     incoming = read(received / 'input', spool.MAX_INPUT)
     original = read(old_received / 'input', spool.MAX_INPUT)
     signed = read(old_response_dir / 'output', spool.MAX_INPUT + 65536)
-    expected = read(independent_loader, 8 * 2**20)
-    require(expected == original, 'checkpoint loader differs from retained input')
-    response = reuse_loader(old_context, new_context, document(old_received / 'request.json'),
-        document(received / 'request.json'), document(old_response_dir / 'response.json'),
-        original, incoming, signed, spool.digest(expected))
+    old_request = spool.request_metadata(document(old_received / 'request.json'))
+    request = spool.request_metadata(document(received / 'request.json'))
+    old_checkpoint_sha = checkpoint_input(old_directory, purpose, old_context, old_request, original)
+    checkpoint_sha = checkpoint_input(directory, purpose, new_context, request, incoming)
+    require(old_checkpoint_sha == checkpoint_sha, 'checkpoint input identity differs across runs')
+    response = reuse_efi(purpose, old_context, new_context, old_request, request,
+        document(old_response_dir / 'response.json'), original, incoming, signed, checkpoint_sha)
     require(response['request_id'] == nonce and
             document(old_received / 'request.json')['request_id'] == old_nonce, 'request directory differs')
     q = document(operation / 'request.json')
@@ -438,42 +475,47 @@ def reuse_response(operation, directory, nonce, old_directory, old_nonce, indepe
     trust = stage.trust.validate(operation / 'new-public', q['new_manifest_sha256'])
     # Existing native crypto verifies certificate, signature and preserved PE envelope.
     verified = loader.verify(received / 'input', old_response_dir / 'output', operation / 'new-public/efi-signing.crt',
-                             trust['identities']['efi-signing.crt'], new_context['architecture'])
+                             trust['identities']['efi-signing.crt'], new_context['architecture'],
+                             spool.MAX_INPUT)
     require(verified['original_sha256'] == spool.digest(incoming) and
             verified['signed_sha256'] == spool.digest(signed) and
             verified['certificate_sha256'] == trust['identities']['efi-signing.crt'] and
-            verified['architecture'] == new_context['architecture'], 'loader changed during verification')
+            verified['architecture'] == new_context['architecture'], 'EFI response changed during verification')
     destination = directory / 'responses' / nonce
     destination.mkdir(mode=0o700)
     spool.write_new(destination / 'output', signed)
     spool.write_new(destination / 'response.json', spool.canonical(response))
-    return {'request_id': nonce, 'signature_reused': True, 'private_key_used': False,
+    return {'request_id': nonce, 'purpose': purpose, 'signature_reused': True, 'private_key_used': False,
             'output_sha256': response['output_sha256'], 'directory': str(destination)}
 
 
-def service_reused_loader(operation, c, directory, run_id, attempt, old_directory,
-                          old_nonce, independent_loader, timeout, interval, ignore=()):
-    """Wait for, fetch, verify, reuse, and deliver one exact loader request."""
+def service_reused_efi(operation, c, directory, run_id, attempt, old_directory,
+                       old_nonce, purpose, timeout, interval, ignore=()):
+    """Wait for, fetch, verify, reuse, and deliver one exact EFI request."""
     observed = wait_status(
         operation, c, run_id, attempt, 'request', timeout, interval, ignore)
     require(observed['job_status'] == 'running' and len(observed['requests']) == 1,
-            'expected exactly one pending loader request from a running job')
+            'expected exactly one pending EFI request from a running job')
     nonce = observed['requests'][0]
     received = directory / 'received' / nonce
     response = directory / 'responses' / nonce
     require(not received.exists() and not response.exists(),
-            'loader service state already exists; inspect it before continuing')
+            'EFI service state already exists; inspect it before continuing')
     client = client_for(directory)
     fetched = client.fetch(nonce, received)
-    reused = reuse_response(
-        operation, directory, nonce, old_directory, old_nonce, independent_loader)
+    import checkpoint_export
+    materialized = checkpoint_export.materialize(
+        operation, directory, purpose, received, spool)
+    reused = reuse_response(operation, directory, nonce, old_directory, old_nonce, purpose)
     delivered = client.deliver(response)
-    require(fetched.get('request_id') == nonce and reused.get('request_id') == nonce
+    require(fetched.get('request_id') == nonce and materialized.get('request_id') == nonce
+            and materialized.get('input_sha256') == fetched.get('input_sha256')
+            and reused.get('request_id') == nonce
             and delivered.get('request_id') == nonce
             and reused.get('output_sha256') == delivered.get('output_sha256'),
-            'loader service result identity differs')
+            'EFI service result identity differs')
     return {'request_id': nonce, 'input_sha256': fetched['input_sha256'],
-            'output_sha256': delivered['output_sha256'], 'signature_reused': True,
+            'output_sha256': delivered['output_sha256'], 'purpose': purpose, 'signature_reused': True,
             'private_key_used': False, 'delivered': True}
 
 
@@ -500,7 +542,7 @@ def main():
     for name, help_text, purposes in (
             ('diagnose-checkpoint', 'read-only checkpoint diagnostics', ('loader', 'live-uki', 'target-uki')),
             ('export-checkpoint', 'publish authenticated checkpoint metadata without large EFI transport', ('loader', 'live-uki', 'target-uki')),
-            ('materialize-checkpoint', 'match a fetched signing input to checkpoint metadata', ('live-uki', 'target-uki'))):
+            ('materialize-checkpoint', 'match a fetched signing input to checkpoint metadata', EFI_PURPOSES)):
         p = sub.add_parser(name, help=help_text)
         p.add_argument('--purpose', choices=purposes, required=True)
         p.add_argument('--run-id', type=int)
@@ -517,23 +559,23 @@ def main():
     for name in ('archive-sha256', 'tools-image-id', 'hardware-profile', 'forgejo-host', 'repository', 'dispatch-ref'):
         init.add_argument('--' + name, required=True)
     init.add_argument('--initial-free-bytes', type=int, required=True)
-    for command in ('bind', 'stage', 'status', 'wait', 'fetch', 'reuse-loader',
-                    'service-reused-loader', 'deliver', 'handoff'):
+    for command in ('bind', 'stage', 'status', 'wait', 'fetch', 'reuse-efi',
+                    'service-reused-efi', 'deliver', 'handoff'):
         p = sub.add_parser(command)
         p.add_argument('--run-id', type=int, required=True)
         p.add_argument('--attempt', type=int, required=True)
-        if command in ('fetch', 'reuse-loader', 'deliver'):
+        if command in ('fetch', 'reuse-efi', 'deliver'):
             p.add_argument('--request-id', required=True)
-        if command in ('wait', 'service-reused-loader'):
+        if command in ('wait', 'service-reused-efi'):
             if command == 'wait':
                 p.add_argument('--until', choices=('running', 'request'), required=True)
             p.add_argument('--timeout', type=int, default=300)
             p.add_argument('--interval', type=int, default=30)
             p.add_argument('--ignore-request', action='append', default=[])
-        if command in ('reuse-loader', 'service-reused-loader'):
+        if command in ('reuse-efi', 'service-reused-efi'):
             p.add_argument('--old-run-directory', type=Path, required=True)
             p.add_argument('--old-request-id', required=True)
-            p.add_argument('--independent-loader', type=Path, required=True)
+            p.add_argument('--purpose', choices=EFI_PURPOSES, required=True)
     a = ap.parse_args()
     require(os.geteuid() == 0, 'trusted local root operation required')
     if a.command in ('diagnose-checkpoint', 'export-checkpoint', 'materialize-checkpoint'):
@@ -569,10 +611,10 @@ def main():
         elif a.command == 'stage': result = stage_run(a.operation, c, directory)
         elif a.command == 'status': result = status(a.operation, c, a.run_id, a.attempt)
         elif a.command == 'wait': result = wait_status(a.operation, c, a.run_id, a.attempt, a.until, a.timeout, a.interval, a.ignore_request)
-        elif a.command == 'service-reused-loader':
+        elif a.command == 'service-reused-efi':
             require(NONCE.fullmatch(a.old_request_id), 'invalid old request ID')
-            result = service_reused_loader(a.operation, c, directory, a.run_id, a.attempt,
-                a.old_run_directory, a.old_request_id, a.independent_loader,
+            result = service_reused_efi(a.operation, c, directory, a.run_id, a.attempt,
+                a.old_run_directory, a.old_request_id, a.purpose,
                 a.timeout, a.interval, a.ignore_request)
         elif a.command == 'handoff': result = handoff(a.operation, directory, c)
         else:
@@ -580,7 +622,7 @@ def main():
             if a.command == 'fetch': result = client_for(directory).fetch(a.request_id, directory / 'received' / a.request_id)
             elif a.command == 'deliver': result = client_for(directory).deliver(directory / 'responses' / a.request_id)
             else: result = reuse_response(a.operation, directory, a.request_id, a.old_run_directory,
-                                         a.old_request_id, a.independent_loader)
+                                         a.old_request_id, a.purpose)
     print(json.dumps(result, sort_keys=True))
 
 
