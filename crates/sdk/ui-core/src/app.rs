@@ -824,6 +824,7 @@ pub struct App {
     fullscreen_active: bool,
 
     autosave: Option<crate::persist::Autosave>,
+    pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
     /// When present the live document is one record's, named by the root
     /// widget via [`crate::widget::Widget::record_intent`].
     records: Option<crate::record::RecordSet>,
@@ -1410,6 +1411,7 @@ impl App {
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
+            legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
             records: None,
             room_index: None,
             action_palette: None,
@@ -6990,6 +6992,14 @@ impl App {
         self
     }
 
+    pub(crate) fn with_legacy_persistence(
+        mut self,
+        policy: crate::launch::LegacyPersistencePolicy,
+    ) -> Self {
+        self.legacy_persistence = policy;
+        self
+    }
+
     /// Takes effect when the window is created, so set before [`App::run`].
     #[must_use]
     pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
@@ -7151,6 +7161,15 @@ impl App {
     /// Called on event-loop teardown so a `kill` right after the last
     /// keystroke still finds it on disk.
     fn autosave_flush(&mut self) {
+        if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
+            if let Err(error) = self.root.try_flush_owned_persistence().unwrap_or_else(|| {
+                Err("widget-owned persistence requires a checked flush hook".into())
+            }) {
+                tracing::error!(%error, "widget-owned persistence failed during shutdown");
+                eprintln!("tilo: notebook save failed during shutdown: {error}");
+            }
+            return;
+        }
         if let Some(set) = self.records.as_mut() {
             set.flush(&mut self.state.doc);
             if let (Some(saver), Some(room)) = (self.autosave.as_mut(), self.room_index.as_mut()) {

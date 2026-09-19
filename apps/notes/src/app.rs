@@ -3344,6 +3344,29 @@ impl ui::widget::AppWidget for NotesApp {
 }
 
 impl Widget for NotesApp {
+    fn has_pending_control_invocation(&self) -> bool {
+        !self.adopted
+            || self.pending_markdown_source.is_some()
+            || self
+                .children()
+                .iter()
+                .any(|child| child.has_pending_control_invocation())
+    }
+
+    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        self.legacy_fixture_storage.as_ref()?;
+        if self.legacy_read_blocked.is_some() {
+            return Some(Err(
+                "Current note is unreadable; its draft has not been saved".into(),
+            ));
+        }
+        self.flush_main_panel_edit();
+        let legacy = self.legacy_fixture_storage.as_ref()?;
+        let bodies = legacy.page_saver.try_flush();
+        let metadata = legacy.saver.try_flush();
+        Some(bodies.and(metadata))
+    }
+
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         if !self.import_control_emitted
             && let Some(resource) = self.pending_import_resource()
