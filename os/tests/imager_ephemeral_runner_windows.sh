@@ -3,7 +3,7 @@
 # strict static contract in the ordinary Linux invariant shard.
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-script="$repo/tools/Run-ImagerEphemeralRunner.ps1"
+script="$repo/tools/ci/runners/imager-ephemeral-windows.ps1"
 
 if command -v pwsh >/dev/null 2>&1; then
   pwsh -NoLogo -NoProfile -NonInteractive -Command \

@@ -39,9 +39,9 @@ NON_COMPILING_DOCS = {
 # inputs. Keep exact source/test pairs: unknown tools, deleted files, workflows,
 # compiler wrappers and packaging implementation changes retain native coverage.
 QUALITY_ONLY_HELPERS = {
-    "tools/ci_select.py": "tools/tests/test_ci_select.py",
-    "tools/ci_queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
-    "tools/ci_timing_report.py": "tools/tests/test_ci_timing_report.py",
+    "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
+    "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
+    "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
     "tools/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
@@ -78,7 +78,7 @@ HEAVY_PACKAGES = {
 
 # Below this structural cost, a second clean target directory spends more CPU
 # rebuilding shared dependencies than it saves in wall time. Shard timing and
-# CPU figures are emitted by ci-measure.sh so this can be tuned from runs.
+# CPU figures are emitted by tools/ci/measure.sh so this can be tuned from runs.
 SHARD_COST_BUDGET = 1_000
 
 

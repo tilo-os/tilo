@@ -5,7 +5,7 @@ from pathlib import Path
 import unittest
 
 
-MODULE_PATH = Path(__file__).parents[1] / "check_changed_rust_allows.py"
+MODULE_PATH = Path(__file__).parents[1] / "ci/check_changed_rust_allows.py"
 SPEC = importlib.util.spec_from_file_location("check_changed_rust_allows", MODULE_PATH)
 assert SPEC and SPEC.loader
 checker = importlib.util.module_from_spec(SPEC)

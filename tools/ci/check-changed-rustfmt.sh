@@ -2,7 +2,7 @@
 # Format-check exactly the Rust files changed from a CI comparison base.
 set -euo pipefail
 
-repo="${TILO_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+repo="${TILO_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$repo"
 
 base="${1:-}"

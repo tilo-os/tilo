@@ -137,7 +137,7 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('runs-on: runner-quality', select_job)
         self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
         self.assertIn('run: python3 tools/check_repository_layout.py', select_job)
-        self.assertIn('python3 tools/ci_select.py --base "$base" --shards 2', select_job)
+        self.assertIn('python3 tools/ci/affected_packages.py --base "$base" --shards 2', select_job)
         self.assertIn('  select:\n    needs: builder', CHECK)
         self.assertIn('  security:\n    needs: builder', CHECK)
         self.assertNotIn('needs.builder.outputs.image', select_job)
@@ -247,9 +247,9 @@ class CanaryIdentity(unittest.TestCase):
         self.assertIn('needs: [images, cache-cold]', BUILD)
         self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
         self.assertIn('builder-canary-inputs.py verify acceptance-receipts', BUILD)
-        self.assertLess(BUILD.index('bash tools/ci-sccache-canary.sh cold'),
+        self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh cold'),
                         BUILD.index('name: Retain only successful cold acceptance'))
-        self.assertLess(BUILD.index('bash tools/ci-sccache-canary.sh warm'),
+        self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
                         BUILD.index('name: Retain only successful warm acceptance'))
 
 
