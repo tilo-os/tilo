@@ -910,7 +910,10 @@ fn pe_checksum(image: &[u8], checksum_offset: usize) -> Result<u32, String> {
     Ok(folded.wrapping_add(image_len))
 }
 
-#[allow(clippy::too_many_lines)] // The DER field order is clearest beside its signed bytes.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep Authenticode DER field construction beside the exact attributes signed by ring"
+)]
 fn efi_authenticode_entry(
     private_key_pem: &str,
     certificate_pem: &str,
