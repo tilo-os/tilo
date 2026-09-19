@@ -1,5 +1,8 @@
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -9,6 +12,22 @@ SPEC.loader.exec_module(resolver)
 
 
 class BuilderResolutionTests(unittest.TestCase):
+    def test_direct_execution_does_not_shadow_python_standard_library(self):
+        env = dict(os.environ)
+        env.pop('REGISTRY_TOKEN', None)
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'tools/ci/resolve_builder.py')],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, '::error::CI builder resolution failed (ValueError)\n')
+        self.assertNotIn('Traceback', result.stderr)
+
     def test_actual_forgejo_manifest_record_contract(self):
         # Fields retained from authenticated package-file API read on 2026-09-19.
         row = {'id': 229897, 'Size': 493, 'name': 'manifest.json',
