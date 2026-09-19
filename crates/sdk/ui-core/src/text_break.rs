@@ -254,7 +254,9 @@ impl OffsetMap {
     }
 }
 
-pub(crate) fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
+/// Return Unicode word-like spans in original UTF-8 byte coordinates.
+/// Uses the same ICU segmentation as toolkit word selection and movement.
+pub fn unicode_word_ranges(text: &str) -> std::vec::IntoIter<std::ops::Range<usize>> {
     use icu_segmenter::WordSegmenter;
     thread_local! {
         static SEGMENTER: WordSegmenter = WordSegmenter::new_auto();
