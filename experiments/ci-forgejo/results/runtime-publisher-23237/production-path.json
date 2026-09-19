@@ -1,0 +1,21 @@
+{
+  "reviewed_main": "3eb4b9f03",
+  "canonical_source": "a987e76bac313e27f11c6f67d4c10779b2c3909f",
+  "matching_source_blobs": {
+    "crates/packaging/runtime-bundle/src/lib.rs": "73306df24f0d1ee6d559a8df3152c28d7f47c929",
+    "crates/packaging/runtime-bundle/src/main.rs": "def049582efc0cf96a480db316b4b529ef94f899"
+  },
+  "identity_input": "current protected RUNTIME_BUNDLE_SIGNING_KEY via stdin /proc/self/fd/0",
+  "algorithm": "Ed25519 32-byte seed; Identity::load -> Identity::from_json_bytes -> SigningKey::from_bytes -> verifying_key().to_bytes()",
+  "production_command": [
+    "tilo-runtime-bundle",
+    "key",
+    "pubkey",
+    "--identity",
+    "/proc/self/fd/0"
+  ],
+  "builder_image": "code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+  "private_files_created": false,
+  "private_values_in_arguments_or_logs": false,
+  "publication_or_activation": false
+}
