@@ -153,13 +153,22 @@ impl CoreGrid {
 /// a `C12  88%` label needs the room) and never exceed the core count, and
 /// rows are derived so **every** core gets a cell — the grid wraps to as
 /// many rows as the core count demands instead of clipping the tail.
+///
+/// Once the width has fixed the row count, the cores are spread evenly over
+/// those rows: eight threads on a card wide enough for seven columns paint as
+/// a 4 × 2 grid, not a full row of seven with one orphan gauge beneath it.
+/// The card height (`per_core_card_h`) only depends on the row count, so
+/// balancing never costs vertical space.
 pub fn per_core_grid(n: usize, avail_w: f64) -> CoreGrid {
     let n = n.max(1);
     // ~150px minimum per cell, at least one column, never more columns than
     // cores. `avail_w` already excludes the card's inner padding.
     let by_width = ((avail_w + CORE_GAP) / (150.0 + CORE_GAP)).floor() as usize;
-    let cols = by_width.clamp(1, 8).min(n);
-    let rows = n.div_ceil(cols);
+    let max_cols = by_width.clamp(1, 8).min(n);
+    let rows = n.div_ceil(max_cols);
+    // ceil(n / ceil(n / max_cols)) never exceeds max_cols, so this is the
+    // fewest columns that still seat every core in the width-derived rows.
+    let cols = n.div_ceil(rows);
     CoreGrid { cols, rows }
 }
 
@@ -394,6 +403,41 @@ mod tests {
                 assert!(
                     g.cells() < n + g.cols,
                     "grid must not waste a whole row: n={n} w={w}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn per_core_grid_balances_rows_instead_of_orphaning_the_last_core() {
+        // A 1172px card (the 1200px window's Resources band) fits seven
+        // 150px cells, so eight threads used to paint as 7 + 1. The width
+        // still forces two rows; the cores are then split 4 + 4.
+        let g = per_core_grid(8, 1172.0);
+        assert_eq!((g.cols, g.rows), (4, 2), "8 cores: {g:?}");
+        // 24 threads: 7 columns would need 4 rows (7/7/7/3); 6 columns fill
+        // the same 4 rows exactly.
+        let g = per_core_grid(24, 1172.0);
+        assert_eq!((g.cols, g.rows), (6, 4), "24 cores: {g:?}");
+        // Balancing never adds a row or exceeds the width-derived column cap,
+        // and it uses the fewest columns that still seat every core in those
+        // rows — so the trailing row is as full as a fixed-column grid allows.
+        for &n in &[2usize, 3, 5, 6, 7, 9, 12, 13, 16, 32, 33, 64] {
+            for &w in &[300.0_f64, 640.0, 900.0, 1172.0, 1600.0] {
+                let g = per_core_grid(n, w);
+                let cap = (((w + CORE_GAP) / (150.0 + CORE_GAP)).floor() as usize)
+                    .clamp(1, 8)
+                    .min(n);
+                assert!(g.cols <= cap, "n={n} w={w}: {g:?} exceeds width cap {cap}");
+                assert_eq!(
+                    g.rows,
+                    n.div_ceil(cap),
+                    "n={n} w={w}: row count is width-derived"
+                );
+                assert!(g.cells() >= n, "n={n} w={w}: {g:?} seats every core");
+                assert!(
+                    (g.cols - 1) * g.rows < n,
+                    "n={n} w={w}: {g:?} uses more columns than the rows need"
                 );
             }
         }

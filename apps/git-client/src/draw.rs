@@ -14,7 +14,7 @@ use vello::peniko::{Color, Fill};
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Avatar;
+use ui::widget::{Avatar, Button, ButtonFace};
 
 use crate::model::ChangeKind;
 
@@ -55,17 +55,32 @@ pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: 
     scene.fill(Fill::NonZero, t, color, None, &r);
 }
 
-/// Stroke a rounded rectangle outline.
-pub fn stroke_round(
+/// A card, row or control face with its derived rest edge (HIG §9.5): the
+/// fill plus a crisp 1 px inset hairline measured against that fill, so the
+/// edge registers on the dark preset where a declared `border_standard`
+/// stroke on a raised surface vanished.
+pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
+    ui::surface::card(scene, t, rect, radius, fill);
+}
+
+/// The derived hairline for a surface painted in `fill` — what a divider
+/// between that surface and its neighbour is stroked in.
+#[must_use]
+pub fn edge(fill: Color) -> Color {
+    ui::surface::edge_on(fill)
+}
+
+/// Paint a button through the shared face so rest, hover, disabled and
+/// primary/danger looks come from one painter. The caller keeps its own hit
+/// rect; this only paints.
+pub fn button(
     scene: &mut Scene,
+    tr: &mut TextRenderer,
     t: Affine,
-    rect: Rect,
-    radius: f64,
-    width: f64,
-    color: Color,
+    theme: &Theme,
+    face: &ButtonFace<'_>,
 ) {
-    let r = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(width), t, color, None, &r);
+    Button::paint(scene, t, tr, theme, face);
 }
 
 /// Draw a horizontal hairline separator.
@@ -161,11 +176,111 @@ pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
         .0
 }
 
+/// Top-of-line `y` that vertically centres `s` (drawn at `size`/`weight`)
+/// inside the band starting at `y0` with height `h`.
+///
+/// Centring uses the measured line height rather than the font size, so a
+/// 12px title, an 11px badge and a 13px tab label placed in one band share
+/// one centre line at every text scale.
+pub fn centered_top(
+    tr: &mut TextRenderer,
+    s: &str,
+    size: f32,
+    weight: TextWeight,
+    y0: f64,
+    h: f64,
+) -> f64 {
+    let (_, th) = tr.measure_weighted(s, size, None, weight);
+    y0 + (h - f64::from(th)) / 2.0
+}
+
+/// Monospace counterpart of [`centered_top`], measured with the same styled
+/// path [`mono`] paints with.
+pub fn mono_centered_top(tr: &mut TextRenderer, s: &str, size: f32, y0: f64, h: f64) -> f64 {
+    let (_, th) = tr.measure_styled(s, size, None, TextWeight::Regular, false, true);
+    y0 + (h - f64::from(th)) / 2.0
+}
+
+/// Leading a pill keeps around its measured label line. A label measures
+/// 1.25× its size, so 10/12/14 px labels (12.5/15/17.5 px) reproduce the
+/// historical 16/18/20 px pills exactly, while a 2× label grows the pill.
+const PILL_LEADING: f64 = 2.5;
+
+/// Horizontal label padding inside a [`pill`] (the same 6 px the pill has
+/// always used; shared by the width, height and paint helpers).
+fn pill_pad() -> f64 {
+    6.0
+}
+
+/// Height of a [`pill`] whose label is painted at `size`: the measured line
+/// height plus leading, never shorter than the label size plus padding.
+///
+/// Callers size the pill from its label rather than the label from the pill,
+/// because the renderer scales `size` by the text scale — deriving a size from
+/// a fixed height painted 2× glyphs inside a 1× pill.
+pub fn pill_height(tr: &mut TextRenderer, size: f32) -> f64 {
+    let (_, th) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
+    (f64::from(th) + PILL_LEADING).max(f64::from(size) + pill_pad())
+}
+
+/// Painted width of a [`pill`] carrying `label` at `size` (without the
+/// trailing gap the draw call adds to its advance).
+pub fn pill_width(tr: &mut TextRenderer, label: &str, size: f32) -> f64 {
+    let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+    f64::from(tw) + pill_pad() * 2.0
+}
+
+/// Truncate monospace `s` to fit `max_width` at `size`, appending an ellipsis
+/// when anything was dropped — the mono counterpart of
+/// [`TextRenderer::elide_to_width`], measured with the same styled path
+/// [`mono`] paints with.
+pub fn elide_mono(tr: &mut TextRenderer, s: &str, size: f32, max_width: f64) -> String {
+    const ELLIPSIS: &str = "\u{2026}";
+    if s.is_empty() || max_width <= 0.0 {
+        return String::new();
+    }
+    if f64::from(mono_width(tr, s, size)) <= max_width {
+        return s.to_string();
+    }
+    let ell_w = f64::from(mono_width(tr, ELLIPSIS, size));
+    if ell_w > max_width {
+        return ELLIPSIS.to_string();
+    }
+    let budget = max_width - ell_w;
+    let mut best = String::new();
+    let mut candidate = String::new();
+    for ch in s.chars() {
+        candidate.push(ch);
+        if f64::from(mono_width(tr, &candidate, size)) <= budget {
+            best.push(ch);
+        } else {
+            break;
+        }
+    }
+    // Trim the space before the ellipsis, as the toolkit's sans-serif
+    // elision does, so `impl Scene …` and `impl Scene…` never sit side by side.
+    let trimmed = best.trim_end().len();
+    best.truncate(trimmed);
+    best.push_str(ELLIPSIS);
+    best
+}
+
+/// How a [`pill`] closes its edge (HIG §9.5 rest edges).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PillEdge {
+    /// A quiet pill on a neutral fill: the hairline is derived from the fill
+    /// (`ui::surface::edge_on`), so it reads on every theme.
+    Derived,
+    /// An accent or semantic fill is self-defining and carries no edge.
+    Bare,
+}
+
 /// A small rounded "pill" with a label — used for ref decorations, badges,
-/// ahead/behind counts. Returns the advance width consumed (pill + gap).
+/// ahead/behind counts. The label is painted at `size`; the pill is
+/// [`pill_height`] tall. Returns the advance width consumed (pill + gap).
 #[allow(
     clippy::too_many_arguments,
-    reason = "a low-level drawing primitive whose arguments directly describe its geometry, label, and palette"
+    reason = "Git decoration pills expose position, text size and label, foreground/background colors, and edge style beside render context."
 )]
 pub fn pill(
     scene: &mut Scene,
@@ -173,20 +288,23 @@ pub fn pill(
     t: Affine,
     x: f64,
     y: f64,
-    height: f64,
+    size: f32,
     label: &str,
     fg: Color,
     bg: Color,
-    border: Option<Color>,
+    edge: PillEdge,
 ) -> f64 {
-    let pad = 6.0;
-    let size = (height - 6.0).max(9.0) as f32;
-    let tw = f64::from(tr.measure_weighted(label, size, None, TextWeight::Medium).0);
-    let w = tw + pad * 2.0;
+    let pad = pill_pad();
+    let height = pill_height(tr, size);
+    // Measure once with the exact style painted below: the width sizes the
+    // pill and the line height centres the label in it. Centring on the
+    // measured line (not the font size) removes the old `- 1.0` nudge.
+    let (tw, th) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+    let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, y, x + w, y + height);
-    fill_round(scene, t, rect, height / 2.0, bg);
-    if let Some(bc) = border {
-        stroke_round(scene, t, rect, height / 2.0, 1.0, bc);
+    match edge {
+        PillEdge::Derived => card(scene, t, rect, height / 2.0, bg),
+        PillEdge::Bare => fill_round(scene, t, rect, height / 2.0, bg),
     }
     text_weighted(
         scene,
@@ -196,7 +314,7 @@ pub fn pill(
         size,
         fg,
         x + pad,
-        y + (height - f64::from(size)) / 2.0 - 1.0,
+        y + (height - f64::from(th)) / 2.0,
         None,
         TextWeight::Medium,
     );

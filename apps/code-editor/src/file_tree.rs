@@ -303,7 +303,7 @@ impl Widget for FileTree {
             let label_color = if self.active == Some(meta.id) {
                 c.text_primary
             } else {
-                c.neutral[8]
+                c.text_dim
             };
             text_renderer.draw_text(
                 scene,

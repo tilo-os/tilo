@@ -28,12 +28,89 @@ use crate::doc::MergeDoc;
 use crate::highlight;
 use crate::model::{MergeHunk, MergeModel, Resolution};
 
+/// Minimum code-line pitch; the measured line height of `FONT_SIZE` wins
+/// when the text scale makes it taller (see [`Metrics`]).
 const ROW_H: f64 = 19.0;
+/// Minimum column / merged header band.
 const HEADER_H: f64 = 30.0;
+/// Minimum band a change hunk reserves under its rows for the chips
+/// (`chip_h + 6`).
 const ACTION_H: f64 = 26.0;
 const FONT_SIZE: f32 = 12.5;
 const PAD_X: f64 = 8.0;
 const GAP: f64 = 6.0;
+/// Text sizes the panel paints with; [`Metrics::measure`] measures the same
+/// values so bands and glyphs move together.
+const HEADER_FONT_SIZE: f32 = 12.5;
+const CHIP_FONT_SIZE: f32 = 11.5;
+const COMPACT_SOURCE_FONT_SIZE: f32 = 12.0;
+const MERGED_HEADER_FONT_SIZE: f32 = 13.0;
+const GUTTER_FONT_SIZE: f32 = 11.0;
+/// Chip label padding for the wide and compact layouts. The inter-chip gap
+/// is a spacing step read from the theme at the use site (`s2` wide, `s1`
+/// compact — HIG §7b siblings in a dense row).
+const CHIP_PAD_X: f64 = 8.0;
+const CHIP_PAD_X_COMPACT: f64 = 7.0;
+/// Minimum x where compact chips start (after the status label).
+const COMPACT_CHIPS_X: f64 = 64.0;
+/// Minimum merged-band line-number gutter.
+const MERGED_GUTTER_W: f64 = 44.0;
+
+/// Row metrics measured from the renderer the panel paints with.
+///
+/// Refreshed at the top of every draw; hunk spans, scrolling, chip hit rects,
+/// the accessibility export and the paint all read this one snapshot, so a
+/// text-scale change moves rows, chips and the merged band together instead
+/// of letting 25px glyphs overprint 19px rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Metrics {
+    /// Code line pitch.
+    row_h: f64,
+    /// Column header / merged header band.
+    header_h: f64,
+    /// Resolution chip height.
+    chip_h: f64,
+    /// Band a change hunk reserves under its rows (`chip_h` plus breathing room).
+    action_h: f64,
+    /// Top offset that centres a `FONT_SIZE` line inside `row_h`.
+    text_dy: f64,
+    /// Merged band line-number gutter width.
+    gutter_w: f64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            row_h: ROW_H,
+            header_h: HEADER_H,
+            chip_h: ACTION_H - 6.0,
+            action_h: ACTION_H,
+            text_dy: 2.0,
+            gutter_w: MERGED_GUTTER_W,
+        }
+    }
+}
+
+impl Metrics {
+    fn measure(tr: &mut TextRenderer) -> Self {
+        let line_h = f64::from(tr.measure("Ag", FONT_SIZE, None).1);
+        let row_h = (line_h + 3.0).max(ROW_H);
+        let header_label_h = f64::from(tr.measure("Ag", HEADER_FONT_SIZE, None).1);
+        let header_h = (header_label_h + 14.0).max(HEADER_H);
+        let chip_label_h = f64::from(tr.measure("Ag", CHIP_FONT_SIZE, None).1);
+        let chip_h = (chip_label_h + 5.0).max(ACTION_H - 6.0);
+        let gutter_w =
+            (f64::from(tr.measure("000", GUTTER_FONT_SIZE, None).0) + 20.0).max(MERGED_GUTTER_W);
+        Self {
+            row_h,
+            header_h,
+            chip_h,
+            action_h: chip_h + 6.0,
+            text_dy: (row_h - line_h) / 2.0,
+            gutter_w,
+        }
+    }
+}
 /// Below this width, three code panes cease to be readable.  Keep one full
 /// source pane and make switching sources explicit instead of merely squeezing
 /// desktop geometry into a phone.
@@ -122,10 +199,14 @@ pub struct MergeView {
     /// merged buffer (a projection of the external inputs, not a replayable
     /// action) and clears any stale per-hunk resolutions.
     pending_seed: bool,
+    expected_content: Option<crate::doc::AuthoredSnapshot>,
+    merged_output: String,
     /// A conflict resolution the user just triggered via a chip, waiting to be
     /// drained by the parent app and dispatched as a [`DiffmergeAction`] through
     /// the shared action path (so a chip and Ctrl+K produce one undo boundary).
     pending_action: Option<DiffmergeAction>,
+    /// Last measured row metrics (see [`Metrics`]); defaults until the first draw.
+    metrics: Metrics,
     /// The authoritative merged CRDT text, edited through the same shared
     /// caret/selection/IME/clipboard implementation as every code surface.
     merged_editor: CodeEditor,
@@ -153,12 +234,68 @@ impl MergeView {
             active_hunk: None,
             cursor: Point::ZERO,
             dirty: true,
-            pending_seed: true,
+            pending_seed: false,
+            expected_content: None,
+            merged_output: String::new(),
             pending_action: None,
+            metrics: Metrics::default(),
             merged_editor: CodeEditor::new(Vec::new())
                 .with_language(Language::PlainText)
                 .with_id("diffmerge_merged_editor"),
         }
+    }
+
+    pub(crate) fn context_matches(&self, doc: &AutoCommit) -> bool {
+        self.expected_content
+            .as_ref()
+            .is_some_and(|expected| *expected == crate::doc::authored_snapshot(doc))
+    }
+    pub(crate) fn acknowledge_content(&mut self, doc: &AutoCommit) {
+        self.expected_content = Some(crate::doc::authored_snapshot(doc));
+        self.merged_output = MergeDoc::merged_text(doc);
+    }
+    /// Historical/remote content cannot identify the unsaved original input hunks.
+    pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
+        if !self.pending_seed && !self.context_matches(doc) {
+            self.model = MergeModel::default();
+            self.base_label.clear();
+            self.ours_label.clear();
+            self.theirs_label.clear();
+            self.pending_action = None;
+            self.action_hits.clear();
+            self.hunk_spans.clear();
+            self.active_hunk = None;
+            self.expected_content = None;
+            self.dirty = true;
+        }
+        self.merged_output = MergeDoc::merged_text(doc);
+    }
+
+    /// Place the panel at `rect` directly (the parent app owns the toolbar
+    /// band above it and re-places the view whenever that band's measured
+    /// height changes, so paint and layout agree within one frame).
+    pub(crate) fn place(&mut self, rect: Rect) {
+        if rect != self.rect {
+            self.rect = rect;
+            self.recompute_spans();
+            self.scroll_y = self.scroll_y.min(self.max_scroll());
+        }
+    }
+
+    /// `(row_h, header_h, chip_h)` from the last draw.
+    #[cfg(test)]
+    pub(crate) fn metrics_for_test(&self) -> (f64, f64, f64) {
+        (
+            self.metrics.row_h,
+            self.metrics.header_h,
+            self.metrics.chip_h,
+        )
+    }
+
+    /// Total content height of the source band in content space.
+    #[cfg(test)]
+    pub(crate) fn content_height_for_test(&self) -> f64 {
+        self.content_height()
     }
 
     pub fn set_inputs(
@@ -174,6 +311,9 @@ impl MergeView {
         self.base_label = base_label.to_string();
         self.ours_label = ours_label.to_string();
         self.theirs_label = theirs_label.to_string();
+        // Spans depend on the model as much as on the metrics; a new input
+        // set at an unchanged rect must not paint against stale spans.
+        self.recompute_spans();
         self.scroll_y = 0.0;
         self.active_hunk = self
             .first_conflict()
@@ -222,7 +362,7 @@ impl MergeView {
                         x0,
                         self.rect.y0 + 4.0,
                         x0 + width,
-                        self.rect.y0 + HEADER_H - 4.0,
+                        self.rect.y0 + self.metrics.header_h - 4.0,
                     ),
                     source: *source,
                 }
@@ -342,12 +482,12 @@ impl MergeView {
 
     fn source_band_height(&self) -> f64 {
         // The source band occupies the top ~58% of the panel.
-        ((self.rect.height() - HEADER_H) * 0.58).max(0.0)
+        ((self.rect.height() - self.metrics.header_h) * 0.58).max(0.0)
     }
 
     fn merged_band_rect(&self) -> Rect {
         let r = self.rect;
-        let band_top = r.y0 + HEADER_H + self.source_band_height();
+        let band_top = r.y0 + self.metrics.header_h + self.source_band_height();
         Rect::new(r.x0, band_top, r.x1, r.y1)
     }
 
@@ -370,12 +510,13 @@ impl MergeView {
     /// Recompute the per-hunk vertical spans (content space).
     fn recompute_spans(&mut self) {
         self.hunk_spans.clear();
+        let m = self.metrics;
         let mut y = 0.0;
         for h in &self.model.hunks {
             let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
-            let mut height = rows as f64 * ROW_H;
+            let mut height = rows as f64 * m.row_h;
             if h.is_change {
-                height += ACTION_H + GAP;
+                height += m.action_h + GAP;
             }
             self.hunk_spans.push((y, y + height));
             y += height;
@@ -420,22 +561,29 @@ impl MergeView {
                     None,
                     &chip,
                 );
+                let label = hit.source.label();
+                let (_, lh) = tr.measure(label, COMPACT_SOURCE_FONT_SIZE, None);
                 tr.draw_text(
                     scene,
-                    hit.source.label(),
-                    12.0,
+                    label,
+                    COMPACT_SOURCE_FONT_SIZE,
                     if selected { c.surfaces.base } else { accent },
-                    transform * Affine::translate((hit.rect.x0 + 8.0, hit.rect.y0 + 4.0)),
+                    transform
+                        * Affine::translate((
+                            hit.rect.x0 + 8.0,
+                            hit.rect.y0 + (hit.rect.height() - f64::from(lh)) / 2.0,
+                        )),
                     Some((hit.rect.width() - 16.0) as f32),
                 );
             }
             return;
         }
 
+        let header_h = self.metrics.header_h;
         let col_w = r.width() / 3.0;
-        let base_col = Rect::new(r.x0, r.y0, r.x0 + col_w, r.y0 + HEADER_H);
-        let ours_col = Rect::new(r.x0 + col_w, r.y0, r.x0 + 2.0 * col_w, r.y0 + HEADER_H);
-        let theirs_col = Rect::new(r.x0 + 2.0 * col_w, r.y0, r.x1, r.y0 + HEADER_H);
+        let base_col = Rect::new(r.x0, r.y0, r.x0 + col_w, r.y0 + header_h);
+        let ours_col = Rect::new(r.x0 + col_w, r.y0, r.x0 + 2.0 * col_w, r.y0 + header_h);
+        let theirs_col = Rect::new(r.x0 + 2.0 * col_w, r.y0, r.x1, r.y0 + header_h);
 
         draw_header(
             scene,
@@ -474,14 +622,14 @@ impl MergeView {
         let c = &theme.tokens.colors;
         let r = self.rect;
         let col_w = r.width() / 3.0;
-        let band_top = r.y0 + HEADER_H;
+        let band_top = r.y0 + self.metrics.header_h;
         let band_bot = band_top + self.source_band_height();
         for k in 1..3 {
             let x = r.x0 + f64::from(k) * col_w;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                c.border_standard,
+                ui::surface::edge_on(c.surfaces.raised),
                 None,
                 &Line::new(Point::new(x, band_top), Point::new(x, band_bot)),
             );
@@ -570,12 +718,6 @@ impl MergeView {
         clippy::too_many_arguments,
         reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
     )]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "r is the hunk rect, y/h are its position/height, c is the theme's colour \
-                  set, and w is a chip's measured width — conventional short names for this \
-                  draw step"
-    )]
     fn draw_hunk_action_chips(
         scene: &mut Scene,
         transform: Affine,
@@ -589,6 +731,7 @@ impl MergeView {
         h: &MergeHunk,
         action_hits: &mut Vec<ActionHit>,
         compact: bool,
+        m: Metrics,
     ) {
         let c = &theme.tokens.colors;
         let ay = y + block_h + 2.0;
@@ -596,20 +739,18 @@ impl MergeView {
         // keeps the resolution controls coherent: ours = success (green),
         // theirs = info (blue), both = the neutral dim tone — mirroring
         // the status label's own `ColorClass` mapping.
-        let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
-            &[
-                ("Take ours", HunkChoice::Ours, c.semantic.success),
-                ("Take theirs", HunkChoice::Theirs, c.semantic.info),
-                ("Take both", HunkChoice::Both, c.text_dim),
-            ]
+        let choices = [
+            (HunkChoice::Ours, c.semantic.success),
+            (HunkChoice::Theirs, c.semantic.info),
+            (HunkChoice::Both, c.text_dim),
+        ];
+        let sp = &theme.tokens.spacing;
+        let (pad_x, gap) = if compact {
+            (CHIP_PAD_X_COMPACT, f64::from(sp.s1))
         } else {
-            // Auto-resolved — still allow flipping.
-            &[
-                ("Ours", HunkChoice::Ours, c.semantic.success),
-                ("Theirs", HunkChoice::Theirs, c.semantic.info),
-                ("Both", HunkChoice::Both, c.text_dim),
-            ]
+            (CHIP_PAD_X, f64::from(sp.s2))
         };
+
         // Status label on the left. On a phone, keep this semantically distinct
         // from the source switcher and the mutation chips: it says whether the
         // hunk still needs a resolution, while every chip says what it will do.
@@ -632,67 +773,87 @@ impl MergeView {
         } else {
             r.x0 + col_w + PAD_X
         };
+        let (status_w, status_h) = tr.measure(status_label, CHIP_FONT_SIZE, None);
         tr.draw_text(
             scene,
             status_label,
-            11.5,
+            CHIP_FONT_SIZE,
             status.1.color(c),
-            transform * Affine::translate((status_x, ay + 5.0)),
+            transform * Affine::translate((status_x, ay + (m.chip_h - f64::from(status_h)) / 2.0)),
             None,
         );
 
-        let mut cx = if compact {
-            r.x0 + 64.0
+        // Chips live in the theirs column (wide) or after the status label
+        // (compact). Their labels are measured with the style they are painted
+        // in; when the explicit verb form cannot fit the pane the short form is
+        // used, so no chip ever paints past the pane edge.
+        let chips_x0 = if compact {
+            (r.x0 + COMPACT_CHIPS_X).max(status_x + f64::from(status_w) + PAD_X)
         } else {
             r.x0 + 2.0 * col_w + PAD_X
         };
-        for (label, choice, col) in chips {
-            let label = if compact {
-                match choice {
-                    HunkChoice::Ours => "Use ours",
-                    HunkChoice::Theirs => "Use theirs",
-                    HunkChoice::Both => "Use both",
-                }
-            } else {
-                *label
-            };
-            let w = label.len() as f64 * if compact { 6.8 } else { 7.2 }
-                + if compact { 14.0 } else { 16.0 };
-            let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
-            let selected = chip_is_selected(h.resolution, *choice);
+        let available = r.x1 - PAD_X - chips_x0;
+        let long: [&str; 3] = if compact {
+            ["Use ours", "Use theirs", "Use both"]
+        } else {
+            ["Take ours", "Take theirs", "Take both"]
+        };
+        let short: [&str; 3] = ["Ours", "Theirs", "Both"];
+        let prefer_long = compact || h.resolution.is_conflict();
+        let widths_for = |tr: &mut TextRenderer, labels: &[&str; 3]| -> [f64; 3] {
+            let mut widths = [0.0; 3];
+            for (w, label) in widths.iter_mut().zip(labels) {
+                *w = f64::from(tr.measure(label, CHIP_FONT_SIZE, None).0) + 2.0 * pad_x;
+            }
+            widths
+        };
+        let mut labels = if prefer_long { long } else { short };
+        let mut widths = widths_for(tr, &labels);
+        if prefer_long && widths.iter().sum::<f64>() + 2.0 * gap > available {
+            labels = short;
+            widths = widths_for(tr, &short);
+        }
+
+        let mut cx = chips_x0;
+        for ((label, w), (choice, col)) in labels.iter().zip(widths).zip(choices) {
+            let chip = Rect::new(cx, ay, cx + w, ay + m.chip_h);
+            let selected = chip_is_selected(h.resolution, choice);
             let bg = if selected {
-                with_alpha(*col, 220)
+                with_alpha(col, 220)
             } else {
-                with_alpha(*col, 50)
+                with_alpha(col, 50)
             };
             let rr = RoundedRect::from_rect(chip, 5.0);
             scene.fill(Fill::NonZero, transform, bg, None, &rr);
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                with_alpha(*col, 160),
+                with_alpha(col, 160),
                 None,
                 &rr,
             );
-            let text_col = if selected {
-                Color::from_rgb8(10, 14, 22)
-            } else {
-                *col
-            };
+            // A selected chip is filled in its hue; the label takes the ink
+            // that reads on that hue rather than a fixed near-black.
+            let text_col = if selected { c.on_surface(col).ink } else { col };
+            let (lw, lh) = tr.measure(label, CHIP_FONT_SIZE, None);
             tr.draw_text(
                 scene,
                 label,
-                11.5,
+                CHIP_FONT_SIZE,
                 text_col,
-                transform * Affine::translate((cx + if compact { 7.0 } else { 8.0 }, ay + 4.0)),
+                transform
+                    * Affine::translate((
+                        cx + (w - f64::from(lw)) / 2.0,
+                        ay + (m.chip_h - f64::from(lh)) / 2.0,
+                    )),
                 None,
             );
             action_hits.push(ActionHit {
                 rect: chip,
                 hunk: hi,
-                choice: *choice,
+                choice,
             });
-            cx += w + if compact { 4.0 } else { 6.0 };
+            cx += w + gap;
         }
     }
 
@@ -704,9 +865,10 @@ impl MergeView {
         theme: &Theme,
     ) {
         let r = self.rect;
+        let m = self.metrics;
         let col_w = r.width() / 3.0;
         let compact_source = self.is_compact().then_some(self.selected_source);
-        let band_top = r.y0 + HEADER_H;
+        let band_top = r.y0 + m.header_h;
         let band_bot = band_top + self.source_band_height();
 
         for (hi, h) in self.model.hunks.iter().enumerate() {
@@ -718,10 +880,10 @@ impl MergeView {
             };
             let y = band_top + top - self.scroll_y;
             let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
-            let block_h = rows as f64 * ROW_H;
+            let block_h = rows as f64 * m.row_h;
 
             // Cull off-screen hunks cheaply.
-            if y + block_h + ACTION_H < band_top || y > band_bot {
+            if y + block_h + m.action_h < band_top || y > band_bot {
                 continue;
             }
 
@@ -742,16 +904,16 @@ impl MergeView {
             // aligned three-column comparison.
             match compact_source {
                 Some(SourcePane::Base) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base, m);
                 }
                 Some(SourcePane::Ours) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.ours);
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.ours, m);
                 }
                 Some(SourcePane::Theirs) => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.theirs);
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.theirs, m);
                 }
                 None => {
-                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base);
+                    draw_lines(scene, transform, tr, theme, r.x0 + PAD_X, y, &h.base, m);
                     draw_lines(
                         scene,
                         transform,
@@ -760,6 +922,7 @@ impl MergeView {
                         r.x0 + col_w + PAD_X,
                         y,
                         &h.ours,
+                        m,
                     );
                     draw_lines(
                         scene,
@@ -769,6 +932,7 @@ impl MergeView {
                         r.x0 + 2.0 * col_w + PAD_X,
                         y,
                         &h.theirs,
+                        m,
                     );
                 }
             }
@@ -788,6 +952,7 @@ impl MergeView {
                     h,
                     &mut self.action_hits,
                     compact_source.is_some(),
+                    m,
                 );
             }
         }
@@ -803,10 +968,11 @@ impl MergeView {
         theme: &Theme,
     ) {
         let c = &theme.tokens.colors;
+        let m = self.metrics;
         let merged = self.merged_band_rect();
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &merged);
         // Merged header.
-        let mh = Rect::new(merged.x0, merged.y0, merged.x1, merged.y0 + HEADER_H);
+        let mh = Rect::new(merged.x0, merged.y0, merged.x1, merged.y0 + m.header_h);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -815,7 +981,9 @@ impl MergeView {
             &mh,
         );
         let conflicts = self.model.conflict_count();
-        let header_label = if conflicts == 0 {
+        let header_label = if self.expected_content.is_none() {
+            "Saved merged output · originals unavailable".to_string()
+        } else if conflicts == 0 {
             if self.is_compact() {
                 "Merged result · resolved".to_string()
             } else {
@@ -831,18 +999,23 @@ impl MergeView {
         } else {
             c.semantic.danger
         };
+        let (_, hh) = tr.measure(&header_label, MERGED_HEADER_FONT_SIZE, None);
         tr.draw_text(
             scene,
             &header_label,
-            13.0,
+            MERGED_HEADER_FONT_SIZE,
             hc,
-            transform * Affine::translate((merged.x0 + PAD_X + 4.0, merged.y0 + 7.0)),
+            transform
+                * Affine::translate((
+                    merged.x0 + PAD_X + 4.0,
+                    merged.y0 + (m.header_h - f64::from(hh)) / 2.0,
+                )),
             Some((merged.width() - PAD_X * 2.0 - 8.0) as f32),
         );
 
         // Merged buffer body. The shared editor owns text, caret, selection,
         // scrolling, clipboard, IME, accessibility, and CRDT splices.
-        let merged_body = Rect::new(merged.x0, merged.y0 + HEADER_H, merged.x1, merged.y1);
+        let merged_body = Rect::new(merged.x0, merged.y0 + m.header_h, merged.x1, merged.y1);
         self.merged_editor.set_rect(merged_body);
         self.merged_editor
             .draw_embedded(scene, transform, tr, theme);
@@ -858,6 +1031,9 @@ impl Widget for MergeView {
             MergeDoc::clear_resolutions(state);
             MergeDoc::set_merged(state, &self.model.merged_text());
             self.pending_seed = false;
+            self.acknowledge_content(state);
+        } else {
+            self.reconcile_content(state);
         }
         // Seed once for a late joiner that has no buffer yet.
         if !MergeDoc::has_merged(state) {
@@ -911,17 +1087,17 @@ impl Widget for MergeView {
         let Ok(l) = taffy.layout(node) else {
             return;
         };
-        self.rect = Rect::new(
+        self.place(Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        ));
         self.recompute_spans();
         let merged = self.merged_band_rect();
         self.merged_editor.set_rect(Rect::new(
             merged.x0,
-            merged.y0 + HEADER_H,
+            merged.y0 + self.metrics.header_h,
             merged.x1,
             merged.y1,
         ));
@@ -937,6 +1113,14 @@ impl Widget for MergeView {
     ) {
         self.action_hits.clear();
         self.source_hits.clear();
+        // One metric snapshot per frame: spans, scroll clamp, chips and paint
+        // all follow the renderer's actual line height.
+        let measured = Metrics::measure(tr);
+        if measured != self.metrics {
+            self.metrics = measured;
+            self.recompute_spans();
+            self.scroll_y = self.scroll_y.min(self.max_scroll());
+        }
         let c = &theme.tokens.colors;
         let r = self.rect;
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &r);
@@ -944,7 +1128,7 @@ impl Widget for MergeView {
         self.draw_column_headers(scene, transform, tr, theme);
         self.draw_band_separators(scene, transform, theme);
 
-        let band_top = r.y0 + HEADER_H;
+        let band_top = r.y0 + self.metrics.header_h;
         let band_bot = band_top + self.source_band_height();
         let band_clip = Rect::new(r.x0, band_top, r.x1, band_bot);
         scene.push_layer(
@@ -955,6 +1139,10 @@ impl Widget for MergeView {
             &band_clip,
         );
         self.draw_hunks(scene, transform, tr, theme);
+        if self.expected_content.is_none() && !self.merged_output.is_empty() {
+            tr.draw_text(scene, "Original inputs unavailable for this saved output. Load new inputs to resolve hunks.", 14., c.text_dim,
+                transform * Affine::translate((r.x0 + 16., band_top + 16.)), Some((r.width()-32.) as f32));
+        }
         scene.pop_layer();
 
         // Divider between source band and merged band.
@@ -1253,22 +1441,41 @@ fn draw_header(
 ) {
     let c = &theme.tokens.colors;
     scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &col);
+    // The header band's top edge, derived against the band itself, so the
+    // raised header reads as a surface above the raised source columns.
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        ui::surface::edge_on(c.surfaces.raised),
+        None,
+        &Rect::new(col.x0, col.y0, col.x1, col.y0 + 1.0),
+    );
     // Accent underline keyed to the column role.
     let underline = Rect::new(col.x0, col.y1 - 2.0, col.x1, col.y1);
     scene.fill(Fill::NonZero, transform, accent, None, &underline);
     if !label.is_empty() {
+        let (_, lh) = tr.measure(label, HEADER_FONT_SIZE, None);
         tr.draw_text(
             scene,
             label,
-            12.5,
+            HEADER_FONT_SIZE,
             c.text_primary,
-            transform * Affine::translate((col.x0 + PAD_X + 2.0, col.y0 + 7.0)),
+            transform
+                * Affine::translate((
+                    col.x0 + PAD_X + 2.0,
+                    col.y0 + (col.height() - f64::from(lh)) / 2.0,
+                )),
             Some((col.width() - 2.0 * PAD_X) as f32),
         );
     }
 }
 
-/// Draw a list of code lines starting at `(x0, y)`, highlighted.
+/// Draw a list of code lines starting at `(x0, y)`, highlighted, one per
+/// measured row pitch.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "code-line painting combines paint context, column origin, source lines and measured row pitch"
+)]
 fn draw_lines(
     scene: &mut Scene,
     transform: Affine,
@@ -1277,14 +1484,15 @@ fn draw_lines(
     x0: f64,
     y0: f64,
     lines: &[String],
+    m: Metrics,
 ) {
     for (i, line) in lines.iter().enumerate() {
-        let y = y0 + i as f64 * ROW_H;
+        let y = y0 + i as f64 * m.row_h + m.text_dy;
         draw_code_segments(scene, transform, tr, theme, x0, y, line);
     }
 }
 
-fn draw_code_segments(
+pub(crate) fn draw_code_segments(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
@@ -1298,12 +1506,13 @@ fn draw_code_segments(
         if seg.is_empty() {
             continue;
         }
+        // `y` is already the glyph top: callers centre it on the row pitch.
         tr.draw_text(
             scene,
             &seg,
             FONT_SIZE,
             color,
-            transform * Affine::translate((x, y + 2.0)),
+            transform * Affine::translate((x, y)),
             None,
         );
         let (w, _) = tr.measure(&seg, FONT_SIZE, None);
