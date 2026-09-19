@@ -1564,19 +1564,6 @@ impl HostSessionConnector {
             identity_exchange_timeout: HOST_IDENTITY_EXCHANGE_TIMEOUT,
         }
     }
-
-    #[cfg(test)]
-    fn with_identity_timeout<F, Fut, C, I>(timeout: Duration, connect: F) -> Self
-    where
-        F: FnOnce(RouteSpec) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<(C, I), runtime_portal::NotAvailable>> + 'static,
-        C: AsyncRead + AsyncWrite + 'static,
-        I: AsyncRead + AsyncWrite + 'static,
-    {
-        let mut connector = Self::new(connect);
-        connector.identity_exchange_timeout = timeout;
-        connector
-    }
 }
 
 /// How the shovel thread reaches the broker. `Env` is production: the
