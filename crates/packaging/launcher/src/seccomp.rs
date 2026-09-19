@@ -11,7 +11,7 @@
 //! Deliberately small and *deny-list*, not a sweeping allow-list: a
 //! hand-rolled allow-list breaks unpredictably when glibc adds a new
 //! syscall and the surface differs per architecture. Same shape as the
-//! per-workspace filter in `shell/src/sandbox/seccomp.rs`, kept
+//! per-workspace filter in `crates/session/shell/src/sandbox/seccomp.rs`, kept
 //! independent so the launcher has zero dep on the compositor.
 //!
 //! The write-xor-execute rules below exist only here, not in that copy:

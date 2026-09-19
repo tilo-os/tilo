@@ -7,7 +7,7 @@ announcing `Hello { app_id, cluster_id, record }`, and then sending
 frames. `cluster_id` is the **room** id, which is the whole reason two
 machines can address one cluster: the launcher passes the room rather
 than the local workspace handle precisely so a peer's app and ours land
-together (`shell/src/shell/launcher.rs`).
+together (`crates/session/shell/src/shell/launcher.rs`).
 
 This script attaches such a client to each of two real compositors in
 one room and asks, frame type by frame type, what arrives at the other

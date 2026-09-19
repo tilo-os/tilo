@@ -18,16 +18,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 PUBLIC_COPY_FILES = (
-    "shell/src/compositor/native.rs",
-    "shell/src/shell/collaborators_overlay.rs",
-    "shell/src/shell/overlay_host/mod.rs",
-    "shell/src/shell/overview.rs",
-    "shell/src/shell/peer_sync_overlay.rs",
-    "shell/src/shell/peer_windows.rs",
-    "shell/src/shell/room_activity.rs",
-    "shell/src/shell/search/providers/actions.rs",
-    "shell/src/shell/search/providers/records.rs",
-    "shell/src/shell/workspace_settings.rs",
+    "crates/session/shell/src/compositor/native.rs",
+    "crates/session/shell/src/shell/collaborators_overlay.rs",
+    "crates/session/shell/src/shell/overlay_host/mod.rs",
+    "crates/session/shell/src/shell/overview.rs",
+    "crates/session/shell/src/shell/peer_sync_overlay.rs",
+    "crates/session/shell/src/shell/peer_windows.rs",
+    "crates/session/shell/src/shell/room_activity.rs",
+    "crates/session/shell/src/shell/search/providers/actions.rs",
+    "crates/session/shell/src/shell/search/providers/records.rs",
+    "crates/session/shell/src/shell/workspace_settings.rs",
 )
 
 FORBIDDEN = re.compile(
