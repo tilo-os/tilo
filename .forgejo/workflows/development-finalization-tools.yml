@@ -5,7 +5,7 @@ on:
 
 jobs:
   publish:
-    runs-on: runner-arm64
+    runs-on: runner-disk-100g-arm64
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
