@@ -3,6 +3,66 @@ import assert from 'node:assert/strict';
 import {createConnectPeer,pendingPeerRecoveryCount,retryPendingPeerRecovery} from './peer-session.mjs';
 import {recoverableClose,settleComponentClose} from './close-recovery.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
+test('presentation bursts coalesce queued persistence behind an in-flight commit',async t=>{
+ const f=fixture();let publications=0,commits=0;
+ f.runtime.peer_committed=()=>{publications++;};
+ const peer=await f.connect(),mount=await peer.mountDesktop({});
+ t.after(()=>peer.dispose());await drain();publications=0;
+ const entered=deferred(),gate=deferred();
+ f.storage.commit=async()=>{commits++;entered.resolve();await gate.promise;};
+ f.setFailCommit(false);
+ f.status({phase:'ready',persistenceNeeded:true});await entered.promise;
+ for(let i=0;i<100;i++)mount.present(1);
+ gate.resolve();await peer.retryPersistence();
+ assert.equal(commits,1);
+ assert(publications<=2,`one active and one queued run should cover the burst; saw ${publications}`);
+});
+test('presented frames without pending writes neither publish nor recompute peer health',async t=>{
+ const f=fixture();let publications=0;
+ const peer=await f.connect(),mount=await peer.mountDesktop({});
+ t.after(()=>peer.dispose());
+ // Settle every queued persistence run without forcing a publication.
+ const settle=async()=>{for(let i=0;i<5;i++){await new Promise(resolve=>setTimeout(resolve,0));await drain();}};
+ await settle();
+ f.runtime.peer_committed=()=>{publications++;};
+ for(let frame=0;frame<100;frame++)mount.present(1);
+ await settle();
+ assert.equal(publications,0,`idle presented frames must not call peer_committed; saw ${publications}`);
+ // The runtime reporting pending writes still commits and then publishes.
+ f.setFailCommit(false);f.status({phase:'ready',persistenceNeeded:true});
+ await settle();
+ assert(publications>=1,'a committed batch publishes');
+ const afterCommit=publications;
+ for(let frame=0;frame<100;frame++)mount.present(1);
+ await settle();
+ assert.equal(publications,afterCommit,'later idle frames stay silent');
+});
+test('a write arriving during publication gets a following persistence barrier',{timeout:1000},async t=>{
+ const f=fixture();let revision=0,durable=0;const committed=[],second=deferred();
+ f.runtime.peer_pending_writes=()=>JSON.stringify(revision>durable?[{revision:String(revision)}]:[]);
+ f.storage.commit=async writes=>{committed.push(Number(writes[0].revision));};
+ f.runtime.acknowledge_storage=(_profile,_device,value)=>{durable=Number(value);if(durable===2)second.resolve();};
+ f.runtime.peer_committed=()=>{if(durable===1&&revision===1){revision=2;f.status({phase:'ready',persistenceNeeded:true});}};
+ const peer=await f.connect();t.after(()=>peer.dispose());
+ revision=1;const first=peer.retryPersistence();await second.promise;await first;
+ assert.deepEqual(committed,[1,2]);assert.equal(durable,revision);
+});
+test('typed persistence batches keep binary bytes and exact revisions through commit before acknowledgement',async()=>{
+ const f=fixture();let pending=true,committed=false,acknowledged=false;
+ const write={key:'{"type":"admission","workspace":"room"}',bytes:new Uint8Array([0,128,255]),actor:new Uint8Array([2,4]),revision:'9007199254740993'};
+ f.storage.epoch='test-epoch';
+ f.runtime.peer_pending_batch_bytes=()=>pending?{id:'1:1',writes:[write],records:[]}:{id:'0',writes:[],records:[]};
+ f.runtime.peer_pending_batch=()=>{throw Error('numeric JSON batch must not be used when binary API is available');};
+ f.runtime.peer_pending_writes=()=>{throw Error('legacy writes must not be used');};
+ f.storage.commit=async writes=>{
+  assert.equal(acknowledged,false);assert.equal(writes.length,1);
+  assert(writes[0].bytes instanceof Uint8Array);assert.deepEqual([...writes[0].bytes],[0,128,255]);
+  assert(writes[0].actor instanceof Uint8Array);assert.equal(writes[0].revision,'9007199254740993');committed=true;
+ };
+ f.runtime.acknowledge_peer_storage_batch=(_id,raw)=>{assert(committed);const value=JSON.parse(raw);assert.equal(value.batchId,'1:1');assert.equal(value.epoch,'test-epoch');assert.equal(value.result.ok,true);pending=false;acknowledged=true;};
+ f.runtime.peer_committed=()=>{assert(acknowledged);};
+ const peer=await f.connect();assert(acknowledged);await peer.dispose();
+});
 function fixture({enroll,recoveryClock}={}){
  let next=0,held=0,storageRefs=0,failConnect=false,failClose=false,failCommit=false,pendingWrite=false,attempts=0,gate;
  const mountGates=[],mountSignals=[],mountOptionsSeen=[];

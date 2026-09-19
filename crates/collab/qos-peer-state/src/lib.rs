@@ -6,6 +6,8 @@ pub use protocol::NeighbourMsg;
 pub mod room;
 pub mod document;
 #[cfg(test)] mod admission_tests;
+mod cached_document;
+mod verified_certificate;
 mod state;
 pub use state::{StatePeer,SeedState,SeedDocument,DocumentRow,ReceiveOutcome,TransportOrigin,seed_room,peer_handle};
 pub mod transport;

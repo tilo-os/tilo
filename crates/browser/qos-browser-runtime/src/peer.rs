@@ -42,6 +42,7 @@ struct Bootstrap {
 use crate::peer_journal::Journal;
 struct Peer {
     actions: RefCell<crate::action_client::PendingActions>,
+    health_projection: RefCell<crate::peer_journal::HealthProjection>,
     action_v2: std::cell::Cell<bool>,
     admission_failure: RefCell<Option<String>>,
     was_ready: std::cell::Cell<bool>,
@@ -229,7 +230,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         if let Some(prior)=prior{prior.close().await;}
         peer
     }else{Rc::new(Peer {
-        actions: RefCell::default(),action_v2: std::cell::Cell::new(action_v2),
+        health_projection: RefCell::default(),actions: RefCell::default(),action_v2: std::cell::Cell::new(action_v2),
         admission_failure: RefCell::new(None),was_ready: std::cell::Cell::new(false),published: RefCell::new(BTreeSet::new()),
         id,cache,outbox:RefCell::new(outbox),endpoint:RefCell::new(Some(endpoint.clone())),session:RefCell::new(Some(session.clone())),state:RefCell::new(state),_key:key,
         callback:callback.ok_or_else(||error("missing status callback"))?,closed:std::cell::Cell::new(false),transport_generation:std::cell::Cell::new(1),transport_connected:std::cell::Cell::new(true),rejected_checkpoints:RefCell::new(BTreeSet::new()),last_relay_contact:std::cell::Cell::new(None),last_peer_contact:std::cell::Cell::new(None),batches:RefCell::new(BTreeMap::new()),next_batch:std::cell::Cell::new(0),storage_epoch:RefCell::new(None),committed_at:std::cell::Cell::new(None),
@@ -456,28 +457,17 @@ fn stage_journal(peer: &Peer, state: &StatePeer, outbox: &[NeighbourMsg]) -> Res
         None,
     )
 }
-pub(crate) fn local_document(
-    id: u32,
-    app: &str,
-    record: &str,
-    bytes: Vec<u8>,
-) -> Result<(), String> {
+/// The canonical record owner has already committed this document. Avoid a
+/// full save/load round trip merely to recover its existing CRDT graph.
+pub(crate) fn local_owned_document(id: u32, app: &str, record: &str, mut current: automerge::AutoCommit) -> Result<(), String> {
+    if current.pending_ops() != 0 { return Err("record mutation is still unfinished".into()); }
     PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or("certified peer is closed")?;
+        let peer = peers.borrow().get(&id).cloned().ok_or("certified peer is closed")?;
+        let before = peer.state.borrow().document_heads(app, record).ok_or("canonical native record not admitted")?;
+        if current.base_heads() == before { return Ok(()); }
+        let delta = current.save_after(&before);
+        let bytes = current.save();
         let mut candidate = peer.state.borrow().clone();
-        let prior = candidate
-            .document(app, record)
-            .ok_or("canonical native record not admitted")?;
-        let before = automerge::AutoCommit::load(&prior).map_err(|e| e.to_string())?;
-        let mut current = automerge::AutoCommit::load(&bytes).map_err(|e| e.to_string())?;
-        if current.base_heads() == before.base_heads() {
-            return Ok(());
-        }
-        let delta = current.save_after(&before.base_heads());
         let message =
             candidate.publish_incremental(app, record, delta, &peer._key, SystemTime::now())?;
         let mut outbox = peer.outbox.borrow().clone();
@@ -567,17 +557,38 @@ pub(crate) fn mark_failure(id:u32,failure:String){PEERS.with(|peers|if let Some(
 struct BatchResult { batch_id:String,epoch:String,observed_at_ms:f64,result:BatchOutcome }
 #[derive(Deserialize)]
 struct BatchOutcome {ok:bool,code:Option<String>}
-#[wasm_bindgen]
-pub fn peer_pending_batch(id:u32)->Result<String,JsValue>{
+fn encode_pending_batch<T>(id:u32, encode:impl FnOnce(&str,&[PendingWrite],&[qos_peer_state::DocumentRow])->Result<T,JsValue>)->Result<T,JsValue>{
     PEERS.with(|peers|{
         let peer=peers.borrow().get(&id).cloned().ok_or_else(||error("closed peer"))?;
         let writes=peer.cache.pending_writes();
-        if writes.is_empty(){return Ok(serde_json::json!({"id":"0","writes":[],"records":[]}).to_string())}
+        if writes.is_empty(){return encode("0",&[],&[])}
         let batch=peer.next_batch.get().checked_add(1).ok_or_else(||error("batch sequence exhausted"))?;peer.next_batch.set(batch);
         let id=format!("{}:{batch}",peer.id);
-        let values=writes.iter().map(|write|{let mut value=crate::browser::write_json(write);value["revision"]=write.revision.to_string().into();value}).collect::<Vec<_>>();
-        peer.batches.borrow_mut().insert(id.clone(),writes);
-        Ok(serde_json::json!({"id":id,"writes":values,"records":peer.state.borrow().rows()}).to_string())
+        let result=encode(&id,&writes,&peer.state.borrow().rows())?;
+        peer.batches.borrow_mut().insert(id,writes);
+        Ok(result)
+    })
+}
+#[wasm_bindgen]
+pub fn peer_pending_batch(id:u32)->Result<String,JsValue>{
+    encode_pending_batch(id,|id,writes,records|{
+        let values=writes.iter().map(crate::browser::write_json).collect::<Vec<_>>();
+        Ok(serde_json::json!({"id":id,"writes":values,"records":records}).to_string())
+    })
+}
+/// JS-owned typed buffers avoid expanding every binary byte into JSON digits.
+/// The Rust-owned batch remains the sole authority for acknowledgement.
+#[wasm_bindgen]
+pub fn peer_pending_batch_bytes(id:u32)->Result<JsValue,JsValue>{
+    encode_pending_batch(id,|id,writes,records|{
+        let result=js_sys::Object::new();
+        let values=js_sys::Array::new();
+        for write in writes { values.push(&crate::browser::write_bytes(write)?); }
+        js_sys::Reflect::set(&result,&"id".into(),&id.into())?;
+        js_sys::Reflect::set(&result,&"writes".into(),&values)?;
+        let records=js_sys::JSON::parse(&serde_json::to_string(records).map_err(error)?)?;
+        js_sys::Reflect::set(&result,&"records".into(),&records)?;
+        Ok(result.into())
     })
 }
 #[wasm_bindgen]
@@ -599,7 +610,7 @@ fn required_read_failure(peer:&Peer,state:&StatePeer)->Option<String>{
 }
 fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->serde_json::Value{
     let journal_status=peer.cache.status(&StorageKey::Admission{workspace:state.room().into()});
-    let journal=journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|Journal::decode(&bytes.bytes).ok());
+    let journal=journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|peer.health_projection.borrow_mut().journal(&bytes.bytes));
     let durable_failure=crate::admission_health::durable_admission_failure(
         state,
         peer._key.verifying_key().to_bytes(),
@@ -622,12 +633,16 @@ fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->s
     let records=state.rows().iter().map(|row|{
         let key=storage_key(state.room(),&row.app_id,&row.record_id);
         let status=peer.cache.status(&key);
-        let durable_heads=status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|journal.as_ref()?.durable_heads(&row.app_id,&row.record_id,&bytes.bytes));
+        let durable_heads=journal.as_ref().and_then(|journal| {
+            let heads=peer.cache.committed_document_heads(&key)?.ok()?.iter().map(ToString::to_string).collect::<Vec<_>>();
+            journal.match_document_heads(&row.app_id,&row.record_id,&heads)
+        });
         let durable_basis=durable_heads.as_ref().map(|heads|serde_json::json!({"heads":heads}));
         let is_durable=durable_basis.is_some()&&durable_heads.as_ref()==Some(&row.heads);
         let failed=status.as_ref().is_some_and(|status|status.error.is_some())||journal_status.as_ref().is_some_and(|status|status.error.is_some());
-        let receipt=state.durable_coverage(&row.app_id,&row.record_id).ok().flatten().filter(|receipt|journal.as_ref().is_some_and(|journal|journal.receipts.get(&qos_peer_state::coverage::route_key(&row.app_id,&row.record_id))==Some(&receipt.receipt_id)));
-        let covered=is_durable&&receipt.is_some()&&state.durable_covers_current(&row.app_id,&row.record_id).unwrap_or(false);
+        let coverage=state.durable_coverage_with_current(&row.app_id,&row.record_id).ok().flatten().filter(|(receipt,_)|journal.as_ref().is_some_and(|journal|journal.receipts.get(&qos_peer_state::coverage::route_key(&row.app_id,&row.record_id))==Some(&receipt.receipt_id)));
+        let covered=is_durable&&coverage.as_ref().is_some_and(|(_,current)|*current);
+        let receipt=coverage.map(|(receipt,_)|receipt);
         let outgoing=peer.outbox.borrow().iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count();
         let durable_outgoing=journal.as_ref().map(|journal|journal.outbox.iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count()).unwrap_or(0);
         serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":if state.check_document_read(peer._key.verifying_key().to_bytes(),&row.app_id,&row.record_id,SystemTime::now()).is_ok(){"admitted"}else{"unavailable"},"current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"journalRevision":journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"pendingWrites":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).map(|write|write.value.bytes.len()).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})

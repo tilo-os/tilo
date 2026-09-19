@@ -1,4 +1,5 @@
 //! Browser journal framing: preserve the exact old postcard body on migration.
+#[cfg(test)]
 use automerge::transaction::Transactable;
 use qos_peer_state::{DocumentRow, NeighbourMsg};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,7 @@ pub(crate) struct Journal {
 }
 impl Journal {
     /// Only matching committed record bytes and committed journal metadata prove a local basis.
+    #[cfg(test)]
     pub fn durable_heads(&self, app: &str, record: &str, bytes: &[u8]) -> Option<Vec<String>> {
         let document = automerge::AutoCommit::load(bytes).ok()?;
         let heads = document
@@ -24,10 +26,15 @@ impl Journal {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        self.records
-            .iter()
+        self.match_document_heads(app, record, &heads)
+    }
+
+    /// Storage supplies heads of its exact committed bytes; the current journal
+    /// must independently agree before they can prove an atomic durable basis.
+    pub fn match_document_heads(&self, app: &str, record: &str, heads: &[String]) -> Option<Vec<String>> {
+        self.records.iter()
             .any(|row| row.app_id == app && row.record_id == record && row.heads == heads)
-            .then_some(heads)
+            .then(|| heads.to_vec())
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
@@ -61,9 +68,89 @@ impl Journal {
         Ok(bytes)
     }
 }
+/// Cache decoding only, never admission or time-dependent permission decisions.
+/// Exact bytes are the key: revisions can restart when storage is rehydrated.
+#[derive(Default)]
+pub(crate) struct HealthProjection {
+    journal: DecodedBytes<Journal>,
+}
+const HEALTH_CACHE_BYTES: usize = 8 * 1024 * 1024;
+struct DecodedBytes<T> {
+    cached: Option<(Vec<u8>, Option<std::rc::Rc<T>>)>,
+}
+impl<T> Default for DecodedBytes<T> {
+    fn default() -> Self { Self { cached: None } }
+}
+impl<T> DecodedBytes<T> {
+    fn get(&mut self, bytes: &[u8], decode: impl FnOnce(&[u8]) -> Option<T>) -> Option<std::rc::Rc<T>> {
+        if let Some((previous, value)) = &self.cached
+            && previous == bytes { return value.clone(); }
+        if bytes.len() > HEALTH_CACHE_BYTES {
+            self.cached = None;
+            return decode(bytes).map(std::rc::Rc::new);
+        }
+        self.cached = Some((bytes.to_vec(), decode(bytes).map(std::rc::Rc::new)));
+        self.cached.as_ref().and_then(|(_, value)| value.clone())
+    }
+}
+impl HealthProjection {
+    pub fn journal(&mut self, bytes: &[u8]) -> Option<std::rc::Rc<Journal>> {
+        self.journal.get(bytes, |bytes| Journal::decode(bytes).ok())
+    }
+
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unchanged_exact_bytes_decode_once_and_changed_invalid_bytes_invalidate() {
+        let mut cache = DecodedBytes::default();
+        let mut calls = 0;
+        for _ in 0..100 {
+            assert_eq!(*cache.get(b"valid", |_| { calls += 1; Some(42) }).unwrap(), 42);
+        }
+        assert_eq!(calls, 1, "unchanged committed bytes must not be reparsed per status report");
+        assert!(cache.get(b"bad", |_| { calls += 1; None }).is_none());
+        assert!(cache.get(b"bad", |_| panic!("invalid result should also be cached")).is_none());
+        assert_eq!(*cache.get(b"valid", |_| { calls += 1; Some(43) }).unwrap(), 43);
+        assert_eq!(calls, 3);
+    }
+    #[test]
+    fn oversized_health_bytes_are_decoded_without_retention() {
+        let mut cache = DecodedBytes::default();
+        cache.get(b"small", |_| Some(1));
+        let large = vec![0; HEALTH_CACHE_BYTES + 1];
+        let mut calls = 0;
+        for _ in 0..2 { assert_eq!(*cache.get(&large, |_| { calls += 1; Some(2) }).unwrap(), 2); }
+        assert_eq!(calls, 2);
+        assert!(cache.cached.is_none());
+    }
+    #[test]
+    fn known_heads_never_reuse_a_different_committed_journal_basis() {
+        use automerge::{AutoCommit, ROOT};
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "text", "A").unwrap();
+        doc.save();
+        let heads_a = doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
+        let mut journal = Journal { state: vec![], outbox: vec![], records: vec![DocumentRow {
+            app_id: "app".into(), record_id: "record".into(), heads: heads_a.clone(),
+        }], receipts: Default::default() };
+        let mut projection = HealthProjection::default();
+        assert_eq!(journal.match_document_heads("app", "record", &heads_a), Some(heads_a.clone()));
+        doc.put(ROOT, "text", "B").unwrap();
+        doc.save();
+        let heads_b = doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
+        journal.records[0].heads = heads_b.clone();
+        assert!(journal.match_document_heads("app", "record", &heads_a).is_none());
+        assert_eq!(journal.match_document_heads("app", "record", &heads_b), Some(heads_b.clone()));
+        assert!(journal.match_document_heads("other-app", "record", &heads_b).is_none());
+        assert!(journal.match_document_heads("app", "other-record", &heads_b).is_none());
+        let encoded = journal.encode().unwrap();
+        let first = projection.journal(&encoded).unwrap();
+        assert!(std::rc::Rc::ptr_eq(&first, &projection.journal(&encoded).unwrap()));
+        assert!(projection.journal(b"corrupt").is_none());
+    }
     #[test]
     fn older_atomic_commit_never_marks_newer_canonical_record_durable() {
         use automerge::{AutoCommit, ROOT, transaction::Transactable};
@@ -138,6 +225,11 @@ mod tests {
             old_journal.durable_heads("app", "record", &old_record.bytes),
             Some(heads_a.clone())
         );
+        let committed_heads = cache.committed_document_heads(&record).unwrap().unwrap()
+            .iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(old_journal.match_document_heads("app", "record", &committed_heads), Some(heads_a.clone()));
+        assert!(journal(heads_b.clone()).match_document_heads("app", "record", &committed_heads).is_none(),
+            "new journal metadata cannot turn an old record acknowledgement into a new durable basis");
         assert_ne!(heads_a, heads_b);
         assert!(cache.flush(&record).is_err());
         assert!(cache.flush(&admission).is_err());
@@ -154,6 +246,8 @@ mod tests {
             cache.status(&record).unwrap().committed.unwrap().1.bytes,
             old_record.bytes
         );
+        assert_eq!(cache.committed_document_heads(&record).unwrap().unwrap()
+            .iter().map(ToString::to_string).collect::<Vec<_>>(), committed_heads);
     }
     #[test]
     fn legacy_bytes_and_operation_identity_survive_versioned_roundtrip() {

@@ -1,6 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {commitPeerWrites} from './peer-persistence.mjs';
+import * as persistence from './peer-persistence.mjs';
+test('shared batch reader uses owned binary payloads without invoking the JSON export',()=>{
+ const batch={id:'peer:1',writes:[{bytes:new Uint8Array([0,128,255]),actor:new Uint8Array([7]),revision:'9007199254740993'}]};
+ const runtime={peer_pending_batch_bytes(id){assert.equal(id,17);return batch;},peer_pending_batch(){throw Error('binary data must not round trip through JSON');}};
+ assert.equal(persistence.readPeerBatch(runtime,17),batch);
+});
+test('shared batch reader supports older JSON runtimes with exact revision strings',()=>{
+ const batch={id:'peer:1',writes:[{bytes:[0,128,255],revision:'9007199254740993'}]};
+ assert.deepEqual(persistence.readPeerBatch({peer_pending_batch:id=>{assert.equal(id,17);return JSON.stringify(batch);}},17),batch);
+});
 test('a newer checkpoint arriving during IDB commit is committed before publication',async()=>{
  let revision=1,durable=0;const batches=[];let publishes=0;
  await commitPeerWrites({pending:()=>revision>durable?[{revision}]:[],commit:async writes=>{batches.push(writes.map(w=>w.revision));if(revision===1){await Promise.resolve();revision=2;}},acknowledge:write=>{durable=Math.max(durable,write.revision);},publish:()=>{assert.equal(durable,revision,'cannot publish over a newer uncommitted admission');publishes++;}});

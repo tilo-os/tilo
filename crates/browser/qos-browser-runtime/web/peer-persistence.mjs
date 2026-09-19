@@ -1,3 +1,7 @@
+/** Preserve JS-owned byte arrays; legacy runtimes expose JSON number arrays. */
+export function readPeerBatch(runtime,id){
+ return runtime.peer_pending_batch_bytes?runtime.peer_pending_batch_bytes(id):JSON.parse(runtime.peer_pending_batch(id));
+}
 /** Local transaction failure rejects; publication failure retains its committed proof. */
 export async function commitPeerWrites({pending,commit,acknowledge,publish}){
   let writes=pending();

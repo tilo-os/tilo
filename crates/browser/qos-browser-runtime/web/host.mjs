@@ -2,7 +2,7 @@ import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createNavigationFocus} from './desktop-navigation-focus.mjs';
 import {bindActionPalette} from './action-palette-bridge.mjs';
 import {bindDesktopCommands} from './desktop-command-bridge.mjs';
-import {commitPeerBatches} from './peer-persistence.mjs';
+import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import init,* as runtime from './pkg/qos_browser_runtime.js';
 import {MountRegistry,beforeInputRoute,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
@@ -110,8 +110,8 @@ export async function mountDesktop(target,options={}) {
       const writes=JSON.parse(runtime.pending_writes(current));
       if(!writes.length)return;
       try{
-        if(config.peer!==undefined&&runtime.peer_pending_batch){
-          await commitPeerBatches({pending:()=>JSON.parse(runtime.peer_pending_batch(config.peer)),commit:batch=>storage.commit(batch),acknowledge:result=>runtime.acknowledge_peer_storage_batch(config.peer,JSON.stringify(result)),epoch:storage.epoch,publish:()=>{}});
+        if(config.peer!==undefined&&(runtime.peer_pending_batch_bytes||runtime.peer_pending_batch)){
+          await commitPeerBatches({pending:()=>readPeerBatch(runtime,config.peer),commit:batch=>storage.commit(batch),acknowledge:result=>runtime.acknowledge_peer_storage_batch(config.peer,JSON.stringify(result)),epoch:storage.epoch,publish:()=>{}});
         }else{
           await storage.commit(writes);
           for(const w of writes)runtime.acknowledge_storage(config.profile,config.device,BigInt(w.revision),undefined);

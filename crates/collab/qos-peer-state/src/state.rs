@@ -1,6 +1,8 @@
 //! Certified room and document replica. Transport identity is always an input.
 use crate::{NeighbourMsg, document, room};
-use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
+use crate::cached_document::CachedDocument;
+use crate::verified_certificate::VerifiedCertificate;
+use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, transaction::Transactable};
 use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability};
 use collab_types::{
     ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpClass, Role, SignedOp,
@@ -68,13 +70,46 @@ struct Route {
     app: String,
     record: String,
 }
+#[cfg(test)]
+thread_local! { pub(crate) static CHECKPOINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+thread_local! { pub(crate) static CERTIFICATE_VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[derive(Clone)]
+struct AcceptedCheckpoint(std::sync::Arc<CheckpointBytes>);
+struct CheckpointBytes {
+    bytes: Vec<u8>,
+    decoded: std::sync::OnceLock<Result<std::sync::Arc<DecodedCheckpoint>, String>>,
+}
+struct DecodedCheckpoint {
+    doc: automerge::Automerge,
+    heads: Vec<String>,
+    payload_hash: [u8; 32],
+}
+impl AcceptedCheckpoint {
+    fn new(bytes: Vec<u8>) -> Self { Self(std::sync::Arc::new(CheckpointBytes { bytes, decoded: std::sync::OnceLock::new() })) }
+    fn decoded(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
+        // Only immutable bytes and their derived representation are shared.
+        // Receipt authority, route and current coverage remain live decisions.
+        self.0.decoded.get_or_init(|| self.decode()).clone()
+    }
+    fn decode(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
+        #[cfg(test)]
+        CHECKPOINT_DECODES.with(|count| count.set(count.get() + 1));
+        let doc = automerge::Automerge::load(&self.0.bytes).map_err(err)?;
+        let heads = doc.get_heads().iter().map(ToString::to_string).collect();
+        let payload = DocumentMutation::Snapshot(self.0.bytes.clone()).encode().map_err(err)?;
+        Ok(std::sync::Arc::new(DecodedCheckpoint { doc, heads, payload_hash: *blake3::hash(&payload).as_bytes() }))
+    }
+}
+
 #[derive(Clone)]
 struct Document {
     doc: AutoCommit,
     channel: ChannelState,
     encryption_required: bool,
     covered: BTreeMap<String, u64>,
-    covered_snapshot: Option<Vec<u8>>,
+    covered_snapshot: Option<AcceptedCheckpoint>,
 }
 #[derive(Serialize, Deserialize)]
 struct DurableDocument {
@@ -100,10 +135,10 @@ struct Durable {
 pub struct StatePeer {
     room: String,
     authority: DeviceCert,
-    certificates: BTreeMap<[u8; 32], DeviceCert>,
+    certificates: BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: RevocationList,
     receipts: BTreeMap<String, Vec<u8>>,
-    room_doc: Option<AutoCommit>,
+    room_doc: Option<CachedDocument>,
     documents: BTreeMap<Route, Document>,
     pending: VecDeque<([u8; 32], NeighbourMsg)>,
     pending_bytes: usize,
@@ -120,7 +155,7 @@ impl StatePeer {
         let room = uuid::Uuid::parse_str(room).map_err(err)?.to_string();
         let mut certificates = BTreeMap::new();
         for certificate in roster.into_iter().chain([authority.clone()]) {
-            qos_user_identity::verify_device_cert_at(&certificate, now_ns(now)).map_err(err)?;
+            let certificate = VerifiedCertificate::new(certificate, now_ns(now))?;
             if revocations.is_revoked(&certificate.device_public_key) {
                 return Err("device revoked".into());
             }
@@ -159,7 +194,7 @@ impl StatePeer {
             return Err("device revoked".into());
         }
         if let Some(old) = self.certificates.get(&cert.device_public_key) {
-            if old != &cert {
+            if old.as_ref() != &cert {
                 return Err("certificate conflict".into());
             }
         }
@@ -224,13 +259,14 @@ impl StatePeer {
             if id != hex::encode(cert.device_public_key) {
                 return Err("governed identity key mismatch".into());
             }
-            if let Some(known) = certificates.get(&cert.device_public_key) {
-                if known != &cert {
+            let verified = if let Some(known) = certificates.get(&cert.device_public_key) {
+                if known.as_ref() != &cert {
                     return Err("certificate conflict".into());
                 }
+                known.clone()
             } else {
-                qos_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-            }
+                VerifiedCertificate::new(cert.clone(), now_ns(now))?
+            };
             // Existing roots remain supported; a new enrollment cannot expand
             // trust beyond the pinned authority's root.
             if !self.certificates.contains_key(&cert.device_public_key)
@@ -250,8 +286,8 @@ impl StatePeer {
                 }
                 changed |= revocations.insert(entry).map_err(err)?;
             }
-            changed |= certificates.get(&cert.device_public_key) != Some(&cert);
-            certificates.insert(cert.device_public_key, cert);
+            changed |= certificates.get(&cert.device_public_key).map(AsRef::as_ref) != Some(&cert);
+            certificates.insert(cert.device_public_key, verified);
         }
         self.certificates = certificates;
         self.revocations = revocations;
@@ -259,7 +295,7 @@ impl StatePeer {
     }
     /// Verified public identity metadata; never includes signing keys.
     pub fn certificates(&self) -> Vec<DeviceCert> {
-        self.certificates.values().cloned().collect()
+        self.certificates.values().map(|cert| cert.as_ref().clone()).collect()
     }
     pub fn revocations(&self) -> Vec<qos_user_identity::RevocationEntry> {
         let mut entries = self.revocations.iter().cloned().collect::<Vec<_>>();
@@ -312,13 +348,12 @@ impl StatePeer {
     ) -> Result<(Role, Vec<collab_types::caps::CapOverride>, String), String> {
         let role = self.role(&source, now)?;
         let cert = self.certificate(&source, now)?;
-        let (_, _, caps) =
-            room::extract_governed_fields(self.room_doc.as_ref().ok_or("room missing")?);
+        let caps = self.room_doc.as_ref().ok_or("room missing")?.policy().caps.clone();
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         Ok((role, caps, person.id().to_owned()))
     }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
-    pub fn admitted_room(&self) -> Option<&AutoCommit> { self.room_doc.as_ref() }
+    pub fn admitted_room(&self) -> Option<&AutoCommit> { self.room_doc.as_deref() }
 
     /// Read permission for an exact canonical record using the same governed
     /// actor/resource vocabulary as document mutation admission.
@@ -397,15 +432,16 @@ impl StatePeer {
         else {
             return false;
         };
-        let Ok(mut proof) = AutoCommit::load(snapshot) else {
+        let Ok(checkpoint) = snapshot.decoded() else {
             return false;
         };
-        let before = proof.base_heads();
+        let mut proof = checkpoint.doc.clone();
+        let before = proof.get_heads();
         // A sequence floor is not causal coverage: an out-of-order incremental
         // may have been validated while its dependencies were unavailable.
         proof.load_incremental(&bytes).is_ok()
             && proof.get_missing_deps(&[]).is_empty()
-            && proof.base_heads() == before
+            && proof.get_heads() == before
     }
     pub fn rows(&self) -> Vec<DocumentRow> {
         self.documents
@@ -422,6 +458,11 @@ impl StatePeer {
             })
             .collect()
     }
+    /// Read the admitted document basis without serializing its contents.
+    pub fn document_heads(&self, app: &str, record: &str) -> Option<Vec<automerge::ChangeHash>> {
+        self.documents.get(&Route { app: app.into(), record: record.into() })
+            .map(|entry| entry.doc.base_heads())
+    }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.documents
             .get(&Route {
@@ -435,7 +476,7 @@ impl StatePeer {
             .certificates
             .get(source)
             .ok_or("certified identity missing")?;
-        qos_user_identity::verify_device_cert_at(cert, now_ns(now)).map_err(err)?;
+        let cert = cert.current(now_ns(now))?;
         if self.revocations.is_revoked(source) {
             return Err("device revoked".into());
         }
@@ -443,11 +484,10 @@ impl StatePeer {
     }
     fn role(&self, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
         let cert = self.certificate(source, now)?;
-        let doc = self.room_doc.as_ref().ok_or("room governance missing")?;
+        let policy = self.room_doc.as_ref().ok_or("room governance missing")?.policy();
         // A root-signed certificate must also be the certificate admitted by room governance.
-        let (_, _, _, identities, _) = room::governance_of(Some(doc));
         let identity: GovernedIdentity = serde_json::from_slice(
-            identities
+            policy.identities
                 .get(&hex::encode(source))
                 .ok_or("device is absent from governed roster")?,
         )
@@ -465,9 +505,8 @@ impl StatePeer {
         if revoked.is_revoked(source) {
             return Err("device revoked by room".into());
         }
-        let (_, owner, caps) = room::extract_governed_fields(doc);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        room::role_of(owner.as_deref(), &caps, person.id(), now_secs(now))
+        room::role_of(policy.owner.as_deref(), &policy.caps, person.id(), now_secs(now))
             .ok_or("person has no room membership".into())
     }
     pub fn receive_from(
@@ -504,10 +543,10 @@ impl StatePeer {
                 if cert.device_public_key != source {
                     return Err("transport certificate mismatch".into());
                 }
-                if self.certificates.get(&source) != Some(cert.as_ref()) {
+                if self.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref()) {
                     let admitted = self
                         .room_doc
-                        .as_ref()
+                        .as_deref()
                         .and_then(|doc| {
                             room::governance_of(Some(doc))
                                 .3
@@ -522,8 +561,8 @@ impl StatePeer {
                         return Err("identity is absent from admitted roster".into());
                     }
                 }
-                qos_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-                let mut metadata_changed = self.certificates.get(&source) != Some(cert.as_ref());
+                let verified = VerifiedCertificate::new((*cert).clone(), now_ns(now))?;
+                let mut metadata_changed = self.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref());
                 for entry in revocations {
                     if entry.user_public_key != cert.user_public_key {
                         return Err("revocation root mismatch".into());
@@ -540,7 +579,7 @@ impl StatePeer {
                 if self.revocations.is_revoked(&source) {
                     return Err("device revoked".into());
                 }
-                self.certificates.insert(source, *cert);
+                self.certificates.insert(source, verified);
                 Ok(ReceiveOutcome {
                     metadata_changed,
                     ..Default::default()
@@ -561,7 +600,7 @@ impl StatePeer {
                         certificate.user_public_key,
                     ));
                     let (_, _, caps) = room::extract_governed_fields(
-                        self.room_doc.as_ref().ok_or("room governance missing")?,
+                        self.room_doc.as_deref().ok_or("room governance missing")?,
                     );
                     let actor = Actor::person(Some(role), person.id()).in_room(self.room.clone());
                     if decide_capability(
@@ -575,7 +614,7 @@ impl StatePeer {
                         return Err("room write forbidden".into());
                     }
                 }
-                let candidate = room::candidate(self.room_doc.as_ref(), &changes).map_err(err)?;
+                let candidate = room::candidate(self.room_doc.as_deref(), &changes).map_err(err)?;
                 if room::declared_room_mismatches(
                     &candidate,
                     uuid::Uuid::parse_str(&self.room).map_err(err)?,
@@ -585,7 +624,7 @@ impl StatePeer {
                 let pinned = hex::encode(self.authority.device_public_key);
                 let from = hex::encode(source);
                 if !room::governance_change_allowed(
-                    self.room_doc.as_ref(),
+                    self.room_doc.as_deref(),
                     &candidate,
                     false,
                     Some(&pinned),
@@ -593,8 +632,8 @@ impl StatePeer {
                 ) {
                     return Err("governance writer is not pinned authority".into());
                 }
-                crate::topology::validate(self.room_doc.as_ref(), &candidate, &from, &pinned)?;
-                if !room::immutable_receipts(self.room_doc.as_ref(), &candidate) {
+                crate::topology::validate(self.room_doc.as_deref(), &candidate, &from, &pinned)?;
+                if !room::immutable_receipts(self.room_doc.as_deref(), &candidate) {
                     return Err("effect receipt is immutable".into());
                 }
                 let mut receipts = self.receipts.clone();
@@ -605,15 +644,15 @@ impl StatePeer {
                     }
                     receipts.insert(key, bytes);
                 }
-                crate::coverage::monotonic(self.room_doc.as_ref(), &candidate)?;
-                crate::durability::monotonic(self.room_doc.as_ref(), &candidate)?;
+                crate::coverage::monotonic(self.room_doc.as_deref(), &candidate)?;
+                crate::durability::monotonic(self.room_doc.as_deref(), &candidate)?;
                 let changed = self
                     .room_doc
-                    .as_ref()
+                    .as_deref()
                     .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
                 let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
                 self.receipts = receipts;
-                self.room_doc = Some(candidate);
+                self.room_doc = Some(candidate.into());
                 let pending = std::mem::take(&mut self.pending);
                 self.pending_bytes = 0;
                 let mut applied = changed;
@@ -728,7 +767,7 @@ impl StatePeer {
         let role = self.role(&source, now)?;
         let cert = self.certificate(&source, now)?;
         let (_, _, caps) =
-            room::extract_governed_fields(self.room_doc.as_ref().ok_or("missing governance")?);
+            room::extract_governed_fields(self.room_doc.as_deref().ok_or("missing governance")?);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         let actor = Actor::person(Some(role), person.id())
             .with_principal(Principal::App(app_id.clone()))
@@ -809,7 +848,7 @@ impl StatePeer {
         };
         candidate.channel = validated_channel;
         if let DocumentMutation::Snapshot(bytes) = &mutation && !local_app {
-            let entries = crate::coverage::entries(self.room_doc.as_ref().ok_or("missing room")?)?;
+            let entries = crate::coverage::entries(self.room_doc.as_deref().ok_or("missing room")?)?;
             let coverage = entries.get(&crate::coverage::route_key(&route.app, &route.record));
             let Some(coverage) = coverage else {
                 return self.defer(
@@ -854,7 +893,7 @@ impl StatePeer {
             if coverage.watermarks.get(&hex::encode(source)).copied() != Some(envelope.seq) {
                 return Err("checkpoint author coverage mismatch".into());
             }
-            candidate.covered_snapshot = Some(bytes.clone());
+            candidate.covered_snapshot = Some(AcceptedCheckpoint::new(bytes.clone()));
             for (author, sequence) in &coverage.watermarks {
                 let key: [u8; 32] = hex::decode(author)
                     .map_err(err)?
@@ -1034,7 +1073,7 @@ impl StatePeer {
                 watermarks,
             };
             crate::coverage::put(
-                self.room_doc.as_mut().ok_or("missing room governance")?,
+                self.room_doc.as_deref_mut().ok_or("missing room governance")?,
                 coverage,
             )?;
         }
@@ -1074,15 +1113,18 @@ impl StatePeer {
     pub fn durable_bootstrap_messages(&mut self,key:&SigningKey,now:SystemTime,generation:u64)->Result<Vec<NeighbourMsg>,String>{
         let mut candidate=self.clone();
         let snapshots=candidate.signed_snapshots(key,now)?;
-        let room=candidate.room_doc.as_mut().ok_or("missing room governance")?;
+        let room=candidate.room_doc.as_deref_mut().ok_or("missing room governance")?;
         let receipts=crate::coverage::entries(room)?.into_iter().map(|(route,coverage)|Ok((route,crate::durability::DurableReceipt::new(coverage,generation)?))).collect::<Result<BTreeMap<_,_>,String>>()?;
         crate::durability::put(room,receipts)?;
-        crate::durability::monotonic(self.room_doc.as_ref(),room)?;
+        crate::durability::monotonic(self.room_doc.as_deref(),room)?;
         let mut messages=vec![candidate.room_message()];messages.extend(snapshots);*self=candidate;Ok(messages)
     }
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
     pub fn durable_coverage(&self,app:&str,record:&str)->Result<Option<crate::durability::DurableReceipt>,String>{
-        let Some(room)=self.room_doc.as_ref()else{return Ok(None)};
+        Ok(self.durable_receipt_checkpoint(app,record)?.map(|(receipt,_)|receipt))
+    }
+    fn durable_receipt_checkpoint(&self,app:&str,record:&str)->Result<Option<(crate::durability::DurableReceipt,std::sync::Arc<DecodedCheckpoint>)>,String>{
+        let Some(room)=self.room_doc.as_deref()else{return Ok(None)};
         let receipts=crate::durability::entries(room)?;
         let Some(receipt)=receipts.get(&crate::coverage::route_key(app,record))else{return Ok(None)};
         let coverage=&receipt.coverage;
@@ -1091,17 +1133,20 @@ impl StatePeer {
         if document.encryption_required{return Ok(None)}
         let Some(snapshot)=document.covered_snapshot.as_ref()else{return Ok(None)};
         if crate::coverage::entries(room)?.get(&crate::coverage::route_key(app,record))!=Some(coverage){return Ok(None)}
-        let accepted=AutoCommit::load(snapshot).map_err(err)?;
-        let heads=accepted.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
-        let payload=DocumentMutation::Snapshot(snapshot.clone()).encode().map_err(err)?;
-        if heads!=coverage.heads||*blake3::hash(&payload).as_bytes()!=coverage.payload_hash||coverage.watermarks.iter().any(|(author,seq)|document.covered.get(author).copied().unwrap_or(0)<*seq){return Ok(None)}
-        Ok(Some(receipt.clone()))
+        let accepted=snapshot.decoded()?;
+        if accepted.heads!=coverage.heads||accepted.payload_hash!=coverage.payload_hash||coverage.watermarks.iter().any(|(author,seq)|document.covered.get(author).copied().unwrap_or(0)<*seq){return Ok(None)}
+        Ok(Some((receipt.clone(),accepted)))
+    }
+    /// Validate the receipt and current-head coverage against one decoded checkpoint.
+    /// All authority, route, payload and watermark checks remain fresh per query.
+    pub fn durable_coverage_with_current(&self,app:&str,record:&str)->Result<Option<(crate::durability::DurableReceipt,bool)>,String>{
+        let Some((receipt,accepted))=self.durable_receipt_checkpoint(app,record)? else{return Ok(None)};
+        let document=self.documents.get(&Route{app:app.into(),record:record.into()}).ok_or("missing record")?;
+        let current=document.doc.base_heads().iter().all(|head|accepted.doc.get_change_by_hash(head).is_some());
+        Ok(Some((receipt,current)))
     }
     pub fn durable_covers_current(&self,app:&str,record:&str)->Result<bool,String>{
-        if self.durable_coverage(app,record)?.is_none(){return Ok(false)}
-        let document=self.documents.get(&Route{app:app.into(),record:record.into()}).ok_or("missing record")?;
-        let mut accepted=AutoCommit::load(document.covered_snapshot.as_ref().ok_or("missing accepted checkpoint")?).map_err(err)?;
-        Ok(document.doc.base_heads().iter().all(|head|accepted.get_change_by_hash(head).is_some()))
+        Ok(self.durable_coverage_with_current(app,record)?.is_some_and(|(_,current)|current))
     }
     pub fn durable(&self) -> Result<Vec<u8>, String> {
         let documents = self
@@ -1118,17 +1163,17 @@ impl StatePeer {
                     .collect(),
                 encryption_required: entry.encryption_required,
                 covered: entry.covered.clone(),
-                covered_snapshot: entry.covered_snapshot.clone(),
+                covered_snapshot: entry.covered_snapshot.as_ref().map(|snapshot|snapshot.0.bytes.clone()),
             })
             .collect();
         postcard::to_allocvec(&Durable {
             version: 2,
             room: self.room.clone(),
             authority: self.authority.clone(),
-            room_bytes: self.room_doc.clone().map(|mut doc| doc.save()),
+            room_bytes: self.room_doc.as_ref().map(CachedDocument::saved),
             documents,
             receipts: self.receipts.clone(),
-            certificates: self.certificates.values().cloned().collect(),
+            certificates: self.certificates.values().map(|cert| cert.as_ref().clone()).collect(),
             revocations: {
                 let mut entries = self.revocations.iter().cloned().collect::<Vec<_>>();
                 entries.sort_by_key(|entry| entry.revoked_device_public_key);
@@ -1180,7 +1225,7 @@ impl StatePeer {
         peer.receipts = durable.receipts;
         peer.room_doc = durable
             .room_bytes
-            .map(|bytes| AutoCommit::load(&bytes).map_err(err))
+            .map(|bytes| AutoCommit::load(&bytes).map(CachedDocument::from).map_err(err))
             .transpose()?;
         for document in durable.documents {
             let mut channel = ChannelState::default();
@@ -1196,7 +1241,7 @@ impl StatePeer {
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,
-                    covered_snapshot: document.covered_snapshot,
+                    covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
                 },
             );
         }
