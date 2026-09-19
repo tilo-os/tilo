@@ -12911,6 +12911,7 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
+ "clap",
  "dirs 6.0.0",
  "fs",
  "iroh-blobs",
