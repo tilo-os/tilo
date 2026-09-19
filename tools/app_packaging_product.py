@@ -36,7 +36,8 @@ REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'dist/apps/assemble-collection.sh', 'tools/assemble_app_collection.py',
                   'tools/rustc-thin-app-wrapper.sh', 'os/scripts/bake-runtime-bundle.sh',
                   'os/scripts/verify-elf-hardening.sh', 'tools/ci-sccache.sh',
-                  '.forgejo/actions/restore-cargo-downloads/action.yml'}
+                  '.forgejo/actions/restore-cargo-downloads/action.yml',
+                  'tools/canonical_verifier_bundle.py'}
 
 
 def require(value, message):
