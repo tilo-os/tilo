@@ -442,27 +442,16 @@ impl Relay {
         members: Vec<[u8; 32]>,
         state_root: PathBuf,
     ) -> Result<(), RelayError> {
-        let existing = {
-            let map = self.workspaces.lock().await;
-            map.get(&workspace_id).cloned()
-        };
-        if let Some(existing) = existing {
-            let mut existing = existing.lock().await;
-            existing.membership.set(members);
-            existing
-                .store
-                .save_membership(&existing.membership.devices)?;
-            drop(existing);
-            return Ok(());
-        }
-        let mut rt =
-            WorkspaceRuntime::open(&state_root, workspace_id, pinned, Membership::default())?;
-        rt.membership.set(members);
-        rt.store.save_membership(&rt.membership.devices)?;
-        self.workspaces
-            .lock()
-            .await
-            .insert(workspace_id, Arc::new(AsyncMutex::new(rt)));
+        let workspace = crate::workspace_io::get_or_initialize(
+            &self.workspaces,
+            state_root,
+            workspace_id,
+            pinned,
+            false,
+            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+        )
+        .await?;
+        crate::workspace_io::replace_membership(&workspace, members).await?;
         Ok(())
     }
 

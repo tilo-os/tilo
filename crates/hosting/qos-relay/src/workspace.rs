@@ -79,6 +79,11 @@ pub struct WorkspaceRuntime {
     /// gate subscribes AND to decide who gets store-and-forward
     /// on delta receive.
     pub membership: Membership,
+    /// Serializes filesystem authority operations independently of state IO.
+    pub(crate) authorization: Arc<AsyncMutex<()>>,
+    /// Failed/pending replacements cap what an old external file may grant.
+    pub(crate) membership_ceiling: Option<HashSet<[u8; 32]>>,
+    pub(crate) membership_revision: u64,
     /// Whether any connection already admitted by the relay's trust policy may
     /// join this workspace. Enabled automatically for matching-user home hosts;
     /// shared/multi-tenant hosts use an explicit membership list.
@@ -135,6 +140,9 @@ impl WorkspaceRuntime {
             store,
             doc,
             membership,
+            authorization: Arc::new(AsyncMutex::new(())),
+            membership_ceiling: None,
+            membership_revision: 0,
             admit_authenticated: false,
             admitted_users: HashSet::new(),
             subscribers: HashMap::new(),
@@ -164,16 +172,19 @@ impl WorkspaceRuntime {
         self.subscribers.insert(sub.device_public_key, sub);
     }
 
-    /// Remember an authenticated device so deltas received while it is offline
-    /// are queued across daemon restarts.
+    /// Remember an authenticated device before sharing this runtime, so deltas
+    /// received while it is offline are queued across daemon restarts. Live
+    /// sessions use the serialized async admission in `workspace_io`.
     ///
     /// # Errors
     ///
     /// Returns an error if persisting the updated membership list fails.
     pub fn admit_device(&mut self, device: [u8; 32]) -> Result<(), crate::store::StoreError> {
         if !self.membership.contains(&device) {
-            self.membership.devices.push(device);
-            self.store.save_membership(&self.membership.devices)?;
+            let mut devices = self.membership.devices.clone();
+            devices.push(device);
+            self.store.save_membership(&devices)?;
+            self.membership.set(devices);
         }
         Ok(())
     }
@@ -468,6 +479,19 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 mod tests {
     use super::*;
     use crate::transport::Envelope;
+
+    #[test]
+    fn failed_membership_admission_never_grants_authority() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime =
+            WorkspaceRuntime::open(tmp.path(), 7, false, Membership::default()).unwrap();
+        std::fs::create_dir(runtime.store.root().join(crate::store::MEMBERSHIP_FILE)).unwrap();
+        assert!(runtime.admit_device([1; 32]).is_err());
+        assert!(
+            !runtime.membership.contains(&[1; 32]),
+            "failed durable admission granted membership"
+        );
+    }
 
     fn env_delta(id: u64, author: [u8; 32]) -> Envelope {
         Envelope::Delta {

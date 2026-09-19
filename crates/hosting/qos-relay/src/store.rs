@@ -24,6 +24,8 @@
 //!   offline for a week and still catch up.
 
 mod retained;
+#[cfg(test)]
+pub(crate) mod test_barrier;
 
 use std::fs;
 use std::io::{self, Write};
@@ -146,6 +148,7 @@ pub struct LogEntry {
 }
 
 /// On-disk manager for one workspace's state.
+#[derive(Clone)]
 pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: u64,
@@ -173,6 +176,8 @@ impl WorkspaceStore {
     /// can't be created.
     pub fn open(state_root: &Path, workspace_id: u64, pinned: bool) -> Result<Self, StoreError> {
         let root = state_root.join("workspaces").join(workspace_id.to_string());
+        #[cfg(test)]
+        test_barrier::pause(&root, "open");
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
         fs::create_dir_all(root.join(RETAINED_DIR).join("checkpoints"))?;
@@ -240,8 +245,11 @@ impl WorkspaceStore {
         if !path.exists() {
             return Ok(Vec::new());
         }
-        let encoded: Vec<String> = serde_json::from_slice(&fs::read(path)?)
-            .map_err(|error| StoreError::Json(error.to_string()))?;
+        let bytes = fs::read(path)?;
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "membership-read");
+        let encoded: Vec<String> =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Json(error.to_string()))?;
         encoded
             .into_iter()
             .map(|value| {
@@ -268,6 +276,8 @@ impl WorkspaceStore {
         let encoded: Vec<_> = devices.iter().map(hex::encode).collect();
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "membership-write");
         atomic_file::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
         Ok(())
     }
