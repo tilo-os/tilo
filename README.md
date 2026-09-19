@@ -44,6 +44,7 @@ Most of the rest follows from that:
 | `crates/system/fs/` | FUSE3 driver. Iroh content addressing, `blake3`, `moka` cache. Mounted at `/var/workspace`; projects metadata immediately, hydrates content on first read. |
 | `apps/` | 50 native applications — office suite, Servo-based browser, mail, calendar, maps, creative tools, passwords, clocks, terminal, and files. See [`apps/README.md`](apps/README.md). |
 | `crates/` | Supporting libraries by domain: collab, doc, runtime, packaging, session, system, text, format. |
+| `dist/` | Distribution packaging, session integration, release policy, and reproducible release recipes. |
 | `os/` | Bootc-based Fedora image. greetd → Wayland session → `shell`. |
 
 Single Cargo workspace, no submodules.
