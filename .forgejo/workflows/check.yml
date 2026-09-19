@@ -94,6 +94,7 @@ jobs:
       base: ${{ steps.plan.outputs.base }}
       full: ${{ steps.plan.outputs.full }}
       rust_required: ${{ steps.plan.outputs.rust_required }}
+      security_required: ${{ steps.plan.outputs.security_required }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
@@ -138,7 +139,9 @@ jobs:
           set -euo pipefail
           base='${{ github.event.pull_request.base.sha }}'
           selection_args=()
-          if [ '${{ github.event_name }}' = workflow_dispatch ]; then
+          if [ '${{ github.event_name }}' = pull_request ]; then
+            selection_args+=(--allow-security-skip)
+          elif [ '${{ github.event_name }}' = workflow_dispatch ]; then
             # Dispatch has no pull-request base or push-before SHA. Do not
             # silently reduce an acceptance run to the last commit's changes.
             base=origin/main
@@ -166,10 +169,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Shell, image-configuration, and workflow policy cannot be selected through
-  # Cargo's dependency graph. Keep these checks mandatory, but run them beside
-  # selection so they do not delay the affected-package matrix.
+  # Cargo's dependency graph. Run these checks beside selection so they do not
+  # delay the affected-package matrix. Pull requests containing only audited
+  # prose or self-tested quality helpers may omit this independent suite.
   security:
-    needs: builder
+    if: needs.select.outputs.security_required == 'true'
+    needs: [builder, select]
     runs-on: runner-quality
     timeout-minutes: 30
     env:
@@ -330,7 +335,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [select, security, affected]
+    needs: [builder, select, security, affected]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -342,16 +347,30 @@ jobs:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
         env:
+          BUILDER_RESULT: ${{ needs.builder.result }}
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           AFFECTED_RESULT: ${{ needs.affected.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          SECURITY_REQUIRED: ${{ needs.select.outputs.security_required }}
           RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
           SELECTED_COUNT: ${{ needs.select.outputs.selected_count }}
         shell: bash
         run: |
           set -euo pipefail
+          test "$BUILDER_RESULT" = success
           test "$SELECT_RESULT" = success
-          test "$SECURITY_RESULT" = success
+          case "$EVENT_NAME:$SECURITY_REQUIRED:$SECURITY_RESULT" in
+            *:true:success)
+              ;;
+            pull_request:false:skipped)
+              echo 'Security checks not applicable: audited pull-request-only inputs.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '::error::Security checks failed, were skipped unexpectedly, or selection outputs are invalid.'
+              exit 1
+              ;;
+          esac
           case "$RUST_REQUIRED:$SELECTED_COUNT:$AFFECTED_RESULT" in
             false:0:skipped)
               echo 'Rust checks not applicable: audited non-compiling inputs.' >> "$GITHUB_STEP_SUMMARY"

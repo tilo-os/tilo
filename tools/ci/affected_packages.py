@@ -312,6 +312,7 @@ def make_plan(
     *,
     force_full: bool = False,
     builder_only_external_assets: bool = False,
+    allow_security_skip: bool = False,
 ) -> dict:
     packages, by_dir = package_maps(metadata, root)
     seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
@@ -336,11 +337,24 @@ def make_plan(
             path.startswith("docs/designs/") and path.endswith(".md")
             and ".." not in Path(path).parts))
 
-    quality_paths = {
+    quality_helper_paths = {
         path for source, test in QUALITY_ONLY_HELPERS.items()
         if (root / source).is_file() and (root / test).is_file()
         for path in (source, test)
     }
+    security_prose = {
+        path for path in changes if prose(path) and (root / path).is_file()
+    }
+    # Security may be omitted only for pull-request inputs whose observers do
+    # not live in the security suite itself. Workflow and OS control inputs are
+    # added to Rust's broader quality-only set below, after this decision.
+    security_not_applicable = (
+        allow_security_skip
+        and not force_full
+        and bool(changes)
+        and all(path in security_prose or path in quality_helper_paths for path in changes)
+    )
+    quality_paths = set(quality_helper_paths)
     quality_paths.update(
         path for source, observers in QUALITY_ONLY_CONTROL_INPUTS.items()
         if (root / source).is_file()
@@ -394,6 +408,7 @@ def make_plan(
     return {
         "full": full,
         "rust_required": bool(selected),
+        "security_required": not security_not_applicable,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -414,6 +429,7 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"matrix={compact_matrix}\n")
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
         handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
+        handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")
@@ -426,6 +442,11 @@ def main() -> int:
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--shards", type=int, default=2)
     parser.add_argument("--full", action="store_true", help="check the complete workspace on each native architecture")
+    parser.add_argument(
+        "--allow-security-skip",
+        action="store_true",
+        help="allow audited pull-request-only inputs to omit security invariants",
+    )
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--metadata", type=Path, help="read metadata JSON instead of invoking Cargo")
     parser.add_argument("--changes", type=Path, help="read changed paths instead of invoking git")
@@ -446,6 +467,7 @@ def main() -> int:
         args.shards,
         force_full=args.full,
         builder_only_external_assets=builder_only_external_assets,
+        allow_security_skip=args.allow_security_skip,
     )
     print(json.dumps(plan, indent=2))
     if args.github_output:
