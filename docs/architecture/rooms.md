@@ -98,12 +98,12 @@ question that otherwise gets answered inconsistently once per app.
 
 **Per-record CRDT routing is a protocol change, not a refactor.** Today the
 broker routes opaque bytes keyed on `(app_id, cluster_id)` and never
-materialises them — `shell/src/shell/collab_broker.rs` holds no `AutoCommit` at
+materialises them — `crates/session/shell/src/shell/collab_broker.rs` holds no `AutoCommit` at
 all. Making the record the routing key means either the broker understands
 record boundaries, or apps announce a channel per record. Both are real work
 and one of them has to be chosen.
 
-Related, and already learned the hard way in `shell/src/network/replica.rs`: an
+Related, and already learned the hard way in `crates/session/shell/src/network/replica.rs`: an
 automerge change graph **cannot be served in part**. Changes carry their
 `deps`, so filtering a stream leaves the receiver with changes whose
 dependencies never arrive, parked forever. Per-record sharing therefore implies

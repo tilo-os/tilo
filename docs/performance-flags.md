@@ -86,8 +86,8 @@ plan. Sparse shader experiments below require the supported GPU/Area path.
 | `TILO_DRM_XRGB_DAMAGE` | Exact-1 | Opt-in damage-aware writes into DRM XRGB destinations, also exercised by `redraw_bench`. Per-buffer revision history must be valid; unknown/stale/invalid history and recovery boundaries require full refresh. This is distinct from GPU texture readback damage. |
 
 Sources: [shader selection](../vendor/vello/src/render.rs),
-[DRM scanout](../shell/src/compositor/backend/drm/scanout.rs),
-[XRGB history](../shell/src/compositor/backend/drm/xrgb_history.rs).
+[DRM scanout](../crates/session/shell/src/compositor/backend/drm/scanout.rs),
+[XRGB history](../crates/session/shell/src/compositor/backend/drm/xrgb_history.rs).
 For the recorded `bounds-xrgb-ppt8` experiment, the additional controls were
 `VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1
 TILO_DRM_XRGB_DAMAGE=1 VELLO_AREA_PPT8=1`; these are not production defaults.
@@ -149,10 +149,10 @@ selection. Keep their values identical across steady-state comparisons.
 | `TILO_WEBVIEW_DRM_NODE` | `/dev/dri/renderD128`; path | DRM node for WPE EGL setup when DMA-BUF export is requested. Empty/unusable paths fail setup and fall back to SHM. Not the wgpu adapter selector. |
 | `TILO_DMABUF_DEVICE` | Unset: automatic probe; path | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
 
-Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs), [shell startup](../shell/src/main.rs),
+Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs), [shell startup](../crates/session/shell/src/main.rs),
 [startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs),
 [WPE export](../crates/sdk/ui-core/src/webview/wpe/mod.rs), [EGL node](../crates/sdk/ui-core/src/webview/wpe/egl.rs),
-[compositor render node](../shell/src/compositor/render_node.rs).
+[compositor render node](../crates/session/shell/src/compositor/render_node.rs).
 
 ## UI dashboard benchmark
 
@@ -246,8 +246,8 @@ reading its explicit mode and result.
 `legacy-dense`, `legacy-versioned`, `segmented-dense`, or
 `segmented-versioned`. It renders one **cold** native-4K frame with phase
 timing; it is not an acceptance benchmark. Sources:
-[redraw_bench.rs](../shell/examples/redraw_bench.rs),
-[retained_scene_probe.rs](../shell/examples/retained_scene_probe.rs).
+[redraw_bench.rs](../crates/session/shell/examples/redraw_bench.rs),
+[retained_scene_probe.rs](../crates/session/shell/examples/retained_scene_probe.rs).
 
 ## Presentation-loop controls
 
@@ -306,9 +306,9 @@ projector results are not native-4K redraw evidence.
 `TILO_PROJECTOR_VIDEO_SOCKET` selects the capture worker's Unix socket, defaulting
 to `XDG_RUNTIME_DIR/tilo-projector/video.sock` when available. It routes output,
 not rendering speed. Sources:
-[capture](../shell/src/compositor/projection_capture.rs),
+[capture](../crates/session/shell/src/compositor/projection_capture.rs),
 [profile schema and defaults](../crates/system/projector/src/lib.rs),
-[native-loop diagnostics](../shell/src/compositor/native.rs).
+[native-loop diagnostics](../crates/session/shell/src/compositor/native.rs).
 
 ## Build and dependency controls
 
@@ -382,7 +382,7 @@ an application can enable them through dependency feature unification):
 | `shell/hevc-codec-tests` | Off | Codec-dependent tests only; enables `hdr-decode`, not a speed optimization. |
 | `shell/hosted-test-control` | On | Hosted input-control test socket; remove from production feature selection when that test surface is unwanted. Not a frame-rate optimization. |
 
-See [UI features](../crates/sdk/ui-core/Cargo.toml) and [shell features](../shell/Cargo.toml).
+See [UI features](../crates/sdk/ui-core/Cargo.toml) and [shell features](../crates/session/shell/Cargo.toml).
 `--no-default-features` changes the workload/capability set; document it in any
 benchmark recipe rather than silently comparing different feature sets.
 

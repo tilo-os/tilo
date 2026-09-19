@@ -17,7 +17,7 @@
 #
 # GEOMETRY LIMITATION (live source): the winit backend's window size is a
 # compile-time constant (INITIAL_WIDTH/INITIAL_HEIGHT = 1600x900 in
-# shell/src/compositor/backend/winit.rs) with no flag or env override, and
+# crates/session/shell/src/compositor/backend/winit.rs) with no flag or env override, and
 # Wayland gives no way for a script to position another client's window. So
 # on a stock Wayland session this script cannot itself lay the three panes
 # out side by side -- it spawns them and tells you what it could not do.
