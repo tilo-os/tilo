@@ -1113,7 +1113,7 @@ impl SetupApp {
             platform.desktop_session = self.desktop_flow.desktop_available();
             self.capabilities.platform = platform;
             self.controller.borrow_mut().set_capabilities(platform);
-            if self.controller.borrow().page() == SetupPage::Review {
+            if self.on_review_for(Experience::Desktop) {
                 match self.desktop_flow.state() {
                     DesktopFlowState::Installed { .. } => {
                         self.status =
@@ -1132,11 +1132,12 @@ impl SetupApp {
             changed = true;
         }
 
+        let on_full_os_review = self.on_review_for(Experience::FullOs);
         if let Some(flow) = &mut self.internal_download_flow {
             changed |= flow.poll();
             if self.internal_download_revision != flow.revision() {
                 self.internal_download_revision = flow.revision();
-                if self.controller.borrow().page() == SetupPage::Review {
+                if on_full_os_review {
                     self.status.clone_from(&flow.presentation().title);
                     self.status_is_error = matches!(
                         flow.presentation().phase,
@@ -2832,6 +2833,135 @@ mod tests {
             Server, manifest_bytes, manifest_value, response,
         };
         use ui::install_artifacts::Phase as InternalPhase;
+
+        fn review_with_experience(experience: Experience) -> SetupApp {
+            let mut app = supported_fixture();
+            app.apply_command(SetupCommand::ChooseExperience(experience));
+            app.apply_command(SetupCommand::Next);
+            app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+            app.apply_command(SetupCommand::Next);
+            assert_eq!(app.controller().page(), SetupPage::Review);
+            app
+        }
+
+        #[test]
+        fn desktop_review_status_ignores_unselected_internal_idle_revision() {
+            let bytes = manifest_bytes(&manifest_value());
+            let server = Server::new(vec![]);
+            let root = tempfile::tempdir().unwrap();
+            let preference = tempfile::tempdir().unwrap();
+            let worker = server.client(root.path(), &preference.path().join("selection.json"));
+            let mut app = supported_fixture();
+            app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+                app.capabilities.platform,
+                worker,
+                vec![vec![server.selection(&bytes)]],
+                "x86_64",
+            ));
+            app.internal_download_flow
+                .as_mut()
+                .unwrap()
+                .wait_preference();
+            app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+            app.apply_command(SetupCommand::Next);
+            app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+            app.apply_command(SetupCommand::Next);
+            let expected = app.status.clone();
+
+            assert!(app.poll_background());
+            assert_eq!(app.status, expected);
+        }
+
+        #[test]
+        fn desktop_review_status_ignores_unselected_internal_failure_revision() {
+            let bytes = manifest_bytes(&manifest_value());
+            let server = Server::new(vec![response(404, "", b"")]);
+            let root = tempfile::tempdir().unwrap();
+            let preference = tempfile::tempdir().unwrap();
+            let worker = server.client(root.path(), &preference.path().join("selection.json"));
+            let mut flow = InternalDownloadFlow::fixture_at(
+                supported_fixture().capabilities.platform,
+                worker,
+                vec![
+                    vec![server.selection(&bytes)],
+                    vec![server.selection(&bytes)],
+                ],
+                "x86_64",
+            );
+            flow.wait_preference();
+            flow.start_selected(flow.offered_selection().unwrap())
+                .unwrap();
+
+            let mut app = review_with_experience(Experience::Desktop);
+            app.internal_download_flow = Some(flow);
+            let expected = app.status.clone();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                app.poll_background();
+                if app
+                    .internal_download_flow
+                    .as_ref()
+                    .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Failed))
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "internal download did not fail");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+
+            assert_eq!(app.status, expected);
+        }
+
+        #[test]
+        fn full_os_review_status_ignores_unselected_desktop_failure_revision() {
+            let mut app = review_with_experience(Experience::FullOs);
+            app.desktop_flow = DesktopFlow::with_runtime_and_state(
+                super::super::super::desktop_flow::DesktopRuntime {
+                    launch_probe: disconnected_desktop_probe,
+                    launch_download: disconnected_desktop_download,
+                    launch_install: disconnected_desktop_install,
+                },
+                DesktopFlowState::Ready(fixture_desktop_selection(false)),
+            );
+            app.desktop_flow.start_check().unwrap();
+            let expected = app.status.clone();
+
+            assert!(app.poll_background());
+            assert!(matches!(
+                app.desktop_flow.state(),
+                DesktopFlowState::Failed { .. }
+            ));
+            assert_eq!(app.status, expected);
+        }
+
+        #[test]
+        fn full_os_review_status_ignores_unselected_installed_desktop_revision() {
+            let mut app = review_with_experience(Experience::FullOs);
+            app.desktop_flow = DesktopFlow::from_fixture_state(DesktopFlowState::Installed {
+                selection: fixture_desktop_selection(false),
+                result: super::super::super::desktop_install::InstalledDesktop {
+                    version: "0.1.9-1.fc44".into(),
+                    session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
+                },
+            });
+            app.desktop_revision = u64::MAX;
+            let expected = app.status.clone();
+
+            assert!(app.poll_background());
+            assert_eq!(app.status, expected);
+        }
+
+        #[test]
+        fn selected_desktop_review_status_still_updates_from_installed_revision() {
+            let mut app = SetupApp::for_shot("setup-desktop-installed");
+            app.desktop_revision = u64::MAX;
+
+            assert!(app.poll_background());
+            assert_eq!(
+                app.status,
+                "Tilo Desktop is installed and verified. Sign out when you are ready."
+            );
+        }
 
         // Catches startup loading being gated but omitted from the real idle scheduler.
         #[test]
