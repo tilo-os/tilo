@@ -149,6 +149,74 @@ fn populated_large_text_library_passes_native_accessibility_certification() {
     assert!(driver.accessibility_audit().is_clean());
 }
 
+/// The destination picker is an overlay, but its controls still have to be
+/// individually routable through the same stable album ids an agent or screen
+/// reader uses.  In particular, the shared modal close control must not
+/// duplicate Cancel's semantic identity.
+#[test]
+fn destination_album_chooser_keeps_native_actions_unique_and_canonical() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 320, 240);
+    let mut hz = Harness::new(960.0, 700.0);
+    hz.app.open_path(&mut hz.state.doc, &path);
+    let photo_id = PhotosDoc::library(&hz.state.doc).photos[0].id.clone();
+    let mut library = PhotosDoc::library(&hz.state.doc);
+    library.albums.extend([
+        Album {
+            id: "photos.album:destination-a".into(),
+            name: "Weekend plans".into(),
+            photo_ids: vec![photo_id.clone()],
+        },
+        Album {
+            id: "photos.album:destination-b".into(),
+            name: "Home projects".into(),
+            photo_ids: vec![photo_id],
+        },
+    ]);
+    PhotosDoc::set_library(&mut hz.state.doc, &library);
+    hz.app.show_selection_for_shot(&hz.state.doc);
+    hz.app
+        .show_selection_destination_chooser_for_shot(&hz.state.doc);
+    hz.frame();
+
+    fn collect_targets(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
+        if let Some(target) = &node.action_target {
+            targets.push(target.clone());
+        }
+        for child in &node.children {
+            collect_targets(child, targets);
+        }
+    }
+
+    let tree = hz
+        .app
+        .accessibility()
+        .expect("Photos publishes accessibility");
+    let mut targets = Vec::new();
+    collect_targets(&tree, &mut targets);
+    for target in [
+        "photos:selection:destination:photos.album:destination-a",
+        "photos:selection:destination:photos.album:destination-b",
+        "photos:selection:destination-cancel",
+        "photos:selection:destination-close",
+    ] {
+        assert_eq!(
+            targets
+                .iter()
+                .filter(|candidate| candidate.as_str() == target)
+                .count(),
+            1,
+            "chooser action `{target}` must be present exactly once: {targets:?}"
+        );
+    }
+    assert!(
+        !targets
+            .iter()
+            .any(|target| target == "photos:selection:destination-apply"),
+        "Use album must remain unavailable until a destination is selected"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 1. An image loads and lays out inside its viewport.
 // ---------------------------------------------------------------------------

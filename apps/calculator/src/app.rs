@@ -1897,6 +1897,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn history_recall_through_headless_host_is_available_to_local_viewer() {
+        let mut app = CalculatorApp::seeded();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let id = crate::doc::row_id_at(&state.doc, crate::doc::HISTORY, 1).unwrap();
+        let expression = crate::doc::load(&state.doc).unwrap().history[1]
+            .expr
+            .clone();
+        let resources = app.resources(&state.doc);
+        let row = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == format!("calculator.history_entry:{id}"))
+            .unwrap();
+        let binding = tilo_actions::ActionBinding::unit_for(row, "open").unwrap();
+        app.set_mode(Mode::Graph3d);
+        let before = state.doc.get_heads();
+        // Exercise the same published binding and host admission used by a
+        // search result, rather than calling the app's handler directly.
+        let root = ui::widget::Column::new().push(Box::new(app)).push(Box::new(
+            ui::widget::Button::new("recall", "Recall", None).on_action(binding),
+        ));
+        let mut harness = ui::headless::FrameHarness::new(state, Box::new(root), (800, 600));
+        harness.set_permission_ctx(ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(
+                Some(ui::permissions::Role::Viewer),
+                ui::permissions::LOCAL_USER,
+            ),
+            vec![],
+        ));
+        harness
+            .perform_named("recall", &ui::a11y::Action::Activate)
+            .unwrap();
+        harness
+            .expect(&ui::headless::SemanticExpectation::named("calculator_app").value(expression))
+            .unwrap();
+        assert_eq!(harness.state_mut().doc.get_heads(), before);
+    }
+
+    #[test]
     fn search_recall_uses_stable_history_identity_and_refuses_deleted_entries() {
         let mut app = CalculatorApp::seeded();
         let mut state = ui::State::new();

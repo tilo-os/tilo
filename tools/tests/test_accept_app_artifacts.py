@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 sys.path.insert(0, str(Path(__file__).parents[1]))
+sys.path.append(str(Path(__file__).parents[1] / 'apps'))
 import accept_app_artifacts as accept
 import app_packaging_product as product
 import assemble_verified_apps as assembler
