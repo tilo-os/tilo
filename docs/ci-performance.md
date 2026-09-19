@@ -35,7 +35,7 @@ diff inventory; it deliberately has no repository-write step.
 The maximum of two affected shards per architecture is intentional. A third, permanently dedicated "heavy
 apps" shard was measured as the wrong trade-off for this workspace: it repeats
 large shared dependency graphs and adds runner CPU even when a change does not
-touch those apps. `tools/ci/select.py` already weights costly packages while
+touch those apps. `tools/ci/affected_packages.py` already weights costly packages while
 preserving dependency-correct selection, so heavy packages receive their own
 capacity when they are affected without creating an always-on third compile.
 

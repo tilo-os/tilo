@@ -31,7 +31,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
         for relative in (
             "dist/apps/package-apps.sh", "dist/apps/assemble-collection.sh",
             "os/scripts/bake-runtime-bundle.sh", "tools/app_release.py",
-            "tools/ci/__init__.py", "tools/ci/select.py",
+            "tools/ci/__init__.py", "tools/ci/affected_packages.py",
             "tools/assemble_app_collection.py",
             "apps/calculator/Cargo.toml", "apps/calculator/tilo-app.toml",
             "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/app_package_isa.py",
