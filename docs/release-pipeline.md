@@ -93,6 +93,12 @@ digest variables automatically. Architecture-specific
 both native lanes publish; the unsuffixed pair remains the x86_64
 compatibility channel.
 
+App publication requires `TILO_PACKAGE_PUBLIC_BASE_URL`, set to the public
+HTTPS generic-package base (currently
+`https://code.sandbox.example/api/packages/qos/generic`). Registry traffic may use
+the runner's internal endpoint, but receipts and persisted collection-channel
+URLs always derive from this public base.
+
 Manual app packaging defaults to both native architectures; PRs only plan
 which apps are affected. During bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture
 without waiting for an unavailable native runner; tagged releases always
