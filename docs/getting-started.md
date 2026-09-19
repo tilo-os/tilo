@@ -1,5 +1,9 @@
 # Getting Tilo onto a computer
 
+Guided migration is still under development. USB-free Full Tilo installation
+and Connected folders are unavailable; see [migration feature status](migration-status.md)
+for implemented paths, platform limits, and remaining validation.
+
 Tilo can be used in three ways. Pick the least invasive route that answers your
 question; a virtual machine is the right first stop for most people.
 
@@ -87,8 +91,8 @@ The Imager authenticates Tilo images selected from its bundled release catalog,
 writes the selected USB drive, reads it back, and can carry account name,
 host name, locale, keyboard, time zone, and a Btrfs (recommended), Ext4, or XFS
 choice into the live installer. Local image files remain visibly unverified and
-write-only even when their filename or volume label says Tilo. It does not inspect
-or copy your files, resize an internal disk, or carry a password or recovery
+write-only even when their filename or volume label says Tilo. The removable-media workflow does not
+inspect or copy your files, resize an internal disk, or carry a password or recovery
 secret.
 
 Boot the USB in UEFI mode and test the hardware. The live installer offers:
