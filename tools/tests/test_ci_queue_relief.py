@@ -72,7 +72,10 @@ class QueueReliefTests(unittest.TestCase):
                 events = section(workflow(name), "on")
                 push = section(events, "push", 2)
                 self.assertIn("tags: " + tags, push)
-                self.assertNotRegex(push, r"(?m)^    branches(?:-ignore)?:")
+                if name == "release-apps":
+                    self.assertRegex(push, r"(?m)^    branches: \[main\]$")
+                else:
+                    self.assertNotRegex(push, r"(?m)^    branches(?:-ignore)?:")
                 self.assertRegex(events, r"(?m)^  workflow_dispatch:")
 
     def test_os_full_build_is_not_a_pr_gate(self):

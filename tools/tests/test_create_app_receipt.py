@@ -150,7 +150,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
         self.assertIn('dist/app-release/publication-receipt.json', workflow)
         self.assertIn('dist/app-release/verification-policy.json', workflow)
         self.assertNotIn('dist/app-release/work/**', workflow)
-        self.assertIn('# branches: [main]', workflow)
+        self.assertIn('    branches: [main]', workflow)
         publish = workflow.split('\n  publish:\n', 1)[1]
         self.assertIn('fromJSON(needs.plan.outputs.matrix).include[0].runner', publish)
         self.assertIn('image: ${{ needs.plan.outputs.builder_image }}', publish)
