@@ -61,19 +61,19 @@ fn build_widget(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-fn live(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let wake_scope = ui::wake::WakeScope::new();
-    let _wake_entry = wake_scope.enter();
-    // The package document is the record index; each PDF's markup lives in a
-    // separate record so annotations from two files cannot collide.
+fn prepare_launch(args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, LaunchError> {
+    // Native and headless launches share the room index and each PDF's markup
+    // record. Never adopt a clone of the package index as the annotation body:
+    // diverging copies share an Automerge actor and cannot safely merge later.
     let records = ui::RecordSet::open(APP_ID);
     let (room, autosave) = ui::persist::open_room(APP_ID, records.home());
-    let mut app = ui::App::from_scoped_parts(wake_scope, ui::State::new(), build_widget(args)?)
-        .with_autosave(autosave)
-        .with_records(records, room.doc);
-    pdf_viewer::actions::register(app.action_registry_mut());
-    app.run();
-    Ok(())
+    let state = ui::State::new();
+    let root = build_widget(args)?;
+    let mut registry = tilo_actions::ActionRegistry::new();
+    pdf_viewer::actions::register(&mut registry);
+    Ok(ui::launch::LegacyLaunchInputs::new(state, root, autosave)
+        .with_records(records, room.doc)
+        .with_registry(registry))
 }
 
 fn shot(args: &LaunchArgs) -> Result<(), LaunchError> {
@@ -117,6 +117,6 @@ pub fn main() {
                 "loading",
                 "error",
             ])
-            .live_handler(live),
+            .prepare_legacy_with_args(prepare_launch),
     );
 }
