@@ -9,6 +9,7 @@ on:
     branches: ["main"]
     tags: ["v*"]
     paths:
+      - "tools/ci/workflow_applicability.py"
       - "os/kernel/**"
       - "crates/system/tilo-crypto/**"
       - "os/tests/kernel_module_signing_test.sh"
@@ -36,6 +37,7 @@ on:
       - "os/dev/install-cached-cosign.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
+      - "tools/ci/workflow_applicability.py"
   workflow_dispatch:
 
 concurrency:
@@ -43,6 +45,27 @@ concurrency:
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) }}
 
 jobs:
+  applicability:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Require an exact relevant PR diff before native work
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/build-kernel.yml
+
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
     runs-on: runner
@@ -77,8 +100,14 @@ jobs:
           }
 
   build-and-push-kernel:
-    needs: signing-preflight
-    if: ${{ always() && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
+    needs: [signing-preflight, applicability]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')
+      }}
     strategy:
       fail-fast: false
       matrix:
