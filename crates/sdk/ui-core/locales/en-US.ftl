@@ -22,3 +22,4 @@ close-discard = Discard changes
 close-retry = Retry
 close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
+terminal-find-scrollback = Find in scrollback
