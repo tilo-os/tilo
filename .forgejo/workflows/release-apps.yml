@@ -365,7 +365,7 @@ jobs:
       - name: Assemble and verify without publication
         env:
           FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}
-          VERIFIER_BUNDLE_READ_TOKEN: ${{ github.token }}
+          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
           FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
           FINAL_RECEIPT_POLICY_SHA256: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256 }}
           COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
@@ -444,7 +444,7 @@ jobs:
       - name: Publish reusable qpkgs and assemble immutable collections
         env:
           VERIFY_FINAL_RECEIPT: ${{ github.event.inputs.verify_final_receipt }}
-          VERIFIER_BUNDLE_READ_TOKEN: ${{ github.token }}
+          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
           BUILDER_IMAGE: ${{ needs.plan.outputs.builder_image }}
           # Independently provisioned policy; never use uploaded verification-policy.json.
           FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
