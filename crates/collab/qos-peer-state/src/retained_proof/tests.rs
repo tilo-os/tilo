@@ -289,6 +289,103 @@ fn room_message(doc: &mut AutoCommit) -> NeighbourMsg {
 }
 
 #[test]
+fn room_checksum_corruption_is_unknown_for_checkpoint_delta_and_coverage() {
+    let (key, authority, mut peer, now) = fixture();
+    let baseline = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let prior = room_proof(&authority, &baseline[0], RoomInput::Checkpoint, None);
+    let mut doc = room_document(&baseline[0]);
+    doc.put(ROOT, "checksum_probe", "compressible".repeat(1024))
+        .unwrap();
+    let mut change = doc.get_last_local_change().unwrap();
+    let raw = change.raw_bytes().to_vec();
+    let compressed = change.bytes().to_vec();
+    let source = authority.governor().device_public_key;
+    let mut outcomes = Vec::new();
+    for (kind, bytes) in [(1, raw), (2, compressed)] {
+        assert_eq!(bytes[8], kind, "exercise raw and compressed Change chunks");
+        assert!(matches!(
+            automerge::Automerge::load(&bytes),
+            Err(automerge::AutomergeError::MissingDeps)
+        ));
+        let delta = NeighbourMsg::SyncResp {
+            room: ROOM.into(),
+            changes: vec![bytes.clone()],
+        };
+        let (channel, body) = encoded(&delta);
+        let complete = room_proof(
+            &authority,
+            &room_message(&mut doc),
+            RoomInput::Checkpoint,
+            Some(&prior),
+        );
+        let valid_delta = verify_room(
+            &authority,
+            source,
+            channel,
+            &body,
+            RoomInput::Delta,
+            Some(&prior),
+        )
+        .unwrap();
+        assert_eq!(valid_delta.heads(), complete.heads());
+        assert_eq!(
+            complete.covers_frame(source, channel, &body),
+            CoverageDecision::Covered
+        );
+        for offset in 4..8 {
+            let mut corrupt = bytes.clone();
+            corrupt[offset] ^= 1;
+            let mut checkpoint = baseline[0].clone();
+            let NeighbourMsg::SyncResp { changes, .. } = &mut checkpoint else {
+                panic!()
+            };
+            changes.push(corrupt.clone());
+            let (_, checkpoint_body) = encoded(&checkpoint);
+            let delta = NeighbourMsg::SyncResp {
+                room: ROOM.into(),
+                changes: vec![corrupt],
+            };
+            let (_, delta_body) = encoded(&delta);
+            outcomes.push((
+                kind,
+                offset,
+                matches!(
+                    verify_room(
+                        &authority,
+                        source,
+                        channel,
+                        &checkpoint_body,
+                        RoomInput::Checkpoint,
+                        None
+                    ),
+                    Err(ProofError::Unknown)
+                ),
+                matches!(
+                    verify_room(
+                        &authority,
+                        source,
+                        channel,
+                        &delta_body,
+                        RoomInput::Delta,
+                        Some(&prior)
+                    ),
+                    Err(ProofError::Unknown)
+                ),
+                complete.covers_frame(source, channel, &delta_body),
+            ));
+        }
+    }
+    assert!(
+        outcomes
+            .iter()
+            .all(|(_, _, checkpoint, delta, covered)| *checkpoint
+                && *delta
+                && *covered == CoverageDecision::Unknown),
+        "corrupt chunk outcomes (kind, checksum byte, checkpoint rejected, delta rejected, coverage): {outcomes:?}"
+    );
+}
+
+#[test]
 fn room_proof_rejects_foreign_missing_dependencies_suffix_and_regressing_metadata() {
     let (key, authority, mut peer, now) = fixture();
     let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();

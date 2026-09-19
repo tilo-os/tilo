@@ -177,6 +177,12 @@ fn room_changes(changes: &[Vec<u8>]) -> Result<(), ProofError> {
         if !rest.is_empty() || !matches!(kind, 1 | 2) {
             return Err(ProofError::Unknown);
         }
+        // Change::try_from validates columns but not the stored checksum.
+        // Validate this exact single Change through the loader first; only an
+        // integrity-valid dependent kind 1/2 chunk may return MissingDeps.
+        if !strict_chunks(bytes) {
+            return Err(ProofError::Unknown);
+        }
         automerge::Change::try_from(bytes.as_slice()).map_err(|_| ProofError::Unknown)?;
     }
     Ok(())

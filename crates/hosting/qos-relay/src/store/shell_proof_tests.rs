@@ -81,6 +81,47 @@ fn shell_authority_failed_or_malformed_persistence_never_installs_trust() {
 }
 
 #[test]
+fn captured_shell_corrupt_room_checksum_never_proves_or_covers() {
+    let authority = binding();
+    let source = authority.governor().device_public_key;
+    let bytes = fs::read(fixture().join("frames/0006.postcard")).unwrap();
+    let (channel, body, kind) = parts(CoeditPayload::decode(&bytes).unwrap());
+    let original = verify_room(&authority, source, channel, &body, kind, None).unwrap();
+    let mut message: NeighbourMsg = postcard::from_bytes(&body).unwrap();
+    let NeighbourMsg::SyncResp { changes, .. } = &mut message else {
+        panic!()
+    };
+    changes[0][4] ^= 1;
+    let corrupted = postcard::to_allocvec(&message).unwrap();
+    let checkpoint = verify_room(
+        &authority,
+        source,
+        channel,
+        &corrupted,
+        RoomInput::Checkpoint,
+        None,
+    );
+    let delta = verify_room(
+        &authority,
+        source,
+        channel,
+        &corrupted,
+        RoomInput::Delta,
+        Some(&original),
+    );
+    let coverage = original.covers_frame(source, channel, &corrupted);
+    assert_eq!(
+        (
+            matches!(checkpoint, Err(ProofError::Unknown)),
+            matches!(delta, Err(ProofError::Unknown)),
+            coverage
+        ),
+        (true, true, CoverageDecision::Unknown),
+        "the actual captured room checksum must be checked even when its change hash is known",
+    );
+}
+
+#[test]
 fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
     let meta = metadata();
     let binding = binding();
