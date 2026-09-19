@@ -2,7 +2,7 @@
 # Recreate the product-owned screenshots used by Tilo and website documentation.
 set -euo pipefail
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out="$repo/target/docs-captures"
 build=1
 

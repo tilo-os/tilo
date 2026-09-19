@@ -26,17 +26,17 @@ frame" placeholder, not the app.
 Examples:
 
     # Every installed package, product environment, PNG per app.
-    scripts/app-launch-sweep.py --out target/sweep --shots
+    scripts/visual/launch-sweep.py --out target/sweep --shots
 
     # Baseline comparison: hand-export the ICD variables the way an
     # operator would have to before this was fixed in the product.
-    scripts/app-launch-sweep.py --out target/sweep-pinned --pin
+    scripts/visual/launch-sweep.py --out target/sweep-pinned --pin
 
     # One app, quickly.
-    scripts/app-launch-sweep.py --out target/one --only calculator
+    scripts/visual/launch-sweep.py --out target/one --only calculator
 
     # Continue an interrupted sweep with the exact same options.
-    scripts/app-launch-sweep.py --out target/sweep --shots --resume
+    scripts/visual/launch-sweep.py --out target/sweep --shots --resume
 """
 
 from __future__ import annotations
@@ -641,7 +641,7 @@ def print_result(package_id: str, result: dict, resumed: bool = False) -> None:
 
 
 def main() -> int:
-    here = pathlib.Path(__file__).resolve().parent.parent
+    here = pathlib.Path(__file__).resolve().parents[2]
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )

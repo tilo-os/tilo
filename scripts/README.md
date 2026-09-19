@@ -11,6 +11,7 @@ operator-facing development and validation flows.
 | `perf/` | Performance measurement, PGO, BOLT, and boot timing |
 | `tests/` | Unit tests for script implementations |
 | `ux-bench/` | Declarative user-flow benchmarks and their runner |
+| `visual/` | App launch sweeps, contact sheets, and documentation captures |
 
 The few root scripts are cross-cutting repository checks or entrypoints that do
 not belong to one workflow. New multi-file workflows should get a named

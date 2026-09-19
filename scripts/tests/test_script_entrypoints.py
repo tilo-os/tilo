@@ -2,12 +2,18 @@ from pathlib import Path
 import unittest
 
 
-DEMO = Path(__file__).resolve().parents[1] / "demo"
+SCRIPTS = Path(__file__).resolve().parents[1]
+DEMO = SCRIPTS / "demo"
+VISUAL = SCRIPTS / "visual"
 
 
-class DemoScriptTests(unittest.TestCase):
+class ScriptEntrypointTests(unittest.TestCase):
     def test_python_entrypoints_parse(self) -> None:
-        entrypoints = sorted(DEMO.glob("*.py"))
+        entrypoints = (
+            sorted(SCRIPTS.glob("*.py"))
+            + sorted(DEMO.glob("*.py"))
+            + sorted(VISUAL.glob("*.py"))
+        )
         self.assertTrue(entrypoints)
         for path in entrypoints:
             with self.subTest(path=path.name):

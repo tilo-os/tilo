@@ -395,8 +395,7 @@ class Session:
             TILO_PACKAGE_ID=spec["package"],
             QUICK_APP_ID=peer_id,
             TILO_WORKSPACE_ID=room,
-            RUST_LOG="tilo.state=debug",
-            RUST_LOG="warn",
+            RUST_LOG="warn,tilo.state=debug",
         )
         argv = [os.path.join(REPO, "target", "debug", spec["bin"])]
         if spec["needs_doc"]:

@@ -8,7 +8,7 @@ import unittest
 from unittest import mock
 
 
-MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / "app-launch-sweep.py"
+MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / "visual/launch-sweep.py"
 SPEC = importlib.util.spec_from_file_location("app_launch_sweep", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 SWEEP = importlib.util.module_from_spec(SPEC)
@@ -203,7 +203,7 @@ class SweepCheckpointTest(unittest.TestCase):
             )
         out = root / "out"
         argv = [
-            "app-launch-sweep.py",
+            "launch-sweep.py",
             "--worktree",
             str(worktree),
             "--data-dir",

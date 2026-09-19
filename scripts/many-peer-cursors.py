@@ -52,7 +52,7 @@ def _load(name: str, filename: str):
 # for its control socket, drive the palette and take a snapshot. Reuse it
 # rather than growing a second copy that drifts.
 collab = _load("two_shell_app_collab", "two-shell-app-collab.py")
-demo_home = _load("demo_home", "demo-home.py")
+demo_home = _load("demo_home", "demo/home.py")
 
 Session = collab.Session
 APPS = collab.APPS

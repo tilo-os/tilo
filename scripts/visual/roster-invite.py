@@ -26,7 +26,7 @@ room. It launches an app in each session, walks the
 guest's pointer inside its window, and photographs the host's bar
 holding a *named* peer whose cursor is somewhere a person put it.
 
-    roster-invite-shot.py --out DIR [--with-presence]
+    scripts/visual/roster-invite.py --out DIR [--with-presence]
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ import shutil
 import sys
 import time
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPTS = pathlib.Path(REPO) / "scripts"
 
 
@@ -51,7 +51,7 @@ def _load(name: str, filename: str):
 
 
 collab = _load("two_shell_app_collab", "two-shell-app-collab.py")
-demo_home = _load("demo_home", "demo-home.py")
+demo_home = _load("demo_home", "demo/home.py")
 Session = collab.Session
 step, claim, note = collab.step, collab.claim, collab.note
 

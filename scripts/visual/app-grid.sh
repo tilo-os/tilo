@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Render every app's offscreen `--shots` frame into one labelled contact grid.
-# Drives app binaries directly; unlike `app-contact-sheet.py`, it needs no
+# Drives app binaries directly; unlike `contact-sheet.py`, it needs no
 # compositor or display.
 #
 # Requires ImageMagick (`magick`, `montage`).
 #
 # Usage:
-#   scripts/app-grid.sh [--out PATH] [--theme dark|light] [--no-build]
+#   scripts/visual/app-grid.sh [--out PATH] [--theme dark|light] [--no-build]
 #                       [--shot-timeout SECONDS]
 #
 #   --no-build   Reuse the binaries already in target/debug and any shots

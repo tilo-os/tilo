@@ -28,7 +28,7 @@ Required Fedora packages:
      ID: window-calls-extended@hseliger.eu)
 
 Usage:
-    scripts/screenshot-app.py --launch ./target/debug/shell \
+    scripts/visual/screenshot-app.py --launch ./target/debug/shell \
         --title "QuickUI App" --out /tmp/qd-shot.png
 """
 
