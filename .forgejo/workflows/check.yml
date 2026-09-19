@@ -227,6 +227,10 @@ jobs:
         id: cargo-cache
         uses: ./.forgejo/actions/restore-cargo-downloads
 
+      - name: Verify deterministic OpenH264 native source ordering
+        if: matrix.shard == 1
+        run: python3 os/tests/test_openh264_source_order.py -v
+
       - name: Prepare headless runtime and compiler cache
         run: |
           ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
