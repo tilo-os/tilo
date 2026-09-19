@@ -115,6 +115,40 @@ class FinalizationTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 finalizer.validate_request(request() | change)
 
+    def test_target_origins_require_the_matching_native_suffix(self):
+        repository = 'code.sandbox.example/qos/tilo-development'
+        for field in ('target', 'new_target'):
+            for suffix in ('installed-ca33fae89a24-aarch64-9787', 'latest', 'next-x86_64'):
+                with self.subTest(field=field, suffix=suffix), self.assertRaisesRegex(
+                        ValueError, f'invalid {field}:.*matching native architecture'):
+                    finalizer.validate_request(request() | {field: repository + ':' + suffix})
+
+    def test_native_tags_and_retained_digests_use_shared_origin_contract(self):
+        repository = 'code.sandbox.example/qos/tilo-development'
+        for architecture in ('aarch64', 'x86_64'):
+            new_target = repository + ':installed-ca33fae89a24-9787-' + architecture
+            for target in (repository + ':' + architecture,
+                           repository + ':old-' + architecture,
+                           repository + '@sha256:' + 'a' * 64,
+                           'registry.vm.test:5443/tilo-development/os:previous'):
+                value = request() | {'architecture': architecture, 'target': target,
+                                     'new_target': new_target}
+                with self.subTest(architecture=architecture, target=target):
+                    self.assertEqual(finalizer.validate_request(value), value)
+
+    def test_target_origin_rejects_aliases_and_invalid_digest_without_widening_publication(self):
+        repository = 'code.sandbox.example/qos/tilo-development'
+        for target in ('alias.example/qos/tilo-development:old-aarch64',
+                       'code.sandbox.example/qos/tilo:old-aarch64',
+                       repository + '@sha256:' + 'A' * 64,
+                       repository + '@sha256:' + 'a' * 63, None):
+            with self.subTest(target=target), self.assertRaises(ValueError):
+                finalizer.validate_request(request() | {'target': target})
+        # Publishing binds a new tag; accepting retained digest inputs must not
+        # silently widen that separate output contract.
+        with self.assertRaisesRegex(ValueError, 'publication must use'):
+            finalizer.validate_request(request() | {'new_target': repository + '@sha256:' + 'a' * 64})
+
     def test_full_stage_wiring_retains_published_artifact_before_success(self):
         q = request()
         source = self.root / 'source'

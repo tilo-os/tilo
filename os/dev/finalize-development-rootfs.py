@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import tempfile
+import hardware_profile
 import installer_overlay
 import signing_spool as spool
 
@@ -49,9 +50,17 @@ def validate_request(request):
         path = Path(request[name])
         if not path.is_absolute() or '..' in path.parts or path.resolve() != path:
             raise ValueError('canonical absolute finalization paths required')
+    if request['architecture'] not in ('aarch64', 'x86_64'):
+        raise ValueError('invalid native architecture')
     for name in ('target', 'new_target'):
-        if not isinstance(request[name], str) or not re.fullmatch(r'[a-z0-9][a-zA-Z0-9./:_-]{1,512}', request[name]):
+        if not isinstance(request[name], str) or not 2 <= len(request[name]) <= 513:
             raise ValueError('invalid intended target reference')
+        # Match the installed origin contract before launching a worker: a
+        # syntactically valid tag can still name the wrong native architecture.
+        try:
+            hardware_profile.development_target(request[name], request['architecture'])
+        except ValueError as error:
+            raise ValueError(f'invalid {name}: {error}') from error
     if (not re.fullmatch(r'code\.podesta\.ai/qos/tilo-development', request['publish_repository'])
             or not re.fullmatch(re.escape(request['publish_repository']) + r':[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', request['new_target'])):
         raise ValueError('publication must use the bound development repository with a separate staging tag')
@@ -60,8 +69,6 @@ def validate_request(request):
     for name, (low, high) in bounds.items():
         if type(request[name]) is not int or not low <= request[name] <= high:
             raise ValueError('invalid finalization execution bound')
-    if request['architecture'] not in ('aarch64', 'x86_64'):
-        raise ValueError('invalid native architecture')
     if not re.fullmatch(r'259(?:[.][0-9]+)?(?:[-+][A-Za-z0-9_.+-]+)?', request['systemd_version']):
         raise ValueError('independently pinned systemd259 version required')
     return request
