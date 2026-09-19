@@ -89,7 +89,7 @@ enforce the complete `x86_64 aarch64` matrix.
 
 ## App selection and collections
 
-Collections live in `release/app-collections.toml`. `default`, `desktop`, and
+Collections live in `dist/apps/app-collections.toml`. `default`, `desktop`, and
 `os` intentionally resolve `*` from checked-in `apps/*/tilo-app.toml` files, so a
 new app joins the normal fleet automatically. Small scenario-specific sets can
 extend another collection and exclude entries, or list apps directly.

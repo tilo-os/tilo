@@ -198,7 +198,7 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
   && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
-grep -Fq 'release/app-collections.toml' "$apps" \
+grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$apps" \
   && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" \
