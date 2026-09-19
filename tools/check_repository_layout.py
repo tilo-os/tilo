@@ -25,11 +25,18 @@ RETIRED_SOURCE_ROOTS = {
     "crates/identity/": "crates/collab/",
     "crates/packaging/hello/": "examples/packaging/hello/",
     "crates/packaging/notes-cli/": "examples/packaging/notes-cli/",
+    "crates/session/tilo-power/": "crates/system/power/",
     "crates/system/windows-vm/": "crates/windows/windows-vm/",
     "fs/": "crates/system/fs/",
+    "os/usr/lib/systemd/system/tilo-power.service": "crates/system/power/",
     "plan/": "docs/architecture/",
     "release/": "dist/",
     "shell/": "crates/session/shell/",
+    "tools/check-windows-": "tools/windows/check-",
+    "tools/gstreamer-licenses/": "tools/windows/gstreamer-licenses/",
+    "tools/install-windows-": "tools/windows/install-",
+    "tools/test-windows-": "tools/windows/test-",
+    "tools/windows-": "tools/windows/",
     "ui/": "crates/sdk/ui-core/",
 }
 

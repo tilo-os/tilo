@@ -14926,13 +14926,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-power"
-version = "0.1.0"
-dependencies = [
- "tempfile",
-]
-
-[[package]]
 name = "tilo-power-mgmt"
 version = "0.1.0"
 dependencies = [
