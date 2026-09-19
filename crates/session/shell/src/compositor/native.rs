@@ -237,6 +237,20 @@ fn cadence_wait_needed(
     pipe_ready && ((content_changed && !cadence_due) || animating)
 }
 
+/// A widget deadline is useful only when the presenter can accept the frame it
+/// will cause us to build.  Once the bounded presenter is full, retaining an
+/// already-expired animation deadline turns every calloop dispatch into an
+/// immediate return: the paint gate correctly declines the frame, but the
+/// stale deadline immediately wakes the loop again.  Retirement already pings
+/// calloop after capacity is restored, so the deadline can be omitted while
+/// back-pressured without delaying the next paint.
+fn widget_deadline_for_presenter(
+    pipe_ready: bool,
+    widget_deadline: Option<Instant>,
+) -> Option<Instant> {
+    pipe_ready.then_some(widget_deadline).flatten()
+}
+
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
     if !session_locked {
         *last_refresh = now;
@@ -7457,7 +7471,7 @@ pub fn run() {
             cadence_needed,
             frame_clock.next_deadline(),
             [
-                frame_builder.next_wake_deadline(),
+                widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
                 None,
                 lock_clock_deadline,
                 run_deadline,
@@ -7694,6 +7708,23 @@ mod tests {
             native_loop_park(now, true, cadence_needed, stale_frame, []),
             None,
             "a full presenter must sleep for its retirement wake instead of spinning on the stale frame deadline"
+        );
+    }
+
+    #[test]
+    fn full_presenter_drops_overdue_widget_deadline_instead_of_busy_spinning() {
+        let now = Instant::now();
+        let stale_widget = now - Duration::from_millis(1);
+
+        assert_eq!(
+            widget_deadline_for_presenter(false, Some(stale_widget)),
+            None,
+            "a saturated presenter must not turn an overdue animation deadline into a zero-timeout wake"
+        );
+        assert_eq!(
+            widget_deadline_for_presenter(true, Some(stale_widget)),
+            Some(stale_widget),
+            "an available presenter still needs overdue widget work immediately"
         );
     }
 
