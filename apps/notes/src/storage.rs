@@ -71,13 +71,23 @@ pub const PAGES_DIR: &str = "pages";
 /// metadata lives.
 const WORKSPACE_TEXT_KEY: &str = "workspace_json";
 
-/// Resolve the default workspace root: `$HOME/notes` (`dirs::home_dir()`
-/// falls back to `$HOME` env). Returns `None` only if the home cannot
-/// be located, which would only happen in extreme container minimal
-/// setups; the binary handles that by printing a friendly error.
-pub fn default_root() -> Option<PathBuf> {
-    let home = dirs::home_dir().or_else(|| std::env::var_os("HOME").map(PathBuf::from))?;
-    Some(home.join("notes"))
+/// Resolve `TILO_NOTES_ROOT`, or the native home directory's `notes` folder.
+/// Returns `None` only when no home directory can be located.
+///
+/// # Errors
+/// An explicit override must be nonempty and absolute. Invalid configuration
+/// never falls back to another notebook.
+pub fn default_root() -> Result<Option<PathBuf>, String> {
+    if let Some(value) = std::env::var_os("TILO_NOTES_ROOT") {
+        let root = PathBuf::from(value);
+        if root.as_os_str().is_empty() || !root.is_absolute() {
+            return Err("TILO_NOTES_ROOT must be a nonempty absolute directory path".into());
+        }
+        return Ok(Some(root));
+    }
+    Ok(dirs::home_dir()
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .map(|home| home.join("notes")))
 }
 
 /// Ensure the workspace root + the `pages/` subdirectory exist. Idempotent.
@@ -615,6 +625,55 @@ fn saver_loop(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn configured_root_is_used_by_production_spawn_and_invalid_values_fail() {
+        const CHILD: &str = "TILO_NOTES_ROOT_TEST_CHILD";
+        if let Ok(mode) = std::env::var(CHILD) {
+            if mode == "valid" {
+                let root = PathBuf::from(std::env::var_os("TILO_NOTES_ROOT").unwrap());
+                ensure_layout(&root).unwrap();
+                let mut workspace = Workspace::new();
+                let page = workspace.create_page(None);
+                workspace.rename(page, "Isolated notebook");
+                workspace.set_selected(Some(page));
+                save_workspace(&root, &workspace).unwrap();
+                std::fs::write(page_file_path(&root, page), "Private fixture body").unwrap();
+                let app = crate::NotesApp::spawn_default().unwrap();
+                assert_eq!(app.selected_for_test(), Some(page));
+                assert_eq!(app.editor_text_for_test(), "Private fixture body");
+            } else {
+                assert!(default_root().is_err());
+                assert!(crate::NotesApp::spawn_default().is_err());
+            }
+            return;
+        }
+        let temp = TempDir::new().unwrap();
+        for (mode, value) in [
+            ("valid", temp.path().join("Notebook ü")),
+            ("empty", PathBuf::new()),
+            ("relative", PathBuf::from("relative-notebook")),
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "storage::tests::configured_root_is_used_by_production_spawn_and_invalid_values_fail",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .env("TILO_NOTES_ROOT", value)
+                .current_dir(temp.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert!(!temp.path().join("relative-notebook").exists());
+    }
 
     #[test]
     fn encode_decode_roundtrip() {

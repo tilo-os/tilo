@@ -79,6 +79,7 @@ const SHOT_SCENARIOS: &[&str] = &[
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.tilo.notes", live_root)
+            .max_positionals(1)
             .open_state_with_args(open_state)
             .shot_handler(render_shot)
             .scenarios(SHOT_SCENARIOS)
@@ -94,9 +95,13 @@ fn peer_id() -> &'static str {
     })
 }
 
-fn live_root(_args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
+fn live_root(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
     let mut app = NotesApp::spawn_default().map_err(LaunchError::Operation)?;
     app.set_local_author(Some(peer_id().to_owned()));
+    if let Some(source) = args.positionals().first() {
+        app.queue_launch_markdown(source)
+            .map_err(LaunchError::Operation)?;
+    }
     Ok(Box::new(app))
 }
 
