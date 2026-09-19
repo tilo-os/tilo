@@ -1,0 +1,448 @@
+{
+  "schema": 1,
+  "collected_at": "2026-09-19T00:53:00.160951+00:00",
+  "repo": "qos/qos",
+  "main": "5ade281b038a0e4f402fd80b6220cb4de7bd0d8f",
+  "merge_authorized": false,
+  "repository": {
+    "id": 23,
+    "private": true,
+    "default_branch": "main",
+    "allow_fast_forward_only_merge": true,
+    "default_merge_style": "merge",
+    "has_actions": true
+  },
+  "branch_protections": [],
+  "grants": {
+    "qos-integrator": {
+      "permission": "none",
+      "id": 81,
+      "login": "qos-integrator",
+      "is_admin": false,
+      "active": false
+    },
+    "claude": {
+      "permission": "owner",
+      "id": 5,
+      "login": "claude",
+      "is_admin": false,
+      "active": false
+    }
+  },
+  "pull_requests": [
+    {
+      "number": 61,
+      "title": "Add native standalone History and checked headless persistence",
+      "head": "42baa6039ba662365b9e909542d8de1f38bb1f41",
+      "base_branch": "main",
+      "draft": false,
+      "author": "xemmerling",
+      "mergeable": true,
+      "runs": [
+        {
+          "id": 22929,
+          "workflow_id": "tilo-relay.yaml",
+          "event": "pull_request",
+          "status": "waiting",
+          "commit_sha": "42baa6039ba662365b9e909542d8de1f38bb1f41"
+        },
+        {
+          "id": 22928,
+          "workflow_id": "release-apps.yml",
+          "event": "pull_request",
+          "status": "blocked",
+          "commit_sha": "42baa6039ba662365b9e909542d8de1f38bb1f41"
+        },
+        {
+          "id": 22927,
+          "workflow_id": "package-desktop.yml",
+          "event": "pull_request",
+          "status": "running",
+          "commit_sha": "42baa6039ba662365b9e909542d8de1f38bb1f41"
+        },
+        {
+          "id": 22926,
+          "workflow_id": "lint.yml",
+          "event": "pull_request",
+          "status": "failure",
+          "commit_sha": "42baa6039ba662365b9e909542d8de1f38bb1f41"
+        },
+        {
+          "id": 22925,
+          "workflow_id": "legacy-app-e2e.yml",
+          "event": "pull_request",
+          "status": "running",
+          "commit_sha": "42baa6039ba662365b9e909542d8de1f38bb1f41"
+        },
+        {
+          "id": 22924,
+          "workflow_id": "fs-fuse.yml",
+          "event": "pull_request",
+          "status": "waiting",
+          "commit_sha": "42baa6039ba662365b9e909542d8de1f38bb1f41"
+        },
+        {
+          "id": 22923,
+          "workflow_id": "check.yml",
+          "event": "pull_request",
+          "status": "running",
+          "commit_sha": "42baa6039ba662365b9e909542d8de1f38bb1f41"
+        },
+        {
+          "id": 22922,
+          "workflow_id": "lint.yml",
+          "event": "push",
+          "status": "cancelled",
+          "commit_sha": "42baa6039ba662365b9e909542d8de1f38bb1f41"
+        }
+      ],
+      "reviews": [],
+      "audit": {
+        "observed_ready": false,
+        "errors": [
+          "no explicit operator policy: matrix completeness and trusted harness unqualified"
+        ]
+      }
+    },
+    {
+      "number": 38,
+      "title": "Fix host-session input, app launch, and durable window close",
+      "head": "3971d4393d219918e07394ca7d3ae197dac7bb3e",
+      "base_branch": "main",
+      "draft": false,
+      "author": "qwolff",
+      "mergeable": false,
+      "runs": [
+        {
+          "id": 16516,
+          "workflow_id": "release-apps.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e"
+        },
+        {
+          "id": 16515,
+          "workflow_id": "package-desktop.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e"
+        },
+        {
+          "id": 16514,
+          "workflow_id": "lint.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e"
+        },
+        {
+          "id": 16513,
+          "workflow_id": "legacy-app-e2e.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e"
+        },
+        {
+          "id": 16512,
+          "workflow_id": "fs-fuse.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e"
+        },
+        {
+          "id": 16511,
+          "workflow_id": "check.yml",
+          "event": "pull_request",
+          "status": "failure",
+          "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e"
+        },
+        {
+          "id": 16510,
+          "workflow_id": "lint.yml",
+          "event": "push",
+          "status": "cancelled",
+          "commit_sha": "3971d4393d219918e07394ca7d3ae197dac7bb3e"
+        }
+      ],
+      "reviews": [],
+      "audit": {
+        "observed_ready": false,
+        "errors": [
+          "no explicit operator policy: matrix completeness and trusted harness unqualified"
+        ]
+      }
+    },
+    {
+      "number": 36,
+      "title": "CI: release only changed components without scheduler deadlocks",
+      "head": "f253957b7d100690a1399d9ed7b16342d39984ac",
+      "base_branch": "main",
+      "draft": false,
+      "author": "qwolff",
+      "mergeable": false,
+      "runs": [
+        {
+          "id": 16440,
+          "workflow_id": "release-apps.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "f253957b7d100690a1399d9ed7b16342d39984ac"
+        },
+        {
+          "id": 16439,
+          "workflow_id": "package-desktop.yml",
+          "event": "pull_request",
+          "status": "failure",
+          "commit_sha": "f253957b7d100690a1399d9ed7b16342d39984ac"
+        },
+        {
+          "id": 16438,
+          "workflow_id": "lint.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "f253957b7d100690a1399d9ed7b16342d39984ac"
+        },
+        {
+          "id": 16437,
+          "workflow_id": "fs-fuse.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "f253957b7d100690a1399d9ed7b16342d39984ac"
+        },
+        {
+          "id": 16436,
+          "workflow_id": "lint.yml",
+          "event": "push",
+          "status": "cancelled",
+          "commit_sha": "f253957b7d100690a1399d9ed7b16342d39984ac"
+        },
+        {
+          "id": 16435,
+          "workflow_id": "check.yml",
+          "event": "pull_request",
+          "status": "failure",
+          "commit_sha": "f253957b7d100690a1399d9ed7b16342d39984ac"
+        },
+        {
+          "id": 16434,
+          "workflow_id": "build-image.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "f253957b7d100690a1399d9ed7b16342d39984ac"
+        }
+      ],
+      "reviews": [],
+      "audit": {
+        "observed_ready": false,
+        "errors": [
+          "no explicit operator policy: matrix completeness and trusted harness unqualified"
+        ]
+      }
+    },
+    {
+      "number": 34,
+      "title": "CI: release only changed components",
+      "head": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+      "base_branch": "main",
+      "draft": false,
+      "author": "qwolff",
+      "mergeable": false,
+      "runs": [
+        {
+          "id": 16421,
+          "workflow_id": "release-apps.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16420,
+          "workflow_id": "package-desktop.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16419,
+          "workflow_id": "lint.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16418,
+          "workflow_id": "fs-fuse.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16417,
+          "workflow_id": "check.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16416,
+          "workflow_id": "build-image.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16413,
+          "workflow_id": "build-image.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16412,
+          "workflow_id": "package-desktop.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16411,
+          "workflow_id": "release-apps.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16410,
+          "workflow_id": "fs-fuse.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16409,
+          "workflow_id": "lint.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16408,
+          "workflow_id": "check.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        }
+      ],
+      "reviews": [],
+      "audit": {
+        "observed_ready": false,
+        "errors": [
+          "no explicit operator policy: matrix completeness and trusted harness unqualified"
+        ]
+      }
+    },
+    {
+      "number": 32,
+      "title": "CI: release only changed components",
+      "head": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+      "base_branch": "main",
+      "draft": false,
+      "author": "qwolff",
+      "mergeable": false,
+      "runs": [
+        {
+          "id": 16421,
+          "workflow_id": "release-apps.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16420,
+          "workflow_id": "package-desktop.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16419,
+          "workflow_id": "lint.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16418,
+          "workflow_id": "fs-fuse.yml",
+          "event": "pull_request",
+          "status": "success",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16417,
+          "workflow_id": "check.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16416,
+          "workflow_id": "build-image.yml",
+          "event": "pull_request",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16413,
+          "workflow_id": "build-image.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16412,
+          "workflow_id": "package-desktop.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16411,
+          "workflow_id": "release-apps.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16410,
+          "workflow_id": "fs-fuse.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16409,
+          "workflow_id": "lint.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        },
+        {
+          "id": 16408,
+          "workflow_id": "check.yml",
+          "event": "",
+          "status": "cancelled",
+          "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12"
+        }
+      ],
+      "reviews": [],
+      "audit": {
+        "observed_ready": false,
+        "errors": [
+          "no explicit operator policy: matrix completeness and trusted harness unqualified"
+        ]
+      }
+    }
+  ],
+  "main_after": "5ade281b038a0e4f402fd80b6220cb4de7bd0d8f",
+  "stable_main": true
+}
