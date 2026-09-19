@@ -98,6 +98,51 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(result['artifacts'], {'x86_64': 400})
         self.assertEqual(self.api.job_reads, 2)
 
+    def test_payload_scratch_is_released_between_architectures(self):
+        receipts, archives, artifacts, markers = {}, {}, [], []
+        for number, architecture in enumerate(('x86_64', 'aarch64'), 400):
+            receipt = copy.deepcopy(self.receipt)
+            receipt['architecture'] = architecture
+            for app in receipt['packages']:
+                app['file'] = app['file'].replace('x86_64', architecture)
+                app['isa'] = 'v3' if architecture == 'x86_64' else 'armv8-a'
+            raw = json.dumps(receipt).encode()
+            digest = hashlib.sha256(raw).hexdigest()
+            zipped = io.BytesIO()
+            with zipfile.ZipFile(zipped, 'w') as archive:
+                archive.writestr(f'tilo-apps-{architecture}.tar.gz', self.archive)
+                archive.writestr('final-publication-receipt.json', raw)
+                archive.writestr('assembly-provenance.json', '{}')
+            receipts[architecture], archives[number] = receipt, zipped.getvalue()
+            artifacts.append(dict(self.artifact, id=number, name=f'final-app-collection-{architecture}',
+                                  size_in_bytes=len(archives[number])))
+            markers.append(f"TILO_COORDINATOR_FINAL {self.intent['id']} 2 {architecture} {digest} "
+                           f"{receipt['collection']['sha256']} {len(self.archive)}\n")
+        self.intent['desired']['architectures'] = list(receipts)
+        self.run['event_payload'] = json.dumps({'ref': self.run['commit_sha'], 'inputs': accept.dispatch_inputs(self.intent)})
+        self.log = ''.join(markers).encode()
+        call = self.api.call
+        self.api.call = lambda path: copy.deepcopy(artifacts) if '/artifacts?' in path else call(path)
+        previous = []
+
+        def download(path, output):
+            if previous:
+                self.assertFalse(previous[-1].exists(), 'previous payload retained during next download')
+            output.write_bytes(archives[int(path.split('/')[-2])])
+
+        def replay(tree, *args):
+            architecture = args[-1]
+            archive = tree / f'tilo-apps-{architecture}.tar.gz'
+            self.assertTrue(archive.samefile(tree.parent / 'payload' / archive.name))
+            previous.append(tree.parent)
+            return copy.deepcopy(receipts[architecture])
+
+        self.callback.read.get = download
+        result = self.invoke(replay)
+        self.assertEqual(set(result['receipts']), set(receipts))
+        self.assertEqual(len(previous), 2)
+        self.assertTrue(all(not path.exists() for path in previous))
+
     def test_stale_attempt_or_log_is_rejected(self):
         self.stale = True
         with self.assertRaisesRegex(ValueError, 'changed during'):
