@@ -21283,9 +21283,10 @@ mod empty_workspace_tests {
                 "Tasks",
                 "Plan a meeting",
                 "Invite people",
-                "Catch up"
+                "Catch up",
+                "Open an app"
             ],
-            "first use presents the actual collaboration jobs, not a generic app picker"
+            "first use presents collaboration jobs plus the explicit app escape hatch"
         );
         let rect = launchpad_rect(host.content.as_ref()).expect("launchpad is mounted");
         assert!(
@@ -22267,7 +22268,12 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
+        let settings = tempfile::tempdir().expect("isolated settings directory");
+        let old_config = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: the process_env serial group excludes concurrent env users.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
         let (mut host, _) = host_with_chrome();
         let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let capture = std::rc::Rc::clone(&published);
@@ -22296,12 +22302,22 @@ mod palette_dispatch_tests {
             &automerge::ROOT,
             &mut handled,
         ));
-        assert!(host.pump_presence_requests());
+        assert!(
+            host.pump_presence_requests(),
+            "the next production update applies the queued semantic status request"
+        );
         assert_eq!(host.local_status.as_deref(), Some("Preparing Q2 review"));
         assert_eq!(
             published.borrow().as_slice(),
             &[Some("Preparing Q2 review".into())]
         );
+        // SAFETY: restore the serialised process environment.
+        unsafe {
+            match old_config {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
     }
 
     #[test]
@@ -26521,6 +26537,8 @@ mod tests {
             let mut chrome = h.chrome.borrow_mut();
             chrome
                 .tree_mut()
+                .active_workspace_mut()
+                .expect("fixture has an active workspace")
                 .collaborators
                 .push(crate::shell::state::Collaborator::new("ada", "Ada").with_role("editor"));
             chrome.overlays.collaborators = true;
