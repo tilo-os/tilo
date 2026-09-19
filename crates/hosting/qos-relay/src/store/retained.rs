@@ -62,6 +62,59 @@ fn checkpoint_key(bytes: &[u8], workspace: u64) -> Option<blake3::Hash> {
     Some(hash.finalize())
 }
 
+/// Frame the pinned Automerge chunk format only; Automerge itself validates
+/// checksums, columns, operations and document heads. Unknown future formats
+/// fail closed. The length must be canonical ULEB128 with checked arithmetic.
+fn first_chunk(bytes: &[u8]) -> Option<(&[u8], &[u8], u8)> {
+    if !bytes.starts_with(&[0x85, 0x6f, 0x4a, 0x83]) {
+        return None;
+    }
+    let kind = *bytes.get(8)?;
+    if kind > 3 {
+        return None;
+    }
+    let mut header_len = 9usize;
+    let mut data_len = 0usize;
+    let mut shift = 0u32;
+    loop {
+        let byte = *bytes.get(header_len)?;
+        header_len = header_len.checked_add(1)?;
+        let low = usize::from(byte & 0x7f);
+        data_len = data_len.checked_add(low.checked_mul(1usize.checked_shl(shift)?)?)?;
+        if byte & 0x80 == 0 {
+            if shift != 0 && low == 0 {
+                return None;
+            }
+            break;
+        }
+        shift = shift.checked_add(7)?;
+    }
+    let (chunk, rest) = bytes.split_at_checked(header_len.checked_add(data_len)?)?;
+    Some((chunk, rest, kind))
+}
+
+/// Every document chunk must be reconstructed in isolation, otherwise the
+/// loader may skip an appended document whose declared heads are already known.
+/// Valid incremental changes/bundles may lack their dependencies in isolation;
+/// the later containment check resolves those against the candidate snapshot.
+fn independently_valid_chunks(mut bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    while !bytes.is_empty() {
+        let Some((chunk, rest, kind)) = first_chunk(bytes) else {
+            return false;
+        };
+        match automerge::Automerge::load(chunk) {
+            Ok(_) => {}
+            Err(automerge::AutomergeError::MissingDeps) if kind != 0 => {}
+            Err(_) => return false,
+        }
+        bytes = rest;
+    }
+    true
+}
+
 /// Only complete, strictly decoded raw Automerge snapshots prove coverage.
 /// In particular `load_incremental` is unsuitable here: it accepts partial
 /// input, so unchanged heads after that operation can hide malformed data.
@@ -79,6 +132,9 @@ fn covers(checkpoint: &[u8], prior: &[u8], workspace: u64) -> bool {
         | CoeditPayload::RetainedDelta { channel, body } => (channel, body),
     };
     if author != old_author || channel != old_channel || body.is_empty() || old_body.is_empty() {
+        return false;
+    }
+    if !independently_valid_chunks(&body) || !independently_valid_chunks(&old_body) {
         return false;
     }
     let Ok(document) = automerge::Automerge::load(&body) else {
@@ -365,6 +421,133 @@ mod tests {
             signature: [0; 64],
         })
         .unwrap()
+    }
+
+    // Two one-change snapshots from the review probe: the malformed document
+    // keeps its unrelated operations but declares the candidate's head. Its
+    // four-byte SHA-256 chunk checksum was recomputed after replacing that head.
+    // Fixed bytes avoid a test-only hashing dependency or an external fixture.
+    fn inconsistent_heads_fixture() -> (Vec<u8>, Vec<u8>) {
+        (hex::decode("856f4a83c3fea776007601100f75efc4a706295a6e71caea86e1a64e017a07c67c94f7ee52107ad9ad2e5ea2b79cc169c7a806544ae3fbd291f52ea14d0601020302130223024002560208150b2102230234014202560257018001027f007f017f017f007f007f077f0963616e6469646174657f007f01017f017f14017f0000").unwrap(), hex::decode("856f4a8360dd956a00760110fb33a1cfd10ffd7d878aa85a2d64767c017a07c67c94f7ee52107ad9ad2e5ea2b79cc169c7a806544ae3fbd291f52ea14d0601020302130223024002560208150b2102230234014202560257018001027f007f017f017f007f007f077f09756e636f76657265647f007f01017f017f14027f0000").unwrap())
+    }
+
+    #[test]
+    fn chunk_framing_rejects_unknown_truncated_overflow_and_noncanonical_lengths() {
+        let (valid, _) = inconsistent_heads_fixture();
+        assert!(first_chunk(&valid).is_some());
+        let mut unknown = valid.clone();
+        unknown[8] = 4;
+        let mut noncanonical = valid.clone();
+        assert!(noncanonical[9] < 128);
+        noncanonical[9] |= 0x80;
+        noncanonical.insert(10, 0);
+        let mut overflow = valid[..9].to_vec();
+        overflow.extend_from_slice(&[0xff; 10]);
+        let mut unterminated = valid[..9].to_vec();
+        unterminated.push(0x80);
+        let mut wrong_magic = valid.clone();
+        wrong_magic[0] = 0;
+        for invalid in [
+            unknown,
+            noncanonical,
+            overflow,
+            unterminated,
+            wrong_magic,
+            valid[..8].to_vec(),
+            valid[..valid.len() - 1].to_vec(),
+        ] {
+            assert!(first_chunk(&invalid).is_none());
+        }
+        let mut trailing = valid;
+        trailing.push(0);
+        assert!(
+            !independently_valid_chunks(&trailing),
+            "all bytes must belong to independently valid chunks"
+        );
+    }
+
+    #[test]
+    fn coverage_accepts_document_change_compressed_change_and_bundle_chunks() {
+        use automerge::transaction::Transactable;
+        let mut document = automerge::AutoCommit::new();
+        document.put(automerge::ROOT, "anchor", 1).unwrap();
+        let baseline = frame(true, document.save(), 1);
+        document
+            .put(automerge::ROOT, "large", "compressible".repeat(1024))
+            .unwrap();
+        let mut change = document.get_last_local_change().unwrap();
+        let raw = change.raw_bytes().to_vec();
+        let compressed = change.bytes().to_vec();
+        let bundle = document.bundle([change.hash()]).unwrap().bytes().to_vec();
+        let snapshot = document.save();
+        let checkpoint = frame(true, snapshot.clone(), 3);
+        for (kind, body) in [(0, snapshot), (1, raw), (2, compressed), (3, bundle)] {
+            assert_eq!(
+                body[8], kind,
+                "fixture must exercise the advertised chunk kind"
+            );
+            if kind != 0 {
+                assert!(
+                    matches!(
+                        automerge::Automerge::load(&body),
+                        Err(automerge::AutomergeError::MissingDeps)
+                    ),
+                    "incremental fixture must genuinely require baseline dependencies"
+                );
+            }
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            store.retain_checkpoint(&[9; 32], &baseline).unwrap();
+            store
+                .retain_delta(&[9; 32], 2, &frame(false, body, 2))
+                .unwrap();
+            store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            assert_eq!(store.load_retained().unwrap(), vec![checkpoint.clone()]);
+        }
+    }
+
+    #[test]
+    fn malformed_prior_document_is_not_covered_even_after_a_valid_prefix() {
+        let (candidate, malformed) = inconsistent_heads_fixture();
+        assert!(automerge::Automerge::load(&candidate).is_ok());
+        assert!(automerge::Automerge::load(&malformed).is_err());
+        for valid_prefix in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let mut prior = if valid_prefix {
+                candidate.clone()
+            } else {
+                Vec::new()
+            };
+            prior.extend_from_slice(&malformed);
+            let prior_frame = frame(false, prior, 1);
+            store.retain_delta(&[9; 32], 1, &prior_frame).unwrap();
+            let checkpoint = frame(true, candidate.clone(), 2);
+            store.retain_checkpoint(&[9; 32], &checkpoint).unwrap();
+            let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+            let replay = store.load_retained().unwrap();
+            assert!(
+                replay.contains(&prior_frame),
+                "malformed prior was collected through known-head fast path (prefix={valid_prefix})"
+            );
+            assert!(replay.contains(&checkpoint));
+        }
+    }
+
+    #[test]
+    fn malformed_candidate_suffix_cannot_be_omitted_as_a_covered_retry() {
+        let (candidate, malformed) = inconsistent_heads_fixture();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let first = frame(true, candidate.clone(), 1);
+        store.retain_checkpoint(&[9; 32], &first).unwrap();
+        let mut combined = candidate;
+        combined.extend_from_slice(&malformed);
+        let unknown = frame(true, combined, 2);
+        store.retain_checkpoint(&[9; 32], &unknown).unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        assert_eq!(store.load_retained().unwrap(), vec![first, unknown]);
     }
 
     #[test]
