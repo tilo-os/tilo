@@ -23,8 +23,8 @@ stage=$work/stage
 
 main=$work/tilo-session
 dev=$work/tilo-session-devel
-mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/doc/tilo-session}
-install -pm 0755 "$stage/bin/tilo-shell" "$stage/bin/tilo-launcher" "$main/usr/bin/"
+mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/doc/tilo-session}
+install -pm 0755 "$stage/bin/tilo-shell" "$stage/bin/tilo-launcher" "$stage/bin/tilo-import-folders" "$main/usr/bin/"
 install -pm 0755 "$stage/libexec/tilo-unlock-helper" "$stage/libexec/tilo-session" \
     "$stage/libexec/tilo-session-runner" "$stage/libexec/tilo-flight-recorder" \
     "$main/usr/libexec/"
@@ -34,6 +34,7 @@ install -pm 0644 "$stage/portal/tilo.portal" "$main/usr/share/xdg-desktop-portal
 install -pm 0644 "$stage/portal/tilo-portals.conf" "$main/usr/share/xdg-desktop-portal/"
 install -pm 0644 "$stage/systemd-user/tilo-graphical-session.target" "$main/usr/lib/systemd/user/"
 install -pm 0644 "$stage/license/LICENSE" "$main/usr/share/doc/tilo-session/copyright"
+install -pm 0644 "$stage/applications/tilo-import-folders.desktop" "$main/usr/share/applications/"
 
 mkdir -p "$dev"/{DEBIAN,usr/libexec,usr/share/wayland-sessions}
 install -pm 0755 "$stage/libexec/tilo-session-dev" "$dev/usr/libexec/"
@@ -56,6 +57,7 @@ shlib_line=$(
     dpkg-shlibdeps -O \
         -e"$main/usr/bin/tilo-shell" \
         -e"$main/usr/bin/tilo-launcher" \
+        -e"$main/usr/bin/tilo-import-folders" \
         -e"$main/usr/libexec/tilo-unlock-helper"
 )
 shlib_deps=${shlib_line#shlibs:Depends=}

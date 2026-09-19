@@ -41,9 +41,11 @@ rustPlatform.buildRustPackage rec {
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
     "-p" "shell"
+    "-p" "imager"
     "--bin" "tilo-launcher"
     "--bin" "tilo-unlock-helper"
     "--bin" "shell"
+    "--bin" "imager"
     "--no-default-features"
   ];
   cargoTestFlags = cargoBuildFlags;
@@ -68,6 +70,7 @@ rustPlatform.buildRustPackage rec {
   # The FHS packages use /usr/libexec. Nix must seal the immutable store path
   # into the compositor or locking the session could never invoke PAM.
   preBuild = ''
+    export QOS_DESKTOP_TRUSTED_SHELL_PATH="$out/bin/.tilo-shell-wrapped"
     export TILO_UNLOCK_HELPER_PATH="$out/libexec/tilo-unlock-helper"
   '';
 
@@ -89,6 +92,9 @@ rustPlatform.buildRustPackage rec {
     install -Dm644 "$p/portal/tilo-portals.conf" "$out/share/xdg-desktop-portal/tilo-portals.conf"
     install -Dm644 "$p/systemd-user/tilo-graphical-session.target" "$out/share/systemd/user/tilo-graphical-session.target"
     install -Dm644 "$p/license/LICENSE" "$out/share/licenses/tilo-session/LICENSE"
+    install -Dm755 "$p/bin/tilo-import-folders" "$out/bin/tilo-import-folders"
+    install -Dm644 "$p/applications/tilo-import-folders.desktop" "$out/share/applications/tilo-import-folders.desktop"
+    substituteInPlace "$out/share/applications/tilo-import-folders.desktop" --replace-fail "/usr/bin/tilo-import-folders" "$out/bin/tilo-import-folders"
 
     # Store paths replace FHS paths in the wrapper and session entry.
     substituteInPlace "$out/libexec/tilo-session" \

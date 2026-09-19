@@ -13,7 +13,7 @@ stage=$2
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
-for bin in shell tilo-launcher tilo-unlock-helper; do
+for bin in shell tilo-launcher tilo-unlock-helper imager; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
 done
 
@@ -23,7 +23,7 @@ if LC_ALL=C grep -q -a -F -e "$marker" "$bin_dir/shell"; then
     exit 1
 fi
 
-mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,portal,systemd-user,license}
+mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,systemd-user,license}
 install -pm 0755 "$bin_dir/shell"             "$stage/bin/tilo-shell"
 install -pm 0755 "$bin_dir/tilo-launcher"      "$stage/bin/tilo-launcher"
 install -pm 0755 "$bin_dir/tilo-unlock-helper" "$stage/libexec/tilo-unlock-helper"
@@ -36,6 +36,8 @@ install -pm 0644 "$repo_root/dist/session/tilo-dev.desktop" "$stage/wayland-sess
 install -pm 0644 "$repo_root/os/etc/pam.d/tilo-unlock"      "$stage/pam/tilo-unlock"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
                  "$stage/systemd-user/tilo-graphical-session.target"
+install -pm 0755 "$bin_dir/imager" "$stage/bin/tilo-import-folders"
+install -pm 0644 "$repo_root/dist/session/tilo-import-folders.desktop" "$stage/applications/tilo-import-folders.desktop"
 
 portal_src=$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal
 install -pm 0644 "$portal_src" "$stage/portal/tilo.portal"

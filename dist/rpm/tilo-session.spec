@@ -182,6 +182,8 @@ makes before it execs anything, and DEVELOPMENT.md for the threat model.
 %install
 install -Dpm 0755 bin/tilo-shell             %{buildroot}%{_bindir}/tilo-shell
 install -Dpm 0755 bin/tilo-launcher          %{buildroot}%{_bindir}/tilo-launcher
+install -Dpm 0755 bin/tilo-import-folders %{buildroot}%{_bindir}/tilo-import-folders
+install -Dpm 0644 applications/tilo-import-folders.desktop %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 # /usr/libexec, not on $PATH: only the compositor invokes it, and the path is
 # compiled into the compositor as lock_auth::DEFAULT_UNLOCK_HELPER. Installing
 # it anywhere else means a session that can be locked and never unlocked.
@@ -237,6 +239,9 @@ install -Dpm 0644 wayland-sessions/tilo-dev.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo-dev.desktop
 
 %check
+test -x %{buildroot}%{_bindir}/tilo-import-folders
+grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
+%{buildroot}%{_bindir}/tilo-import-folders --tilo-package-smoke
 # A session entry that names a binary the package does not install is the
 # failure mode this whole package exists to avoid, so prove the two agree
 # rather than trusting the spec to have been edited consistently.
@@ -290,6 +295,8 @@ done
 %files
 %{_bindir}/tilo-shell
 %{_bindir}/tilo-launcher
+%{_bindir}/tilo-import-folders
+%{_datadir}/applications/tilo-import-folders.desktop
 %{_libexecdir}/tilo-unlock-helper
 %{_libexecdir}/tilo-session
 %{_libexecdir}/tilo-session-runner

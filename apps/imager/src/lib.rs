@@ -69,7 +69,63 @@ pub mod probe;
 pub mod profile;
 pub mod profile_cli;
 pub mod release;
+pub mod setup;
 pub mod write;
+
+/// The imager's spacing rhythm (HIG §7b): the same relationship always gets
+/// the same step, and every step is a token of `Spacing::BASE` — the
+/// compile-time reference the wizard's immediate-mode hit layout and the
+/// setup pages' retained compositions both need, because neither receives a
+/// `Theme` when its geometry is declared. Declared once here; every view
+/// imports the steps it uses instead of restating them.
+pub(crate) mod rhythm {
+    use ui::tokens::Spacing;
+    const S: Spacing = Spacing::BASE;
+    /// A label and its control; an icon and its label; two lines of one block.
+    pub const LABEL: f64 = S.s1 as f64;
+    /// Related rows that read as one group: a title and its explanation, a
+    /// section caption and its list, help copy under a field.
+    pub const RELATED: f64 = S.s2 as f64;
+    /// Siblings of equal weight: list rows, cards in a list, the two footer
+    /// actions, a card and the banner that follows it.
+    pub const SIBLING: f64 = S.s3 as f64;
+    /// Section padding: the inset inside a card or row; the compact page gutter.
+    pub const SECTION: f64 = S.s4 as f64;
+    /// Before the next group; the page gutter.
+    pub const GROUP: f64 = S.s6 as f64;
+    /// Between major regions: the step rail and the step body, the progress
+    /// ring and its bars, the hero disc and its headline.
+    pub const REGION: f64 = S.s8 as f64;
+    /// The Done hero's stand-off from the content top.
+    pub const HERO: f64 = S.s16 as f64;
+
+    /// The same steps as `f32`, for the retained setup pages whose taffy
+    /// styles and `Column` / `Row` gaps take `f32`.
+    pub mod px {
+        /// A title and its explanation.
+        pub const RELATED: f32 = super::RELATED as f32;
+        /// Siblings: the cards of one section, the page's own bands.
+        pub const SIBLING: f32 = super::SIBLING as f32;
+        /// Before the next group of the page; between the saved folders of
+        /// one card.
+        pub const GROUP: f32 = super::GROUP as f32;
+        /// The page gutter, all four sides.
+        pub const PAGE_GUTTER: f32 = super::GROUP as f32;
+        /// The scrollbar's footprint beside the content.
+        pub const SCROLLBAR_GUTTER: f32 = super::SECTION as f32;
+        /// A sticky footer's clean edge inside the scroll viewport.
+        pub const FOOTER_INSET: f32 = super::LABEL as f32;
+    }
+}
+
+/// Below a 520 px content width — scaled by the text scale, so a 1000 px
+/// column at 2× (the room of a 500 px one) counts as compact too — the
+/// wizard's steps and the customization panel take their compact form. One
+/// decision for the chrome, the heading floor and the form's column split, so
+/// no width exists where one is compact and the other is not.
+pub(crate) fn compact_content(width: f64, text_scale: f64) -> bool {
+    width < 520.0 * text_scale
+}
 
 pub use app::ImagerApp;
 pub use customize::CustomizePanel;
@@ -88,6 +144,12 @@ pub fn app_root() -> Box<dyn Widget> {
 /// Build the same widget as [`app_root`], with only peer-local shot state
 /// staged outside the collaborative document.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    if scenario.starts_with("import-") {
+        return Box::new(setup::import_view::ImportApp::for_shot(scenario));
+    }
+    if scenario.starts_with("setup-") {
+        return Box::new(setup::view::SetupApp::for_shot(scenario));
+    }
     let mut app = ImagerApp::new();
     app.seed_local_shot_state(scenario);
     if scenario == "confirm" {
@@ -115,6 +177,23 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "progress",
     "done",
     "done-failed",
+    "setup-experience-checking",
+    "setup-experience",
+    "setup-experience-failed",
+    "setup-folders-copy",
+    "setup-folders-connected",
+    "setup-folders-later",
+    "setup-review",
+    "setup-desktop-installed",
+    "import-first-login",
+    "import-first-login-waiting",
+    "import-first-login-later",
+    "import-progress",
+    "import-retry-progress",
+    "import-partial",
+    "import-conflict",
+    "import-complete",
+    "import-issue-pages",
 ];
 
 /// Pose the document for one named `--shots` scenario. Sample content is seeded

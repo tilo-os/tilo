@@ -60,8 +60,8 @@ fi
 
 karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
-   && grep -Fq 'append root=tilo-auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
-   && grep -Fq 'append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && python3 -B "$repo_root/os/tests/test_installer_target_cmdline.py" \
+   && python3 -B "$repo_root/os/tests/test_installer_target_boot_digest.py" \
    && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \

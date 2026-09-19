@@ -39,6 +39,15 @@ python3 "$repo_root/dist/session/tests/flight-recorder.py"
 "$repo_root/dist/rpm/test-app-store-stage.sh"
 "$repo_root/dist/rpm/test-build-target-dir.sh"
 
+# A production import entry must name an installed native executable. This
+# fails before the import payload is added, and must remain in every builder.
+for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; do
+    grep -Eq 'cargo build .*-p imager.*--bin imager' "$repo_root/$builder" || {
+        echo "$builder does not build the delivered folder import UI" >&2
+        exit 1
+    }
+done
+
 # Host packages ship only the compositor from the shell crate. Keep every FHS
 # builder explicit so adding another developer binary to that crate cannot
 # multiply release build time and disk use again.
@@ -62,11 +71,12 @@ if grep -Fq -- "-name 'tilo-session*.rpm'" "$overlay_helper"; then
 fi
 
 fhs=$work/fhs
-mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/licenses/tilo-session}
-for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" \
+mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/licenses/tilo-session}
+for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
 done
+install -m644 "$repo_root/dist/session/tilo-import-folders.desktop" "$fhs/usr/share/applications/tilo-import-folders.desktop"
 install -m755 "$repo_root/dist/session/tilo-session" "$fhs/usr/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/tilo-session-runner"
 install -m755 "$repo_root/dist/session/tilo-flight-recorder.py" "$fhs/usr/libexec/tilo-flight-recorder"
@@ -119,10 +129,25 @@ done
 # Both legitimate static forms bypass ldd only after real ELF inspection.
 # Build minimal native executables; a missing compiler/inspector fails this
 # contract rather than silently skipping an architecture's coverage.
-printf 'void _start(void) { for (;;) {} }\n' > "$work/static.c"
+# The import executable is also smoke-tested, so static fixtures must exit
+# successfully without depending on libc or a dynamic loader.
+cat > "$work/static.c" <<'EOF'
+void _start(void) {
+#if defined(__x86_64__)
+    __asm__ volatile("xor %%edi, %%edi\n\tmov $60, %%eax\n\tsyscall"
+                     ::: "rax", "rdi", "rcx", "r11", "memory");
+#elif defined(__aarch64__)
+    __asm__ volatile("mov x0, #0\n\tmov x8, #93\n\tsvc #0"
+                     ::: "x0", "x8", "memory");
+#else
+#error unsupported fixture architecture
+#endif
+    __builtin_unreachable();
+}
+EOF
 for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
-    for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" \
+    for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
                   "$fhs/usr/libexec/tilo-unlock-helper"; do
         install -m755 "$work/static" "$target"
     done
@@ -156,8 +181,32 @@ for object_mode in -shared -c; do
         exit 1
     fi
 done
-install -m755 "$true_bin" "$fhs/usr/bin/tilo-shell"
+for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+              "$fhs/usr/libexec/tilo-unlock-helper"; do
+    install -m755 "$true_bin" "$target"
+done
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
+# A tool failure cannot masquerade as a complete runtime dependency closure.
+mkdir "$work/fake-tools"
+printf '#!/bin/sh\nexit 42\n' > "$work/fake-tools/ldd"
+chmod 755 "$work/fake-tools/ldd"
+if PATH="$work/fake-tools:$PATH" TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted a failed ldd invocation" >&2; exit 1
+fi
+printf '#!/bin/sh\necho "libmissing.so => not found"\n' > "$work/fake-tools/ldd"
+if PATH="$work/fake-tools:$PATH" TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted a missing shared library" >&2; exit 1
+fi
+mv "$fhs/usr/bin/tilo-import-folders" "$work/import-held"
+if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted missing import executable" >&2; exit 1
+fi
+mv "$work/import-held" "$fhs/usr/bin/tilo-import-folders"
+sed -i 's#^Exec=.*#Exec=/missing --import-folders#' "$fhs/usr/share/applications/tilo-import-folders.desktop"
+if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted wrong import entry" >&2; exit 1
+fi
+install -m644 "$repo_root/dist/session/tilo-import-folders.desktop" "$fhs/usr/share/applications/tilo-import-folders.desktop"
 
 sed -i 's#^TryExec=.*#TryExec=/wrong#' "$fhs/usr/share/wayland-sessions/tilo-dev.desktop"
 if "$repo_root/dist/verify-devel-payload.sh" "$fhs" >/dev/null 2>&1; then
@@ -166,11 +215,12 @@ if "$repo_root/dist/verify-devel-payload.sh" "$fhs" >/dev/null 2>&1; then
 fi
 
 nix=$work/nix-result
-mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/xdg-desktop-portal/portals,share/licenses/tilo-session}
-for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" \
+mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/licenses/tilo-session}
+for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
               "$nix/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
 done
+sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/dist/session/tilo-import-folders.desktop" > "$nix/share/applications/tilo-import-folders.desktop"
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
 install -m755 "$repo_root/dist/session/tilo-flight-recorder.py" "$nix/libexec/tilo-flight-recorder"

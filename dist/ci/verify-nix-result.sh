@@ -7,12 +7,12 @@ result=$(realpath "$1")
 arch=$2
 case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
 
-for file in bin/tilo-shell bin/tilo-launcher libexec/tilo-unlock-helper \
+for file in bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper \
             libexec/tilo-session libexec/tilo-session-runner \
             libexec/tilo-flight-recorder; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
-for file in etc/pam.d/tilo-unlock share/wayland-sessions/tilo.desktop \
+for file in share/applications/tilo-import-folders.desktop etc/pam.d/tilo-unlock share/wayland-sessions/tilo.desktop \
             share/xdg-desktop-portal/portals/tilo.portal \
             share/xdg-desktop-portal/tilo-portals.conf \
             share/systemd/user/tilo-graphical-session.target \
@@ -46,7 +46,10 @@ if ! command -v ldd >/dev/null 2>&1; then
     # invocation must fail verification instead of looking like clean output.
     ldd_command=(nix shell nixpkgs#glibc.bin --command ldd)
 fi
-for installed in bin/tilo-shell bin/tilo-launcher libexec/tilo-unlock-helper; do
+grep -Fxq "Exec=$result/bin/tilo-import-folders --import-folders" "$result/share/applications/tilo-import-folders.desktop"
+grep -Fxq "TryExec=$result/bin/tilo-import-folders" "$result/share/applications/tilo-import-folders.desktop"
+"$result/bin/tilo-import-folders" --tilo-package-smoke
+for installed in bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper; do
     directory=$(dirname "$installed")
     basename=$(basename "$installed")
     elf=$result/$installed

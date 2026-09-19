@@ -12,13 +12,13 @@ libexec_dir=${TILO_LIBEXEC_DIR:-/usr/libexec}
     exit 2
 }
 
-for file in /usr/bin/tilo-shell /usr/bin/tilo-launcher \
+for file in /usr/bin/tilo-shell /usr/bin/tilo-launcher /usr/bin/tilo-import-folders \
             "$libexec_dir/tilo-unlock-helper" "$libexec_dir/tilo-session" \
             "$libexec_dir/tilo-session-runner" \
             "$libexec_dir/tilo-flight-recorder"; do
     [[ -x $(path "$file") ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
-for file in /etc/pam.d/tilo-unlock \
+for file in /usr/share/applications/tilo-import-folders.desktop /etc/pam.d/tilo-unlock \
             /usr/share/wayland-sessions/tilo.desktop \
             /usr/share/xdg-desktop-portal/portals/tilo.portal \
             /usr/share/xdg-desktop-portal/tilo-portals.conf \
@@ -55,7 +55,11 @@ grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.targe
 [[ ! -e $(path /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.tilo.service) ]]
 [[ ! -e $(path /usr/lib/systemd/user/tilo-portal.service) ]]
 
-for elf in /usr/bin/tilo-shell /usr/bin/tilo-launcher "$libexec_dir/tilo-unlock-helper"; do
+grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" "$(path /usr/share/applications/tilo-import-folders.desktop)"
+grep -Fxq "TryExec=/usr/bin/tilo-import-folders" "$(path /usr/share/applications/tilo-import-folders.desktop)"
+"$(path /usr/bin/tilo-import-folders)" --tilo-package-smoke
+
+for elf in /usr/bin/tilo-shell /usr/bin/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper"; do
     elf_description=$(LC_ALL=C file "$(path "$elf")")
     case ${TILO_EXPECT_ARCH:-} in
         amd64) grep -Eq 'ELF 64-bit.*x86-64' <<<"$elf_description" ;;

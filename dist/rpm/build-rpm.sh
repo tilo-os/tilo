@@ -35,6 +35,7 @@ if (( run_cargo )); then
     ( cd "$repo_root" && cargo build --release --locked \
         -p launcher -p tilo-unlock-helper -p pkg-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p ush -p local-model-service -p tilo-model-gateway )
+    ( cd "$repo_root" && cargo build --release --locked -p imager --bin imager )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -49,7 +50,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
-for bin in shell tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
+for bin in shell imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
