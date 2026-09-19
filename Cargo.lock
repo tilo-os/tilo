@@ -9566,6 +9566,7 @@ dependencies = [
  "bitflags 2.11.0",
  "block2 0.6.2",
  "objc2 0.6.3",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 
@@ -16200,6 +16201,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base32",
+ "base64 0.22.1",
  "blake3",
  "capnp",
  "capnp-rpc",
@@ -16235,6 +16237,7 @@ dependencies = [
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
+ "rustc-hash 2.1.1",
  "rustls",
  "serde",
  "serde_bytes",
@@ -16270,6 +16273,7 @@ dependencies = [
  "vello",
  "vello_encoding",
  "wgpu",
+ "wgpu-hal",
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
