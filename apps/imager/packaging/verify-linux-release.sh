@@ -38,7 +38,33 @@ published_fingerprint="$(tr -d '[:space:]' <"$fingerprint_file")"
   || { printf 'published Linux fingerprint does not match protected release policy\n' >&2; exit 1; }
 
 keyring="$(mktemp -d /var/tmp/tilo-imager-release-keyring.XXXXXX)"
-trap 'find "$keyring" -depth -delete' EXIT
+cleanup_keyring() {
+  local verification_status=$? cleanup_status=0
+  trap - EXIT
+  # This is the exact private directory allocated above, never the caller's
+  # signing keyring. Refuse an unexpected path before recursive removal.
+  if [[ ! $keyring =~ ^/var/tmp/tilo-imager-release-keyring\.[[:alnum:]]{6}$ \
+        || -L $keyring ]]; then
+    printf 'refusing unsafe release keyring cleanup: %s\n' "$keyring" >&2
+    cleanup_status=1
+  else
+    if ! GNUPGHOME="$keyring" gpgconf --homedir "$keyring" --kill gpg-agent; then
+      printf 'could not stop release verification agent: %s\n' "$keyring" >&2
+      cleanup_status=1
+    fi
+    # Agent shutdown can unlink sockets after directory enumeration. rm -f
+    # tolerates those disappeared entries while reporting real removal errors.
+    if ! rm -rf -- "$keyring"; then
+      printf 'could not remove release verification keyring: %s\n' "$keyring" >&2
+      cleanup_status=1
+    fi
+  fi
+  if (( verification_status != 0 )); then
+    exit "$verification_status"
+  fi
+  exit "$cleanup_status"
+}
+trap cleanup_keyring EXIT
 chmod 0700 "$keyring"
 GNUPGHOME="$keyring" gpg --batch --import "$key" >/dev/null 2>&1
 if GNUPGHOME="$keyring" gpg --batch --with-colons --list-secret-keys 2>/dev/null \
