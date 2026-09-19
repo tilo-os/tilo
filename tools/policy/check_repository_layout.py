@@ -20,6 +20,7 @@ GENERATED_DIRECTORIES = frozenset(
 )
 
 RETIRED_SOURCE_ROOTS = {
+    "apps/imager/profile-tool/": "tools/imager-profile/",
     "crates/app/": "crates/sdk/",
     "crates/format/": "crates/doc/",
     "crates/identity/": "crates/collab/",

@@ -118,6 +118,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         self.assertEqual(
             checker.retired_source_root_violations(
                 [
+                    "apps/imager/profile-tool/src/main.rs",
                     "crates/app/tilo-app/src/lib.rs",
                     "crates/format/format-host/src/main.rs",
                     "crates/identity/tilo-user-identity/src/lib.rs",
@@ -140,6 +141,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                 ]
             ),
             [
+                "tracked file uses retired source root `apps/imager/profile-tool/`; move it under `tools/imager-profile/`: apps/imager/profile-tool/src/main.rs",
                 "tracked file uses retired source root `crates/app/`; move it under `crates/sdk/`: crates/app/tilo-app/src/lib.rs",
                 "tracked file uses retired source root `crates/format/`; move it under `crates/doc/`: crates/format/format-host/src/main.rs",
                 "tracked file uses retired source root `crates/identity/`; move it under `crates/collab/`: crates/identity/tilo-user-identity/src/lib.rs",
