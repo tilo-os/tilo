@@ -100,10 +100,12 @@ impl App {
         }
         self.history_handle_event(event, scale, handled, focus);
         let history_handled = *handled
-            || (matches!(event, winit::event::WindowEvent::KeyboardInput { .. })
-                && self
-                    .focused_node
-                    .is_some_and(|node| self.is_history_node(node)));
+            || (matches!(
+                event,
+                winit::event::WindowEvent::KeyboardInput { .. } | winit::event::WindowEvent::Ime(_)
+            ) && self
+                .focused_node
+                .is_some_and(|node| self.is_history_node(node)));
         if !*handled
             && !history_handled
             && self.history_layout.is_none_or(|layout| layout.app_visible)
