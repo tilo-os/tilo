@@ -361,7 +361,11 @@ fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
         return Some(A11yTarget::Root);
     }
     if is_synthetic_id(id) {
-        return search_synthetic::<BOUND>(root, &reverse_node_map::<S, BOUND>(&[root], node_map), id);
+        return search_synthetic::<BOUND>(
+            root,
+            &reverse_node_map::<S, BOUND>(&[root], node_map),
+            id,
+        );
     }
     let widget_id = id.0 & !TEXT_RUN_ID_BASE;
     // A structural fallback id names a widget with no taffy node: nothing to
@@ -674,8 +678,10 @@ pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
     build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, resources)
 }
 pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
-    roots: &[&dyn Widget], node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
-    focused: Option<TaffyNodeId>, scale: f64,
+    roots: &[&dyn Widget],
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
 ) -> TreeUpdate {
     build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, &[])
 }
@@ -683,8 +689,11 @@ pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
 /// Multiple presentation roots retain ordinary live resource nodes when their
 /// owner is interactive; callers supply only currently presented resources.
 pub(crate) fn build_presentation_with_resources_bound<S: BuildHasher>(
-    roots: &[&dyn Widget], node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
-    focused: Option<TaffyNodeId>, scale: f64, resources: &[tilo_actions::Resource],
+    roots: &[&dyn Widget],
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
+    resources: &[tilo_actions::Resource],
 ) -> TreeUpdate {
     build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, resources)
 }
@@ -713,16 +722,16 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
 
     let mut root_children: Vec<AkNodeId> = Vec::new();
     for root in roots {
-    visit::<BOUND>(
-        *root,
-        &ptr_to_taffy,
-        scale,
-        focused,
-        &mut walk_counter,
-        &mut nodes,
-        &mut root_children,
-        &mut active_descendant,
-    );
+        visit::<BOUND>(
+            *root,
+            &ptr_to_taffy,
+            scale,
+            focused,
+            &mut walk_counter,
+            &mut nodes,
+            &mut root_children,
+            &mut active_descendant,
+        );
     }
     let mut resource_ids = HashMap::new();
     append_resource_nodes(resources, &mut nodes, &mut root_children, &mut resource_ids);
@@ -825,7 +834,10 @@ fn append_resource_nodes(
 // The walk threads three accumulators (nodes, the parent's child list, the
 // active descendant) alongside the tree it is reading; bundling them would only
 // move the arity into a struct.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the accessibility walk threads widget identity, scale and focus alongside node, child-list and active-descendant accumulators"
+)]
 fn visit<const BOUND: bool>(
     w: &dyn Widget,
     ptr_to_taffy: &WidgetNodeMap,
@@ -1566,7 +1578,11 @@ mod tests {
                 .find(|(id, _)| *id == wanted)
                 .map(|(_, node)| node.role())
         };
-        assert_eq!(role_of(child_id), Some(AkRole::Button), "child exported under its own id");
+        assert_eq!(
+            role_of(child_id),
+            Some(AkRole::Button),
+            "child exported under its own id"
+        );
         assert_eq!(
             role_of(root_id),
             Some(AkRole::GenericContainer),

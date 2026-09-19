@@ -1,7 +1,7 @@
-use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::icons;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -1763,7 +1763,10 @@ impl Widget for WindowGroup {
         // `fold`, not `any`: every child's flag must be drained even if
         // an earlier one already reported dirty.
         let bar = self.bar.take_structure_dirty();
-        #[allow(clippy::unnecessary_fold)] // see comment above: must not short-circuit
+        #[allow(
+            clippy::unnecessary_fold,
+            reason = "Every hosted widget must have its structure-dirty flag drained even when an earlier host is already dirty."
+        )] // see comment above: must not short-circuit
         let hosts = self
             .hosts
             .iter_mut()
@@ -3608,7 +3611,11 @@ mod tests {
                 theme.name,
                 g.rect
             );
-            assert!(quiet_edge.is_some(), "{}: the quiet chip declares a rest edge", theme.name);
+            assert!(
+                quiet_edge.is_some(),
+                "{}: the quiet chip declares a rest edge",
+                theme.name
+            );
             let edge = pixel(&idle, w, cx, top);
             let moved = (relative_luminance(edge) - relative_luminance(face)).abs();
             assert!(
@@ -3698,13 +3705,16 @@ mod tests {
         let inset = crate::widget::tabs::TAB_PILL_INSET_Y;
         assert_eq!(g.close_rect.height(), MAXIMIZED_CHIP_H);
         assert_eq!(g.restore_rect.height(), MAXIMIZED_CHIP_H);
-        assert_eq!(g.close_rect.width(), g.close_rect.height(), "the × chip is square");
+        assert_eq!(
+            g.close_rect.width(),
+            g.close_rect.height(),
+            "the × chip is square"
+        );
         assert_eq!(g.close_rect.y0, g.rect.y0 + inset);
         assert_eq!(g.restore_rect.y0, g.close_rect.y0, "one row");
         assert!((g.rect.x1 - g.close_rect.x1 - inset).abs() < 1e-9);
         assert!(
-            (g.close_rect.x0 - g.restore_rect.x1 - f64::from(theme.tokens.spacing.s1)).abs()
-                < 1e-9,
+            (g.close_rect.x0 - g.restore_rect.x1 - f64::from(theme.tokens.spacing.s1)).abs() < 1e-9,
             "restore and close sit one s1 apart"
         );
         assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);

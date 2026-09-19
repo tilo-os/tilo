@@ -163,7 +163,16 @@ fn draw_columns_panel(
         );
 
         cell(scene, t, tr, theme.text_primary, &col.name, cols[0].1, y, m);
-        cell(scene, t, tr, theme.text_dim, &col.decl_type, cols[1].1, y, m);
+        cell(
+            scene,
+            t,
+            tr,
+            theme.text_dim,
+            &col.decl_type,
+            cols[1].1,
+            y,
+            m,
+        );
         cell(
             scene,
             t,
@@ -406,7 +415,12 @@ mod tests {
         let mut tr = TextRenderer::new();
         let one = Bands::measure(&mut tr);
         assert_eq!(
-            (one.row_h, one.header_h, one.title_band, one.panel_title_band),
+            (
+                one.row_h,
+                one.header_h,
+                one.title_band,
+                one.panel_title_band
+            ),
             (ROW_H, HEADER_H, 30.0, 18.0)
         );
 

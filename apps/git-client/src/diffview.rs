@@ -145,7 +145,10 @@ impl DiffView {
     /// Draw the diff into `viewport`, scrolled down by `scroll` px.
     /// `hover_hunk` highlights the stage button on that hunk. Returns the
     /// hunk-stage button rects for hit-testing and the row metrics painted.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "diff painting combines paint context, viewport and scroll with settings and the hovered, staged and armed hunk states"
+    )]
     pub fn draw(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -177,7 +180,10 @@ impl DiffView {
         DiffDraw { buttons, metrics }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "row painting receives the diff viewport, settings, measured metrics and hunk interaction states alongside paint context"
+    )]
     fn draw_rows(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -257,7 +263,10 @@ impl DiffView {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "unified rows use paint context, scrolling metrics, diff data and hunk interaction states to place code and action buttons"
+    )]
     fn draw_unified(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -448,7 +457,10 @@ impl DiffView {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "split rows use paint context, viewport, scroll and measured metrics to align old/new lines under the selected settings"
+    )]
     fn draw_split(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -508,7 +520,10 @@ impl DiffView {
         Vec::new()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "half-row painting combines paint context, line data and origin with display settings, side and measured gutter metrics"
+    )]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/y/c follow this file's graphics convention (transform, position, colour tokens); n/s/w are the line number and its formatted string/measured width"
@@ -618,7 +633,10 @@ impl DiffView {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "code painting keeps the renderer inputs, text origin, language and highlighting toggle explicit"
+    )]
     fn draw_code(
         scene: &mut Scene,
         tr: &mut TextRenderer,
@@ -657,7 +675,10 @@ impl DiffView {
     /// Draw one hunk-action button whose right edge sits at `right_x`, and
     /// return its hit rect. Discard buttons read in the danger hue when hovered
     /// so the destructive action is visually distinct from stage/unstage.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "hunk buttons combine paint context and alignment with the hunk/action identity, label and hover state"
+    )]
     fn draw_hunk_button(
         scene: &mut Scene,
         tr: &mut TextRenderer,

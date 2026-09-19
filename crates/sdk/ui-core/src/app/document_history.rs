@@ -34,8 +34,18 @@ impl App {
     ) -> Result<R, String> {
         let exported = self.bindings.exported_nodes(&self.node_map);
         if self.history.is_some() {
-            let root = FrameworkPresentation { roots: self.history_presentation_roots(), layout_root: self.root_node.ok_or("History presentation requires layout")? };
-            return Ok(visit(&root, &exported.nodes, exported.focus(self.focused_node), &self.taffy));
+            let root = FrameworkPresentation {
+                roots: self.history_presentation_roots(),
+                layout_root: self
+                    .root_node
+                    .ok_or("History presentation requires layout")?,
+            };
+            return Ok(visit(
+                &root,
+                &exported.nodes,
+                exported.focus(self.focused_node),
+                &self.taffy,
+            ));
         }
         let Some(layout) = self.history_layout else {
             return Ok(visit(
@@ -71,7 +81,12 @@ impl App {
             .unwrap_or_default();
         self.document_history
             .with_presentation(&context, self.root_widget.as_ref(), layout, rect, |root| {
-                visit(root, &exported.nodes, exported.focus(self.focused_node), &self.taffy)
+                visit(
+                    root,
+                    &exported.nodes,
+                    exported.focus(self.focused_node),
+                    &self.taffy,
+                )
             })
             .map_err(|error| format!("History is unavailable: {error:?}"))
     }
@@ -94,12 +109,19 @@ impl App {
                     .focused_node
                     .is_some_and(|node| self.is_history_node(node)));
         if !*handled
-            && self.history.as_ref().is_none_or(|history| history.live_interactive())
+            && self
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
             && self.history_layout.is_none_or(|layout| layout.app_visible)
             && let Some(root) = self
                 .history_layout
                 .map(|layout| layout.app)
-                .or_else(|| self.history.as_ref().and_then(|history| history.live_layout_node()))
+                .or_else(|| {
+                    self.history
+                        .as_ref()
+                        .and_then(|history| history.live_layout_node())
+                })
                 .or(self.root_node)
         {
             self.root_widget.handle_event(
@@ -284,14 +306,30 @@ impl App {
         let width = self.last_layout_logical.map_or(900.0, |size| size.0);
         self.refresh_framework_history(width);
         let status = self.document_sync_status().map(str::to_owned);
-        crate::history_mode::embedded::refresh(self.root_widget.as_mut(), &self.state.doc, width, status.as_deref());
+        crate::history_mode::embedded::refresh(
+            self.root_widget.as_mut(),
+            &self.state.doc,
+            width,
+            status.as_deref(),
+        );
         if let Some(history) = &mut self.history {
             self.history_layout = None;
-            let root = history.build_composition(self.root_widget.as_mut(), &mut self.taffy, &self.theme, &mut self.node_map);
+            let root = history.build_composition(
+                self.root_widget.as_mut(),
+                &mut self.taffy,
+                &self.theme,
+                &mut self.node_map,
+            );
             self.root_node = Some(root);
             // SAFETY: App owns this settled composition and its retained live root.
             unsafe {
-                self.bindings.rebuild_with_retained_root(history.as_ref(), Some(self.root_widget.as_ref()), &self.taffy, root, &self.node_map);
+                self.bindings.rebuild_with_retained_root(
+                    history.as_ref(),
+                    Some(self.root_widget.as_ref()),
+                    &self.taffy,
+                    root,
+                    &self.node_map,
+                );
             }
             return;
         }
@@ -347,7 +385,12 @@ impl App {
 
     pub(super) fn apply_history_presentation(&mut self, root: taffy::NodeId) {
         if let Some(history) = &mut self.history {
-            history.apply_composition(self.root_widget.as_mut(), &self.taffy, root, vello::kurbo::Point::ORIGIN);
+            history.apply_composition(
+                self.root_widget.as_mut(),
+                &self.taffy,
+                root,
+                vello::kurbo::Point::ORIGIN,
+            );
             return;
         }
         if let Some(layout) = self.history_layout {
@@ -542,7 +585,11 @@ impl App {
     pub fn enable_document_history_chrome(&mut self) {
         // A registered framework owner already supplies its own shared History
         // surface and custody. The standalone adapter serves unregistered roots.
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()) { return; }
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        {
+            return;
+        }
         self.history_chrome_enabled = true;
         self.remember_history_content();
         self.structure_dirty = true;

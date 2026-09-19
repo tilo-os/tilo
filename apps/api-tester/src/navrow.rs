@@ -495,7 +495,10 @@ impl NavRow {
         format!("{}…", &label[..boundaries[low]])
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "label painting takes the clipping rect, text, color and style alongside the scene, transform and text renderer"
+    )]
     fn draw_label(
         scene: &mut Scene,
         t: Affine,
@@ -525,7 +528,10 @@ impl NavRow {
         scene.pop_layer();
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "collection rows combine paint context and row geometry with the label, expansion state and request count"
+    )]
     fn draw_collection_row(
         scene: &mut Scene,
         t: Affine,
@@ -576,7 +582,10 @@ impl NavRow {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "request rows combine paint context and row geometry with the label, HTTP method and selection state"
+    )]
     fn draw_request_row(
         scene: &mut Scene,
         t: Affine,
@@ -630,7 +639,10 @@ impl NavRow {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "history rows combine paint context and row geometry with the label, HTTP method and response status"
+    )]
     fn draw_history_row(
         scene: &mut Scene,
         t: Affine,
@@ -684,7 +696,10 @@ impl NavRow {
 
 // A tiny unused helper kept to document that a caret glyph is a triangle;
 // `draw` uses the unicode caret directly for parity with the original.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "retained as the triangle geometry reference for the Unicode caret used by draw"
+)]
 fn draw_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, expanded: bool) {
     let mut p = BezPath::new();
     let (cx, cy) = (center.x, center.y);

@@ -479,13 +479,16 @@ pub struct ButtonInteract {
     pub disabled: bool,
 }
 
-fn danger_face_colors(theme: &Theme, interact: ButtonInteract) -> (
+fn danger_face_colors(
+    theme: &Theme,
+    interact: ButtonInteract,
+) -> (
     vello::peniko::Color,
     Option<vello::peniko::Color>,
     vello::peniko::Color,
 ) {
-    use vello::peniko::Color;
     use crate::color_compat::ColorCompat;
+    use vello::peniko::Color;
     let d = theme.tokens.colors.semantic.danger;
     // The label is resolved first: the feedback has to respect it.
     let fg = theme
@@ -857,7 +860,9 @@ fn px_f32(value: f64) -> f32 {
 /// a host that scales its theme but not its renderer. At 1× both paths
 /// produce the same 14 px line.
 fn renderer_label_size(theme_size: f32, renderer: &TextRenderer) -> f32 {
-    renderer.renderer_input_style(&TextStyle::new(theme_size)).size
+    renderer
+        .renderer_input_style(&TextStyle::new(theme_size))
+        .size
 }
 
 /// Resolve a label key for painting, measuring or speaking. An empty key is
@@ -1057,7 +1062,11 @@ impl Button {
             .max((line_height + self.content_padding).ceil())
             .max(minimum_target);
         let icon_width = if self.icon.is_some() {
-            let gap = if label.is_empty() { 0.0 } else { ICON_LABEL_GAP };
+            let gap = if label.is_empty() {
+                0.0
+            } else {
+                ICON_LABEL_GAP
+            };
             px_f32(icon_edge(f64::from(height)) + gap)
         } else {
             0.0
@@ -1115,7 +1124,10 @@ impl Widget for Button {
         // `adjust_layout_with_measure` will make; `DEFAULT_SIZE` until then.
         let (mut w, mut h) = self
             .size
-            .or_else(|| self.default_footprint.filter(|_| self.uses_default_footprint()))
+            .or_else(|| {
+                self.default_footprint
+                    .filter(|_| self.uses_default_footprint())
+            })
             .unwrap_or(DEFAULT_SIZE);
         let minimum_target = self.interaction.minimum_target();
         w = w.max(minimum_target);
@@ -1197,11 +1209,18 @@ impl Widget for Button {
         } else {
             None
         };
-        let (width, height) =
-            text.measure(&label, renderer_label_size(self.label_size, text), max_width);
+        let (width, height) = text.measure(
+            &label,
+            renderer_label_size(self.label_size, text),
+            max_width,
+        );
         let intrinsic_width = (width + extra_width)
             .ceil()
-            .max(if self.content_sized { 0.0 } else { FIT_MIN_WIDTH })
+            .max(if self.content_sized {
+                0.0
+            } else {
+                FIT_MIN_WIDTH
+            })
             .max(self.interaction.minimum_target());
         if self.fit_content {
             // Capture the real width even when a stretching parent supplies
@@ -1253,7 +1272,9 @@ impl Widget for Button {
         if !self.uses_default_footprint() {
             return self.adjust_layout_style(taffy, node);
         }
-        let (width, height) = if let Some(footprint) = self.default_footprint { footprint } else {
+        let (width, height) = if let Some(footprint) = self.default_footprint {
+            footprint
+        } else {
             let footprint = self.measured_default_footprint(text);
             self.default_footprint = Some(footprint);
             footprint
@@ -1356,8 +1377,7 @@ impl Widget for Button {
 
         // Focus ring wins over the style border; an accent-filled style
         // has no rest border, so it only strokes when focused.
-        let outline =
-            crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md));
+        let outline = crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md));
         if self.is_focused && enabled {
             scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
@@ -2137,10 +2157,20 @@ mod tests {
             text.set_text_scale(renderer_scale);
 
             let mut laid_out = Button::new("save", "Save", None);
-            laid_out.build_layout(&mut TaffyTree::new(), &theme, &mut std::collections::HashMap::new());
+            laid_out.build_layout(
+                &mut TaffyTree::new(),
+                &theme,
+                &mut std::collections::HashMap::new(),
+            );
             laid_out.apply_layout_external(rect);
             let mut retained = Scene::new();
-            laid_out.draw(&mut retained, Affine::IDENTITY, &mut text, &theme, &presence);
+            laid_out.draw(
+                &mut retained,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &presence,
+            );
             assert!(
                 (font_size(&retained) - 28.0).abs() < 1e-3,
                 "retained label at renderer {renderer_scale}×: {}",
@@ -2151,7 +2181,13 @@ mod tests {
             let mut external = Button::new("save", "Save", None);
             external.apply_layout_external(rect);
             let mut external_scene = Scene::new();
-            external.draw(&mut external_scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            external.draw(
+                &mut external_scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &presence,
+            );
             assert!(
                 (font_size(&external_scene) - 28.0).abs() < 1e-3,
                 "externally laid-out label at renderer {renderer_scale}×: {}",
@@ -2184,7 +2220,11 @@ mod tests {
         let mut button = Button::new("save", "Save", None);
         let presence = crate::presence::PresenceCtx::default();
         let one = Theme::dark();
-        button.build_layout(&mut TaffyTree::new(), &one, &mut std::collections::HashMap::new());
+        button.build_layout(
+            &mut TaffyTree::new(),
+            &one,
+            &mut std::collections::HashMap::new(),
+        );
         button.apply_layout_external(rect);
         let mut first = Scene::new();
         button.draw(&mut first, Affine::IDENTITY, &mut text, &one, &presence);
@@ -2197,7 +2237,10 @@ mod tests {
             &larger,
             &mut std::collections::HashMap::new(),
         );
-        assert!(button.needs_redraw(), "a new label size must dirty the cache");
+        assert!(
+            button.needs_redraw(),
+            "a new label size must dirty the cache"
+        );
         let mut second = Scene::new();
         button.draw(&mut second, Affine::IDENTITY, &mut text, &larger, &presence);
         let before = first.encoding().resources.glyph_runs[0].font_size;
@@ -2689,7 +2732,10 @@ mod tests {
         assert!((line_h - 35.0).abs() < 1e-3, "2× base line: {line_h}");
         let expected_height = (line_h + theme.padding_standard).ceil();
         assert!(expected_height > 40.0);
-        assert!(label_w + FIT_SIDE_PADDING * 2.0 < 120.0, "fixture label must fit 120");
+        assert!(
+            label_w + FIT_SIDE_PADDING * 2.0 < 120.0,
+            "fixture label must fit 120"
+        );
 
         let rect = measured_button_rect(Button::new("save", "Save", None), 2.0);
         assert!(
@@ -2717,7 +2763,10 @@ mod tests {
             None,
         );
         let expected = (label_w + FIT_SIDE_PADDING * 2.0).ceil();
-        assert!(expected > 120.0, "fixture label must exceed the default face");
+        assert!(
+            expected > 120.0,
+            "fixture label must exceed the default face"
+        );
 
         let rect = measured_button_rect(Button::new("remove", label, None), 1.0);
         assert!(
@@ -2772,7 +2821,10 @@ mod tests {
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
 
         assert_eq!(icon_only_runs, 0, "an icon-only face paints no glyph run");
-        assert!(labelled_runs > 0, "the labelled control still paints its text");
+        assert!(
+            labelled_runs > 0,
+            "the labelled control still paints its text"
+        );
     }
 
     /// The same defect in the accessibility tree: `⟦⟧` is not empty, so the
@@ -2787,7 +2839,10 @@ mod tests {
         let name = Widget::accessibility(&button).and_then(|node| node.name);
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
         let name = name.expect("icon-only button with a tooltip has a spoken name");
-        assert_ne!(name, "⟦⟧", "the spoken name must not be the empty pseudo-locale markers");
+        assert_ne!(
+            name, "⟦⟧",
+            "the spoken name must not be the empty pseudo-locale markers"
+        );
         assert!(
             name.contains('C') && name.contains('s'),
             "the tooltip is what gets spoken, got {name:?}"
@@ -2800,9 +2855,22 @@ mod tests {
     #[test]
     fn face_colors_danger_outline_is_transparent_at_rest_and_outlined_in_its_ink() {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let rest = face_colors(&theme, ButtonStyle::DangerOutline, ButtonInteract::default());
-            assert!(rest.0.components[3] <= 0.0, "{}: rest fill is transparent", theme.name);
-            assert_eq!(rest.1, Some(rest.2), "{}: outline is the label ink", theme.name);
+            let rest = face_colors(
+                &theme,
+                ButtonStyle::DangerOutline,
+                ButtonInteract::default(),
+            );
+            assert!(
+                rest.0.components[3] <= 0.0,
+                "{}: rest fill is transparent",
+                theme.name
+            );
+            assert_eq!(
+                rest.1,
+                Some(rest.2),
+                "{}: outline is the label ink",
+                theme.name
+            );
             let ratio = crate::a11y::contrast_ratio(rest.2, theme.tokens.colors.surfaces.base);
             assert!(
                 ratio >= ON_FILL_MIN_CONTRAST,
@@ -2817,8 +2885,16 @@ mod tests {
                     ..ButtonInteract::default()
                 },
             );
-            assert_eq!(hovered.0, theme.bg_hover, "{}: hover tints the fill", theme.name);
-            assert_eq!(hovered.2, rest.2, "{}: the ink does not change under the pointer", theme.name);
+            assert_eq!(
+                hovered.0, theme.bg_hover,
+                "{}: hover tints the fill",
+                theme.name
+            );
+            assert_eq!(
+                hovered.2, rest.2,
+                "{}: the ink does not change under the pointer",
+                theme.name
+            );
         }
     }
 
@@ -2832,10 +2908,34 @@ mod tests {
         let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
         let states = [
             ("rest", ButtonInteract::default()),
-            ("hovered", ButtonInteract { hovered: true, ..ButtonInteract::default() }),
-            ("pressed", ButtonInteract { pressed: true, ..ButtonInteract::default() }),
-            ("focused", ButtonInteract { focused: true, ..ButtonInteract::default() }),
-            ("disabled", ButtonInteract { disabled: true, ..ButtonInteract::default() }),
+            (
+                "hovered",
+                ButtonInteract {
+                    hovered: true,
+                    ..ButtonInteract::default()
+                },
+            ),
+            (
+                "pressed",
+                ButtonInteract {
+                    pressed: true,
+                    ..ButtonInteract::default()
+                },
+            ),
+            (
+                "focused",
+                ButtonInteract {
+                    focused: true,
+                    ..ButtonInteract::default()
+                },
+            ),
+            (
+                "disabled",
+                ButtonInteract {
+                    disabled: true,
+                    ..ButtonInteract::default()
+                },
+            ),
         ];
         for style in [
             ButtonStyle::Neutral,
@@ -2858,10 +2958,9 @@ mod tests {
                 let origin = *origins.first().expect("label painted");
                 match reference {
                     None => reference = Some(origin),
-                    Some(expected) => assert_eq!(
-                        origin, expected,
-                        "{style:?}/{name}: the label moved"
-                    ),
+                    Some(expected) => {
+                        assert_eq!(origin, expected, "{style:?}/{name}: the label moved")
+                    }
                 }
             }
         }

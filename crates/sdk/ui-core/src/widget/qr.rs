@@ -25,11 +25,11 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::text_metrics::renderer_type_size;
 
 /// Default quiet-zone size in modules (the standard requires ≥4).
 pub const DEFAULT_QUIET_MODULES: usize = 4;

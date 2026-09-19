@@ -14,12 +14,12 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::renderer_type_size;
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::input::{InputBinding, KeyLegend, KeyboardBinding, KeyboardModifier};
 use crate::interaction::InteractionEnvironment;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::{InputHint, TaffyTreeExt, Widget};
@@ -168,7 +168,11 @@ impl Widget for ShortcutRecorder {
         }
         if self.capturing {
             let label = "…";
-            let (w, h) = text.measure(label, renderer_type_size(text, theme.tokens.typography.scale.sm), None);
+            let (w, h) = text.measure(
+                label,
+                renderer_type_size(text, theme.tokens.typography.scale.sm),
+                None,
+            );
             text.draw_text_weighted(
                 scene,
                 label,
@@ -224,7 +228,11 @@ impl Widget for ShortcutRecorder {
                     &RoundedRect::from_rect(reset, 6.0),
                 );
             }
-            let (w, h) = text.measure("↶", renderer_type_size(text, theme.tokens.typography.scale.base), None);
+            let (w, h) = text.measure(
+                "↶",
+                renderer_type_size(text, theme.tokens.typography.scale.base),
+                None,
+            );
             text.draw_text(
                 scene,
                 "↶",

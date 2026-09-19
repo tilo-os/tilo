@@ -256,7 +256,10 @@ impl CreateIdentityScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "identity creation forwards the host's Widget event, CRDT, focus and layout context and adds the persistence store"
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -831,9 +834,15 @@ mod tests {
             .expect("layout");
         s.apply_layout(&taffy, node, Point::ORIGIN);
         let field_node = s.name_node.expect("the field has a node");
-        assert!(node_map.contains_key(&field_node), "registered for the host");
+        assert!(
+            node_map.contains_key(&field_node),
+            "registered for the host"
+        );
         assert_eq!(
-            s.children().iter().filter_map(|c| c.test_id()).collect::<Vec<_>>(),
+            s.children()
+                .iter()
+                .filter_map(|c| c.test_id())
+                .collect::<Vec<_>>(),
             vec![NAME_INPUT_ID]
         );
 
@@ -859,11 +868,19 @@ mod tests {
         send(&mut s, &ev::cursor_at(centre));
         let (_, target) = send(&mut s, &ev::left_press());
         assert!(s.name.is_focused(), "a click in the row focuses the field");
-        assert_eq!(target, Some(field_node), "and hands the host the field's node");
+        assert_eq!(
+            target,
+            Some(field_node),
+            "and hands the host the field's node"
+        );
         assert!(!s.is_submit_enabled());
         send(&mut s, &ev::char("B"));
         send(&mut s, &ev::char("o"));
-        assert_eq!(s.display_name(), "Bo", "typed keys land in the shared field");
+        assert_eq!(
+            s.display_name(),
+            "Bo",
+            "typed keys land in the shared field"
+        );
         assert!(s.is_submit_enabled());
         let (outcome, _) = send(&mut s, &ev::named(NamedKey::Enter));
         assert!(matches!(outcome, ScreenOutcome::Advance), "Enter submits");

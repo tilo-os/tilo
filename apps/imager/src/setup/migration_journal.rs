@@ -2039,7 +2039,10 @@ pub(super) mod crash_injection {
     use std::cell::Cell;
     thread_local! { static COUNT: Cell<usize> = const { Cell::new(0) }; }
     // Intentional abrupt child exit exercises process-crash recovery boundaries.
-    #[allow(clippy::exit)]
+    #[allow(
+        clippy::exit,
+        reason = "Crash-recovery tests deliberately exit the child at a selected journal boundary without running destructors."
+    )]
     pub(crate) fn boundary(name: &str) {
         if std::env::var("QOS_JOURNAL_BOUNDARY").ok().as_deref() != Some(name) {
             return;

@@ -67,10 +67,14 @@ pub(crate) fn assert_glyph_run_centred_in_band(
     let reference = &reference.encoding().resources.glyph_runs[0];
     let runs = &scene.encoding().resources.glyph_runs;
     let run = runs.get(run_index).unwrap_or_else(|| {
-        panic!("{text:?}: glyph run {run_index} missing ({} runs painted)", runs.len())
+        panic!(
+            "{text:?}: glyph run {run_index} missing ({} runs painted)",
+            runs.len()
+        )
     });
     assert_eq!(
-        run.transform.translation[1], reference.transform.translation[1],
+        run.transform.translation[1],
+        reference.transform.translation[1],
         "{text:?} is not centred on its measured line in band {band_y0}..{}",
         band_y0 + band_height
     );
@@ -1081,13 +1085,22 @@ mod tests {
         let mut renderer = TextRenderer::new();
         let (_, measured) = renderer.measure("Home", 12.0, None);
         let measured = f64::from(measured);
-        assert!(measured > 12.0, "cosmic-text line box exceeds the font size: {measured}");
+        assert!(
+            measured > 12.0,
+            "cosmic-text line box exceeds the font size: {measured}"
+        );
         let band = (0.0, 18.0);
         let correct = centered_text_top(band.0, band.1, measured);
         let drifted = band.0 + (band.1 - 12.0) / 2.0;
         let line_centre = correct + measured / 2.0;
-        assert!((line_centre - 9.0).abs() < 1e-9, "line centre {line_centre} != band centre 9");
-        assert!(drifted > correct, "font-size centring drifts downward ({drifted} vs {correct})");
+        assert!(
+            (line_centre - 9.0).abs() < 1e-9,
+            "line centre {line_centre} != band centre 9"
+        );
+        assert!(
+            drifted > correct,
+            "font-size centring drifts downward ({drifted} vs {correct})"
+        );
     }
 
     struct RecordingEngine {

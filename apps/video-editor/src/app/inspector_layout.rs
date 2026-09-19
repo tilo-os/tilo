@@ -247,7 +247,12 @@ impl VideoEditorApp {
             cy + 9.0 * scale,
         );
         let up = Rect::new(key.x1 + S1 * scale, cy - h, key.x1 + 26.0 * scale, cy + h);
-        let down = Rect::new(up.x1 + S1 * scale, cy - h, up.x1 + (S1 + 22.0) * scale, cy + h);
+        let down = Rect::new(
+            up.x1 + S1 * scale,
+            cy - h,
+            up.x1 + (S1 + 22.0) * scale,
+            cy + h,
+        );
         let remove = Rect::new(row.x1 - 22.0 * scale, cy - h, row.x1, cy + h);
         let slider = Rect::new(
             row.x1 - 96.0 * scale,

@@ -310,7 +310,10 @@ impl ReadingSettings {
         ((px1 - panel_w).max(content_x0), px1)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Reading settings paints from viewport and column bounds, current settings, available fonts, default font ID, and color schemes."
+    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -444,7 +447,10 @@ impl ReadingSettings {
         self.push_hit(panel, ReadingSettingsAction::Swallow);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Panel layout measures font and scheme choices against the viewport and reading-column bounds using the current settings."
+    )]
     fn layout(
         text: &mut TextRenderer,
         viewport: Rect,
@@ -591,7 +597,10 @@ impl ReadingSettings {
         (scheme_pills, scheme_widths)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The settings header painter takes render context and explicit horizontal bounds, vertical origin, and row height."
+    )]
     fn draw_header(
         &mut self,
         scene: &mut Scene,
@@ -628,7 +637,10 @@ impl ReadingSettings {
         y + height
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The text-size and line-height steppers share render context, row bounds, spacing, and the current reading settings."
+    )]
     fn draw_steppers(
         &mut self,
         scene: &mut Scene,
@@ -671,7 +683,10 @@ impl ReadingSettings {
         y + row_h + 22.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Each reading stepper needs render context, row geometry, label, value, and field identity for the shared numeric control."
+    )]
     fn stepper(
         &mut self,
         scene: &mut Scene,
@@ -707,7 +722,10 @@ impl ReadingSettings {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Layout choices wrap within explicit row bounds and spacing while reflecting the current reading mode."
+    )]
     fn draw_layout_row(
         &mut self,
         scene: &mut Scene,
@@ -752,7 +770,10 @@ impl ReadingSettings {
         y + height + 22.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Composition choices use render context, row origin, height and gap, and the selected composition from reading settings."
+    )]
     fn draw_composition_row(
         &mut self,
         scene: &mut Scene,
@@ -791,7 +812,10 @@ impl ReadingSettings {
         y + height + 22.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Typeface pills use render context, wrapping bounds, row height and gap, and premeasured labels with selection state."
+    )]
     fn draw_font_row(
         &mut self,
         scene: &mut Scene,
@@ -834,7 +858,10 @@ impl ReadingSettings {
         y + height + 22.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Page-scheme pills use render context, wrapping bounds and spacing, and separately measured scheme labels and widths."
+    )]
     fn draw_page_row(
         &mut self,
         scene: &mut Scene,
@@ -877,7 +904,6 @@ impl ReadingSettings {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn section_label(
         scene: &mut Scene,
         transform: Affine,
@@ -905,7 +931,10 @@ impl ReadingSettings {
         ) + 24.0
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Each settings pill paints from render context, position and height, label and selection, then records its specific action."
+    )]
     fn pill(
         &mut self,
         scene: &mut Scene,

@@ -611,8 +611,11 @@ fn managed_registration_supports_multiple_scopes_and_refuses_empty_namespace() {
         .collect();
     let registration = HistoryRegistration::new(&MULTI, sources).unwrap();
     let mut driver = Driver::from_managed_root(
-        State::new(), ManagedRoot::new(Box::new(Column::new()), registration), (900, 650)
-    ).expect("registered scopes must compose in the managed host");
+        State::new(),
+        ManagedRoot::new(Box::new(Column::new()), registration),
+        (900, 650),
+    )
+    .expect("registered scopes must compose in the managed host");
     driver.click_named("history-scope-b").unwrap();
     assert!(driver.targets().contains_key("history-scope-a"));
     assert!(

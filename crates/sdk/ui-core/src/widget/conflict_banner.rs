@@ -222,7 +222,10 @@ impl ConflictBanner {
     }
 
     /// Paint one trailing chip (`Review` / `Dismiss`).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Conflict action painting combines render context, chip bounds, its label and cached measurement, and hover state."
+    )]
     fn draw_chip(
         scene: &mut Scene,
         transform: Affine,

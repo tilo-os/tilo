@@ -96,7 +96,10 @@ pub fn measure_w(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeigh
 }
 
 /// Draw a single line of text inside `rect`, aligned + vertically centered.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "passes the scene, text renderer and transform alongside bounds, alignment and weighted text styling"
+)]
 pub fn text_in(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -134,7 +137,10 @@ pub fn text_in(
 }
 
 /// Draw text at an explicit top-left point.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "passes the scene, text renderer and transform alongside the text position, size, color and weight"
+)]
 pub fn text_at(
     scene: &mut Scene,
     tr: &mut TextRenderer,

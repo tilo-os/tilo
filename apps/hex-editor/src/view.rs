@@ -798,7 +798,10 @@ impl HexView {
     }
 
     /// Draw a small rounded pill ending at `right_x`; returns its left x.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Pill painting combines render context, right alignment and bar bounds, label measurement, and the fill color."
+    )]
     fn draw_pill(
         scene: &mut Scene,
         t: Affine,
@@ -1111,7 +1114,9 @@ impl HexView {
             .is_some_and(|(lo, hi)| geom.off >= lo && geom.off <= hi);
 
         let hex_color = if is_cursor {
-            tokens.colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+            tokens
+                .colors
+                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
         } else if is_dirty {
             tokens.colors.semantic.warning
         } else if selected {
@@ -1141,7 +1146,9 @@ impl HexView {
         // ASCII glyph.
         let ch = ascii_glyph(geom.byte);
         let ascii_color = if is_cursor && self.model.column() == Column::Ascii {
-            tokens.colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
+            tokens
+                .colors
+                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST)
         } else if is_dirty {
             tokens.colors.semantic.warning
         } else if (0x20..=0x7E).contains(&geom.byte) {
@@ -1175,7 +1182,10 @@ impl HexView {
         Some((cur, cur + width - 1))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Inspector painting receives render context and the measured grid geometry used to align decoded byte values."
+    )]
     fn draw_inspector(
         &self,
         scene: &mut Scene,
@@ -1544,7 +1554,9 @@ impl HexView {
             scene,
             kind,
             kind_size,
-            tokens.colors.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
+            tokens
+                .colors
+                .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
             t * Affine::translate((
                 x0 + pad + (chip_w - f64::from(kind_w)) / 2.0,
                 y0 + 12.0 + (chip_h - f64::from(kind_h)) / 2.0,
@@ -1573,7 +1585,10 @@ impl HexView {
         let count_w = if count.is_empty() {
             0.0
         } else {
-            f64::from(tr.measure(&count, ts(tr, tokens.typography.scale.sm), None).0)
+            f64::from(
+                tr.measure(&count, ts(tr, tokens.typography.scale.sm), None)
+                    .0,
+            )
         };
 
         // The shared field supplies selection, word/caret navigation,
@@ -2905,7 +2920,10 @@ mod tests {
     fn grid_pitches_follow_the_measured_mono_metrics_and_hit_their_cells() {
         let mut tr = TextRenderer::new();
         let base = CellMetrics::measure(&mut tr);
-        assert!(base.glyph_w > 0.0 && base.line_h > 0.0, "measured: {base:?}");
+        assert!(
+            base.glyph_w > 0.0 && base.line_h > 0.0,
+            "measured: {base:?}"
+        );
         assert_eq!(base.row_h(), 20.0, "1× keeps the 20px row density");
         tr.set_text_scale(2.0);
         let large = CellMetrics::measure(&mut tr);
@@ -2918,8 +2936,14 @@ mod tests {
         // The title bar grows with its `lg` line at 2×, and that growth is
         // part of the same measurement the event path reads, so `metrics()`
         // before and after a painted frame agree on where the grid starts.
-        assert!(base.title_growth.abs() < 1e-6, "no title growth at 1×: {base:?}");
-        assert!(large.title_growth > 4.0, "the title line grows at 2×: {large:?}");
+        assert!(
+            base.title_growth.abs() < 1e-6,
+            "no title growth at 1×: {base:?}"
+        );
+        assert!(
+            large.title_growth > 4.0,
+            "the title line grows at 2×: {large:?}"
+        );
 
         let mut view = HexView::new(vec![0xAB; 96], "scale.bin");
         view.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
@@ -2941,7 +2965,10 @@ mod tests {
                 &theme,
                 &PresenceCtx::empty(),
             );
-            assert_eq!(view.cell_metrics, cell, "draw measures the same cell metrics");
+            assert_eq!(
+                view.cell_metrics, cell,
+                "draw measures the same cell metrics"
+            );
             let m = view.metrics();
             assert!(
                 (m.header_bottom - before_paint.header_bottom).abs() < 1e-6

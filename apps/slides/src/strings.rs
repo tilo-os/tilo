@@ -175,7 +175,10 @@ mod tests {
     /// the presenter position line carries its three values.
     #[test]
     fn formatted_keys_interpolate_their_arguments() {
-        let hint = tr_args("slides-overview-hint", &[("count", ArgValue::from(5_usize))]);
+        let hint = tr_args(
+            "slides-overview-hint",
+            &[("count", ArgValue::from(5_usize))],
+        );
         assert!(hint.starts_with("5 slides"), "{hint}");
         let pos = tr_args(
             "slides-position",
@@ -186,7 +189,10 @@ mod tests {
             ],
         );
         assert_eq!(pos, "ELAPSED  ·  slide 2 / 5");
-        let custom = tr_args("slides-custom-colour-hex", &[("hex", ArgValue::from("#ff0000"))]);
+        let custom = tr_args(
+            "slides-custom-colour-hex",
+            &[("hex", ArgValue::from("#ff0000"))],
+        );
         assert_eq!(custom, "Custom  ·  #ff0000");
     }
 }

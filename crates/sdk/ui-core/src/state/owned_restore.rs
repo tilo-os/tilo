@@ -35,7 +35,10 @@ impl ConfirmedRestore<'_> {
 
 /// The only production admission door. The current owner/context is borrowed
 /// through preparation, final authorization and the synchronous canonical write.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "restore admission binds the reviewed source and schema to current state, authority, author, title and time"
+)]
 pub(crate) fn restore_reviewed_history(
     state: &mut State,
     source: &crate::history_mode::HistorySourceRegistration,
@@ -49,57 +52,119 @@ pub(crate) fn restore_reviewed_history(
 ) -> Result<OwnedActionReceipt, String> {
     use crate::history_mode::{HistorySourceRegistration, owner::OwnerKind};
     let resource = match source {
-        HistorySourceRegistration::HostDocument { resource, .. } | HistorySourceRegistration::OwnedDocument { resource, .. } => resource,
-        HistorySourceRegistration::Unversioned { .. } | HistorySourceRegistration::CheckedFiles { .. } => return Err("This resource has no restorable versions.".into()),
+        HistorySourceRegistration::HostDocument { resource, .. }
+        | HistorySourceRegistration::OwnedDocument { resource, .. } => resource,
+        HistorySourceRegistration::Unversioned { .. }
+        | HistorySourceRegistration::CheckedFiles { .. } => {
+            return Err("This resource has no restorable versions.".into());
+        }
     };
-    if resource != review.resource() { return Err("This review belongs to a different document.".into()); }
-    let document = source.document(&state.doc).map_err(|_| "This document is no longer available.")?;
-    controller.validate_restore(review, &document).map_err(|error| match error {
-        crate::history_mode::HistoryError::StaleLiveHeads => "Live content changed. Refresh review before restoring.".to_owned(),
-        crate::history_mode::HistoryError::UncommittedLiveChanges => "Finish the current edit before restoring.".to_owned(),
-        _ => "This review no longer matches the selected document version.".to_owned(),
-    })?;
+    if resource != review.resource() {
+        return Err("This review belongs to a different document.".into());
+    }
+    let document = source
+        .document(&state.doc)
+        .map_err(|_| "This document is no longer available.")?;
+    controller
+        .validate_restore(review, &document)
+        .map_err(|error| match error {
+            crate::history_mode::HistoryError::StaleLiveHeads => {
+                "Live content changed. Refresh review before restoring.".to_owned()
+            }
+            crate::history_mode::HistoryError::UncommittedLiveChanges => {
+                "Finish the current edit before restoring.".to_owned()
+            }
+            _ => "This review no longer matches the selected document version.".to_owned(),
+        })?;
     let prepared = crate::history_mode::restore::prepare_content_restore(
-        &document, schema, review.reviewed_live_heads(), review.selected_heads(),
-    ).map_err(|_| "This version cannot be restored safely with this application's content format.")?;
+        &document,
+        schema,
+        review.reviewed_live_heads(),
+        review.selected_heads(),
+    )
+    .map_err(
+        |_| "This version cannot be restored safely with this application's content format.",
+    )?;
     let context = tilo_actions::ActionContext::for_resource(
-        "Restore version", review.resource().record_id.as_str(), "document", title,
-    ).with_app(&review.resource().app_id, title);
+        "Restore version",
+        review.resource().record_id.as_str(),
+        "document",
+        title,
+    )
+    .with_app(&review.resource().app_id, title);
     let apply = |authority: &PermissionContext, author: &UserId, file: bool, state: &mut State| {
         use crate::permissions::{CapDecision, Principal, ResourceRef, Verb};
         let current = authority.clone().at_unix_time(now);
         // The installed solo-workspace principal is the runner's existing
         // local-author mapping. Other contexts must name the actual author.
         let mapped = current.actor().principals.contains(&author.principal())
-            || current.actor().principals.contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
-        if !mapped || current.decide(&ResourceRef::App(review.resource().app_id.clone()), Verb::Write) != CapDecision::Allow {
+            || current
+                .actor()
+                .principals
+                .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
+        if !mapped
+            || current.decide(
+                &ResourceRef::App(review.resource().app_id.clone()),
+                Verb::Write,
+            ) != CapDecision::Allow
+        {
             return Err("You no longer have permission to restore this document.".to_owned());
         }
-        if file && let Some(path) = review.resource().record_id.file_path()
-            && current.decide(&ResourceRef::FsPath(path.to_string_lossy().into_owned()), Verb::Write) != CapDecision::Allow {
+        if file
+            && let Some(path) = review.resource().record_id.file_path()
+            && current.decide(
+                &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
+                Verb::Write,
+            ) != CapDecision::Allow
+        {
             return Err("You do not have permission to write this file.".to_owned());
         }
-        let admitted = ConfirmedRestore { _authority: authority, author: author.clone(), context };
+        let admitted = ConfirmedRestore {
+            _authority: authority,
+            author: author.clone(),
+            context,
+        };
         let receipt = match source {
-            HistorySourceRegistration::HostDocument { .. } => state.restore_prepared_owned(&admitted, &prepared),
+            HistorySourceRegistration::HostDocument { .. } => {
+                state.restore_prepared_owned(&admitted, &prepared)
+            }
             HistorySourceRegistration::OwnedDocument { owner, .. } => {
-                owner.validate().map_err(|_| "This document owner is no longer available.".to_owned())?;
+                owner
+                    .validate()
+                    .map_err(|_| "This document owner is no longer available.".to_owned())?;
                 match &owner.0 {
-                    OwnerKind::Component(binding) => binding.restore_prepared(&mut state.doc, &admitted, &prepared),
-                    OwnerKind::Legacy { store, checkout, .. } => crate::bound_dispatch::restore_legacy_history(store, checkout, &admitted, &prepared),
+                    OwnerKind::Component(binding) => {
+                        binding.restore_prepared(&mut state.doc, &admitted, &prepared)
+                    }
+                    OwnerKind::Legacy {
+                        store, checkout, ..
+                    } => crate::bound_dispatch::restore_legacy_history(
+                        store, checkout, &admitted, &prepared,
+                    ),
                 }
             }
-            HistorySourceRegistration::Unversioned { .. } | HistorySourceRegistration::CheckedFiles { .. } => return Err("This resource has no restorable versions.".to_owned()),
+            HistorySourceRegistration::Unversioned { .. }
+            | HistorySourceRegistration::CheckedFiles { .. } => {
+                return Err("This resource has no restorable versions.".to_owned());
+            }
         };
         receipt.map_err(|error| match error {
-            OwnedRestoreError::PendingEdits | OwnedRestoreError::UnfinishedActionBoundary | OwnedRestoreError::ActiveAction => "Finish the current edit before restoring.".to_owned(),
-            OwnedRestoreError::StaleReview => "Live content changed. Refresh review before restoring.".to_owned(),
+            OwnedRestoreError::PendingEdits
+            | OwnedRestoreError::UnfinishedActionBoundary
+            | OwnedRestoreError::ActiveAction => {
+                "Finish the current edit before restoring.".to_owned()
+            }
+            OwnedRestoreError::StaleReview => {
+                "Live content changed. Refresh review before restoring.".to_owned()
+            }
             _ => "The document could not be restored safely.".to_owned(),
         })
     };
     match source {
         HistorySourceRegistration::OwnedDocument { owner, .. } => match &owner.0 {
-            OwnerKind::Component(binding) => apply(&binding.permissions.borrow(), &binding.author, true, state),
+            OwnerKind::Component(binding) => {
+                apply(&binding.permissions.borrow(), &binding.author, true, state)
+            }
             OwnerKind::Legacy { .. } => apply(authority, author, true, state),
         },
         _ => apply(authority, author, false, state),
@@ -275,10 +340,19 @@ impl State {
 }
 
 impl State {
-    pub(crate) fn merge_remote_committed(&mut self, mutation: &collab_types::DocumentMutation) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
-        if self.doc.pending_ops() != 0 || !same_frontier(&self.undo.last_heads, &self.doc.base_heads()) { return Ok(None); }
+    pub(crate) fn merge_remote_committed(
+        &mut self,
+        mutation: &collab_types::DocumentMutation,
+    ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
+        if self.doc.pending_ops() != 0
+            || !same_frontier(&self.undo.last_heads, &self.doc.base_heads())
+        {
+            return Ok(None);
+        }
         let changed = crate::history_mode::routes::merge_committed(&mut self.doc, mutation)?;
-        if changed { self.undo.rebase(&mut self.doc); }
+        if changed {
+            self.undo.rebase(&mut self.doc);
+        }
         Ok(Some(changed))
     }
 }

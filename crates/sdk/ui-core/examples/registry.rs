@@ -98,7 +98,7 @@ const SHOT_SOURCES: &[&str] = &[
     "fractional_scale_shots.rs",
     "floating_surface_shots.rs",
     "gallery_harness_shots.rs",
-            "gallery_shots.rs",
+    "gallery_shots.rs",
     "history_cases.rs",
     "nav_shell_shots.rs",
     "perf_hud_shot.rs",

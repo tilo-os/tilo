@@ -1,7 +1,10 @@
 // `Promise::from_future(async move {..})` refines capnp-rpc's declared
 // `Promise<.., capnp::Error>` return type — the intended pattern, but it
 // trips `refining_impl_trait`.
-#![allow(refining_impl_trait)]
+#![allow(
+    refining_impl_trait,
+    reason = "Capnp server implementations return concrete Promise values from from_future to implement the generated async RPC contract."
+)]
 
 //! Native Cap'n Proto server for the Tilo collaboration broker.
 //!
@@ -1023,7 +1026,10 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Directory resolution identifies the actor, workspace cluster, peer, revision, resource, and action independently."
+    )]
     /// # Errors
     ///
     /// Returns an error when the target is invalid, the bounded broker queue
@@ -1067,7 +1073,10 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Directory invocation carries actor and exact directory target fields plus the action argument and confirmation."
+    )]
     /// # Errors
     ///
     /// Returns an error when invocation inputs are invalid, the bounded broker
@@ -2981,7 +2990,11 @@ impl CapnpBrokerState {
     /// Atomically resolve and start a directory action on the broker
     /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
     /// thread participates in admission.
-    #[allow(clippy::too_many_arguments, clippy::future_not_send)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::future_not_send,
+        reason = "Admission carries actor, exact directory target, argument, and confirmation through Rc-backed capabilities on the broker LocalSet."
+    )]
     async fn start_action_directory_for_actor(
         &self,
         directories: &LocalActionDirectoryRegistry,
@@ -3071,7 +3084,10 @@ impl CapnpBrokerState {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Confirmation grants bind peer/resource/action/argument and actor identity to the action contract and supplied approval."
+    )]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
@@ -9730,7 +9746,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The two-peer production fixture follows offer, acceptance, media readiness, source stop, and target-live cutover end to end."
+    )]
     fn production_realtime_bridge_delivers_two_peer_offer_and_cutover() {
         use crate::shell::realtime_session::{
             BrokerRealtimeFabricAdapter, RealtimeFabricAdapter, RealtimeFabricSignal,

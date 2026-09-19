@@ -14,9 +14,9 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::presence::PresenceCtx;
+use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::{Metrics, Spacing, TypeScale};
@@ -443,7 +443,10 @@ impl<C: Widget> ModalDialog<C> {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Detached dialog routing accepts the event, scale/modifiers, and CRDT document/path before supplying Widget layout state."
+)]
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
@@ -804,38 +807,59 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         let title = crate::i18n!(&self.title);
         let name = (!title.is_empty()).then_some(title);
         let mut node = AccessNode::new(Role::Dialog)
-                .with_optional_name(name)
-                .with_state(AccessState {
-                    modal: true,
-                    hidden: !self.open,
-                    ..Default::default()
-                });
+            .with_optional_name(name)
+            .with_state(AccessState {
+                modal: true,
+                hidden: !self.open,
+                ..Default::default()
+            });
         if self.open {
-            for (key, action, bounds) in [("primary", &self.primary_action, self.primary_rect), ("secondary", &self.secondary_action, self.secondary_rect)] {
+            for (key, action, bounds) in [
+                ("primary", &self.primary_action, self.primary_rect),
+                ("secondary", &self.secondary_action, self.secondary_rect),
+            ] {
                 if let Some(action) = action {
-                    node.children.push(AccessNode::new(Role::Button)
-                        .with_name(crate::i18n!(&action.label))
-                        .with_key(if key == "primary" { 1 } else { 2 })
-                        .with_state(AccessState::new().focusable(true))
-                        .with_bounds(bounds)
-                        .with_action_target(format!("dialog:{}:{key}", self.action_identity)));
+                    node.children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(crate::i18n!(&action.label))
+                            .with_key(if key == "primary" { 1 } else { 2 })
+                            .with_state(AccessState::new().focusable(true))
+                            .with_bounds(bounds)
+                            .with_action_target(format!("dialog:{}:{key}", self.action_identity)),
+                    );
                 }
             }
         }
         Some(node)
     }
 
-    fn perform_semantic_action(&mut self, target: &str, action: &crate::a11y::Action, _: &mut AutoCommit, _: &ObjId) -> bool {
-        if !self.open || !matches!(action, crate::a11y::Action::Activate) { return false; }
-        let callback = if target == "modal.primary" || target == format!("dialog:{}:primary", self.action_identity) {
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _: &mut AutoCommit,
+        _: &ObjId,
+    ) -> bool {
+        if !self.open || !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        let callback = if target == "modal.primary"
+            || target == format!("dialog:{}:primary", self.action_identity)
+        {
             self.primary_action.as_mut()
-        } else if target == "modal.secondary" || target == format!("dialog:{}:secondary", self.action_identity) {
+        } else if target == "modal.secondary"
+            || target == format!("dialog:{}:secondary", self.action_identity)
+        {
             self.secondary_action.as_mut()
-        } else { None };
+        } else {
+            None
+        };
         if let Some(callback) = callback {
             (callback.on_click)();
             true
-        } else { false }
+        } else {
+            false
+        }
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -846,8 +870,6 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             .bounds
             .map(|bounds| bounds.to_rect())
     }
-
-
 }
 
 #[cfg(test)]
@@ -1104,22 +1126,57 @@ mod tests {
         use automerge::transaction::Transactable;
         let fired = Rc::new(Cell::new(0));
         let callback = fired.clone();
-        let mut dialog = ModalDialog::new("Review", TestContent).open(true).primary_action("Restore", move || callback.set(callback.get()+1));
-        let target = dialog.accessibility().unwrap().children[0].action_target.clone().unwrap();
+        let mut dialog = ModalDialog::new("Review", TestContent)
+            .open(true)
+            .primary_action("Restore", move || callback.set(callback.get() + 1));
+        let target = dialog.accessibility().unwrap().children[0]
+            .action_target
+            .clone()
+            .unwrap();
         let mut doc = AutoCommit::new();
-        assert!(dialog.perform_semantic_action(&target, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        assert!(dialog.perform_semantic_action(
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
         assert_eq!(fired.get(), 1);
         dialog.set_open(false);
         assert!(dialog.accessibility().unwrap().children.is_empty());
-        assert!(!dialog.perform_semantic_action(&target, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        assert!(!dialog.perform_semantic_action(
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
         dialog.set_open(true);
         dialog.primary_action = None; // Unavailable footer action is absent in all input paths.
-        assert!(!dialog.perform_semantic_action(&target, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        assert!(!dialog.perform_semantic_action(
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
         let callback = fired.clone();
-        let mut replacement = ModalDialog::new("Review", TestContent).open(true).primary_action("Restore", move || callback.set(callback.get()+1));
-        assert!(!replacement.perform_semantic_action(&target, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
-        let fresh = replacement.accessibility().unwrap().children[0].action_target.clone().unwrap();
-        assert!(replacement.perform_semantic_action(&fresh, &crate::a11y::Action::Activate, &mut doc, &automerge::ROOT));
+        let mut replacement = ModalDialog::new("Review", TestContent)
+            .open(true)
+            .primary_action("Restore", move || callback.set(callback.get() + 1));
+        assert!(!replacement.perform_semantic_action(
+            &target,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        let fresh = replacement.accessibility().unwrap().children[0]
+            .action_target
+            .clone()
+            .unwrap();
+        assert!(replacement.perform_semantic_action(
+            &fresh,
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
         assert_eq!(fired.get(), 2);
         assert_eq!(doc.pending_ops(), 0);
     }

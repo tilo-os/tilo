@@ -138,7 +138,7 @@ impl PreviewPane {
     #[cfg(test)]
     pub(crate) fn history_test_point(&self, page: usize, y: f64) -> Point {
         let b = self.boxes[page];
-        self.viewport.content_to_screen() * Point::new(b.x_off, b.top+y)
+        self.viewport.content_to_screen() * Point::new(b.x_off, b.top + y)
     }
 
     pub fn new() -> Self {
@@ -165,9 +165,15 @@ impl PreviewPane {
     }
 
     /// Frozen page navigation: all inputs are bounded local view coordinates.
-    pub(crate) fn set_snapshot_view(&mut self, page: usize, zoom: f64, scroll: (f64, f64)) -> (f64, f64) {
+    pub(crate) fn set_snapshot_view(
+        &mut self,
+        page: usize,
+        zoom: f64,
+        scroll: (f64, f64),
+    ) -> (f64, f64) {
         self.fit_width = false;
-        self.viewport.set_zoom(self.viewport.fit_width_zoom() * zoom);
+        self.viewport
+            .set_zoom(self.viewport.fit_width_zoom() * zoom);
         self.viewport.set_scroll(0., 0.);
         self.scroll_to_page(page);
         // History offsets are relative to this selected page's clamped anchor,
@@ -175,7 +181,10 @@ impl PreviewPane {
         let anchor_y = self.viewport.scroll_y();
         self.viewport.pan_by(scroll.0, scroll.1);
         self.recompute_current();
-        (self.viewport.scroll_x(), self.viewport.scroll_y() - anchor_y)
+        (
+            self.viewport.scroll_x(),
+            self.viewport.scroll_y() - anchor_y,
+        )
     }
 
     pub fn set_pages(&mut self, pages: &[PageImage]) {

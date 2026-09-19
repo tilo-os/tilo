@@ -217,7 +217,13 @@ impl FindBar {
             *w = (f64::from(tr.measure(label, LABEL_FONT, None).0) + 2.0 * s2).max(*w);
         }
         let mut action_w = ACTION_W;
-        let actions = ["↑".to_string(), "↓".to_string(), t("find-replace"), t("find-replace-all"), "✕".to_string()];
+        let actions = [
+            "↑".to_string(),
+            "↓".to_string(),
+            t("find-replace"),
+            t("find-replace-all"),
+            "✕".to_string(),
+        ];
         for (w, label) in action_w.iter_mut().zip(&actions) {
             *w = (f64::from(tr.measure(label, ACTION_FONT, None).0) + 2.0 * s2).max(*w);
         }
@@ -689,7 +695,12 @@ impl FindBar {
         let [case_w, word_w, regex_w] = m.toggle_w;
         let [case_l, word_l, regex_l] = TOGGLE_LABELS;
         for (action, label, width, active) in [
-            (Action::ToggleCase, case_l, case_w, self.options.case_sensitive),
+            (
+                Action::ToggleCase,
+                case_l,
+                case_w,
+                self.options.case_sensitive,
+            ),
             (Action::ToggleWord, word_l, word_w, self.options.whole_word),
             (Action::ToggleRegex, regex_l, regex_w, self.options.regex),
         ] {
@@ -706,7 +717,13 @@ impl FindBar {
                 );
                 ctx.palette.on_accent
             } else {
-                ui::surface::card(ctx.scene, ctx.transform, rect, FIELD_RADIUS, ctx.palette.chip);
+                ui::surface::card(
+                    ctx.scene,
+                    ctx.transform,
+                    rect,
+                    FIELD_RADIUS,
+                    ctx.palette.chip,
+                );
                 ctx.palette.text_dim
             };
             // Centred on the measured label box, not a per-glyph estimate.
@@ -794,7 +811,13 @@ impl FindBar {
             (Action::Close, "✕".to_string(), close_w),
         ] {
             let rect = Rect::new(x, field_y, x + width, field_y + m.field_h);
-            ui::surface::card(ctx.scene, ctx.transform, rect, FIELD_RADIUS, ctx.palette.chip);
+            ui::surface::card(
+                ctx.scene,
+                ctx.transform,
+                rect,
+                FIELD_RADIUS,
+                ctx.palette.chip,
+            );
             let (label_w, label_h) = ctx.tr.measure(&label, ACTION_FONT, None);
             let text_x = rect.x0 + (width - f64::from(label_w)).max(0.0) / 2.0;
             ctx.tr.draw_text(

@@ -178,7 +178,10 @@ impl NumberControls {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The numeric-control painter takes field identity, current value, bounds, and the scene, transform, text renderer, and theme."
+    )]
     pub(crate) fn draw(
         &mut self,
         field: &NumberField,
@@ -494,7 +497,7 @@ impl NoteComposer {
 
     /// Shadow, card background/border, the "Note" header, excerpt and the
     /// (already laid-out) shared text input.
-    #[allow(clippy::too_many_arguments)]
+
     fn draw_note_chrome(
         &mut self,
         scene: &mut Scene,
@@ -587,7 +590,10 @@ impl NoteComposer {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The note editor combines render context with viewport bounds, optional anchor position, and the annotation being edited."
+    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,

@@ -206,16 +206,28 @@ fn customizer_actions_match_the_dropdown_control_height() {
     let reset = by_test_id(&app, "themes.reset");
     let delete = by_test_id(&app, "themes.delete");
     let font = by_test_id(&app, "font_dropdown");
-    for (name, button) in [("Duplicate", duplicate), ("Reset", reset), ("Delete", delete)] {
+    for (name, button) in [
+        ("Duplicate", duplicate),
+        ("Reset", reset),
+        ("Delete", delete),
+    ] {
         close(
             button.height(),
             font.height(),
             &format!("{name} button height vs the font dropdown"),
         );
-        close(button.y0, duplicate.y0, &format!("{name} shares the action row"));
+        close(
+            button.y0,
+            duplicate.y0,
+            &format!("{name} shares the action row"),
+        );
     }
     // The chooser and the actions share the panel's left inset.
-    close(duplicate.x0, font.x0, "actions start on the dropdown's left edge");
+    close(
+        duplicate.x0,
+        font.x0,
+        "actions start on the dropdown's left edge",
+    );
 }
 
 // ---- round two (2026-09-17) ----
@@ -230,8 +242,16 @@ fn gallery_toggle_is_a_shared_button_on_the_bar_control_height() {
     lay_out(&mut app, (480.0, 900.0));
     let metrics = ui::tokens::Metrics::default();
     let toggle = by_test_id(&app, "themes.gallery_toggle");
-    close(toggle.width(), f64::from(metrics.bar_height), "toggle width");
-    close(toggle.height(), f64::from(metrics.bar_height), "toggle height");
+    close(
+        toggle.width(),
+        f64::from(metrics.bar_height),
+        "toggle width",
+    );
+    close(
+        toggle.height(),
+        f64::from(metrics.bar_height),
+        "toggle height",
+    );
     close(
         toggle.x0,
         f64::from(NARROW_CONTENT_GUTTER),
@@ -244,8 +264,16 @@ fn gallery_toggle_is_a_shared_button_on_the_bar_control_height() {
     );
     for id in ["themes.new", "themes.export", "themes.apply"] {
         let action = by_test_id(&app, id);
-        close(action.center().y, toggle.center().y, &format!("{id} shares the toggle's centre line"));
-        close(action.height(), toggle.height(), &format!("{id} shares the control height"));
+        close(
+            action.center().y,
+            toggle.center().y,
+            &format!("{id} shares the toggle's centre line"),
+        );
+        close(
+            action.height(),
+            toggle.height(),
+            &format!("{id} shares the control height"),
+        );
     }
     // The toggle is a real child of the tree (reachable by assistive
     // technology), not a painted rect, and it speaks the action it will
@@ -265,8 +293,16 @@ fn gallery_toggle_is_a_shared_button_on_the_bar_control_height() {
     lay_out(&mut open, (480.0, 900.0));
     assert_eq!(spoken(&open), "Hide themes");
     let close_toggle = by_test_id(&open, "themes.gallery_toggle");
-    close(close_toggle.x0, toggle.x0, "the close control keeps the toggle's slot");
-    close(close_toggle.width(), toggle.width(), "the close control keeps the toggle's size");
+    close(
+        close_toggle.x0,
+        toggle.x0,
+        "the close control keeps the toggle's slot",
+    );
+    close(
+        close_toggle.width(),
+        toggle.width(),
+        "the close control keeps the toggle's size",
+    );
 }
 
 /// Under large text on a phone-width window the bar's actions no longer fit
@@ -304,7 +340,10 @@ fn top_bar_wraps_its_actions_under_large_text_instead_of_covering_the_toggle() {
 /// name (round one's U6).
 #[test]
 fn gallery_rows_keep_their_1x_height_and_grow_with_large_text() {
-    let spec = default_catalog().into_iter().next().expect("a preset theme");
+    let spec = default_catalog()
+        .into_iter()
+        .next()
+        .expect("a preset theme");
     let mut row = ThemeRow::from_spec(&spec, false);
     lay_out_widget_scaled(&mut row, (272.0, 400.0), 1.0);
     close(row.get_rect().height(), f64::from(ROW_H), "1× row height");
@@ -389,6 +428,14 @@ fn gallery_rows_stack_on_the_s2_step_and_never_touch() {
         close(pair[0].x1, pair[1].x1, "rows share a right edge");
     }
     let gallery = by_widget_name(&app, "Gallery")[0];
-    close(rows[0].x0 - gallery.x0, f64::from(sp.s4), "row inset from the gallery edge");
-    close(gallery.x1 - rows[0].x1, f64::from(sp.s4), "row inset from the gallery edge");
+    close(
+        rows[0].x0 - gallery.x0,
+        f64::from(sp.s4),
+        "row inset from the gallery edge",
+    );
+    close(
+        gallery.x1 - rows[0].x1,
+        f64::from(sp.s4),
+        "row inset from the gallery edge",
+    );
 }

@@ -931,7 +931,10 @@ impl AccountsPane {
     /// checked and, only after that check succeeds, committed. Existing
     /// envelopes are cloned so fields contributed by another app or a newer
     /// provider survive an edit.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Account preparation validates the account kind, existing or assigned ID, display name, identity, login, server, and credential together."
+    )]
     #[allow(
         clippy::too_many_lines,
         reason = "one canonical conversion validates the complete set of account kinds and credential fields"
@@ -1056,7 +1059,10 @@ impl AccountsPane {
 
     /// Commit a draft after its protocol probe succeeds. The draft is rebuilt
     /// over the latest canonical envelope to preserve concurrent/newer fields.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Account persistence passes the full validated draft, including existing or assigned ID and credential, into canonical preparation."
+    )]
     fn save_account_with_id(
         kind: AccountKind,
         existing_id: Option<&str>,
@@ -1118,7 +1124,6 @@ impl AccountsPane {
         finish_or_recover("account save")
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[cfg(test)]
     fn save_account(
         kind: AccountKind,

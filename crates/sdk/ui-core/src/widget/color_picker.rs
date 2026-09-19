@@ -7,8 +7,8 @@
 //! state with [`ColorPicker::from_state`], or be observed with `on_change`
 //! for an app-owned durable mutation.
 
-use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;

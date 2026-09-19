@@ -21,13 +21,29 @@ const MAX_COMMANDS: u32 = 512;
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
     Observe {},
-    Click { x: f64, y: f64 },
+    Click {
+        x: f64,
+        y: f64,
+    },
     /// A secondary (right) button press and release at a logical point:
     /// the pointer route to a context menu, which no semantic action opens.
-    ContextClick { x: f64, y: f64 },
-    Key { key: String, modifiers: Vec<String> },
-    Type { text: String },
-    Wheel { x: f64, y: f64, dx: f64, dy: f64 },
+    ContextClick {
+        x: f64,
+        y: f64,
+    },
+    Key {
+        key: String,
+        modifiers: Vec<String>,
+    },
+    Type {
+        text: String,
+    },
+    Wheel {
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+    },
     Finish {},
 }
 

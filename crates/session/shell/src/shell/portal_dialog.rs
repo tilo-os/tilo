@@ -1214,13 +1214,19 @@ mod tests {
         ));
         let mut c = PortalDialogController::new(q);
         assert!(c.pump());
-        let layout = c.layout(Rect::new(0.0, 0.0, 1280.0, 800.0)).expect("an active sheet");
+        let layout = c
+            .layout(Rect::new(0.0, 0.0, 1280.0, 800.0))
+            .expect("an active sheet");
         let row = layout.choices[0];
         // Confirm's right edge is the rows' right edge; the row above used
         // to end 4 px short of the buttons below it.
         assert_eq!(layout.confirm.x1, row.x1);
         assert_eq!(layout.confirm.x1, layout.sheet.x1 - 24.0);
-        assert_eq!(layout.cancel.x1 + 12.0, layout.confirm.x0, "buttons keep their 12 px gap");
+        assert_eq!(
+            layout.cancel.x1 + 12.0,
+            layout.confirm.x0,
+            "buttons keep their 12 px gap"
+        );
         assert_eq!(layout.cancel.width(), 92.0);
         assert_eq!(layout.confirm.width(), 84.0);
         assert!(layout.cancel.height() >= 32.0 && layout.confirm.height() >= 32.0);

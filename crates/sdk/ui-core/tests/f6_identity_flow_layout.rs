@@ -50,10 +50,8 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 fn ensure_invite_broker() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let root = std::env::temp_dir().join(format!(
-            "qos-f6-invite-authority-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("qos-f6-invite-authority-{}", std::process::id()));
         let _ = configure_invite_broker("127.0.0.1:4433", vec![0x2a; 64], root);
     });
 }
@@ -155,8 +153,13 @@ fn seeded_flow(store: Arc<dyn IdentityStore>) -> Result<IdentityFlow, IdentityFl
         .unwrap_or_else(SystemTime::now);
     flow.invite_mint
         .set_channel(ChannelId::new(), "engineering");
-    flow.invite_mint
-        .mint_now(owner_pk, &owner_sk, "Alice", Role::Editor, SystemTime::now())?;
+    flow.invite_mint.mint_now(
+        owner_pk,
+        &owner_sk,
+        "Alice",
+        Role::Editor,
+        SystemTime::now(),
+    )?;
     let env = mint_invite(
         ChannelId::new(),
         "engineering",
@@ -187,7 +190,8 @@ fn identity_screens_fill_the_viewport() {
             let store: Arc<dyn IdentityStore> = Arc::new(MemoryIdentityStore::new());
             let mut flow = seeded_flow(store).expect("seed the identity ceremony");
             flow.set_screen(*screen);
-            let harness = FrameHarness::new_with_theme(State::new(), Box::new(flow), VIEWPORT, theme);
+            let harness =
+                FrameHarness::new_with_theme(State::new(), Box::new(flow), VIEWPORT, theme);
             write_shot(&harness, &format!("identity_{tag}_{theme_name}"));
             let targets = harness.targets();
             let Some(rect) = targets.get(*test_id).copied() else {
@@ -347,7 +351,10 @@ fn identity_fields_are_shared_text_inputs_reached_by_tab_typing_and_paste() {
     h.send(&mouse(ElementState::Pressed));
     h.send(&cursor_moved(end));
     let selecting = selection_of(&h, "Word 2");
-    assert!(selecting.is_some(), "the drag reports a selection through accessibility");
+    assert!(
+        selecting.is_some(),
+        "the drag reports a selection through accessibility"
+    );
     h.tab(false);
     assert_eq!(focused_name(&h).as_deref(), Some("Word 11"));
     h.send(&mouse(ElementState::Released));

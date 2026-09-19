@@ -37,7 +37,10 @@ fn managed_driver_for(root: Box<dyn Widget>) -> ui::headless::Driver {
 }
 
 fn resource_snapshot(driver: &ui::headless::Driver) -> Vec<(String, String, Vec<String>)> {
-    fn collect(resource: &ui::tilo_actions::Resource, out: &mut Vec<(String, String, Vec<String>)>) {
+    fn collect(
+        resource: &ui::tilo_actions::Resource,
+        out: &mut Vec<(String, String, Vec<String>)>,
+    ) {
         out.push((
             resource.id.0.clone(),
             resource.label.clone(),
@@ -69,14 +72,8 @@ fn semantic_center(inspection: &str, name: &str) -> (f64, f64) {
         if value.get("name").and_then(serde_json::Value::as_str) == Some(name) {
             let bounds = value.get("bounds")?;
             return Some((
-                f64::midpoint(
-                    bounds.get("x0")?.as_f64()?,
-                    bounds.get("x1")?.as_f64()?,
-                ),
-                f64::midpoint(
-                    bounds.get("y0")?.as_f64()?,
-                    bounds.get("y1")?.as_f64()?,
-                ),
+                f64::midpoint(bounds.get("x0")?.as_f64()?, bounds.get("x1")?.as_f64()?),
+                f64::midpoint(bounds.get("y0")?.as_f64()?, bounds.get("y1")?.as_f64()?),
             ));
         }
         match value {

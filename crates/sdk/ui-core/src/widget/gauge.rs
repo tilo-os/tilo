@@ -18,8 +18,8 @@ use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Str
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
-use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -159,7 +159,10 @@ impl RingGauge {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "ring painting combines scene resources and theme with center/radius/thickness, fraction, color and value/caption text"
+    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -404,7 +407,10 @@ impl BarGauge {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "bar painting combines scene resources and theme with bounds, fraction, color, label and formatted value"
+    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -432,7 +438,11 @@ impl BarGauge {
             );
         }
         if !value.is_empty() {
-            let (vw, _) = text_renderer.measure(value, renderer_type_size(text_renderer, tokens.typography.scale.sm), None);
+            let (vw, _) = text_renderer.measure(
+                value,
+                renderer_type_size(text_renderer, tokens.typography.scale.sm),
+                None,
+            );
             text_renderer.draw_text(
                 scene,
                 value,

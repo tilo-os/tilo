@@ -790,7 +790,11 @@ mod tests {
         let theme = Theme::dark();
         let target = Rect::new(20.0, 30.0, 64.0, 62.0);
         let pill = Rect::new(20.0, 34.0, 64.0, 58.0);
-        assert_eq!(track_rect(target), pill, "44×24 pill centred in the 44×32 target");
+        assert_eq!(
+            track_rect(target),
+            pill,
+            "44×24 pill centred in the 44×32 target"
+        );
         let pill_shape = RoundedRect::from_rect(pill, 12.0);
 
         for (on, hovered, focused, enabled) in [

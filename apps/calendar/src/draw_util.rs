@@ -84,7 +84,10 @@ pub(crate) fn row_ground(theme: &Theme, ground: Color, active: bool, hover: bool
 /// `ground` it sits on — fill, derived hairline and inner glow — never an
 /// accent wash. Hover alone is the quiet half-lift; an idle row paints
 /// nothing.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Selection painting needs the scene transform, theme and ground color, row geometry, and active/hover states."
+)]
 pub(crate) fn selected_row(
     scene: &mut Scene,
     transform: Affine,

@@ -36,7 +36,16 @@ impl VideoEditorApp {
             return;
         }
         let readout_y = text_baseline(m.readout, 9.0, tr);
-        text(scene, tr, tf, "MIX", 9.0, c.text_dim, m.readout.x0, readout_y);
+        text(
+            scene,
+            tr,
+            tf,
+            "MIX",
+            9.0,
+            c.text_dim,
+            m.readout.x0,
+            readout_y,
+        );
         let flag = self.clip_flag_rect(r);
         if self.mix.clipped() {
             let hot = flag.contains(self.last_mouse);

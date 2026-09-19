@@ -392,7 +392,13 @@ impl BrowserTabStrip {
         ] {
             // The overflow paddles are raised faces with their derived rest
             // edge, not bare fills that dissolve into the strip on dark.
-            ui::surface::card(scene, transform, rect, 6.0, theme.tokens.colors.surfaces.raised);
+            ui::surface::card(
+                scene,
+                transform,
+                rect,
+                6.0,
+                theme.tokens.colors.surfaces.raised,
+            );
             let center = rect.center();
             let mut arrow = BezPath::new();
             if forward {

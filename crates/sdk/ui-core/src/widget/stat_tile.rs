@@ -25,11 +25,11 @@ use winit::event::WindowEvent;
 
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::text_metrics::renderer_type_size;
 
 const PAD: f64 = 14.0;
 const ICON_D: f64 = 18.0;
@@ -87,7 +87,10 @@ fn tile_height(has_delta: bool, theme: &Theme) -> f64 {
 
 /// Shared paint of a stat tile filling `rect`. Used by both the retained
 /// [`StatTile`] widget and the immediate-mode [`StatTile::paint`] entry point.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Shared stat-tile painting combines render context and bounds with caption, value/color, optional icon, and trend delta."
+)]
 fn paint_stat_tile(
     scene: &mut Scene,
     transform: Affine,
@@ -231,7 +234,10 @@ impl StatTile {
     }
 
     /// For apps that render straight to a `Scene`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Immediate stat-tile painting forwards render context, bounds, caption/value/color, icon, and trend to the shared painter."
+    )]
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,

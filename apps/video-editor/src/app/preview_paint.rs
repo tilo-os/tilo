@@ -344,16 +344,7 @@ impl VideoEditorApp {
             );
         }
         if let Some(x) = fit.total_x {
-            text(
-                scene,
-                tr,
-                tf,
-                &total,
-                13.0,
-                c.text_dim,
-                x,
-                total_y,
-            );
+            text(scene, tr, tf, &total, 13.0, c.text_dim, x, total_y);
         }
         // Playing is reported in the success tint it always was; a shuttle
         // takes the accent, so the two states are not one word apart. This used
@@ -369,16 +360,7 @@ impl VideoEditorApp {
             text(scene, tr, tf, words, 10.0, tint, x, motion_y);
         }
         if let Some(x) = fit.meta_x {
-            text(
-                scene,
-                tr,
-                tf,
-                &meta,
-                11.5,
-                c.text_dim,
-                x,
-                meta_y,
-            );
+            text(scene, tr, tf, &meta, 11.5, c.text_dim, x, meta_y);
         }
         // Scrubber.
         let scrub = self.scrubber_rect(r);

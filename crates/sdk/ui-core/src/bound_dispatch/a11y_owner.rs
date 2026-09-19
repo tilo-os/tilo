@@ -1,6 +1,9 @@
 //! Host-local AT aliases for legacy live record owners. Taffy arena identity
 //! alone is insufficient when a replacement owner occupies a rebuilt slot.
-#[allow(clippy::wildcard_imports, reason = "private implementation module shares its enclosing host types")]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
 use super::*;
 use crate::accesskit_bridge::A11yTarget;
 
@@ -15,7 +18,11 @@ pub(super) struct OwnerAliases {
 impl OwnerAliases {
     pub(super) fn admit(&mut self, nodes: &HashMap<NodeId, BoundNode>) {
         for (&node, entry) in nodes {
-            let Some(lifetime) = entry.legacy.as_ref().and_then(crate::history_mode::HistoryOwner::lifetime_id) else {
+            let Some(lifetime) = entry
+                .legacy
+                .as_ref()
+                .and_then(crate::history_mode::HistoryOwner::lifetime_id)
+            else {
                 continue;
             };
             let key = (lifetime, node);

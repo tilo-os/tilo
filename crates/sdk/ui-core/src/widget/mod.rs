@@ -443,38 +443,71 @@ pub trait Widget {
     /// A successful, locally applied resource Document action on this exact owner.
     /// Immutable document access permits cache reconciliation only. Not called for
     /// submissions, failed execution, replay, remote merge, or History restore.
-    fn document_action_applied(&mut self, _action: &tilo_actions::EncodedAction, _before: &[automerge::ChangeHash], _doc: &AutoCommit, _path: &ObjId) {}
+    fn document_action_applied(
+        &mut self,
+        _action: &tilo_actions::EncodedAction,
+        _before: &[automerge::ChangeHash],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) {
+    }
 
     /// Explicit root-owned History custody, including selected external resources.
     /// Runners consume this bundle; preview renderers never receive the root.
     ///
     /// # Errors
     /// Returns a registration error when the root cannot provide valid History custody.
-    fn history_registration(&self) -> Result<Option<crate::history_mode::HistoryRegistration>,crate::history_mode::HistoryRegistrationError> { Ok(None) }
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<crate::history_mode::HistoryRegistration>,
+        crate::history_mode::HistoryRegistrationError,
+    > {
+        Ok(None)
+    }
     /// Presentation declaration for a legacy tile's eventual checked record.
     /// The `TileHost` resolves custody after binding; this grants no authority.
-    fn document_history_definition(&self) -> Option<&'static crate::history_mode::HistoryDefinition> { None }
-
+    fn document_history_definition(
+        &self,
+    ) -> Option<&'static crate::history_mode::HistoryDefinition> {
+        None
+    }
 
     /// Framework lifecycle traversal, independent of visible presentation children.
     /// Borrowed surfaces and retained children cannot escape this callback.
     #[doc(hidden)]
-    fn visit_framework_history(&self, visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget)) {
-        for child in self.children() { child.visit_framework_history(visitor); }
+    fn visit_framework_history(
+        &self,
+        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+    ) {
+        for child in self.children() {
+            child.visit_framework_history(visitor);
+        }
     }
     #[doc(hidden)]
-    fn visit_framework_history_mut(&mut self, visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget)) {
-        for child in self.children_mut() { child.visit_framework_history_mut(visitor); }
+    fn visit_framework_history_mut(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+    ) {
+        for child in self.children_mut() {
+            child.visit_framework_history_mut(visitor);
+        }
     }
     /// Structural chrome can explicitly leave an inherited document callback.
     #[doc(hidden)]
-    fn resets_callback_binding(&self) -> bool { false }
+    fn resets_callback_binding(&self) -> bool {
+        false
+    }
     /// A legacy owner's actual live layout boundary, never framework chrome.
     #[doc(hidden)]
-    fn legacy_callback_boundary(&self) -> Option<(NodeId, crate::history_mode::HistoryOwner)> { None }
+    fn legacy_callback_boundary(&self) -> Option<(NodeId, crate::history_mode::HistoryOwner)> {
+        None
+    }
     /// Drawn live content whose input is suspended by a framework surface.
     #[doc(hidden)]
-    fn inactive_callback_boundary(&self) -> Option<NodeId> { None }
+    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+        None
+    }
 
     /// Read-only state evidence for opt-in scheduled native input diagnostics.
     /// Called only around diagnostic inputs, never during ordinary input or paint.
@@ -544,7 +577,8 @@ pub trait Widget {
 
     /// Opaque actual custody for framework History source registration.
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
-        self.callback_binding().map(crate::history_mode::HistoryOwner::component)
+        self.callback_binding()
+            .map(crate::history_mode::HistoryOwner::component)
     }
 
     #[doc(hidden)]
@@ -1218,9 +1252,9 @@ pub trait Widget {
     /// including the same modal child exposure, regardless of current availability.
     /// Transparent containers may query their children without building semantics.
     fn has_action_control_bindings(&self) -> bool {
-        self.control_action_bindings().iter().any(|binding| {
-            matches!(binding.kind, ControlBindingKind::Action(_))
-        })
+        self.control_action_bindings()
+            .iter()
+            .any(|binding| matches!(binding.kind, ControlBindingKind::Action(_)))
     }
     /// Push the fresh local permission-filtered action surface into every
     /// retained control. Custom widgets should refresh their own emitter and

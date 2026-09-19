@@ -575,7 +575,10 @@ impl Widget for Customizer {
         self.font_dropdown.draw_overlay(scene, t, tr, theme, p);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the Widget event signature carries input, CRDT location, handled/focus outputs and layout context to child controls"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1099,7 +1102,14 @@ impl Customizer {
 }
 
 /// The same color swatch paint used by live customization and frozen library views.
-fn draw_token_chip(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, rgb: [u8;3], selected: bool) {
+fn draw_token_chip(
+    scene: &mut Scene,
+    t: Affine,
+    theme: &Theme,
+    rect: Rect,
+    rgb: [u8; 3],
+    selected: bool,
+) {
     // The rest ring derives from the chip's own colour, so a chip that
     // matches the panel ground (a dark theme's `base` on the dark app) still
     // has a rim; the selected chip carries the accent ring instead.
@@ -1112,11 +1122,46 @@ fn draw_token_chip(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, rgb:
     }
 }
 
-pub(crate) fn draw_snapshot_tokens(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, spec: &ThemeSpec, rect: Rect) {
-    draw::text(tr, scene, t, &format!("{} · radius {:.2} · spacing {:.2}",spec.font,spec.radius_norm,spec.spacing_norm), 13., theme.text_primary, rect.x0, rect.y0);
+pub(crate) fn draw_snapshot_tokens(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    spec: &ThemeSpec,
+    rect: Rect,
+) {
+    draw::text(
+        tr,
+        scene,
+        t,
+        &format!(
+            "{} · radius {:.2} · spacing {:.2}",
+            spec.font, spec.radius_norm, spec.spacing_norm
+        ),
+        13.,
+        theme.text_primary,
+        rect.x0,
+        rect.y0,
+    );
     for (i, token) in TokenId::ALL.iter().enumerate() {
         let y = rect.y0 + 34. + i as f64 * 38.;
-        draw_token_chip(scene, t, theme, Rect::new(rect.x0,y,rect.x0+28.,y+28.),spec.token(*token),false);
-        draw::text(tr,scene,t,&format!("{} · {}",token.label(),model::hex(spec.token(*token))),12.,theme.text_primary,rect.x0+40.,y+5.);
+        draw_token_chip(
+            scene,
+            t,
+            theme,
+            Rect::new(rect.x0, y, rect.x0 + 28., y + 28.),
+            spec.token(*token),
+            false,
+        );
+        draw::text(
+            tr,
+            scene,
+            t,
+            &format!("{} · {}", token.label(), model::hex(spec.token(*token))),
+            12.,
+            theme.text_primary,
+            rect.x0 + 40.,
+            y + 5.,
+        );
     }
 }

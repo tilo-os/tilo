@@ -464,37 +464,31 @@ impl Toolbar {
         }
     }
     fn handle_key(&mut self, key: &Key, handled: &mut bool) {
-    match key {
-        Key::Named(NamedKey::Enter | NamedKey::Space) => {
-            if let Some(target) = self.focus {
-                self.activate(target);
+        match key {
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                if let Some(target) = self.focus {
+                    self.activate(target);
+                }
+                *handled = true;
             }
-            *handled = true;
+            Key::Named(NamedKey::ArrowRight) if self.orientation == Orientation::Horizontal => {
+                self.move_focus(true);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowLeft) if self.orientation == Orientation::Horizontal => {
+                self.move_focus(false);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowDown) if self.orientation == Orientation::Vertical => {
+                self.move_focus(true);
+                *handled = true;
+            }
+            Key::Named(NamedKey::ArrowUp) if self.orientation == Orientation::Vertical => {
+                self.move_focus(false);
+                *handled = true;
+            }
+            _ => {}
         }
-        Key::Named(NamedKey::ArrowRight)
-            if self.orientation == Orientation::Horizontal =>
-        {
-            self.move_focus(true);
-            *handled = true;
-        }
-        Key::Named(NamedKey::ArrowLeft)
-            if self.orientation == Orientation::Horizontal =>
-        {
-            self.move_focus(false);
-            *handled = true;
-        }
-        Key::Named(NamedKey::ArrowDown)
-            if self.orientation == Orientation::Vertical =>
-        {
-            self.move_focus(true);
-            *handled = true;
-        }
-        Key::Named(NamedKey::ArrowUp) if self.orientation == Orientation::Vertical => {
-            self.move_focus(false);
-            *handled = true;
-        }
-        _ => {}
-    }
     }
 
     fn move_focus(&mut self, forward: bool) {
@@ -507,7 +501,10 @@ impl Toolbar {
             .and_then(|focus| targets.iter().position(|target| *target == focus));
         let next = match index {
             None => 0,
-            Some(index) if forward => index.saturating_add(1).checked_rem(targets.len()).unwrap_or_default(),
+            Some(index) if forward => index
+                .saturating_add(1)
+                .checked_rem(targets.len())
+                .unwrap_or_default(),
             Some(index) => index
                 .checked_sub(1)
                 .unwrap_or_else(|| targets.len().saturating_sub(1)),

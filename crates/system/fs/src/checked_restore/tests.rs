@@ -2090,125 +2090,412 @@ async fn checked_restore_startup_completion_io_failure_remains_retryable_and_fen
 async fn history_read_complete_paging_and_exact_parent_metadata() {
     use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
     let fixture = Fixture::new().await;
-    for i in 0..25 { fixture.fs.commit_content(fixture.ino, format!("edit-{i}").as_bytes()).unwrap(); }
-    let V::Page(first) = fixture.fs.read_file_history(fixture.ino, Q::Page { cursor: None }).unwrap() else { panic!() };
+    for i in 0..25 {
+        fixture
+            .fs
+            .commit_content(fixture.ino, format!("edit-{i}").as_bytes())
+            .unwrap();
+    }
+    let V::Page(first) = fixture
+        .fs
+        .read_file_history(fixture.ino, Q::Page { cursor: None })
+        .unwrap()
+    else {
+        panic!()
+    };
     assert_eq!(first.total_versions, 27);
     assert_eq!(first.versions.len(), 12);
     let scope = first.scope;
     let mut versions = first.versions;
     let mut next = first.next_after;
     while let Some(id) = next {
-        let V::Page(page) = fixture.fs.read_file_history(fixture.ino, Q::Page { cursor: Some((scope.frontier, id)) }).unwrap() else { panic!() };
+        let V::Page(page) = fixture
+            .fs
+            .read_file_history(
+                fixture.ino,
+                Q::Page {
+                    cursor: Some((scope.frontier, id)),
+                },
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
         assert_eq!(page.scope, scope);
         versions.extend(page.versions);
         next = page.next_after;
     }
     assert_eq!(versions.len(), 27);
-    assert_eq!(versions.iter().map(|v| v.id).collect::<std::collections::BTreeSet<_>>().len(), 27);
-    assert!(versions.windows(2).all(|v| (v[0].timestamp_ms,v[0].id) < (v[1].timestamp_ms,v[1].id)));
+    assert_eq!(
+        versions
+            .iter()
+            .map(|v| v.id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        27
+    );
+    assert!(
+        versions
+            .windows(2)
+            .all(|v| (v[0].timestamp_ms, v[0].id) < (v[1].timestamp_ms, v[1].id))
+    );
     let old = versions.iter().find(|v| v.id == fixture.original).unwrap();
-    let V::Version { scope: actual, version } = fixture.fs.read_file_history(fixture.ino, Q::Version { frontier:scope.frontier, version_id: old.id }).unwrap() else { panic!() };
-    assert_eq!(actual,scope); assert_eq!(&version,old);
+    let V::Version {
+        scope: actual,
+        version,
+    } = fixture
+        .fs
+        .read_file_history(
+            fixture.ino,
+            Q::Version {
+                frontier: scope.frontier,
+                version_id: old.id,
+            },
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(actual, scope);
+    assert_eq!(&version, old);
     assert!(version.parents.is_empty());
     fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_rejects_stale_wrong_record_missing_cursor_and_revocation() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V, FileHistoryReadErrorV1 as E};
+    use collab_types::files::{
+        FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
+    };
     let mut fixture = Fixture::new().await;
-    let V::Page(page) = fixture.fs.read_file_history(fixture.ino, Q::Page { cursor: None }).unwrap() else { panic!() };
-    let mut wrong = page.scope; wrong.record_id = collab_types::FileRecordId::new(); wrong.frontier[0] ^= 1;
-    assert_eq!(fixture.fs.read_file_history(fixture.ino,Q::Version { frontier:wrong.frontier,version_id: fixture.original }), Err(E::Stale));
-    assert_eq!(fixture.fs.read_file_history(fixture.ino,Q::Page { cursor: Some((page.scope.frontier,collab_types::FileVersionId::new())) }), Err(E::InvalidRequest));
-    assert_eq!(fixture.fs.read_file_history(fixture.ino,Q::Version { frontier:page.scope.frontier,version_id: collab_types::FileVersionId::new() }), Err(E::MissingVersion));
-    fixture.fs.commit_content(fixture.ino,b"later").unwrap();
-    assert_eq!(fixture.fs.read_file_history(fixture.ino,Q::Page { cursor: Some((page.scope.frontier,fixture.original)) }), Err(E::Stale));
-    fixture.fs.enforcement = Some((AclHandle::new(crate::acl::WorkspaceAcl::new()),[55;32]));
-    assert_eq!(fixture.fs.read_file_history(fixture.ino,Q::Version { frontier:wrong.frontier,version_id: fixture.original }), Err(E::NotVisible));
+    let V::Page(page) = fixture
+        .fs
+        .read_file_history(fixture.ino, Q::Page { cursor: None })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut wrong = page.scope;
+    wrong.record_id = collab_types::FileRecordId::new();
+    wrong.frontier[0] ^= 1;
+    assert_eq!(
+        fixture.fs.read_file_history(
+            fixture.ino,
+            Q::Version {
+                frontier: wrong.frontier,
+                version_id: fixture.original
+            }
+        ),
+        Err(E::Stale)
+    );
+    assert_eq!(
+        fixture.fs.read_file_history(
+            fixture.ino,
+            Q::Page {
+                cursor: Some((page.scope.frontier, collab_types::FileVersionId::new()))
+            }
+        ),
+        Err(E::InvalidRequest)
+    );
+    assert_eq!(
+        fixture.fs.read_file_history(
+            fixture.ino,
+            Q::Version {
+                frontier: page.scope.frontier,
+                version_id: collab_types::FileVersionId::new()
+            }
+        ),
+        Err(E::MissingVersion)
+    );
+    fixture.fs.commit_content(fixture.ino, b"later").unwrap();
+    assert_eq!(
+        fixture.fs.read_file_history(
+            fixture.ino,
+            Q::Page {
+                cursor: Some((page.scope.frontier, fixture.original))
+            }
+        ),
+        Err(E::Stale)
+    );
+    fixture.fs.enforcement = Some((AclHandle::new(crate::acl::WorkspaceAcl::new()), [55; 32]));
+    assert_eq!(
+        fixture.fs.read_file_history(
+            fixture.ino,
+            Q::Version {
+                frontier: wrong.frontier,
+                version_id: fixture.original
+            }
+        ),
+        Err(E::NotVisible)
+    );
     fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_immutable_bytes_and_post_hydration_visibility() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V, FileHistoryReadErrorV1 as E};
+    use collab_types::files::{
+        FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
+    };
     let mut fixture = Fixture::new().await;
-    let mut grants = crate::acl::WorkspaceAcl::new(); grants.grant_read([55;32],"/");
+    let mut grants = crate::acl::WorkspaceAcl::new();
+    grants.grant_read([55; 32], "/");
     let acl = AclHandle::new(grants);
-    fixture.fs.enforcement = Some((acl.clone(),[55;32]));
-    let V::Page(page) = fixture.fs.read_file_history(fixture.ino,Q::Page { cursor: None }).unwrap() else { panic!() };
-    assert_eq!(fixture.fs.read_file_history_preview(fixture.ino,page.scope,fixture.original).unwrap(),b"first");
-    assert_eq!(fixture.fs.read_file_history_preview_using(fixture.ino,page.scope,fixture.original,|_| Ok(b"second".to_vec())),Err(E::Unavailable));
-    assert_eq!(fixture.fs.read_file_history_preview_using(fixture.ino,page.scope,fixture.original,|_| {
-        acl.replace(crate::acl::WorkspaceAcl::new()); Ok(b"first".to_vec())
-    }),Err(E::NotVisible));
-    let mut grants = crate::acl::WorkspaceAcl::new(); grants.grant_read([55;32],"/");
+    fixture.fs.enforcement = Some((acl.clone(), [55; 32]));
+    let V::Page(page) = fixture
+        .fs
+        .read_file_history(fixture.ino, Q::Page { cursor: None })
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        fixture
+            .fs
+            .read_file_history_preview(fixture.ino, page.scope, fixture.original)
+            .unwrap(),
+        b"first"
+    );
+    assert_eq!(
+        fixture.fs.read_file_history_preview_using(
+            fixture.ino,
+            page.scope,
+            fixture.original,
+            |_| Ok(b"second".to_vec())
+        ),
+        Err(E::Unavailable)
+    );
+    assert_eq!(
+        fixture.fs.read_file_history_preview_using(
+            fixture.ino,
+            page.scope,
+            fixture.original,
+            |_| {
+                acl.replace(crate::acl::WorkspaceAcl::new());
+                Ok(b"first".to_vec())
+            }
+        ),
+        Err(E::NotVisible)
+    );
+    let mut grants = crate::acl::WorkspaceAcl::new();
+    grants.grant_read([55; 32], "/");
     acl.replace(grants);
-    assert_eq!(fixture.fs.read_file_history_preview_using(fixture.ino,page.scope,fixture.original,|_| {
-        let mut replacement=crate::namespace::Namespace::new("retargeted-during-hydration").unwrap();
-        let other=replacement.create_file(crate::namespace::ROOT_INO,"other.bin",None,0,1).unwrap();
-        assert_eq!(other,fixture.ino,"simulate inode reuse during an owner lifetime change");
-        let record_id=replacement.record_id_for(other).unwrap();
-        let mut version=page.versions[0].clone(); version.id=collab_types::FileVersionId::new(); version.record_id=record_id; version.parents.clear();
-        fixture.history.append(version).unwrap();
-        *fixture.fs.namespace.lock().unwrap()=replacement;
-        Ok(b"first".to_vec())
-    }),Err(E::Stale),"hydrated bytes cannot cross a changed stable record binding");
+    assert_eq!(
+        fixture.fs.read_file_history_preview_using(
+            fixture.ino,
+            page.scope,
+            fixture.original,
+            |_| {
+                let mut replacement =
+                    crate::namespace::Namespace::new("retargeted-during-hydration").unwrap();
+                let other = replacement
+                    .create_file(crate::namespace::ROOT_INO, "other.bin", None, 0, 1)
+                    .unwrap();
+                assert_eq!(
+                    other, fixture.ino,
+                    "simulate inode reuse during an owner lifetime change"
+                );
+                let record_id = replacement.record_id_for(other).unwrap();
+                let mut version = page.versions[0].clone();
+                version.id = collab_types::FileVersionId::new();
+                version.record_id = record_id;
+                version.parents.clear();
+                fixture.history.append(version).unwrap();
+                *fixture.fs.namespace.lock().unwrap() = replacement;
+                Ok(b"first".to_vec())
+            }
+        ),
+        Err(E::Stale),
+        "hydrated bytes cannot cross a changed stable record binding"
+    );
     fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_backfill_changes_frontier_without_changing_visible_bytes() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V, FileHistoryReadErrorV1 as E};
+    use collab_types::files::{
+        FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
+    };
     let fixture = Fixture::with_signed(false).await;
-    let V::Page(page) = fixture.fs.read_file_history(fixture.ino,Q::Page { cursor: None }).unwrap() else { panic!() };
-    let mut version = page.versions[0].clone(); version.id = collab_types::FileVersionId::new(); version.timestamp_ms = 0; version.parents = vec![fixture.original];
+    let V::Page(page) = fixture
+        .fs
+        .read_file_history(fixture.ino, Q::Page { cursor: None })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut version = page.versions[0].clone();
+    version.id = collab_types::FileVersionId::new();
+    version.timestamp_ms = 0;
+    version.parents = vec![fixture.original];
     fixture.history.append(version).unwrap();
-    assert_eq!(fixture.fs.read_file_history(fixture.ino,Q::Page { cursor: Some((page.scope.frontier,fixture.original)) }),Err(E::Stale));
+    assert_eq!(
+        fixture.fs.read_file_history(
+            fixture.ino,
+            Q::Page {
+                cursor: Some((page.scope.frontier, fixture.original))
+            }
+        ),
+        Err(E::Stale)
+    );
     fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_current_winner_is_separate_from_exact_restore_receipt() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q,FileHistoryReadValueV1 as V};
-    let fixture=Fixture::new().await;
-    let request=fixture.request();
-    let applied=fixture.fs.checked_history_restore(fixture.ino,request);
-    let Outcome::Applied { receipt }=&applied else { panic!("{applied:?}") };
-    fixture.fs.commit_content(fixture.ino,b"later converged content").unwrap();
-    let V::Page(page)=fixture.fs.read_file_history(fixture.ino,Q::Page { cursor:None }).unwrap() else { panic!() };
-    let current=page.current_revision.unwrap();
-    assert_eq!(current,fixture.fs.namespace.lock().unwrap().content_revision_for(fixture.ino).unwrap());
-    assert_ne!(current.version_id,receipt.restored_revision.version_id);
-    assert_eq!(fixture.fs.checked_history_result(fixture.ino,request.intent_id),applied);
-    assert_eq!(fixture.fs.read_file_history_preview(fixture.ino,page.scope,fixture.original).unwrap(),b"first");
+    use collab_types::files::{FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V};
+    let fixture = Fixture::new().await;
+    let request = fixture.request();
+    let applied = fixture.fs.checked_history_restore(fixture.ino, request);
+    let Outcome::Applied { receipt } = &applied else {
+        panic!("{applied:?}")
+    };
+    fixture
+        .fs
+        .commit_content(fixture.ino, b"later converged content")
+        .unwrap();
+    let V::Page(page) = fixture
+        .fs
+        .read_file_history(fixture.ino, Q::Page { cursor: None })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let current = page.current_revision.unwrap();
+    assert_eq!(
+        current,
+        fixture
+            .fs
+            .namespace
+            .lock()
+            .unwrap()
+            .content_revision_for(fixture.ino)
+            .unwrap()
+    );
+    assert_ne!(current.version_id, receipt.restored_revision.version_id);
+    assert_eq!(
+        fixture
+            .fs
+            .checked_history_result(fixture.ino, request.intent_id),
+        applied
+    );
+    assert_eq!(
+        fixture
+            .fs
+            .read_file_history_preview(fixture.ino, page.scope, fixture.original)
+            .unwrap(),
+        b"first"
+    );
     fixture.endpoint.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn history_read_cursors_bind_workspace_mount_record_and_allow_codec_browsing() {
-    use collab_types::files::{FileHistoryReadQueryV1 as Q,FileHistoryReadValueV1 as V,FileHistoryReadErrorV1 as E};
-    let mut fixture=Fixture::with_signed(false).await;
-    let V::Page(page)=fixture.fs.read_file_history(fixture.ino,Q::Page { cursor:None }).unwrap() else { panic!() };
-    let query=Q::Version { frontier:page.scope.frontier,version_id:fixture.original };
-    fixture.fs.checked_history_workspace=Some(uuid::Uuid::new_v4());
-    assert_eq!(fixture.fs.read_file_history(fixture.ino,query),Err(E::Stale),"workspace change must invalidate cursor");
-    fixture.fs.checked_history_workspace=Some(page.scope.workspace_id);
-    let other=fixture.fs.namespace.lock().unwrap().create_file(crate::namespace::ROOT_INO,"other.bin",None,0,1).unwrap();
+    use collab_types::files::{
+        FileHistoryReadErrorV1 as E, FileHistoryReadQueryV1 as Q, FileHistoryReadValueV1 as V,
+    };
+    let mut fixture = Fixture::with_signed(false).await;
+    let V::Page(page) = fixture
+        .fs
+        .read_file_history(fixture.ino, Q::Page { cursor: None })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let query = Q::Version {
+        frontier: page.scope.frontier,
+        version_id: fixture.original,
+    };
+    fixture.fs.checked_history_workspace = Some(uuid::Uuid::new_v4());
+    assert_eq!(
+        fixture.fs.read_file_history(fixture.ino, query),
+        Err(E::Stale),
+        "workspace change must invalidate cursor"
+    );
+    fixture.fs.checked_history_workspace = Some(page.scope.workspace_id);
+    let other = fixture
+        .fs
+        .namespace
+        .lock()
+        .unwrap()
+        .create_file(crate::namespace::ROOT_INO, "other.bin", None, 0, 1)
+        .unwrap();
     fixture.fs.ensure_history_baseline().unwrap();
-    assert_eq!(fixture.fs.read_file_history(other,query),Err(E::Stale),"another record must reject the cursor");
-    let request=fixture.request();
-    assert!(matches!(fixture.fs.checked_history_restore(fixture.ino,request),Outcome::Applied { .. }));
-    let V::Page(fresh)=fixture.fs.read_file_history(fixture.ino,Q::Page { cursor:None }).unwrap() else { panic!() };
-    let fresh_query=Q::Version { frontier:fresh.scope.frontier,version_id:fixture.original };
-    assert!(fixture.fs.read_file_history(fixture.ino,fresh_query).is_ok());
-    let reopened=fixture.reopen();
-    let reopened_ino=reopened.namespace.lock().unwrap().lookup(crate::namespace::ROOT_INO,"test.bin").unwrap().ino.0;
-    assert_eq!(reopened.namespace.lock().unwrap().record_id_for(reopened_ino),Some(fresh.scope.record_id));
-    assert_eq!(reopened.read_file_history(reopened_ino,fresh_query),Err(E::Stale),"only remounted lifetime changed after the last successful read");
-    fixture.fs.rename_named(crate::namespace::ROOT_INO,"test.bin",crate::namespace::ROOT_INO,"test.qdoc").unwrap();
-    assert!(matches!(fixture.fs.checked_history_review(fixture.ino),Err(Outcome::UnsupportedOwner { .. })));
-    let V::Page(page)=fixture.fs.read_file_history(fixture.ino,Q::Page { cursor:None }).unwrap() else { panic!() };
-    assert_eq!(fixture.fs.read_file_history_preview(fixture.ino,page.scope,fixture.original).unwrap(),b"first","unsupported restore codec does not suppress authorized immutable reads");
+    assert_eq!(
+        fixture.fs.read_file_history(other, query),
+        Err(E::Stale),
+        "another record must reject the cursor"
+    );
+    let request = fixture.request();
+    assert!(matches!(
+        fixture.fs.checked_history_restore(fixture.ino, request),
+        Outcome::Applied { .. }
+    ));
+    let V::Page(fresh) = fixture
+        .fs
+        .read_file_history(fixture.ino, Q::Page { cursor: None })
+        .unwrap()
+    else {
+        panic!()
+    };
+    let fresh_query = Q::Version {
+        frontier: fresh.scope.frontier,
+        version_id: fixture.original,
+    };
+    assert!(
+        fixture
+            .fs
+            .read_file_history(fixture.ino, fresh_query)
+            .is_ok()
+    );
+    let reopened = fixture.reopen();
+    let reopened_ino = reopened
+        .namespace
+        .lock()
+        .unwrap()
+        .lookup(crate::namespace::ROOT_INO, "test.bin")
+        .unwrap()
+        .ino
+        .0;
+    assert_eq!(
+        reopened
+            .namespace
+            .lock()
+            .unwrap()
+            .record_id_for(reopened_ino),
+        Some(fresh.scope.record_id)
+    );
+    assert_eq!(
+        reopened.read_file_history(reopened_ino, fresh_query),
+        Err(E::Stale),
+        "only remounted lifetime changed after the last successful read"
+    );
+    fixture
+        .fs
+        .rename_named(
+            crate::namespace::ROOT_INO,
+            "test.bin",
+            crate::namespace::ROOT_INO,
+            "test.qdoc",
+        )
+        .unwrap();
+    assert!(matches!(
+        fixture.fs.checked_history_review(fixture.ino),
+        Err(Outcome::UnsupportedOwner { .. })
+    ));
+    let V::Page(page) = fixture
+        .fs
+        .read_file_history(fixture.ino, Q::Page { cursor: None })
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(
+        fixture
+            .fs
+            .read_file_history_preview(fixture.ino, page.scope, fixture.original)
+            .unwrap(),
+        b"first",
+        "unsupported restore codec does not suppress authorized immutable reads"
+    );
     fixture.endpoint.close().await;
 }

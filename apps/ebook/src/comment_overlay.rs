@@ -381,7 +381,10 @@ impl CommentOverlay {
     /// Draws the card shadow/background/border and the "Highlight" header row
     /// (color swatch, label, delete-highlight trash); records their hits.
     /// Returns the y-coordinate immediately below the header.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The highlight header painter needs render context, cursor, card padding and height, highlight color, and the action group ID."
+    )]
     fn draw_card_and_header(
         &mut self,
         scene: &mut Scene,
@@ -442,7 +445,10 @@ impl CommentOverlay {
 
     /// Draws each comment row (text, delete/edit affordances) and records
     /// their hits. Returns the y-coordinate immediately below the last row.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Comment rows share render context and cursor but carry premeasured row heights, text width, column bounds, and spacing."
+    )]
     fn draw_comment_rows(
         &mut self,
         scene: &mut Scene,
@@ -547,7 +553,10 @@ impl CommentOverlay {
     }
 
     /// Draws the "Add comment" button and records its hit.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The add-comment button uses render context, cursor, row bounds and height, plus the highlight group targeted by its hit action."
+    )]
     fn draw_add_button(
         &mut self,
         scene: &mut Scene,
@@ -578,7 +587,10 @@ impl CommentOverlay {
         self.push_hit(add, CommentAction::Add(group));
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The comment overlay combines render context with viewport, cursor, annotations, and the fallback highlight color."
+    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,

@@ -1,5 +1,8 @@
 //! Native runner integration for the same retained `HistoryHost` used headlessly.
-#[allow(clippy::wildcard_imports, reason = "private implementation module shares its enclosing host types")]
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
 use super::*;
 use crate::history_mode::frame::FrameworkInputFrame;
 
@@ -159,7 +162,9 @@ impl App {
                 && target.is_some_and(|node| !history.owns_node(node, &self.taffy))
         });
         if resumed {
-            if let Some(history) = &mut self.history { history.discard_saved_focus(); }
+            if let Some(history) = &mut self.history {
+                history.discard_saved_focus();
+            }
             self.history_focus = None;
             let old: Vec<_> = self
                 .node_map

@@ -2038,7 +2038,10 @@ impl MonitorApp {
 
     /// Draw a tab pill. `compact` draws an icon-only pill (the label is
     /// dropped) so the tab control still fits when the header is narrow.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "tab pills combine paint context and bounds with icon, label, active state and compact layout"
+    )]
     fn draw_tab_pill_ex(
         scene: &mut Scene,
         t: Affine,
@@ -3870,7 +3873,10 @@ impl MonitorApp {
     /// whatever vertical slack remains above the stat grid so a tall pane
     /// fills top-to-bottom cleanly instead of leaving gaps. Returns the y
     /// position for the stat grid.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "process sparklines combine paint context, content bounds and vertical position with the selected process sample"
+    )]
     fn draw_detail_sparkline(
         &self,
         scene: &mut Scene,

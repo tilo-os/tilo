@@ -27,7 +27,10 @@ impl LegacyHistoryLifetime {
 #[derive(Clone)]
 pub struct HistoryOwner(pub(crate) OwnerKind);
 #[derive(Clone)]
-#[allow(clippy::large_enum_variant, reason = "avoid a heap allocation for each captured component custody witness")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "avoid a heap allocation for each captured component custody witness"
+)]
 pub(crate) enum OwnerKind {
     Component(CallbackBinding),
     Legacy {
@@ -201,7 +204,8 @@ impl HistoryOwner {
         &self,
         mutation: &collab_types::DocumentMutation,
     ) -> Result<Option<bool>, super::routes::RemoteApplyError> {
-        self.validate().map_err(|error| super::routes::RemoteApplyError::Unavailable(error.to_string()))?;
+        self.validate()
+            .map_err(|error| super::routes::RemoteApplyError::Unavailable(error.to_string()))?;
         let (store, checkout) = self.store_checkout();
         crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation)
     }

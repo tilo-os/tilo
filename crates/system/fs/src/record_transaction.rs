@@ -489,7 +489,10 @@ mod tests {
 
     use super::*;
 
-    #[allow(clippy::too_many_lines)] // Complete signed journal fixture construction.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "The journal fixture builds a signed replacement rename with source/replaced projections and prepare/commit envelopes."
+    )] // Complete signed journal fixture construction.
     fn entry() -> RecordTransactionJournalEntry {
         let key = ed25519_dalek::SigningKey::generate(&mut OsRng);
         let actor = FileActor {

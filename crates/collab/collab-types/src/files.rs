@@ -635,7 +635,10 @@ impl FileMutationParticipantV1 {
             FileMutationParticipantRoleV1::RestoreContent => {
                 !self.proposed_binding.tombstoned
                     && self.proposed_binding.kind == FileNodeKind::File
-                    && matches!(self.proposed_version.provenance, FileProvenance::Restore { .. })
+                    && matches!(
+                        self.proposed_version.provenance,
+                        FileProvenance::Restore { .. }
+                    )
             }
             FileMutationParticipantRoleV1::KeepBothSibling => {
                 !self.proposed_binding.tombstoned
@@ -724,7 +727,9 @@ impl FileMutationTransactionManifestV1 {
     pub fn validate(&self) -> Result<(), FileRecordError> {
         if !matches!(
             self.schema_version,
-            FILE_MUTATION_TRANSACTION_VERSION | FILE_MUTATION_TRANSACTION_VERSION_V2 | FILE_MUTATION_TRANSACTION_VERSION_V3
+            FILE_MUTATION_TRANSACTION_VERSION
+                | FILE_MUTATION_TRANSACTION_VERSION_V2
+                | FILE_MUTATION_TRANSACTION_VERSION_V3
         ) {
             return Err(FileRecordError::UnsupportedMutationTransactionVersion(
                 self.schema_version,
@@ -746,26 +751,51 @@ impl FileMutationTransactionManifestV1 {
             participant.validate(self.actor)?;
         }
         match &self.operation {
-            FileMutationOperationV1::RestoreContent { request, selected_version, prior_revision, compensates } => {
-                request.validate().map_err(|_| FileRecordError::InvalidTransactionParticipant)?;
+            FileMutationOperationV1::RestoreContent {
+                request,
+                selected_version,
+                prior_revision,
+                compensates,
+            } => {
+                request
+                    .validate()
+                    .map_err(|_| FileRecordError::InvalidTransactionParticipant)?;
                 prior_revision.validate()?;
-                let participant = self.participants.first().ok_or(FileRecordError::InvalidTransactionParticipants)?;
+                let participant = self
+                    .participants
+                    .first()
+                    .ok_or(FileRecordError::InvalidTransactionParticipants)?;
                 let action_valid = match request.operation {
-                    CheckedHistoryOperationV1::Restore { version_id } => version_id == *selected_version && compensates.is_none(),
-                    CheckedHistoryOperationV1::Undo { restore_intent } => *compensates == Some(restore_intent),
-                    CheckedHistoryOperationV1::Redo { undo_intent } => *compensates == Some(undo_intent),
+                    CheckedHistoryOperationV1::Restore { version_id } => {
+                        version_id == *selected_version && compensates.is_none()
+                    }
+                    CheckedHistoryOperationV1::Undo { restore_intent } => {
+                        *compensates == Some(restore_intent)
+                    }
+                    CheckedHistoryOperationV1::Redo { undo_intent } => {
+                        *compensates == Some(undo_intent)
+                    }
                 };
-                if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V3 || self.participants.len() != 1
-                    || request.intent_id != self.transaction_id || request.review.workspace_id != self.workspace_id
-                    || request.review.record_id != participant.record_id || prior_revision.record_id != participant.record_id
-                    || prior_revision.version_id != participant.expected_version || selected_version.0.is_nil()
+                if self.schema_version != FILE_MUTATION_TRANSACTION_VERSION_V3
+                    || self.participants.len() != 1
+                    || request.intent_id != self.transaction_id
+                    || request.review.workspace_id != self.workspace_id
+                    || request.review.record_id != participant.record_id
+                    || prior_revision.record_id != participant.record_id
+                    || prior_revision.version_id != participant.expected_version
+                    || selected_version.0.is_nil()
                     || participant.role != FileMutationParticipantRoleV1::RestoreContent
-                    || participant.proposed_version.provenance != (FileProvenance::Restore { from: *selected_version })
-                    || participant.proposed_version.timestamp_ms != self.timestamp_ms || !action_valid {
+                    || participant.proposed_version.provenance
+                        != (FileProvenance::Restore {
+                            from: *selected_version,
+                        })
+                    || participant.proposed_version.timestamp_ms != self.timestamp_ms
+                    || !action_valid
+                {
                     return Err(FileRecordError::InvalidTransactionParticipant);
                 }
                 Ok(())
-            },
+            }
             FileMutationOperationV1::ReplacementRename {
                 source_parent,
                 source_name,
@@ -1716,21 +1746,36 @@ mod tests {
         participant.role = FileMutationParticipantRoleV1::RestoreContent;
         participant.proposed_version.provenance = FileProvenance::Restore { from: selected };
         participant.projection_hash = participant.computed_projection_hash().unwrap();
-        let prior = ContentRevisionV1 { version_id: participant.expected_version,
-            ..participant.proposed_content_revision.unwrap() };
+        let prior = ContentRevisionV1 {
+            version_id: participant.expected_version,
+            ..participant.proposed_content_revision.unwrap()
+        };
         manifest.operation = FileMutationOperationV1::RestoreContent {
-            request: CheckedHistoryRequestV1 { schema_version: 1, intent_id: manifest.transaction_id,
-                review: FileRestoreReviewV1 { schema_version: 1, workspace_id: manifest.workspace_id,
-                    record_id: participant.record_id, mount_lifetime: Uuid::new_v4(), frontier: [9;32] },
-                operation: CheckedHistoryOperationV1::Restore { version_id: selected } },
-            selected_version: selected, prior_revision: prior, compensates: None };
+            request: CheckedHistoryRequestV1 {
+                schema_version: 1,
+                intent_id: manifest.transaction_id,
+                review: FileRestoreReviewV1 {
+                    schema_version: 1,
+                    workspace_id: manifest.workspace_id,
+                    record_id: participant.record_id,
+                    mount_lifetime: Uuid::new_v4(),
+                    frontier: [9; 32],
+                },
+                operation: CheckedHistoryOperationV1::Restore {
+                    version_id: selected,
+                },
+            },
+            selected_version: selected,
+            prior_revision: prior,
+            compensates: None,
+        };
         manifest.validate().unwrap();
         let mut forged = manifest.clone();
         if let FileMutationOperationV1::RestoreContent { request, .. } = &mut forged.operation {
             request.review.record_id = FileRecordId::new();
         }
         assert!(forged.validate().is_err());
-        let key = SigningKey::from_bytes(&[42;32]);
+        let key = SigningKey::from_bytes(&[42; 32]);
         let signed = FileMutationTransactionV1::signed(manifest, &key).unwrap();
         signed.verify().unwrap();
     }

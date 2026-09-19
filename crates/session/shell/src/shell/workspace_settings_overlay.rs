@@ -1735,7 +1735,10 @@ impl WorkspaceSettingsOverlay {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Workspace identity painting combines render context and card bounds with chrome state, active name, and the existing body-position parameter."
+    )]
 
     fn draw_ws_settings_name_input(
         &self,

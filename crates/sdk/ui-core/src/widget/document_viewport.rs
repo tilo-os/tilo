@@ -1185,7 +1185,10 @@ impl DocumentViewport {
     /// Route an event to the wrapped child, if any. Events reach the child
     /// in window/screen coordinates; its inner taffy node is passed through
     /// so child containers can recurse.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "child event routing forwards the Widget event, scale, modifiers, CRDT state and focus outputs unchanged"
+    )]
     fn route_to_child(
         &mut self,
         event: &WindowEvent,

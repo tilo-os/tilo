@@ -101,7 +101,10 @@ impl ReaderBubble {
     }
 
     /// Draw the bubble and refresh the geometry consumed by [`Self::hit_test`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The page bubble needs render context, viewport, cursor, reading-column edges, and chapter/page position for placement and hits."
+    )]
     pub(crate) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -156,7 +159,10 @@ impl ReaderBubble {
         self.draw_pill(scene, transform, text, theme, &label, alpha, cursor);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The page pill painter combines render context with its label, animation opacity, and cursor for navigation hover states."
+    )]
     fn draw_pill(
         &self,
         scene: &mut Scene,

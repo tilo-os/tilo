@@ -9,7 +9,6 @@ fn malformed_fixture(doc: &mut AutoCommit) {
         .unwrap();
 }
 
-
 fn fixture() -> (AutoCommit, automerge::ChangeHash, String) {
     let mut d = AutoCommit::new();
     let mut c = crate::model::sample_contacts().remove(0);
@@ -261,7 +260,9 @@ fn open_form_rebases_reordered_rows_by_identity_before_save() {
     assert_eq!(saved.phones[1].value, "local 222");
 }
 
-fn test_root() -> Box<dyn ui::widget::Widget> { crate::app_root() }
+fn test_root() -> Box<dyn ui::widget::Widget> {
+    crate::app_root()
+}
 
 /// The frozen address-book preview at 1× in dark and light: rendered to
 /// `target/ux1x/a6/contacts/after/<theme>/history_preview.png` as the visual

@@ -47,7 +47,13 @@ pub fn draw(
     right: &str,
 ) {
     let colors = &theme.tokens.colors;
-    scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &rect);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.raised,
+        None,
+        &rect,
+    );
     // Bar role (HIG §9.1): one derived top hairline.
     scene.fill(
         Fill::NonZero,
@@ -129,7 +135,10 @@ mod tests {
         let mut scaled_tr = TextRenderer::new();
         scaled_tr.set_text_scale(2.0);
         assert!((label_size(&base, &base_tr) - label_size(&scaled, &scaled_tr)).abs() < 0.01);
-        assert!((label_size(&base, &base_tr) - 12.0).abs() < 0.01, "scale.sm at 1×");
+        assert!(
+            (label_size(&base, &base_tr) - 12.0).abs() < 0.01,
+            "scale.sm at 1×"
+        );
     }
 
     #[test]

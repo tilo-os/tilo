@@ -489,7 +489,13 @@ pub fn pill(
     let shape = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, r);
     scene.fill(Fill::NonZero, transform, fill, None, &shape);
     if let Some(bc) = border {
-        scene.stroke(&Stroke::new(1.0), transform, bc, None, &edge_outline(rect, r));
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            bc,
+            None,
+            &edge_outline(rect, r),
+        );
     }
 }
 
@@ -548,7 +554,8 @@ fn derive_edge_on(surface: Color) -> Color {
     for alpha in EDGE_ALPHA_STEPS {
         last = Colors::hairline_on(surface, *alpha);
         let painted = crate::tokens::colors::composite(last, surface);
-        if (relative_luminance(painted) - ground).abs() >= crate::tokens::colors::HAIRLINE_MIN_DELTA {
+        if (relative_luminance(painted) - ground).abs() >= crate::tokens::colors::HAIRLINE_MIN_DELTA
+        {
             return last;
         }
     }
@@ -594,7 +601,12 @@ pub fn edge_outline(rect: Rect, radius: f64) -> RoundedRect {
 /// fractional rect covers two device pixels at half coverage on each and
 /// stops registering. Layout may hand us fractions; the paint does not.
 fn snap(rect: Rect) -> Rect {
-    Rect::new(rect.x0.round(), rect.y0.round(), rect.x1.round(), rect.y1.round())
+    Rect::new(
+        rect.x0.round(),
+        rect.y0.round(),
+        rect.x1.round(),
+        rect.y1.round(),
+    )
 }
 
 /// Fill a card / row / tile and give it its derived rest edge in one call —
@@ -749,14 +761,20 @@ mod tests {
             "dark border_standard on raised was the invisible edge ({declared:.4}); if this \
              changed, the ratchet's rationale needs revisiting"
         );
-        assert!(derived > declared, "derived {derived:.4} vs declared {declared:.4}");
+        assert!(
+            derived > declared,
+            "derived {derived:.4} vs declared {declared:.4}"
+        );
     }
 
     #[test]
     fn edge_on_starts_at_the_control_hairline_where_that_already_registers() {
         // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
         let grey = Color::from_rgb8(0x80, 0x80, 0x80);
-        assert_eq!(edge_on(grey), Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0]));
+        assert_eq!(
+            edge_on(grey),
+            Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0])
+        );
     }
 
     #[test]
@@ -789,7 +807,10 @@ mod tests {
         assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
         let half = separator_rect(0.0, 50.0, 99.5, 0.0).expect("rule");
         assert_eq!((half.y0, half.y1), (99.0, 100.0));
-        assert!(separator_rect(0.0, 20.0, 5.0, 12.0).is_none(), "insets that meet paint nothing");
+        assert!(
+            separator_rect(0.0, 20.0, 5.0, 12.0).is_none(),
+            "insets that meet paint nothing"
+        );
     }
 
     #[test]
@@ -835,8 +856,17 @@ mod tests {
         }
         // Degenerate rects paint nothing rather than a stray hairline.
         let mut scene = Scene::new();
-        panel(&mut scene, Affine::IDENTITY, Rect::new(10.0, 10.0, 10.0, 40.0), 8.0, &Theme::dark());
-        assert!(scene.encoding().is_empty(), "an empty panel encodes no draw ops");
+        panel(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(10.0, 10.0, 10.0, 40.0),
+            8.0,
+            &Theme::dark(),
+        );
+        assert!(
+            scene.encoding().is_empty(),
+            "an empty panel encodes no draw ops"
+        );
     }
 
     #[test]
@@ -868,7 +898,12 @@ mod tests {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let (fill, border) = chip_colors(&theme, false);
             let edge = border.expect("quiet chip has an edge");
-            assert_eq!(edge, edge_on(fill), "{}: edge derives from the fill", theme.name);
+            assert_eq!(
+                edge,
+                edge_on(fill),
+                "{}: edge derives from the fill",
+                theme.name
+            );
             assert!(
                 edge_delta(edge, fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
                 "{}: quiet chip edge moved only {:.4}",

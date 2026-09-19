@@ -278,7 +278,10 @@ pub fn publish_actions(peer: &mut TypedPeer, app_id: &str, resources: &[Resource
 ///
 /// Panics if a successful document action produces no CRDT delta or that
 /// delta cannot be sent through the typed test peer.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the peer, replica, registry and invocation envelope stay explicit so tests can interleave document actions and terminal updates"
+)]
 pub fn service_document_invocation(
     peer: &mut TypedPeer,
     replica: &mut automerge::AutoCommit,

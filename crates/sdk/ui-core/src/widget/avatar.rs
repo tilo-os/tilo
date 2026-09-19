@@ -17,8 +17,8 @@ use vello::kurbo::{Affine, Circle, Point, Rect, Vec2};
 use vello::peniko::{self, BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
-use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -144,7 +144,8 @@ impl Avatar {
         }
         // Same 0.4× ratio the widget uses, but keyed off the rect rather
         // than a stored `size` field so callers don't have to thread one.
-        let text_size = renderer_type_size(text_renderer, px(rect.width().min(rect.height())) * 0.4);
+        let text_size =
+            renderer_type_size(text_renderer, px(rect.width().min(rect.height())) * 0.4);
         let (tw, th) =
             text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - f64::from(tw) / 2.0;
@@ -182,7 +183,10 @@ impl Avatar {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Ringed avatar painting combines scene/transform, avatar bounds and initials/color, ring style, theme, and text renderer."
+    )]
     pub fn draw_ringed_at(
         scene: &mut Scene,
         transform: Affine,
@@ -216,7 +220,10 @@ impl Avatar {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Overflow avatar painting combines scene/transform, bounds and count, fill/ring/label colors, ring width, and text renderer."
+    )]
     pub fn draw_overflow_at(
         scene: &mut Scene,
         transform: Affine,
@@ -244,7 +251,8 @@ impl Avatar {
         // "+N" can be 2–3 glyphs, so key the size a touch below the 0.4×
         // initials ratio to keep "+12" inside the chip.
         let label = format!("+{count}");
-        let text_size = renderer_type_size(text_renderer, px(rect.width().min(rect.height())) * 0.36);
+        let text_size =
+            renderer_type_size(text_renderer, px(rect.width().min(rect.height())) * 0.36);
         let (tw, th) =
             text_renderer.measure_weighted(&label, text_size, None, TextWeight::Semibold);
         let tx = centre.x - f64::from(tw) / 2.0;

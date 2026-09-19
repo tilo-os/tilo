@@ -9,7 +9,6 @@ fn malformed_fixture(doc: &mut AutoCommit) {
         .unwrap();
 }
 
-
 fn fixture() -> (AutoCommit, automerge::ChangeHash, String) {
     let mut d = AutoCommit::new();
     let mut m = crate::model::CalcModel::seeded();
@@ -140,4 +139,6 @@ fn incomplete_schema_marker_never_turns_recorded_maps_into_empty_previews() {
     );
 }
 
-fn test_root() -> Box<dyn ui::widget::Widget> { crate::app_root() }
+fn test_root() -> Box<dyn ui::widget::Widget> {
+    crate::app_root()
+}

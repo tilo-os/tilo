@@ -18,10 +18,10 @@ use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::AccentChip;
@@ -381,7 +381,10 @@ impl Chip {
     // Standard immediate-mode paint-helper signature for this vello
     // renderer (scene + transform + text_renderer + theme, plus this
     // draw's own content); every parameter is independently load-bearing.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate chip painting combines scene, transform, theme and text renderer with bounds, label, lead and style"
+    )]
     pub fn draw_at(
         scene: &mut Scene,
         transform: Affine,
@@ -476,7 +479,10 @@ impl Chip {
         }
 
         // Label, truncated to the space actually left inside the pill.
-        let size = renderer_type_size(text_renderer, Self::label_size_for_height(rect.height(), theme));
+        let size = renderer_type_size(
+            text_renderer,
+            Self::label_size_for_height(rect.height(), theme),
+        );
         let avail = rect.x1 - PAD_X - x;
         if avail <= 1.0 {
             return;
@@ -558,7 +564,8 @@ impl Widget for Chip {
     ) -> NodeId {
         let label_size = theme.tokens.typography.scale.sm;
         let pad_y = f64::from(theme.tokens.spacing.s1);
-        if label_size.to_bits() != self.label_size.to_bits() || pad_y.to_bits() != self.pad_y.to_bits()
+        if label_size.to_bits() != self.label_size.to_bits()
+            || pad_y.to_bits() != self.pad_y.to_bits()
         {
             // A new type step re-shapes the label and a new spacing scale
             // moves the pill's inset; the settled pill no longer describes
@@ -605,7 +612,9 @@ impl Widget for Chip {
         node: NodeId,
         text_renderer: &mut TextRenderer,
     ) -> bool {
-        let footprint = if let Some(footprint) = self.footprint { footprint } else {
+        let footprint = if let Some(footprint) = self.footprint {
+            footprint
+        } else {
             let footprint = self.measured_footprint(text_renderer);
             self.footprint = Some(footprint);
             footprint
@@ -634,7 +643,9 @@ impl Widget for Chip {
         _a: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        if let Some(footprint) = self.footprint { footprint } else {
+        if let Some(footprint) = self.footprint {
+            footprint
+        } else {
             let footprint = self.measured_footprint(text_renderer);
             self.footprint = Some(footprint);
             footprint
@@ -990,7 +1001,11 @@ mod tests {
             "settled width {} should be the measured pill {expected}",
             rect.width()
         );
-        assert_eq!(rect.height(), HEIGHT, "1× pill keeps the 28 px selector height");
+        assert_eq!(
+            rect.height(),
+            HEIGHT,
+            "1× pill keeps the 28 px selector height"
+        );
     }
 
     /// The pill height follows the label's measured line once that line
@@ -1007,7 +1022,10 @@ mod tests {
         let (_, line_h) = text.measure("Filter", size, None);
         assert!((line_h - 30.0).abs() < 1e-3, "2× sm line: {line_h}");
         let expected = (f64::from(line_h) + f64::from(theme.tokens.spacing.s1) * 2.0).ceil();
-        assert!(expected > HEIGHT, "fixture: the 2× line must outgrow the 28 px pill");
+        assert!(
+            expected > HEIGHT,
+            "fixture: the 2× line must outgrow the 28 px pill"
+        );
         let rect = settled_chip_rect(Chip::new("Filter"), 2.0);
         assert!(
             (rect.height() - expected).abs() < 1e-6,
@@ -1035,7 +1053,10 @@ mod tests {
         let just_above = Point::new(c.get_rect().center().x, c.get_rect().y0 - 1.0);
         assert!(!c.get_rect().contains(just_above) && hit.contains(just_above));
         dispatch(&mut c, &cursor(just_above));
-        assert!(dispatch(&mut c, &press()), "a click in the grown target is consumed");
+        assert!(
+            dispatch(&mut c, &press()),
+            "a click in the grown target is consumed"
+        );
         assert!(c.is_selected());
     }
 

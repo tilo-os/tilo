@@ -122,14 +122,22 @@ fn browse_summary_shares_the_pickers_centre_line() {
     let source = by_test_id(&app, "store.source-filter");
     let category = by_test_id(&app, "store.category-filter");
     let summary = first_named(&app, "6 apps from 2 configured sources");
-    close(source.center().y, category.center().y, "pickers share a centre line");
+    close(
+        source.center().y,
+        category.center().y,
+        "pickers share a centre line",
+    );
     close(
         summary.center().y,
         source.center().y,
         "summary text centred on the pickers, not on the label+picker stack",
     );
     // The labels row and the controls row resolve to the same column edges.
-    close(first_named(&app, "Source").x0, source.x0, "Source label over its picker");
+    close(
+        first_named(&app, "Source").x0,
+        source.x0,
+        "Source label over its picker",
+    );
     close(
         first_named(&app, "Category").x0,
         category.x0,
@@ -163,7 +171,11 @@ fn remotes_heading_hugs_its_first_card() {
         })
         .max_by(|a, b| a.area().partial_cmp(&b.area()).unwrap())
         .expect("a card surface holds the configured remote");
-    close(card.y0 - heading.y1, f64::from(sp.s2), "heading to its first card");
+    close(
+        card.y0 - heading.y1,
+        f64::from(sp.s2),
+        "heading to its first card",
+    );
     // The form card above and the heading are one page step apart, which is
     // larger than the heading's own gap to its cards.
     let form_title = first_named(&app, "Add a remote");
@@ -178,7 +190,11 @@ fn remotes_heading_hugs_its_first_card() {
         })
         .max_by(|a, b| a.area().partial_cmp(&b.area()).unwrap())
         .expect("a card surface holds the add-remote form");
-    close(heading.y0 - form_card.y1, f64::from(sp.s3), "form card to list heading");
+    close(
+        heading.y0 - form_card.y1,
+        f64::from(sp.s3),
+        "form card to list heading",
+    );
 }
 
 #[test]
@@ -213,8 +229,16 @@ fn secondary_pages_share_one_header_composition() {
 
     let remotes_title = first_named(&remotes, "Flatpak remotes");
     let safety_title = first_named(&safety, "Trust & moderation");
-    close(remotes_title.height(), safety_title.height(), "titles use one size");
-    close(remotes_title.y0, safety_title.y0, "titles start on one line");
+    close(
+        remotes_title.height(),
+        safety_title.height(),
+        "titles use one size",
+    );
+    close(
+        remotes_title.y0,
+        safety_title.y0,
+        "titles start on one line",
+    );
     let remotes_back = by_test_id(&remotes, "store.remotes.back");
     let safety_back = by_test_id(&safety, "store.safety.back");
     close(
@@ -249,7 +273,12 @@ fn secondary_pages_share_one_header_composition() {
 fn status_pill_never_floats_over_a_card_action() {
     let theme = ui::Theme::dark();
     let sp = spacing();
-    for (w, h) in [(1200.0, 800.0), (1366.0, 768.0), (800.0, 700.0), (480.0, 900.0)] {
+    for (w, h) in [
+        (1200.0, 800.0),
+        (1366.0, 768.0),
+        (800.0, 700.0),
+        (480.0, 900.0),
+    ] {
         let mut app = store::shots::seeded_app();
         app.arm_status_bubble_for_shots();
         lay_out(&mut app, (w, h));
@@ -265,7 +294,10 @@ fn status_pill_never_floats_over_a_card_action() {
             "{w}×{h}: pill {pill:?} is inside the window"
         );
         let buttons = by_widget_name(&app, "Button");
-        assert!(!buttons.is_empty(), "{w}×{h}: the catalogue shows card actions");
+        assert!(
+            !buttons.is_empty(),
+            "{w}×{h}: the catalogue shows card actions"
+        );
         for button in buttons {
             let overlap = pill.intersect(button);
             assert!(
@@ -298,5 +330,8 @@ fn status_pill_landing_zone_follows_the_text_scale() {
         one >= 30.0 + 2.0 * sp.s4,
         "1× band ({one}) reserves the pill floor plus two margins"
     );
-    assert!(two > one, "200 % band ({two}) is taller than the 1× band ({one})");
+    assert!(
+        two > one,
+        "200 % band ({two}) is taller than the 1× band ({one})"
+    );
 }

@@ -216,7 +216,10 @@ enum QuickSettingsDamage {
 
 // The four flags are independent lifecycle signals from the handoff protocol;
 // wrapping them would only obscure the truth table at this private boundary.
-#[allow(clippy::fn_params_excessive_bools)]
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "suspension, native presentation, pending source clear and mapped pixels are independent handoff signals in this truth table"
+)]
 fn floating_transfer_proxy_needed(
     suspended: bool,
     native_presented: bool,

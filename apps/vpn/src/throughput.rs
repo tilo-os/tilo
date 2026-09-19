@@ -17,7 +17,10 @@ pub const SAMPLES: usize = 56;
 ///
 /// Colours are pulled from the theme: `down` uses the info/accent blue,
 /// `up` uses the success green. A faint card + gridlines anchor the plot.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "throughput painting combines scene, transform, bounds and theme with both data series and connection state"
+)]
 pub fn draw_chart(
     scene: &mut Scene,
     transform: Affine,
@@ -46,8 +49,7 @@ pub fn draw_chart(
     }
 
     // Horizontal gridlines (3 divisions).
-    let grid_color =
-        ui::surface::edge_on(theme.tokens.colors.surfaces.raised).multiply_alpha(0.6);
+    let grid_color = ui::surface::edge_on(theme.tokens.colors.surfaces.raised).multiply_alpha(0.6);
     for k in 0..=3 {
         let y = plot.y0 + plot.height() * (f64::from(k) / 3.0);
         scene.stroke(

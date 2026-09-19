@@ -8198,7 +8198,10 @@ struct FieldButtonFace<'a> {
     trailing_caret: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The field-button painter combines scene, transform, text, and theme with bounds, label, active state, and optional caret."
+)]
 fn draw_field_button(
     scene: &mut Scene,
     t: Affine,

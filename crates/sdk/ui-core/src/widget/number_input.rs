@@ -1219,7 +1219,10 @@ mod tests {
             preferred + 1e-6 >= required,
             "preferred {preferred} must hold the widest value ({required})"
         );
-        assert!(preferred >= DEFAULT_WIDTH, "never below the configured width");
+        assert!(
+            preferred >= DEFAULT_WIDTH,
+            "never below the configured width"
+        );
         assert!(
             preferred < required + 1.0,
             "preferred {preferred} should be the widest value's need rounded up, not more (required {required})"

@@ -548,7 +548,9 @@ impl NotificationStack {
         let label = lock_suppressed_label(count);
         // Centre on the measured line, not the font size (HIG §7a).
         let max_width = f64_to_f32_lossy(width - CARD_PADDING_X * 2.0);
-        let (_, label_h) = ctx.text_renderer.measure(&label, title_size, Some(max_width));
+        let (_, label_h) = ctx
+            .text_renderer
+            .measure(&label, title_size, Some(max_width));
         ctx.text_renderer.draw_text(
             ctx.scene,
             &label,
@@ -593,12 +595,14 @@ impl NotificationStack {
         let text_x = x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
         let max_width = f64_to_f32_lossy(width - (text_x - x0) - CARD_PADDING_X);
         // Centre on the measured line, not the font size (HIG §7a).
-        let (_, label_h) = ctx.text_renderer.measure(&label, body_size, Some(max_width));
+        let (_, label_h) = ctx
+            .text_renderer
+            .measure(&label, body_size, Some(max_width));
         // A status pill is a Selector-height surface (HIG §9.6: 28), not an
         // off-grid 30 — and it grows with its measured label plus `s2` so
         // 200 % type has a pill around it rather than a band through it.
-        let pill_h = SELECTOR_HEIGHT
-            .max(f64::from(label_h) + f64::from(ctx.theme.tokens.spacing.s2));
+        let pill_h =
+            SELECTOR_HEIGHT.max(f64::from(label_h) + f64::from(ctx.theme.tokens.spacing.s2));
         let pill_rect = Rect::new(x0, y, x0 + width, y + pill_h);
         // Panel role, like the toasts it holds back (HIG §9.5).
         ui::surface::panel(ctx.scene, ctx.transform, pill_rect, radius, ctx.theme);
@@ -620,9 +624,8 @@ impl NotificationStack {
             &label,
             body_size,
             ctx.theme.tokens.colors.text_dim,
-            ctx.transform.pre_translate(
-                (text_x, pill_rect.y0 + (pill_h - f64::from(label_h)) / 2.0).into(),
-            ),
+            ctx.transform
+                .pre_translate((text_x, pill_rect.y0 + (pill_h - f64::from(label_h)) / 2.0).into()),
             Some(max_width),
         );
         pill_rect
@@ -631,7 +634,10 @@ impl NotificationStack {
     /// Paint each live toast card, top to bottom starting at `y`,
     /// recording its dismiss hit-rect and folding its bounds into
     /// `stack_min_y`/`stack_max_y`. Split out of [`Widget::draw`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Toast painting combines render context, notification snapshot and time, stack position/width, and accumulated stack bounds."
+    )]
     fn draw_toast_cards(
         &mut self,
         ctx: &mut PaintCtx,
@@ -1028,17 +1034,29 @@ mod tests {
                     &theme,
                     &PresenceCtx::default(),
                 );
-                assert_eq!(tr.text_scale(), scale, "the pass restores the renderer's scale");
+                assert_eq!(
+                    tr.text_scale(),
+                    scale,
+                    "the pass restores the renderer's scale"
+                );
                 let ground = theme.tokens.colors.surfaces.base;
                 let path = out.join(format!("{name}-{state}.png"));
                 renderer.render_png(&scene, ground, &path);
-                assert!(path.is_file(), "notification fixture missing: {}", path.display());
+                assert!(
+                    path.is_file(),
+                    "notification fixture missing: {}",
+                    path.display()
+                );
                 // The rendered pixels, not just the file: the first surface
                 // in the column (pill, locked card or toast card) is the
                 // Panel ground at its plain bottom-right interior — the
                 // toolkit toast and the two shell cards share one material.
                 let first = Widget::get_rect(&stack);
-                let first_h = if state == "live" { TOAST_HEIGHT } else { first.height() };
+                let first_h = if state == "live" {
+                    TOAST_HEIGHT
+                } else {
+                    first.height()
+                };
                 let probe = Point::new(first.x1 - 12.0, first.y0 + first_h - 8.0);
                 #[allow(
                     clippy::cast_possible_truncation,

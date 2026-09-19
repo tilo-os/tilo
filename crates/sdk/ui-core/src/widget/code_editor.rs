@@ -516,7 +516,10 @@ impl Widget for CodeEditor {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the Widget event signature is forwarded intact to the inner text editor with CRDT, focus and layout context"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,

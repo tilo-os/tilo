@@ -108,9 +108,13 @@ pub enum RunError {
     InvalidCapturePlan,
 }
 
-pub use crate::capture::{CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination};
+pub use crate::capture::{
+    CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
+};
 impl From<crate::capture::InvalidCapturePlan> for RunError {
-    fn from(_: crate::capture::InvalidCapturePlan) -> Self { Self::InvalidCapturePlan }
+    fn from(_: crate::capture::InvalidCapturePlan) -> Self {
+        Self::InvalidCapturePlan
+    }
 }
 
 impl RunError {
@@ -1382,7 +1386,10 @@ fn splice_sandbox_shim(
 /// `pre_exec`, then wait for it. Logs the derived Landlock/egress plan from
 /// the parent for observability (the shim enforces Landlock; this only
 /// records intent).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Sandbox launch combines argv/options, scheduling policy, seccomp and service descriptors, egress policy, net gate, and broker lifetime."
+)]
 fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,

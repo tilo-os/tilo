@@ -882,7 +882,10 @@ impl AddAccountPanel {
         let half = (content_w - s3) / 2.0;
         let btn_w = half
             .min(BUTTON_MAX_W)
-            .max(PanelMetrics::button_w(m.save_label_w.max(m.cancel_label_w), s6))
+            .max(PanelMetrics::button_w(
+                m.save_label_w.max(m.cancel_label_w),
+                s6,
+            ))
             .min(half);
         let by = y0 + h - PAD - footer_h;
         self.save_rect = Rect::new(right - btn_w, by, right, by + footer_h);
@@ -2220,7 +2223,10 @@ mod tests {
         };
         assert!(m.input_h(12.0) > INPUT_H);
         assert!(m.card_h(8.0) > CARD_MIN_H);
-        assert!(m.label_gap(4.0) > m.label_h, "a label never overlaps its field");
+        assert!(
+            m.label_gap(4.0) > m.label_h,
+            "a label never overlaps its field"
+        );
         assert!(m.title_block_h(24.0, 8.0) >= 24.0 + m.title_h + m.subtitle_h + 8.0);
 
         let mut p = AddAccountPanel::new();

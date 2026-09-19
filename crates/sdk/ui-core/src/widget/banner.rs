@@ -39,7 +39,10 @@ const GAP: f64 = 10.0;
 /// Shared visual paint for a banner filling `rect`. Used by both the retained
 /// [`Banner`] widget and the immediate-mode [`Banner::paint`] entry point.
 /// Returns the dismiss "×" rect when `dismissible`, else `Rect::ZERO`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "shared banner painting combines render context with bounds, severity, icon, text and dismiss-button hover state"
+)]
 fn paint_banner(
     scene: &mut Scene,
     transform: Affine,
@@ -296,7 +299,10 @@ impl Banner {
     /// straight to a `Scene`. Returns the dismiss "×" rect (or `Rect::ZERO`
     /// when not dismissible) so the caller can hit-test it against its own
     /// pointer state; pass `hover` for the ×-hover tint.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "immediate banner painting forwards render context, content, bounds and dismissal state to the retained widget painter"
+    )]
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,
@@ -329,15 +335,21 @@ impl Banner {
     fn content_height(&self, theme: &Theme, text_renderer: &mut TextRenderer, width: f32) -> f64 {
         let rect = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), 1.0);
         let text_width = banner_text_width(rect, self.dismissible);
-        let title_style = text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base));
+        let title_style =
+            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base));
         let (_, title_h) = text_renderer.measure_style(&self.title, Some(text_width), &title_style);
         let message_h = self.message.as_ref().map_or(0.0, |message| {
-            let style = text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+            let style = text_renderer
+                .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
             text_renderer
                 .measure_style(message, Some(text_width), &style)
                 .1
         });
-        let gap = if self.message.is_some() { f64::from(theme.tokens.spacing.s1) } else { 0.0 };
+        let gap = if self.message.is_some() {
+            f64::from(theme.tokens.spacing.s1)
+        } else {
+            0.0
+        };
         (f64::from(title_h + message_h) + gap + PAD_Y * 2.0).max(44.0)
     }
 }

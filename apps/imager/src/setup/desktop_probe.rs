@@ -416,7 +416,13 @@ fn sandbox_environment_marker_present(mut present: impl FnMut(&str) -> bool) -> 
 
 // Also compile the read-only primitives on Unix test hosts for bounded IO tests.
 #[cfg(any(target_os = "linux", all(test, unix)))]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "non-Linux Unix tests compile these bounded IO primitives without using every Linux desktop probe"
+    )
+)]
 mod native {
     use super::{
         DesktopHost, HashMap, InstalledPackage, OsRelease, PackageManager, SessionSupport, adapter,

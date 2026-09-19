@@ -2047,7 +2047,10 @@ impl RoomActivityPane {
         self.refresh_records_inner(tree, records, Some(local));
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "record refresh keeps scoped history projection, origin mapping, agent runs and both unread digests on the same index refresh"
+    )]
     fn refresh_records_inner(
         &mut self,
         tree: &mut WorkspaceTree,
