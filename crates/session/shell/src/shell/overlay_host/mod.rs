@@ -15034,7 +15034,15 @@ impl Widget for ShellOverlayHost {
         // Offer every open tab's document to its own writer, debounced and
         // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
-            let records = chrome.borrow().records().clone();
+            let state = chrome.borrow();
+            // Covers removals through workspace/peer reconciliation as well
+            // as the explicit close action.
+            let mut tree = state.tree_mut();
+            if state.hosted_inputs.prune_documents(&mut tree) {
+                tree.flush_to_disk();
+            }
+            drop(tree);
+            let records = state.records().clone();
             records.tick();
         }
         // Before the prompt pump, so a request arriving this frame is on

@@ -63,9 +63,7 @@ struct Parts {
 /// Measured heights the stack is built from.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
-    title_w: f64,
     title_h: f64,
-    msg_w: f64,
     msg_h: f64,
     action_w: f64,
     action_h: f64,
@@ -129,17 +127,15 @@ fn measure_metrics(
         reason = "window widths are logical pixels well within f32 range"
     )]
     let inner_width = (width - gap * 2.0).max(1.0) as f32;
-    let (title_w, title_h) = text_renderer.measure_style(title, Some(inner_width), title_style);
-    let (msg_w, msg_h) = message.map_or((0.0, 0.0), |value| {
+    let (_, title_h) = text_renderer.measure_style(title, Some(inner_width), title_style);
+    let (_, msg_h) = message.map_or((0.0, 0.0), |value| {
         text_renderer.measure_style(value, Some(inner_width), message_style)
     });
     let (action_w, action_h) = action_label.map_or((0.0, 0.0), |value| {
         text_renderer.measure_style(value, Some(inner_width), action_style)
     });
     Metrics {
-        title_w: f64::from(title_w),
         title_h: f64::from(title_h),
-        msg_w: f64::from(msg_w),
         msg_h: f64::from(msg_h),
         action_w: f64::from(action_w),
         action_h: f64::from(action_h),
@@ -998,9 +994,7 @@ mod tests {
     /// the spacing scale a docked panel is drawn with.
     fn metrics() -> Metrics {
         Metrics {
-            title_w: 0.0,
             title_h: 24.0,
-            msg_w: 0.0,
             msg_h: 18.0,
             action_w: 0.0,
             action_h: 0.0,

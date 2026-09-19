@@ -551,12 +551,6 @@ impl ContextMenu {
     fn row_height(&self) -> f64 {
         self.row_height
     }
-    fn padding(&self) -> f64 {
-        PADDING
-    }
-    fn menu_width(&self) -> f64 {
-        self.legacy_width()
-    }
     fn rows_viewport(&self) -> Rect {
         self.body_rect()
     }
@@ -1479,8 +1473,8 @@ mod tests {
         let viewport = Rect::new(
             0.0,
             0.0,
-            menu.menu_width(),
-            menu.padding() * 2.0 + menu.row_height() * 2.0,
+            menu.legacy_width(),
+            PADDING * 2.0 + menu.row_height() * 2.0,
         );
         menu.set_viewport(Some(viewport));
         menu.open_at([390.0, 160.0]);
@@ -1496,8 +1490,8 @@ mod tests {
         }
         assert_eq!(menu.hovered(), Some(3));
         let last = menu.item_rect(3).expect("last action is laid out");
-        assert!(last.y0 >= menu.rect.y0 + menu.padding());
-        assert!(last.y1 <= menu.rect.y1 - menu.padding());
+        assert!(last.y0 >= menu.body_rect().y0);
+        assert!(last.y1 <= menu.body_rect().y1);
     }
 
     #[test]
@@ -1506,13 +1500,10 @@ mod tests {
         for label in ["First", "Second", "Third", "Fourth"] {
             menu.push(MenuItem::action(label, || {}));
         }
-        let viewport = Rect::new(0.0, 0.0, menu.menu_width(), 68.0);
+        let viewport = Rect::new(0.0, 0.0, menu.legacy_width(), 68.0);
         menu.set_viewport(Some(viewport));
         menu.open_at([0.0, 0.0]);
-        let pointer = Point::new(
-            16.0,
-            menu.rect.y0 + menu.padding() + menu.row_height() / 2.0,
-        );
+        let pointer = Point::new(16.0, menu.body_rect().y0 + menu.row_height() / 2.0);
         dispatch(&mut menu, &cursor_at(pointer));
         assert!(dispatch(&mut menu, &wheel_lines(-2.0)));
         assert_eq!(menu.item_at([pointer.x, pointer.y]), Some(2));
