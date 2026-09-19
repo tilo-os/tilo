@@ -63,6 +63,7 @@ impl Storage {
         for name in [
             "entries",
             "pending",
+            "deferred-pending",
             "reviews",
             "quarantined",
             "snapshots",
@@ -98,6 +99,9 @@ impl Storage {
 
     #[cfg(unix)]
     fn snapshot_lock_path(&self) -> PathBuf {
+        // Keep the established filename so mixed-version rolling deployments
+        // still share one kernel lock while its scope expands to all registry
+        // mutations.
         self.root.join("snapshot.lock")
     }
 
@@ -105,9 +109,11 @@ impl Storage {
         self.root.join("first-party-promotion.pending.json")
     }
 
-    /// Acquire the registry-wide snapshot writer lock. The retained lock file
-    /// and kernel `flock` make this safe across `CronJobs` and CLI processes;
-    /// the in-process mutex also covers independently opened [`Storage`]s.
+    /// Acquire the registry-wide mutation lock. Promotion selection, pending
+    /// changes, moderation, and snapshot publication all use this one lock in
+    /// that order. The retained lock file and kernel `flock` make this safe
+    /// across `CronJobs`, the HTTP server, and CLI processes; the in-process
+    /// mutex also covers independently opened [`Storage`]s.
     ///
     /// # Errors
     ///
@@ -382,6 +388,12 @@ impl Storage {
             .join(format!("{}.json", filename_encode(submission_id)))
     }
 
+    fn deferred_pending_path(&self, submission_id: &str) -> PathBuf {
+        self.root
+            .join("deferred-pending")
+            .join(format!("{}.json", filename_encode(submission_id)))
+    }
+
     /// One review record's file path.
     fn review_path(&self, review_id: &str) -> PathBuf {
         self.root
@@ -405,13 +417,6 @@ impl Storage {
         self.root
             .join("transparency")
             .join(format!("{sequence:020}.json"))
-    }
-
-    /// Process-wide lock used by the server and local reviewer CLI to
-    /// serialize multi-file moderation transitions.
-    #[cfg(unix)]
-    pub(crate) fn moderation_lock_path(&self) -> PathBuf {
-        self.root.join("moderation.lock")
     }
 
     /// Load every entry from disk. Order is not defined.
@@ -555,6 +560,48 @@ impl Storage {
         delete_if_exists(&self.pending_path(submission_id))
     }
 
+    /// Load a newer revision held behind an active promotion journal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the deferred revision cannot be read or decoded.
+    pub(crate) fn load_deferred_pending(
+        &self,
+        submission_id: &str,
+    ) -> Result<Option<PendingSubmission>, StorageError> {
+        load_json(
+            &self.deferred_pending_path(submission_id),
+            "deferred pending submission",
+        )
+    }
+
+    /// Durably retain a newer revision without replacing a journal reservation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the revision cannot be encoded or persisted.
+    pub(crate) fn save_deferred_pending(
+        &self,
+        submission: &PendingSubmission,
+    ) -> Result<(), StorageError> {
+        save_json(
+            &self.deferred_pending_path(&submission.submission_id),
+            submission,
+        )
+    }
+
+    /// Remove a deferred revision after it has been restored to `pending/`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the deferred file exists but cannot be removed.
+    pub(crate) fn delete_deferred_pending(
+        &self,
+        submission_id: &str,
+    ) -> Result<bool, StorageError> {
+        delete_if_exists(&self.deferred_pending_path(submission_id))
+    }
+
     /// Load one durable moderator review/audit record.
     ///
     /// # Errors
@@ -630,11 +677,12 @@ impl Storage {
     }
 }
 
-static SNAPSHOT_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+static REGISTRY_TRANSACTION_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
-/// Exclusive snapshot publication transaction. A signed snapshot is first
+/// Exclusive registry mutation transaction. A signed snapshot is first
 /// recorded as an exact durable intent, then archived, then installed as the
-/// public pointer. Recovery repeats those idempotent steps after a crash.
+/// public pointer. Pending submissions and moderation use the same guard, so
+/// their state cannot change between promotion selection and publication.
 pub struct SnapshotLock<'a> {
     storage: &'a Storage,
     _process_mutex: std::sync::MutexGuard<'static, ()>,
@@ -644,7 +692,7 @@ pub struct SnapshotLock<'a> {
 
 impl<'a> SnapshotLock<'a> {
     fn acquire(storage: &'a Storage) -> Result<Self, StorageError> {
-        let process_mutex = SNAPSHOT_MUTEX
+        let process_mutex = REGISTRY_TRANSACTION_MUTEX
             .get_or_init(|| Mutex::new(()))
             .lock()
             .map_err(|_| StorageError::Io("snapshot writer lock was poisoned".into()))?;
@@ -1031,6 +1079,7 @@ mod tests {
         let s = Storage::open(dir.path()).unwrap();
         assert!(s.root.join("entries").is_dir());
         assert!(s.root.join("pending").is_dir());
+        assert!(s.root.join("deferred-pending").is_dir());
         assert!(s.root.join("reviews").is_dir());
         assert!(s.root.join("quarantined").is_dir());
         assert!(s.root.join("snapshots").is_dir());

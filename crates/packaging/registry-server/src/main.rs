@@ -451,7 +451,8 @@ fn cmd_promote_first_party(
         }
     }
     let moderation = ModerationService::new(storage.clone());
-    let reviews = moderation.approve_batch(
+    let reviews = moderation.approve_batch_in_transaction(
+        &writer,
         &journal.submissions,
         &journal.reviewer,
         &journal.reason,
@@ -459,8 +460,9 @@ fn cmd_promote_first_party(
         &allowlist,
     )?;
     writer.publish(&journal.candidate_snapshot)?;
-    drop(writer);
+    moderation.activate_deferred_in_transaction(&writer, &journal.submissions)?;
     let _deleted = storage.delete_promotion_transaction()?;
+    drop(writer);
     println!(
         "{}",
         serde_json::json!({
