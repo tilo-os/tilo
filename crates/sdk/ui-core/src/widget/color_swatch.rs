@@ -89,10 +89,11 @@ impl ColorSwatchFace {
         } else if self.hovered {
             Some((
                 1.5,
-                theme
-                    .tokens
-                    .colors
-                    .ink_on_any(&[self.color], Color::WHITE, 3.0),
+                theme.tokens.colors.ink_on_any(
+                    &[self.color],
+                    theme.tokens.colors.text_primary,
+                    3.0,
+                ),
             ))
         } else {
             None

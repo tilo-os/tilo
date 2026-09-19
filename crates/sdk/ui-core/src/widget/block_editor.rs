@@ -3702,7 +3702,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     ctx.scene.fill(
         vello::peniko::Fill::NonZero,
         ctx.transform,
-        ctx.theme.tokens.colors.surface_white_10,
+        ctx.theme.tokens.colors.lift(0.25),
         None,
         &header,
     );
@@ -4741,7 +4741,7 @@ impl Widget for BlockEditor {
                 ctx.scene.fill(
                     vello::peniko::Fill::NonZero,
                     ctx.transform,
-                    ctx.theme.tokens.colors.surface_white_10,
+                    ctx.theme.tokens.colors.lift(0.25),
                     None,
                     &vello::kurbo::RoundedRect::from_rect(*rect, 4.0 * self.text_scale),
                 );
