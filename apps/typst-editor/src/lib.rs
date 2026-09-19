@@ -73,3 +73,8 @@ pub fn demo_root_scenario(scenario: &str) -> Box<dyn Widget> {
     app.apply_demo_scenario(scenario);
     Box::new(app)
 }
+
+#[cfg(test)]
+mod framework_history_tests;
+
+pub mod framework_history;
