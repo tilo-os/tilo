@@ -33,6 +33,33 @@ def step_script(workflow, name):
 
 
 class BuilderCandidates(unittest.TestCase):
+    def test_legacy_subjects_are_installed_only_for_e2e_and_cannot_be_skipped(self):
+        subjects = ['gnome-text-editor', 'qt6-qtbase-examples', 'libreoffice-writer']
+        recipe = (ROOT / 'os/Containerfile.builder').read_text()
+        for subject in subjects[1:]:
+            self.assertNotIn(subject, recipe)
+        self.assertIn("gnome-text-editor", recipe)
+        legacy = (ROOT / '.forgejo/workflows/legacy-app-e2e.yml').read_text()
+        script = step_script(legacy, 'Install and verify real app subjects')
+        # Execute the workflow script with package installation and subject
+        # discovery intercepted. Missing subjects must still fail after dnf.
+        stubs = r'''dnf() { printf '%s\n' "$@" > dnf-args; test "$FAIL_AT" != dnf; }
+        rpm() { printf '%s\n' "$@" > rpm-args; test "$FAIL_AT" != rpm; }
+        command() { test "$2" != "$FAIL_AT"; }
+        find() { test "$FAIL_AT" != qt || return 1; echo /qt/widgets/lineedits/lineedits/lineedits; }
+        '''
+        for failure in ('none', 'dnf', 'rpm', 'gnome-text-editor', 'libreoffice', 'qt'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                result = subprocess.run(['bash', '-e', '-c', stubs + script], cwd=work,
+                                        env={**os.environ, 'FAIL_AT': failure},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
+                self.assertEqual((work / 'dnf-args').read_text().splitlines(),
+                                 ['install', '-y', '--setopt=install_weak_deps=False', *subjects])
+                if failure == 'none':
+                    self.assertEqual((work / 'rpm-args').read_text().splitlines(), ['-q', *subjects])
+
     def resolve(self, requested):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'outputs'
