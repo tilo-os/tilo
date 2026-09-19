@@ -169,6 +169,21 @@ entry.
 tilo-registry-server serve --port 8443 --bind 127.0.0.1
 ```
 
+The production OCI image uses the same interface and contains no TLS
+termination or private signing material:
+
+```text
+code.podesta.ai/qos/tilo-registry-server@sha256:<digest>
+/usr/local/bin/tilo-registry-server \
+  --data-dir /var/lib/tilo-registry serve --bind 0.0.0.0 --port 8443
+```
+
+It runs as UID/GID 65532 and supports a read-only root filesystem. Mount the
+state directory read-write, mount `/tmp` as a small tmpfs, and probe
+`GET /health` on port 8443. Main-branch CI publishes only an immutable
+`sha-<full-source-revision>` tag and records the deployable digest in the
+`registry-server-image-receipt` workflow artifact.
+
 Behind nginx / Caddy — see TLS below.
 
 ### 5. Publisher workflow
