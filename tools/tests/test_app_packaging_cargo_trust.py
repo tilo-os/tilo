@@ -14,6 +14,7 @@ class CargoTrustTests(unittest.TestCase):
         root = Path(product.__file__).resolve().parents[1]
         self.files = {path: (root / path).read_bytes() for path in product.REQUIRED_PATHS}
         policy = {'enabled': True, 'qualification_only': True,
+                  'final_receipt_policy_sha256': 'f' * 64,
                   'trusted_files': {path: hashlib.sha256(raw).hexdigest() for path, raw in self.files.items()}}
         self.api = product.ProductForgejo(policy)
         self.listings = {'': [{'name': '.cargo', 'type': 'dir'}],
