@@ -13,6 +13,8 @@ import io
 from pathlib import Path
 import re
 import subprocess
+import threading
+import time
 import zipfile
 
 import app_packaging_coordinator as core
@@ -39,6 +41,53 @@ REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
 def require(value, message):
     if not value:
         raise ValueError(message)
+
+
+def bounded_output(command, maximum, timeout=30):
+    """Bound captured CLI stdout and kill/reap on overflow or timeout.
+
+    This bounds this process's capture, not the CLI's internal HTTP buffers.
+    Stderr is discarded rather than retained or included in error diagnostics.
+    """
+    require(type(maximum) is int and maximum >= 0 and timeout > 0, 'invalid capture limit')
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + timeout
+    output, errors = bytearray(), []
+    finished = threading.Event()
+
+    def read():
+        try:
+            with process.stdout:
+                while len(output) <= maximum:
+                    chunk = process.stdout.read1(min(65536, maximum + 1 - len(output)))
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    try:
+        if not finished.wait(max(0, deadline - time.monotonic())):
+            raise TimeoutError('plan API response timed out')
+        require(len(output) <= maximum, 'plan API response exceeds byte bound')
+        require(not errors, 'plan API response could not be read')
+        try:
+            status = process.wait(timeout=max(0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            raise TimeoutError('plan API response timed out') from None
+        require(status == 0, 'plan API request failed')
+        return bytes(output)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        # The child is reaped even if an unrelated descendant inherited stdout.
+        # Never wait indefinitely for that descendant to close its pipe.
+        reader.join(timeout=1)
 
 
 def digest(value, size=64):
@@ -130,10 +179,7 @@ class ProductForgejo(core.Forgejo):
     def raw_api(self, path, maximum):
         # The server metadata is checked before requesting this small artifact.
         # Keep bytes raw: the ordinary call() method expects JSON API responses.
-        result = subprocess.run(['fgj', '--hostname', 'code.sandbox.example', 'api', path],
-                                capture_output=True, timeout=30, check=True)
-        require(len(result.stdout) <= maximum, 'plan API response exceeds byte bound')
-        return result.stdout
+        return bounded_output(['fgj', '--hostname', 'code.sandbox.example', 'api', path], maximum)
 
     def artifact_bytes(self, artifact_id):
         return self.raw_api(f'repos/{REPO}/actions/artifacts/{artifact_id}/zip', 256 * 1024)
