@@ -57,6 +57,58 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_inner(path, bytes, None)
 }
 
+/// Atomically save a user document, following an existing symbolic link and
+/// retaining the existing target's Unix permission bits. Other [`write`]
+/// consumers retain their directory-entry replacement semantics.
+///
+/// Existing targets must be writable regular files. Dangling links and Unix
+/// multiply-linked files fail closed rather than replacing a link or detaching
+/// another name from the edited document. New paths use [`write`] defaults.
+/// As with [`write`], callers must control the containing directory: resolution
+/// is not a defense against concurrent hostile namespace changes. This retains
+/// permission bits, not extended ACLs, ownership, or other inode metadata.
+///
+/// # Errors
+/// Returns resolution/access errors, rejects unsupported targets, and propagates
+/// [`write`] durability errors (which may occur after publication).
+pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return write(path, bytes),
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    let target = fs::canonicalize(path)?;
+    let metadata = fs::metadata(&target)?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "document target is not a regular file",
+        ));
+    }
+    if metadata.permissions().readonly() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "document target is read-only",
+        ));
+    }
+    // Do not let directory replacement bypass the target's write access. This
+    // opens without truncating, so an access refusal leaves its bytes intact.
+    drop(OpenOptions::new().write(true).open(&target)?);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.nlink() != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "atomic document save cannot preserve multiple hard links",
+            ));
+        }
+        write_with_mode(&target, bytes, metadata.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    write(&target, bytes)
+}
+
 /// [`write`], creating the parent directory first when it is missing.
 ///
 /// # Errors
@@ -381,5 +433,80 @@ mod tests {
         write(&p, b"seed").unwrap();
         write(&p, b"").unwrap();
         assert_eq!(fs::read(&p).unwrap(), b"");
+    }
+}
+
+#[cfg(test)]
+mod document_target_tests {
+    use super::*;
+
+    #[test]
+    fn document_save_readonly_target_refuses_without_changing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("document");
+        fs::write(&path, b"original").unwrap();
+        let original = fs::metadata(&path).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&path, readonly).unwrap();
+        let result = write_preserving_target(&path, b"replacement");
+        fs::set_permissions(&path, original).unwrap();
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_save_follows_relative_symlink_and_preserves_private_mode() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("private");
+        let link = dir.path().join("document");
+        fs::write(&target, b"original").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink("private", &link).unwrap();
+        write_preserving_target(&link, b"replacement").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+        assert_eq!(fs::read_link(&link).unwrap(), PathBuf::from("private"));
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_save_refuses_dangling_and_multiple_hard_links() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("original");
+        let hardlink = dir.path().join("hardlink");
+        let dangling = dir.path().join("dangling");
+        fs::write(&target, b"original").unwrap();
+        fs::hard_link(&target, &hardlink).unwrap();
+        symlink("missing", &dangling).unwrap();
+        assert_eq!(
+            write_preserving_target(&hardlink, b"replacement")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            write_preserving_target(&dangling, b"replacement")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert_eq!(fs::read(&hardlink).unwrap(), b"original");
+        assert_eq!(
+            fs::metadata(&target).unwrap().ino(),
+            fs::metadata(&hardlink).unwrap().ino()
+        );
+        assert_eq!(fs::read_link(&dangling).unwrap(), PathBuf::from("missing"));
+        assert!(!dir.path().join("missing").exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
     }
 }

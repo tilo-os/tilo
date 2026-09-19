@@ -366,7 +366,7 @@ pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::i
     let bytes = format
         .export(dr)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    atomic_file::write(path, &bytes)
+    atomic_file::write_preserving_target(path, &bytes)
 }
 
 // ---- autosave / crash-recovery -------------------------------------------
