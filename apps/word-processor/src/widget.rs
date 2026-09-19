@@ -2355,7 +2355,7 @@ impl WordProcessorWidget {
             let dr = qdoc::DocRef { doc: state, c };
             match format.export(dr) {
                 Ok(bytes) => {
-                    atomic_file::write(path, &bytes).map_err(|e| {
+                    atomic_file::write_preserving_target(path, &bytes).map_err(|e| {
                         eprintln!("word-processor: could not write {}: {e}", path.display());
                         self.toast = Some((t("toast-save-failed"), ToastKind::Error));
                         format!("could not write {}: {e}", path.display())
