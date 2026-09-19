@@ -645,7 +645,7 @@ impl DateIndexedScrollbar {
                 if marker.kind == DateIndexMarkerKind::Major {
                     theme.accent_primary
                 } else {
-                    theme.tokens.colors.border_white_20
+                    crate::tokens::Colors::hairline_on(theme.tokens.colors.surfaces.base, 51)
                 },
                 None,
                 &tick,
@@ -663,21 +663,22 @@ impl DateIndexedScrollbar {
     ) {
         let colors = &theme.tokens.colors;
         if let Some(thumb) = self.bar.thumb_rect(self.rect, metrics) {
+            let fill = if active {
+                theme.accent_primary
+            } else {
+                colors.lift(0.45)
+            };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                if active {
-                    theme.accent_primary
-                } else {
-                    colors.surface_white_20
-                },
+                fill,
                 None,
                 &RoundedRect::from_rect(thumb, thumb.width() / 2.0),
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_white_20,
+                crate::tokens::Colors::hairline_on(fill, 51),
                 None,
                 &RoundedRect::from_rect(thumb, thumb.width() / 2.0),
             );
