@@ -14,7 +14,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "release/app-collections.toml"
+      - "dist/apps/app-collections.toml"
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
@@ -35,7 +35,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "release/app-collections.toml"
+      - "dist/apps/app-collections.toml"
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/app_release.py"
@@ -51,7 +51,7 @@ on:
         required: false
         default: ""
       collection:
-        description: "Named set from release/app-collections.toml."
+        description: "Named set from dist/apps/app-collections.toml."
         required: false
         default: "default"
       architectures:
