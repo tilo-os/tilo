@@ -830,7 +830,7 @@ pub struct App {
     room_index: Option<crate::state::DocumentReplica>,
 
     action_palette: Option<crate::action_palette::ActionPalette>,
-    document_history: crate::standalone_history_host::StandaloneHistoryHost,
+    document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
     history_chrome_enabled: bool,
     history_layout: Option<crate::standalone_history_host::HostHistoryLayout>,
     history_viewport_width: f64,
@@ -1413,7 +1413,7 @@ impl App {
             records: None,
             room_index: None,
             action_palette: None,
-            document_history: crate::standalone_history_host::StandaloneHistoryHost::new(),
+            document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             history_layout: None,
             history_viewport_width: 1000.0,
