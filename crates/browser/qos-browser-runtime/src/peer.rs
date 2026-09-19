@@ -54,10 +54,10 @@ struct Peer {
     session: RefCell<Option<Rc<RelayCoeditSession>>>,
     transport_generation: std::cell::Cell<u64>,
     transport_connected: std::cell::Cell<bool>,
-    rejected_checkpoints: RefCell<BTreeSet<Vec<u8>>>,
+    admission_progress: RefCell<crate::admission_health::AdmissionProgress>,
     last_relay_contact: std::cell::Cell<Option<f64>>,
     last_peer_contact: std::cell::Cell<Option<f64>>,
-    batches: RefCell<BTreeMap<String,Vec<PendingWrite>>>,
+    batches: RefCell<BTreeMap<String,(Vec<PendingWrite>,Option<u64>)>>,
     next_batch: std::cell::Cell<u64>,
     storage_epoch: RefCell<Option<String>>,
     committed_at: std::cell::Cell<Option<f64>>,
@@ -71,6 +71,10 @@ fn error(e: impl ToString) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 fn report(peer: &Peer, phase: &str, error: Option<String>) {
+    let source=if !peer.transport_connected.get(){crate::admission_health::ReportSource::Transport}else{crate::admission_health::ReportSource::Runtime};
+    report_from(peer,phase,error,source);
+}
+fn report_from(peer: &Peer, phase: &str, error: Option<String>, source: crate::admission_health::ReportSource) {
     let state = peer.state.borrow();
     let complete = crate::desktop::admission(&state).is_ok_and(|admission| admission.complete());
     let outgoing=state.outbox_status(&peer.outbox.borrow(),SystemTime::now());
@@ -86,7 +90,7 @@ fn report(peer: &Peer, phase: &str, error: Option<String>) {
     let phase=if phase=="admitting"&&peer.was_ready.get()&&complete{"ready"}else{phase};
     if phase=="ready"{peer.was_ready.set(true);}
     let error = error.or(incomplete);
-    let health=health(peer,&state,phase=="ready",error.as_deref());
+    let health=health(peer,&state,phase=="ready",error.as_deref(),source);
     let synchronized=health["records"].as_array().is_some_and(|records|!records.is_empty()&&records.iter().all(|record|record["acknowledgement"]["coversCurrentBasis"]==true));
     let value = serde_json::json!({"phase":phase,"desktop":{"version":1,"mode":"session"},"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":!peer.cache.pending_writes().is_empty(),"outgoingPending":peer.outbox.borrow().len(),"outgoingBlocked":outgoing.blocked_expired,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if synchronized{"acknowledged"}else{"pending"},"error":error,"health":health});
     let _ = peer
@@ -233,7 +237,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         health_projection: RefCell::default(),actions: RefCell::default(),action_v2: std::cell::Cell::new(action_v2),
         admission_failure: RefCell::new(None),was_ready: std::cell::Cell::new(false),published: RefCell::new(BTreeSet::new()),
         id,cache,outbox:RefCell::new(outbox),endpoint:RefCell::new(Some(endpoint.clone())),session:RefCell::new(Some(session.clone())),state:RefCell::new(state),_key:key,
-        callback:callback.ok_or_else(||error("missing status callback"))?,closed:std::cell::Cell::new(false),transport_generation:std::cell::Cell::new(1),transport_connected:std::cell::Cell::new(true),rejected_checkpoints:RefCell::new(BTreeSet::new()),last_relay_contact:std::cell::Cell::new(None),last_peer_contact:std::cell::Cell::new(None),batches:RefCell::new(BTreeMap::new()),next_batch:std::cell::Cell::new(0),storage_epoch:RefCell::new(None),committed_at:std::cell::Cell::new(None),
+        callback:callback.ok_or_else(||error("missing status callback"))?,closed:std::cell::Cell::new(false),transport_generation:std::cell::Cell::new(1),transport_connected:std::cell::Cell::new(true),admission_progress:RefCell::default(),last_relay_contact:std::cell::Cell::new(None),last_peer_contact:std::cell::Cell::new(None),batches:RefCell::new(BTreeMap::new()),next_batch:std::cell::Cell::new(0),storage_epoch:RefCell::new(None),committed_at:std::cell::Cell::new(None),
     })};
     let transport_generation=peer.transport_generation.get();
     let hello = NeighbourMsg::IdentityHello {
@@ -310,6 +314,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                 if let Err(error)=crate::browser::prepare_peer_remote(peer.id){mark_failure(peer.id,error);continue;}
             }
             let mut candidate = peer.state.borrow().clone();
+            let pending_before=candidate.pending_count();
             let result = candidate.receive_from(
                 if authenticated {
                     TransportOrigin::RelayDelta(author)
@@ -342,6 +347,9 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                         };
                         match install.and_then(|()| stage_journal(&peer, &candidate, &outbox)) {
                             Ok(()) => {
+                                let journal=StorageKey::Admission{workspace:candidate.room().into()};
+                                let revision=peer.cache.status(&journal).filter(|status|!status.durable).map(|status|status.revision);
+                                peer.admission_progress.borrow_mut().accepted(revision);
                                 *peer.admission_failure.borrow_mut()=reconciliation_error;
                                 *peer.outbox.borrow_mut() = outbox;
                                 *peer.state.borrow_mut() = candidate;
@@ -351,6 +359,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                             Err(e) => { *peer.admission_failure.borrow_mut()=Some(e.clone());report(&peer, "incomplete", Some(e)); },
                         }
                     } else {
+                        if candidate.pending_count()<pending_before {peer.admission_progress.borrow_mut().accepted(None);}
                         *peer.state.borrow_mut() = candidate;
                         report(
                             &peer,
@@ -368,11 +377,8 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                 // peer ready), while exposing the rejection. Authenticated missing
                 // crypto and failed record installation remain sticky incomplete.
                 Err(e) => {
-                    if (e.contains("timestamp")||e.contains("expired")) && peer.rejected_checkpoints.borrow().len()<32 && peer.rejected_checkpoints.borrow_mut().insert(data){
-                        let request=NeighbourMsg::SyncReq{since:vec![],room:peer.state.borrow().room().into(),invite_id:None};
-                        if let Ok(bytes)=postcard::to_allocvec(&request){let _=session.publish_presence(bytes);}
-                    }
-                    report(&peer,"admitting",Some(e));
+                    let source=crate::admission_health::receive_source(&e);
+                    report_from(&peer,"admitting",Some(e),source);
                 },
             }
         }
@@ -386,6 +392,19 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         }
     });
     Ok(id)
+}
+/// Request bootstrap on the retained authenticated transport without replacing
+/// the owner or requiring the very document permissions bootstrap may supply.
+#[wasm_bindgen]
+pub fn peer_request_sync(id:u32,expected_transport_generation:String)->Result<(),JsValue>{
+    let expected=expected_transport_generation.parse::<u64>().map_err(error)?;
+    PEERS.with(|peers|{
+        let peer=peers.borrow().get(&id).cloned().ok_or_else(||error("closed peer"))?;
+        if peer.closed.get()||!peer.transport_connected.get()||peer.transport_generation.get()!=expected{return Err(error("sync transport generation is unavailable"));}
+        let session=peer.session.borrow().clone().ok_or_else(||error("sync transport disconnected"))?;
+        let request=NeighbourMsg::SyncReq{since:vec![],room:peer.state.borrow().room().into(),invite_id:None};
+        session.publish_presence(postcard::to_allocvec(&request).map_err(error)?).map_err(error)
+    })
 }
 /// Disconnect transport without destroying durable cache/outbox ownership.
 #[wasm_bindgen]
@@ -565,7 +584,9 @@ fn encode_pending_batch<T>(id:u32, encode:impl FnOnce(&str,&[PendingWrite],&[qos
         let batch=peer.next_batch.get().checked_add(1).ok_or_else(||error("batch sequence exhausted"))?;peer.next_batch.set(batch);
         let id=format!("{}:{batch}",peer.id);
         let result=encode(&id,&writes,&peer.state.borrow().rows())?;
-        peer.batches.borrow_mut().insert(id,writes);
+        let journal_revision=writes.iter().find(|write|matches!(write.key,StorageKey::Admission{..})).map(|write|write.revision);
+        let basis=peer.admission_progress.borrow().batch_basis(journal_revision);
+        peer.batches.borrow_mut().insert(id,(writes,basis));
         Ok(result)
     })
 }
@@ -598,17 +619,17 @@ pub fn acknowledge_peer_storage_batch(id:u32,raw:String)->Result<(),JsValue>{
     PEERS.with(|peers|{
         let peer=peers.borrow().get(&id).cloned().ok_or_else(||error("closed peer"))?;
         if peer.storage_epoch.borrow().as_ref().is_some_and(|epoch|epoch!=&result.epoch){return Err(error("foreign storage epoch"))}
-        let writes=peer.batches.borrow_mut().remove(&result.batch_id).ok_or_else(||error("unknown or settled storage batch"))?;
+        let (writes,basis)=peer.batches.borrow_mut().remove(&result.batch_id).ok_or_else(||error("unknown or settled storage batch"))?;
         *peer.storage_epoch.borrow_mut()=Some(result.epoch);
         for write in writes{peer.cache.acknowledge(&write,if result.result.ok{Ok(())}else{Err(result.result.code.clone().unwrap_or_else(||"storage-transaction-failed".into()))}).map_err(error)?;}
-        if result.result.ok{peer.committed_at.set(Some(result.observed_at_ms));}
+        if result.result.ok{peer.committed_at.set(Some(result.observed_at_ms));peer.admission_progress.borrow_mut().committed(basis);}
         report(&peer,"admitting",None);Ok(())
     })
 }
 fn required_read_failure(peer:&Peer,state:&StatePeer)->Option<String>{
     crate::desktop::admission(state).ok()?.required.iter().find_map(|record|state.check_document_read(peer._key.verifying_key().to_bytes(),&record.app_id,&record.record_id,SystemTime::now()).err())
 }
-fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->serde_json::Value{
+fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>,source:crate::admission_health::ReportSource)->serde_json::Value{
     let journal_status=peer.cache.status(&StorageKey::Admission{workspace:state.room().into()});
     let journal=journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|peer.health_projection.borrow_mut().journal(&bytes.bytes));
     let durable_failure=crate::admission_health::durable_admission_failure(
@@ -619,10 +640,10 @@ fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->s
     );
     let required_failure=required_read_failure(peer,state);
     let durable_failure=durable_failure.or(required_failure);
-    let failure=durable_failure.as_deref().or(reported_error);
+    let failure=crate::admission_health::reported_failure(durable_failure.as_deref(),reported_error,source,ready&&state.pending_count()==0);
     let mut failures=failure.map(|text|{
-        let (code,message,recovery)=if text.contains("revoked"){("identity-revoked","This device no longer has access.","review-permissions")}else if text.contains("MLS")||text.contains("crypto"){("crypto-unavailable","Encrypted content is waiting for its security prerequisites.","refresh-checkpoint")}else if text.contains("timestamp")||text.contains("expired"){("checkpoint-expired","A fresh copy of the shared state is required.","refresh-checkpoint")}else if text.contains("forbidden")||text.contains("permission"){("permission-required","Access to this record needs permission.","review-permissions")}else if !peer.transport_connected.get(){("transport-ended","The connection was interrupted. Saved work is retained.","retry-connection")}else{("record-install-failed","Shared state could not be loaded yet.","refresh-checkpoint")};
-        serde_json::json!({"id":"runtime:admission","code":code,"scope":{"kind":if !peer.transport_connected.get(){"connection"}else{"admission"}},"severity":if durable_failure.is_some(){"error"}else{"notice"},"message":message,"recovery":[if recovery=="review-permissions"{serde_json::json!({"kind":recovery,"failureId":"runtime:admission"})}else{serde_json::json!({"kind":recovery})}],"occurredAtMs":js_sys::Date::now()})
+        let (code,message,recovery)=crate::admission_health::failure_policy(text,source,durable_failure.is_some(),peer.transport_connected.get());
+        serde_json::json!({"id":"runtime:admission","code":code,"scope":{"kind":if !peer.transport_connected.get(){"connection"}else{"admission"}},"severity":if durable_failure.is_some()||matches!(source,crate::admission_health::ReportSource::ReceiveRejection){"error"}else{"notice"},"message":message,"recovery":[if recovery=="review-permissions"{serde_json::json!({"kind":recovery,"failureId":"runtime:admission"})}else{serde_json::json!({"kind":recovery})}],"occurredAtMs":js_sys::Date::now()})
     }).into_iter().collect::<Vec<_>>();
     if let Ok(admission)=crate::desktop::admission(state){for app in admission.unsupported{
         failures.push(serde_json::json!({"id":format!("runtime:application:{app}"),"code":"runtime-unavailable","scope":{"kind":"admission"},"severity":"notice","message":format!("{app}: application integration or required service unavailable"),"recovery":[],"occurredAtMs":js_sys::Date::now()}));
@@ -648,7 +669,7 @@ fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->s
         serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":if state.check_document_read(peer._key.verifying_key().to_bytes(),&row.app_id,&row.record_id,SystemTime::now()).is_ok(){"admitted"}else{"unavailable"},"current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"journalRevision":journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"pendingWrites":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).map(|write|write.value.bytes.len()).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})
     }).collect::<Vec<_>>();
     let admission_phase=crate::admission_health::admission_phase(state,ready,durable_failure.as_deref());
-    serde_json::json!({"version":1,"transport":{"phase":if peer.closed.get(){"closed"}else if peer.transport_connected.get(){"connected"}else{"offline"},"authenticated":peer.transport_connected.get(),"lastRelayContactAtMs":peer.last_relay_contact.get(),"lastSessionPeerContactAtMs":peer.last_peer_contact.get()},"admission":{"phase":admission_phase,"requiredRecords":crate::desktop::admission(state).map(|admission|admission.required.iter().map(|row|serde_json::json!({"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id})).collect::<Vec<_>>()).unwrap_or_default(),"pendingPrerequisites":state.pending_count(),"deadlineAtMs":null},"records":records,"capabilities":{"automaticRecovery":true,"retrySaving":true,"recoverRenderer":true,"durablePeerAcknowledgement":true},"failures":failures})
+    serde_json::json!({"version":1,"transport":{"phase":if peer.closed.get(){"closed"}else if peer.transport_connected.get(){"connected"}else{"offline"},"authenticated":peer.transport_connected.get(),"generation":peer.transport_generation.get().to_string(),"lastRelayContactAtMs":peer.last_relay_contact.get(),"lastSessionPeerContactAtMs":peer.last_peer_contact.get()},"admission":{"phase":admission_phase,"progressRevision":peer.admission_progress.borrow().revision().to_string(),"requiredRecords":crate::desktop::admission(state).map(|admission|admission.required.iter().map(|row|serde_json::json!({"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id})).collect::<Vec<_>>()).unwrap_or_default(),"pendingPrerequisites":state.pending_count(),"deadlineAtMs":null},"records":records,"capabilities":{"automaticRecovery":true,"retrySaving":true,"recoverRenderer":true,"durablePeerAcknowledgement":true},"failures":failures})
 }
 
 /// Read-only handoff from the committed admission owner to the retained desktop.

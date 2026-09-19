@@ -1,4 +1,4 @@
-import {createActionClient} from './action-client.mjs';
+import {createActionClient,actionError} from './action-client.mjs';
 import {commitPeerWrites,commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createRecoveryCoordinator} from './peer-recovery.mjs';
 import {retryableMemo} from './asset-recovery.mjs';
@@ -19,11 +19,11 @@ return async function connectPeer(options={}){
   let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),queuedPersist,failed=false,generation=0;
   const subscribers=new Set(),mounts=new Set(),failedMounts=new Set(),pendingMounts=new Set(),mountControllers=new Set();
   let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0;
-  const admissionWaiters=new Set();
+  const admissionWaiters=new Set(),admissionFailures=new Map();let admissionEpisode,admissionEpoch=0;
   const operations=new Map(),surfaces=new Map(),surfaceWaiters=new Map(),surfaceAttempts=new Map(),surfaceTargets=new WeakMap();
   let health={version:1,generation:'0',transport:{phase:'connecting',authenticated:false,lastRelayContactAtMs:null,lastSessionPeerContactAtMs:null,retry:{attempt:0,nextAttemptAtMs:null,inFlight:false}},admission:{phase:'waiting',requiredRecords:[],pendingPrerequisites:0,deadlineAtMs:null},records:[],surfaces:[],capabilities:{automaticRecovery:true,retrySaving:true,recoverRenderer:true,durablePeerAcknowledgement:false},failures:[],recoveryOperations:[]};
   const timerSet=recoveryClock.setTimeout??globalThis.setTimeout,timerClear=recoveryClock.clearTimeout??globalThis.clearTimeout,now=recoveryClock.now??Date.now;
-  const report=(next,force=false)=>{if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}health={...health,generation:snapshot.health?.generation??health.generation,admission:{...health.admission,deadlineAtMs:admissionDeadline}};const candidate={...snapshot,...next,health},changed=force||!samePublicValue(snapshot,candidate);if(changed){health={...health,generation:String(++healthRevision)};snapshot={...candidate,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);}for(const waiter of admissionWaiters)waiter.check();};
+  const report=(next,force=false)=>{if(next.health){if(next.health.admission||next.health.records)admissionRevision++;health={...health,...next.health,transport:{...health.transport,...next.health.transport,retry:health.transport.retry},failures:[...health.failures.filter(f=>!f.id.startsWith('runtime:')),...(next.health.failures??[])]};}for(const waiter of admissionWaiters)waiter.check();reconcileAdmission();health={...health,generation:snapshot.health?.generation??health.generation,admission:{...health.admission,deadlineAtMs:admissionDeadline}};const candidate={...snapshot,...next,health},changed=force||!samePublicValue(snapshot,candidate);if(changed){health={...health,generation:String(++healthRevision)};snapshot={...candidate,health};options.onStatus?.(snapshot);for(const listener of subscribers)listener(snapshot);}for(const waiter of admissionWaiters)waiter.check();};
   // `force` publishes (peer_committed: outbox send plus a fresh health report)
   // even when this run committed nothing. Presented frames pass false: without a
   // commit there is nothing new to send, and the health report would be unchanged.
@@ -53,12 +53,20 @@ return async function connectPeer(options={}){
     queuedPersist=request;flush=request.promise;
     return flush;
   }
+  function actionRuntime(operation,stage){
+    try{return operation();}catch(error){
+      // This exact error originates in Rust action_context / peer_action_request.
+      // Certificate, membership, protocol and arbitrary transport text stay fatal.
+      if(String(error?.message??error)==='action transport disconnected')throw actionError('transport-disconnected',stage,'Action transport disconnected',stage==='discovery');
+      throw error;
+    }
+  }
   function pollActions(){
     if(!actionsV1||closed||closing||actionPolling)return;
     if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;actionPolling=true;
     void actionsV1.recover().catch(()=>{}).finally(()=>{actionPolling=false;if(!closed&&!closing)actionTimer=timerSet(pollActions,1000);});
   }
-  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}let next=JSON.parse(value);if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};if(next.phase==='ready'){if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;clearFailure('admission');}report(next);if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(next.persistenceNeeded)void persist().catch(()=>{});};
+  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}let next=JSON.parse(value);if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(next.persistenceNeeded)void persist().catch(()=>{});};
   async function post(route,body){
     const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json'},body,signal,cache:'no-store',credentials:'same-origin'});
     const text=await response.text();
@@ -83,12 +91,57 @@ return async function connectPeer(options={}){
     clearFailure(scope);health={...health,failures:[...health.failures,{id:`session:${scope}`,code,scope:{kind:scope},severity:'error',message:scope==='storage'?'Changes could not be saved on this device.':terminal?'This device needs authorization to reconnect.':'Connection is unavailable. Your saved work is retained.',recovery:[{kind:scope==='storage'?'retry-saving':terminal?'reauthenticate':'retry-connection'}],occurredAtMs:Date.now()}]};return terminal;
   }
   function connectionFailure(error){const terminal=setFailure('connection',error);health={...health,transport:{...health.transport,phase:terminal?'failed':'offline',authenticated:false}};report({error:String(error)});}
-  function admissionAttempt(){
-    if(admissionTimer!==null)timerClear(admissionTimer);admissionDeadline=now()+10000;
-    admissionTimer=timerSet(()=>{admissionTimer=null;if(closed||closing)return;clearFailure('admission');health={...health,admission:{...health.admission,phase:'failed'},failures:[...health.failures,{id:'session:admission',code:'admission-timeout',scope:{kind:'admission'},severity:'error',message:'Shared state is taking longer to load.',recovery:[{kind:'refresh-checkpoint'}],occurredAtMs:now()}]};report({});},10000);
+  const readyRecord=record=>{const row=health.records.find(row=>sameRecord(row.record,record));return row?.admission==='admitted'&&row.current&&row.editing.mode!=='blocked';};
+  const admitted=()=>health.admission.phase==='ready'&&health.admission.pendingPrerequisites===0&&health.admission.requiredRecords.every(readyRecord);
+  const terminalAdmission=()=>health.failures.find(f=>f.severity==='error'&&(f.scope.kind==='storage'||['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','permission-required','crypto-unavailable','record-install-failed'].includes(f.code)));
+  function stopAdmission(){if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;}
+  function admissionTimeout(record,id=`session:admission:${admissionEpisode.epoch}`){
+    const failure={id,code:'admission-timeout',scope:{kind:'admission',...(record?{record}:{})},severity:'error',message:'Shared state is still catching up; automatic recovery paused.',recovery:[{kind:'refresh-checkpoint',...(record?{record}:{})}],occurredAtMs:now()};
+    admissionFailures.set(id,record);health={...health,failures:[...health.failures.filter(f=>f.id!==id),failure]};return Object.assign(Error('Checkpoint admission timed out'),{failureId:id});
+  }
+  function startAdmission(explicit=false,record){
+    if(closed||closing||terminalAdmission()||!health.transport.authenticated)return;
+    const transport=health.transport.generation;
+    // A record retry owns only its own failures; joining never resets the budget.
+    if(explicit){for(const [id,failedRecord] of admissionFailures){if(!record||!failedRecord||sameRecord(record,failedRecord)){health={...health,failures:health.failures.filter(f=>f.id!==id)};admissionFailures.delete(id);}}}
+    if(admissionEpisode?.state==='active'&&admissionEpisode.transport===transport)return;
+    if(!explicit&&admissionEpisode&&admissionEpisode.transport===transport&&admissionEpisode.state!=='complete')return;
+    stopAdmission();admissionDeadline=now()+30000;
+    admissionEpisode={epoch:++admissionEpoch,transport,owner:id,start:now(),deadline:admissionDeadline,lastProgress:now(),progress:health.admission.progressRevision??'0',sends:0,lastSent:-Infinity,state:'active'};
+    scheduleAdmission();
+  }
+  function scheduleAdmission(){
+    if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;
+    const episode=admissionEpisode;if(!episode||episode.state!=='active'||closed||closing)return;
+    const due=episode.sends<2?Math.min(episode.deadline,Math.max(episode.lastProgress+10000,episode.lastSent+10000)):episode.deadline;
+    admissionTimer=timerSet(()=>{
+      admissionTimer=null;if(admissionEpisode!==episode||closed||closing)return;
+      if(terminalAdmission()){episode.state='terminal';stopAdmission();return;}
+      if(now()>=episode.deadline){episode.state='exhausted';stopAdmission();if(!admitted())admissionTimeout();for(const waiter of [...admissionWaiters])waiter.timeout();report({});return;}
+      if(id!==undefined&&health.transport.authenticated&&health.transport.generation===episode.transport){
+        episode.owner??=id;episode.sends++;episode.lastSent=now();
+        try{runtime.peer_request_sync(id,episode.transport);}catch(error){connectionFailure(error);coordinator.schedule();}
+      }else{episode.lastSent=now();if(!health.transport.authenticated)coordinator.schedule();}
+      scheduleAdmission();
+    },Math.max(0,due-now()));
+  }
+  function reconcileAdmission(){
+    if(closed||closing)return;
+    for(const [id,record] of admissionFailures){if(record?readyRecord(record):admitted()){health={...health,failures:health.failures.filter(f=>f.id!==id)};admissionFailures.delete(id);}}
+    if(terminalAdmission()){if(admissionEpisode)admissionEpisode.state='terminal';stopAdmission();return;}
+    if(admitted()&&!admissionWaiters.size){if(admissionEpisode)admissionEpisode.state='complete';stopAdmission();return;}
+    startAdmission();
+    const episode=admissionEpisode,progress=health.admission.progressRevision;if(episode?.state==='active'&&typeof progress==='string'&&/^(0|[1-9][0-9]*)$/.test(progress)&&BigInt(progress)>BigInt(episode.progress)){episode.progress=progress;episode.lastProgress=now();scheduleAdmission();}
+  }
+  async function joinAdmission(explicit=false,record){
+    if(!health.transport.authenticated)await reconnect();
+    startAdmission(explicit,record);
+    // Force one fresh projection without changing the published tail-coalescing
+    // or private-write barriers. A stale ready callback cannot finish a waiter.
+    await persist();
   }
   const connect=async(old)=>{
-    actionRecovery=false;actionsV1?.invalidate("reconnecting");admissionAttempt();await refreshEnrollment();
+    actionRecovery=false;actionsV1?.invalidate("reconnecting");await refreshEnrollment();
     if(closed||closing)throw Error('Session disposed during enrollment');
     if(old===undefined){
       const current=generation;
@@ -106,18 +159,32 @@ return async function connectPeer(options={}){
       if(!actionsV1){
         const key=JSON.stringify({type:'privateActions',workspace:namespace.room});
         actionsV1=await createActionClient({
-          context:()=>JSON.parse(runtime.peer_action_context(id)),
+          clock:recoveryClock,
+          context:()=>{if(closed||closing||!health.transport.authenticated)throw actionError('transport-disconnected','discovery','Action transport disconnected',true);return JSON.parse(actionRuntime(()=>runtime.peer_action_context(id),'discovery'));},
           load:async()=>{const rows=await storage.hydrate();const saved=rows.find(row=>{const storedKey=JSON.parse(row.key);return storedKey.type==='privateActions'&&storedKey.workspace===namespace.room;});if(saved)actionRevision=BigInt(saved.revision);return saved?JSON.parse(new TextDecoder().decode(saved.bytes)):undefined;},
-          commit:value=>{
+          commit:(value,control)=>{
             const write={key,revision:String(++actionRevision),bytes:new TextEncoder().encode(JSON.stringify(value)),actor:null};
-            const task=flush.catch(()=>{}).then(()=>storage.commit([write]));flush=task;return task;
+            const task=flush.catch(()=>{}).then(()=>{control?.check();return storage.commit([write]);});flush=task;return task;
           },
-          request:async message=>{
-            if(closed||closing||id===undefined)throw Error('Action transport disconnected');
-            const request=runtime.peer_action_request(id,JSON.stringify(message));
-            const deadline=now()+10000;
-            try{while(!closed&&!closing){const response=runtime.peer_action_response(id,request);if(response)return JSON.parse(response);if(now()>=deadline)throw Error('Action response expired; outcome unknown');await new Promise(resolve=>timerSet(resolve,25));}throw Error('Action transport disconnected');}
-            finally{if(id!==undefined)runtime.peer_action_forget(id,request);}
+          request:(message,control)=>{
+            const discovery=message.type==='catalogue_refresh',stage=discovery?'discovery':'observation';
+            const disconnected=()=>actionError('transport-disconnected',stage,'Action transport disconnected',discovery);
+            control.check();if(closed||closing||id===undefined||!health.transport.authenticated)return Promise.reject(disconnected());
+            const owner=id,transport=health.transport.generation;
+            const request=actionRuntime(()=>runtime.peer_action_request(owner,JSON.stringify(message)),stage);
+            const deadline=Math.min(now()+10000,control.deadlineAtMs??Infinity);
+            return new Promise((resolve,reject)=>{
+              let timer,settled=false;
+              const finish=(error,response)=>{if(settled)return;settled=true;timerClear(timer);control.signal.removeEventListener('abort',abort);runtime.peer_action_forget(owner,request);error?reject(error):resolve(response);};
+              const abort=()=>finish(control.signal.reason??actionError('cancelled',stage,'Action attempt cancelled'));
+              const poll=()=>{try{
+                control.check();if(closed||closing||owner!==id||transport!==health.transport.generation||!health.transport.authenticated)throw disconnected();
+                const response=actionRuntime(()=>runtime.peer_action_response(owner,request),stage);if(response){finish(null,JSON.parse(response));return;}
+                if(now()>=deadline)throw actionError('transport-timeout',stage,discovery?'Desktop service discovery delayed':'Action response expired; outcome unknown',discovery);
+                timer=timerSet(poll,Math.min(25,deadline-now()));
+              }catch(error){finish(error);}};
+              control.signal.addEventListener('abort',abort,{once:true});poll();
+            });
           },
         });
       }
@@ -156,7 +223,7 @@ return async function connectPeer(options={}){
   function close(){
     if(closed)return Promise.resolve();
     if(closePromise)return closePromise;
-    closing=true;if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;coordinator.dispose();events?.removeEventListener?.('online',online);
+    closing=true;const actionClose=actionsV1?.close();if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;coordinator.dispose();events?.removeEventListener?.('online',online);
     closePromise=(async()=>{
       for(const waiter of admissionWaiters)waiter.reject(Error('Session closed'));
       for(const waiter of surfaceWaiters.values())waiter.reject(Error('Session closed'));surfaceWaiters.clear();
@@ -169,7 +236,7 @@ return async function connectPeer(options={}){
       // Stop the replaceable endpoint even when component settlement retains
       // custody. Keep its durable owner addressable for the next retry.
       if(id!==undefined)await runtime.disconnect_peer(id);
-      await actionsV1?.close();
+      await actionClose;
       await settleMounts(mounts);
       failed=false;await persist(false);
       generation++;if(id!==undefined){await runtime.close_peer(id);id=undefined;}
@@ -188,29 +255,22 @@ return async function connectPeer(options={}){
     // A transport join may precede the authoritative checkpoint. Observe a fresh
     // admission projection, then settle only the resource named by this request.
     const revision=admissionRevision;
-    health={...health,failures:health.failures.filter(f=>!(f.code==='admission-timeout'&&!f.id.startsWith('runtime:')&&(!request.record||!f.scope.record||sameRecord(f.scope.record,request.record))))};
     return new Promise((resolve,reject)=>{
-      let joined=false,settled=false,timeout;
-      const finish=error=>{if(settled)return;settled=true;timerClear(timeout);admissionWaiters.delete(waiter);error?reject(error):resolve();};
-      const waiter={reject:finish,check:()=>{
-        if(admissionRevision<=revision)return;
+      let joined=false,settled=false;
+      const finish=error=>{if(settled)return;settled=true;admissionWaiters.delete(waiter);error?reject(error):resolve();};
+      const waiter={reject:finish,timeout:()=>finish(admissionTimeout(request.record,`recovery:admission:${operation.id}`)),check:()=>{
         const row=request.record?health.records.find(row=>sameRecord(row.record,request.record)):null;
         const relevant=health.failures.filter(f=>f.severity==='error'&&(
-          f.scope.kind==='connection'||(['admission','permission'].includes(f.scope.kind)&&(!request.record||!f.scope.record||sameRecord(f.scope.record,request.record)))||row?.failureIds.includes(f.id)));
-        const terminal=relevant.find(f=>['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','permission-required','crypto-unavailable','admission-timeout'].includes(f.code));
+          ['connection','storage'].includes(f.scope.kind)||(['admission','permission'].includes(f.scope.kind)&&(!request.record||!f.scope.record||sameRecord(f.scope.record,request.record)))||row?.failureIds.includes(f.id)));
+        const terminal=relevant.find(f=>f.scope.kind==='storage'||['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','permission-required','crypto-unavailable','record-install-failed'].includes(f.code)||(admissionRevision>revision&&f.code==='admission-timeout'));
         if(terminal){finish(Object.assign(Error('Checkpoint admission failed'),{failureId:terminal.id}));return;}
+        if(admissionRevision<=revision)return;
         const ready=row=>row?.admission==='admitted'&&row.current&&row.editing.mode!=='blocked';
         const admitted=request.record?ready(row):health.admission.phase==='ready'&&health.admission.pendingPrerequisites===0&&health.admission.requiredRecords.every(record=>ready(health.records.find(row=>sameRecord(row.record,record))));
         if(joined&&admitted&&!relevant.some(f=>f.scope.kind!=='connection'))finish();
       }};
-      timeout=timerSet(()=>{
-        const failureId=`recovery:admission:${operation.id}`;
-        const failure={id:failureId,code:'admission-timeout',scope:{kind:'admission',...(request.record?{record:request.record}:{})},severity:'error',message:'Shared state is taking longer to load.',recovery:[request],occurredAtMs:now()};
-        finish(Object.assign(Error('Checkpoint recovery timed out'),{failureId}));
-        health={...health,failures:[...health.failures,failure]};if(!closed&&!closing)report({});
-      },10000);
-      admissionWaiters.add(waiter);
-      reconnect().then(()=>{joined=true;waiter.check();},finish);
+      admissionWaiters.add(waiter);waiter.check();if(settled)return;
+      joinAdmission(true,request.record).then(()=>{joined=true;waiter.check();reconcileAdmission();},finish);
     });
   }
   function waitForDesktopAdmission(signal){
@@ -218,10 +278,10 @@ return async function connectPeer(options={}){
     // dispatch. A ready snapshot from before its rejection cannot authorize retry.
     const revision=admissionRevision;
     return new Promise((resolve,reject)=>{
-      let settled=false,timeout;
-      const finish=error=>{if(settled)return;settled=true;timerClear(timeout);admissionWaiters.delete(waiter);signal.removeEventListener('abort',abort);error?reject(error):resolve();};
+      let settled=false;
+      const finish=error=>{if(settled)return;settled=true;admissionWaiters.delete(waiter);signal.removeEventListener('abort',abort);error?reject(error):resolve();};
       const abort=()=>finish(Error('Desktop attempt cancelled'));
-      const waiter={reject:finish,check:()=>{
+      const waiter={reject:finish,timeout:()=>finish(Error('Desktop admission timed out')),check:()=>{
         if(closed||closing||signal.aborted){abort();return;}
         const failure=health.failures.find(f=>f.severity==='error'&&(['admission','permission'].includes(f.scope.kind)||['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','crypto-unavailable'].includes(f.code)));
         if(health.admission.phase==='failed'||failure){finish(Error(failure?.message??'Desktop admission failed'));return;}
@@ -232,11 +292,10 @@ return async function connectPeer(options={}){
         });
         if(snapshot.phase==='ready'&&admitted)finish();
       }};
-      timeout=timerSet(()=>finish(Error('Desktop admission timed out')),10000);
       admissionWaiters.add(waiter);signal.addEventListener('abort',abort,{once:true});waiter.check();
       // Ask the existing durable owner for a fresh projection even when the last
       // checkpoint arrived while the rejected host was releasing its resources.
-      if(!settled)void persist().catch(finish);
+      if(!settled)void joinAdmission().catch(finish);
     });
   }
   function recover(request){

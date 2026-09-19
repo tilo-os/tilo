@@ -8,17 +8,17 @@ const invocation='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 // Deliberately beyond JS integer precision: the bridge must never decode/rebuild it.
 const command='{"source":{"room":"'+room+'","heads":[[7]]},"command":{"CloseTab":{"location":{"strip":18446744073709551001,"group":18446744073709551002,"tab":18446744073709551003}}}}';
 const catalogue={version:1,surfaces:[{peer_id:'9007199254740993',app_id:'dev.qos.desktop',record_id:'',cluster_id:room,live:true,actions:[{resource:'desktop:session',action:'command',resource_label:'Desktop',resource_kind:'desktop',action_label:'Change desktop',operation_kind:'Effect',params:[{name:'command',ty:'text',required:true}],contract:{confirmation:{mode:'none'}}}]}]};
-async function fixture(){
+async function fixture({requestHook,commitHook,clock}={}){
  let disk,deny=false,available=true,outcome='unknown';const sent=[],reports=[];let queue=[{invocation,command}];
- const config={context:()=>binding,load:async()=>disk,commit:async value=>{if(deny)throw Error('quota');disk=structuredClone(value);},request:async message=>{
-  sent.push(message);if(message.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:available?catalogue:{version:1,surfaces:[]}};
+ const config={context:()=>binding,load:async()=>disk,commit:async value=>{await commitHook?.(value);if(deny)throw Error('quota');disk=structuredClone(value);},request:async message=>{
+  sent.push(message);const override=await requestHook?.(message,sent);if(override!==undefined)return override;if(message.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue:available?catalogue:{version:1,surfaces:[]}};
   assert.equal(disk.entries[0].invocation,message.invocation,'dispatch follows durable admission');
   if(outcome==='succeeded')return{type:'observation',host,invocation:message.invocation,update:{state:'succeeded',invocation:message.invocation,output:{resources:[]}},uncertain:false,cancellation_requested:false};
   if(outcome==='failed')return{type:'observation',host,invocation:message.invocation,update:{state:'failed',invocation:message.invocation,error:{code:'refused',message:'refused',retryable:false}},uncertain:false,cancellation_requested:false};
   return {type:'observation',host,invocation:message.invocation,update:null,uncertain:true,cancellation_requested:false};
  }};
- const actions=await createActionClient(config);
- const bridge=bindDesktopCommands({actions,peek:()=>queue[0],ack:id=>{assert.equal(queue[0].invocation,id);queue.shift();},report:value=>reports.push(value)});
+ const actions=await createActionClient({...config,clock});
+ const bridge=bindDesktopCommands({actions,clock,peek:()=>queue[0],ack:id=>{assert.equal(queue[0].invocation,id);queue.shift();},report:value=>reports.push(value)});
  return {actions,bridge,sent,reports,config,get disk(){return disk;},get queue(){return queue;},deny(){deny=true;},unavailable(){available=false;},succeed(){outcome='succeeded';},fail(){outcome='failed';}};
 }
 test('widget command preserves full IDs and UUID through actual durable client and restart recovery',async()=>{
@@ -38,4 +38,53 @@ test('terminal waiter resolves success, rejects failure, and retains unknown inv
  f.succeed();await f.actions.status(invocation);await pending;assert.equal(settled,true);f.bridge.close();
  const rejected=await fixture();const refused=rejected.bridge.waitForTerminal(invocation);rejected.fail();await rejected.bridge.pump();await assert.rejects(refused,/refused/);rejected.bridge.close();
  const unknown=await fixture();const retained=unknown.bridge.waitForTerminal(invocation);await unknown.bridge.pump();unknown.bridge.close();await assert.rejects(retained,/closed/);
+});
+
+const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
+const drain=async()=>{for(let i=0;i<50;i++)await Promise.resolve();};
+function fakeClock(){let time=0,id=0;const timers=new Map();return{now:()=>time,setTimeout:(fn,delay)=>{timers.set(++id,{fn,at:time+delay});return id;},clearTimeout:id=>timers.delete(id),async tick(ms){const end=time+ms;await drain();for(;;){const due=[...timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!due)break;time=due[1].at;timers.delete(due[0]);due[1].fn();await drain();}time=end;await drain();}};}
+const delayed=()=>Object.assign(Error('discovery delayed'),{code:'transport-timeout',stage:'discovery',retryable:true});
+test('catalogue timeout then success retains and launches the exact original intent once',async()=>{
+ const clock=fakeClock();let calls=0;const f=await fixture({clock,requestHook:m=>{if(m.type==='catalogue_refresh'&&++calls===1)throw delayed();}});
+ await f.bridge.pump();assert.equal(f.queue.length,1);assert.equal(f.reports.at(-1).desktopCommand.terminal,false);
+ await clock.tick(249);assert.equal(calls,1);await clock.tick(1);assert.equal(calls,3);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,1);assert.equal(f.disk.entries[0].intent.argument.command,command);assert.equal(f.queue.length,0);f.bridge.close();
+});
+test('second discovery failure retries with the pinned descriptor and original UUID',async()=>{
+ const clock=fakeClock();let calls=0;const f=await fixture({clock,requestHook:m=>{if(m.type==='catalogue_refresh'&&++calls===2)throw delayed();}});
+ await f.bridge.pump();assert.equal(f.queue.length,1);assert.equal(f.disk,undefined);await clock.tick(250);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,1);assert.equal(f.disk.entries[0].invocation,invocation);f.bridge.close();
+});
+test('close, explicit cancel and actual queue supersession prevent late discovery dispatch',async()=>{
+ for(const stop of ['close','cancel','supersede']){const hold=deferred(),entered=deferred();const f=await fixture({requestHook:async m=>{if(m.type==='catalogue_refresh'){entered.resolve();await hold.promise;}}});
+ const pumping=f.bridge.pump();await entered.promise;if(stop==='close')f.bridge.close();else if(stop==='cancel')f.bridge.cancel?.(invocation);else f.queue[0]={invocation,command:command+' '};
+ const reports=f.reports.length;hold.resolve();await pumping;assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0);if(stop==='close')assert.equal(f.reports.length,reports);f.bridge.close();}
+});
+test('repeated pumps cannot reset retry count or lifetime for unavailable discovery',async()=>{
+ const clock=fakeClock(),f=await fixture({clock,requestHook:m=>{if(m.type==='catalogue_refresh')throw delayed();}});
+ await f.bridge.pump();for(let i=0;i<10;i++)await f.bridge.pump();assert.equal(f.sent.length,1);await clock.tick(1250);assert.equal(f.sent.length,3);assert.equal(f.queue.length,0);assert.match(f.reports.at(-1).desktopCommand.error,/not sent/i);await clock.tick(60000);assert.equal(f.sent.length,3);f.bridge.close();
+});
+test('lost response after dispatch remains unknown and recovers status under original UUID',async()=>{
+ const f=await fixture({requestHook:m=>{if(m.type==='invoke_bound')throw delayed();}});await f.bridge.pump();assert.equal(f.queue.length,0);assert.equal(f.reports.at(-1).desktopCommand.state,'unknown');await f.bridge.pump();await f.actions.recover();const reopened=await createActionClient(f.config);await reopened.recover();assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,1);assert.deepEqual(f.sent.filter(m=>m.type==='status').map(m=>m.invocation),[invocation,invocation]);f.bridge.close();await reopened.close();
+});
+test('first failed discovery pins identity across retries',async()=>{
+ const clock=fakeClock();let calls=0,current={...binding};const sent=[];let queue=[{invocation,command}];
+ const actions=await createActionClient({clock,context:()=>current,load:async()=>undefined,commit:async()=>{},request:async m=>{sent.push(m);if(m.type==='catalogue_refresh'){if(++calls===1)throw delayed();return{type:'broker_catalogue',host,catalogue};}return{type:'observation',host,invocation,update:null,uncertain:true};}});
+ const bridge=bindDesktopCommands({actions,clock,peek:()=>queue[0],ack:()=>queue.shift()});await bridge.pump();current={...binding,certificate:'replacement'};await clock.tick(250);assert.equal(sent.filter(m=>m.type==='invoke_bound').length,0);assert.equal(queue.length,0);bridge.close();await actions.close();
+});
+test('deadline includes queued discovery and a late response cannot dispatch',async()=>{
+ const clock=fakeClock(),hold=deferred();let calls=0;const f=await fixture({clock,requestHook:async m=>{if(m.type==='catalogue_refresh'&&++calls===2)await hold.promise;}});const pumping=f.bridge.pump();await drain();await clock.tick(30000);await pumping;assert.equal(f.queue.length,0);assert.match(f.reports.at(-1).desktopCommand.error,/not sent/i);hold.resolve();await drain();assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0);assert.equal(f.disk,undefined);f.bridge.close();
+});
+test('deadline during pending commit never retries or dispatches and retains original row',async()=>{
+ const clock=fakeClock(),hold=deferred(),entered=deferred();const f=await fixture({clock,commitHook:async()=>{entered.resolve();await hold.promise;}});const pumping=f.bridge.pump();await entered.promise;await clock.tick(30000);assert.equal(f.actions.getInvocationStage(invocation),'admitting');assert.equal(f.queue.length,1);assert.equal(f.reports.at(-1).desktopCommand.state,'unknown');hold.resolve();await pumping;assert.equal(f.queue.length,0);assert.equal(f.disk.entries[0].invocation,invocation);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0);assert.equal(f.reports.at(-1).desktopCommand.state,'unknown');f.bridge.close();
+});
+test('security and descriptor changes during revalidation refuse without retries',async()=>{
+ for(const change of ['host','binding','live','cluster','removed','revision','descriptor','confirmation','permission','expired']){
+  const clock=fakeClock();let calls=0;const f=await fixture({clock,requestHook:m=>{if(m.type!=='catalogue_refresh'||++calls!==2)return;const changed=structuredClone(catalogue);if(change==='permission'||change==='expired')throw Error(change==='expired'?'device cert has expired':'permission revoked');if(change==='binding')return{type:'rejected',code:'NotAuthorised'};if(change==='live')changed.surfaces[0].live=false;if(change==='cluster')changed.surfaces[0].cluster_id='wrong';if(change==='removed')changed.surfaces=[];if(change==='revision')changed.surfaces[0].actions[0].revision='new';if(change==='descriptor')changed.surfaces[0].actions[0].action_label='replacement';if(change==='confirmation')changed.surfaces[0].actions[0].contract.confirmation={mode:'confirm'};return{type:'broker_catalogue',host:change==='host'?'dddddddd-dddd-4ddd-8ddd-dddddddddddd':host,catalogue:changed};}});
+  await f.bridge.pump();await clock.tick(30000);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0,change);assert.equal(f.disk,undefined,change);assert.equal(calls,2,change);assert.equal(f.reports.at(-1).desktopCommand.state,'rejected',change);f.bridge.close();
+ }
+});
+test('supersession during backoff rejects the retired intent waiter',async()=>{
+ const clock=fakeClock(),f=await fixture({clock,requestHook:m=>{if(m.type==='catalogue_refresh')throw delayed();}});const waiting=f.bridge.waitForTerminal(invocation);await f.bridge.pump();f.queue[0]={invocation:'ffffffff-ffff-4fff-8fff-ffffffffffff',command};let outcome='pending';waiting.then(()=>outcome='success',()=>outcome='cancelled');await f.bridge.pump();await drain();assert.equal(outcome,'cancelled');f.bridge.close();
+});
+test('explicit cancellation retires a queued intent before its first pump',async()=>{
+ const f=await fixture(),waiting=f.bridge.waitForTerminal(invocation),rejected=assert.rejects(waiting,/cancelled/);assert.equal(f.bridge.cancel(invocation),true);await rejected;await f.bridge.pump();assert.equal(f.sent.length,0);assert.equal(f.queue.length,0);f.bridge.close();
 });

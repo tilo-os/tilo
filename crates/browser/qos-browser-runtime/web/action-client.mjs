@@ -6,9 +6,27 @@ const equal=(a,b)=>canonical(a)===canonical(b);
 const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)&&value!=='00000000-0000-0000-0000-000000000000';
 const terminal=update=>['succeeded','failed','cancelled'].includes(update?.state);
 const encoder=new TextEncoder();
-export async function createActionClient({context,load,commit,request}){
+export const actionError=(code,stage,message,retryable=false)=>Object.assign(Error(message),{code,stage,retryable});
+// Public cancellation may settle early; callers must keep the underlying serial
+// operation ordered until any storage transaction already started has settled.
+export function actionControl({signal,parentSignal,deadlineAtMs,isCurrent}={},clock={},stage='discovery'){
+  const now=clock.now??Date.now,set=clock.setTimeout??globalThis.setTimeout,clear=clock.clearTimeout??globalThis.clearTimeout;
+  const controller=new AbortController();let timer;
+  const abort=reason=>{if(timer!==undefined)clear(timer);controller.abort(reason);};
+  const cancelled=()=>abort(actionError('cancelled',stage,'Action attempt cancelled'));
+  const sources=[signal,parentSignal].filter(Boolean);
+  for(const source of sources){source.addEventListener('abort',cancelled,{once:true});if(source.aborted)cancelled();}
+  const expire=()=>abort(actionError('deadline-exceeded',stage,stage==='discovery'?'Desktop service unavailable; command was not sent':'Action outcome unknown; original invocation retained'));
+  if(deadlineAtMs!==undefined&&!controller.signal.aborted){if(now()>=deadlineAtMs)expire();else timer=set(expire,deadlineAtMs-now());}
+  const check=()=>{if(controller.signal.aborted)throw controller.signal.reason;if(deadlineAtMs!==undefined&&now()>=deadlineAtMs){expire();throw controller.signal.reason;}if(isCurrent&&!isCurrent()){cancelled();throw controller.signal.reason;}};
+  return {signal:controller.signal,deadlineAtMs,isCurrent,check,setStage:next=>{stage=next;},
+    wait(task){return new Promise((resolve,reject)=>{const stop=()=>reject(controller.signal.reason);controller.signal.addEventListener('abort',stop,{once:true});Promise.resolve(task).then(resolve,reject).finally(()=>controller.signal.removeEventListener('abort',stop));if(controller.signal.aborted)stop();});},
+    dispose(){if(timer!==undefined)clear(timer);for(const source of sources)source.removeEventListener('abort',cancelled);},
+  };
+}
+export async function createActionClient({context,load,commit,request,clock={}}){
   let disk=await load()??{version:1,entries:[]},serial=Promise.resolve(),pending=0,closed=false,recoveryCursor=0,capability={state:'unavailable',reason:'not-discovered'};
-  const listeners=new Set();
+  const listeners=new Set(),lifetime=new AbortController(),admissions=new Map();
   if(disk.version!==1||!Array.isArray(disk.entries)||disk.entries.length>MAX_ENTRIES||encoder.encode(JSON.stringify(disk)).length>MAX_BYTES)throw Error('Unsupported private action outbox');
   const identities=new Set();
   for(const row of disk.entries){
@@ -25,14 +43,28 @@ export async function createActionClient({context,load,commit,request}){
   for(const row of disk.entries)if(!row.terminal){row.state='unknown';row.reason='recovered';}
   const snapshot=()=>copy({version:1,capability,entries:disk.entries});
   const notify=()=>{for(const listener of listeners){try{listener(snapshot());}catch{}}};
-  function enqueue(operation){if(closed)return Promise.reject(Error('Action client closed'));if(pending>=MAX_PENDING)return Promise.reject(Error('Action request overload'));pending++;const task=serial.catch(()=>{}).then(operation);serial=task;return task.finally(()=>{pending--;});}
-  async function save(next){if(equal(next,disk))return;if(encoder.encode(JSON.stringify(next)).length>MAX_BYTES)throw Error('Action outbox capacity exceeded');try{await commit(copy(next));}catch(error){capability={state:'unavailable',reason:'storage-failed'};notify();throw error;}disk=next;notify();}
-  async function discover(){try{const binding=copy(context());const response=await request({type:'catalogue_refresh'});if(response.type!=='broker_catalogue'||!uuid(response.host)||response.catalogue?.version!==1||!Array.isArray(response.catalogue.surfaces))throw Error(response.code??response.reason??'Broker unavailable');if(!equal(binding,context()))throw Error('Action identity changed during discovery');capability={state:'ready',host:response.host,binding,catalogue:copy(response.catalogue)};notify();return copy(capability);}catch(error){capability={state:'unavailable',reason:String(error.message??error)};notify();throw error;}}
+  function enqueue(operation,options={},stage='discovery'){
+    if(closed)return Promise.reject(Error('Action client closed'));if(pending>=MAX_PENDING)return Promise.reject(Error('Action request overload'));
+    const control=actionControl({...options,parentSignal:lifetime.signal},clock,stage);pending++;
+    const task=serial.catch(()=>{}).then(()=>{control.check();return operation(control);});
+    serial=task.finally(()=>{pending--;control.dispose();});serial.catch(()=>{});
+    return control.wait(task);
+  }
+  async function save(next,control){if(equal(next,disk))return;if(encoder.encode(JSON.stringify(next)).length>MAX_BYTES)throw Error('Action outbox capacity exceeded');try{control?.check();await commit(copy(next),control);}catch(error){capability={state:'unavailable',reason:'storage-failed'};notify();throw error;}disk=next;notify();}
+  async function discover(control){try{
+    control.check();const binding=copy(context());const response=await request({type:'catalogue_refresh'},control);control.check();
+    if(response.type!=='broker_catalogue'||!uuid(response.host)||response.catalogue?.version!==1||!Array.isArray(response.catalogue.surfaces)){
+      const code=response.type==='rejected'?response.code:'invalid-catalogue';
+      throw actionError(code,'discovery',code??'Broker unavailable',['Offline','Backpressure','AdmissionUnavailable'].includes(code));
+    }
+    if(!equal(binding,context()))throw Error('Action identity changed during discovery');
+    capability={state:'ready',host:response.host,binding,catalogue:copy(response.catalogue)};notify();return copy(capability);
+  }catch(error){capability={state:'unavailable',reason:String(error.message??error)};notify();throw error;}}
   const find=id=>{const row=disk.entries.find(row=>row.invocation===id);if(!row)throw Error('Unknown local invocation');return row;};
-  async function bound(row){if(!equal(row.binding,context()))throw Error('Action identity changed');const current=await discover();if(current.host!==row.host)throw Error('Action host changed; original invocation retained');return current;}
-  async function observe(row,message){
+  async function bound(row,control){if(!equal(row.binding,context()))throw Error('Action identity changed');const current=await discover(control);if(current.host!==row.host)throw Error('Action host changed; original invocation retained');return current;}
+  async function observe(row,message,control){
     let response;
-    try{response=await request(message);}catch(error){const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);if(!item.terminal){item.state='unknown';item.reason=String(error.message??error);}await save(next);throw error;}
+    try{control.check();response=await request(message,control);}catch(error){const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);if(!item.terminal){item.state='unknown';item.reason=String(error.message??error);}await save(next);throw error;}
     if(response.type==='observation'&&(response.host!==row.host||response.invocation!==row.invocation||(response.update&&response.update.invocation!==row.invocation)))throw Error('Action response correlation mismatch');
     const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);
     if(!item.terminal){
@@ -52,7 +84,7 @@ export async function createActionClient({context,load,commit,request}){
   }
   function intent(input,host){return {type:'invoke_bound',host,invocation:input.invocation,app_peer:String(input.app_peer),app_id:input.app_id,record_id:input.record_id,resource:input.resource,action:input.action,argument:input.argument??null,confirmation:input.confirmation??null,revision:input.revision??null};}
   function resolve(current,value){
-    const surfaces=current.catalogue.surfaces.filter(s=>String(s.peer_id)===value.app_peer&&s.app_id===value.app_id&&s.record_id===value.record_id);
+    const surfaces=current.catalogue.surfaces.filter(s=>s.live!==false&&(s.cluster_id===undefined||s.cluster_id===current.binding.room)&&String(s.peer_id)===value.app_peer&&s.app_id===value.app_id&&s.record_id===value.record_id);
     const offered=surfaces.flatMap(s=>s.actions??[]).filter(a=>a.resource===value.resource&&a.action===value.action&&(a.revision??null)===value.revision);
     if(offered.length!==1)throw Error('Action catalogue route or revision is stale');
     const declared=offered[0].contract?.confirmation;
@@ -62,34 +94,39 @@ export async function createActionClient({context,load,commit,request}){
     if(!['none','confirm','phrase'].includes(declared?.mode))throw Error('Unsupported confirmation mechanism');
     return offered[0];
   }
-  return {version:1,getSnapshot:snapshot,subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
+  return {version:1,getBinding:()=>copy(context()),getSnapshot:snapshot,subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
     invalidate(reason){capability={state:'unavailable',reason};notify();},
-    catalogue:()=>enqueue(discover),
-    invoke:input=>{input=copy(input);return enqueue(async()=>{
+    getInvocationStage:id=>disk.entries.some(row=>row.invocation===id)?'retained':admissions.has(id)?'admitting':'none',
+    settleAdmission:id=>admissions.get(id)?.promise??Promise.resolve(),
+    catalogue:options=>enqueue(discover,options),
+    invoke:(input,options)=>{input=copy(input);return enqueue(async control=>{
       input.invocation??=crypto.randomUUID();if(!uuid(input.invocation))throw Error('Full invocation UUID required');
       const existing=disk.entries.find(row=>row.invocation===input.invocation);
-      if(existing){if(!equal(existing.intent,intent(input,existing.host)))throw Error('Invocation intent changed');await bound(existing);return observe(existing,{type:'status',invocation:existing.invocation});}
+      if(existing){control.setStage('observation');if(!equal(existing.intent,intent(input,existing.host)))throw Error('Invocation intent changed');await bound(existing,control);return observe(existing,{type:'status',invocation:existing.invocation},control);}
       if(disk.entries.length>=MAX_ENTRIES)throw Error('Action outbox capacity exceeded; retained work is never evicted');
-      const current=await discover();
+      const current=await discover(control);
       const value=intent(input,current.host),descriptor=resolve(current,value);
       if(input.expected&&(!equal(input.expected.binding,current.binding)||input.expected.host!==current.host||!equal(input.expected.descriptor,descriptor)))throw Error('Action binding or catalogue changed');
       const row={invocation:input.invocation,host:current.host,binding:current.binding,intent:value,state:'unknown',reason:'may-have-dispatched',update:null,terminal:false,cancellationRequested:false};
-      await save({...disk,entries:[...disk.entries,row]});
-      if(!equal(row.binding,context()))throw Error('Action identity changed after commit');
-      return observe(row,value);
-    });},
-    status:id=>enqueue(async()=>{const row=find(id);await bound(row);return observe(row,{type:'status',invocation:id});}),
-    cancel:id=>enqueue(async()=>{const row=find(id);await bound(row);return observe(row,{type:'cancel',invocation:id});}),
-    recover:()=>enqueue(async()=>{
-      const current=await discover(),rows=disk.entries.filter(row=>!row.terminal);
+      control.check();
+      control.setStage('admission');let settle;const reservation={promise:new Promise(resolve=>settle=resolve)};admissions.set(input.invocation,reservation);
+      try{await save({...disk,entries:[...disk.entries,row]},control);}catch(error){reservation.error=error;throw error;}finally{admissions.delete(input.invocation);settle(reservation.error);}
+      control.check();if(!equal(row.binding,context()))throw Error('Action identity changed after commit');
+      control.setStage('observation');return observe(row,value,control);
+    },options);},
+    status:(id,options)=>enqueue(async control=>{const row=find(id);await bound(row,control);return observe(row,{type:'status',invocation:id},control);},options,'observation'),
+    cancel:(id,options)=>enqueue(async control=>{const row=find(id);await bound(row,control);return observe(row,{type:'cancel',invocation:id},control);},options,'observation'),
+    recover:()=>enqueue(async control=>{
+      const rows=disk.entries.filter(row=>!row.terminal);if(!rows.length)return snapshot();
+      const current=await discover(control);
       // One recovery turn is bounded; rotate fairly over retained uncertain work.
       for(let count=0;count<Math.min(16,rows.length);count++){
-        const row=rows[(recoveryCursor+count)%rows.length];
+        control.check();const row=rows[(recoveryCursor+count)%rows.length];
         if(!equal(row.binding,current.binding)||row.host!==current.host){const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);item.state='unknown';item.reason=!equal(row.binding,current.binding)?'identity-changed':'host-changed';await save(next);continue;}
-        try{await observe(row,{type:'status',invocation:row.invocation});}catch{ /* Keep original identity and durable uncertainty. */ }
+        try{await observe(row,{type:'status',invocation:row.invocation},control);}catch{ /* Keep original identity and durable uncertainty. */ }
       }
       recoveryCursor=rows.length?(recoveryCursor+16)%rows.length:0;return snapshot();
     }),
-    async close(){closed=true;await serial.catch(()=>{});listeners.clear();},
+    async close(){closed=true;lifetime.abort();await serial.catch(()=>{});listeners.clear();},
   };
 }

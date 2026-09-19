@@ -29,3 +29,42 @@ test('a retained palette control cannot rebind to a replacement certified host',
  await assert.rejects(c.invoke({...route,invocation:id,expected:{host:offered.host,binding:offered.binding,descriptor:offered.catalogue.surfaces[0].actions[0]}}),/binding|catalogue/i);
  assert.equal(f.bytes,undefined);assert.equal(f.calls.filter(m=>m.type==='invoke_bound').length,0);
 });
+
+const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
+const drain=async()=>{for(let i=0;i<30;i++)await Promise.resolve();};
+test('empty and terminal recovery performs no catalogue work',async()=>{
+ const f=fixture(),c=await f.open();await c.recover();assert.equal(f.calls.length,0);
+ await c.invoke({...route,invocation:id});f.response={type:'observation',host,invocation:id,update:{state:'succeeded',invocation:id},uncertain:false};await c.status(id);f.calls.length=0;await c.recover();assert.equal(f.calls.length,0);
+});
+test('abort survives the serial queue without durable admission',async()=>{
+ const hold=deferred(),sent=[];let saved;
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async v=>saved=v,request:async m=>{sent.push(m);await hold.promise;return{type:'broker_catalogue',host,catalogue};}});
+ const first=c.catalogue(),abort=new AbortController(),queued=c.invoke({...route,invocation:id},{signal:abort.signal});
+ abort.abort();const rejected=assert.rejects(queued,/cancel|abort/i);await drain();hold.resolve();await first;await rejected;await c.close();assert.equal(saved,undefined);assert.equal(sent.length,1);
+});
+test('abort during commit reserves admission and keeps serial ordering until commit settles',async()=>{
+ const entered=deferred(),hold=deferred(),sent=[];let saved;
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async v=>{entered.resolve();await hold.promise;saved=structuredClone(v);},request:async m=>{sent.push(m);return m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation:id,update:null,uncertain:true};}});
+ const abort=new AbortController(),pending=c.invoke({...route,invocation:id},{signal:abort.signal});await entered.promise;
+ assert.equal(c.getInvocationStage?.(id),'admitting');abort.abort();await assert.rejects(pending,/cancel|abort/i);
+ const following=c.catalogue();await drain();assert.equal(sent.length,1,'following closure must wait for commit');hold.resolve();await following;
+ assert.equal(saved.entries[0].invocation,id);assert.equal(sent.filter(m=>m.type==='invoke_bound').length,0);await c.invoke({...route,invocation:id});assert.equal(sent.filter(m=>m.type==='status').length,1);await c.close();
+});
+test('current route must still be live and in the bound cluster',async()=>{
+ for(const change of [{live:false},{cluster_id:'different-room'}]){const changed=structuredClone(catalogue);Object.assign(changed.surfaces[0],change);let saved;
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async v=>saved=v,request:async()=>({type:'broker_catalogue',host,catalogue:changed})});
+ await assert.rejects(c.invoke({...route,invocation:id}),/catalogue/);assert.equal(saved,undefined);await c.close();}
+});
+test('only concrete transient catalogue codes acquire discovery retry metadata',async()=>{
+ for(const code of ['Offline','Backpressure','AdmissionUnavailable','NotAuthorised','InvalidRequest','UnsupportedPeer','PermissionDenied']){
+ const c=await createActionClient({context:()=>context,load:async()=>undefined,commit:async()=>{},request:async()=>({type:'rejected',code})});
+ await assert.rejects(c.catalogue(),error=>error.stage==='discovery'&&error.retryable===['Offline','Backpressure','AdmissionUnavailable'].includes(code));await c.close();}
+});
+test('identity revocation after commit retains the row and prevents effect send',async()=>{
+ let revoked=false,saved;const sent=[];const c=await createActionClient({context:()=>{if(revoked)throw Error('identity revoked');return context;},load:async()=>undefined,commit:async v=>{saved=v;revoked=true;},request:async m=>{sent.push(m);return{type:'broker_catalogue',host,catalogue};}});
+ await assert.rejects(c.invoke({...route,invocation:id}),/revoked/);assert.equal(saved.entries[0].invocation,id);assert.equal(sent.filter(m=>m.type==='invoke_bound').length,0);await c.close();
+});
+test('queued deadline settles the caller while retaining the serial operation guard',async()=>{
+ let time=0;const callbacks=new Set(),clock={now:()=>time,setTimeout:fn=>{callbacks.add(fn);return fn;},clearTimeout:fn=>callbacks.delete(fn)};const hold=deferred(),sent=[];let saved;
+ const c=await createActionClient({clock,context:()=>context,load:async()=>undefined,commit:async v=>saved=v,request:async m=>{sent.push(m);await hold.promise;return{type:'broker_catalogue',host,catalogue};}});const first=c.catalogue(),queued=c.invoke({...route,invocation:id},{deadlineAtMs:100});await drain();time=100;for(const fn of [...callbacks])fn();await assert.rejects(queued,/not sent/);hold.resolve();await first;await c.close();assert.equal(saved,undefined);assert.equal(sent.length,1);
+});
