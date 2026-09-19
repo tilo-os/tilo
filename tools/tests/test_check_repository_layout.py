@@ -97,6 +97,23 @@ class RepositoryLayoutTests(unittest.TestCase):
             ],
         )
 
+    def test_application_tool_root_exception_is_closed_and_documented(self) -> None:
+        allowed = sorted(checker.ROOT_APPLICATION_CONTROLLER_FILES)
+        self.assertEqual(checker.flat_application_tooling_violations(allowed), [])
+        self.assertEqual(
+            checker.flat_application_tooling_violations(
+                allowed
+                + [
+                    "tools/app_release_notes.py",
+                    "tools/accept_app_preview.py",
+                ]
+            ),
+            [
+                "new application tooling must live under `tools/apps/`; the root-level controller exception is closed: tools/accept_app_preview.py",
+                "new application tooling must live under `tools/apps/`; the root-level controller exception is closed: tools/app_release_notes.py",
+            ],
+        )
+
     def test_retired_source_roots_are_rejected_with_their_replacements(self) -> None:
         self.assertEqual(
             checker.retired_source_root_violations(
