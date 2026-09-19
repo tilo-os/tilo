@@ -463,22 +463,20 @@ pub(crate) fn local_document(
     record: &str,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
+    let current = automerge::AutoCommit::load(&bytes).map_err(|e| e.to_string())?;
+    local_owned_document(id, app, record, current)
+}
+/// The canonical record owner has already committed this document. Avoid a
+/// full save/load round trip merely to recover its existing CRDT graph.
+pub(crate) fn local_owned_document(id: u32, app: &str, record: &str, mut current: automerge::AutoCommit) -> Result<(), String> {
+    if current.pending_ops() != 0 { return Err("record mutation is still unfinished".into()); }
     PEERS.with(|peers| {
-        let peer = peers
-            .borrow()
-            .get(&id)
-            .cloned()
-            .ok_or("certified peer is closed")?;
+        let peer = peers.borrow().get(&id).cloned().ok_or("certified peer is closed")?;
+        let before = peer.state.borrow().document_heads(app, record).ok_or("canonical native record not admitted")?;
+        if current.base_heads() == before { return Ok(()); }
+        let delta = current.save_after(&before);
+        let bytes = current.save();
         let mut candidate = peer.state.borrow().clone();
-        let prior = candidate
-            .document(app, record)
-            .ok_or("canonical native record not admitted")?;
-        let before = automerge::AutoCommit::load(&prior).map_err(|e| e.to_string())?;
-        let mut current = automerge::AutoCommit::load(&bytes).map_err(|e| e.to_string())?;
-        if current.base_heads() == before.base_heads() {
-            return Ok(());
-        }
-        let delta = current.save_after(&before.base_heads());
         let message =
             candidate.publish_incremental(app, record, delta, &peer._key, SystemTime::now())?;
         let mut outbox = peer.outbox.borrow().clone();

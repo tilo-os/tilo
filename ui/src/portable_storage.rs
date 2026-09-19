@@ -1,8 +1,43 @@
 //! Hydrated, explicitly namespaced browser persistence. Durable writes are acknowledged
 //! by the host only after its backing transaction commits.
 #[cfg(test)]
+thread_local! { static DOCUMENT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn document_heads_decode_once_per_value_and_preserve_ack_state() {
+        use automerge::transaction::Transactable;
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::Primary { package: "test".into(), workspace: "room".into() };
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "value", 1).unwrap();
+        let bytes = doc.save();
+        let first_heads = doc.get_heads();
+        cache.hydrate(key.clone(), bytes.clone(), None).unwrap();
+        DOCUMENT_DECODES.with(|count| count.set(0));
+        for _ in 0..100 { assert_eq!(cache.document_heads(&key), Some(Ok(first_heads.clone()))); }
+        cache.put(key.clone(), bytes, None).unwrap();
+        assert_eq!(cache.document_heads(&key), Some(Ok(first_heads)));
+        assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 1);
+        doc.put(automerge::ROOT, "value", 2).unwrap();
+        cache.put(key.clone(), doc.save(), None).unwrap();
+        let pending = cache.pending_writes().remove(0);
+        assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
+        assert!(cache.flush(&key).is_err(), "head decoding must not acknowledge persistence");
+        cache.acknowledge(&pending, Err("quota".into())).unwrap();
+        assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
+        assert_eq!(cache.flush(&key), Err("quota".into()));
+        cache.acknowledge(&pending, Ok(())).unwrap();
+        assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
+        assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 2);
+        cache.put(key.clone(), vec![1,2,3], None).unwrap();
+        for _ in 0..3 { assert_eq!(cache.document_heads(&key), Some(Err(()))); }
+        assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 3);
+        cache.put(key.clone(), doc.save(), None).unwrap();
+        assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
+        assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 4);
+    }
     #[test]
     fn status_retains_exact_prior_commit_across_newer_pending_and_failed_writes() {
         let cache=PortableStorage::new("profile","device").unwrap();
@@ -128,6 +163,8 @@ pub struct StorageStatus {
 }
 struct Entry {
     value: CachedBytes,
+    // Derived only from this entry's immutable bytes; replacement invalidates it.
+    document_heads: Option<Result<Vec<automerge::ChangeHash>, ()>>,
     revision: u64,
     durable: bool,
     error: Option<String>,
@@ -192,6 +229,18 @@ impl PortableStorage {
             .get(key)
             .map(|entry| entry.value.clone())
     }
+    /// Decode the current cached document without asserting that it is durable.
+    pub(crate) fn document_heads(&self, key: &StorageKey) -> Option<Result<Vec<automerge::ChangeHash>, ()>> {
+        let mut cache = self.cache.borrow_mut();
+        let entry = cache.entries.get_mut(key)?;
+        if entry.document_heads.is_none() {
+            #[cfg(test)]
+            DOCUMENT_DECODES.with(|count| count.set(count.get() + 1));
+            entry.document_heads = Some(automerge::AutoCommit::load(&entry.value.bytes)
+                .map(|mut doc| doc.get_heads()).map_err(|_| ()));
+        }
+        entry.document_heads.clone()
+    }
     /// Initial durable bytes. Existing entries may never be replaced through hydration.
     pub fn hydrate(
         &self,
@@ -209,6 +258,7 @@ impl PortableStorage {
             Entry {
                 committed: Some((0,CachedBytes{bytes:bytes.clone(),actor:actor.clone()})),
                 value: CachedBytes { bytes, actor },
+                document_heads: None,
                 revision: 0,
                 durable: true,
                 error: None,
@@ -243,6 +293,7 @@ impl PortableStorage {
             Entry {
                 committed,
                 value: CachedBytes { bytes, actor },
+                document_heads: None,
                 revision,
                 durable: false,
                 error: None,

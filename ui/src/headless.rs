@@ -2367,6 +2367,10 @@ impl FrameHarness {
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
         if let WindowEvent::ModifiersChanged(modifiers) = event {
+            // DOM key capture and Winit can publish the same snapshot repeatedly.
+            // Only transitions are input; duplicate snapshots must not run the
+            // document sync, action discovery and layout passes below.
+            if self.modifiers == *modifiers { return; }
             self.modifiers = *modifiers;
         }
         // An open search is modal above both live History chrome and the
@@ -6290,6 +6294,24 @@ mod prepared_driver_tests {
         driver.set_focused(None);
         assert_eq!(driver.undo_status(), outer_baseline);
     }
+    #[test]
+    fn duplicate_host_modifiers_do_not_sync_the_document_tree() {
+        let (_host, mut driver, observed, _) = prepared();
+        let before = observed.syncs.get();
+        for _ in 0..100 {
+            driver.send_host_event(&WindowEvent::ModifiersChanged(winit::event::Modifiers::default()));
+        }
+        assert_eq!(observed.syncs.get(), before, "unchanged modifiers must not relayout");
+        let shifted = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+        driver.send_host_event(&WindowEvent::ModifiersChanged(shifted));
+        let changed = observed.syncs.get();
+        assert!(changed > before, "real modifier transitions still reach widgets");
+        driver.send_host_event(&WindowEvent::ModifiersChanged(shifted));
+        assert_eq!(observed.syncs.get(), changed);
+        driver.send_host_event(&WindowEvent::ModifiersChanged(winit::event::Modifiers::default()));
+        assert!(observed.syncs.get() > changed, "modifier release still reaches widgets");
+    }
+
     #[test]
     fn prepared_driver_wakes_are_installed_before_callbacks_and_stale_wakes_are_rejected() {
         let mut outer_scope = crate::WakeScope::new();

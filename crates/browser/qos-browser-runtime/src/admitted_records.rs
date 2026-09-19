@@ -218,11 +218,14 @@ mod tests {
 /// Capture through the canonical owner; a renderer must never commit a clone
 /// of an unfinished typing transaction under the same Automerge actor.
 pub(crate) fn capture(records:&ui::record::RecordStore,id:&RecordId)->Result<Vec<u8>,String>{
+ Ok(capture_owned(records,id)?.save())
+}
+pub(crate) fn capture_owned(records:&ui::record::RecordStore,id:&RecordId)->Result<automerge::AutoCommit,String>{
  use automerge::transaction::Transactable;
  // try_flush stamps the real owned transaction before queuing persistence.
  // Its expected "not yet durable" error does not undo that canonical commit.
  let _=records.try_flush();
- records.read(id,|doc|if doc.pending_ops()==0{Ok(doc.clone().save())}else{Err("record mutation is still unfinished".into())}).ok_or("record unavailable")?
+ records.read(id,|doc|if doc.pending_ops()==0{Ok(doc.clone())}else{Err("record mutation is still unfinished".into())}).ok_or("record unavailable")?
 }
 #[cfg(test)]
 mod capture_tests {
@@ -262,7 +265,8 @@ mod capture_tests {
   assert!(records.read(&record,|doc|doc.pending_ops()>0).unwrap());
   let mut sent_typing=None;
   assert!(published.publish(1,definition.app_id,&records,&record,|bytes|{sent_typing=Some(bytes);Ok(())}).unwrap(),"unfinished typing must publish despite unchanged heads");
-  let sent_typing=automerge::AutoCommit::load(&sent_typing.unwrap()).unwrap();
+  let sent_typing=sent_typing.unwrap();
+  assert_eq!(sent_typing.pending_ops(),0,"publication receives only the canonical committed transaction");
   assert_eq!(chat::doc::ChatDoc::draft_text(&sent_typing,"c_general"),"ST");
   let _=capture(&records,&record).unwrap();assert_eq!(records.read(&record,|doc|chat::doc::ChatDoc::draft_text(doc,"c_general")).unwrap(),"ST");
  }
@@ -283,7 +287,7 @@ pub(crate) struct PublishedRecords {
 impl PublishedRecords {
     pub(crate) fn publish(
         &mut self, peer: u32, app: &str, records: &ui::record::RecordStore,
-        id: &RecordId, send: impl FnOnce(Vec<u8>) -> Result<(), String>,
+        id: &RecordId, send: impl FnOnce(automerge::AutoCommit) -> Result<(), String>,
     ) -> Result<bool, String> {
         use automerge::transaction::Transactable;
         let key = (peer, app.to_owned(), id.clone());
@@ -293,9 +297,9 @@ impl PublishedRecords {
             doc.pending_ops() == 0 && self.heads.get(&key).is_some_and(|heads| *heads == doc.base_heads())
         }).ok_or("record unavailable")?;
         if unchanged { return Ok(false); }
-        let bytes = capture(records, id)?;
-        let heads = records.read(id, |doc| doc.base_heads()).ok_or("record unavailable")?;
-        send(bytes)?;
+        let document = capture_owned(records, id)?;
+        let heads = document.base_heads();
+        send(document)?;
         // A failed journal/publication must not suppress the next retry.
         self.heads.insert(key, heads);
         Ok(true)
@@ -324,7 +328,7 @@ mod publication_tests {
         }
         store.with(&id, |doc| {doc.put(automerge::ROOT, "text", "edited").unwrap(); doc.commit();}).unwrap();
         assert!(published.publish(1, "test", &store, &id, |bytes| {payloads.push(bytes); Ok(())}).unwrap());
-        let doc = automerge::AutoCommit::load(&payloads[1]).unwrap();
+        let doc = &payloads[1];
         assert_eq!(doc.get(automerge::ROOT, "text").unwrap().unwrap().0.to_str(), Some("edited"));
         assert!(published.publish(2, "test", &store, &id, |_| Ok(())).unwrap());
         assert!(published.publish(2, "different-app", &store, &id, |_| Ok(())).unwrap());

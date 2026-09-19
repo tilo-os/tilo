@@ -688,7 +688,7 @@ impl Mount {
         if let Some(peer)=self.peer.filter(|_| !self.peer_suspended) {
             for record in self.owned_records(){
                 let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
-                let published=self.published_records.borrow_mut().publish(peer,&record.app,&record.store,&record.checkout.id,|bytes|crate::peer::local_document(peer,&record.app,id,bytes));
+                let published=self.published_records.borrow_mut().publish(peer,&record.app,&record.store,&record.checkout.id,|document|crate::peer::local_owned_document(peer,&record.app,id,document));
                 if let Err(error)=published{crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
             }
         }
@@ -724,7 +724,9 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         if m.peer_suspended { return Ok(()); }
+        let start = m.metric_start();
         m.frame.send_host_event(&WindowEvent::Ime(event));
+        m.metric_end("input_ime", start);
         m.pending = true;
         m.window.request_redraw();
         Ok(())

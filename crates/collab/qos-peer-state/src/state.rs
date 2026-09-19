@@ -422,6 +422,11 @@ impl StatePeer {
             })
             .collect()
     }
+    /// Read the admitted document basis without serializing its contents.
+    pub fn document_heads(&self, app: &str, record: &str) -> Option<Vec<automerge::ChangeHash>> {
+        self.documents.get(&Route { app: app.into(), record: record.into() })
+            .map(|entry| entry.doc.base_heads())
+    }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.documents
             .get(&Route {
