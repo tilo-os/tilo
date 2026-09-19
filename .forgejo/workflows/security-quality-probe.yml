@@ -1,0 +1,46 @@
+name: Probe / security on quality envelope
+on:
+  workflow_dispatch:
+jobs:
+  security-quality:
+    runs-on: runner-quality
+    timeout-minutes: 20
+    container:
+      image: code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Ensure invariant test tooling
+        run: |
+          command -v jq >/dev/null || dnf install -y jq
+          python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
+      - name: Complete unchanged security suite with resource receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          set +e
+          bash tools/run-security-boundary-invariants.sh
+          result=$?
+          set -e
+          echo "SECURITY_SUITE_SECONDS=$(( $(date +%s) - started ))"
+          for field in memory.peak memory.current memory.max memory.events; do
+            if [ -r "/sys/fs/cgroup/$field" ]; then
+              echo "SECURITY_CGROUP_$field"
+              cat "/sys/fs/cgroup/$field"
+            else
+              echo "SECURITY_CGROUP_$field=unavailable"
+            fi
+          done
+          exit "$result"
