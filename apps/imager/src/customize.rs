@@ -1526,9 +1526,9 @@ mod tests {
                 assert!(panel.measure(&mut tr, 61.0));
             }
             let label_h = panel.anchors.label_h;
-            for content in [
-                Rect::new(190.0, 90.0, 1090.0, 700.0),
-                Rect::new(16.0, 90.0, 304.0, 700.0),
+            for (content, compact) in [
+                (Rect::new(190.0, 90.0, 1090.0, 700.0), false),
+                (Rect::new(16.0, 90.0, 304.0, 700.0), true),
             ] {
                 let g = panel.geom(content);
                 // Section caption → first field caption → field.
@@ -1556,7 +1556,16 @@ mod tests {
                         .abs()
                         < 1e-6
                 );
-                assert!((g.export.y0 - (g.keyboard.y1 + GROUP)).abs() < 1e-6);
+                assert!((g.export.y0 - (g.filesystem.y1 + GROUP)).abs() < 1e-6);
+                if compact {
+                    assert!(
+                        (g.filesystem.y0 - (g.keyboard.y1 + SECTION + label_h + LABEL)).abs()
+                            < 1e-6
+                    );
+                } else {
+                    assert!((g.filesystem.y0 - g.keyboard.y0).abs() < 1e-6);
+                    assert!((g.filesystem.y1 - g.keyboard.y1).abs() < 1e-6);
+                }
                 // Independent of the formula: fields are the toolkit's bar
                 // control, the Preview action a pointer target, a caption band
                 // plus an `s1` step separates every field from the caption
@@ -1569,6 +1578,7 @@ mod tests {
                     g.timezone,
                     g.locale,
                     g.keyboard,
+                    g.filesystem,
                 ];
                 assert!(
                     fields
