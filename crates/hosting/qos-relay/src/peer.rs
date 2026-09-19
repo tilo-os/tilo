@@ -4301,12 +4301,14 @@ mod private_transport_tests {
         let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
         let trust = Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowMatchingUser));
         let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-        let metrics = crate::metrics::Metrics::default();
+        let metrics = Arc::new(crate::metrics::Metrics::default());
         let (ptx, _prx) = mpsc::channel(1);
         let session = SessionCtx {
             workspaces: &registry,
             autobind: None,
             outbound: &btx,
+            state_outbound: None,
+            connection_live: None,
             own_user_public_key: &user.public_key,
             metrics: &metrics,
             trust_policy: &trust,

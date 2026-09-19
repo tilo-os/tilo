@@ -952,8 +952,10 @@ mod tests {
         assert_eq!(rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 5).unwrap(), 0);
         assert!(rx.try_recv().is_err(), "an idle checkpoint must not reach a device that holds every delta");
         assert!(rt.subscribers.contains_key(&device), "the device stays subscribed");
-        // It is still retained (newest per channel) for the subscribe-time replay.
-        assert_eq!(rt.store.load_retained().unwrap().len(), 2);
+        // The synthetic bodies are opaque rather than valid Automerge documents,
+        // so bounded retention preserves both versions without inventing causal
+        // supersedence. The live fanout gate remains one checkpoint per channel.
+        assert_eq!(rt.store.load_retained().unwrap().len(), 4);
         // A checkpoint on a channel this device has never been served passes.
         let (env, raw) = checkpoint_on(author, 6, [11u8; 32], vec![3]);
         assert_eq!(rt.fanout_delta(&author, PeerRole::Device, &env, &raw, 6).unwrap(), 1);
