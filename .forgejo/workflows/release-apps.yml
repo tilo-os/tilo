@@ -443,7 +443,7 @@ jobs:
     container:
       # This job handles publisher credentials and already-built artifacts. Its
       # reviewed image deliberately contains no compiler or build toolchain.
-      image: code.sandbox.example/qos/tilo-release-tools@sha256:bb519a7b710e61f7dc9f383dde3b5045f2d3b01145302f6c01e4e0b5f433b67b
+      image: code.sandbox.example/qos/tilo-release-tools@sha256:65f353e93781c3c22881078900754d1f7b59c3349f522631e6289ef2838daa70
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
