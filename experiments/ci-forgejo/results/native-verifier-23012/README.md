@@ -49,3 +49,13 @@ The downloaded ZIP and extracted bundle are retained locally under
 bundle and `qualified/materialized/` contains the checked executables and adapter.
 Large executable artifacts are not committed to Git. The retained JSON observations
 are historical evidence, not current API state or centrally approved trust policy.
+
+## Registry publication follow-up
+
+After the offline qualification above, the platform uploaded the original accepted
+x86 archive to its exact digest URL and downloaded it again on 2026-09-19.
+The readback matched all 6,113,401 bytes and SHA-256; `registry-readback.json`
+records that later operation. Existing content was checked before upload, and no
+mutable alias was created. The dedicated service identity still needs its own
+read-permission test. Native signed-fixture replay, ARM qualification, central
+policy approval and application publication remain separate pending gates.
