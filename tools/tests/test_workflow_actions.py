@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).parents[1] / "check_workflow_actions.py"
+MODULE_PATH = Path(__file__).parents[1] / "policy/check_workflow_actions.py"
 SPEC = importlib.util.spec_from_file_location("check_workflow_actions", MODULE_PATH)
 assert SPEC and SPEC.loader
 workflow_actions = importlib.util.module_from_spec(SPEC)

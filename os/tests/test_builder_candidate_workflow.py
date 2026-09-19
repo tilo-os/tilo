@@ -136,7 +136,7 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn(qualified_image, select_job)
         self.assertIn('runs-on: runner-quality', select_job)
         self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
-        self.assertIn('run: python3 tools/check_repository_layout.py', select_job)
+        self.assertIn('run: python3 tools/policy/check_repository_layout.py', select_job)
         self.assertIn('python3 tools/ci/affected_packages.py --base "$base" --shards 2', select_job)
         self.assertIn('  select:\n    needs: builder', CHECK)
         self.assertIn('  security:\n    needs: builder', CHECK)

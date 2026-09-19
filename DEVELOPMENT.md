@@ -8,7 +8,7 @@ conventions.
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
 ```sh
-tools/run-repository-policy.sh
+tools/policy/run.sh
 python3 tools/dev.py check installer
 python3 tools/dev.py check app-packaging
 ```

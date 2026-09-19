@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "check_app_text_contract.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_app_text_contract.py"
 SPEC = importlib.util.spec_from_file_location("check_app_text_contract", SCRIPT)
 contract = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
