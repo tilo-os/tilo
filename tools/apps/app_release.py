@@ -14,7 +14,8 @@ import tomllib
 
 TOOLS = Path(__file__).resolve().parents[1]
 ROOT = TOOLS.parent
-sys.path.insert(0, str(TOOLS))
+if str(TOOLS) not in sys.path:
+    sys.path.append(str(TOOLS))
 
 from ci import affected_packages as ci_select
 

@@ -23,6 +23,8 @@ on:
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "tools/apps/**"
+      - "tools/canonical_verifier_bundle.py"
+      - "tools/assemble_verified_apps.py"
       - "tools/ci/**"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/actions/restore-cargo-downloads/**"
@@ -51,6 +53,34 @@ on:
         type: boolean
         required: false
         default: false
+      coordinator_intent:
+        description: "Disabled qualification coordinator intent; always publish=false."
+        required: false
+        default: ""
+      builder_image:
+        description: "Qualification-only immutable builder image."
+        required: false
+        default: ""
+      baseline_sha:
+        description: "Prior independently verified packaging source; empty builds full collection."
+        required: false
+        default: ""
+      baseline_run_id:
+        description: "Exact previously verified packaging run for authenticated artifact lookup."
+        required: false
+        default: ""
+      coordinator_policy_sha256:
+        description: "Trusted external coordinator policy identity."
+        required: false
+        default: ""
+      baseline_receipt_sha256:
+        description: "Qualification baseline verification proof digest."
+        required: false
+        default: ""
+      baseline_evidence:
+        description: "Canonical verified baseline proof, bound to baseline_receipt_sha256."
+        required: false
+        default: ""
 
 concurrency:
   group: release-apps-${{ github.ref }}
@@ -80,12 +110,29 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Resolve one immutable builder for every architecture
         id: builder
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: python3 tools/ci/resolve_builder.py
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py
+      - name: Guard disabled nonpublishing coordinator qualification
+        env:
+          COORDINATOR_ENABLED: ${{ vars.TILO_APP_COORDINATOR_QUALIFICATION }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
+          BASELINE_RUN_ID: ${{ github.event.inputs.baseline_run_id }}
+          BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
+          COORDINATOR_POLICY_SHA256: ${{ github.event.inputs.coordinator_policy_sha256 }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
+          REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
+        run: python3 -I tools/ci/python.py tools/app_packaging_qualification.py
       - name: Select only the affected apps or requested collection
         id: plan
         shell: bash
@@ -95,6 +142,8 @@ jobs:
           REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
           MAIN_ARCHITECTURES: ${{ vars.TILO_APP_MAIN_ARCHITECTURES }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
         run: |
           set -euo pipefail
           args=(--github-output "$GITHUB_OUTPUT")
@@ -102,7 +151,13 @@ jobs:
             refs/tags/app-*-v*) args+=(--tag "$GITHUB_REF_NAME") ;;
             refs/tags/apps-v*) args+=(--collection "${REQUESTED_COLLECTION:-default}") ;;
             *)
-              if [[ -n ${REQUESTED_APPS:-} ]]; then
+              if [[ -n ${COORDINATOR_INTENT:-} ]]; then
+                if [[ -n ${BASELINE_SHA:-} ]]; then
+                  args+=(--base "$BASELINE_SHA")
+                else
+                  args+=(--collection "${REQUESTED_COLLECTION:-default}")
+                fi
+              elif [[ -n ${REQUESTED_APPS:-} ]]; then
                 args+=(--apps "$REQUESTED_APPS")
               elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
                 args+=(--collection "${REQUESTED_COLLECTION:-default}")
@@ -120,7 +175,7 @@ jobs:
               fi
               ;;
           esac
-          python3 tools/apps/app_release.py "${args[@]}" | tee app-release-plan.json
+          python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}" | tee app-release-plan.json
           collection=
           case "$GITHUB_REF" in
             refs/tags/apps-v*) collection=${REQUESTED_COLLECTION:-default} ;;
@@ -136,7 +191,7 @@ jobs:
           if [[ $GITHUB_REF == refs/tags/* \
                 || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ) \
                 || ${REQUESTED_PUBLISH:-false} == true ]]; then
-            matrix=$(python3 tools/apps/app_release.py --architecture-matrix \
+            matrix=$(python3 -I tools/ci/python.py tools/apps/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES" \
               --main-architectures "$MAIN_ARCHITECTURES")
@@ -151,7 +206,7 @@ jobs:
             fi
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
-            matrix=$(python3 tools/apps/app_release.py --architecture-matrix \
+            matrix=$(python3 -I tools/ci/python.py tools/apps/app_release.py --architecture-matrix \
               --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
               --architectures "$REQUESTED_ARCHITECTURES")
             echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -163,6 +218,30 @@ jobs:
           esac
           [[ $version =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Retain trusted coordinator plan provenance
+        if: github.event.inputs.coordinator_intent != ''
+        env:
+          COORDINATOR_ENABLED: ${{ vars.TILO_APP_COORDINATOR_QUALIFICATION }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          COORDINATOR_POLICY_SHA256: ${{ github.event.inputs.coordinator_policy_sha256 }}
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+          RESOLVED_BUILDER: ${{ steps.builder.outputs.image }}
+          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
+          REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          BASELINE_RUN_ID: ${{ github.event.inputs.baseline_run_id }}
+          BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
+          BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
+        run: python3 -I tools/ci/python.py tools/app_packaging_plan.py
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: github.event.inputs.coordinator_intent != ''
+        with:
+          name: coordinator-plan-${{ github.run_attempt }}
+          path: coordinator-plan.json
+          if-no-files-found: error
 
   build:
     # PR compilation belongs to the focused CI lane. Packaging remains available
@@ -194,6 +273,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - name: Validate native architecture
         run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
@@ -249,17 +329,6 @@ jobs:
             --runtime-binary target/release/tilo-runtime-bundle \
             --signers dist/app-release/work/receipt-signers.json \
             --source-sha "$GITHUB_SHA" --architecture "$RECEIPT_ARCH"
-      - name: Stage native canonical tools for final receipt qualification
-        if: github.event.inputs.verify_final_receipt == 'true'
-        run: |
-          mkdir -p dist/canonical-verifiers
-          cp target/release/tilo-pkg target/release/tilo-runtime-bundle dist/canonical-verifiers/
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: github.event.inputs.verify_final_receipt == 'true'
-        with:
-          name: canonical-verifiers-${{ matrix.arch }}
-          path: dist/canonical-verifiers/*
-          if-no-files-found: error
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-apps-${{ matrix.arch }}
@@ -274,6 +343,83 @@ jobs:
       - name: Report compiler-cache effectiveness
         if: always()
         run: bash tools/ci/sccache.sh report || true
+
+  qualify-collection:
+    # Coordinator guard keeps this qualification disabled; no publisher OIDC.
+    if: github.event.inputs.coordinator_intent != '' && needs.plan.outputs.publish == 'false' && needs.build.result == 'success'
+    needs: [plan, build]
+    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.plan.outputs.builder_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release
+      - name: Assemble and verify without publication
+        env:
+          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}
+          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
+          FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
+          FINAL_RECEIPT_POLICY_SHA256: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256 }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          COORDINATOR_POLICY_SHA256: ${{ github.event.inputs.coordinator_policy_sha256 }}
+          BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
+          BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          BUILDER_IMAGE: ${{ needs.plan.outputs.builder_image }}
+          COLLECTION: ${{ needs.plan.outputs.collection }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+          SELECTED_APPS: ${{ needs.plan.outputs.apps }}
+        run: |
+          set -euo pipefail
+          policy="$RUNNER_TEMP/final-policy.json"
+          printf '%s' "$FINAL_RECEIPT_POLICY" > "$policy"
+          baseline="$RUNNER_TEMP/baseline-proof.json"
+          printf '%s' "$BASELINE_EVIDENCE" > "$baseline"
+          plan="$RUNNER_TEMP/final-collection-plan.json"
+          python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$plan"
+          tools="$RUNNER_TEMP/platform-verifiers"
+          python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch \
+            --trust-policy "$policy" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
+            --builder-image "$BUILDER_IMAGE" --output "$tools"
+          while read -r arch; do
+            python3 -I tools/ci/python.py tools/assemble_verified_apps.py \
+              --built "release/tilo-apps-$arch" --plan "$plan" --selected-apps "$SELECTED_APPS" \
+              --output "dist/qualified-apps/$arch" --work "$RUNNER_TEMP/qualified-apps-$arch" \
+              --pkg-binary "$tools/tilo-pkg" --runtime-binary "$tools/tilo-runtime-bundle" \
+              --trust-policy "$policy" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
+              --source-sha "$GITHUB_SHA" --builder-image "$BUILDER_IMAGE" \
+              --collection "$COLLECTION" --architecture "$arch" --intent "$COORDINATOR_INTENT" \
+              --run-id "$GITHUB_RUN_ID" --qualifier-attempt "$GITHUB_RUN_ATTEMPT" --source-epoch "$(git log -1 --format=%ct)" \
+              --coordinator-policy-sha256 "$COORDINATOR_POLICY_SHA256" \
+              --baseline-proof "$baseline" --baseline-proof-sha256 "$BASELINE_RECEIPT_SHA256" \
+              --baseline-source "$BASELINE_SHA"
+          done < <(jq -r '.include[].arch' <<< "$MATRIX")
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: contains(github.event.inputs.architectures, 'x86_64')
+        with:
+          name: final-app-collection-x86_64
+          path: |
+            dist/qualified-apps/x86_64/tilo-apps-x86_64.tar.gz
+            dist/qualified-apps/x86_64/final-publication-receipt.json
+            dist/qualified-apps/x86_64/assembly-provenance.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: contains(github.event.inputs.architectures, 'aarch64')
+        with:
+          name: final-app-collection-aarch64
+          path: |
+            dist/qualified-apps/aarch64/tilo-apps-aarch64.tar.gz
+            dist/qualified-apps/aarch64/final-publication-receipt.json
+            dist/qualified-apps/aarch64/assembly-provenance.json
+          if-no-files-found: error
 
   publish:
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
@@ -298,6 +444,8 @@ jobs:
       - name: Publish reusable qpkgs and assemble immutable collections
         env:
           VERIFY_FINAL_RECEIPT: ${{ github.event.inputs.verify_final_receipt }}
+          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
+          BUILDER_IMAGE: ${{ needs.plan.outputs.builder_image }}
           # Independently provisioned policy; never use uploaded verification-policy.json.
           FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
           FINAL_RECEIPT_POLICY_SHA256: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256 }}
@@ -324,21 +472,13 @@ jobs:
           if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
             policy_file="$RUNNER_TEMP/final-receipt-policy.json"
             printf '%s' "$FINAL_RECEIPT_POLICY" > "$policy_file"
-            native_arch=$(uname -m)
-            case "$native_arch" in x86_64|aarch64) ;; *) exit 1 ;; esac
-            verifier_tools="release/canonical-verifiers-$native_arch"
-            test -f "$verifier_tools/tilo-pkg"
-            test -f "$verifier_tools/tilo-runtime-bundle"
-            chmod +x "$verifier_tools/tilo-pkg" "$verifier_tools/tilo-runtime-bundle"
-            # Check the independent policy/binary pins before any execution or upload.
-            python3 - "$policy_file" "$FINAL_RECEIPT_POLICY_SHA256" "$verifier_tools" <<'PY'
-          import sys
-          from pathlib import Path
-          sys.path.insert(0, 'tools/apps')
-          from final_app_receipt import preflight
-          root = Path(sys.argv[3])
-          preflight(root / 'tilo-pkg', root / 'tilo-runtime-bundle', Path(sys.argv[1]), sys.argv[2])
-          PY
+            verifier_tools="$RUNNER_TEMP/platform-verifiers"
+            python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch \
+              --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
+              --builder-image "$BUILDER_IMAGE" --output "$verifier_tools"
+            python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
+              --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" preflight \
+              --pkg-binary "$verifier_tools/tilo-pkg" --runtime-binary "$verifier_tools/tilo-runtime-bundle"
           fi
           owner=${GITHUB_REPOSITORY%%/*}
           package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
@@ -380,7 +520,7 @@ jobs:
 
           [[ -n ${COLLECTION:-} ]] || exit 0
           collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
-          python3 tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
+          python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
           source_epoch=$(git log -1 --format=%ct)
           channel_url=
           channel_sha=
@@ -461,7 +601,7 @@ jobs:
             digest_file="$bundle.sha256"
             bundle_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
             if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
-              python3 tools/apps/final_app_receipt.py \
+              python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
                 --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
                 --collection "$out" --pkg-binary "$verifier_tools/tilo-pkg" \
                 --runtime-binary "$verifier_tools/tilo-runtime-bundle" \
@@ -474,7 +614,7 @@ jobs:
               curl --fail --silent --show-error --header "Authorization: Bearer $jwt" \
                 "$bundle_url" --output "$readback"
               final_receipt="$out/final-publication-receipt.json"
-              python3 tools/apps/final_app_receipt.py \
+              python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
                 --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" bind-readback \
                 --receipt "$final_receipt" --receipt-sha256 "$(sha256sum "$final_receipt" | cut -d' ' -f1)" \
                 --downloaded "$readback" --url "$bundle_url" --output "$out/published-receipt.json"
