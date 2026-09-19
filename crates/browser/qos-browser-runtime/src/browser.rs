@@ -286,6 +286,10 @@ impl ApplicationHandler<u64> for Runner {
                     let start = m.metric_start();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
+                    if start.is_some() {
+                        if m.frame.last_send_skipped_relayout() { m.metrics.borrow_mut().count("relayout_skipped"); }
+                        for path in m.frame.take_pointer_redraw_sources() { m.metrics.borrow_mut().note(&path); }
+                    }
                     if matches!(event, WindowEvent::Focused(false)) { m.publish_records(id, true); }
                     if start.is_some() {
                         let demand = m.frame.frame_schedule();
@@ -1324,14 +1328,14 @@ pub fn desktop_global_search(id:u64,generation:&str,query:&str)->Result<(),JsVal
 /// Opt-in bounded diagnostic capture; disabled by default and never persisted.
 #[wasm_bindgen]
 pub fn configure_frame_metrics(enabled: bool) {
-    MOUNTS.with_borrow(|mounts| for mount in mounts.values() { mount.metrics.borrow_mut().configure(enabled); });
+    MOUNTS.with_borrow_mut(|mounts| for mount in mounts.values_mut() { mount.metrics.borrow_mut().configure(enabled); mount.frame.set_pointer_redraw_diagnostics(enabled); });
 }
 #[wasm_bindgen]
 pub fn take_frame_metrics() -> Result<String, JsValue> {
     MOUNTS.with_borrow(|mounts| {
         let samples: Vec<_> = mounts.iter().map(|(id, mount)| {
             let mut metrics = mount.metrics.borrow_mut();
-            serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "redrawSources": mount.frame.redraw_sources()})
+            serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "notes": metrics.take_notes(), "redrawSources": mount.frame.redraw_sources()})
         }).collect();
         serde_json::to_string(&samples).map_err(error)
     })

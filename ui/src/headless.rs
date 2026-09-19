@@ -498,6 +498,11 @@ pub struct FrameHarness {
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
     /// pass is timed and every frame committed — see [`crate::profiling`].
     profiler: Option<crate::profiling::FrameProfiler>,
+    /// Whether the latest `send_host_event` was inert pointer motion that skipped relayout.
+    last_send_skipped_relayout: bool,
+    /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
+    pointer_redraw_diagnostics: bool,
+    pointer_redraw_sources: Vec<String>,
 }
 
 /// Backwards-compatible name for the input-driving use of [`FrameHarness`].
@@ -845,6 +850,9 @@ impl FrameHarness {
             pending_control_invocations: HashSet::new(),
             bound_invocations: HashMap::new(),
             profiler: None,
+            last_send_skipped_relayout: false,
+            pointer_redraw_diagnostics: false,
+            pointer_redraw_sources: Vec::new(),
         };
         // Match `App::rebuild_theme`: reduced motion is both a paint-time
         // theme property and a lifecycle policy retained widgets use to settle
@@ -2391,6 +2399,7 @@ impl FrameHarness {
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
+        self.last_send_skipped_relayout = false;
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             // DOM key capture and Winit can publish the same snapshot repeatedly.
             // Only transitions are input; duplicate snapshots must not run the
@@ -2557,8 +2566,38 @@ impl FrameHarness {
         }
         if history_input { self.poll_control_invocations(); }
         else { self.host_tick(); }
-        self.relayout();
+        // Inert pointer motion: no widget consumed it, focus and the interaction
+        // environment are unchanged, and no presentation root reports new paint,
+        // animation or a due wake. Such a move cannot change the frame, so it
+        // skips the compose/layout/draw pass. Hover changes still count as paint
+        // because retained widgets compare hover against their drawn state.
+        let unconsumed_motion = matches!(event, WindowEvent::CursorMoved { .. })
+            && !handled && !history_input && focus_target.is_none();
+        let inert = unconsumed_motion && !self.frame_schedule_demands_frame();
+        if unconsumed_motion && !inert && self.pointer_redraw_diagnostics {
+            self.pointer_redraw_sources = self.redraw_sources();
+        }
+        self.last_send_skipped_relayout = inert;
+        if !inert { self.relayout(); }
     }
+
+    /// Diagnostics only: record which dirty widget paths made unconsumed
+    /// pointer motion produce a frame. Off by default; no document content.
+    pub fn set_pointer_redraw_diagnostics(&mut self, enabled: bool) {
+        self.pointer_redraw_diagnostics = enabled;
+        self.pointer_redraw_sources.clear();
+    }
+    pub fn take_pointer_redraw_sources(&mut self) -> Vec<String> { std::mem::take(&mut self.pointer_redraw_sources) }
+
+    fn frame_schedule_demands_frame(&self) -> bool {
+        let schedule = self.frame_schedule();
+        schedule.needs_redraw || schedule.needs_animation_frame
+            || schedule.next_wake_deadline.is_some_and(|wake| wake <= crate::clock::Instant::now())
+    }
+
+    /// Whether the most recent [`Self::send_host_event`] skipped its relayout
+    /// because it was inert pointer motion.
+    pub fn last_send_skipped_relayout(&self) -> bool { self.last_send_skipped_relayout }
 
     /// Everything the live host does between one interaction and the next
     /// frame, in the order [`App`](crate::app::App)'s idle tick does it.

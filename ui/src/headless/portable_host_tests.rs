@@ -597,3 +597,44 @@ fn idle_frame_poll_does_not_materialize_accessibility_tree() {
     let _=frame.frame_output();
     assert_eq!(inspections.get(),1,"explicit output still supplies current semantics");
 }
+
+#[test]
+fn inert_pointer_motion_skips_relayout_while_hover_and_presses_still_render() {
+    // Two retained buttons; the column below them is empty space with no
+    // hover state. (A childless Container is a leaf that never opts into
+    // incremental redraw, so it is deliberately not used as the inert area.)
+    let root = Column::new()
+        .push(Box::new(Button::new("target", "Target", None)))
+        .push(Box::new(Button::new("other", "Other", None)));
+    let mut frame = frame(Box::new(root));
+    let device_id = winit::event::DeviceId::dummy();
+    let move_to = |x: f64, y: f64| WindowEvent::CursorMoved {
+        device_id,
+        position: winit::dpi::PhysicalPosition::new(x, y),
+    };
+    let button = frame.targets()["target"];
+    let other = frame.targets()["other"];
+    let filler_point = (button.center().x, other.max_y() + 40.0);
+    assert!(filler_point.1 < 240.0, "inert point stays inside the 400x240 frame");
+
+    frame.send_host_event(&move_to(filler_point.0, filler_point.1));
+    let schedule = frame.frame_schedule();
+    assert!(frame.last_send_skipped_relayout(), "a move over inert space must not run the compose pass; redraw={} animation={} wake={:?} dirty={:?}", schedule.needs_redraw, schedule.needs_animation_frame, schedule.next_wake_deadline.map(|w| w <= Instant::now()), frame.redraw_sources());
+    frame.send_host_event(&move_to(filler_point.0 + 8.0, filler_point.1 + 3.0));
+    assert!(frame.last_send_skipped_relayout(), "repeated inert motion stays skipped");
+
+    frame.send_host_event(&move_to(button.center().x, button.center().y));
+    assert!(!frame.last_send_skipped_relayout(), "hover onto a button is paint and produces a frame");
+    frame.send_host_event(&move_to(button.center().x + 1.0, button.center().y));
+    assert!(frame.last_send_skipped_relayout(), "motion inside the hovered button changes nothing");
+
+    frame.send_host_event(&WindowEvent::MouseInput { device_id, state: ElementState::Pressed, button: MouseButton::Left });
+    assert!(!frame.last_send_skipped_relayout(), "a press is handled input");
+    frame.send_host_event(&WindowEvent::MouseInput { device_id, state: ElementState::Released, button: MouseButton::Left });
+    assert!(!frame.last_send_skipped_relayout());
+
+    frame.send_host_event(&move_to(filler_point.0, filler_point.1));
+    assert!(!frame.last_send_skipped_relayout(), "leaving the button repaints its resting state");
+    frame.send_host_event(&move_to(filler_point.0 + 2.0, filler_point.1));
+    assert!(frame.last_send_skipped_relayout());
+}
