@@ -22174,7 +22174,8 @@ mod palette_dispatch_tests {
     fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
-        let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+            .with_chrome(chrome.clone());
         (host, chrome)
     }
 
@@ -22310,6 +22311,7 @@ mod palette_dispatch_tests {
             &automerge::ROOT,
             &mut handled,
         ));
+        assert!(host.pump_presence_requests());
         assert_eq!(host.local_status.as_deref(), Some("Preparing Q2 review"));
         assert_eq!(
             published.borrow().as_slice(),
@@ -23263,7 +23265,11 @@ mod palette_dispatch_tests {
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
 
-        let (mut host, chrome) = host_with_chrome();
+        // This is deliberately the production constructor: the behavior under
+        // test is its real app-launch service and unavailable-package notice.
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.quick_settings = true;
         host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
 
