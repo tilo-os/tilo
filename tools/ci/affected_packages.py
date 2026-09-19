@@ -61,6 +61,7 @@ QUALITY_ONLY_HELPERS = {
 QUALITY_ONLY_CONTROL_INPUTS = {
     ".forgejo/workflows/build-builder-image.yml": (
         "os/tests/test_builder_candidate_workflow.py",
+        "tools/tests/test_cargo_download_cache_action.py",
         "tools/tests/test_ci_native_mold.py",
     ),
     ".forgejo/workflows/check.yml": (

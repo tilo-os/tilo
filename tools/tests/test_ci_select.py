@@ -305,6 +305,18 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected"], [])
         self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_builder_cache_policy_does_not_compile_unrelated_rust(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        changes = [
+            ".forgejo/workflows/build-builder-image.yml",
+            "tools/tests/test_cargo_download_cache_action.py",
+        ]
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected"], [])
+        self.assertEqual(plan["matrix"], {"include": []})
+
     def test_ci_control_plane_mapping_stays_exact_and_conservative(self) -> None:
         self.install_control_inputs()
         source = ".forgejo/workflows/check.yml"
