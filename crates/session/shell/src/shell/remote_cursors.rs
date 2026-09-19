@@ -161,9 +161,17 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             &clip_rect,
         );
 
+        // Theme type tokens already carry the user's text scale, and this
+        // overlay paints with those resolved sizes; the renderer must not
+        // scale them again (HIG §7a) — reset for this pass, as the shell's
+        // immediate-mode chrome passes do, and restored below.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
         let label_size = theme.tokens.typography.scale.sm;
         let chip_bg = theme.tokens.colors.surfaces.raised;
-        let chip_border = theme.tokens.colors.border_standard;
+        // The chip's edge derives from its own fill (HIG §9.5): the declared
+        // border was three shades off `raised` on dark and vanished.
+        let chip_border = ui::surface::edge_on(chip_bg);
         let label_color = theme.tokens.colors.text_primary;
         let chip_radius = f64::from(theme.tokens.radii.sm);
 
@@ -179,10 +187,13 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             caret.close_path();
             scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &caret);
 
-            let (text_w, _text_h) = text_renderer.measure(&cursor.label, label_size, None);
+            // The chip wraps the label's measured line, not its font size:
+            // a 12 px face lays out taller than 12 px, and sizing the chip
+            // from the size alone let the glyphs ride onto the underline.
+            let (text_w, text_h) = text_renderer.measure(&cursor.label, label_size, None);
             let chip_size = vello::kurbo::Size::new(
                 f64::from(text_w) + CHIP_PADDING_X * 2.0,
-                f64::from(label_size) + CHIP_PADDING_Y * 2.0,
+                f64::from(text_h) + CHIP_PADDING_Y * 2.0,
             );
             let chip_left = apex.x + CARET_SIZE + CHIP_OFFSET;
             let chip_top = apex.y + CARET_SIZE + CHIP_OFFSET;
@@ -234,6 +245,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             );
         }
 
+        text_renderer.set_text_scale(renderer_scale);
         scene.pop_layer();
     }
 

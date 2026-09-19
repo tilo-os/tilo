@@ -246,6 +246,11 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+runtime-portal = { path = "../../runtime/runtime-portal" }
+# Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
+# `src/network/protocol.rs`. `qos-collab-types` already uses this for
+# signing; the test verifies `NeighbourMsg::AppCrdtIncrementalSigned`
+# survives the same codec.
 postcard = { workspace = true, features = ["alloc"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 rand_08 = { package = "rand", version = "0.8" }

@@ -1,8 +1,10 @@
+// Linux compositor/protocol integration suite; portable native app tests also
+// run through the shell library test target on macOS.
+#![cfg(target_os = "linux")]
 // One test binary instead of one per file: each tests/*.rs linked the whole
 // crate separately. Files stay where they are; #[path] pulls them in as
 // modules. nextest runs each test in its own process, so tests that touch
 // process state keep the isolation separate binaries gave them.
-
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

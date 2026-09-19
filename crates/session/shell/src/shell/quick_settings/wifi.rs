@@ -11,14 +11,18 @@ use vello::peniko::Fill;
 use ui::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, Toggle, ToggleFace};
+use ui::widget::{Toggle, ToggleFace};
 
 use crate::shell::chrome_state::QuickSettingsState;
 #[cfg(test)]
 use crate::shell::quick_settings::WifiNetwork;
 use crate::shell::quick_settings::WifiPasswordPrompt;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
-use crate::shell::quick_settings::drill_in::{DrillInList, DrillInOutcome};
+use crate::shell::quick_settings::drill_in::{
+    CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, LIST_TOP, PANEL_PAD, RELATED_GAP,
+    ROW_HEIGHT, STATUS_DOT, TOGGLE_H, TOGGLE_W, centred_text_top, leading_glyph, paint_control,
+    trailing_dot_center, trailing_status_glyph, trailing_toggle, type_size,
+};
 
 #[derive(Default)]
 pub struct QuickSettingsWifiPane {
@@ -33,6 +37,20 @@ pub enum WifiPaneOutcome {
 }
 
 impl QuickSettingsWifiPane {
+    /// Discovery rows start under the Hotspot row: one related step below
+    /// it, on the shared list rhythm.
+    pub(crate) const LIST_TOP: f64 = LIST_TOP + ROW_HEIGHT + RELATED_GAP;
+
+    /// The Hotspot row: the first Control-height row on the panel padding.
+    fn hotspot_rect_for(panel: Rect) -> Rect {
+        Rect::new(
+            panel.x0 + PANEL_PAD,
+            panel.y0 + LIST_TOP,
+            panel.x1 - PANEL_PAD,
+            panel.y0 + LIST_TOP + ROW_HEIGHT,
+        )
+    }
+
     pub fn handle_click(
         &mut self,
         point: Point,
@@ -41,7 +59,10 @@ impl QuickSettingsWifiPane {
         actions: &dyn QsActions,
     ) -> WifiPaneOutcome {
         self.list
-            .layout_from(panel, state.wifi_networks.len(), 116.0);
+            .layout_from(panel, state.wifi_networks.len(), Self::LIST_TOP);
+        // The same geometry paint uses, so a click before the first frame
+        // still lands on the row that will be drawn.
+        self.hotspot_rect = Self::hotspot_rect_for(panel);
         if self.list.back_contains(point) {
             return WifiPaneOutcome::DrillIn(DrillInOutcome::Back);
         }
@@ -94,59 +115,56 @@ impl QuickSettingsWifiPane {
         state: &QuickSettingsState,
     ) {
         let networks = &state.wifi_networks;
-        self.list.layout_from(panel, networks.len(), 116.0);
-        self.hotspot_rect = Rect::new(
-            panel.x0 + 12.0,
-            panel.y0 + 56.0,
-            panel.x1 - 12.0,
-            panel.y0 + 108.0,
-        );
+        self.list.layout_from(panel, networks.len(), Self::LIST_TOP);
+        self.hotspot_rect = Self::hotspot_rect_for(panel);
         let colors = &theme.tokens.colors;
         self.list
             .draw_header(scene, transform, text, theme, panel, cursor, "Wi-Fi");
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::new(self.hotspot_rect, "")
-                .hovered(cursor.is_some_and(|point| self.hotspot_rect.contains(point)))
-                .accessible_name("Wi-Fi hotspot"),
-        );
+        // The Hotspot row is a Control (HIG §9.1/§9.5): glyph, two-line
+        // label and switch all on its centre line and the shared inset.
+        let row = self.hotspot_rect;
+        let hovered = cursor.is_some_and(|point| row.contains(point));
+        paint_control(scene, transform, theme, row, hovered, false);
+        let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
         ui::icons::draw_icon(
             scene,
             transform,
-            Rect::new(
-                self.hotspot_rect.x0 + 12.0,
-                self.hotspot_rect.y0 + 16.0,
-                self.hotspot_rect.x0 + 32.0,
-                self.hotspot_rect.y0 + 36.0,
-            ),
+            glyph,
             ui::icons::Icon::Wifi,
             colors.text_primary,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
+        let label_size = type_size(text, theme.tokens.typography.scale.sm);
+        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
+        let detail = if state.radios.hotspot_active {
+            "Sharing this connection"
+        } else {
+            "Off"
+        };
+        let (_, label_h) = text.measure_weighted(
+            "Hotspot",
+            label_size,
+            None,
+            ui::text_render::TextWeight::Medium,
+        );
+        let (_, detail_h) = text.measure(detail, detail_size, None);
+        let block_top = centred_text_top(row, f64::from(label_h) + f64::from(detail_h));
+        let text_x = glyph.x1 + CONTROL_INSET;
         text.draw_text_weighted(
             scene,
             "Hotspot",
-            theme.tokens.typography.scale.sm,
+            label_size,
             colors.text_primary,
-            transform
-                .pre_translate((self.hotspot_rect.x0 + 44.0, self.hotspot_rect.y0 + 22.0).into()),
+            transform.pre_translate((text_x, block_top).into()),
             None,
             ui::text_render::TextWeight::Medium,
         );
         text.draw_text(
             scene,
-            if state.radios.hotspot_active {
-                "Sharing this connection"
-            } else {
-                "Off"
-            },
-            theme.tokens.typography.scale.xs,
+            detail,
+            detail_size,
             colors.text_dim,
-            transform
-                .pre_translate((self.hotspot_rect.x0 + 44.0, self.hotspot_rect.y0 + 39.0).into()),
+            transform.pre_translate((text_x, block_top + f64::from(label_h)).into()),
             None,
         );
         Toggle::paint(
@@ -154,28 +172,20 @@ impl QuickSettingsWifiPane {
             transform,
             theme,
             &ToggleFace::new(
-                Rect::new(
-                    self.hotspot_rect.x1 - 48.0,
-                    self.hotspot_rect.y0 + 16.0,
-                    self.hotspot_rect.x1 - 12.0,
-                    self.hotspot_rect.y0 + 36.0,
-                ),
+                trailing_toggle(row, CONTROL_INSET, TOGGLE_W, TOGGLE_H),
                 state.radios.hotspot_active,
             )
-            .hovered(cursor.is_some_and(|point| self.hotspot_rect.contains(point))),
+            .hovered(hovered),
         );
         if networks.is_empty() {
-            let message = "Scanning for networks…";
-            let (width, _) = text.measure(message, theme.tokens.typography.scale.sm, None);
-            text.draw_text(
+            DrillInList::draw_empty_from(
                 scene,
-                message,
-                theme.tokens.typography.scale.sm,
-                colors.text_dim,
-                transform.pre_translate(
-                    (panel.center().x - f64::from(width) / 2.0, panel.y0 + 144.0).into(),
-                ),
-                None,
+                transform,
+                text,
+                theme,
+                panel,
+                "Scanning for networks…",
+                Self::LIST_TOP,
             );
             return;
         }
@@ -208,10 +218,17 @@ impl QuickSettingsWifiPane {
                 colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
-            let baseline = row.y0 + row.height() / 2.0 + 6.0;
+            // Four signal bars fill the trailing status slot on a pitch of a
+            // fifth of it, rising by 15 % of its height per bar, so the
+            // tallest bar's top and their shared foot sit symmetric about
+            // the row's centre line.
+            let slot = trailing_status_glyph(*row, CONTROL_INSET, GLYPH);
+            let pitch = slot.width() / 5.0;
+            let step = slot.height() * 0.15;
+            let baseline = row.center().y + 2.0 * step;
             for bar in 0..4_u8 {
-                let x = row.x1 - 62.0 + f64::from(bar) * 4.0;
-                let height = f64::from(bar.saturating_add(1)) * 3.0;
+                let x = slot.x0 + pitch * f64::from(bar.saturating_add(1));
+                let height = f64::from(bar.saturating_add(1)) * step;
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -222,7 +239,7 @@ impl QuickSettingsWifiPane {
                     },
                     None,
                     &RoundedRect::from_rect(
-                        Rect::new(x, baseline - height, x + 3.0, baseline),
+                        Rect::new(x, baseline - height, x + pitch * 0.75, baseline),
                         1.0,
                     ),
                 );
@@ -233,7 +250,7 @@ impl QuickSettingsWifiPane {
                     transform,
                     colors.accent[5],
                     None,
-                    &Circle::new(Point::new(row.x1 - 14.0, row.center().y), 5.0),
+                    &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );
             }
         }
@@ -292,7 +309,8 @@ mod tests {
         let actions = RecordingActions::default();
         // The pane reserves its hotspot card before discovery rows; prepare
         // the same geometry that `handle_click` will use.
-        pane.list.layout_from(panel, 2, 116.0);
+        pane.list
+            .layout_from(panel, 2, QuickSettingsWifiPane::LIST_TOP);
         assert_eq!(
             pane.handle_click(pane.list.rows()[0].center(), panel, &mut state, &actions),
             WifiPaneOutcome::DrillIn(DrillInOutcome::Changed)
