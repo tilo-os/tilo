@@ -32,7 +32,50 @@ def step_script(workflow, name):
     return textwrap.dedent('\n'.join(body))
 
 
+def step_block(workflow, name):
+    block = workflow.split(f'      - name: {name}\n', 1)[1]
+    return block.split('\n      - name: ', 1)[0]
+
+
+def action_input(block, name):
+    marker = f'          {name}: '
+    value = block.split(marker, 1)[1]
+    first, *remaining = value.splitlines()
+    if first != '|':
+        return first
+    continuation = []
+    for line in remaining:
+        if line and not line.startswith('            '):
+            break
+        continuation.append(line.removeprefix('            '))
+    return '\n'.join(continuation).rstrip()
+
+
 class BuilderCandidates(unittest.TestCase):
+    def test_image_push_finishes_before_the_same_graph_exports_cache(self):
+        image = step_block(BUILD, 'Build and push')
+        cache = step_block(BUILD, 'Export build cache')
+        signing = step_block(BUILD, 'Sign and describe the native builder')
+
+        self.assertIn('id: build', image)
+        self.assertEqual(action_input(image, 'push'), 'true')
+        self.assertNotIn('cache-to:', image)
+        self.assertEqual(action_input(cache, 'push'), 'false')
+        self.assertIn('cache-to:', cache)
+        self.assertLess(BUILD.index('- name: Build and push'),
+                        BUILD.index('- name: Export build cache'))
+        self.assertLess(BUILD.index('- name: Export build cache'),
+                        BUILD.index('- name: Sign and describe the native builder'))
+
+        # The second invocation resolves entirely from the BuildKit state made
+        # by the first. A changed graph here could rerun expensive image layers.
+        for name in ('context', 'build-contexts', 'file', 'platforms',
+                     'provenance', 'labels', 'build-args', 'tags', 'cache-from'):
+            self.assertEqual(action_input(cache, name), action_input(image, name), name)
+
+        # Signing remains bound to the pushed image, never to cache metadata.
+        self.assertIn('CHILD_DIGEST: ${{ steps.build.outputs.digest }}', signing)
+
     def test_legacy_subjects_are_installed_only_for_e2e_and_cannot_be_skipped(self):
         subjects = ['gnome-text-editor', 'qt6-qtbase-examples', 'libreoffice-writer']
         recipe = (ROOT / 'os/Containerfile.builder').read_text()
