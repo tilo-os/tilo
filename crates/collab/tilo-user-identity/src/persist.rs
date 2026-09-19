@@ -141,7 +141,7 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
     };
     let directory = root
         .as_ref()
-        .map_or(libc::AT_FDCWD, |root| std::os::fd::AsRawFd::as_raw_fd(root));
+        .map_or(libc::AT_FDCWD, std::os::fd::AsRawFd::as_raw_fd);
     // SAFETY: path and open_how remain live for this syscall. A successful
     // descriptor is uniquely transferred into File below.
     let descriptor = unsafe {
