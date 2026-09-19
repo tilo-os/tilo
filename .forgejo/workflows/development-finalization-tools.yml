@@ -44,9 +44,9 @@ jobs:
           LABEL org.opencontainers.image.revision="$GITHUB_SHA"
           EOF
           docker build --file "$context/Containerfile" --tag "$tag" "$context"
-          docker push "$tag"
-          digest=$(skopeo inspect --creds "$GITHUB_ACTOR:$REGISTRY_TOKEN" \
-            --format '{{.Digest}}' "docker://$tag")
+          push_output=$(docker push "$tag")
+          printf '%s\n' "$push_output"
+          digest=$(printf '%s\n' "$push_output" | awk '/digest: sha256:/ {print $2}' | tail -n1)
           test "${digest#sha256:}" != "$digest"
           python3 - "$tag" "$digest" "$binary_sha256" "$GITHUB_SHA" <<'PY'
           import json, pathlib, sys
