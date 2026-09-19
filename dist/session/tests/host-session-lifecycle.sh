@@ -5,7 +5,13 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 work=$(mktemp -d)
-cleanup() { rm -rf -- "$work"; }
+cleanup() {
+    if [ "${TILO_SESSION_TEST_KEEP:-0}" = 1 ]; then
+        printf 'kept host-session fixture at %s\n' "$work" >&2
+    else
+        rm -rf -- "$work"
+    fi
+}
 trap cleanup EXIT
 
 log=$work/log
@@ -59,12 +65,17 @@ fi
 shift 2
 exec "$@"
 SH
+cat >"$work/tilo-flight-recorder" <<'SH'
+#!/bin/sh
+cat >>"$1"
+SH
 chmod 0755 "$work/systemctl" "$work/systemd-cat" \
-    "$work/dbus-update-activation-environment" "$work/shell"
+    "$work/dbus-update-activation-environment" "$work/shell" "$work/tilo-flight-recorder"
 sed \
     -e "s|SYSTEMCTL=/usr/bin/systemctl|SYSTEMCTL=$work/systemctl|" \
     -e "s|SYSTEMD_CAT=/usr/bin/systemd-cat|SYSTEMD_CAT=$work/systemd-cat|" \
     -e "s|DBUS_UPDATE=/usr/bin/dbus-update-activation-environment|DBUS_UPDATE=$work/dbus-update-activation-environment|" \
+    -e "s|FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder|FLIGHT_RECORDER=$work/tilo-flight-recorder|" \
     "$repo_root/dist/session/tilo-session-runner" >"$work/tilo-session"
 chmod 0755 "$work/tilo-session"
 
@@ -77,13 +88,20 @@ no_arg_status=$?
 relative_status=$?
 "$work/tilo-session" "$work/missing-shell" >"$work/missing.out" 2>&1
 missing_status=$?
+chmod 0644 "$work/tilo-flight-recorder"
+"$work/tilo-session" "$work/shell" >"$work/missing-recorder.out" 2>&1
+missing_recorder_status=$?
+chmod 0755 "$work/tilo-flight-recorder"
 set -e
 [[ $no_arg_status == 2 ]]
 [[ $relative_status == 2 ]]
 [[ $missing_status == 1 ]]
+[[ $missing_recorder_status == 1 ]]
 grep -Fqx 'tilo-session-runner: missing compositor path' "$work/no-arg.out"
 grep -Fqx 'tilo-session-runner: compositor path must be absolute' "$work/relative.out"
 grep -Fqx "tilo-session-runner: $work/missing-shell is missing or not executable" "$work/missing.out"
+grep -Fqx "tilo-session: $work/tilo-flight-recorder is missing or not executable" \
+    "$work/missing-recorder.out"
 
 # The public production entry must remain non-redirectable. In particular,
 # environment names used by an older developer-wrapper prototype cannot turn
@@ -113,15 +131,20 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
-systemd-cat --identifier=tilo-session --level-prefix=false $work/shell --host-desktop-session --firstboot --backend drm
 shell --host-desktop-session --firstboot --backend drm
+systemd-cat --identifier=tilo-session --level-prefix=false
 systemd-cat --identifier=tilo-session --priority=err --level-prefix=false
 tilo-session: compositor exited without a logout request (exit status 7)
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
-cmp "$work/expected" "$log"
+# The FIFO relay and compositor are deliberately concurrent; either may append
+# its startup breadcrumb first. Compare the lifecycle as a set here, then keep
+# the ordered assertions below for teardown and failure handling.
+sort "$work/expected" >"$work/expected.sorted"
+sort "$log" >"$work/log.sorted"
+cmp "$work/expected.sorted" "$work/log.sorted"
 ! grep -Fq 'must-not-be-logged' "$log"
 
 : >"$log"
@@ -138,15 +161,17 @@ systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SE
 dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
-systemd-cat --identifier=tilo-session --level-prefix=false $work/shell --host-desktop-session --firstboot --backend drm
 shell --host-desktop-session --firstboot --backend drm
+systemd-cat --identifier=tilo-session --level-prefix=false
 systemd-cat --identifier=tilo-session --priority=err --level-prefix=false
 tilo-session: compositor exited without a logout request (exit status 0)
 systemctl --user stop tilo-graphical-session.target
 dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
 systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
-cmp "$work/expected-predecessor" "$log"
+sort "$work/expected-predecessor" >"$work/expected-predecessor.sorted"
+sort "$log" >"$work/log.sorted"
+cmp "$work/expected-predecessor.sorted" "$work/log.sorted"
 
 : >"$log"
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_HOLD=1 "$work/tilo-session" "$work/shell" &
@@ -187,7 +212,7 @@ grep -Fqx 'dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=' "$log"
 grep -Fqx 'systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE' "$log"
 grep -Fqx 'systemd-cat --identifier=tilo-session --priority=err --level-prefix=false' "$log"
 grep -Fqx 'tilo-session: startup failed during Tilo graphical session target start (exit status 1)' "$log"
-! grep -Fq "systemd-cat --identifier=tilo-session --level-prefix=false $work/shell" "$log"
+! grep -Fq 'shell --host-desktop-session' "$log"
 
 for failure in dbus import; do
     : >"$log"
