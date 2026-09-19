@@ -1576,6 +1576,28 @@ impl FrameBuilder {
                 .is_some_and(Widget::needs_animation_frame)
     }
 
+    /// Earliest one-shot widget deadline. Unlike animation demand this lets
+    /// the compositor sleep until the visual state can actually change.
+    pub fn next_wake_deadline(&self) -> Option<Instant> {
+        [
+            self.host.next_wake_deadline(),
+            self.floating_overlays
+                .iter()
+                .filter_map(|(_, surface)| surface.next_wake_deadline())
+                .min(),
+            self.transient_overlays
+                .iter()
+                .filter_map(|(_, surface)| surface.next_wake_deadline())
+                .min(),
+            self.osk_overlay
+                .as_ref()
+                .and_then(Widget::next_wake_deadline),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
     /// Whether any tab is still holding a place for an app that hasn't drawn
     /// yet. The opening card's spinner keeps [`Self::needs_animation_frame`]
     /// true for the wait's duration, so a caller waiting for quiet has to
@@ -2921,6 +2943,30 @@ mod tests {
         let shift = Modifiers::from(ModifiersState::SHIFT);
         assert!(fb.dispatch_event(&tab, &shift, &mut doc, &automerge::ROOT, &mut focus,));
         assert_eq!(focused_name(&fb, focus).as_deref(), Some("Use existing"));
+    }
+
+    #[test]
+    fn native_oobe_pointer_motion_is_retained_before_modal_dispatch() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let position = Point::new(417.0, 263.0);
+
+        assert!(fb.dispatch_event(
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(position.x, position.y),
+            },
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            fb.capture_pointer_position(),
+            Some(position),
+            "onboarding must retain the motion used to hit-test the following coordinate-free MouseInput"
+        );
     }
 
     #[test]
