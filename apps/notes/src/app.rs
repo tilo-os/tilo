@@ -5229,6 +5229,66 @@ mod tests {
 
     #[test]
     fn copy_page_link_operation_uses_the_current_title_and_stable_target() {
+        const CHILD: &str = "TILO_NOTES_COPY_LINK_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let temp = TempDir::new().unwrap();
+            let stdout = temp.path().join("stdout.log");
+            let stderr = temp.path().join("stderr.log");
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "app::tests::copy_page_link_operation_uses_the_current_title_and_stable_target",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .current_dir(temp.path())
+                .stdout(std::fs::File::create(&stdout).unwrap())
+                .stderr(std::fs::File::create(&stderr).unwrap());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000);
+            }
+            let mut child = command.spawn().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if std::time::Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("isolated clipboard regression timed out");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(
+                status.success(),
+                "{}\n{}",
+                std::fs::read_to_string(stdout).unwrap(),
+                std::fs::read_to_string(stderr).unwrap()
+            );
+            return;
+        }
+        // The backend is process-global. Install it only in this isolated
+        // child so neither this assertion nor concurrent widget tests touch
+        // the user's real clipboard or replace one another's backend.
+        #[derive(Default)]
+        struct PrivateClipboard(std::sync::Mutex<Option<String>>);
+        impl ui::clipboard::ClipboardBackend for PrivateClipboard {
+            fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+                *self.0.lock().unwrap() = Some(text.to_owned());
+                true
+            }
+            fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
+                self.0.lock().unwrap().clone()
+            }
+            fn name(&self) -> &'static str {
+                "notes-isolated-test"
+            }
+        }
+        ui::clipboard::install_clipboard_backend(Arc::new(PrivateClipboard::default()));
         let (mut app, state, _tmp, welcome) = app_seeded_into_doc();
         app.open_notes_operation(
             actions::NotesOperation::CopyPageLink { page: welcome },
@@ -5246,6 +5306,7 @@ mod tests {
             .is_err(),
             "a stale resource must not copy a nearby page's link"
         );
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("[[Welcome]]"));
     }
 
     #[test]
