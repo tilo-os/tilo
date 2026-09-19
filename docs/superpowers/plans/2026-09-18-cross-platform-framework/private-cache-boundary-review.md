@@ -1,0 +1,39 @@
+### Spec Compliance
+
+- ✅ **Spec compliant for the bounded Task 3 source milestone.** The 17-path snapshot delta implements the requested documentation, privacy harness, workflow wiring, exact baseline retirement, and authorized view-test grouping without changing the preserved cache/transport/catalog/native algorithms. The preservation receipt identifies all 23 algorithm paths as unchanged, keeps the catalog at `3aa2c12d…`, confirms the old app cache/download implementations are absent, and confirms all 58 folder-service inputs plus root/lock/manifests are unchanged (`task-3-preservation-checks.json:2-35`).
+- ✅ The external harness builds the requested service or SDK feature set (`crates/packaging/install-artifacts/tests/privacy_probes.py:24-49`), selects the one Cargo-emitted hashed artifact row and matching `.rmeta`/`.rlib` pair (`:61-88`), records feature and artifact identities (`:158-203`), runs the public positive control first (`:224-247`), rejects E0463/E0464/E0514/E0786 (`:17,259-260`), and accepts only the exact intended error-code set (`:261-268`). The frozen results contain the required 37 outcomes, including E0451, E0616, E0277, E0599, and the parent-corrected E0624 after successful controls (`task-3-final-probes/service-support-2/results.json:3-112`; `task-3-final-probes/service-normal-2/results.json:3-104`; `task-3-final-probes/sdk-normal-2/results.json:3-102`; `task-3-final-probes/sdk-support/results.json:3-102`).
+- ✅ The privacy claims agree with the implementation, not just the probes: `cache` is private (`crates/packaging/install-artifacts/src/lib.rs:33`), while `Provider`, `PreparedPrefix`, `SelectedManifest`, and both native `CacheRoot` types are at most `pub(crate)` (`src/cache/checkpoint.rs:83,749`; `src/transport.rs:23`; `src/cache/linux.rs:362`; `src/cache/windows.rs:854`). Normal receipts omit `test-support`, support receipts include it only on the direct service edge, and SDK receipts expose only `install-artifacts` (`task-3-final-probes/service-normal-2/feature-and-artifact-receipt.json:3-8`; `service-support-2/feature-and-artifact-receipt.json:3-9`; `sdk-normal-2/feature-and-artifact-receipt.json:3-11`; `sdk-support/feature-and-artifact-receipt.json:3-12`).
+- ✅ Focused risk check — **supported-target diagnostic stability:** Linux includes `cache::linux`, while Windows does not (`crates/packaging/install-artifacts/src/cache.rs:8-10`); the harness therefore expects E0603 on supported Linux artifacts and E0432+E0603 elsewhere (`privacy_probes.py:214-219`). Native Linux lanes use the host target; Windows forwards the exact x86_64/aarch64 MSVC target to Cargo and rustc (`.forgejo/workflows/release-imager.yml:450-465,530-541`). The remaining privacy probes depend on target-independent public/module visibility. I found no source path by which these supported release targets should fail with a different intended diagnostic.
+- ✅ Focused risk check — **release-lane reachability:** Linux and macOS run service lib/doc, SDK docs, and all four probe groups before retaining the existing Imager tests (`release-imager.yml:261,371-381,607,690-700`). Windows retains its existing explicit target for service/SDK/Imager commands and runs the two normal groups only, so Unix fixture support is not falsely qualified there (`:450,530-546`).
+- ✅ Exact retirement and test preservation are evidenced rather than inferred: the baseline moves from 512 to 428 entries by removing the exact 84 observed stale identities, with no allowance addition (`task-3-baseline-retirement.json:3-7`); the checker and its tests pass (`task-3-final-results.json:217-249`). The inventory preserves 26 bundle, 49 transport, and 101 original cache tests plus all five ignore reasons, accounts separately for Task 2's one added cache test, and maps all 29 byte-identical view-test bodies to 24 portable plus 5 Unix-qualified tests (`task-3-test-inventory.json:2-16,212-396`). The scoped view run passed all 29 with zero ignored (`task-3-final-results.json:173-211`).
+- ✅ API documentation describes the bounded semantic surface, preference ordering, fixed-catalog provenance limit, compatibility constructor, and local verifier limits (`crates/packaging/install-artifacts/src/lib.rs:1-24,72-136`; `crates/app/tilo-app/src/install_artifacts.rs:1-19`). Service/SDK doctests and the service/Imager checks all completed successfully under unchanged causal inputs (`task-3-final-results.json:87-166`), and the parent shell test-target compilation passed under 2,548 unchanged inputs (`task-3-shell-checkpoint/receipt.json:2-17`).
+- ⚠️ **Cannot verify from this task:** native Linux/Windows backend execution, Windows ACL/quota fixtures and durable namespace profiles, a real macOS production cache, G02 HostContext authority/removal of `open_legacy_imager`, L02/L03, S01/S02, signed-distribution provenance, or installed-package execution. The available Linux/Windows Task 3 results are dependency-resolution trees only (`task-3-final-results.json:299-339`); all four frozen probe receipts have `"target": null`, so the direct diagnostic evidence is macOS-host evidence (`task-3-final-probes/*/feature-and-artifact-receipt.json:3`). The recorded cross-target attempts stopped in unchanged native prerequisites before this crate, and the milestone explicitly leaves these gates open (`task-3-report.md:63-71`). These are concrete follow-on evidence gaps, not failures of this source-boundary task.
+
+### Strengths
+
+- The harness makes false privacy passes difficult: it binds exact current artifacts and features, establishes loadability before every negative group, rejects known metadata/linkage failures, and compares the complete coded-error set rather than searching stderr text (`privacy_probes.py:143-203,245-268`).
+- The feature split is deliberate and verified in both directions: normal construction remains separate from the explicit Unix fixture constructor, and SDK support never reexports the fixture facade (`src/lib.rs:39-48,69-84,118-124`; probe feature receipts cited above).
+- The view remediation is narrow: only the five already-Unix tests move beneath `tests::unix_tests` (`apps/imager/src/setup/view.rs:2335-2582`), while the receipt proves every body stayed identical and all portable tests remain selected (`task-3-test-inventory.json:219-396`).
+- The report and receipts distinguish source/API/fixture/target-resolution evidence from native and installed behavior. That preserves the milestone boundary instead of converting unavailable native checks into passes.
+
+### Issues
+
+#### Critical (Must Fix)
+
+- None.
+
+#### Important (Should Fix)
+
+- None.
+
+#### Minor (Nice to Have)
+
+- **Retained warning debt keeps verification output noisy.** The final receipts record 16 warning lines for the service lib, 101 for normal API/docs, 22 for support API/preference, 135 for SDK docs, 116 for all-targets, and 488 for Imager/view compilation (`task-3-final-results.json:17-166,189-211`). Parent verification identifies the shell warnings as the existing 60 library/36 library-test warnings, and the frozen source map shows the implementation paths that produce the established debt were unchanged (`task-3-review-context.md:24-26`; `task-3-preservation-checks.json:2-35`), so this is not a Task 3 regression and should not expand this bounded fix round. Track and retire the owning warnings separately so future receipts are pristine and new warnings are attributable.
+
+### Assessment
+
+**Task quality: Approved.**
+
+**Finding counts:** Critical 0, Important 0, Minor 1 (pre-existing warning debt); 1 explicit cross-task evidence-gap group.
+
+**Reasoning:** The actual diff satisfies the corrected brief and binding privacy/source boundary, with exact automated probes, preserved release targets/tests, and no algorithm or authority widening. The remaining limitations are accurately bounded native/installed follow-on gates rather than missing Task 3 implementation.

@@ -20,6 +20,7 @@ dirs.workspace = true
 atomic-file = { path = "../../../crates/system/atomic-file" }
 
 [dev-dependencies]
+atomic-file = { path = "../atomic-file", features = ["test-support"] }
 serial_test.workspace = true
 tempfile.workspace = true
 

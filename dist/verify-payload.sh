@@ -5,6 +5,9 @@ set -euo pipefail
 [[ $# == 1 ]] || { echo "usage: $0 ROOT" >&2; exit 2; }
 root=${1%/}
 [[ -n $root ]] || root=/
+# Package builders may use a relative output directory. Resolve the staging
+# root before passing the installed executable to the absolute-only helper.
+root=$(CDPATH= cd -- "$root" && pwd -P)
 path() { printf '%s%s' "${root%/}" "$1"; }
 libexec_dir=${TILO_LIBEXEC_DIR:-/usr/libexec}
 [[ $libexec_dir == /* && $libexec_dir != */ ]] || {
@@ -57,7 +60,8 @@ grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.targe
 
 grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" "$(path /usr/share/applications/tilo-import-folders.desktop)"
 grep -Fxq "TryExec=/usr/bin/tilo-import-folders" "$(path /usr/share/applications/tilo-import-folders.desktop)"
-"$(path /usr/bin/tilo-import-folders)" --tilo-package-smoke
+python3 "$(dirname "${BASH_SOURCE[0]}")/ci/verify-installed-imager.py" \
+    "$(path /usr/bin/tilo-import-folders)"
 
 for elf in /usr/bin/tilo-shell /usr/bin/tilo-launcher /usr/bin/tilo-import-folders "$libexec_dir/tilo-unlock-helper"; do
     elf_description=$(LC_ALL=C file "$(path "$elf")")

@@ -1,0 +1,947 @@
+shell/src/config.rs:9:    pub flatpak_share: FlatpakShareConfig,
+shell/src/config.rs:46:            flatpak_share: FlatpakShareConfig::default(),
+shell/src/config.rs:112:        std::path::PathBuf::from("/etc/tilo-desktop/desktop.toml"),
+shell/src/device_fleet.rs:5:use std::os::fd::AsRawFd;
+shell/src/device_fleet.rs:73:    /// `XDG_CONFIG_HOME` nor `HOME` set) can't be resolved.
+shell/src/device_fleet.rs:422:        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+shell/src/firstboot.rs:2://! `/usr/bin/shell --firstboot-only`.
+shell/src/firstboot.rs:5://! `/etc/tilo/.firstboot-done`, so this module is a one-shot "make sure the
+shell/src/firstboot.rs:19:#[cfg(unix)]
+shell/src/firstboot.rs:20:use std::os::unix::fs::{MetadataExt, PermissionsExt};
+shell/src/firstboot.rs:40:#[cfg(unix)]
+shell/src/firstboot.rs:44:    let uid = unsafe { libc::geteuid() };
+shell/src/firstboot.rs:45:    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+shell/src/firstboot.rs:49:        libc::getpwuid_r(
+shell/src/firstboot.rs:108:/// `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and creates
+shell/src/firstboot.rs:109:/// `tilo-desktop/` under it. Returns `Ok(())` on success and on the "no HOME / no XDG" no-op path so boot continues.
+shell/src/firstboot.rs:116:        std::env::var_os("XDG_CONFIG_HOME"),
+shell/src/firstboot.rs:117:        std::env::var_os("HOME"),
+shell/src/firstboot.rs:373:    let mut command = Command::new("gsettings");
+shell/src/firstboot.rs:399:/// of reading the process environment — tests drive this with a `tempdir`-rooted fixture so the suite never pokes the developer's `$HOME`.
+shell/src/firstboot.rs:410:            "firstboot: neither XDG_CONFIG_HOME nor HOME set; skipping config-dir creation"
+shell/src/firstboot.rs:577:    #[cfg(unix)]
+shell/src/firstboot.rs:579:        if metadata.uid() != unsafe { libc::geteuid() } {
+shell/src/firstboot.rs:864:    #[cfg(unix)]
+shell/src/firstboot.rs:1176:        run_with_env(None, Some(OsString::from(tmp.path()))).expect("firstboot succeeds via HOME");
+shell/src/firstboot.rs:1245:    #[cfg(unix)]
+shell/src/firstboot.rs:1248:        use std::os::unix::fs::symlink;
+shell/src/firstboot.rs:1384:    #[cfg(unix)]
+shell/src/firstboot.rs:1564:    #[cfg(unix)]
+shell/src/runtime_host.rs:46:        unix::private_directory(root)?;
+shell/src/runtime_host.rs:47:        let lock = unix::private_file(&root.join("runtime.lock"))?;
+shell/src/runtime_host.rs:105:        unix::launch(
+shell/src/identity_registry.rs:12:#[cfg(unix)]
+shell/src/identity_registry.rs:13:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+shell/src/identity_registry.rs:198:    #[cfg(unix)]
+shell/src/identity_registry.rs:199:    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+shell/src/identity_registry.rs:230:    /// directory (`XDG_CONFIG_HOME` or `HOME`).
+shell/src/identity_registry.rs:234:    /// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
+shell/src/identity_registry.rs:473:/// Returns an error if neither `XDG_CONFIG_HOME` nor `HOME` is set.
+shell/src/identity_registry.rs:496:    #[cfg(unix)]
+shell/src/identity_registry.rs:546:        #[cfg(unix)]
+shell/src/identity_registry.rs:615:    #[cfg(unix)]
+shell/src/identity_registry.rs:618:        use std::os::unix::fs::symlink;
+shell/src/onboarding_view.rs:15:use std::os::unix::process::CommandExt as _;
+shell/src/onboarding_view.rs:131:    #[cfg(unix)]
+shell/src/onboarding_view.rs:133:        use std::os::unix::fs::OpenOptionsExt as _;
+shell/src/onboarding_view.rs:134:        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+shell/src/onboarding_view.rs:148:    #[cfg(unix)]
+shell/src/onboarding_view.rs:150:        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+shell/src/onboarding_view.rs:151:        if metadata.uid() != unsafe { libc::geteuid() }
+shell/src/onboarding_view.rs:269:        if cfg!(target_os = "macos") {
+shell/src/onboarding_view.rs:2089:    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
+shell/src/onboarding_view.rs:2098:        let group_gone = unsafe { libc::kill(group, 0) } != 0
+shell/src/onboarding_view.rs:2099:            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+shell/src/onboarding_view.rs:2110:    let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+shell/src/onboarding_view.rs:2241:                                    Command::new("pkexec")
+shell/src/onboarding_view.rs:2243:                                            "/usr/libexec/tilo-home-peer-control",
+shell/src/onboarding_view.rs:2955:    let home = std::env::var_os("HOME")
+shell/src/onboarding_view.rs:2965:        for base in [PathBuf::from("/run/media"), PathBuf::from("/media")] {
+shell/src/onboarding_view.rs:3035:        let child = Command::new("sh")
+shell/src/onboarding_view.rs:3070:        std::fs::read_dir("/proc").is_ok_and(|entries| {
+shell/src/onboarding_view.rs:3075:                let Ok(stat) = std::fs::read_to_string(format!("/proc/{process_id}/stat")) else {
+shell/src/onboarding_view.rs:3232:        #[cfg(unix)]
+shell/src/onboarding_view.rs:3234:            use std::os::unix::fs::PermissionsExt as _;
+shell/src/onboarding_view.rs:3372:        #[cfg(unix)]
+shell/src/onboarding_view.rs:3374:            use std::os::unix::fs::symlink;
+shell/src/onboarding_view.rs:3676:        if cfg!(target_os = "macos") {
+shell/src/identity_broker.rs:4:use std::os::unix::net::{UnixListener, UnixStream};
+shell/src/identity_broker.rs:50:    let listener = UnixListener::bind(&path)?;
+shell/src/identity_broker.rs:85:fn serve(mut stream: UnixStream, tree: &WorkspaceTreeHandle) {
+shell/src/identity_broker.rs:383:fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
+shell/src/identity_broker.rs:400:fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
+shell/src/identity_broker.rs:412:fn read_action_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
+shell/src/identity_broker.rs:427:fn write_action_frame<T: serde::Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
+shell/src/identity_broker.rs:448:    use std::os::fd::IntoRawFd;
+shell/src/identity_broker.rs:455:        let previous = std::env::var_os("XDG_CONFIG_HOME");
+shell/src/identity_broker.rs:459:            std::env::set_var("XDG_CONFIG_HOME", &xdg);
+shell/src/identity_broker.rs:541:                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+shell/src/identity_broker.rs:542:                None => std::env::remove_var("XDG_CONFIG_HOME"),
+shell/src/identity_broker.rs:557:        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+shell/src/identity_broker.rs:560:            std::env::set_var("XDG_CONFIG_HOME", &xdg);
+shell/src/identity_broker.rs:753:                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+shell/src/identity_broker.rs:754:                None => std::env::remove_var("XDG_CONFIG_HOME"),
+shell/src/identity_broker.rs:768:        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+shell/src/identity_broker.rs:774:            std::env::set_var("XDG_CONFIG_HOME", &xdg);
+shell/src/identity_broker.rs:804:        let mut client = UnixStream::connect(socket).expect("connect");
+shell/src/identity_broker.rs:885:                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+shell/src/identity_broker.rs:886:                None => std::env::remove_var("XDG_CONFIG_HOME"),
+shell/src/onboarding.rs:211:    /// No `$HOME` / `$XDG_CONFIG_HOME`, so there's no user directory to write into — never guess a path for something this sensitive.
+shell/src/onboarding.rs:222:                "no user config directory ($HOME / $XDG_CONFIG_HOME unset); refusing to guess \
+shell/src/priority_contacts.rs:197:    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+shell/src/priority_contacts.rs:200:        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+shell/src/priority_contacts.rs:205:        || metadata.uid() != unsafe { libc::geteuid() }
+shell/src/main.rs:3:#[cfg(target_os = "linux")]
+shell/src/main.rs:6:#[cfg(target_os = "linux")]
+shell/src/main.rs:11:#[cfg(all(test, target_os = "macos"))]
+shell/src/main.rs:449:#[cfg(target_os = "macos")]
+shell/src/main.rs:454:#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+shell/src/lib.rs:44:#[cfg(all(test, target_os = "macos"))]
+shell/src/notifications.rs:9://! The zbus service runs async on a tokio runtime; the toast queue lives
+shell/src/notifications.rs:22:    reason = "the D-Bus `Notify` signature requires app_icon; the zbus `#[interface]` macro \
+shell/src/notifications.rs:28:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:30:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:33:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:34:use zbus::interface;
+shell/src/notifications.rs:35:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:36:use zbus::names::OwnedUniqueName;
+shell/src/notifications.rs:37:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:38:use zbus::object_server::SignalContext;
+shell/src/notifications.rs:40:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:45:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:46:use zbus::zvariant::OwnedValue;
+shell/src/notifications.rs:51:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:840:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:849:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:858:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:868:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:886:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:900:/// [`serve_notifications`] call, held by the zbus `ObjectServer` for the connection's life.
+shell/src/notifications.rs:901:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:905:    connection: Option<zbus::Connection>,
+shell/src/notifications.rs:909:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:923:        connection: zbus::Connection,
+shell/src/notifications.rs:943:        let bus = zbus::fdo::DBusProxy::new(connection).await.ok()?;
+shell/src/notifications.rs:944:        let name = zbus::names::BusName::try_from(sender.as_str()).ok()?;
+shell/src/notifications.rs:965:            && let Ok(bus) = zbus::fdo::DBusProxy::new(connection).await
+shell/src/notifications.rs:966:            && let Ok(name) = zbus::names::BusName::try_from(sender.as_str())
+shell/src/notifications.rs:992:/// metadata — its per-process `.flatpak-info` and systemd cgroup — which are
+shell/src/notifications.rs:994:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:997:    verified_foreign_notification_identity_from(Path::new("/proc"), pid, entries)
+shell/src/notifications.rs:1000:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:1007:    let app_id = flatpak_application_id(&proc.join("root/.flatpak-info"))?;
+shell/src/notifications.rs:1009:    if !flatpak_cgroup_matches(&cgroup, &app_id) {
+shell/src/notifications.rs:1023:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:1037:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:1038:fn flatpak_application_id(info_path: &Path) -> Option<String> {
+shell/src/notifications.rs:1059:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:1060:fn flatpak_cgroup_matches(cgroup: &str, app_id: &str) -> bool {
+shell/src/notifications.rs:1061:    let raw_prefix = format!("app-flatpak-{app_id}");
+shell/src/notifications.rs:1062:    let escaped_prefix = format!("app-flatpak-{}", systemd_escape(app_id));
+shell/src/notifications.rs:1080:#[cfg(any(test, target_os = "linux"))]
+shell/src/notifications.rs:1100:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:1109:        #[zbus(header)] hdr: zbus::message::Header<'_>,
+shell/src/notifications.rs:1161:        #[zbus(header)] hdr: zbus::message::Header<'_>,
+shell/src/notifications.rs:1163:    ) -> zbus::fdo::Result<u32> {
+shell/src/notifications.rs:1167:            return Err(zbus::fdo::Error::AccessDenied(
+shell/src/notifications.rs:1182:            .map_err(zbus::fdo::Error::Failed)
+shell/src/notifications.rs:1195:        reason = "zbus's #[interface] macro dispatches D-Bus methods as instance methods, even though this fixed capability list doesn't depend on self"
+shell/src/notifications.rs:1208:        reason = "zbus's #[interface] macro dispatches D-Bus methods as instance methods, even though this fixed server info doesn't depend on self"
+shell/src/notifications.rs:1220:    #[zbus(signal)]
+shell/src/notifications.rs:1225:    ) -> zbus::Result<()>;
+shell/src/notifications.rs:1228:    #[zbus(signal)]
+shell/src/notifications.rs:1233:    ) -> zbus::Result<()>;
+shell/src/notifications.rs:1237:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:1239:    connection: zbus::Connection,
+shell/src/notifications.rs:1242:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:1244:    pub fn connection(&self) -> &zbus::Connection {
+shell/src/notifications.rs:1252:/// **Production** passes `zbus::Connection::session()`. **Tests** pass an
+shell/src/notifications.rs:1260:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:1262:    connection: zbus::Connection,
+shell/src/notifications.rs:1264:) -> Result<ServerHandle, zbus::Error> {
+shell/src/notifications.rs:1274:#[cfg(target_os = "linux")]
+shell/src/notifications.rs:1276:    connection: zbus::Connection,
+shell/src/notifications.rs:1303:    #[cfg(target_os = "linux")]
+shell/src/notifications.rs:1306:    fn flatpak_entries(root: &Path, app_id: &str) -> Vec<desktop_entry::DesktopEntry> {
+shell/src/notifications.rs:1320:    fn write_flatpak_proc(root: &Path, pid: u32, app_id: &str, cgroup_app_id: &str) {
+shell/src/notifications.rs:1324:            proc.join("root/.flatpak-info"),
+shell/src/notifications.rs:1331:                "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-flatpak-{cgroup_app_id}-123.scope\n"
+shell/src/notifications.rs:1624:            OwnedValue::from(zbus::zvariant::Str::from("surprise")),
+shell/src/notifications.rs:1633:    fn systemd_escape_and_scope_match_handle_flatpak_ids_without_indexing() {
+shell/src/notifications.rs:1636:        assert!(flatpak_cgroup_matches(
+shell/src/notifications.rs:1637:            "0::/app.slice/app-flatpak-org.example\\x20App-42.scope",
+shell/src/notifications.rs:1640:        assert!(!flatpak_cgroup_matches(
+shell/src/notifications.rs:1641:            "0::/app.slice/app-flatpak-org.example\\x20App-42.SCOPE",
+shell/src/notifications.rs:1733:            OwnedValue::from(zbus::zvariant::Str::from("ada@example.test")),
+shell/src/notifications.rs:1742:            OwnedValue::from(zbus::zvariant::Str::from("bad\nhandle")),
+shell/src/notifications.rs:1748:    fn foreign_flatpak_identity_requires_matching_runtime_cgroup_and_install() {
+shell/src/notifications.rs:1751:        let entries = flatpak_entries(tmp.path(), app_id);
+shell/src/notifications.rs:1752:        write_flatpak_proc(tmp.path(), 404, app_id, app_id);
+shell/src/notifications.rs:1760:        write_flatpak_proc(tmp.path(), 405, app_id, "org.example.Spoof");
+shell/src/notifications.rs:1767:        write_flatpak_proc(
+shell/src/notifications.rs:1781:    // `tests/portal_test.rs`'s hermetic fixture: a `UnixStream::pair()`
+shell/src/notifications.rs:1784:    #[cfg(target_os = "linux")]
+shell/src/notifications.rs:1787:    #[cfg(target_os = "linux")]
+shell/src/notifications.rs:1791:    ) -> (zbus::Connection, zbus::Connection) {
+shell/src/notifications.rs:1792:        use tokio::net::UnixStream;
+shell/src/notifications.rs:1793:        use zbus::connection::Builder;
+shell/src/notifications.rs:1795:        let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
+shell/src/notifications.rs:1810:    #[cfg(target_os = "linux")]
+shell/src/notifications.rs:1811:    async fn notifications_proxy(client: &zbus::Connection) -> zbus::Proxy<'_> {
+shell/src/notifications.rs:1812:        zbus::proxy::Builder::<zbus::Proxy<'_>>::new(client)
+shell/src/notifications.rs:1825:    #[cfg(target_os = "linux")]
+shell/src/notifications.rs:1883:    #[cfg(target_os = "linux")]
+shell/src/notifications.rs:1908:    #[cfg(target_os = "linux")]
+shell/src/notifications.rs:1922:    #[cfg(target_os = "linux")]
+shell/src/bluetooth.rs:15:#[cfg(any(test, target_os = "linux"))]
+shell/src/bluetooth.rs:20:#[cfg(target_os = "linux")]
+shell/src/bluetooth.rs:22:#[cfg(target_os = "linux")]
+shell/src/bluetooth.rs:66:    #[cfg(any(test, target_os = "linux"))]
+shell/src/bluetooth.rs:115:#[cfg(target_os = "linux")]
+shell/src/bluetooth.rs:123:#[cfg(target_os = "linux")]
+shell/src/bluetooth.rs:190:#[cfg(target_os = "linux")]
+shell/src/linux_main.rs:251:        let unavailable_keyring = io::Error::from_raw_os_error(libc::ENOKEY);
+shell/src/linux_main.rs:514:        let connection = match zbus::ConnectionBuilder::session() {
+shell/src/network/surface_tracker.rs:2:#[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:5:#[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:7:#[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:47:    #[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:75:    #[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:134:        #[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:140:    #[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:146:    #[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:148:        #[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:187:    #[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:219:        #[cfg(target_os = "linux")]
+shell/src/network/surface_tracker.rs:254:#[cfg(any(test, target_os = "linux"))]
+shell/src/runtime_host/mcp_process_tests.rs:21:    let status = Command::new(std::env::current_exe().unwrap())
+shell/src/runtime_host/mcp_process_tests.rs:24:        .env("XDG_CONFIG_HOME", environment.join("config"))
+shell/src/runtime_host/mcp_process_tests.rs:25:        .env("XDG_DATA_HOME", environment.join("data"))
+shell/src/runtime_host/mcp_process_tests.rs:26:        .env("XDG_CACHE_HOME", environment.join("cache"))
+shell/src/runtime_host/mcp_process_tests.rs:27:        .env("XDG_STATE_HOME", environment.join("state"))
+shell/src/runtime_host/mcp_process_tests.rs:153:        OsString::from("/tmp/profile"),
+shell/src/runtime_host/mcp_process_tests.rs:155:        OsString::from("/tmp/apps.json"),
+shell/src/runtime_host/mcp_process_tests.rs:158:    assert_eq!(parsed.profile, PathBuf::from("/tmp/profile"));
+shell/src/runtime_host/mcp_process_tests.rs:159:    assert_eq!(parsed.apps, PathBuf::from("/tmp/apps.json"));
+shell/src/runtime_host/mcp_process_tests.rs:160:    assert!(parse_args([OsString::from("--profile"), OsString::from("/tmp/profile")]).is_err());
+shell/src/runtime_host/mcp_process_tests.rs:200:        "XDG_CONFIG_HOME",
+shell/src/runtime_host/mcp_process_tests.rs:201:        "XDG_DATA_HOME",
+shell/src/runtime_host/mcp_process_tests.rs:202:        "XDG_CACHE_HOME",
+shell/src/runtime_host/mcp_process_tests.rs:203:        "XDG_STATE_HOME",
+shell/src/runtime_host/mcp_process_tests.rs:286:    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+shell/src/runtime_host/mcp_process_tests.rs:289:        Some(libc::ESRCH)
+shell/src/runtime_host/mcp_process_tests.rs:345:    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+shell/src/runtime_host/mcp_process_tests.rs:348:        Some(libc::ESRCH)
+shell/src/runtime_host/mcp_process_tests.rs:374:        let mut command = Command::new(&executable);
+shell/src/collab/mod.rs:7://! workspace peers"**. See [`flatpak_share::SharedFlatpakSession`].
+shell/src/collab/mod.rs:11://! only `flatpak_share`.
+shell/src/collab/mod.rs:15:pub mod flatpak_share;
+shell/src/network/behaviour.rs:182:        #[cfg(unix)]
+shell/src/network/behaviour.rs:184:            use std::os::unix::fs::PermissionsExt;
+shell/src/network/behaviour.rs:204:        #[cfg(unix)]
+shell/src/network/behaviour.rs:205:        use std::os::unix::fs::PermissionsExt;
+shell/src/network/behaviour.rs:211:        #[cfg(unix)]
+shell/src/network/behaviour.rs:258:    #[cfg(unix)]
+shell/src/network/behaviour.rs:261:        use std::os::unix::fs::PermissionsExt;
+shell/src/runtime_host/mcp_process.rs:9:    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+shell/src/runtime_host/mcp_process.rs:140:    super::unix::private_directory(profile)?;
+shell/src/runtime_host/mcp_process.rs:142:        ("XDG_CONFIG_HOME", profile.join("config")),
+shell/src/runtime_host/mcp_process.rs:143:        ("XDG_DATA_HOME", profile.join("data")),
+shell/src/runtime_host/mcp_process.rs:144:        ("XDG_CACHE_HOME", profile.join("cache")),
+shell/src/runtime_host/mcp_process.rs:145:        ("XDG_STATE_HOME", profile.join("state")),
+shell/src/runtime_host/mcp_process.rs:150:        super::unix::private_directory(path)?;
+shell/src/runtime_host/mcp_process.rs:233:    super::unix::private_directory(&logs)?;
+shell/src/runtime_host/mcp_process.rs:259:        let mut command = Command::new(&app.executable);
+shell/src/collab/flatpak_share.rs:7:#[cfg(target_os = "linux")]
+shell/src/collab/flatpak_share.rs:8:use std::os::fd::AsRawFd;
+shell/src/collab/flatpak_share.rs:26:#[cfg(target_os = "linux")]
+shell/src/collab/flatpak_share.rs:28:#[cfg(target_os = "linux")]
+shell/src/collab/flatpak_share.rs:84:    #[cfg(target_os = "linux")]
+shell/src/collab/flatpak_share.rs:92:#[cfg(target_os = "linux")]
+shell/src/collab/flatpak_share.rs:503:    #[cfg(target_os = "linux")]
+shell/src/collab/flatpak_share.rs:558:            #[cfg(target_os = "linux")]
+shell/src/collab/flatpak_share.rs:784:        "flatpak share encoder selected"
+shell/src/collab/flatpak_share.rs:825:        // On a stripped host (no hw feature, no /dev/dri) the probe falls
+shell/src/runtime_host/daemon.rs:14:    os::unix::{
+shell/src/runtime_host/daemon.rs:16:        net::{UnixListener, UnixStream},
+shell/src/runtime_host/daemon.rs:57:    unix::check_private_profile(profile)
+shell/src/runtime_host/daemon.rs:67:        let home = std::env::var_os("HOME")
+shell/src/runtime_host/daemon.rs:68:            .ok_or_else(|| invalid("HOME is missing; set QOS_RUNTIME_PROFILE"))?;
+shell/src/runtime_host/daemon.rs:69:        #[cfg(target_os = "macos")]
+shell/src/runtime_host/daemon.rs:71:        #[cfg(not(target_os = "macos"))]
+shell/src/runtime_host/daemon.rs:147:    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+shell/src/runtime_host/daemon.rs:191:    let lock = unix::private_file(&profile.join("start.lock"))?;
+shell/src/runtime_host/daemon.rs:196:    let log = unix::private_file(&profile.join("daemon.log"))?;
+shell/src/runtime_host/daemon.rs:197:    let mut command = Command::new(std::env::current_exe()?);
+shell/src/runtime_host/daemon.rs:209:            if libc::setsid() < 0 {
+shell/src/runtime_host/daemon.rs:257:            use std::os::unix::fs::FileTypeExt;
+shell/src/runtime_host/daemon.rs:266:    let listener = UnixListener::bind(&path)?;
+shell/src/runtime_host/daemon.rs:308:    mut stream: UnixStream,
+shell/src/runtime_host/daemon.rs:346:    let mut stream = UnixStream::connect(profile.join("native.sock"))?;
+shell/src/runtime_host/daemon.rs:376:    let mut command = Command::new(executable);
+shell/src/runtime_host/daemon.rs:380:    let connections = unix::Connections::prepare(
+shell/src/network/input_firewall.rs:1184:#[cfg(all(test, target_os = "linux"))]
+shell/src/shell/doc_open.rs:677:        use std::os::unix::fs::PermissionsExt;
+shell/src/shell/doc_open.rs:689:            std::env::set_var("XDG_RUNTIME_DIR", dir);
+shell/src/shell/doc_open.rs:724:            std::env::remove_var("XDG_RUNTIME_DIR");
+shell/src/collab/encoder/nvenc.rs:15://! 1. Check `/dev/nvidia0` / `/dev/nvidiactl` presence — the SDK panics
+shell/src/collab/encoder/nvenc.rs:43:    has_primaries: libc::c_int,
+shell/src/collab/encoder/nvenc.rs:44:    has_luminance: libc::c_int,
+shell/src/collab/encoder/nvenc.rs:51:    MaxCLL: libc::c_uint,
+shell/src/collab/encoder/nvenc.rs:52:    MaxFALL: libc::c_uint,
+shell/src/collab/encoder/nvenc.rs:85:    if !std::path::Path::new("/dev/nvidiactl").exists()
+shell/src/collab/encoder/nvenc.rs:86:        && !std::path::Path::new("/dev/nvidia0").exists()
+shell/src/collab/encoder/nvenc.rs:92:            reason: "no /dev/nvidia* nodes present — non-NVIDIA host".to_string(),
+shell/src/collab/encoder/nvenc.rs:220:                // Low-latency preset — matches the flatpak-share cadence.
+shell/src/collab/encoder/nvenc.rs:607:            (*out).MaxCLL = l.max_content_light_level as libc::c_uint;
+shell/src/collab/encoder/nvenc.rs:608:            (*out).MaxFALL = l.max_frame_average_light_level as libc::c_uint;
+shell/src/runtime_host/daemon_process_tests.rs:2:#![cfg(unix)]
+shell/src/runtime_host/daemon_process_tests.rs:6:    os::unix::net::UnixStream,
+shell/src/runtime_host/daemon_process_tests.rs:13:    let mut command = Command::new(
+shell/src/runtime_host/daemon_process_tests.rs:34:        use std::os::unix::fs::PermissionsExt;
+shell/src/runtime_host/daemon_process_tests.rs:48:        if let Ok(stream) = UnixStream::connect(self.path().join("native.sock")) {
+shell/src/runtime_host/daemon_process_tests.rs:57:                            libc::kill(i32::try_from(pid).unwrap(), libc::SIGTERM);
+shell/src/runtime_host/daemon_process_tests.rs:66:    let mut stream = UnixStream::connect(profile.join("native.sock")).unwrap();
+shell/src/runtime_host/daemon_process_tests.rs:77:        .args(["--run-app", app, "--", "/usr/bin/true"])
+shell/src/runtime_host/daemon_process_tests.rs:84:    let stale = std::os::unix::net::UnixListener::bind(profile.path().join("native.sock")).unwrap();
+shell/src/runtime_host/daemon_process_tests.rs:108:                .args(["--run-app", "dev.qos.race", "--", "/usr/bin/true"])
+shell/src/runtime_host/daemon_process_tests.rs:175:    std::os::unix::fs::symlink(root.path(), root.path().join("link")).unwrap();
+shell/src/runtime_host/daemon_process_tests.rs:214:        Command::new(std::env::current_exe().unwrap())
+shell/src/runtime_host/daemon_process_tests.rs:239:    while UnixStream::connect(profile.path().join("native.sock")).is_err() {
+shell/src/runtime_host/daemon_process_tests.rs:246:    let mut stream = UnixStream::connect(profile.path().join("native.sock")).unwrap();
+shell/src/runtime_host/daemon_process_tests.rs:286:    use std::os::unix::fs::PermissionsExt;
+shell/src/runtime_host/daemon_process_tests.rs:302:    std::os::unix::fs::symlink(&target, profile.path().join("runtime.lock")).unwrap();
+shell/src/runtime_host/daemon_process_tests.rs:320:                Command::new(std::env::current_exe().unwrap())
+shell/src/runtime_host/daemon_process_tests.rs:334:    use std::os::unix::process::CommandExt;
+shell/src/runtime_host/daemon_process_tests.rs:340:                libc::kill(group, libc::SIGKILL);
+shell/src/runtime_host/daemon_process_tests.rs:376:        if let Ok(mut stream) = UnixStream::connect(profile.path().join("native.sock")) {
+shell/src/runtime_host/daemon_process_tests.rs:435:    let _collab = std::os::unix::net::UnixListener::bind(&collab_path).unwrap();
+shell/src/runtime_host/daemon_process_tests.rs:436:    let _identity = std::os::unix::net::UnixListener::bind(&identity_path).unwrap();
+shell/src/runtime_host/daemon_process_tests.rs:437:    let mut command = Command::new("/usr/bin/true");
+shell/src/runtime_host/daemon_process_tests.rs:441:    let _connections = super::unix::Connections::prepare(
+shell/src/network/streaming.rs:297:    #[cfg(target_os = "linux")]
+shell/src/network/streaming.rs:489:    #[cfg(target_os = "linux")]
+shell/src/network/streaming.rs:555:    #[cfg(target_os = "linux")]
+shell/src/network/streaming.rs:644:    #[cfg(target_os = "linux")]
+shell/src/network/streaming.rs:743:    #[cfg(target_os = "linux")]
+shell/src/network/streaming.rs:774:    #[cfg(target_os = "linux")]
+shell/src/network/streaming.rs:804:    #[cfg(target_os = "linux")]
+shell/src/network/streaming.rs:847:    #[cfg(target_os = "linux")]
+shell/src/collab/encoder/mod.rs:5://! flatpak-share pipeline is the only caller today.
+shell/src/collab/encoder/mod.rs:193:        plane_fds: [std::os::fd::RawFd; 4],
+shell/src/collab/encoder/mod.rs:216:/// one frame ahead of the encoder — this contract matches the flatpak-
+shell/src/collab/encoder/mod.rs:420:/// `/dev/dri/renderD*` and asks libavcodec whether the render node
+shell/src/runtime_host/unix.rs:7:        unix::{
+shell/src/runtime_host/unix.rs:9:            net::UnixStream,
+shell/src/runtime_host/unix.rs:22:    if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+shell/src/runtime_host/unix.rs:51:    _collab: UnixStream,
+shell/src/runtime_host/unix.rs:52:    _identity: UnixStream,
+shell/src/runtime_host/unix.rs:68:        let collab = UnixStream::connect(collab_path)?;
+shell/src/runtime_host/unix.rs:69:        let mut identity = UnixStream::connect(identity_path)?;
+shell/src/runtime_host/unix.rs:96:                    let flags = libc::fcntl(fd, libc::F_GETFD);
+shell/src/runtime_host/unix.rs:97:                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+shell/src/runtime_host/unix.rs:130:        .custom_flags(libc::O_NOFOLLOW)
+shell/src/runtime_host/unix.rs:135:        || metadata.uid() != unsafe { libc::geteuid() }
+shell/src/shell/windows_compat.rs:122:    std::process::Command::new("/usr/libexec/tilo-windows-rail")
+shell/src/shell/windows_compat.rs:391:    let uid = unsafe { libc::geteuid() };
+shell/src/shell/windows_compat.rs:552:            .install_from_portal("workspace", input, File::open("/dev/null").unwrap())
+shell/src/network/wayland.rs:546:        _: std::os::unix::io::OwnedFd,
+shell/src/network/wayland.rs:554:    fn send(&mut self, _: String, _: std::os::unix::io::OwnedFd, _: Seat<Self>) {}
+shell/src/collab/encoder/vaapi.rs:9://! 1. `av_hwdevice_ctx_create(VAAPI, "/dev/dri/renderD*")` — opens
+shell/src/collab/encoder/vaapi.rs:58:    has_primaries: libc::c_int,
+shell/src/collab/encoder/vaapi.rs:60:    has_luminance: libc::c_int,
+shell/src/collab/encoder/vaapi.rs:70:    MaxCLL: libc::c_uint,
+shell/src/collab/encoder/vaapi.rs:72:    MaxFALL: libc::c_uint,
+shell/src/collab/encoder/vaapi.rs:120:            reason: "no /dev/dri/renderD* nodes present on this host".to_string(),
+shell/src/collab/encoder/vaapi.rs:172:    let dri = PathBuf::from("/dev/dri");
+shell/src/collab/encoder/vaapi.rs:603:        plane_fds: [std::os::fd::RawFd; 4],
+shell/src/collab/encoder/vaapi.rs:650:                (*desc_ptr).layers[0].planes[i].offset = plane_offsets[i] as libc::ptrdiff_t;
+shell/src/collab/encoder/vaapi.rs:651:                (*desc_ptr).layers[0].planes[i].pitch = plane_strides[i] as libc::ptrdiff_t;
+shell/src/collab/encoder/vaapi.rs:969:            reason: "no /dev/dri/renderD* nodes present".to_string(),
+shell/src/collab/encoder/vaapi.rs:1208:            (*out).MaxCLL = l.max_content_light_level as libc::c_uint;
+shell/src/collab/encoder/vaapi.rs:1209:            (*out).MaxFALL = l.max_frame_average_light_level as libc::c_uint;
+shell/src/collab/encoder/vaapi.rs:1234:    /// `/dev/dri` don't fail the suite; enable with
+shell/src/collab/encoder/vaapi.rs:1237:    #[ignore = "requires /dev/dri render node with H264 VAAPI encode support"]
+shell/src/network/actor.rs:2833:            || std::path::PathBuf::from("/usr/bin/fs"),
+shell/src/network/actor.rs:2846:    let mut child = match tokio::process::Command::new(&publisher)
+shell/src/network/actor.rs:2905:            || std::path::PathBuf::from("/usr/bin/fs"),
+shell/src/network/actor.rs:2916:        tokio::process::Command::new(&publisher)
+shell/src/network/mod.rs:13:#[cfg(target_os = "linux")]
+shell/src/shell/device_fabric_runtime.rs:9:use std::os::unix::fs::OpenOptionsExt as _;
+shell/src/shell/device_fabric_runtime.rs:4647:        .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/device_fabric_runtime.rs:7289:    let chassis = std::fs::read_to_string("/sys/class/dmi/id/chassis_type")
+shell/src/shell/peer_windows.rs:667:        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
+shell/src/shell/peer_windows.rs:670:        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+shell/src/shell/peer_windows.rs:703:                std::env::set_var("XDG_DATA_HOME", previous);
+shell/src/shell/peer_windows.rs:705:                std::env::remove_var("XDG_DATA_HOME");
+shell/src/network/invite.rs:111:const MAX_HOME_HOST_PINS: usize = 16;
+shell/src/network/invite.rs:549:    if token.home_host_pins.len() > MAX_HOME_HOST_PINS {
+shell/src/shell/hosted_inputs.rs:191:    #[cfg(target_os = "macos")]
+shell/src/shell/hosted_inputs.rs:213:    #[cfg(target_os = "macos")]
+shell/src/shell/hosted_inputs.rs:353:#[cfg(all(test, target_os = "macos"))]
+shell/src/shell/network.rs:8:use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+shell/src/shell/network.rs:328:    use std::os::unix::ffi::OsStrExt as _;
+shell/src/shell/network.rs:331:    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+shell/src/shell/network.rs:332:    if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
+shell/src/shell/network.rs:698:const MAX_HOME_PEER_REGISTRY_BYTES: u64 = 1024 * 1024;
+shell/src/shell/network.rs:699:const MAX_HOME_PEERS: usize = 128;
+shell/src/shell/network.rs:700:const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
+shell/src/shell/network.rs:701:const MAX_HOME_PEER_WORKSPACES: usize = 4096;
+shell/src/shell/network.rs:704:    std::env::var_os("TILO_HOME_PEERS_PATH")
+shell/src/shell/network.rs:756:    if metadata.len() > MAX_HOME_PEER_REGISTRY_BYTES {
+shell/src/shell/network.rs:764:            Some(registrations) if registrations.len() <= MAX_HOME_PEERS => registrations,
+shell/src/shell/network.rs:773:            || registration.label.len() > MAX_HOME_PEER_LABEL_BYTES
+shell/src/shell/network.rs:774:            || registration.relay_workspace_ids.len() > MAX_HOME_PEER_WORKSPACES
+shell/src/shell/network.rs:821:const HOME_PEER_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+shell/src/shell/network.rs:2342:            && now.duration_since(previous) < HOME_PEER_REFRESH_INTERVAL
+shell/src/shell/network.rs:3116:            .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/network.rs:3238:            .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/network.rs:5851:        use std::os::unix::fs::symlink;
+shell/src/shell/network.rs:5901:        use std::os::unix::fs::PermissionsExt as _;
+shell/src/shell/network.rs:6576:        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
+shell/src/shell/network.rs:6578:        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+shell/src/shell/network.rs:6635:                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+shell/src/shell/network.rs:6636:                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
+shell/src/shell/network.rs:7279:        #[cfg(unix)]
+shell/src/shell/network.rs:7281:            use std::os::unix::fs::PermissionsExt as _;
+shell/src/shell/network.rs:7963:        #[cfg(unix)]
+shell/src/shell/network.rs:7965:            use std::os::unix::fs::PermissionsExt as _;
+shell/src/shell/network.rs:8604:        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
+shell/src/shell/network.rs:8606:        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+shell/src/shell/network.rs:8617:                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+shell/src/shell/network.rs:8618:                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
+shell/src/shell/network.rs:8661:        let previous = std::env::var_os("TILO_HOME_PEERS_PATH");
+shell/src/shell/network.rs:8663:        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+shell/src/shell/network.rs:8676:                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+shell/src/shell/network.rs:8677:                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
+shell/src/shell/network.rs:8688:        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
+shell/src/shell/network.rs:8692:            std::env::remove_var("TILO_HOME_PEERS_PATH");
+shell/src/shell/network.rs:8706:                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+shell/src/shell/network.rs:8707:                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
+shell/src/shell/network.rs:8726:        let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
+shell/src/shell/network.rs:8728:        unsafe { std::env::set_var("TILO_HOME_PEERS_PATH", &registry) };
+shell/src/shell/network.rs:8766:                Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
+shell/src/shell/network.rs:8767:                None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
+shell/src/shell/network.rs:9650:        let previous_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+shell/src/shell/network.rs:9652:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+shell/src/shell/network.rs:9734:                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+shell/src/shell/network.rs:9735:                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+shell/src/shell/host_apps.rs:59:    target_os = "linux",
+shell/src/shell/host_apps.rs:66:    #[cfg(target_os = "linux")]
+shell/src/shell/host_apps.rs:70:    #[cfg(not(target_os = "linux"))]
+shell/src/shell/host_apps.rs:87:#[cfg(target_os = "linux")]
+shell/src/shell/host_apps.rs:115:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/host_apps.rs:191:    pub fn is_flatpak(&self) -> bool {
+shell/src/shell/host_apps.rs:243:                && app.is_flatpak()
+shell/src/shell/host_apps.rs:244:                && !existing.is_flatpak()
+shell/src/shell/host_apps.rs:296:        "XDG_RUNTIME_DIR".to_string(),
+shell/src/shell/host_apps.rs:300:        // The launcher is an intermediary. Keep this out of argv/process
+shell/src/shell/host_apps.rs:457:            Path::new("/usr/libexec/tilo-launcher"),
+shell/src/shell/host_apps.rs:458:            Path::new("/run/user/1000/wayland-1"),
+shell/src/shell/host_apps.rs:464:        assert_eq!(cmd.program, PathBuf::from("/usr/libexec/tilo-launcher"));
+shell/src/shell/host_apps.rs:472:                "/run/user/1000/wayland-1",
+shell/src/shell/host_apps.rs:494:            Path::new("/usr/libexec/tilo-launcher"),
+shell/src/shell/host_apps.rs:495:            Path::new("/run/user/1000/wayland-1"),
+shell/src/shell/host_apps.rs:510:            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
+shell/src/shell/host_apps.rs:514:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/host_apps.rs:515:            Path::new("/run/user/1000/wayland-2"),
+shell/src/shell/host_apps.rs:529:                "/run/user/1000/tilo-session/Xauthority-1234",
+shell/src/shell/host_apps.rs:545:            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
+shell/src/shell/host_apps.rs:554:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/host_apps.rs:555:            Path::new("/run/user/1000/wayland-2"),
+shell/src/shell/host_apps.rs:572:    #[cfg(target_os = "linux")]
+shell/src/shell/host_apps.rs:594:            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
+shell/src/shell/host_apps.rs:614:            authority: PathBuf::from("/tmp/tilo-test-authority"),
+shell/src/shell/host_apps.rs:636:                !app.window_identities.iter().any(|i| i == "flatpak"),
+shell/src/shell/host_apps.rs:644:    fn cross_source_aliases_are_one_app_and_keep_flatpak_confinement() {
+shell/src/shell/host_apps.rs:649:        let flatpak = HostApp {
+shell/src/shell/host_apps.rs:653:        let apps = deduplicate_host_apps(vec![system, flatpak.clone()]);
+shell/src/shell/host_apps.rs:654:        assert_eq!(apps, vec![flatpak]);
+shell/src/shell/host_apps.rs:672:        let flatpak = HostApp {
+shell/src/shell/host_apps.rs:676:        let canonical = deduplicate_host_apps(vec![system, flatpak.clone()]);
+shell/src/shell/host_apps.rs:677:        assert_eq!(app_for_window_id_in("Chat", canonical), Some(flatpak));
+shell/src/shell/host_apps.rs:688:        #[cfg(target_os = "linux")]
+shell/src/shell/host_apps.rs:690:        #[cfg(not(target_os = "linux"))]
+shell/src/shell/host_apps.rs:702:#[cfg(all(test, not(target_os = "linux")))]
+shell/src/shell/test_control.rs:1://! Real-input e2e test control protocol (`TILO_TEST_CONTROL=/run/user/N/tilo-test-N.sock`): pure command/response types + dispatcher, kept separate from the socket transport.
+shell/src/shell/test_control.rs:1577:                path: "/tmp/x.png".to_string(),
+shell/src/shell/test_control.rs:1585:                path: PathBuf::from("/tmp/x.png"),
+shell/src/shell/test_control.rs:1608:        let cmd = parse_command(r#"{"op":"snapshot","path":"/tmp/round.png"}"#).unwrap();
+shell/src/shell/test_control.rs:1612:                path: "/tmp/round.png".to_string()
+shell/src/shell/remote_capture_adapter.rs:10:#[cfg(target_os = "linux")]
+shell/src/shell/remote_capture_adapter.rs:11:use std::os::fd::FromRawFd as _;
+shell/src/shell/remote_capture_adapter.rs:12:use std::os::fd::OwnedFd;
+shell/src/shell/remote_capture_adapter.rs:543:#[cfg(target_os = "linux")]
+shell/src/shell/remote_capture_adapter.rs:549:        libc::open(
+shell/src/shell/remote_capture_adapter.rs:551:            libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+shell/src/shell/remote_capture_adapter.rs:627:        let status = Command::new(trusted_command("v4l2-ctl").ok_or_else(|| {
+shell/src/shell/remote_capture_adapter.rs:683:        let mut loopback = Command::new(trusted_command("pw-loopback").ok_or_else(|| {
+shell/src/shell/remote_capture_adapter.rs:701:        let mut writer = Command::new(trusted_command("pw-cat").ok_or_else(|| {
+shell/src/shell/remote_capture_adapter.rs:812:    ["/usr/bin", "/usr/libexec/tilo"]
+shell/src/shell/remote_capture_adapter.rs:820:    std::fs::read_dir("/sys/class/video4linux")
+shell/src/shell/remote_capture_adapter.rs:835:        let output = Command::new(trusted_command("pw-dump").ok_or_else(|| {
+shell/src/shell/remote_capture_adapter.rs:1205:#[cfg(not(target_os = "linux"))]
+shell/src/shell/notes_app.rs:1260:    #[cfg(target_os = "linux")]
+shell/src/shell/session_policy.rs:96:        #[cfg(unix)]
+shell/src/shell/session_policy.rs:98:            use std::os::unix::fs::OpenOptionsExt;
+shell/src/shell/tab_documents.rs:384:            std::env::set_var("XDG_DATA_HOME", tmp.path());
+shell/src/shell/tab_documents.rs:418:        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+shell/src/shell/tab_documents.rs:433:            std::env::set_var("XDG_DATA_HOME", tmp.path());
+shell/src/shell/tab_documents.rs:465:        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+shell/src/shell/collab_mls_authority.rs:10:#[cfg(unix)]
+shell/src/shell/collab_mls_authority.rs:11:use std::os::unix::fs::OpenOptionsExt as _;
+shell/src/shell/collab_mls_authority.rs:168:        let state = std::env::var_os("XDG_STATE_HOME").ok_or_else(|| {
+shell/src/shell/collab_mls_authority.rs:170:                "launcher did not provide XDG_STATE_HOME for MLS state".into(),
+shell/src/shell/collab_mls_authority.rs:192:        #[cfg(unix)]
+shell/src/shell/collab_mls_authority.rs:194:            use std::os::unix::fs::PermissionsExt as _;
+shell/src/shell/collab_mls_authority.rs:579:        #[cfg(unix)]
+shell/src/shell/collab_mls_authority.rs:581:            use std::os::unix::fs::PermissionsExt as _;
+shell/src/shell/collab_mls_authority.rs:1049:    #[cfg(unix)]
+shell/src/shell/remote_audio.rs:870:        let mut child = Command::new("pw-record")
+shell/src/shell/remote_audio.rs:940:        let mut child = Command::new("pw-play")
+shell/src/shell/desktop_continuation.rs:9:use std::os::unix::ffi::OsStrExt;
+shell/src/shell/desktop_continuation.rs:10:use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+shell/src/shell/desktop_continuation.rs:11:use std::os::unix::net::UnixListener;
+shell/src/shell/desktop_continuation.rs:41:    listener: UnixListener,
+shell/src/shell/desktop_continuation.rs:59:            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+shell/src/shell/desktop_continuation.rs:83:        let listener = UnixListener::bind(&socket_path)?;
+shell/src/shell/desktop_continuation.rs:160:        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+shell/src/shell/desktop_continuation.rs:184:    use std::os::unix::net::UnixStream;
+shell/src/shell/desktop_continuation.rs:237:        let _wayland = UnixListener::bind(root.join("wayland-1")).unwrap();
+shell/src/shell/desktop_continuation.rs:240:        let mut client = UnixStream::connect(&gate.socket_path).unwrap();
+shell/src/shell/desktop_continuation.rs:245:        let mut client = UnixStream::connect(&gate.socket_path).unwrap();
+shell/src/shell/topbar_chrome.rs:9:#[cfg(unix)]
+shell/src/shell/topbar_chrome.rs:10:use std::os::unix::fs::MetadataExt;
+shell/src/shell/topbar_chrome.rs:258:    let Some(path) = std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/shell/topbar_chrome.rs:3009:            && let Some(path) = std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/shell/topbar_chrome.rs:3013:            && meta.uid() == unsafe { libc::geteuid() }
+shell/src/shell/topbar_chrome.rs:3021:            && std::path::Path::new(&format!("/proc/{}", activity.producer_pid)).exists()
+shell/src/shell/realtime_session.rs:2379:        for forbidden in ["pipewire", "device_id", "capture", "credential", "/dev/"] {
+shell/src/shell/mod.rs:38:#[cfg(target_os = "linux")]
+shell/src/shell/mod.rs:123:#[cfg(target_os = "linux")]
+shell/src/shell/mod.rs:1101:                    #[cfg(target_os = "linux")]
+shell/src/shell/mod.rs:1105:                    #[cfg(not(target_os = "linux"))]
+shell/src/shell/identity_provisioning.rs:24:#[cfg(unix)]
+shell/src/shell/identity_provisioning.rs:25:use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+shell/src/shell/identity_provisioning.rs:274:    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+shell/src/shell/identity_provisioning.rs:277:            if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+shell/src/shell/identity_provisioning.rs:285:            use std::os::unix::fs::DirBuilderExt;
+shell/src/shell/identity_provisioning.rs:295:    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+shell/src/shell/identity_provisioning.rs:298:        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+shell/src/shell/identity_provisioning.rs:307:        || metadata.uid() != unsafe { libc::geteuid() }
+shell/src/shell/identity_provisioning.rs:352:    use std::os::unix::fs::OpenOptionsExt;
+shell/src/shell/identity_provisioning.rs:512:                "neither XDG_DATA_HOME nor HOME is set for this login",
+shell/src/shell/identity_provisioning.rs:540:        None => host_identity_root(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))?,
+shell/src/shell/identity_provisioning.rs:559:#[cfg(unix)]
+shell/src/shell/identity_provisioning.rs:561:    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+shell/src/shell/identity_provisioning.rs:569:        || parent_meta.uid() != unsafe { libc::geteuid() }
+shell/src/shell/identity_provisioning.rs:585:                if !metadata.file_type().is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
+shell/src/shell/identity_provisioning.rs:614:/// Writes public metadata to `$XDG_CONFIG_HOME/tilo/identity/primary.json`
+shell/src/shell/identity_provisioning.rs:615:/// (falling back to `$HOME/.config/...`) and imports its private share into
+shell/src/shell/identity_provisioning.rs:657:    /// Used by tests to point at a tempdir without `$HOME` shimming.
+shell/src/shell/identity_provisioning.rs:675:            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+shell/src/shell/identity_provisioning.rs:684:            || metadata.uid() != unsafe { libc::geteuid() }
+shell/src/shell/identity_provisioning.rs:965:        #[cfg(unix)]
+shell/src/shell/identity_provisioning.rs:973:    #[cfg(unix)]
+shell/src/shell/identity_provisioning.rs:976:        use std::os::unix::fs::symlink;
+shell/src/shell/identity_provisioning.rs:1013:    #[cfg(unix)]
+shell/src/shell/identity_provisioning.rs:1046:    #[cfg(unix)]
+shell/src/shell/identity_provisioning.rs:1049:        use std::os::unix::fs::{PermissionsExt, symlink};
+shell/src/shell/personal_continuity.rs:1311:        assert!(LaunchIntent::app("/usr/bin/browser").is_err());
+shell/src/shell/render/xrgb_history.rs:29:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/collab_broker_capnp.rs:18:use std::os::fd::AsRawFd;
+shell/src/shell/collab_broker_capnp.rs:19:#[cfg(unix)]
+shell/src/shell/collab_broker_capnp.rs:20:use std::os::unix::fs::PermissionsExt;
+shell/src/shell/collab_broker_capnp.rs:352:    use std::os::unix::ffi::OsStringExt as _;
+shell/src/shell/collab_broker_capnp.rs:398:    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/shell/collab_broker_capnp.rs:402:    #[cfg(unix)]
+shell/src/shell/collab_broker_capnp.rs:9175:    let std_listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+shell/src/shell/collab_broker_capnp.rs:9205:                let listener = match tokio::net::UnixListener::from_std(std_listener) {
+shell/src/shell/collab_broker_capnp.rs:9278:            match tokio::net::UnixStream::connect(&path).await {
+shell/src/shell/collab_broker_capnp.rs:9330:async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<bool, capnp::Error> {
+shell/src/shell/collab_broker_capnp.rs:9340:            libc::recv(
+shell/src/shell/collab_broker_capnp.rs:9344:                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+shell/src/shell/collab_broker_capnp.rs:9347:        let marker_len = libc::ssize_t::try_from(marker.len())
+shell/src/shell/collab_broker_capnp.rs:9376:    stream: &mut tokio::net::UnixStream,
+shell/src/shell/collab_broker_capnp.rs:9388:    if credentials.uid() != unsafe { libc::geteuid() } {
+shell/src/shell/collab_broker_capnp.rs:9470:    stream: tokio::net::UnixStream,
+shell/src/shell/collab_broker_capnp.rs:10190:    #[cfg(unix)]
+shell/src/shell/collab_broker_capnp.rs:10195:        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+shell/src/shell/collab_broker_capnp.rs:10197:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+shell/src/shell/collab_broker_capnp.rs:10213:        std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
+shell/src/shell/collab_broker_capnp.rs:10218:                std::env::set_var("XDG_RUNTIME_DIR", previous);
+shell/src/shell/collab_broker_capnp.rs:10220:                std::env::remove_var("XDG_RUNTIME_DIR");
+shell/src/shell/collab_broker_capnp.rs:11589:                        resource: "files.entry:/tmp/report".into(),
+shell/src/shell/collab_broker_capnp.rs:11601:                        resource: "files.entry:/tmp/report".into(),
+shell/src/shell/collab_broker_capnp.rs:11617:                        resource: "files.entry:/tmp/report".into(),
+shell/src/shell/collab_broker_capnp.rs:11657:        assert!(owner_catalogue.contains("files.entry:/tmp/report"));
+shell/src/shell/collab_broker_capnp.rs:11662:            !denied_catalogue.contains("files.entry:/tmp/report"),
+shell/src/shell/collab_broker_capnp.rs:11667:            .invoke(7, "files.entry:/tmp/report", "reveal", None, "owner")
+shell/src/shell/collab_broker_capnp.rs:11670:        assert_eq!(invocation.resource, "files.entry:/tmp/report");
+shell/src/shell/collab_broker_capnp.rs:11673:                .start_invocation(7, "files.entry:/tmp/report", "erase", None, "owner")
+shell/src/shell/collab_broker_capnp.rs:11678:            .prepare_confirmation(7, "files.entry:/tmp/report", "erase", None, "owner", None)
+shell/src/shell/collab_broker_capnp.rs:11683:                "files.entry:/tmp/report",
+shell/src/shell/collab_broker_capnp.rs:11694:                    "files.entry:/tmp/report",
+shell/src/shell/collab_broker_capnp.rs:11707:            .start_invocation(7, "files.entry:/tmp/report", "refresh", None, "owner")
+shell/src/shell/collab_broker_capnp.rs:11767:                .invoke(7, "files.entry:/tmp/report", "gone", None, "owner")
+shell/src/shell/collab_broker_capnp.rs:11773:                .invoke(7, "files.entry:/tmp/report", "reveal", None, "stranger")
+shell/src/shell/collab_broker_capnp.rs:12242:        use std::os::unix::fs::symlink;
+shell/src/shell/collab_broker_capnp.rs:12256:        assert!(nearby_source_from_grants(b"/etc/passwd", &grants).is_err());
+shell/src/shell/collab_broker_capnp.rs:12259:        symlink("/etc/passwd", &escape).expect("create escape symlink");
+shell/src/shell/persist.rs:91:/// **ignores a relative `XDG_CONFIG_HOME`**, so a harness isolating
+shell/src/shell/remote_capture_source.rs:12:#[cfg(target_os = "linux")]
+shell/src/shell/remote_capture_source.rs:13:use std::os::fd::FromRawFd as _;
+shell/src/shell/remote_capture_source.rs:230:            let mut command = Command::new(
+shell/src/shell/remote_capture_source.rs:258:            let mut command = Command::new(
+shell/src/shell/remote_capture_source.rs:273:            let mut command = Command::new(
+shell/src/shell/remote_capture_source.rs:408:    ["/usr/bin", "/usr/libexec/tilo"]
+shell/src/shell/remote_capture_source.rs:416:    std::fs::read_dir("/sys/class/video4linux")
+shell/src/shell/remote_capture_source.rs:426:#[cfg(target_os = "linux")]
+shell/src/shell/remote_capture_source.rs:429:    let runtime = format!("/run/user/{}\0", unsafe { libc::geteuid() });
+shell/src/shell/remote_capture_source.rs:435:            libc::open(
+shell/src/shell/remote_capture_source.rs:437:                libc::O_TMPFILE | libc::O_RDWR | libc::O_CLOEXEC,
+shell/src/shell/remote_capture_source.rs:451:    let fd = unsafe { libc::memfd_create(c"tilo-remote-scan".as_ptr(), libc::MFD_CLOEXEC) };
+shell/src/shell/remote_capture_source.rs:539:#[cfg(not(target_os = "linux"))]
+shell/src/shell/mpris.rs:9://! natural bound (tens of seconds) and `zbus::block_on` can't run inside
+shell/src/shell/mpris.rs:21:use zbus::zvariant::OwnedValue;
+shell/src/shell/mpris.rs:327:    let Ok(connection) = zbus::blocking::Connection::session() else {
+shell/src/shell/mpris.rs:340:            let Ok(player) = zbus::blocking::Proxy::new(
+shell/src/shell/mpris.rs:365:fn verified_player_names(connection: &zbus::blocking::Connection, package_id: &str) -> Vec<String> {
+shell/src/shell/mpris.rs:366:    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(connection) else {
+shell/src/shell/mpris.rs:377:            let Ok(name) = zbus::names::BusName::try_from(name.as_str()) else {
+shell/src/shell/mpris.rs:388:fn player_reports_uri(player: &zbus::blocking::Proxy<'_>, expected_uri: &str) -> bool {
+shell/src/shell/mpris.rs:397:    player: &zbus::blocking::Proxy<'_>,
+shell/src/shell/mpris.rs:466:    connection: &zbus::blocking::Connection,
+shell/src/shell/mpris.rs:471:    let Ok(root) = zbus::blocking::Proxy::new(connection, bus_name, MPRIS_PATH, ROOT_IFACE) else {
+shell/src/shell/mpris.rs:514:    let Ok(connection) = zbus::blocking::Connection::session() else {
+shell/src/shell/mpris.rs:517:    let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&connection) else {
+shell/src/shell/mpris.rs:538:            let name = zbus::names::BusName::try_from(bus_name.as_str()).ok()?;
+shell/src/shell/mpris.rs:549:    connection: &zbus::blocking::Connection,
+shell/src/shell/mpris.rs:554:        zbus::blocking::Proxy::new(connection, bus_name.as_str(), MPRIS_PATH, PLAYER_IFACE).ok()?;
+shell/src/shell/mpris.rs:556:        zbus::blocking::Proxy::new(connection, bus_name.as_str(), MPRIS_PATH, ROOT_IFACE).ok()?;
+shell/src/shell/mpris.rs:834:            let result = zbus::blocking::Connection::session()
+shell/src/shell/mpris.rs:837:                    let proxy = zbus::blocking::Proxy::new(
+shell/src/shell/mpris.rs:874:            let result = zbus::blocking::Connection::session()
+shell/src/shell/mpris.rs:877:                    let proxy = zbus::blocking::Proxy::new(
+shell/src/shell/mpris.rs:901:    let conn = zbus::blocking::Connection::session()
+shell/src/shell/mpris.rs:908:    let proxy = zbus::blocking::Proxy::new(&conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE).ok()?;
+shell/src/shell/mpris.rs:937:fn active_player(conn: &zbus::blocking::Connection) -> Option<String> {
+shell/src/shell/mpris.rs:938:    let dbus = zbus::blocking::fdo::DBusProxy::new(conn).ok()?;
+shell/src/shell/mpris.rs:949:        let Ok(proxy) = zbus::blocking::Proxy::new(conn, name.as_str(), MPRIS_PATH, PLAYER_IFACE)
+shell/src/shell/mpris.rs:960:fn playback_status(proxy: &zbus::blocking::Proxy<'_>) -> Option<String> {
+shell/src/shell/mpris.rs:967:    use zbus::zvariant::Value;
+shell/src/shell/search/files_index.rs:283:        tantivy::error::TantivyError::InvalidArgument("no XDG_CACHE_HOME".to_string())
+shell/src/shell/qs_actions.rs:43:        #[cfg(target_os = "linux")]
+shell/src/shell/qs_actions.rs:52:        #[cfg(not(target_os = "linux"))]
+shell/src/shell/qs_actions.rs:56:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/qs_actions.rs:69:#[cfg(target_os = "linux")]
+shell/src/shell/qs_actions.rs:71:    use std::os::unix::fs::PermissionsExt as _;
+shell/src/shell/qs_actions.rs:152:    #[cfg(not(target_os = "linux"))]
+shell/src/shell/nearby_transfer.rs:11:use std::os::fd::{AsRawFd as _, FromRawFd as _};
+shell/src/shell/nearby_transfer.rs:12:use std::os::unix::ffi::OsStrExt as _;
+shell/src/shell/nearby_transfer.rs:13:use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+shell/src/shell/nearby_transfer.rs:27:#[cfg(target_os = "linux")]
+shell/src/shell/nearby_transfer.rs:29:#[cfg(target_os = "linux")]
+shell/src/shell/nearby_transfer.rs:31:#[cfg(target_os = "linux")]
+shell/src/shell/nearby_transfer.rs:34:#[cfg(target_os = "linux")]
+shell/src/shell/nearby_transfer.rs:63:            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_DIRECTORY)
+shell/src/shell/nearby_transfer.rs:75:    #[cfg(not(target_os = "macos"))]
+shell/src/shell/nearby_transfer.rs:77:        PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()))
+shell/src/shell/nearby_transfer.rs:81:        #[cfg(target_os = "macos")]
+shell/src/shell/nearby_transfer.rs:90:        #[cfg(not(target_os = "macos"))]
+shell/src/shell/nearby_transfer.rs:115:            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:153:#[cfg(target_os = "linux")]
+shell/src/shell/nearby_transfer.rs:158:    let mut flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+shell/src/shell/nearby_transfer.rs:160:        flags |= libc::O_DIRECTORY;
+shell/src/shell/nearby_transfer.rs:170:        libc::syscall(
+shell/src/shell/nearby_transfer.rs:171:            libc::SYS_openat2,
+shell/src/shell/nearby_transfer.rs:523:            .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:592:        #[cfg(target_os = "macos")]
+shell/src/shell/nearby_transfer.rs:598:                        .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:610:        #[cfg(not(target_os = "macos"))]
+shell/src/shell/nearby_transfer.rs:652:            .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:723:                .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:798:        .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:850:                .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:890:    #[cfg(target_os = "macos")]
+shell/src/shell/nearby_transfer.rs:892:    #[cfg(not(target_os = "macos"))]
+shell/src/shell/nearby_transfer.rs:894:        let root = PathBuf::from(format!("/proc/self/fd/{}", source.as_raw_fd()));
+shell/src/shell/nearby_transfer.rs:972:            .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:1016:                        && error.raw_os_error() != Some(libc::ENOTEMPTY)
+shell/src/shell/nearby_transfer.rs:1038:        .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:1107:        .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:1126:        .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:1140:        .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:1316:        std::os::unix::fs::symlink("a.txt", source.join("link")).unwrap();
+shell/src/shell/nearby_transfer.rs:1341:        std::os::unix::fs::symlink("/etc", &folder).unwrap();
+shell/src/shell/nearby_transfer.rs:1365:        std::os::unix::fs::symlink("/etc", &destination).unwrap();
+shell/src/shell/nearby_transfer.rs:1394:        std::os::unix::fs::symlink(&source_path, &approved).unwrap();
+shell/src/shell/nearby_transfer.rs:1503:#[cfg(not(target_os = "linux"))]
+shell/src/shell/nearby_transfer.rs:1510:        let flags = libc::O_RDONLY
+shell/src/shell/nearby_transfer.rs:1511:            | libc::O_CLOEXEC
+shell/src/shell/nearby_transfer.rs:1512:            | libc::O_NOFOLLOW
+shell/src/shell/nearby_transfer.rs:1514:                libc::O_DIRECTORY
+shell/src/shell/nearby_transfer.rs:1519:        let fd = unsafe { libc::openat(current.as_raw_fd(), name.as_ptr(), flags) };
+shell/src/shell/nearby_transfer.rs:1529:#[cfg(target_os = "macos")]
+shell/src/shell/nearby_transfer.rs:1541:        let fd = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+shell/src/shell/nearby_transfer.rs:1545:        let stream = unsafe { libc::fdopendir(fd) };
+shell/src/shell/nearby_transfer.rs:1548:            unsafe { libc::close(fd); }
+shell/src/shell/nearby_transfer.rs:1551:        struct DirectoryStream(*mut libc::DIR);
+shell/src/shell/nearby_transfer.rs:1555:                    libc::closedir(self.0);
+shell/src/shell/nearby_transfer.rs:1561:            libc::rewinddir(stream.0);
+shell/src/shell/nearby_transfer.rs:1566:                *libc::__error() = 0;
+shell/src/shell/nearby_transfer.rs:1568:            let entry = unsafe { libc::readdir(stream.0) };
+shell/src/shell/nearby_transfer.rs:1599:#[cfg(target_os = "macos")]
+shell/src/shell/nearby_transfer.rs:1604:        libc::openat(
+shell/src/shell/nearby_transfer.rs:1607:            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+shell/src/shell/nearby_transfer.rs:1617:#[cfg(target_os = "macos")]
+shell/src/shell/nearby_transfer.rs:1638:#[cfg(target_os = "macos")]
+shell/src/shell/nearby_transfer.rs:1650:        let result = unsafe { libc::mkdirat(current.as_raw_fd(), name.as_ptr(), 0o700) };
+shell/src/shell/nearby_transfer.rs:1659:#[cfg(target_os = "macos")]
+shell/src/shell/nearby_transfer.rs:1664:    if unsafe { libc::mkdirat(root.as_raw_fd(), temporary_c.as_ptr(), 0o700) } != 0 {
+shell/src/shell/nearby_transfer.rs:1671:            .custom_flags(libc::O_NOFOLLOW)
+shell/src/shell/nearby_transfer.rs:1712:                libc::renameatx_np(
+shell/src/shell/nearby_transfer.rs:1717:                    libc::RENAME_EXCL,
+shell/src/shell/nearby_transfer.rs:1745:                            libc::unlinkat(
+shell/src/shell/nearby_transfer.rs:1748:                                if is_dir { libc::AT_REMOVEDIR } else { 0 },
+shell/src/shell/nearby_transfer.rs:1756:            libc::unlinkat(root.as_raw_fd(), temporary_c.as_ptr(), libc::AT_REMOVEDIR);
+shell/src/shell/projection.rs:8://! The production integration point is `/usr/libexec/tilo-projector`. It speaks
+shell/src/shell/projection.rs:76:                .unwrap_or_else(|_| "/usr/libexec/tilo-projector".into()),
+shell/src/shell/projection.rs:93:        let mut command = Command::new(&self.helper);
+shell/src/shell/history_narrative.rs:99:    let mut command = Command::new("ollama");
+shell/src/shell/history_narrative.rs:156:    let mut command = Command::new("ollama");
+shell/src/shell/search/providers/files.rs:924:    "appimage", "flatpak", "snap", "msi", "exe", "cab", "iso", "img", "dmg", "apk",
+shell/src/shell/search/providers/files.rs:1323:            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+shell/src/shell/search/providers/files.rs:1715:        assert!(should_skip(Path::new("/home/x/Downloads/tmp/a.iso"), home));
+shell/src/shell/search/providers/files.rs:1726:        assert!(!should_skip(Path::new("/home/x/tmp/Downloads/a.iso"), home));
+shell/src/shell/search/providers/files.rs:1733:        assert_eq!(depth_penalty("~/dev/proj/src/lib.rs"), 0);
+shell/src/shell/search/providers/files.rs:1969:            ("~/tmp/tdo.md", false),
+shell/src/shell/session_audio_policy.rs:5://! until the desktop session ends. It is intentionally not a `DBus` service:
+shell/src/shell/room_records.rs:958:/// The path `XDG_DATA_HOME` takes inside an app's directory, derived from
+shell/src/shell/room_records.rs:964:        .find(|(k, _)| k == "XDG_DATA_HOME")
+shell/src/shell/search/providers/applications.rs:744:/// otherwise gets `HOME` pointed at its own directory, wrong for one whose
+shell/src/shell/launcher.rs:15:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:17:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:19:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:24:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:26:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:27:use std::os::fd::AsRawFd;
+shell/src/shell/launcher.rs:28:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:29:use std::os::unix::net::UnixStream;
+shell/src/shell/launcher.rs:30:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:31:use std::os::unix::process::CommandExt;
+shell/src/shell/launcher.rs:48:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:53:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:61:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:139:#[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:141:    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+shell/src/shell/launcher.rs:152:#[cfg(not(target_os = "linux"))]
+shell/src/shell/launcher.rs:157:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:180:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:187:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:188:fn install_launch_registration_gate(command: &mut Command) -> io::Result<UnixStream> {
+shell/src/shell/launcher.rs:189:    let (release, wait) = UnixStream::pair()?;
+shell/src/shell/launcher.rs:198:            let flags = libc::fcntl(inherited_fd, libc::F_GETFD);
+shell/src/shell/launcher.rs:200:                || libc::fcntl(inherited_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
+shell/src/shell/launcher.rs:236:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:254:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:366:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:717:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:733:    /// Environment *overrides* for the child; `WAYLAND_DISPLAY` is set
+shell/src/shell/launcher.rs:749:static WAYLAND_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
+shell/src/shell/launcher.rs:834:    *lock(&WAYLAND_SOCKET) = Some(path);
+shell/src/shell/launcher.rs:839:    lock(&WAYLAND_SOCKET).clone()
+shell/src/shell/launcher.rs:901:    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+shell/src/shell/launcher.rs:1012:    use std::os::unix::fs::OpenOptionsExt;
+shell/src/shell/launcher.rs:1030:        use std::os::unix::fs::DirBuilderExt;
+shell/src/shell/launcher.rs:1053:/// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
+shell/src/shell/launcher.rs:1055:    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/shell/launcher.rs:1060:    #[cfg(target_os = "macos")]
+shell/src/shell/launcher.rs:1065:    #[cfg(not(target_os = "macos"))]
+shell/src/shell/launcher.rs:1068:        let uid = unsafe { libc::getuid() };
+shell/src/shell/launcher.rs:1069:        PathBuf::from(format!("/run/user/{uid}"))
+shell/src/shell/launcher.rs:1328:    out.push(PathBuf::from("/usr/libexec/tilo-launcher"));
+shell/src/shell/launcher.rs:1329:    out.push(PathBuf::from("/usr/bin/tilo-launcher"));
+shell/src/shell/launcher.rs:1536:    // `$XDG_RUNTIME_DIR/tilo/services`; a required-but-absent one fails loudly.
+shell/src/shell/launcher.rs:1541:        "XDG_RUNTIME_DIR".to_string(),
+shell/src/shell/launcher.rs:1654:#[cfg(not(target_os = "linux"))]
+shell/src/shell/launcher.rs:1665:#[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:1869:    #[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:1873:    #[cfg(not(target_os = "linux"))]
+shell/src/shell/launcher.rs:2067:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/launcher.rs:2073:    #[cfg(all(test, not(target_os = "linux")))]
+shell/src/shell/launcher.rs:2095:        let mut cmd = Command::new(&command.program);
+shell/src/shell/launcher.rs:2563:/// [`set_wayland_socket`], which resolves it against `$XDG_RUNTIME_DIR`).
+shell/src/shell/launcher.rs:2566:    *WAYLAND_SOCKET.lock().expect("WAYLAND_SOCKET poisoned") = path;
+shell/src/shell/launcher.rs:2593:        let raw = "error: could not connect\nWAYLAND_DISPLAY=wayland-1\nbacktrace: 0xdeadbeef";
+shell/src/shell/launcher.rs:2798:    #[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:2801:        use std::os::unix::fs::PermissionsExt;
+shell/src/shell/launcher.rs:2854:            Some(std::ffi::OsString::from("/tmp/my/tilo-launcher")),
+shell/src/shell/launcher.rs:2855:            Some(Path::new("/home/dev/target/debug/shell")),
+shell/src/shell/launcher.rs:2857:        assert_eq!(got[0], PathBuf::from("/tmp/my/tilo-launcher"));
+shell/src/shell/launcher.rs:2860:            PathBuf::from("/home/dev/target/debug/tilo-launcher")
+shell/src/shell/launcher.rs:2870:            Some(std::ffi::OsString::from("/tmp/evil/tilo-launcher")),
+shell/src/shell/launcher.rs:2871:            Some(Path::new("/usr/bin/tilo-shell")),
+shell/src/shell/launcher.rs:2880:                PathBuf::from("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:2881:                PathBuf::from("/usr/libexec/tilo-launcher"),
+shell/src/shell/launcher.rs:2882:                PathBuf::from("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:2893:                PathBuf::from("/usr/libexec/tilo-launcher"),
+shell/src/shell/launcher.rs:2894:                PathBuf::from("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3031:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3032:            Path::new("/run/user/1000/wayland-3"),
+shell/src/shell/launcher.rs:3036:            Some(Path::new("/dev/dri/renderD128")),
+shell/src/shell/launcher.rs:3039:        assert_eq!(cmd.program, Path::new("/usr/bin/tilo-launcher"));
+shell/src/shell/launcher.rs:3051:            "/run/user/1000/wayland-3",
+shell/src/shell/launcher.rs:3056:            "/dev/dri/renderD128",
+shell/src/shell/launcher.rs:3079:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3080:            Path::new("/run/user/1000/wayland-3"),
+shell/src/shell/launcher.rs:3130:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3132:            Some(Path::new("/run/user/1000/tilo/identity.json")),
+shell/src/shell/launcher.rs:3194:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3195:            Path::new("/run/user/1000/wayland-3"),
+shell/src/shell/launcher.rs:3287:    #[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:3302:            use std::os::unix::fs::PermissionsExt;
+shell/src/shell/launcher.rs:3313:        set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
+shell/src/shell/launcher.rs:3361:            argv.contains(&"--wayland-socket") && argv.contains(&"/run/user/1000/wayland-7"),
+shell/src/shell/launcher.rs:3448:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3449:            Path::new("/run/user/1000/wayland-3"),
+shell/src/shell/launcher.rs:3474:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3475:            Path::new("/run/user/1000/wayland-3"),
+shell/src/shell/launcher.rs:3478:                "/run/user/1000/tilo/capabilities/dev.tilo.books.json",
+shell/src/shell/launcher.rs:3491:            "/run/user/1000/tilo/capabilities/dev.tilo.books.json"
+shell/src/shell/launcher.rs:3499:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3500:            Path::new("/run/user/1000/wayland-3"),
+shell/src/shell/launcher.rs:3556:        use std::os::unix::fs::PermissionsExt;
+shell/src/shell/launcher.rs:3559:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+shell/src/shell/launcher.rs:3582:        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+shell/src/shell/launcher.rs:3607:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+shell/src/shell/launcher.rs:3621:        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+shell/src/shell/launcher.rs:3638:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+shell/src/shell/launcher.rs:3639:        let caps = vec![fs_grant("../../etc/x", "/var/workspace/books", Verb::Read)];
+shell/src/shell/launcher.rs:3640:        let escaped = write_capabilities_file("../../etc/x", &caps);
+shell/src/shell/launcher.rs:3642:        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+shell/src/shell/launcher.rs:3648:    #[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:3652:        let mut child = std::process::Command::new("sh")
+shell/src/shell/launcher.rs:3676:    #[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:3725:    #[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:3742:    #[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:3773:    #[cfg(target_os = "linux")]
+shell/src/shell/launcher.rs:3796:        use std::os::unix::fs::PermissionsExt;
+shell/src/shell/launcher.rs:3799:        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+shell/src/shell/launcher.rs:3801:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+shell/src/shell/launcher.rs:3864:                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+shell/src/shell/launcher.rs:3865:                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+shell/src/shell/launcher.rs:3874:        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+shell/src/shell/launcher.rs:3876:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+shell/src/shell/launcher.rs:3881:            Path::new("/usr/bin/tilo-launcher"),
+shell/src/shell/launcher.rs:3882:            Path::new("/run/user/1000/wayland-3"),
+shell/src/shell/launcher.rs:3913:                Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+shell/src/shell/launcher.rs:3914:                None => std::env::remove_var("XDG_RUNTIME_DIR"),
+shell/src/shell/launcher.rs:3924:#[cfg(all(not(test), not(target_os = "linux")))]
+shell/src/shell/overlay_host.rs:25968:        let old_config = std::env::var_os("XDG_CONFIG_HOME");
+shell/src/shell/overlay_host.rs:25970:        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
+shell/src/shell/overlay_host.rs:26004:                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+shell/src/shell/overlay_host.rs:26005:                None => std::env::remove_var("XDG_CONFIG_HOME"),
+shell/src/shell/overlay_host.rs:26340:            "spawn failed: /run/user/1000/tilo\nbackend detail".to_string(),
+shell/src/shell/overlay_host.rs:26356:                .all(|notification| !notification.body.contains("/run/user")),
+shell/src/shell/overlay_host.rs:26887:        use std::os::unix::fs::PermissionsExt;
+shell/src/shell/file_picker_overlay.rs:178:        #[cfg(all(target_os = "linux", not(test)))]
+shell/src/shell/file_picker_overlay.rs:182:        #[cfg(any(not(target_os = "linux"), test))]
+shell/src/shell/tool_intents.rs:4:use std::os::unix::net::{UnixListener, UnixStream};
+shell/src/shell/tool_intents.rs:42:        let _ = UnixStream::connect(&self.path);
+shell/src/shell/tool_intents.rs:104:        if UnixStream::connect(&path).is_ok() {
+shell/src/shell/tool_intents.rs:112:    let listener = UnixListener::bind(&path)?;
+shell/src/shell/tool_intents.rs:226:fn serve_client(stream: UnixStream, handler: &Handler) {
+shell/src/shell/tool_intents.rs:307:        let mut stream = UnixStream::connect(path).unwrap();
+shell/src/shell/catalogue.rs:124:    out.push(PathBuf::from("/usr/libexec/tilo-catalogue"));
+shell/src/shell/catalogue.rs:125:    out.push(PathBuf::from("/usr/bin/tilo-catalogue"));
+shell/src/shell/catalogue.rs:236:            let mut command = std::process::Command::new(&bin);
+shell/src/shell/catalogue.rs:352:        let mut command = std::process::Command::new(&bin);
+shell/src/shell/catalogue.rs:517:            "a path that does not exist must not be handed to Command::new"
+shell/src/shell/uri_open.rs:128:            "file:///etc/passwd",
+shell/src/shell/state.rs:27:const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
+shell/src/shell/state.rs:122:            let result = std::process::Command::new(&publication.publisher)
+shell/src/shell/state.rs:204:        use std::os::unix::fs::PermissionsExt;
+shell/src/shell/state.rs:277:        use std::os::unix::fs::PermissionsExt;
+shell/src/shell/state.rs:354:        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+shell/src/shell/state.rs:357:            std::env::set_var("XDG_CONFIG_HOME", &xdg);
+shell/src/shell/state.rs:415:                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+shell/src/shell/state.rs:416:                None => std::env::remove_var("XDG_CONFIG_HOME"),
+shell/src/shell/state.rs:1196:    /// Camera (`/dev/video*`) access.
+shell/src/shell/state.rs:1213:    /// for it, so `/run/cups/cups.sock` never appears inside the sandbox
+shell/src/shell/state.rs:9280:    const ROGUE_GRANT_PATH: &str = "/etc/shadow";
+shell/src/shell/state.rs:11128:                path: PathBuf::from("/tmp/ws"),
+shell/src/shell/search/providers/actions.rs:3227:                crate::shell::search::action_api::ArgValue::Text("file:/tmp/example".into()),
+shell/src/shell/foreign.rs:36:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:40:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:42:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:43:use std::os::fd::AsRawFd;
+shell/src/shell/foreign.rs:45:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:50:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:52:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:54:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:56:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:58:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:60:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:75:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:85:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:86:const DMA_BUF_IOCTL_SYNC: libc::c_ulong = 0x4008_6200;
+shell/src/shell/foreign.rs:87:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:89:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:91:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:96:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:114:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:143:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:152:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:160:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:168:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:170:    #[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:184:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:228:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:251:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:291:        libc::mmap(
+shell/src/shell/foreign.rs:294:            libc::PROT_READ,
+shell/src/shell/foreign.rs:295:            libc::MAP_SHARED,
+shell/src/shell/foreign.rs:300:    if ptr == libc::MAP_FAILED {
+shell/src/shell/foreign.rs:335:        libc::munmap(ptr, map_len);
+shell/src/shell/foreign.rs:340:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:341:fn sync_dmabuf(fd: libc::c_int, flags: u64) {
+shell/src/shell/foreign.rs:350:        libc::ioctl(fd, DMA_BUF_IOCTL_SYNC, &raw const arg);
+shell/src/shell/foreign.rs:385:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:389:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:406:            #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:408:            #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:435:    #[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:474:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:483:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:487:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:498:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:503:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:512:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:528:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:539:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:544:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:552:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:558:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:670:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:679:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:687:#[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:689:    #[cfg(not(target_os = "linux"))]
+shell/src/shell/foreign.rs:691:    #[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:700:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:730:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:742:    #[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:750:    #[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:809:    #[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:850:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:881:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:989:        #[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:1934:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:1979:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:1992:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:2022:#[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:2085:    #[cfg(target_os = "linux")]
+shell/src/shell/foreign.rs:2183:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:2193:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:2202:    #[cfg(any(test, target_os = "linux"))]
+shell/src/shell/foreign.rs:2212:    #[cfg(target_os = "linux")]

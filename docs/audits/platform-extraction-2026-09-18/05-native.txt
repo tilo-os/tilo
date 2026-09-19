@@ -1,0 +1,1250 @@
+apps/imager/src/model.rs:77:        #[cfg(unix)]
+apps/imager/src/model.rs:79:            use std::os::unix::fs::MetadataExt;
+apps/imager/src/model.rs:86:        #[cfg(target_os = "windows")]
+apps/imager/src/model.rs:88:            use std::os::windows::io::AsRawHandle;
+apps/imager/src/model.rs:89:            use windows_sys::Win32::Storage::FileSystem::{
+apps/imager/src/model.rs:104:        #[cfg(not(any(unix, target_os = "windows")))]
+apps/imager/src/model.rs:322:    /// `true` for the root/system disk. The media creator never accepts it;
+apps/imager/src/model.rs:347:        #[cfg(target_os = "windows")]
+apps/imager/src/model.rs:351:        #[cfg(target_os = "macos")]
+apps/imager/src/model.rs:353:            // The raw character device avoids the buffered `/dev/diskN` path
+apps/imager/src/model.rs:355:            format!("/dev/r{}", self.name)
+apps/imager/src/model.rs:357:        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+apps/imager/src/model.rs:359:            format!("/dev/{}", self.name)
+apps/imager/src/model.rs:1082:            local_path: "/var/lib/tilo/images/tilo-1.0-x86_64.iso".into(),
+apps/imager/src/model.rs:1223:    #[cfg(any(unix, target_os = "windows"))]
+apps/imager/src/app.rs:43:#[cfg(target_os = "linux")]
+apps/imager/src/app.rs:816:                self.status = "Ready to write Tilo 1.0 → /dev/sdb".into();
+apps/imager/src/app.rs:828:                self.status = "Writing Tilo 1.0 → /dev/sdb".into();
+apps/imager/src/app.rs:880:        !confirm.is_empty() && (confirm == want || confirm == format!("/dev/{want}"))
+apps/imager/src/app.rs:2702:                // "Erase & write /dev/sdb" for a stick; "Erase & install
+apps/imager/src/app.rs:2703:                // /dev/nvme0n1" for a disk install — the verb reads plainly.
+apps/imager/src/app.rs:3557:    /// Draws the removable/fixed/system chip, the model + capacity line, and
+apps/imager/src/app.rs:4418:        #[cfg(target_os = "linux")]
+apps/imager/src/app.rs:4433:        #[cfg(not(target_os = "linux"))]
+apps/imager/src/profile_cli.rs:57:    #[cfg(unix)]
+apps/imager/src/profile_cli.rs:59:        use std::os::unix::fs::OpenOptionsExt;
+apps/imager/src/profile_cli.rs:60:        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+apps/imager/src/profile_cli.rs:62:    #[cfg(target_os = "windows")]
+apps/imager/src/profile_cli.rs:64:        use std::os::windows::fs::OpenOptionsExt;
+apps/imager/src/profile_cli.rs:68:    #[cfg(not(any(unix, target_os = "windows")))]
+apps/imager/src/main.rs:65:    #[cfg(target_os = "linux")]
+apps/imager/src/main.rs:69:    #[cfg(target_os = "linux")]
+apps/imager/src/main.rs:120:            .runtime_attachment(|_| !cfg!(target_os = "windows"))
+apps/imager/src/setup/view.rs:30:#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:67:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:69:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:71:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:73:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:75:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:77:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:126:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:128:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:130:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:145:        let host = if cfg!(target_os = "windows") {
+apps/imager/src/setup/view.rs:147:        } else if cfg!(target_os = "linux") {
+apps/imager/src/setup/view.rs:180:        #[cfg(all(any(target_os = "linux", windows, unix), test))]
+apps/imager/src/setup/view.rs:187:        #[cfg(all(any(target_os = "linux", windows), not(test)))]
+apps/imager/src/setup/view.rs:216:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:218:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:220:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:261:            app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+apps/imager/src/setup/view.rs:262:            app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:280:            app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+apps/imager/src/setup/view.rs:282:            app.apply_command(SetupCommand::SetMode(FolderMode::Connected));
+apps/imager/src/setup/view.rs:284:            app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:291:                    session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
+apps/imager/src/setup/view.rs:333:            SetupCommand::ChooseExperience(experience) => {
+apps/imager/src/setup/view.rs:343:            SetupCommand::SetMode(mode) => {
+apps/imager/src/setup/view.rs:352:            SetupCommand::SetFolderMode(index, mode) => {
+apps/imager/src/setup/view.rs:360:            SetupCommand::ClearFolderMode(index) => {
+apps/imager/src/setup/view.rs:369:            SetupCommand::RemoveFolder(index) => {
+apps/imager/src/setup/view.rs:374:            SetupCommand::AddSuggested(index) => {
+apps/imager/src/setup/view.rs:386:            SetupCommand::AddFolder => {
+apps/imager/src/setup/view.rs:392:            SetupCommand::OpenImports => {
+apps/imager/src/setup/view.rs:396:            SetupCommand::ToggleHelp => {
+apps/imager/src/setup/view.rs:399:            SetupCommand::Next => match self.controller.borrow_mut().next() {
+apps/imager/src/setup/view.rs:406:            SetupCommand::Back => {
+apps/imager/src/setup/view.rs:410:            SetupCommand::InstallDesktop => self.start_desktop_install(),
+apps/imager/src/setup/view.rs:411:            SetupCommand::CancelDesktopDownload => {
+apps/imager/src/setup/view.rs:416:            SetupCommand::RetryDesktop => match self.desktop_flow.retry() {
+apps/imager/src/setup/view.rs:423:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:424:            SetupCommand::StartInternalDownload => {
+apps/imager/src/setup/view.rs:445:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:446:            SetupCommand::PauseInternalDownload => {
+apps/imager/src/setup/view.rs:454:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:455:            SetupCommand::ResumeInternalDownload => {
+apps/imager/src/setup/view.rs:463:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:464:            SetupCommand::CancelInternalDownload => {
+apps/imager/src/setup/view.rs:472:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:473:            SetupCommand::DiscardInternalDownload => {
+apps/imager/src/setup/view.rs:481:            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:482:            SetupCommand::ReleaseInternalDownload => {
+apps/imager/src/setup/view.rs:490:            SetupCommand::InternalInstallUnavailable => {
+apps/imager/src/setup/view.rs:499:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:707:        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:819:                    SetupCommand::ChooseExperience(experience),
+apps/imager/src/setup/view.rs:844:                        SetupCommand::RetryDesktop,
+apps/imager/src/setup/view.rs:877:                SetupCommand::SetMode(mode),
+apps/imager/src/setup/view.rs:924:                SetupCommand::AddSuggested(index),
+apps/imager/src/setup/view.rs:971:                SetupCommand::SetFolderMode(index, FolderMode::Copy),
+apps/imager/src/setup/view.rs:981:                SetupCommand::SetFolderMode(index, FolderMode::Connected),
+apps/imager/src/setup/view.rs:990:            SetupCommand::SetFolderMode(index, FolderMode::Later),
+apps/imager/src/setup/view.rs:1003:                SetupCommand::ClearFolderMode(index),
+apps/imager/src/setup/view.rs:1009:            SetupCommand::RemoveFolder(index),
+apps/imager/src/setup/view.rs:1073:                SetupCommand::ToggleHelp,
+apps/imager/src/setup/view.rs:1096:            SetupCommand::AddFolder,
+apps/imager/src/setup/view.rs:1132:                        SetupCommand::OpenImports,
+apps/imager/src/setup/view.rs:1206:    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:1228:                    SetupCommand::StartInternalDownload,
+apps/imager/src/setup/view.rs:1235:                    SetupCommand::PauseInternalDownload,
+apps/imager/src/setup/view.rs:1242:                    SetupCommand::CancelInternalDownload,
+apps/imager/src/setup/view.rs:1249:                    SetupCommand::ResumeInternalDownload,
+apps/imager/src/setup/view.rs:1256:                    SetupCommand::ReleaseInternalDownload,
+apps/imager/src/setup/view.rs:1263:                    SetupCommand::DiscardInternalDownload,
+apps/imager/src/setup/view.rs:1381:        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:1447:                SetupCommand::OpenImports,
+apps/imager/src/setup/view.rs:1453:                SetupCommand::Back,
+apps/imager/src/setup/view.rs:1463:                    SetupCommand::InternalInstallUnavailable,
+apps/imager/src/setup/view.rs:1471:                        SetupCommand::InstallDesktop,
+apps/imager/src/setup/view.rs:1477:                        SetupCommand::CancelDesktopDownload,
+apps/imager/src/setup/view.rs:1483:                        SetupCommand::RetryDesktop,
+apps/imager/src/setup/view.rs:1489:                        SetupCommand::InstallDesktop,
+apps/imager/src/setup/view.rs:1495:                        SetupCommand::InstallDesktop,
+apps/imager/src/setup/view.rs:1511:                self.button("setup.next", "Continue", SetupCommand::Next)
+apps/imager/src/setup/view.rs:1567:    #[cfg(unix)]
+apps/imager/src/setup/view.rs:1570:            "/bin", "/boot", "/dev", "/etc", "/lib", "/private", "/proc", "/root", "/run", "/sbin",
+apps/imager/src/setup/view.rs:1571:            "/System", "/sys", "/usr",
+apps/imager/src/setup/view.rs:1574:            && !path.starts_with("/var/home");
+apps/imager/src/setup/view.rs:1925:                #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/view.rs:1931:                #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
+apps/imager/src/setup/view.rs:2042:        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+apps/imager/src/setup/view.rs:2043:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2052:        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+apps/imager/src/setup/view.rs:2053:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2060:            app.apply_command(SetupCommand::SetMode(mode));
+apps/imager/src/setup/view.rs:2061:            app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2068:            app.apply_command(SetupCommand::Back);
+apps/imager/src/setup/view.rs:2075:        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+apps/imager/src/setup/view.rs:2076:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2081:        app.apply_command(SetupCommand::SetMode(FolderMode::Copy));
+apps/imager/src/setup/view.rs:2082:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2083:        app.apply_command(SetupCommand::Back);
+apps/imager/src/setup/view.rs:2095:        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+apps/imager/src/setup/view.rs:2096:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2097:        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+apps/imager/src/setup/view.rs:2098:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2138:        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+apps/imager/src/setup/view.rs:2139:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2140:        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+apps/imager/src/setup/view.rs:2141:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2143:        app.apply_command(SetupCommand::StartInternalDownload);
+apps/imager/src/setup/view.rs:2176:        app.apply_command(SetupCommand::ReleaseInternalDownload);
+apps/imager/src/setup/view.rs:2216:        app.apply_command(SetupCommand::StartInternalDownload);
+apps/imager/src/setup/view.rs:2272:        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+apps/imager/src/setup/view.rs:2273:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2274:        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+apps/imager/src/setup/view.rs:2275:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2277:        app.apply_command(SetupCommand::StartInternalDownload);
+apps/imager/src/setup/view.rs:2280:        app.apply_command(SetupCommand::StartInternalDownload);
+apps/imager/src/setup/view.rs:2313:        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+apps/imager/src/setup/view.rs:2314:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2319:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2378:        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+apps/imager/src/setup/view.rs:2379:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2388:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2536:    #[cfg(unix)]
+apps/imager/src/setup/view.rs:2543:                source: PathBuf::from("/var/home/qos/Documents"),
+apps/imager/src/setup/view.rs:2558:        inherited.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+apps/imager/src/setup/view.rs:2559:        inherited.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2574:        overridden.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+apps/imager/src/setup/view.rs:2575:        overridden.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2580:        overridden.apply_command(SetupCommand::SetFolderMode(0, FolderMode::Connected));
+apps/imager/src/setup/view.rs:2737:        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+apps/imager/src/setup/view.rs:2738:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2743:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2825:        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+apps/imager/src/setup/view.rs:2826:        app.apply_command(SetupCommand::Next);
+apps/imager/src/setup/view.rs:2831:        app.apply_command(SetupCommand::SetMode(FolderMode::Copy));
+apps/imager/src/setup/view.rs:2846:        app.apply_command(SetupCommand::RetryDesktop);
+apps/imager/src/setup/desktop_continuation.rs:11:#[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:452:#[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:454:    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+apps/imager/src/setup/desktop_continuation.rs:471:#[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:478:    use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/desktop_continuation.rs:479:    use std::os::unix::fs::FileTypeExt;
+apps/imager/src/setup/desktop_continuation.rs:480:    use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/desktop_continuation.rs:484:    let uid = unsafe { libc::getuid() };
+apps/imager/src/setup/desktop_continuation.rs:527:#[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:529:    stream: &std::os::unix::net::UnixStream,
+apps/imager/src/setup/desktop_continuation.rs:534:    use std::os::fd::AsRawFd;
+apps/imager/src/setup/desktop_continuation.rs:535:    use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/desktop_continuation.rs:536:    let mut peer = std::mem::MaybeUninit::<libc::ucred>::uninit();
+apps/imager/src/setup/desktop_continuation.rs:537:    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+apps/imager/src/setup/desktop_continuation.rs:540:        libc::getsockopt(
+apps/imager/src/setup/desktop_continuation.rs:542:            libc::SOL_SOCKET,
+apps/imager/src/setup/desktop_continuation.rs:543:            libc::SO_PEERCRED,
+apps/imager/src/setup/desktop_continuation.rs:548:        || len as usize != std::mem::size_of::<libc::ucred>()
+apps/imager/src/setup/desktop_continuation.rs:578:        std::fs::File::open(format!("/proc/{}/exe", peer.pid)).map_err(|e| e.to_string())?;
+apps/imager/src/setup/desktop_continuation.rs:593:#[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:594:fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStream> {
+apps/imager/src/setup/desktop_continuation.rs:595:    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+apps/imager/src/setup/desktop_continuation.rs:596:    use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/desktop_continuation.rs:599:    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+apps/imager/src/setup/desktop_continuation.rs:603:    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+apps/imager/src/setup/desktop_continuation.rs:605:        *slot = *byte as libc::c_char;
+apps/imager/src/setup/desktop_continuation.rs:612:        libc::socket(
+apps/imager/src/setup/desktop_continuation.rs:613:            libc::AF_UNIX,
+apps/imager/src/setup/desktop_continuation.rs:614:            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+apps/imager/src/setup/desktop_continuation.rs:625:        libc::connect(
+apps/imager/src/setup/desktop_continuation.rs:628:            std::mem::size_of_val(&address) as libc::socklen_t,
+apps/imager/src/setup/desktop_continuation.rs:634:    let stream = std::os::unix::net::UnixStream::from(owned);
+apps/imager/src/setup/desktop_continuation.rs:639:#[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/desktop_continuation.rs:654:        let temp = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+apps/imager/src/setup/desktop_continuation.rs:675:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:678:        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+apps/imager/src/setup/desktop_continuation.rs:679:        use std::os::unix::net::UnixListener;
+apps/imager/src/setup/desktop_continuation.rs:680:        let temp = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
+apps/imager/src/setup/desktop_continuation.rs:684:        let trusted = Path::new("/usr/bin/true");
+apps/imager/src/setup/desktop_continuation.rs:702:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:705:        use std::os::unix::net::UnixListener;
+apps/imager/src/setup/desktop_continuation.rs:898:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:901:        use std::os::unix::ffi::OsStringExt;
+apps/imager/src/setup/desktop_continuation.rs:952:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_continuation.rs:956:        use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/desktop_continuation.rs:959:        let uid = unsafe { libc::getuid() };
+apps/imager/src/setup/desktop_continuation.rs:961:        let home = dirs::home_dir().unwrap().canonicalize().unwrap();
+apps/imager/src/setup/desktop_continuation.rs:1040:        #[cfg(unix)]
+apps/imager/src/setup/desktop_download.rs:9:#[cfg(unix)]
+apps/imager/src/setup/desktop_download.rs:12:#[cfg(unix)]
+apps/imager/src/setup/desktop_download.rs:48:#[cfg(unix)]
+apps/imager/src/setup/desktop_download.rs:71:#[cfg(unix)]
+apps/imager/src/setup/desktop_download.rs:98:            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+apps/imager/src/setup/desktop_download.rs:103:        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o700 {
+apps/imager/src/setup/desktop_download.rs:122:            || metadata.uid() != unsafe { libc::geteuid() }
+apps/imager/src/setup/desktop_download.rs:592:    #[cfg(unix)]
+apps/imager/src/setup/desktop_download.rs:595:        use std::os::unix::fs::{PermissionsExt, symlink};
+apps/imager/src/setup/mod.rs:16:#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/mod.rs:23:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/mod.rs:25:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/migration.rs:217:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:312:        #[cfg(unix)]
+apps/imager/src/setup/migration.rs:936:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:942:        std::os::unix::fs::symlink(&source, &link).unwrap();
+apps/imager/src/setup/migration.rs:948:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:978:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:985:        std::os::unix::fs::symlink(&outside, source.join("link")).unwrap();
+apps/imager/src/setup/migration.rs:986:        let _socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
+apps/imager/src/setup/migration.rs:1035:        #[cfg(unix)]
+apps/imager/src/setup/migration.rs:1037:            use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration.rs:1054:        #[cfg(unix)]
+apps/imager/src/setup/migration.rs:1056:            use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration.rs:1192:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:1206:                std::os::unix::fs::symlink(&outside, source.join("child")).unwrap();
+apps/imager/src/setup/migration.rs:1243:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:1246:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration.rs:1263:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:1266:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration.rs:1285:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:1288:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration.rs:1315:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:1318:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration.rs:1331:    #[cfg(target_os = "macos")]
+apps/imager/src/setup/migration.rs:1334:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration.rs:1340:            std::process::Command::new("chmod")
+apps/imager/src/setup/migration.rs:1360:    #[cfg(target_os = "macos")]
+apps/imager/src/setup/migration.rs:1366:        assert!(std::process::Command::new("chmod").args(["+a", "everyone allow write,append,delete_child,file_inherit,directory_inherit,only_inherit"]).arg(&parent).status().unwrap().success());
+apps/imager/src/setup/migration.rs:1379:    #[cfg(target_os = "macos")]
+apps/imager/src/setup/migration.rs:1387:            std::process::Command::new("chmod")
+apps/imager/src/setup/migration.rs:1407:    #[cfg(unix)]
+apps/imager/src/setup/migration.rs:1411:        use std::os::fd::AsRawFd;
+apps/imager/src/setup/migration.rs:1412:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration.rs:1415:        assert_eq!(unsafe { libc::geteuid() }, 0);
+apps/imager/src/setup/migration.rs:1425:        assert_eq!(unsafe { libc::fchown(file.as_raw_fd(), 65_534, 65_534) }, 0);
+apps/imager/src/setup/internal_download_flow.rs:435:            self.set_pending(PendingCommand::Cancel, "Cancelling download…");
+apps/imager/src/setup/internal_download_flow.rs:438:            self.set_pending(PendingCommand::Pause, "Pausing download…");
+apps/imager/src/setup/internal_download_flow.rs:473:            PendingCommand::Discard,
+apps/imager/src/setup/internal_download_flow.rs:489:        self.set_pending(PendingCommand::Release, "Keeping download for later…");
+apps/imager/src/setup/internal_download_flow.rs:513:                PendingCommand::Pause => status.phase == WorkerPhase::Paused,
+apps/imager/src/setup/internal_download_flow.rs:514:                PendingCommand::Cancel => status.phase == WorkerPhase::Cancelled,
+apps/imager/src/setup/internal_download_flow.rs:515:                PendingCommand::Release => status.phase == WorkerPhase::Released,
+apps/imager/src/setup/internal_download_flow.rs:516:                PendingCommand::Discard => status.phase == WorkerPhase::Discarded,
+apps/imager/src/setup/internal_download_flow.rs:670:        let root = dirs::data_local_dir()
+apps/imager/src/setup/internal_download_flow.rs:901:        use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/internal_download_flow.rs:971:        use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/destination_security/macos_acl.rs:6:use std::os::fd::AsRawFd;
+apps/imager/src/setup/destination_security/macos_acl.rs:14:unsafe extern "C" {
+apps/imager/src/setup/destination_security/macos_acl.rs:51:        return if error.raw_os_error() == Some(libc::ENOENT) {
+apps/imager/src/setup/destination_security/macos_acl.rs:66:            if error.raw_os_error() == Some(libc::EINVAL) {
+apps/imager/src/setup/migration_worker.rs:327:        #[cfg(unix)]
+apps/imager/src/setup/migration_worker.rs:329:            use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/folders.rs:10:#[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/folders.rs:208:#[cfg(target_os = "linux")]
+apps/imager/src/setup/folders.rs:214:#[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/folders.rs:232:#[cfg(target_os = "macos")]
+apps/imager/src/setup/folders.rs:240:    let output = Command::new("osascript").args(["-e", SCRIPT]).output()?;
+apps/imager/src/setup/folders.rs:247:#[cfg(target_os = "windows")]
+apps/imager/src/setup/folders.rs:261:    let output = Command::new("powershell.exe")
+apps/imager/src/setup/folders.rs:277:#[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/folders.rs:324:    #[cfg(unix)]
+apps/imager/src/setup/folders.rs:327:        use std::os::unix::fs::symlink;
+apps/imager/src/setup/folders.rs:357:    #[cfg(unix)]
+apps/imager/src/setup/folders.rs:360:        use std::os::unix::fs::symlink;
+apps/imager/src/setup/folders.rs:376:    #[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/migration_review.rs:129:#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+apps/imager/src/setup/desktop_flow.rs:515:    let cache = dirs::cache_dir()
+apps/imager/src/setup/desktop_flow.rs:686:            session_entry: "/usr/share/wayland-sessions/tilo.desktop".into(),
+apps/imager/src/setup/migration_journal_log.rs:200:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/migration_journal_log.rs:209:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/migration_journal.rs:116:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/migration_journal.rs:140:        #[cfg(unix)]
+apps/imager/src/setup/migration_journal.rs:142:            use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/migration_journal.rs:147:            use std::os::windows::ffi::OsStrExt;
+apps/imager/src/setup/migration_journal.rs:153:            #[cfg(unix)]
+apps/imager/src/setup/migration_journal.rs:155:                use std::os::unix::ffi::OsStringExt;
+apps/imager/src/setup/migration_journal.rs:160:                use std::os::windows::ffi::OsStringExt;
+apps/imager/src/setup/migration_journal.rs:221:    #[cfg(unix)]
+apps/imager/src/setup/migration_journal.rs:235:            #[cfg(unix)]
+apps/imager/src/setup/migration_journal.rs:1253:#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+apps/imager/src/setup/migration_journal.rs:1377:        #[cfg(unix)]
+apps/imager/src/setup/migration_journal.rs:1379:            use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration_journal.rs:1501:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/migration_journal.rs:1504:        use std::os::unix::ffi::OsStringExt;
+apps/imager/src/setup/migration_journal.rs:1579:        let output = std::process::Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/migration_journal.rs:1686:    #[cfg(unix)]
+apps/imager/src/setup/migration_journal.rs:1689:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/migration_journal.rs:1698:        std::os::unix::fs::symlink(journal.with_extension("old"), &journal).unwrap();
+apps/imager/src/setup/migration_journal.rs:1801:                use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/migration_journal.rs:1806:                assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+apps/imager/src/setup/migration_journal.rs:1816:        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/migration_journal.rs:2098:    #[cfg(any(target_os = "macos", target_os = "linux"))]
+apps/imager/src/setup/migration_journal.rs:2100:    #[cfg(any(target_os = "macos", target_os = "linux"))]
+apps/imager/src/setup/migration_journal.rs:2107:    #[cfg(any(target_os = "macos", target_os = "linux"))]
+apps/imager/src/setup/internal_cache.rs:8:#[cfg(any(target_os = "linux", all(test, unix)))]
+apps/imager/src/setup/internal_cache.rs:14:#[cfg(any(target_os = "linux", windows, all(test, unix)))]
+apps/imager/src/setup/desktop_install.rs:38:pub(super) const SESSION_ENTRY: &str = "/usr/share/wayland-sessions/tilo.desktop";
+apps/imager/src/setup/desktop_install.rs:44:#[cfg(any(target_os = "linux", all(test, unix)))]
+apps/imager/src/setup/desktop_install.rs:50:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/desktop_install.rs:53:#[cfg(any(target_os = "linux", all(test, unix)))]
+apps/imager/src/setup/desktop_install.rs:219:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_install.rs:221:            use std::os::fd::AsRawFd;
+apps/imager/src/setup/desktop_install.rs:226:                .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+apps/imager/src/setup/desktop_install.rs:238:                .custom_flags(libc::O_NONBLOCK)
+apps/imager/src/setup/desktop_install.rs:239:                .open(format!("/proc/self/fd/{}", inode.as_raw_fd()))
+apps/imager/src/setup/desktop_install.rs:242:        #[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/desktop_install.rs:248:                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+apps/imager/src/setup/desktop_install.rs:284:        if metadata.uid() != unsafe { libc::geteuid() }
+apps/imager/src/setup/desktop_install.rs:349:#[cfg(any(target_os = "linux", all(test, unix)))]
+apps/imager/src/setup/desktop_install.rs:350:#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+apps/imager/src/setup/desktop_install.rs:370:    const WRAPPER: &str = "/usr/libexec/tilo-session";
+apps/imager/src/setup/desktop_install.rs:371:    const RUNNER: &str = "/usr/libexec/tilo-session-runner";
+apps/imager/src/setup/desktop_install.rs:383:            let output = run_command("/usr/bin/systemd-detect-virt", &["--chroot".into()], true)?;
+apps/imager/src/setup/desktop_install.rs:398:                    "/usr/bin/rpm",
+apps/imager/src/setup/desktop_install.rs:409:                    "/usr/bin/dpkg-deb",
+apps/imager/src/setup/desktop_install.rs:419:                    ("/usr/bin/pacman", ["-Qip", "--"].map(Into::into).to_vec())
+apps/imager/src/setup/desktop_install.rs:457:                        "/usr/bin/rpm",
+apps/imager/src/setup/desktop_install.rs:463:                        ("/usr/bin/dpkg-query", ["-S", path].map(Into::into).to_vec())
+apps/imager/src/setup/desktop_install.rs:466:                        "/usr/bin/pacman",
+apps/imager/src/setup/desktop_install.rs:483:                PackageManager::Dnf => ("/usr/bin/rpm", vec!["-V".into(), "tilo-session".into()]),
+apps/imager/src/setup/desktop_install.rs:485:                    "/usr/bin/dpkg",
+apps/imager/src/setup/desktop_install.rs:489:                    "/usr/bin/pacman",
+apps/imager/src/setup/desktop_install.rs:575:                "/usr/bin/dnf",
+apps/imager/src/setup/desktop_install.rs:579:                "/usr/bin/apt-get",
+apps/imager/src/setup/desktop_install.rs:585:                "/usr/bin/pacman",
+apps/imager/src/setup/desktop_install.rs:624:                .any(|line| line.trim() == "TILO_SHELL=/usr/bin/tilo-shell")
+apps/imager/src/setup/desktop_install.rs:627:                .any(|line| line.trim() == "SESSION_RUNNER=/usr/libexec/tilo-session-runner")
+apps/imager/src/setup/desktop_install.rs:647:            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+apps/imager/src/setup/desktop_install.rs:699:            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+apps/imager/src/setup/desktop_install.rs:700:            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+apps/imager/src/setup/desktop_install.rs:705:        let mut child = Command::new(program)
+apps/imager/src/setup/desktop_install.rs:708:            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+apps/imager/src/setup/desktop_install.rs:710:            .env("HOME", "/root")
+apps/imager/src/setup/desktop_install.rs:845:#[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_install.rs:849:    if unsafe { libc::geteuid() } != 0 {
+apps/imager/src/setup/desktop_install.rs:854:    let flags = unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_GETFL) };
+apps/imager/src/setup/desktop_install.rs:856:        || unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+apps/imager/src/setup/desktop_install.rs:875:            std::path::Path::new("/var/tmp"),
+apps/imager/src/setup/desktop_install.rs:1090:        use std::os::unix::fs::symlink;
+apps/imager/src/setup/desktop_install.rs:1146:        let path = Path::new("/var/tmp/private/package with spaces.rpm");
+apps/imager/src/setup/desktop_install.rs:1148:        assert_eq!(program, "/usr/bin/dnf");
+apps/imager/src/setup/desktop_install.rs:1156:                "/var/tmp/private/package with spaces.rpm"
+apps/imager/src/setup/desktop_install.rs:1160:        assert_eq!(program, "/usr/bin/apt-get");
+apps/imager/src/setup/desktop_install.rs:1168:                "/var/tmp/private/package with spaces.rpm"
+apps/imager/src/setup/desktop_install.rs:1172:        assert_eq!(program, "/usr/bin/pacman");
+apps/imager/src/setup/desktop_install.rs:1180:                "/var/tmp/private/package with spaces.rpm"
+apps/imager/src/setup/desktop_install.rs:1198:                "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+apps/imager/src/setup/desktop_install.rs:1212:        assert!(native::validate_session("[Desktop Entry]\nExec=/usr/libexec/tilo-session\nExec=/tmp/evil\nType=Application\n", "--host-desktop-session --firstboot", "--host-desktop-session --firstboot").is_err());
+apps/imager/src/setup/desktop_install.rs:1215:                "[Desktop Entry]\nExec=/usr/libexec/tilo-session\nType=Application\n",
+apps/imager/src/setup/desktop_install.rs:1226:            native::run_command("/usr/bin/printf", &["%s".into(), "a;$(false)".into()], true)
+apps/imager/src/setup/desktop_install.rs:1230:        let result = native::run_command("/usr/bin/false", &[], false).unwrap();
+apps/imager/src/setup/desktop_install.rs:1237:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_install.rs:1241:        assert_eq!(unsafe { libc::geteuid() }, 0);
+apps/imager/src/setup/desktop_install.rs:1277:                Path::new("/var/tmp"),
+apps/imager/src/setup/desktop_install.rs:1286:            Path::new("/var/tmp"),
+apps/imager/src/setup/desktop_install.rs:1408:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/desktop_install.rs:1489:        assert!(pin_input(Path::new("/dev/null")).is_err());
+apps/imager/src/setup/desktop_install.rs:1492:        std::os::unix::fs::symlink(&path, &link).unwrap();
+apps/imager/src/setup/desktop_install.rs:1499:        let script = "set -e; sleep 0.05; /usr/bin/yes credential-bearing-stdout | /usr/bin/head -c 262144; /usr/bin/yes credential-bearing-stderr | /usr/bin/head -c 262144 >&2; : > \"$1\"";
+apps/imager/src/setup/destination_security/windows.rs:6:use std::os::windows::ffi::{OsStrExt, OsStringExt};
+apps/imager/src/setup/destination_security/windows.rs:7:use std::os::windows::io::AsRawHandle;
+apps/imager/src/setup/destination_security/windows.rs:12:use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+apps/imager/src/setup/destination_security/windows.rs:13:use windows_sys::Win32::Security::Authorization::{
+apps/imager/src/setup/destination_security/windows.rs:17:use windows_sys::Win32::Security::{
+apps/imager/src/setup/destination_security/windows.rs:23:use windows_sys::Win32::Storage::FileSystem::{
+apps/imager/src/setup/destination_security/windows.rs:29:use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+apps/imager/src/setup/migration_native.rs:31:#[cfg(target_os = "linux")]
+apps/imager/src/setup/migration_native.rs:33:#[cfg(target_os = "linux")]
+apps/imager/src/setup/migration_native.rs:740:#[cfg(target_os = "linux")]
+apps/imager/src/setup/migration_native.rs:753:#[cfg(target_os = "linux")]
+apps/imager/src/setup/migration_native.rs:765:#[cfg(target_os = "linux")]
+apps/imager/src/setup/migration_native.rs:768:    extern "C" fn cancel(_: libc::c_int) {
+apps/imager/src/setup/migration_native.rs:773:    use std::os::unix::fs::OpenOptionsExt;
+apps/imager/src/setup/migration_native.rs:792:        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+apps/imager/src/setup/migration_native.rs:826:        libc::signal(libc::SIGINT, cancel as *const () as libc::sighandler_t);
+apps/imager/src/setup/migration_native.rs:827:        libc::signal(libc::SIGTERM, cancel as *const () as libc::sighandler_t);
+apps/imager/src/setup/migration_native.rs:1118:    #[cfg(unix)]
+apps/imager/src/setup/migration_native.rs:1130:    #[cfg(unix)]
+apps/imager/src/setup/migration_native.rs:1133:            let output = std::process::Command::new(&self.program)
+apps/imager/src/setup/migration_native.rs:1178:    #[cfg(unix)]
+apps/imager/src/setup/migration_native.rs:1180:    #[cfg(unix)]
+apps/imager/src/setup/migration_native.rs:1299:    #[cfg(unix)]
+apps/imager/src/setup/migration_native.rs:1417:    #[cfg(unix)]
+apps/imager/src/setup/migration_native.rs:1450:    #[cfg(unix)]
+apps/imager/src/setup/migration_native.rs:1538:    #[cfg(unix)]
+apps/imager/src/setup/migration_native.rs:1571:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/known_folders.rs:7:#[cfg(any(target_os = "linux", target_os = "windows"))]
+apps/imager/src/setup/known_folders.rs:36:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/known_folders.rs:46:    #[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/known_folders.rs:49:            Self::Documents => "XDG_DOCUMENTS_DIR",
+apps/imager/src/setup/known_folders.rs:50:            Self::Desktop => "XDG_DESKTOP_DIR",
+apps/imager/src/setup/known_folders.rs:51:            Self::Pictures => "XDG_PICTURES_DIR",
+apps/imager/src/setup/known_folders.rs:52:            Self::Downloads => "XDG_DOWNLOAD_DIR",
+apps/imager/src/setup/known_folders.rs:56:    #[cfg(target_os = "windows")]
+apps/imager/src/setup/known_folders.rs:92:#[cfg(target_os = "linux")]
+apps/imager/src/setup/known_folders.rs:94:    let config_path = std::env::var_os("XDG_CONFIG_HOME").map_or_else(
+apps/imager/src/setup/known_folders.rs:96:            std::env::var_os("HOME")
+apps/imager/src/setup/known_folders.rs:110:    let output = match Command::new("xdg-user-dir").arg(kind.xdg_name()).output() {
+apps/imager/src/setup/known_folders.rs:123:    if let (Some(path), Some(home)) = (resolved.path.as_ref(), std::env::var_os("HOME"))
+apps/imager/src/setup/known_folders.rs:134:#[cfg(target_os = "windows")]
+apps/imager/src/setup/known_folders.rs:142:    let output = match Command::new("powershell.exe")
+apps/imager/src/setup/known_folders.rs:160:#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+apps/imager/src/setup/known_folders.rs:168:#[cfg(any(target_os = "linux", target_os = "windows"))]
+apps/imager/src/setup/known_folders.rs:185:#[cfg(any(target_os = "linux", target_os = "windows", test))]
+apps/imager/src/setup/known_folders.rs:193:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/known_folders.rs:237:XDG_DOCUMENTS_DIR="$HOME/Work Documents"
+apps/imager/src/setup/known_folders.rs:238:XDG_DOWNLOAD_DIR="$HOME/Downloads"
+apps/imager/src/setup/internal_bundle.rs:364:    #[cfg(unix)]
+apps/imager/src/setup/internal_bundle.rs:423:#[cfg(unix)]
+apps/imager/src/setup/internal_bundle.rs:452:            libc::openat(
+apps/imager/src/setup/internal_bundle.rs:455:                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+apps/imager/src/setup/internal_bundle.rs:474:            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_NONBLOCK)
+apps/imager/src/setup/internal_bundle.rs:652:    use windows_sys::Win32::Storage::FileSystem::*;
+apps/imager/src/setup/internal_bundle.rs:1068:    #[cfg(unix)]
+apps/imager/src/setup/internal_bundle.rs:1071:        use std::os::unix::fs::symlink;
+apps/imager/src/setup/internal_bundle.rs:1086:        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+apps/imager/src/setup/internal_bundle.rs:1093:    #[cfg(unix)]
+apps/imager/src/setup/internal_bundle.rs:1382:    #[cfg(unix)]
+apps/imager/src/setup/internal_bundle.rs:1427:    #[cfg(unix)]
+apps/imager/src/setup/destination_security/mod.rs:11:#[cfg(unix)]
+apps/imager/src/setup/destination_security/mod.rs:13:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:649:    #[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1540:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1544:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1546:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1615:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1653:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1712:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1769:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1799:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1805:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1826:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1887:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1919:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:1956:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2044:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2114:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2188:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2230:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2318:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2380:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2386:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2408:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2459:#[cfg(unix)]
+apps/imager/src/setup/internal_download/tests.rs:2525:#[cfg(unix)]
+apps/imager/src/setup/import_view.rs:106:                    && let Err(error) = app.request_identity_gate(ImportCommand::CheckIdentity)
+apps/imager/src/setup/import_view.rs:156:        let temporary_parent = dirs::data_local_dir()
+apps/imager/src/setup/import_view.rs:158:            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+apps/imager/src/setup/import_view.rs:220:                #[cfg(unix)]
+apps/imager/src/setup/import_view.rs:222:                    std::os::unix::fs::symlink(
+apps/imager/src/setup/import_view.rs:301:        #[cfg(unix)]
+apps/imager/src/setup/import_view.rs:302:        std::os::unix::fs::symlink(source.join("Welcome.txt"), source.join("Old shortcut"))
+apps/imager/src/setup/import_view.rs:675:                        let parent = dirs::data_local_dir()
+apps/imager/src/setup/import_view.rs:1094:                self.apply_command(ImportCommand::Start(next));
+apps/imager/src/setup/import_view.rs:1113:                ImportCommand::Start(_)
+apps/imager/src/setup/import_view.rs:1114:                    | ImportCommand::CheckIdentity
+apps/imager/src/setup/import_view.rs:1115:                    | ImportCommand::Retry(_)
+apps/imager/src/setup/import_view.rs:1116:                    | ImportCommand::StartBatch
+apps/imager/src/setup/import_view.rs:1117:                    | ImportCommand::ResolveContinued(_)
+apps/imager/src/setup/import_view.rs:1118:                    | ImportCommand::PickContinuedDestination(_)
+apps/imager/src/setup/import_view.rs:1162:            ImportCommand::CheckIdentity => {
+apps/imager/src/setup/import_view.rs:1168:            ImportCommand::ResolveContinued(index) => self.resolve_continued(index),
+apps/imager/src/setup/import_view.rs:1169:            ImportCommand::PickContinuedDestination(index) => {
+apps/imager/src/setup/import_view.rs:1181:            ImportCommand::ContinuedMode(index, mode) => self.save_continued_mode(index, mode),
+apps/imager/src/setup/import_view.rs:1182:            ImportCommand::LaterAll => {
+apps/imager/src/setup/import_view.rs:1191:            ImportCommand::StartBatch => self.start_reviewed_batch(),
+apps/imager/src/setup/import_view.rs:1192:            ImportCommand::PickSource => {
+apps/imager/src/setup/import_view.rs:1197:            ImportCommand::PickDestination => {
+apps/imager/src/setup/import_view.rs:1202:            ImportCommand::PrepareReview => self.prepare_review(),
+apps/imager/src/setup/import_view.rs:1203:            ImportCommand::Start(index) => self.start_operation(index),
+apps/imager/src/setup/import_view.rs:1204:            ImportCommand::Retry(index) => self.retry_operation(index),
+apps/imager/src/setup/import_view.rs:1205:            ImportCommand::Cancel => {
+apps/imager/src/setup/import_view.rs:1209:            ImportCommand::ClearSelection => {
+apps/imager/src/setup/import_view.rs:1215:            ImportCommand::NextIssues(index) => {
+apps/imager/src/setup/import_view.rs:1223:            ImportCommand::ToggleDetails(index) => {
+apps/imager/src/setup/import_view.rs:1292:                .push(Box::new(self.button("import.pick-source", "Choose source…", ImportCommand::PickSource)))
+apps/imager/src/setup/import_view.rs:1293:                .push(Box::new(self.button("import.pick-destination", "Choose destination…", ImportCommand::PickDestination)))));
+apps/imager/src/setup/import_view.rs:1298:                ImportCommand::ClearSelection,
+apps/imager/src/setup/import_view.rs:1302:            self.button("import.review", "Review copy", ImportCommand::PrepareReview)
+apps/imager/src/setup/import_view.rs:1359:                ImportCommand::ToggleDetails(index),
+apps/imager/src/setup/import_view.rs:1381:                            ImportCommand::NextIssues(index),
+apps/imager/src/setup/import_view.rs:1393:                    ImportCommand::Start(index),
+apps/imager/src/setup/import_view.rs:1407:                    ImportCommand::Cancel,
+apps/imager/src/setup/import_view.rs:1417:                    ImportCommand::Retry(index),
+apps/imager/src/setup/import_view.rs:1468:                        ImportCommand::ResolveContinued(index),
+apps/imager/src/setup/import_view.rs:1476:                        ImportCommand::PickContinuedDestination(index),
+apps/imager/src/setup/import_view.rs:1491:                    ImportCommand::CheckIdentity,
+apps/imager/src/setup/import_view.rs:1541:                            ImportCommand::ContinuedMode(index, ChoiceMode::Copy),
+apps/imager/src/setup/import_view.rs:1546:                            ImportCommand::ContinuedMode(index, ChoiceMode::Later),
+apps/imager/src/setup/import_view.rs:1564:                        ImportCommand::StartBatch,
+apps/imager/src/setup/import_view.rs:1573:                        ImportCommand::LaterAll,
+apps/imager/src/setup/import_view.rs:1912:        let home = std::env::var_os("HOME").unwrap();
+apps/imager/src/setup/import_view.rs:2456:    #[cfg(unix)]
+apps/imager/src/setup/import_view.rs:2459:        use std::os::unix::fs::symlink;
+apps/imager/src/setup/import_view.rs:2498:        partial.apply_command(ImportCommand::ToggleDetails(0));
+apps/imager/src/setup/import_view.rs:2517:        pages.apply_command(ImportCommand::NextIssues(0));
+apps/imager/src/host.rs:5:#[cfg(target_os = "windows")]
+apps/imager/src/host.rs:10:    unsafe extern "system" {
+apps/imager/src/host.rs:41:#[cfg(not(target_os = "windows"))]
+apps/imager/src/host.rs:54:#[cfg(any(target_os = "windows", test))]
+apps/imager/src/setup/migration_store.rs:49:        #[cfg(unix)]
+apps/imager/src/setup/migration_store.rs:51:            use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/migration_store.rs:56:            use std::os::windows::ffi::OsStrExt;
+apps/imager/src/setup/migration_store.rs:70:            #[cfg(unix)]
+apps/imager/src/setup/migration_store.rs:72:                use std::os::unix::ffi::OsStringExt;
+apps/imager/src/setup/migration_store.rs:77:                use std::os::windows::ffi::OsStringExt;
+apps/imager/src/setup/migration_store.rs:422:        let root = dirs::data_local_dir()
+apps/imager/src/setup/migration_store.rs:1109:        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/migration_store.rs:1302:    #[cfg(unix)]
+apps/imager/src/setup/migration_store.rs:1305:        use std::os::unix::ffi::OsStringExt;
+apps/imager/src/setup/migration_store.rs:1322:    #[cfg(unix)]
+apps/imager/src/setup/migration_store.rs:1325:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/connection/store/storage.rs:26:#[cfg(all(test, target_os = "macos"))]
+apps/imager/src/setup/connection/store/storage.rs:87:    #[cfg(all(test, target_os = "macos"))]
+apps/imager/src/setup/connection/store/storage.rs:98:    #[cfg(not(all(test, target_os = "macos")))]
+apps/imager/src/setup/connection/store/storage.rs:107:    #[cfg(not(any(target_os = "linux", all(test, target_os = "macos"))))]
+apps/imager/src/setup/connection/store/storage.rs:109:    #[cfg(any(target_os = "linux", all(test, target_os = "macos")))]
+apps/imager/src/setup/connection/store/storage.rs:148:    #[cfg(unix)]
+apps/imager/src/setup/connection/store/storage.rs:940:    #[cfg(any(target_os = "linux", target_os = "macos"))]
+apps/imager/src/setup/connection/store/storage.rs:942:        use std::os::fd::AsRawFd;
+apps/imager/src/setup/connection/store/storage.rs:945:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/storage.rs:948:            libc::renameat2(
+apps/imager/src/setup/connection/store/storage.rs:953:                libc::RENAME_NOREPLACE,
+apps/imager/src/setup/connection/store/storage.rs:956:        #[cfg(target_os = "macos")]
+apps/imager/src/setup/connection/store/storage.rs:959:            libc::renameatx_np(
+apps/imager/src/setup/connection/store/storage.rs:964:                libc::RENAME_EXCL,
+apps/imager/src/setup/connection/store/storage.rs:972:    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+apps/imager/src/setup/desktop_catalog.rs:16:#[cfg(unix)]
+apps/imager/src/actions.rs:836:        let resource = operation_resource(Some("/dev/sdz"), true, false, true);
+apps/imager/src/actions.rs:848:                phrase: "/dev/sdz".into()
+apps/imager/src/actions.rs:856:                tilo_actions::ArgValue::Text("/dev/sdz".into()),
+apps/imager/src/actions.rs:862:                device: "/dev/sdz".into(),
+apps/imager/src/actions.rs:863:                confirmation: "/dev/sdz".into(),
+apps/imager/src/actions.rs:870:        let resource = operation_resource(Some("/dev/sdz"), true, false, false);
+apps/imager/src/actions.rs:886:        let resource = operation_resource(Some("/dev/sdz"), true, true, true);
+apps/imager/src/setup/internal_cache/coordinator.rs:15:#[cfg(all(target_os = "linux", not(test)))]
+apps/imager/src/release.rs:440:    std::env::var_os("XDG_CACHE_HOME")
+apps/imager/src/release.rs:442:        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
+apps/imager/src/release.rs:443:        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+apps/imager/src/setup/internal_cache/windows.rs:137:    use windows_sys::{
+apps/imager/src/setup/internal_cache/windows.rs:854:            let cache = dirs::cache_dir().ok_or("Current-user LocalAppData cache unavailable")?;
+apps/imager/src/setup/destination_security/unix.rs:4:use std::os::fd::AsRawFd;
+apps/imager/src/setup/destination_security/unix.rs:5:use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/destination_security/unix.rs:12:#[cfg(target_os = "macos")]
+apps/imager/src/setup/destination_security/unix.rs:18:    unsafe { libc::geteuid() }
+apps/imager/src/setup/destination_security/unix.rs:56:    #[cfg(target_os = "macos")]
+apps/imager/src/setup/destination_security/unix.rs:69:    #[cfg(target_os = "macos")]
+apps/imager/src/setup/destination_security/unix.rs:81:    #[cfg(any(target_os = "macos", target_os = "linux"))]
+apps/imager/src/setup/destination_security/unix.rs:83:        let mut status = std::mem::MaybeUninit::<libc::statfs>::uninit();
+apps/imager/src/setup/destination_security/unix.rs:85:        if unsafe { libc::fstatfs(file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+apps/imager/src/setup/destination_security/unix.rs:90:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/destination_security/unix.rs:105:        #[cfg(target_os = "macos")]
+apps/imager/src/setup/destination_security/unix.rs:110:                || status.f_flags & libc::MNT_LOCAL as u32 == 0
+apps/imager/src/setup/destination_security/unix.rs:111:                || status.f_flags & libc::MNT_IGNORE_OWNERSHIP as u32 != 0
+apps/imager/src/setup/destination_security/unix.rs:120:    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+apps/imager/src/setup/internal_cache/windows/tests.rs:77:        tempfile::tempdir_in(dirs::cache_dir().unwrap()).unwrap()
+apps/imager/src/setup/internal_cache/windows/tests.rs:325:        let status = std::process::Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/internal_cache/windows/tests.rs:565:        use std::os::windows::fs::OpenOptionsExt;
+apps/imager/src/setup/internal_cache/windows/tests.rs:599:        use std::os::windows::fs::symlink_dir;
+apps/imager/src/setup/internal_cache/windows/tests.rs:647:        use windows_sys::Win32::{
+apps/imager/src/setup/internal_cache/windows/tests.rs:980:        use windows_sys::Win32::{
+apps/imager/src/setup/internal_cache/windows/tests.rs:1122:        use std::os::windows::fs::OpenOptionsExt;
+apps/imager/src/setup/migration_durability.rs:13:    if cfg!(any(target_os = "macos", target_os = "linux")) {
+apps/imager/src/setup/migration_durability.rs:31:#[cfg(target_os = "macos")]
+apps/imager/src/setup/migration_durability.rs:33:    use std::os::fd::AsRawFd;
+apps/imager/src/setup/migration_durability.rs:34:    let mut attributes = libc::attrlist {
+apps/imager/src/setup/migration_durability.rs:35:        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+apps/imager/src/setup/migration_durability.rs:38:        volattr: libc::ATTR_VOL_INFO | libc::ATTR_VOL_UUID,
+apps/imager/src/setup/migration_durability.rs:46:        libc::fgetattrlist(
+apps/imager/src/setup/migration_durability.rs:67:#[cfg(target_os = "linux")]
+apps/imager/src/setup/migration_durability.rs:69:    use std::os::fd::AsRawFd;
+apps/imager/src/setup/migration_durability.rs:70:    use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/migration_durability.rs:71:    let mut status = std::mem::MaybeUninit::<libc::statfs>::uninit();
+apps/imager/src/setup/migration_durability.rs:73:    if unsafe { libc::fstatfs(file.as_raw_fd(), status.as_mut_ptr()) } != 0 {
+apps/imager/src/setup/migration_durability.rs:84:        libc::ioctl(
+apps/imager/src/setup/migration_durability.rs:86:            0x8011_1500 as libc::c_ulong,
+apps/imager/src/setup/migration_durability.rs:100:    let boot = std::fs::read("/proc/sys/kernel/random/boot_id")?;
+apps/imager/src/setup/migration_durability.rs:116:#[cfg(target_os = "linux")]
+apps/imager/src/setup/migration_durability.rs:118:    use std::os::fd::AsRawFd;
+apps/imager/src/setup/migration_durability.rs:127:        libc::ioctl(
+apps/imager/src/setup/migration_durability.rs:129:            0x8400_941f as libc::c_ulong,
+apps/imager/src/setup/migration_durability.rs:134:            libc::ioctl(
+apps/imager/src/setup/migration_durability.rs:136:                0x81f8_943c as libc::c_ulong,
+apps/imager/src/setup/migration_durability.rs:164:#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+apps/imager/src/setup/migration_durability.rs:172:    #[cfg(target_os = "macos")]
+apps/imager/src/setup/migration_durability.rs:174:        use std::os::fd::AsRawFd;
+apps/imager/src/setup/migration_durability.rs:176:        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } != 0 {
+apps/imager/src/setup/migration_durability.rs:197:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/internal_cache/linux/tests.rs:37:#[cfg(target_os = "linux")]
+apps/imager/src/setup/internal_cache/linux/tests.rs:68:        tempfile::tempdir_in(dirs::cache_dir().unwrap()).unwrap()
+apps/imager/src/setup/internal_cache/linux/tests.rs:241:        let status = std::process::Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/internal_cache/linux/tests.rs:443:        use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+apps/imager/src/setup/internal_cache/linux/tests.rs:446:            let uid = unsafe { libc::geteuid() };
+apps/imager/src/setup/internal_cache/linux/tests.rs:463:                    libc::fsetxattr(
+apps/imager/src/setup/internal_cache/linux/tests.rs:478:                libc::fgetxattr(
+apps/imager/src/setup/internal_cache/linux/tests.rs:492:            let rc = unsafe { libc::fremovexattr(held.as_raw_fd(), key.as_ptr()) };
+apps/imager/src/setup/internal_cache/linux/tests.rs:494:                rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ENODATA)
+apps/imager/src/setup/internal_cache/linux/tests.rs:802:#[cfg(target_os = "linux")]
+apps/imager/src/setup/internal_cache/linux/tests.rs:804:#[cfg(target_os = "linux")]
+apps/imager/src/setup/internal_cache/linux/tests.rs:806:#[cfg(target_os = "linux")]
+apps/imager/src/setup/internal_cache/linux/tests.rs:819:                std::io::Error::from_raw_os_error(libc::ENOSPC)
+apps/imager/src/setup/internal_cache/tests.rs:75:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:77:    use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/internal_cache/tests.rs:85:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:120:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:125:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:164:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:261:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:284:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:313:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:376:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:418:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:496:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:527:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:584:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:626:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:656:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:738:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:755:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:795:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:874:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:882:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:936:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:983:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1027:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1036:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1078:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1099:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1111:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1149:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1210:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1254:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1256:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1260:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1274:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1285:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1330:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1386:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1408:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1465:#[cfg(unix)]
+apps/imager/src/setup/internal_cache/tests.rs:1540:#[cfg(unix)]
+apps/imager/src/setup/connection/store/tests.rs:356:    #[cfg(unix)]
+apps/imager/src/setup/connection/store/tests.rs:358:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/connection/store/tests.rs:366:    #[cfg(unix)]
+apps/imager/src/setup/connection/store/tests.rs:368:        use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/connection/store/tests.rs:455:        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+apps/imager/src/setup/connection/store/tests.rs:1117:#[cfg(unix)]
+apps/imager/src/setup/connection/store/tests.rs:1157:    std::os::unix::fs::symlink(&source, &object).unwrap();
+apps/imager/src/setup/connection/store/tests.rs:1258:    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/connection/mod.rs:13:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint/linux.rs:9:use std::os::fd::AsRawFd;
+apps/imager/src/setup/connection/endpoint/linux.rs:10:use std::os::unix::ffi::OsStringExt;
+apps/imager/src/setup/connection/endpoint/linux.rs:11:use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/connection/endpoint/linux.rs:16:    request: libc::c_ulong,
+apps/imager/src/setup/connection/endpoint/linux.rs:20:    if unsafe { libc::ioctl(file.as_raw_fd(), request, data.as_mut_ptr()) } != 0 {
+apps/imager/src/setup/connection/endpoint/linux.rs:140:    File::open(PathBuf::from("/sys/fs").join(name).join("errors_count"))?
+apps/imager/src/setup/connection/endpoint/linux.rs:150:    let mut stat = std::mem::MaybeUninit::<libc::statx>::uninit();
+apps/imager/src/setup/connection/endpoint/linux.rs:153:        libc::statx(
+apps/imager/src/setup/connection/endpoint/linux.rs:156:            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+apps/imager/src/setup/connection/endpoint/linux.rs:157:            libc::STATX_MNT_ID,
+apps/imager/src/setup/connection/endpoint/linux.rs:166:    if stat.stx_mask & libc::STATX_MNT_ID == 0 {
+apps/imager/src/setup/connection/endpoint/linux.rs:187:        libc::name_to_handle_at(
+apps/imager/src/setup/connection/endpoint/linux.rs:192:            libc::AT_EMPTY_PATH,
+apps/imager/src/setup/connection/endpoint/linux.rs:269:    File::open("/proc/self/mountinfo")?
+apps/imager/src/setup/connection/endpoint/linux.rs:347:    let mut devices = std::fs::read_dir(PathBuf::from("/sys/fs/btrfs").join(text).join("devices"))?;
+apps/imager/src/setup/connection/endpoint/linux.rs:355:    Ok(libc::makedev(
+apps/imager/src/setup/connection/endpoint/linux.rs:365:        "/sys/dev/block/{}:{}",
+apps/imager/src/setup/connection/endpoint/linux.rs:366:        libc::major(device),
+apps/imager/src/setup/connection/endpoint/linux.rs:367:        libc::minor(device)
+apps/imager/src/setup/connection/endpoint/linux.rs:381:        let parent = libc::makedev(
+apps/imager/src/setup/connection/endpoint/linux.rs:507:    let count = unsafe { libc::flistxattr(file.as_raw_fd(), std::ptr::null_mut(), 0) };
+apps/imager/src/setup/connection/endpoint/linux.rs:518:            unsafe { libc::flistxattr(file.as_raw_fd(), names.as_mut_ptr().cast(), names.len()) };
+apps/imager/src/setup/connection/endpoint/linux.rs:535:    let mut flags: libc::c_long = 0;
+apps/imager/src/setup/connection/endpoint/linux.rs:536:    let request = if std::mem::size_of::<libc::c_long>() == 8 {
+apps/imager/src/setup/connection/endpoint/linux.rs:542:    if unsafe { libc::ioctl(file.as_raw_fd(), request, &raw mut flags) } != 0 {
+apps/imager/src/setup/connection/endpoint/linux.rs:566:        std::os::unix::fs::symlink(&selected, root.path().join("link")).unwrap();
+apps/imager/src/setup/connection/endpoint/linux.rs:586:        let device = File::open("/dev/null").unwrap();
+apps/imager/src/setup/connection/store.rs:558:        let path = dirs::data_local_dir()
+apps/imager/src/setup/connection/store.rs:938:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:963:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:981:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:1438:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:1833:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:1855:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:1895:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:1924:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:1969:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2014:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2061:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2347:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2375:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2408:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2461:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2485:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2498:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2524:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2537:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2578:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2605:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:2628:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:4221:            #[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:4465:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:4478:    #[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:4492:        not(any(test, target_os = "linux")),
+apps/imager/src/setup/connection/store.rs:4504:            #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:4559:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:4565:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:4591:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:4961:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:4970:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5003:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5008:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5073:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5120:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5122:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5126:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5135:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5138:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5140:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5144:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5153:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5239:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5348:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5395:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5431:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5911:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store.rs:5924:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5929:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5933:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5942:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store.rs:5970:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/transaction.rs:237:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction.rs:330:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction.rs:549:#[cfg(target_os = "linux")]
+apps/imager/src/setup/internal_cache/linux.rs:33:#[cfg(target_os = "linux")]
+apps/imager/src/setup/internal_cache/linux.rs:35:#[cfg(target_os = "linux")]
+apps/imager/src/setup/internal_cache/linux.rs:84:            libc::openat(
+apps/imager/src/setup/internal_cache/linux.rs:87:                flags | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+apps/imager/src/setup/internal_cache/linux.rs:131:                libc::fgetxattr(
+apps/imager/src/setup/internal_cache/linux.rs:140:                if e.raw_os_error() == Some(libc::ENODATA) {
+apps/imager/src/setup/internal_cache/linux.rs:170:        let uid = unsafe { libc::geteuid() };
+apps/imager/src/setup/internal_cache/linux.rs:183:        let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+apps/imager/src/setup/internal_cache/linux.rs:185:        if unsafe { libc::fstatfs(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+apps/imager/src/setup/internal_cache/linux.rs:232:                    libc::O_RDONLY | if self.directory { libc::O_DIRECTORY } else { 0 },
+apps/imager/src/setup/internal_cache/linux.rs:245:        let file = match open(parent, leaf, libc::O_RDONLY | libc::O_DIRECTORY) {
+apps/imager/src/setup/internal_cache/linux.rs:250:                if unsafe { libc::mkdirat(parent.as_raw_fd(), n.as_ptr(), 0o700) } != 0 {
+apps/imager/src/setup/internal_cache/linux.rs:253:                let file = open(parent, leaf, libc::O_RDONLY | libc::O_DIRECTORY).map_err(io)?;
+apps/imager/src/setup/internal_cache/linux.rs:270:            libc::openat(
+apps/imager/src/setup/internal_cache/linux.rs:273:                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+apps/imager/src/setup/internal_cache/linux.rs:280:        let ptr = unsafe { libc::fdopendir(fd) };
+apps/imager/src/setup/internal_cache/linux.rs:283:                libc::close(fd);
+apps/imager/src/setup/internal_cache/linux.rs:287:        struct Dir(*mut libc::DIR);
+apps/imager/src/setup/internal_cache/linux.rs:291:                    libc::closedir(self.0);
+apps/imager/src/setup/internal_cache/linux.rs:300:                *libc::__errno_location() = 0;
+apps/imager/src/setup/internal_cache/linux.rs:302:            let entry = unsafe { libc::readdir(dir.0) };
+apps/imager/src/setup/internal_cache/linux.rs:363:                if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
+apps/imager/src/setup/internal_cache/linux.rs:366:                    let home = dirs::home_dir().ok_or("Current-user home directory unavailable")?;
+apps/imager/src/setup/internal_cache/linux.rs:402:                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+apps/imager/src/setup/internal_cache/linux.rs:410:                    open(root, b"ownership.lock", libc::O_RDWR).map_err(io)?
+apps/imager/src/setup/internal_cache/linux.rs:420:            if unsafe { libc::flock(lock.file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+apps/imager/src/setup/internal_cache/linux.rs:422:                return Err(if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+apps/imager/src/setup/internal_cache/linux.rs:474:            let file = open(parent, &leaf, libc::O_RDONLY).map_err(io)?;
+apps/imager/src/setup/internal_cache/linux.rs:628:        let file = match open(&lease.payload.file, leaf.as_bytes(), libc::O_RDONLY) {
+apps/imager/src/setup/internal_cache/linux.rs:653:            unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), libc::GRND_NONBLOCK) };
+apps/imager/src/setup/internal_cache/linux.rs:719:                    let file = open(parent, leaf.as_bytes(), libc::O_RDWR).map_err(io)?;
+apps/imager/src/setup/internal_cache/linux.rs:736:                            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+apps/imager/src/setup/internal_cache/linux.rs:953:                    libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+apps/imager/src/setup/internal_cache/linux.rs:1023:        if unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), 0) } != 0 {
+apps/imager/src/setup/internal_cache/linux.rs:1061:                    libc::renameat2(
+apps/imager/src/setup/internal_cache/linux.rs:1066:                        libc::RENAME_NOREPLACE,
+apps/imager/src/setup/internal_cache/linux.rs:1101:                let readonly = open(parent, final_name.as_bytes(), libc::O_RDONLY).map_err(io)?;
+apps/imager/src/setup/connection/endpoint.rs:23:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:29:#[cfg(not(any(target_os = "linux", windows)))]
+apps/imager/src/setup/connection/endpoint.rs:33:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/connection/endpoint.rs:43:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/connection/endpoint.rs:81:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:87:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:94:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:196:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:203:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:235:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:253:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:257:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:289:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:336:        if cfg!(target_os = "linux")
+apps/imager/src/setup/connection/endpoint.rs:424:#[cfg(any(target_os = "linux", windows))]
+apps/imager/src/setup/connection/endpoint.rs:522:    #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:524:        use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/connection/endpoint.rs:529:        use std::os::windows::ffi::OsStrExt;
+apps/imager/src/setup/connection/endpoint.rs:551:    #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:566:    #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:568:        use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/connection/endpoint.rs:588:            #[cfg(any(target_os = "linux", windows))]
+apps/imager/src/setup/connection/endpoint.rs:595:            #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:598:                options.custom_flags(libc::O_NONBLOCK);
+apps/imager/src/setup/connection/endpoint.rs:623:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:677:            #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:727:        #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:730:            options.custom_flags(libc::O_NONBLOCK);
+apps/imager/src/setup/connection/endpoint.rs:762:            #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:810:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:816:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:827:    #[cfg(target_os = "linux")] owned: Option<&super::transaction::native::NativeOwnedNames>,
+apps/imager/src/setup/connection/endpoint.rs:841:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:843:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:846:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:855:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:882:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:916:    #[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/connection/endpoint.rs:1015:    #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:1020:        std::os::unix::fs::symlink(temp.path().join("real"), temp.path().join("link")).unwrap();
+apps/imager/src/setup/connection/endpoint.rs:1025:#[cfg(all(test, any(target_os = "linux", windows)))]
+apps/imager/src/setup/connection/endpoint.rs:1086:        #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:1087:        std::os::unix::fs::symlink("missing", fixture.path().join("link")).unwrap();
+apps/imager/src/setup/connection/endpoint.rs:1098:        #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:1169:        #[cfg(unix)]
+apps/imager/src/setup/connection/endpoint.rs:1246:#[cfg(all(test, any(target_os = "linux", windows)))]
+apps/imager/src/setup/connection/endpoint.rs:1265:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:1272:        #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:1286:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/endpoint.rs:1289:    use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/connection/endpoint.rs:1314:        use std::os::fd::AsRawFd;
+apps/imager/src/setup/connection/endpoint.rs:1318:                libc::fsetxattr(
+apps/imager/src/setup/connection/endpoint.rs:1405:    use std::os::windows::ffi::OsStrExt;
+apps/imager/src/setup/connection/endpoint.rs:1406:    use std::os::windows::fs::OpenOptionsExt;
+apps/imager/src/setup/connection/endpoint.rs:1434:                windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(path.as_ptr(), 0x1000)
+apps/imager/src/setup/connection/endpoint.rs:1441:            windows_sys::Win32::Storage::FileSystem::SetFileAttributesW(path.as_ptr(), 0x80);
+apps/imager/src/setup/connection/endpoint.rs:1456:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:1459:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:1483:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:1499:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:1503:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint.rs:1507:#[cfg(target_os = "linux")]
+apps/imager/src/setup/internal_cache/coordinator/tests.rs:184:        use std::os::unix::fs::MetadataExt;
+apps/imager/src/setup/connection/store/recovery.rs:219:            #[cfg(unix)]
+apps/imager/src/setup/connection/store/recovery.rs:1858:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:2059:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:2189:#[cfg(all(test, target_os = "linux"))]
+apps/imager/src/setup/connection/store/recovery.rs:2206:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:2903:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:3472:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4072:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4203:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4362:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4383:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4526:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4551:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4570:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4596:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/store/recovery.rs:4655:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/endpoint/windows.rs:7:use std::os::windows::ffi::OsStringExt;
+apps/imager/src/setup/connection/endpoint/windows.rs:8:use std::os::windows::fs::OpenOptionsExt;
+apps/imager/src/setup/connection/endpoint/windows.rs:9:use std::os::windows::io::AsRawHandle;
+apps/imager/src/setup/connection/endpoint/windows.rs:11:use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, GetLastError};
+apps/imager/src/setup/connection/endpoint/windows.rs:12:use windows_sys::Win32::Storage::FileSystem::{
+apps/imager/src/setup/connection/endpoint/windows.rs:18:use windows_sys::Win32::System::IO::DeviceIoControl;
+apps/imager/src/setup/connection/endpoint/windows.rs:121:    use windows_sys::Win32::System::Ioctl::{
+apps/imager/src/setup/connection/endpoint/windows.rs:131:            windows_sys::Win32::Storage::FileSystem::IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+apps/imager/src/setup/connection/endpoint/windows.rs:272:struct VolumeEnumeration(windows_sys::Win32::Foundation::HANDLE);
+apps/imager/src/setup/connection/endpoint/windows.rs:285:    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+apps/imager/src/setup/connection/endpoint/windows.rs:385:    owner: windows_sys::Win32::Security::PSID,
+apps/imager/src/setup/connection/endpoint/windows.rs:386:    dacl: *mut windows_sys::Win32::Security::ACL,
+apps/imager/src/setup/connection/endpoint/windows.rs:392:            windows_sys::Win32::Foundation::LocalFree(self.allocation);
+apps/imager/src/setup/connection/endpoint/windows.rs:398:        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+apps/imager/src/setup/connection/endpoint/windows.rs:399:        use windows_sys::Win32::Security::{
+apps/imager/src/setup/connection/endpoint/windows.rs:436:    use windows_sys::Win32::Security::{
+apps/imager/src/setup/connection/endpoint/windows.rs:442:    use windows_sys::Win32::Storage::FileSystem::{
+apps/imager/src/setup/connection/endpoint/windows.rs:511:    use windows_sys::Win32::Foundation::{ERROR_HANDLE_EOF, SetLastError};
+apps/imager/src/setup/connection/endpoint/windows.rs:549:    use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo};
+apps/imager/src/setup/connection/endpoint/windows.rs:608:    use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo};
+apps/imager/src/setup/connection/endpoint/windows.rs:630:    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
+apps/imager/src/setup/connection/endpoint/windows.rs:631:    use windows_sys::Win32::Security::{
+apps/imager/src/setup/connection/endpoint/windows.rs:635:    use windows_sys::Win32::Storage::FileSystem::{FILE_ALL_ACCESS, FILE_GENERIC_READ, WRITE_DAC};
+apps/imager/src/setup/connection/store/storage/windows.rs:463:        let result = std::process::Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/connection/store/storage/windows.rs:721:        use std::os::windows::fs::OpenOptionsExt;
+apps/imager/src/setup/connection/store/storage/windows.rs:729:        use std::os::windows::fs::OpenOptionsExt;
+apps/imager/src/setup/connection/store/storage/windows.rs:730:        use windows_sys::Win32::Storage::FileSystem::DELETE;
+apps/imager/src/setup/desktop_worker.rs:14:    if !cfg!(target_os = "linux") {
+apps/imager/src/setup/desktop_worker.rs:47:    let mut command = Command::new("/usr/bin/pkexec");
+apps/imager/src/setup/desktop_worker.rs:181:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_worker.rs:188:    #[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/desktop_worker.rs:209:        assert_eq!(command.get_program(), "/usr/bin/pkexec");
+apps/imager/src/setup/desktop_worker.rs:224:            "printf '%s\\n' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'",
+apps/imager/src/setup/desktop_worker.rs:225:            "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'; exit 7",
+apps/imager/src/setup/desktop_worker.rs:228:            let child = Command::new("/bin/sh")
+apps/imager/src/setup/desktop_worker.rs:246:        let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}'; sleep 0.05; touch \"$1\"; printf '%s\\n' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Failed\",\"detail\":\"fixture failure\"}'", "recording-helper"]).arg(&marker).stdout(Stdio::piped()).spawn().unwrap();
+apps/imager/src/setup/desktop_worker.rs:254:        let child = Command::new("/bin/sh").args(["-c", "printf '%s\\n' '{\"phase\":\"Preparing\"}' '{\"phase\":\"Installing\"}' '{\"phase\":\"DiagnosticLog\",\"detail\":\"/var/tmp/qos-desktop-fixture/native.log\"}' '{\"phase\":\"Verifying\"}' '{\"phase\":\"Complete\",\"detail\":{\"version\":\"1\",\"session_entry\":\"/usr/share/wayland-sessions/tilo.desktop\"}}'"]).stdout(Stdio::piped()).spawn().unwrap();
+apps/imager/src/setup/connection/store/format.rs:46:        #[cfg(unix)]
+apps/imager/src/setup/connection/store/format.rs:48:            use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/connection/store/format.rs:53:            use std::os::windows::ffi::OsStrExt;
+apps/imager/src/setup/connection/store/format.rs:59:            #[cfg(unix)]
+apps/imager/src/setup/connection/store/format.rs:61:                use std::os::unix::ffi::OsStringExt;
+apps/imager/src/setup/connection/store/format.rs:66:                use std::os::windows::ffi::OsStringExt;
+apps/imager/src/setup/connection/windows_native.rs:91:    use windows_sys::{
+apps/imager/src/setup/connection/windows_native.rs:677:        use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
+apps/imager/src/setup/connection/windows_native.rs:722:            use windows_sys::Win32::Security::{
+apps/imager/src/setup/connection/windows_native.rs:737:            std::os::windows::fs::symlink_file(path.join("stream"), path.join("reparse")).unwrap();
+apps/imager/src/setup/connection/windows_native.rs:775:                windows_sys::Win32::Foundation::LocalFree(allocation);
+apps/imager/src/setup/connection/windows_native.rs:787:            use windows_sys::Win32::Security::{
+apps/imager/src/setup/connection/windows_native.rs:842:                windows_sys::Win32::Foundation::LocalFree(descriptor);
+apps/imager/src/setup/connection/windows_native.rs:857:            use windows_sys::Win32::{
+apps/imager/src/setup/desktop_probe.rs:316:            #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_probe.rs:320:            #[cfg(not(target_os = "linux"))]
+apps/imager/src/setup/desktop_probe.rs:337:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/desktop_probe.rs:404:#[cfg(any(target_os = "linux", all(test, unix)))]
+apps/imager/src/setup/desktop_probe.rs:405:#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+apps/imager/src/setup/desktop_probe.rs:413:    use std::os::fd::AsRawFd;
+apps/imager/src/setup/desktop_probe.rs:414:    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+apps/imager/src/setup/desktop_probe.rs:433:        let mut child = Command::new(program)
+apps/imager/src/setup/desktop_probe.rs:436:            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+apps/imager/src/setup/desktop_probe.rs:438:            .env("HOME", "/")
+apps/imager/src/setup/desktop_probe.rs:449:                let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+apps/imager/src/setup/desktop_probe.rs:451:                    || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+apps/imager/src/setup/desktop_probe.rs:526:            .custom_flags(libc::O_NONBLOCK)
+apps/imager/src/setup/desktop_probe.rs:556:            PackageManager::Dnf => &["/usr/bin/dnf", "/usr/bin/rpm"],
+apps/imager/src/setup/desktop_probe.rs:557:            PackageManager::Apt => &["/usr/bin/apt-get", "/usr/bin/dpkg-query"],
+apps/imager/src/setup/desktop_probe.rs:558:            PackageManager::Pacman => &["/usr/bin/pacman"],
+apps/imager/src/setup/desktop_probe.rs:576:                "/usr/bin/rpm",
+apps/imager/src/setup/desktop_probe.rs:585:                "/usr/bin/dpkg-query",
+apps/imager/src/setup/desktop_probe.rs:588:            PackageManager::Pacman => run("/usr/bin/pacman", &["-Q", "tilo-session"]),
+apps/imager/src/setup/desktop_probe.rs:595:            "/run/ostree-booted",
+apps/imager/src/setup/desktop_probe.rs:597:            "/sysroot/ostree",
+apps/imager/src/setup/desktop_probe.rs:598:            "/etc/NIXOS",
+apps/imager/src/setup/desktop_probe.rs:599:            "/run/current-system",
+apps/imager/src/setup/desktop_probe.rs:600:            "/run/booted-system",
+apps/imager/src/setup/desktop_probe.rs:607:            let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+apps/imager/src/setup/desktop_probe.rs:609:            if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+apps/imager/src/setup/desktop_probe.rs:613:            if unsafe { stat.assume_init() }.f_flag & libc::ST_RDONLY != 0 {
+apps/imager/src/setup/desktop_probe.rs:669:    /// permission-restricted /proc/1/root link. Missing evidence is not absence.
+apps/imager/src/setup/desktop_probe.rs:725:            "/run/.containerenv",
+apps/imager/src/setup/desktop_probe.rs:726:            "/run/systemd/container",
+apps/imager/src/setup/desktop_probe.rs:732:        if process_confined(&read_text(Path::new("/proc/self/status"))?)? {
+apps/imager/src/setup/desktop_probe.rs:735:        if root_mount(&read_text(Path::new("/proc/self/mountinfo"))?)?
+apps/imager/src/setup/desktop_probe.rs:736:            != root_mount(&read_text(Path::new("/proc/1/mountinfo"))?)?
+apps/imager/src/setup/desktop_probe.rs:740:        let output = run("/usr/bin/systemd-detect-virt", &["--container"])?;
+apps/imager/src/setup/desktop_probe.rs:830:            let path = if marker("/etc/os-release")? {
+apps/imager/src/setup/desktop_probe.rs:831:                "/etc/os-release"
+apps/imager/src/setup/desktop_probe.rs:833:                "/usr/lib/os-release"
+apps/imager/src/setup/desktop_probe.rs:838:            let native = successful("/usr/bin/uname", &["-m"])?;
+apps/imager/src/setup/desktop_probe.rs:852:                "/usr/bin/systemctl",
+apps/imager/src/setup/desktop_probe.rs:862:                other_wayland_sessions: wayland_sessions(Path::new("/usr/share/wayland-sessions"))?,
+apps/imager/src/setup/desktop_probe.rs:882:    #[cfg(unix)]
+apps/imager/src/setup/desktop_probe.rs:885:        let host = "45 1 8:3 / / rw,relatime shared:1 - xfs /dev/sda3 rw,seclabel\n";
+apps/imager/src/setup/desktop_probe.rs:888:            native::root_mount("45 1 8:3 / / rw - xfs /dev/sda3 rw\n").unwrap()
+apps/imager/src/setup/desktop_probe.rs:892:            native::root_mount("45 1 8:3 /chroot / rw - xfs /dev/sda3 rw\n").unwrap()
+apps/imager/src/setup/desktop_probe.rs:896:            native::root_mount("99 1 8:3 / / rw - xfs /dev/sda3 rw\n").unwrap()
+apps/imager/src/setup/desktop_probe.rs:900:            native::root_mount("45 1 8:4 / / rw - xfs /dev/sda4 rw\n").unwrap()
+apps/imager/src/setup/desktop_probe.rs:905:            "45 1 8:3 / /other rw - xfs /dev/sda3 rw\n",
+apps/imager/src/setup/desktop_probe.rs:906:            "45 1 8:3 /bad\\999 / rw - xfs /dev/sda3 rw\n",
+apps/imager/src/setup/desktop_probe.rs:908:            "xx 1 8:3 / / rw - xfs /dev/sda3 rw\n",
+apps/imager/src/setup/desktop_probe.rs:919:    #[cfg(unix)]
+apps/imager/src/setup/desktop_probe.rs:922:        use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/desktop_probe.rs:927:        assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+apps/imager/src/setup/desktop_probe.rs:1007:    #[cfg(unix)]
+apps/imager/src/setup/desktop_probe.rs:1012:            native::query("/usr/bin/printf", &["hello"], Duration::from_secs(1), 32).unwrap();
+apps/imager/src/setup/desktop_probe.rs:1015:            native::query("/usr/bin/printf", &["123456789"], Duration::from_secs(1), 4).is_err()
+apps/imager/src/setup/desktop_probe.rs:1022:    #[cfg(unix)]
+apps/imager/src/setup/desktop_probe.rs:1065:        if !cfg!(target_os = "linux") {
+apps/imager/src/setup/desktop_probe.rs:1072:    #[cfg(target_os = "linux")]
+apps/imager/src/setup/desktop_probe.rs:1243:        let host = parse_os_release("# Fedora fixture\nNAME=\"Fedora Linux\"\nID='fedora'\nVERSION_ID=\"44\"\nPRETTY_NAME=\"Fedora \\\"44\\\" \\$HOME\"\n").unwrap();
+apps/imager/src/setup/connection/transaction/native/mod.rs:3:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:5:#[cfg(any(target_os = "linux", test))]
+apps/imager/src/setup/connection/transaction/native/mod.rs:8:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:15:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:33:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:44:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:51:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:57:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:67:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:79:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:87:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:94:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:108:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:120:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:130:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:144:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:149:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:157:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:163:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:173:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:182:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:194:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:207:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:213:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:223:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:615:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/mod.rs:626:#[cfg(target_os = "linux")]
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:54:        let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:100:        let proc = File::open("/proc/self/fd")?;
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:101:        let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::uninit();
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:103:        if unsafe { libc::fstatfs(proc.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:107:        if unsafe { filesystem.assume_init() }.f_type != libc::PROC_SUPER_MAGIC {
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:110:        let reference = CString::new(format!("/proc/self/fd/{}", directory.file().as_raw_fd()))
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:114:            libc::open(
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:116:                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:131:            libc::inotify_add_watch(
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:134:                rules::MASK | libc::IN_ONLYDIR,
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:359:                libc::read(
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:367:                if error.raw_os_error() == Some(libc::EAGAIN) {
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:402:        Err(error) if error.raw_os_error() == Some(libc::EEXIST) => Ok(()),
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:418:        libc::O_RDONLY | libc::O_DIRECTORY,
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:432:            libc::syscall(
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:433:                libc::SYS_getdents64,
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:500:        let file = self.io(open_at(directory.file(), name, libc::O_RDONLY))?;
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:506:        if identity.kind != libc::S_IFREG
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:507:            || stamp.mode != (libc::S_IFREG | 0o600)
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:524:        let named = self.io(open_at(directory.file(), name, libc::O_PATH))?;
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:660:    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:803:                            "/proc/self/fd/{}",
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:821:                        let path = format!("/proc/self/fd/{}/stage", directory.file().as_raw_fd());
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:834:                            Some(open_at(directory.file(), c"stage", libc::O_WRONLY).unwrap());
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:838:                        let file = open_at(directory.file(), c"stage", libc::O_RDONLY).unwrap();
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:846:                            "/proc/self/fd/{}/..",
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:850:                            std::fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
+apps/imager/src/setup/connection/transaction/native/linux/witness.rs:961:                libc::fsetxattr(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:5:use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:6:use std::os::unix::process::CommandExt;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:21:fn cvt(value: libc::c_int) -> io::Result<libc::c_int> {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:28:fn lease(file: &File, command: libc::c_int, value: libc::c_int) -> io::Result<libc::c_int> {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:30:    cvt(unsafe { libc::fcntl(file.as_raw_fd(), command, value) })
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:34:        let _ = lease(file, libc::F_SETLEASE, libc::F_UNLCK);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:39:        if lease(file, libc::F_GETLEASE, 0)? != libc::F_RDLCK {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:49:        libc::socketpair(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:50:            libc::AF_UNIX,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:51:            libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:65:        let mut item = libc::pollfd {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:72:            libc::poll(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:85:        if item.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:95:    let mut vector = libc::iovec {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:102:    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:109:            unsafe { libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) } as usize;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:112:            let header = libc::CMSG_FIRSTHDR(&raw const message);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:113:            (*header).cmsg_level = libc::SOL_SOCKET;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:114:            (*header).cmsg_type = libc::SCM_RIGHTS;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:115:            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as usize;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:116:            std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<RawFd>(), fd);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:121:        libc::sendmsg(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:124:            libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:139:    let mut vector = libc::iovec {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:144:    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:151:        libc::recvmsg(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:154:            libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:161:    let mut bad = message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:164:        let mut header = libc::CMSG_FIRSTHDR(&raw const message);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:166:            let base = libc::CMSG_LEN(0) as usize;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:172:            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:178:                        libc::CMSG_DATA(header).cast::<RawFd>().add(index),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:185:            header = libc::CMSG_NXTHDR(&raw const message, header);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:226:        Self::start_command(epoch, Command::new(executable))
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:248:                    cvt(libc::dup2(child_fd, CHILD_FD))?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:250:                cvt(libc::fcntl(CHILD_FD, libc::F_SETFD, 0))?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:253:                cvt(libc::syscall(libc::SYS_close_range, 4_u32, u32::MAX, 4_u32) as i32)?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:277:                libc::POLLIN,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:339:                libc::POLLIN,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:361:            libc::shutdown(self.socket.as_raw_fd(), libc::SHUT_RDWR);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:424:        let mut mask: libc::sigset_t = std::mem::zeroed();
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:425:        cvt(libc::sigemptyset(&raw mut mask))?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:426:        cvt(libc::sigaddset(&raw mut mask, libc::SIGIO))?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:427:        cvt(libc::sigprocmask(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:428:            libc::SIG_BLOCK,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:432:        let mut action: libc::sigaction = std::mem::zeroed();
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:433:        action.sa_sigaction = libc::SIG_DFL;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:434:        cvt(libc::sigemptyset(&raw mut action.sa_mask))?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:435:        cvt(libc::sigaction(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:436:            libc::SIGIO,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:440:        let fd = cvt(libc::signalfd(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:443:            libc::SFD_CLOEXEC | libc::SFD_NONBLOCK,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:449:    let mut info = std::mem::MaybeUninit::<libc::signalfd_siginfo>::uninit();
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:452:        libc::read(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:455:            std::mem::size_of::<libc::signalfd_siginfo>(),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:466:    let mut len = std::mem::size_of_val(&kind) as libc::socklen_t;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:469:        libc::getsockopt(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:471:            libc::SOL_SOCKET,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:472:            libc::SO_TYPE,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:477:    if kind != libc::SOCK_SEQPACKET {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:481:    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:482:    len = std::mem::size_of_val(&credentials) as libc::socklen_t;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:485:        libc::getsockopt(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:487:            libc::SOL_SOCKET,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:488:            libc::SO_PEERCRED,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:495:        credentials.pid != libc::getppid()
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:496:            || credentials.uid != libc::geteuid()
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:497:            || libc::getuid() != libc::geteuid()
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:502:    cvt(unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) })?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:514:    poll(socket.as_raw_fd(), libc::POLLIN, startup)?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:537:                libc::pollfd {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:539:                    events: libc::POLLIN,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:542:                libc::pollfd {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:544:                    events: libc::POLLIN,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:549:            let status = unsafe { libc::poll(polls.as_mut_ptr(), 2, POLL.as_millis() as i32) };
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:559:            if polls[1].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:562:            if polls[1].revents & libc::POLLIN == 0 {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:578:                    || lease(&file, libc::F_GETFL, 0)? & libc::O_ACCMODE != libc::O_RDONLY
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:585:                lease(&file, libc::F_SETOWN, unsafe { libc::getpid() })?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:588:                lease(&file, libc::F_SETLEASE, libc::F_RDLCK)?;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:632:    if unsafe { libc::fcntl(CHILD_FD, libc::F_GETFD) } < 0 {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:642:    use std::os::unix::fs::OpenOptionsExt;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:648:    extern "C" fn handler(_: i32) {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:660:            .custom_flags(libc::O_NONBLOCK)
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:683:                    Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:701:                    let mut action: libc::sigaction = std::mem::zeroed();
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:703:                        libc::SIG_IGN
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:707:                    libc::sigemptyset(&raw mut action.sa_mask);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:709:                        libc::sigaction(libc::SIGIO, &raw const action, std::ptr::null_mut()),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:712:                    let mut before: libc::sigset_t = std::mem::zeroed();
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:714:                        libc::sigprocmask(libc::SIG_SETMASK, std::ptr::null(), &raw mut before),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:737:                    let mut after: libc::sigaction = std::mem::zeroed();
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:739:                        libc::sigaction(libc::SIGIO, std::ptr::null(), &raw mut after),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:743:                    let mut mask: libc::sigset_t = std::mem::zeroed();
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:745:                        libc::sigprocmask(libc::SIG_SETMASK, std::ptr::null(), &raw mut mask),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:750:                            libc::sigismember(&raw const before, signal),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:751:                            libc::sigismember(&raw const mask, signal)
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:755:                    assert_eq!(lease(&file, libc::F_GETLEASE, 0).unwrap(), libc::F_UNLCK);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:774:                    libc::mmap(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:777:                        libc::PROT_READ | libc::PROT_WRITE,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:778:                        libc::MAP_SHARED,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:783:                assert_ne!(mapping, libc::MAP_FAILED);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:789:                    assert_eq!(libc::munmap(mapping, 8), 0);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:800:                assert_eq!(lease(&file, libc::F_GETLEASE, 0).unwrap(), libc::F_UNLCK);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:813:                    assert_eq!(libc::kill(pid, libc::SIGSTOP), 0);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:818:                    assert_eq!(libc::kill(pid, libc::SIGCONT), 0);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:848:                    if lease(&held, libc::F_GETLEASE, 0).unwrap() == libc::F_UNLCK {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:888:                    libc::POLLIN,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:898:                        libc::send(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:902:                            libc::MSG_NOSIGNAL
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:912:                let mut vector = libc::iovec {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:917:                    let mut message: libc::msghdr = std::mem::zeroed();
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:922:                        libc::CMSG_SPACE(16 * std::mem::size_of::<RawFd>() as u32) as usize;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:923:                    let header = libc::CMSG_FIRSTHDR(&raw const message);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:924:                    (*header).cmsg_level = libc::SOL_SOCKET;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:925:                    (*header).cmsg_type = libc::SCM_RIGHTS;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:927:                        libc::CMSG_LEN(16 * std::mem::size_of::<RawFd>() as u32) as usize;
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:930:                            libc::CMSG_DATA(header).cast::<RawFd>().add(index),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:935:                        libc::sendmsg(a.as_raw_fd(), &raw const message, libc::MSG_NOSIGNAL),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:981:            let mut item = libc::pollfd {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:983:                events: libc::POLLIN,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:989:                libc::poll(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1001:            if item.revents & libc::POLLIN != 0 {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1011:            Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1031:        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, receiver_pid, 0_u32) };
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1035:        let mut before = libc::pollfd {
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1037:            events: libc::POLLIN,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1042:            unsafe { libc::poll(&raw mut before, 1, 0) },
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1057:                libc::syscall(
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1058:                    libc::SYS_pidfd_send_signal,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1060:                    libc::SIGKILL,
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1061:                    std::ptr::null::<libc::siginfo_t>(),
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1084:            assert_eq!(libc::kill(pid, libc::SIGSTOP), 0);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1087:        let timeout: u64 = std::fs::read_to_string("/proc/sys/fs/lease-break-time")
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1102:        assert_eq!(lease(&file, libc::F_GETLEASE, 0).unwrap(), libc::F_UNLCK);
+apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs:1104:            assert_eq!(libc::kill(pid, libc::SIGCONT), 0);
+apps/imager/src/setup/connection/transaction/native/linux.rs:18:use std::os::fd::{AsRawFd, FromRawFd};
+apps/imager/src/setup/connection/transaction/native/linux.rs:19:use std::os::unix::ffi::OsStrExt;
+apps/imager/src/setup/connection/transaction/native/linux.rs:20:use std::os::unix::fs::{FileExt, MetadataExt};
+apps/imager/src/setup/connection/transaction/native/linux.rs:3145:                let mut status = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+apps/imager/src/setup/connection/transaction/native/linux.rs:3148:                    unsafe { libc::statvfs(name.as_ptr(), status.as_mut_ptr()) },
+apps/imager/src/setup/connection/transaction/native/linux.rs:3158:                File::open("/dev/urandom")
+apps/imager/src/setup/connection/transaction/native/linux.rs:3171:                        Err(error) if error.raw_os_error() == Some(libc::ENOSPC) => break,
+apps/imager/src/setup/connection/transaction/native/linux.rs:3263:        use std::os::unix::ffi::OsStringExt;
+apps/imager/src/setup/connection/transaction/native/linux.rs:3297:                    std::process::Command::new(std::env::current_exe().unwrap())
+apps/imager/src/setup/connection/transaction/native/linux.rs:3681:                libc::mmap(
+apps/imager/src/setup/connection/transaction/native/linux.rs:3684:                    libc::PROT_READ | libc::PROT_WRITE,
+apps/imager/src/setup/connection/transaction/native/linux.rs:3685:                    libc::MAP_SHARED,
+apps/imager/src/setup/connection/transaction/native/linux.rs:3690:            assert_ne!(value, libc::MAP_FAILED);
+apps/imager/src/setup/connection/transaction/native/linux.rs:3776:            assert_eq!(unsafe { libc::munmap(region, 7) }, 0);
+apps/imager/src/setup/connection/transaction/native/linux.rs:4116:                use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/connection/transaction/native/linux.rs:4181:            use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/connection/transaction/native/linux.rs:5022:                use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/connection/transaction/native/linux.rs:5036:                use std::os::unix::fs::PermissionsExt;
+apps/imager/src/setup/connection/transaction/native/linux.rs:8009:                use std::os::unix::fs::OpenOptionsExt;
+apps/imager/src/setup/connection/transaction/native/linux.rs:8013:                        .custom_flags(libc::O_NONBLOCK)
+apps/imager/src/setup/connection/transaction/native/linux.rs:8059:                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL
+apps/imager/src/setup/connection/transaction/native/linux.rs:8109:        assert_eq!(moved.actual.kind, libc::S_IFDIR);
+apps/imager/src/setup/connection/transaction/native/linux.rs:8345:    let result = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
+apps/imager/src/setup/connection/transaction/native/linux.rs:8356:        kind: metadata.mode() & libc::S_IFMT,
+apps/imager/src/setup/connection/transaction/native/linux.rs:8363:        libc::openat(
+apps/imager/src/setup/connection/transaction/native/linux.rs:8366:            flags | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+apps/imager/src/setup/connection/transaction/native/linux.rs:8389:    fn bits(self) -> libc::mode_t {
+apps/imager/src/setup/connection/transaction/native/linux.rs:8399:        libc::openat(
+apps/imager/src/setup/connection/transaction/native/linux.rs:8402:            libc::O_WRONLY
+apps/imager/src/setup/connection/transaction/native/linux.rs:8403:                | libc::O_CREAT
+apps/imager/src/setup/connection/transaction/native/linux.rs:8404:                | libc::O_EXCL
+apps/imager/src/setup/connection/transaction/native/linux.rs:8405:                | libc::O_CLOEXEC
+apps/imager/src/setup/connection/transaction/native/linux.rs:8406:                | libc::O_NOFOLLOW
+apps/imager/src/setup/connection/transaction/native/linux.rs:8407:                | libc::O_NONBLOCK,
+apps/imager/src/setup/connection/transaction/native/linux.rs:8420:        libc::syscall(
+apps/imager/src/setup/connection/transaction/native/linux.rs:8421:            libc::SYS_renameat2,
+apps/imager/src/setup/connection/transaction/native/linux.rs:8426:            libc::RENAME_NOREPLACE,
+apps/imager/src/setup/connection/transaction/native/linux.rs:8435:    open_at(directory, c".", libc::O_RDONLY | libc::O_DIRECTORY)?.sync_all()
+apps/imager/src/setup/connection/transaction/native/linux.rs:8640:        let before = self.io(open_at(parent.directory.file(), &parent.name, libc::O_PATH))?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:8648:            libc::O_RDONLY,
+apps/imager/src/setup/connection/transaction/native/linux.rs:8688:                libc::O_PATH,
+apps/imager/src/setup/connection/transaction/native/linux.rs:8716:                    self.io::<()>(Err(io::Error::from_raw_os_error(libc::ENOSPC)))?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:8778:        match open_at(parent.directory.file(), &parent.name, libc::O_PATH) {
+apps/imager/src/setup/connection/transaction/native/linux.rs:8823:            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+apps/imager/src/setup/connection/transaction/native/linux.rs:8967:                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+apps/imager/src/setup/connection/transaction/native/linux.rs:9026:            libc::O_PATH,
+apps/imager/src/setup/connection/transaction/native/linux.rs:9041:            libc::O_PATH,
+apps/imager/src/setup/connection/transaction/native/linux.rs:9073:            || displaced.actual.kind != libc::S_IFREG
+apps/imager/src/setup/connection/transaction/native/linux.rs:9162:            libc::O_RDONLY,
+apps/imager/src/setup/connection/transaction/native/linux.rs:9187:        let named = self.io(open_at(target.directory.file(), &target.name, libc::O_PATH))?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:9462:            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+apps/imager/src/setup/connection/transaction/native/linux.rs:9526:        let file = self.io(open_at(directory.file(), name, libc::O_RDONLY))?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:10382:        let file = open_at(directory.file(), name, libc::O_RDONLY)?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:10450:        let readable = open_at(directory.file(), c".", libc::O_RDONLY | libc::O_DIRECTORY)?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:10501:            let file = open_at(directory.file(), c"stage", libc::O_PATH)?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:10514:            let file = open_at(directory.file(), c"displaced", libc::O_PATH)?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:11641:            != (libc::S_IFREG | CreatedMode::from_executable(staged.content.executable).bits())
+apps/imager/src/setup/connection/transaction/native/linux.rs:11718:        let file = self.io(open_at(directory.file(), name, libc::O_RDONLY))?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:11756:            libc::O_RDONLY | libc::O_DIRECTORY,
+apps/imager/src/setup/connection/transaction/native/linux.rs:12121:            libc::O_PATH,
+apps/imager/src/setup/connection/transaction/native/linux.rs:13131:        let present = match open_at(directory.file(), &name, libc::O_RDONLY) {
+apps/imager/src/setup/connection/transaction/native/linux.rs:13160:                let named = open_at(self.directory.file(), &self.name, libc::O_PATH)?;
+apps/imager/src/setup/connection/transaction/native/linux.rs:13169:            None => match open_at(self.directory.file(), &self.name, libc::O_PATH) {
+apps/imager/src/setup/connection/transaction/native/linux.rs:13503:            match open_at(root.file(), &name, libc::O_PATH) {
+apps/imager/src/setup/connection/transaction/native/linux.rs:14161:            let state = match open_at(parent.directory.file(), &parent.name, libc::O_PATH) {
+apps/imager/src/setup/connection/transaction/native/linux.rs:14616:                Err(_) => match open_at(root.file(), &name, libc::O_PATH) {
+apps/imager/src/setup/connection/transaction/native/linux.rs:15330:                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+apps/imager/src/setup/connection/transaction/native/linux.rs:15361:            libc::fchmod(
+apps/imager/src/setup/connection/transaction/native/linux.rs:15523:                libc::O_RDONLY,
+apps/imager/src/setup/connection/transaction/native/linux.rs:17082:        match open_at(self.epoch.target_root.file(), &name, libc::O_PATH) {
+apps/imager/src/setup/connection/transaction/native/linux.rs:17997:        use std::os::unix::fs::{PermissionsExt, symlink};

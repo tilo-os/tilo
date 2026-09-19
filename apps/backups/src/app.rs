@@ -15,8 +15,12 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::mpsc::Sender;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
+#[cfg(any(test, feature = "test-support"))]
+use std::{cell::RefCell, rc::Rc};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -50,6 +54,7 @@ use crate::model::{
     SnapType, Snapshot, Source, SourceKind, View,
 };
 use crate::paint;
+use crate::presentation::RetentionPresentation;
 
 // Fixed bands are the 1× *floors* of renderer-measured values: the top bar and
 // its tabs (`chrome_metrics`), the timeline's day header / snapshot row /
@@ -201,6 +206,122 @@ enum JobEvent {
     Failed(String),
 }
 
+struct JobReceiver {
+    events: Receiver<JobEvent>,
+    #[cfg(any(test, feature = "test-support"))]
+    identity: Rc<()>,
+}
+
+impl JobReceiver {
+    fn new(events: Receiver<JobEvent>) -> Self {
+        Self {
+            events,
+            #[cfg(any(test, feature = "test-support"))]
+            identity: Rc::new(()),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ControlledJobRequest {
+    Create {
+        source: PathBuf,
+        destination: PathBuf,
+    },
+    Verify {
+        destination: PathBuf,
+        snapshot_id: String,
+    },
+    Restore {
+        destination: PathBuf,
+        snapshot_id: String,
+        restore_to: PathBuf,
+        overwrite: bool,
+    },
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct ControlledJob {
+    pub request: ControlledJobRequest,
+    events: Sender<JobEvent>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlledJobDisconnected;
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HistoryJobTerminal {
+    Success(String),
+    Error(String),
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryJobSnapshot {
+    pub receiver_identity: Option<Rc<()>>,
+    pub status: Option<String>,
+    pub terminal: Option<HistoryJobTerminal>,
+    pub terminal_toast_identity: Option<Instant>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryViewSnapshot {
+    pub timeline_scroll: f64,
+    pub rail_scroll: f64,
+    pub source_path: Option<PathBuf>,
+    pub destination_path: Option<PathBuf>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ControlledJob {
+    /// Send one controlled progress event through the retained app receiver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlledJobDisconnected`] after the app has settled or
+    /// otherwise dropped the real job receiver.
+    pub fn progress(&self, files: u64, bytes: u64) -> Result<(), ControlledJobDisconnected> {
+        self.events
+            .send(JobEvent::Progress(crate::engine::Progress {
+                files,
+                bytes,
+                current: PathBuf::from("controlled"),
+            }))
+            .map_err(|_| ControlledJobDisconnected)
+    }
+
+    /// Send one controlled failure through the retained app receiver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlledJobDisconnected`] after the app has settled or
+    /// otherwise dropped the real job receiver.
+    pub fn fail(&self, message: impl Into<String>) -> Result<(), ControlledJobDisconnected> {
+        self.events
+            .send(JobEvent::Failed(message.into()))
+            .map_err(|_| ControlledJobDisconnected)
+    }
+
+    /// Send one controlled verification result through the retained app receiver.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlledJobDisconnected`] after the app has settled or
+    /// otherwise dropped the real job receiver.
+    pub fn verified(&self, files: u64, bytes: u64) -> Result<(), ControlledJobDisconnected> {
+        self.events
+            .send(JobEvent::Verified(crate::engine::Verification {
+                files,
+                bytes,
+            }))
+            .map_err(|_| ControlledJobDisconnected)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShotScenario {
     Restore,
@@ -216,6 +337,7 @@ struct UiCache {
     sel_dest: Option<String>,
     restore_open: bool,
     policy: RetentionPolicy,
+    retention_presentation: RetentionPresentation,
 }
 
 impl Default for UiCache {
@@ -227,6 +349,7 @@ impl Default for UiCache {
             sel_dest: Some("pool".into()),
             restore_open: false,
             policy: RetentionPolicy::default(),
+            retention_presentation: RetentionPresentation::default(),
         }
     }
 }
@@ -251,8 +374,8 @@ pub struct BackupsApp {
     bar_h: f64,
     tab_h: f64,
     policy_focus: usize,
+    has_focus: bool,
     toast: Option<(String, ToastKind, Instant)>,
-    seeded: bool,
     /// The Timeline source rail as the shared adaptive drawer: docked beside the
     /// snapshot list on wide windows, a summoned overlay drawer when narrow.
     drawer: SidebarDrawer,
@@ -287,8 +410,14 @@ pub struct BackupsApp {
     /// imply the repository is ready when it was not successfully loaded.
     repository_error: Option<String>,
     picker: Option<(PickPurpose, ui::portal::PortalChannel)>,
-    job: Option<Receiver<JobEvent>>,
+    job: Option<JobReceiver>,
     job_status: Option<String>,
+    #[cfg(any(test, feature = "test-support"))]
+    controlled_jobs: Option<Sender<ControlledJob>>,
+    #[cfg(any(test, feature = "test-support"))]
+    history_view_observer: Option<Rc<RefCell<HistoryViewSnapshot>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    history_job_observer: Option<Rc<RefCell<HistoryJobSnapshot>>>,
 }
 
 impl Default for BackupsApp {
@@ -352,6 +481,85 @@ impl BackupsApp {
         Self::with_catalog(Catalog::sample())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_root() -> Self {
+        Self::with_catalog(Catalog::empty())
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_job_root() -> Self {
+        let mut app = Self::with_catalog(Catalog::sample());
+        app.source_path = Some(PathBuf::from("/controlled/source"));
+        app.destination_path = Some(PathBuf::from("/controlled/destination"));
+        app
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn history_test_staged_root() -> (Self, Rc<RefCell<HistoryViewSnapshot>>) {
+        let mut app = Self::with_catalog(Catalog::sample());
+        app.ui.sel_source = app.catalog.sources.first().map(|source| source.id.clone());
+        app.ui.sel_snapshot = app
+            .catalog
+            .snapshots
+            .iter()
+            .find(|snapshot| Some(&snapshot.source_id) == app.ui.sel_source.as_ref())
+            .map(|snapshot| snapshot.id.clone());
+        app.ui.sel_dest = app
+            .catalog
+            .destinations
+            .first()
+            .map(|destination| destination.id.clone());
+        app.timeline_scroll = 73.0;
+        app.rail_scroll = 11.0;
+        app.policy_focus = 2;
+        app.drawer.open();
+        app.drawer.snap(true);
+        app.ui.restore_open = true;
+        app.source_path = Some(PathBuf::from("/controlled/source"));
+        app.destination_path = Some(PathBuf::from("/controlled/destination"));
+        let observer = Rc::new(RefCell::new(app.history_view_snapshot()));
+        app.history_view_observer = Some(observer.clone());
+        (app, observer)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn history_view_snapshot(&self) -> HistoryViewSnapshot {
+        HistoryViewSnapshot {
+            timeline_scroll: self.timeline_scroll,
+            rail_scroll: self.rail_scroll,
+            source_path: self.source_path.clone(),
+            destination_path: self.destination_path.clone(),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn history_job_snapshot(&self) -> HistoryJobSnapshot {
+        let terminal_toast = self.job.is_none().then_some(self.toast.as_ref()).flatten();
+        let terminal = terminal_toast.and_then(|(message, kind, _)| match kind {
+            ToastKind::Success => Some(HistoryJobTerminal::Success(message.clone())),
+            ToastKind::Error => Some(HistoryJobTerminal::Error(message.clone())),
+            ToastKind::Info | ToastKind::Warning => None,
+        });
+        HistoryJobSnapshot {
+            receiver_identity: self.job.as_ref().map(|job| job.identity.clone()),
+            status: self.job_status.clone(),
+            terminal,
+            terminal_toast_identity: terminal_toast.map(|(_, _, identity)| *identity),
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn observe_history_job(&mut self) -> Rc<RefCell<HistoryJobSnapshot>> {
+        let observer = Rc::new(RefCell::new(self.history_job_snapshot()));
+        self.history_job_observer = Some(observer.clone());
+        observer
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_controlled_jobs(&mut self, sender: Sender<ControlledJob>) {
+        self.controlled_jobs = Some(sender);
+    }
+
     fn with_catalog(catalog: Catalog) -> Self {
         let search_index = crate::search_provider::BackupsSearchIndex::new(&catalog);
         Self {
@@ -370,8 +578,8 @@ impl BackupsApp {
             bar_h: BAR_H,
             tab_h: TAB_H,
             policy_focus: 0,
+            has_focus: false,
             toast: None,
-            seeded: false,
             drawer: SidebarDrawer::new()
                 .left()
                 .docked_width(RAIL_W)
@@ -390,6 +598,12 @@ impl BackupsApp {
             picker: None,
             job: None,
             job_status: None,
+            #[cfg(any(test, feature = "test-support"))]
+            controlled_jobs: None,
+            #[cfg(any(test, feature = "test-support"))]
+            history_view_observer: None,
+            #[cfg(any(test, feature = "test-support"))]
+            history_job_observer: None,
         }
     }
 
@@ -428,6 +642,7 @@ impl BackupsApp {
 
     fn load_cache(&mut self, doc: &AutoCommit, root: &ObjId) {
         self.ui.policy = BackupsDoc::policy(doc, root);
+        self.ui.retention_presentation = RetentionPresentation::from_doc(doc, root);
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
@@ -505,8 +720,25 @@ impl BackupsApp {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        self.job = Some(rx);
+        self.job = Some(JobReceiver::new(rx));
         self.job_status = Some("Preparing files…".into());
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(controlled) = &self.controlled_jobs {
+            if controlled
+                .send(ControlledJob {
+                    request: ControlledJobRequest::Create {
+                        source,
+                        destination,
+                    },
+                    events: tx,
+                })
+                .is_err()
+            {
+                self.job = None;
+                self.job_status = None;
+            }
+            return;
+        }
         if let Err(error) = std::thread::Builder::new()
             .name("backups-create".into())
             .spawn(move || {
@@ -542,8 +774,25 @@ impl BackupsApp {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        self.job = Some(rx);
+        self.job = Some(JobReceiver::new(rx));
         self.job_status = Some("Checking every file…".into());
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(controlled) = &self.controlled_jobs {
+            if controlled
+                .send(ControlledJob {
+                    request: ControlledJobRequest::Verify {
+                        destination,
+                        snapshot_id: id,
+                    },
+                    events: tx,
+                })
+                .is_err()
+            {
+                self.job = None;
+                self.job_status = None;
+            }
+            return;
+        }
         if let Err(error) = std::thread::Builder::new()
             .name("backups-verify".into())
             .spawn(
@@ -576,8 +825,27 @@ impl BackupsApp {
             return;
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        self.job = Some(rx);
+        self.job = Some(JobReceiver::new(rx));
         self.job_status = Some("Restoring and checking files…".into());
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(controlled) = &self.controlled_jobs {
+            if controlled
+                .send(ControlledJob {
+                    request: ControlledJobRequest::Restore {
+                        destination,
+                        snapshot_id: id,
+                        restore_to,
+                        overwrite: false,
+                    },
+                    events: tx,
+                })
+                .is_err()
+            {
+                self.job = None;
+                self.job_status = None;
+            }
+            return;
+        }
         if let Err(error) = std::thread::Builder::new()
             .name("backups-restore".into())
             .spawn(move || {
@@ -666,7 +934,7 @@ impl BackupsApp {
             let event = self
                 .job
                 .as_ref()
-                .and_then(|receiver| match receiver.try_recv() {
+                .and_then(|job| match job.events.try_recv() {
                     Ok(event) => Some(event),
                     Err(TryRecvError::Empty) => None,
                     Err(TryRecvError::Disconnected) => Some(JobEvent::Failed(
@@ -706,31 +974,34 @@ impl BackupsApp {
                             }
                         }
                     }
-                    self.toast_now(format!(
+                    let message = format!(
                         "Backup complete · {} files · {}",
                         manifest.files,
                         ui::format::bytes(manifest.bytes)
-                    ));
+                    );
+                    self.toast_now(message);
                     break;
                 }
                 JobEvent::Verified(result) => {
                     self.job = None;
                     self.job_status = None;
-                    self.toast_now(format!(
+                    let message = format!(
                         "Verified {} files · {}",
                         result.files,
                         ui::format::bytes(result.bytes)
-                    ));
+                    );
+                    self.toast_now(message);
                     break;
                 }
                 JobEvent::Restored(result) => {
                     self.job = None;
                     self.job_status = None;
-                    self.toast_now(format!(
+                    let message = format!(
                         "Restored {} files · {}",
                         result.files,
                         ui::format::bytes(result.bytes)
-                    ));
+                    );
+                    self.toast_now(message);
                     break;
                 }
                 JobEvent::Failed(error) => {
@@ -1471,6 +1742,10 @@ impl BackupsApp {
 
     // ---- TIMELINE view --------------------------------------------------
 
+    #[allow(
+        clippy::similar_names,
+        reason = "tile and title heights are distinct layout measures"
+    )]
     fn draw_timeline_view(
         &mut self,
         scene: &mut Scene,
@@ -1944,6 +2219,10 @@ impl BackupsApp {
     ) {
         let content_h = y_end + self.rail_scroll - rows_clip.y0 - S2 + PAD;
         self.rail_scroll_max = (content_h - rows_clip.height()).max(0.0);
+        #[allow(
+            clippy::needless_collect,
+            reason = "the drain must finish before extending the same hit vector"
+        )]
         let rows: Vec<(Rect, Hit)> = self.hits.drain(first_row_hit..).collect();
         self.hits.extend(rows.into_iter().filter_map(|(r, hit)| {
             let r = r.intersect(rows_clip);
@@ -3770,11 +4049,26 @@ impl BackupsApp {
 
         let top = Self::view_body_top(tr, content);
         let panel = Self::schedules_panel_rect(content, top, stacked, scale);
-        let c = &theme.tokens.colors;
-        paint::card(scene, t, panel, 16.0, c.surfaces.raised);
-
         let p = self.ui.policy;
-        self.draw_schedules_editor_rows(scene, t, tr, theme, panel, p);
+        let hovered = match self.hover {
+            Some(Hit::Policy(field, delta)) => Some((field, delta)),
+            _ => None,
+        };
+        let controls = self.ui.retention_presentation.draw_editor(
+            scene,
+            t,
+            tr,
+            theme,
+            panel,
+            Some(self.policy_focus),
+            hovered,
+            true,
+        );
+        self.hits.extend(
+            controls
+                .into_iter()
+                .map(|control| (control.rect, Hit::Policy(control.field, control.delta))),
+        );
 
         // Summary of effective retention — beside the editor when wide, stacked
         // beneath it when narrow.
@@ -3829,128 +4123,8 @@ impl BackupsApp {
             content.x0,
             top,
             content.x0 + panel_w,
-            top + PAD
-                + 4.0 * (56.0 + (scale - 1.0) * 44.0)
-                + 3.0 * (S2 + (scale - 1.0) * 8.0)
-                + PAD,
+            top + RetentionPresentation::panel_height(scale),
         )
-    }
-
-    /// The four per-class retention rows inside the editor panel. Split out
-    /// of [`Self::draw_schedules_view`] to keep it under the line budget.
-    fn draw_schedules_editor_rows(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        p: RetentionPolicy,
-    ) {
-        let vals = [p.hourly, p.daily, p.weekly, p.monthly];
-        for (i, field) in PolicyField::ALL.iter().enumerate() {
-            // `vals` and `PolicyField::ALL` both have exactly 4 entries.
-            let value = vals.get(i).copied().unwrap_or(0);
-            self.draw_schedules_editor_row(scene, t, tr, theme, panel, i, *field, value);
-        }
-    }
-
-    /// One retention-class row: focus highlight, dot + label + unit, and the
-    /// -/value/+ stepper. Split out of [`Self::draw_schedules_editor_rows`]
-    /// to keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "retention rows combine paint context and panel position with the policy field and its current value"
-    )]
-    fn draw_schedules_editor_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        i: usize,
-        field: PolicyField,
-        value: u32,
-    ) {
-        let c = &theme.tokens.colors;
-        let scale = Self::text_scale(tr);
-        // Rows are `S2` apart inside the panel's `PAD`; keyboard focus is the
-        // focus ring token, like every other focused control.
-        let row_h = 56.0 + (scale - 1.0) * 44.0;
-        let row_step = row_h + S2 + (scale - 1.0) * 8.0;
-        let ry = panel.y0 + PAD + i as f64 * row_step;
-        let row = Rect::new(panel.x0 + S3, ry, panel.x1 - S3, ry + row_h);
-        let focused = self.policy_focus == i;
-        if focused {
-            paint::fill_rrect(scene, t, row, 10.0, c.lift(0.5));
-            paint::stroke_rrect(scene, t, row, 10.0, c.border_focus, 2.0);
-        }
-        let rc = Self::retention_color(
-            theme,
-            match field {
-                PolicyField::Hourly => Retention::Hourly,
-                PolicyField::Daily => Retention::Daily,
-                PolicyField::Weekly => Retention::Weekly,
-                PolicyField::Monthly => Retention::Monthly,
-            },
-        );
-        paint::dot(
-            scene,
-            t,
-            Point::new(row.x0 + 18.0 * scale, row.center().y),
-            5.0,
-            rc,
-        );
-        paint::text_bold(
-            scene,
-            tr,
-            t,
-            field.label(),
-            14.5,
-            c.text_primary,
-            row.x0 + 34.0 * scale,
-            row.y0 + 12.0 * scale,
-        );
-        paint::text(
-            scene,
-            tr,
-            t,
-            &format!("keep over the {}", field.unit()),
-            11.0,
-            c.text_dim,
-            row.x0 + 34.0 * scale,
-            row.y0 + 32.0 * scale,
-        );
-
-        // Stepper: [-]  value  [+]
-        let cy = row.center().y;
-        let plus = Rect::new(
-            row.x1 - 44.0 * scale,
-            cy - 18.0 * scale,
-            row.x1 - 8.0 * scale,
-            cy + 18.0 * scale,
-        );
-        let valx0 = plus.x0 - 64.0 * scale;
-        let minus = Rect::new(
-            valx0 - 44.0 * scale,
-            cy - 18.0 * scale,
-            valx0 - 8.0 * scale,
-            cy + 18.0 * scale,
-        );
-        self.draw_stepper(scene, t, tr, theme, minus, "–", Hit::Policy(field, -1));
-        self.draw_stepper(scene, t, tr, theme, plus, "+", Hit::Policy(field, 1));
-        paint::text_center(
-            scene,
-            tr,
-            t,
-            &format!("{value}"),
-            20.0,
-            c.text_primary,
-            valx0 - 8.0 * scale,
-            plus.x0,
-            cy - 12.0 * scale,
-        );
     }
 
     /// The side summary panel's rect: beside the editor when wide, stacked
@@ -4126,36 +4300,6 @@ impl BackupsApp {
                 cy - 7.0,
             );
         }
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "stepper painting takes paint context, button bounds, glyph and hit action so hover and hit registration agree"
-    )] // see `draw_source_row` above.
-    fn draw_stepper(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        b: Rect,
-        glyph: &str,
-        hit: Hit,
-    ) {
-        // The shared button face: rest edge, hover and ink contrast come with
-        // it instead of a hand-painted ramp fill.
-        let hovered = self.hover.as_ref() == Some(&hit);
-        Button::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &ButtonFace::new(b, glyph)
-                .radius(8.0)
-                .text_size(18.0)
-                .hovered(hovered),
-        );
-        self.hits.push((b, hit));
     }
 
     // ---- restore modal --------------------------------------------------
@@ -4791,16 +4935,16 @@ impl BackupsApp {
 }
 
 impl Widget for BackupsApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::BACKUPS_OPERATION_TYPE]
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_effects();
-        if !self.seeded {
-            BackupsDoc::seed(state, path);
-            self.seeded = true;
-        }
         self.load_cache(state, path);
         // Auto-select the newest snapshot locally so the detail panel + actions
         // are visible. This is a convenience selection, never a replicated
@@ -4834,6 +4978,14 @@ impl Widget for BackupsApp {
         }
         if self.shot_scenario == Some(ShotScenario::Restore) {
             self.ui.restore_open = true;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(observer) = &self.history_view_observer {
+            *observer.borrow_mut() = self.history_view_snapshot();
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(observer) = &self.history_job_observer {
+            *observer.borrow_mut() = self.history_job_snapshot();
         }
     }
 
@@ -5022,6 +5174,9 @@ impl Widget for BackupsApp {
                     return Err("Backups are not configured on this device.".into());
                 }
                 self.start_backup();
+                if self.job.is_none() {
+                    return Err("The backup worker could not accept the request.".into());
+                }
             }
             crate::actions::BackupOperation::Verify { snapshot_id } => {
                 if self.destination_path.is_none()
@@ -5031,6 +5186,9 @@ impl Widget for BackupsApp {
                 }
                 self.ui.sel_snapshot = Some(snapshot_id);
                 self.start_verify();
+                if self.job.is_none() {
+                    return Err("The verification worker could not accept the request.".into());
+                }
             }
             crate::actions::BackupOperation::Restore { snapshot_id } => {
                 if self.destination_path.is_none()
@@ -5103,115 +5261,167 @@ impl Widget for BackupsApp {
         reason = "one match keeps every painted hit target paired with its semantic name"
     )]
     fn accessibility(&self) -> Option<AccessNode> {
-        let controls = self
-            .hits
-            .iter()
-            .map(|(rect, hit)| {
-                let (name, role, state) = match hit {
-                    Hit::Tab(view) => (
-                        format!("{} view", view.title()),
-                        Role::RadioButton,
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.ui.view == *view),
-                    ),
-                    Hit::Source(Some(id)) => (
-                        format!("Select source {id}"),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::Source(None) => (
-                        "All sources".into(),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::Snap(id) => (
-                        format!("Open snapshot {id}"),
-                        Role::ListItem,
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(self.ui.sel_snapshot.as_deref() == Some(id)),
-                    ),
-                    Hit::Dest(id) => (
-                        format!("Select destination {id}"),
-                        Role::ListItem,
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(self.ui.sel_dest.as_deref() == Some(id)),
-                    ),
-                    Hit::Policy(field, delta) => (
-                        format!(
-                            "{} retention {}",
-                            field.label(),
-                            if *delta > 0 { "increase" } else { "decrease" }
-                        ),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::ToggleRail => (
-                        "Show backup sources".into(),
-                        Role::ToggleButton,
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.drawer.is_open()),
-                    ),
-                    Hit::CloseRail => (
-                        "Close backup sources".into(),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::Setup => (
-                        if let Some(error) = self.repository_error.as_deref() {
-                            format!(
-                                "Choose another backup location. {error} {RECOVERY_SAFETY_COPY}"
-                            )
-                        } else {
-                            "Set up backups".into()
-                        },
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::BackupNow => (
-                        "Back up now".into(),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::Verify => (
-                        "Verify latest backup".into(),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::RestoreOpen => (
-                        "Recover complete snapshot".into(),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::RestoreConfirm => (
-                        "Choose an empty folder for recovery".into(),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                    Hit::RestoreCancel => (
-                        "Cancel recovery".into(),
-                        Role::Button,
-                        AccessState::new().focusable(true),
-                    ),
-                };
-                // A tab's accessible bounds are its painted pill, not the
-                // contiguous hit cell, so neighbouring tabs report the gap
-                // that is on screen.
-                let bounds = if matches!(hit, Hit::Tab(_)) {
-                    rect.inset(-TAB_PILL_INSET)
-                } else {
-                    *rect
-                };
+        let mut controls = Vec::new();
+        for (rect, hit) in &self.hits {
+            let (name, role, state) = match hit {
+                Hit::Tab(view) => (
+                    format!("{} view", view.title()),
+                    Role::RadioButton,
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.ui.view == *view),
+                ),
+                Hit::Source(Some(id)) => (
+                    format!("Select source {id}"),
+                    Role::Button,
+                    AccessState::new()
+                        .focusable(true)
+                        .selected(self.ui.sel_source.as_deref() == Some(id)),
+                ),
+                Hit::Source(None) => (
+                    "All sources".into(),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                ),
+                Hit::Snap(id) => (
+                    format!("Open snapshot {id}"),
+                    Role::ListItem,
+                    AccessState::new()
+                        .focusable(true)
+                        .selected(self.ui.sel_snapshot.as_deref() == Some(id)),
+                ),
+                Hit::Dest(id) => (
+                    format!("Select destination {id}"),
+                    Role::ListItem,
+                    AccessState::new()
+                        .focusable(true)
+                        .selected(self.ui.sel_dest.as_deref() == Some(id)),
+                ),
+                Hit::Policy(_, _) => continue,
+                Hit::ToggleRail => (
+                    "Show backup sources".into(),
+                    Role::ToggleButton,
+                    AccessState::new()
+                        .focusable(true)
+                        .checked(self.drawer.is_open()),
+                ),
+                Hit::CloseRail => (
+                    "Close backup sources".into(),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                ),
+                Hit::Setup => (
+                    if let Some(error) = self.repository_error.as_deref() {
+                        format!("Choose another backup location. {error} {RECOVERY_SAFETY_COPY}")
+                    } else {
+                        "Set up backups".into()
+                    },
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                ),
+                Hit::BackupNow => (
+                    "Back up now".into(),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                ),
+                Hit::Verify => (
+                    "Verify latest backup".into(),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                ),
+                Hit::RestoreOpen => (
+                    "Recover complete snapshot".into(),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                ),
+                Hit::RestoreConfirm => (
+                    "Choose an empty folder for recovery".into(),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                ),
+                Hit::RestoreCancel => (
+                    "Cancel recovery".into(),
+                    Role::Button,
+                    AccessState::new().focusable(true),
+                ),
+            };
+            // A tab's accessible bounds are its painted pill, not the
+            // contiguous hit cell, so neighbouring tabs report the gap
+            // that is on screen.
+            let bounds = if matches!(hit, Hit::Tab(_)) {
+                rect.inset(-TAB_PILL_INSET)
+            } else {
+                *rect
+            };
+            controls.push(
                 AccessNode::new(role)
                     .with_name(name)
                     .with_state(state)
                     .with_bounds(bounds)
-                    .with_action_target(format!("backups.hit:{hit:?}"))
-            })
-            .collect();
+                    .with_action_target(format!("backups.hit:{hit:?}")),
+            );
+        }
+        for field in PolicyField::ALL {
+            let actions: Vec<_> = self
+                .hits
+                .iter()
+                .filter_map(|(rect, hit)| match hit {
+                    Hit::Policy(candidate, delta) if *candidate == field => Some((*rect, *delta)),
+                    _ => None,
+                })
+                .collect();
+            let Some((first, _)) = actions.first() else {
+                continue;
+            };
+            let bounds = actions
+                .iter()
+                .fold(*first, |bounds, (rect, _)| bounds.union(*rect));
+            let value = self
+                .ui
+                .retention_presentation
+                .slots
+                .iter()
+                .find(|slot| slot.field == field)
+                .map_or_else(
+                    || format!("{} retention", field.label()),
+                    |slot| {
+                        let value = slot.stored.map_or_else(
+                            || slot.effective.to_string(),
+                            |stored| stored.to_string(),
+                        );
+                        if slot.default_unrecorded {
+                            format!("{}: {value} (default, not recorded)", field.label())
+                        } else {
+                            format!("{}: {value}", field.label())
+                        }
+                    },
+                );
+            let action_nodes = actions
+                .into_iter()
+                .map(|(rect, delta)| {
+                    AccessNode::new(Role::Button)
+                        .with_name(format!(
+                            "{value}; {}",
+                            if delta > 0 { "increase" } else { "decrease" }
+                        ))
+                        .with_state(AccessState::new().focusable(true))
+                        .with_bounds(rect)
+                        .with_action_target(format!("backups.hit:{:?}", Hit::Policy(field, delta)))
+                })
+                .collect();
+            controls.push(
+                AccessNode::new(Role::Group)
+                    .with_name(format!("{} retention field", field.label()))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(PolicyField::ALL.get(self.policy_focus) == Some(&field)),
+                    )
+                    .with_bounds(bounds)
+                    .with_action_target(format!("backups.policy-focus:{}", field.key()))
+                    .with_children(action_nodes),
+            );
+        }
         Some(
             AccessNode::new(Role::Window)
                 .with_name("Backups")
@@ -5227,6 +5437,13 @@ impl Widget for BackupsApp {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if matches!(action, A11yAction::Focus)
+            && let Some(key) = target.strip_prefix("backups.policy-focus:")
+            && let Some(index) = PolicyField::ALL.iter().position(|field| field.key() == key)
+        {
+            self.policy_focus = index;
+            return true;
+        }
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
         }
@@ -5241,6 +5458,18 @@ impl Widget for BackupsApp {
         } else {
             false
         }
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.has_focus = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.has_focus
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -5368,6 +5597,160 @@ impl BackupsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::{ReadDoc, transaction::Transactable};
+
+    fn invoke_operation(
+        app: &mut BackupsApp,
+        operation: &crate::actions::BackupOperation,
+    ) -> Result<bool, String> {
+        let doc = AutoCommit::new();
+        let resources = Widget::resources(app, &doc);
+        let encoded = tilo_actions::flatten(&resources)
+            .into_iter()
+            .filter_map(|entry| match &entry.action.input {
+                tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
+                tilo_actions::ActionInput::Prompted { .. } => None,
+            })
+            .find(|encoded| {
+                crate::actions::decode_operation(&encoded.type_id, &encoded.payload)
+                    .ok()
+                    .flatten()
+                    .as_ref()
+                    == Some(operation)
+            })
+            .expect("published operation payload")
+            .clone();
+        Widget::invoke_resource_operation(
+            app,
+            tilo_actions::OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )
+    }
+
+    #[test]
+    fn history_controlled_create_job_keeps_captured_inputs_and_settles_once() {
+        let mut app = BackupsApp::with_catalog(Catalog::sample());
+        app.source_path = Some(PathBuf::from("/controlled/source"));
+        app.destination_path = Some(PathBuf::from("/controlled/destination"));
+        let (requests, captured) = std::sync::mpsc::channel();
+        app.set_controlled_jobs(requests);
+
+        assert!(invoke_operation(&mut app, &crate::actions::BackupOperation::BackupNow).unwrap());
+        let receiver = std::ptr::from_ref(app.job.as_ref().unwrap());
+        let request = captured.try_recv().unwrap();
+        assert_eq!(
+            request.request,
+            ControlledJobRequest::Create {
+                source: PathBuf::from("/controlled/source"),
+                destination: PathBuf::from("/controlled/destination"),
+            }
+        );
+        assert!(
+            app.job.is_some(),
+            "admission completes while the job remains live"
+        );
+        request.progress(3, 2048).unwrap();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(std::ptr::from_ref(app.job.as_ref().unwrap()), receiver);
+        assert_eq!(app.job_status.as_deref(), Some("3 files · 2.0 KiB"));
+        request.fail("controlled create failure").unwrap();
+        app.sync(&mut state.doc, &state.root);
+        assert!(app.job.is_none());
+        assert_eq!(app.job_status, None);
+        assert!(matches!(
+            app.toast.as_ref(),
+            Some((message, ToastKind::Error, _)) if message == "controlled create failure"
+        ));
+        app.sync(&mut state.doc, &state.root);
+        assert!(matches!(
+            captured.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn history_controlled_verify_job_keeps_snapshot_identity_and_settles_once() {
+        let catalog = Catalog::sample();
+        let snapshot_id = catalog.snapshots[0].id.clone();
+        let mut app = BackupsApp::with_catalog(catalog);
+        app.destination_path = Some(PathBuf::from("/controlled/destination"));
+        let (requests, captured) = std::sync::mpsc::channel();
+        app.set_controlled_jobs(requests);
+
+        assert!(
+            invoke_operation(
+                &mut app,
+                &crate::actions::BackupOperation::Verify {
+                    snapshot_id: snapshot_id.clone(),
+                }
+            )
+            .unwrap()
+        );
+        let request = captured.try_recv().unwrap();
+        assert_eq!(
+            request.request,
+            ControlledJobRequest::Verify {
+                destination: PathBuf::from("/controlled/destination"),
+                snapshot_id,
+            }
+        );
+        assert!(app.job.is_some(), "admission is complete, not the job");
+        request.progress(8, 4096).unwrap();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(app.job_status.as_deref(), Some("8 files · 4.0 KiB"));
+        request.verified(8, 4096).unwrap();
+        app.sync(&mut state.doc, &state.root);
+        assert!(app.job.is_none());
+        assert!(matches!(
+            app.toast.as_ref(),
+            Some((message, ToastKind::Success, _)) if message == "Verified 8 files · 4.0 KiB"
+        ));
+        app.sync(&mut state.doc, &state.root);
+        assert!(matches!(
+            captured.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn failed_controlled_job_admission_clears_provisional_receiver() {
+        let mut app = BackupsApp::history_test_job_root();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        drop(receiver);
+        app.set_controlled_jobs(sender);
+
+        assert_eq!(
+            invoke_operation(&mut app, &crate::actions::BackupOperation::BackupNow),
+            Err("The backup worker could not accept the request.".into())
+        );
+
+        assert!(app.job.is_none());
+        assert!(app.job_status.is_none());
+    }
+
+    #[test]
+    fn fresh_inert_sync_does_not_author_retention_roots() {
+        let mut app = BackupsApp::with_catalog(Catalog::empty());
+        let mut state = ui::State::new();
+        let heads = state.doc.get_heads();
+
+        app.sync(&mut state.doc, &state.root);
+
+        assert_eq!(state.doc.get_heads(), heads);
+        assert_eq!(state.doc.pending_ops(), 0);
+        for field in PolicyField::ALL {
+            assert!(
+                state.doc.get(&state.root, field.key()).unwrap().is_none(),
+                "sync authored {}",
+                field.key()
+            );
+        }
+    }
 
     #[test]
     fn live_constructor_starts_with_an_empty_catalog() {

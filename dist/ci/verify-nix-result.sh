@@ -48,7 +48,8 @@ if ! command -v ldd >/dev/null 2>&1; then
 fi
 grep -Fxq "Exec=$result/bin/tilo-import-folders --import-folders" "$result/share/applications/tilo-import-folders.desktop"
 grep -Fxq "TryExec=$result/bin/tilo-import-folders" "$result/share/applications/tilo-import-folders.desktop"
-"$result/bin/tilo-import-folders" --tilo-package-smoke
+python3 "$(dirname "${BASH_SOURCE[0]}")/verify-installed-imager.py" \
+    "$result/bin/tilo-import-folders"
 for installed in bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper; do
     directory=$(dirname "$installed")
     basename=$(basename "$installed")

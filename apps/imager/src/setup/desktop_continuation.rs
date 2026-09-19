@@ -1,10 +1,10 @@
 //! Device-local first-login migration choices. Never collaborative state.
 
 use super::controller::{FolderChoice, FolderDestination};
-use super::migration::PinnedDirectory;
-use super::migration_durability::{self, Identity};
-use super::migration_store::{MigrationStore, NativePath, OperationRecord};
-use super::migration_worker::MigrationJob;
+use ui::folders::review::{directory_identity, inspect_copy_review, path_is_absent};
+use ui::folders::review::DirectoryIdentity as Identity;
+use ui::folders::copy::{MigrationStore, NativePath, OperationRecord};
+use ui::folders::copy::MigrationJob;
 use super::model::FolderMode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -57,7 +57,7 @@ impl ContinuedFolder {
         self.resolved.as_ref().map(|r| r.path.decode()).transpose()
     }
     fn validate_source(&self) -> Result<(), String> {
-        if path_identity(&self.source()?)? != self.source_identity {
+        if directory_identity(&self.source()?)? != self.source_identity {
             return Err(
                 "Selected source changed or its volume was replaced. Select and review it again."
                     .into(),
@@ -87,33 +87,6 @@ fn absolute(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn path_identity(path: &Path) -> Result<Identity, String> {
-    absolute(path)?;
-    let pin = PinnedDirectory::open_absolute(path).map_err(|e| e.to_string())?;
-    pin.validate().map_err(|e| e.to_string())?;
-    // Linux traversal descriptors are O_PATH. Sample the same readable
-    // directory capability as the journal, including durable Btrfs identity.
-    let readable =
-        migration_durability::readable_directory(&pin.file).map_err(|e| e.to_string())?;
-    migration_durability::identity(&readable).map_err(|e| e.to_string())
-}
-
-fn absent(path: &Path) -> Result<bool, String> {
-    let parent = PinnedDirectory::open_absolute(path.parent().ok_or("copy path has no parent")?)
-        .map_err(|e| e.to_string())?;
-    parent.validate_destination().map_err(|e| e.to_string())?;
-    let result = super::nofollow::metadata_nofollow(
-        &parent.file,
-        Path::new(path.file_name().ok_or("copy path has no name")?),
-    );
-    parent.validate_destination().map_err(|e| e.to_string())?;
-    match result {
-        Ok(_) => Ok(false),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
 impl Continuation {
     pub(super) fn capture(choices: &[FolderChoice]) -> Result<Self, String> {
         if choices.len() > 128 {
@@ -121,7 +94,7 @@ impl Continuation {
         }
         let mut folders = Vec::new();
         for choice in choices {
-            let source_identity = path_identity(&choice.scan.source)?;
+            let source_identity = directory_identity(&choice.scan.source)?;
             folders.push(ContinuedFolder {
                 source: NativePath::encode(&choice.scan.source),
                 source_identity,
@@ -241,19 +214,12 @@ impl Continuation {
                 destination.display()
             ));
         }
-        let parent = destination.parent().ok_or("destination has no parent")?;
-        let pin = PinnedDirectory::open_absolute(parent).map_err(|e| e.to_string())?;
-        pin.validate_destination().map_err(|e| e.to_string())?;
+        let (parent_identity, source_revision) =
+            inspect_copy_review(&source, &destination)?.into_expectations();
         f.resolved = Some(ResolvedDestination {
             path: NativePath::encode(&destination),
-            parent_identity: path_identity(parent)?,
-            source_revision: Some(
-                super::migration_review::SourceInventory::capture(
-                    &PinnedDirectory::open_absolute(&source).map_err(|e| e.to_string())?,
-                )
-                .and_then(|inventory| inventory.revision())
-                .map_err(|e| e.to_string())?,
-            ),
+            parent_identity,
+            source_revision: Some(source_revision),
         });
         Ok(())
     }
@@ -283,14 +249,14 @@ impl Continuation {
         index: usize,
         record: &OperationRecord,
     ) -> Result<Option<MigrationJob>, String> {
-        use super::migration_store::OperationState;
+        use ui::folders::copy::OperationState;
         if !matches!(
             record.state(),
             OperationState::Interrupted | OperationState::Failed | OperationState::Cancelled
         ) {
             return Ok(None);
         }
-        if !absent(&record.journal()?)? || !absent(&record.destination()?)? {
+        if !path_is_absent(&record.journal()?)? || !path_is_absent(&record.destination()?)? {
             return Ok(None);
         }
         let mut fresh = record.clone();
@@ -299,7 +265,7 @@ impl Continuation {
     }
 
     pub(super) fn can_replace_unpublished(record: &OperationRecord) -> Result<(), String> {
-        use super::migration_store::OperationState;
+        use ui::folders::copy::OperationState;
         if !matches!(
             record.state(),
             OperationState::AwaitingReview
@@ -309,10 +275,10 @@ impl Continuation {
         ) {
             return Err("This copy has published or active work; preserve its outcome and use its existing retry action.".into());
         }
-        if !absent(&record.journal()?)? {
+        if !path_is_absent(&record.journal()?)? {
             return Err("This copy has a durable journal; its reviewed destination and source revision must be retained.".into());
         }
-        if record.state() != OperationState::AwaitingReview && !absent(&record.destination()?)? {
+        if record.state() != OperationState::AwaitingReview && !path_is_absent(&record.destination()?)? {
             return Err(
                 "Interrupted output requires review; its existing outcome was retained.".into(),
             );
@@ -327,7 +293,7 @@ impl Continuation {
             .ok_or("folder choice is no longer available")?
             .destination()?
             .ok_or("Review the destination first")?;
-        if !absent(&destination)? {
+        if !path_is_absent(&destination)? {
             return Err("Destination collision: choose and review another destination; existing data was preserved.".into());
         }
         Ok(())
@@ -375,7 +341,7 @@ impl Continuation {
             .as_ref()
             .ok_or("Review the actual destination first")?;
         let destination = r.path.decode()?;
-        if path_identity(destination.parent().ok_or("destination has no parent")?)?
+        if directory_identity(destination.parent().ok_or("destination has no parent")?)?
             != r.parent_identity
         {
             return Err("Destination changed; review it again.".into());
@@ -405,9 +371,9 @@ impl Continuation {
                 && op.destination()? == destination
                 && !matches!(
                     op.state(),
-                    super::migration_store::OperationState::Failed
-                        | super::migration_store::OperationState::Interrupted
-                        | super::migration_store::OperationState::Cancelled
+                    ui::folders::copy::OperationState::Failed
+                        | ui::folders::copy::OperationState::Interrupted
+                        | ui::folders::copy::OperationState::Cancelled
                 )
             {
                 return Ok(None);
@@ -447,206 +413,14 @@ pub(super) fn persist_review(choices: &[FolderChoice]) -> Result<(), String> {
     captured.save(&store)
 }
 
-/// Read-only confirmation from the live trusted compositor. The UI runs this
-/// off-thread; a missing, unauthentic or incomplete session keeps work pending.
-#[cfg(target_os = "linux")]
-pub(super) fn trusted_identity_complete() -> Result<(), String> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .ok_or("No Tilo session runtime directory")?;
-    let display = std::env::var_os("WAYLAND_DISPLAY")
-        .ok_or("Open Add folders inside Tilo after identity setup")?;
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let parent = executable
-        .parent()
-        .ok_or("Import executable has no installed directory")?;
-    // Nix seals its actual wrapped ELF path at build time. FHS packages keep
-    // the root-owned shell ELF beside this installed import executable.
-    let trusted_shell = option_env!("QOS_DESKTOP_TRUSTED_SHELL_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| parent.join("tilo-shell"));
-    authenticated_session_ready(&runtime, &display, &trusted_shell)
-}
-
-#[cfg(target_os = "linux")]
-fn authenticated_session_ready(
-    runtime: &Path,
-    display: &std::ffi::OsStr,
-    trusted_shell: &Path,
-) -> Result<(), String> {
-    use std::io::Read;
-    use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::FileTypeExt;
-    use std::os::unix::fs::MetadataExt;
-    let pin = PinnedDirectory::open_absolute(runtime).map_err(|e| e.to_string())?;
-    let metadata = pin.file.metadata().map_err(|e| e.to_string())?;
-    // SAFETY: getuid has no arguments or memory contract.
-    let uid = unsafe { libc::getuid() };
-    if metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
-        return Err("Session runtime directory is not private".into());
-    }
-    let bytes = display.as_bytes();
-    if bytes.is_empty() || bytes.len() > 32 || bytes.contains(&b'/') {
-        return Err("Invalid session display".into());
-    }
-    let wayland = std::fs::symlink_metadata(runtime.join(display)).map_err(|e| e.to_string())?;
-    if !wayland.file_type().is_socket() || wayland.uid() != uid {
-        return Err("Untrusted session display".into());
-    }
-    let key = bytes.iter().fold(String::new(), |mut key, byte| {
-        let _ = write!(key, "{byte:02x}");
-        key
-    });
-    let socket = runtime.join(format!("qos-import-{key}-{}.sock", wayland.ino()));
-    let mut stream = connect_readiness(&socket)
-        .map_err(|_| "Waiting for trusted Tilo identity setup to finish".to_string())?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_millis(250)))
-        .map_err(|e| e.to_string())?;
-    authenticate_session_peer(&stream, trusted_shell, uid)?;
-    pin.validate().map_err(|e| e.to_string())?;
-    let mut response = [0_u8; 20];
-    stream
-        .read_exact(&mut response)
-        .map_err(|_| "Tilo identity setup is still pending".to_string())?;
-    if &response != b"qos-import-ready-v1\n" {
-        return Err("Tilo identity setup is still pending".into());
-    }
-    let current = std::fs::symlink_metadata(runtime.join(display)).map_err(|e| e.to_string())?;
-    if !current.file_type().is_socket()
-        || current.ino() != wayland.ino()
-        || current.dev() != wayland.dev()
-        || current.uid() != uid
-    {
-        return Err("The Tilo session changed; reopen Add folders.".into());
-    }
-    pin.validate().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn authenticate_session_peer(
-    stream: &std::os::unix::net::UnixStream,
-    trusted_shell: &Path,
-    uid: u32,
-) -> Result<(), String> {
-    use cap_fs_ext::OpenOptionsFollowExt;
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::MetadataExt;
-    let mut peer = std::mem::MaybeUninit::<libc::ucred>::uninit();
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: socket is live; peer and len are correctly sized writable storage.
-    if unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            peer.as_mut_ptr().cast(),
-            &raw mut len,
-        )
-    } != 0
-        || len as usize != std::mem::size_of::<libc::ucred>()
-    {
-        return Err("Cannot authenticate Tilo session".into());
-    }
-    // SAFETY: successful getsockopt initialized ucred.
-    let peer = unsafe { peer.assume_init() };
-    if peer.uid != uid {
-        return Err("Session readiness peer has a different owner".into());
-    }
-    let mut options = cap_primitives::fs::OpenOptions::new();
-    options
-        .read(true)
-        .follow(cap_primitives::fs::FollowSymlinks::No);
-    let trusted_parent = PinnedDirectory::open_absolute(
-        trusted_shell
-            .parent()
-            .ok_or("trusted shell has no parent")?,
-    )
-    .map_err(|e| e.to_string())?;
-    let expected = cap_primitives::fs::open(
-        &trusted_parent.file,
-        Path::new(
-            trusted_shell
-                .file_name()
-                .ok_or("trusted shell has no name")?,
-        ),
-        &options,
-    )
-    .map_err(|e| e.to_string())?;
-    let actual =
-        std::fs::File::open(format!("/proc/{}/exe", peer.pid)).map_err(|e| e.to_string())?;
-    let expected = expected.metadata().map_err(|e| e.to_string())?;
-    let actual = actual.metadata().map_err(|e| e.to_string())?;
-    if !expected.is_file()
-        || expected.uid() != 0
-        || expected.mode() & 0o022 != 0
-        || expected.ino() != actual.ino()
-        || expected.dev() != actual.dev()
-    {
-        return Err("Readiness peer is not the installed trusted Tilo shell".into());
-    }
-    trusted_parent.validate().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn connect_readiness(path: &Path) -> std::io::Result<std::os::unix::net::UnixStream> {
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::ffi::OsStrExt;
-    let bytes = path.as_os_str().as_bytes();
-    // SAFETY: sockaddr_un consists solely of integer fields and a byte array.
-    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
-        return Err(std::io::Error::other("invalid readiness socket path"));
-    }
-    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
-        *slot = *byte as libc::c_char;
-    }
-    // A filled or malicious listener backlog must not hang the check thread.
-    // Local AF_UNIX connects finish immediately or fail pending; a later
-    // explicit check can retry, without granting identity readiness.
-    // SAFETY: valid AF_UNIX socket constants; no pointers are passed.
-    let raw = unsafe {
-        libc::socket(
-            libc::AF_UNIX,
-            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
-            0,
-        )
-    };
-    if raw < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: this call uniquely adopts the newly created owned descriptor.
-    let owned = unsafe { OwnedFd::from_raw_fd(raw) };
-    // SAFETY: address is initialized and its correct size is supplied.
-    if unsafe {
-        libc::connect(
-            owned.as_raw_fd(),
-            (&raw const address).cast(),
-            std::mem::size_of_val(&address) as libc::socklen_t,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error());
-    }
-    let stream = std::os::unix::net::UnixStream::from(owned);
-    stream.set_nonblocking(false)?;
-    Ok(stream)
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn trusted_identity_complete() -> Result<(), String> {
-    Err("Continue the saved Desktop imports after logging into Tilo on Linux.".into())
-}
+pub(super) use ui::folders::session::trusted_identity_complete;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::setup::controller::{FolderChoice, FolderDestination};
     use crate::setup::folders::FolderScan;
-    use crate::setup::migration_store::MigrationStore;
+    use ui::folders::copy::MigrationStore;
     use crate::setup::model::FolderMode;
     use std::fs;
 
@@ -672,55 +446,6 @@ mod tests {
         (temp, store, choices)
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn direct_invocation_without_shell_and_fake_ready_peer_are_refused() {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        use std::os::unix::net::UnixListener;
-        let temp = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();
-        let root = temp.path();
-        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
-        let _wayland = UnixListener::bind(root.join("wayland-1")).unwrap();
-        let trusted = Path::new("/usr/bin/true");
-        assert!(
-            authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted).is_err()
-        );
-        let ino = fs::symlink_metadata(root.join("wayland-1")).unwrap().ino();
-        let socket = root.join(format!("qos-import-7761796c616e642d31-{ino}.sock"));
-        let _fake = UnixListener::bind(socket).unwrap();
-        let error = authenticated_session_ready(root, std::ffi::OsStr::new("wayland-1"), trusted)
-            .unwrap_err();
-        assert!(
-            error.contains("not the installed trusted Tilo shell"),
-            "{error}"
-        );
-        assert!(
-            authenticated_session_ready(root, std::ffi::OsStr::new("../escape"), trusted).is_err()
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn readiness_connection_refuses_a_full_backlog_without_hanging() {
-        use std::os::unix::net::UnixListener;
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("gate");
-        let _server = UnixListener::bind(&path).unwrap();
-        let mut held = Vec::new();
-        let started = std::time::Instant::now();
-        loop {
-            match connect_readiness(&path) {
-                Ok(stream) => held.push(stream),
-                Err(_) => break,
-            }
-            assert!(
-                held.len() < 1024,
-                "fixture backlog was unexpectedly unbounded"
-            );
-        }
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
-    }
-
     #[test]
     fn edits_after_inventory_validation_cannot_become_the_copy_baseline() {
         for edit_already_copied in [false, true] {
@@ -742,7 +467,7 @@ mod tests {
             let destination = parent.join("Documents");
             let journal = store.root().join("late-edit.journal");
             let mut edited = false;
-            let report = super::super::migration_journal::copy_reviewed(
+            let report = tilo_folder_service::test_support::run_reviewed_copy_for_test(
                 source,
                 &destination,
                 &journal,
@@ -768,7 +493,7 @@ mod tests {
             }
             // Even the ordinary resume route must retain the reviewed journal baseline.
             assert!(
-                super::super::migration_journal::resume_folder(
+                tilo_folder_service::test_support::resume_folder(
                     &journal,
                     &std::sync::atomic::AtomicBool::new(false),
                     |_| {}
@@ -780,7 +505,7 @@ mod tests {
 
     #[test]
     fn existing_file_edited_after_final_review_is_refused_before_publication() {
-        use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+        use ui::folders::copy::{MigrationWorker, WorkerEvent, WorkerOutcome};
         let (_temp, store, choices) = fixture();
         let file = choices[0].scan.source.join("existing.txt");
         fs::write(&file, b"before").unwrap();
@@ -833,7 +558,7 @@ mod tests {
 
     #[test]
     fn source_swapped_after_review_is_rejected_by_worker_before_journal_or_output() {
-        use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+        use ui::folders::copy::{MigrationWorker, WorkerEvent, WorkerOutcome};
         let (_temp, store, choices) = fixture();
         let mut c = Continuation::capture(&choices).unwrap();
         let parent = store.root().parent().unwrap().join("target");
@@ -867,7 +592,7 @@ mod tests {
 
     #[test]
     fn destination_swapped_after_review_is_rejected_before_output() {
-        use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+        use ui::folders::copy::{MigrationWorker, WorkerEvent, WorkerOutcome};
         let (_temp, store, choices) = fixture();
         let mut c = Continuation::capture(&choices).unwrap();
         let parent = store.root().parent().unwrap().join("target");
@@ -928,7 +653,7 @@ mod tests {
         let mut record = c.prepare(0, &store, &[], true).unwrap().unwrap();
         record.approve();
         record.mark_running().unwrap();
-        store.save(&[record]).unwrap();
+        tilo_folder_service::test_support::save_snapshot(&store, &[record]).unwrap();
         let record = store.load().unwrap().remove(0);
         fs::write(record.journal().unwrap(), b"existing journal must remain").unwrap();
         assert!(c.unpublished_retry(0, &record).unwrap().is_none());
@@ -1088,7 +813,7 @@ mod tests {
         c.resolve(0, &parent, true).unwrap();
         c.save(&store).unwrap();
         let op = c.prepare(0, &store, &[], true).unwrap().unwrap();
-        store.save(&[op]).unwrap();
+        tilo_folder_service::test_support::save_snapshot(&store, &[op]).unwrap();
         let mut replay = Continuation::load(&store).unwrap().unwrap();
         assert!(
             replay

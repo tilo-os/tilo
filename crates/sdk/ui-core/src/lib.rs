@@ -349,3 +349,9 @@ pub mod synthetic_input;
 pub mod bound_dispatch;
 
 mod presentation_feedback;
+
+/// Emission-time local control custody.
+pub mod control_custody;
+pub use control_custody::{
+    ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
+};

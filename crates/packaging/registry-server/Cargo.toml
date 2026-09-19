@@ -42,7 +42,6 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 bytes.workspace = true
 anyhow.workspace = true
 blake3 = { workspace = true }
-libc = { workspace = true }
 zeroize.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 

@@ -1,0 +1,51 @@
+{
+  "revision": "9fcfabda76edb49587ed76b3b88838bba6c4226e",
+  "searched_files": 3493,
+  "candidate_files": 1646,
+  "rows": 2555,
+  "matches_by_category": {
+    "conditional-platform": 2332,
+    "host-command-service": 4840,
+    "host-path": 6333,
+    "platform-build-link": 242,
+    "native-api": 2795
+  },
+  "candidate_files_by_root": {
+    ".cargo": 1,
+    ".config": 1,
+    ".forgejo": 28,
+    "Cargo.toml": 1,
+    "apps": 357,
+    "crates": 323,
+    "dist": 39,
+    "flake.nix": 1,
+    "fs": 22,
+    "fuzz": 2,
+    "os": 360,
+    "release": 3,
+    "scripts": 96,
+    "shell": 203,
+    "site": 11,
+    "tools": 45,
+    "vendor": 153
+  },
+  "exclusions": [
+    "ui/",
+    "crates/app/",
+    "target/",
+    ".git/",
+    ".codex/",
+    ".superpowers/",
+    "keys/",
+    "binary/media assets",
+    "files over 3MB",
+    "non-code documentation (separate agent review)"
+  ],
+  "patterns": {
+    "conditional-platform": "target_(?:os|arch|family|env|vendor)|cfg\\([^\\n]*(?:unix|windows)|#\\s*(?:if|ifdef).*?(?:WIN32|APPLE|linux)|sys\\.platform|platform\\.system|process\\.platform|uname\\s+-",
+    "native-api": "std::os::|\\blibc::|\\bnix::|windows_sys::|windows::Win32|objc2?::|CoreFoundation|AppKit|IOKit|Win32|\\bDwm|\\bRegOpenKey|\\bCreateFileW",
+    "host-path": "/(?:proc|sys|dev|run|var/(?:run|lib|cache|workspace)|etc|usr/(?:bin|lib|share)|Library|Applications)/|APPDATA|LOCALAPPDATA|XDG_(?:RUNTIME|CONFIG|DATA|CACHE)|USERPROFILE",
+    "host-command-service": "xdg-open|osascript|powershell|pwsh|systemctl|systemd-run|nmcli|bluetoothctl|pactl|pw-play|pw-record|lsblk|diskutil|bwrap|landlock|seccomp|PipeWire|pipewire|org\\.freedesktop|wayland|drm_sys|v4l2|SO_PEERCRED|SCM_RIGHTS",
+    "platform-build-link": "pkg_config|pkg-config|framework\\s*=|kind\\s*=\\s*\"framework\"|windows-sys|target\\..*dependencies|cargo:rustc-link|x86_64-.*(?:linux|windows|darwin)|aarch64-.*(?:linux|windows|darwin)"
+  }
+}

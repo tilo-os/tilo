@@ -1,0 +1,708 @@
+crates/system/atomic-file/src/lib.rs:158:        #[cfg(unix)]
+crates/system/atomic-file/src/lib.rs:160:            use std::os::unix::fs::OpenOptionsExt;
+crates/system/atomic-file/src/lib.rs:167:                #[cfg(unix)]
+crates/system/atomic-file/src/lib.rs:169:                    use std::os::unix::fs::PermissionsExt;
+crates/system/atomic-file/src/lib.rs:231:        let t = temp_path(Path::new("/var/lib/tilo/state.automerge"), 7);
+crates/system/atomic-file/src/lib.rs:232:        assert_eq!(t.parent(), Some(Path::new("/var/lib/tilo")));
+crates/system/atomic-file/src/lib.rs:272:    #[cfg(unix)]
+crates/system/atomic-file/src/lib.rs:275:        use std::os::unix::fs::PermissionsExt;
+crates/system/atomic-file/src/lib.rs:286:    #[cfg(unix)]
+crates/system/atomic-file/src/lib.rs:289:        use std::os::unix::fs::PermissionsExt;
+crates/system/app-state/src/lib.rs:2://! package at `$XDG_DATA_HOME/<package-id>/state.automerge`, atomic writes,
+crates/system/app-state/src/lib.rs:28:#[cfg(unix)]
+crates/system/app-state/src/lib.rs:29:use std::os::fd::AsRawFd;
+crates/system/app-state/src/lib.rs:31:use std::os::windows::fs::OpenOptionsExt;
+crates/system/app-state/src/lib.rs:1151:#[cfg(unix)]
+crates/system/app-state/src/lib.rs:1153:    use std::os::unix::fs::MetadataExt;
+crates/system/app-state/src/lib.rs:1165:#[cfg(unix)]
+crates/system/app-state/src/lib.rs:1175:        libc::LOCK_EX
+crates/system/app-state/src/lib.rs:1177:        libc::LOCK_SH
+crates/system/app-state/src/lib.rs:1180:    if unsafe { libc::flock(file.as_raw_fd(), mode | libc::LOCK_NB) } != 0 {
+crates/system/app-state/src/lib.rs:1255:/// Publish a fully durable temp file with a no-replace hard link.  `link(2)`
+crates/system/app-state/src/lib.rs:1281:    match fs::hard_link(&temp, marker) {
+crates/system/app-state/src/lib.rs:1381:#[cfg(unix)]
+crates/system/app-state/src/lib.rs:1391:    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+crates/system/app-state/src/lib.rs:1450:            std::env::set_var("XDG_DATA_HOME", tmp.path());
+crates/system/app-state/src/lib.rs:1541:                    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+crates/system/app-state/src/lib.rs:2011:            "/etc/shadow",
+crates/system/app-state/src/lib.rs:2622:            std::env::set_var("XDG_DATA_HOME", blocker.join("sub"));
+crates/system/app-state/src/lib.rs:2627:        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+crates/system/app-state/src/autosave.rs:811:            std::env::set_var("XDG_DATA_HOME", tmp.path());
+crates/system/app-state/Cargo.toml:25:[target.'cfg(unix)'.dependencies]
+crates/system/desktop-policy/src/defaults.rs:362:    let root = std::env::var_os("XDG_CONFIG_HOME")
+crates/system/desktop-policy/src/storage.rs:9:use std::os::unix::fs::MetadataExt;
+crates/system/desktop-policy/src/storage.rs:22:        let data = std::env::var_os("XDG_DATA_HOME")
+crates/system/desktop-policy/src/storage.rs:26:        let cache = std::env::var_os("XDG_CACHE_HOME")
+crates/system/desktop-policy/src/storage.rs:268:    if !root_meta.is_dir() || root_meta.file_type().is_symlink() {
+crates/system/desktop-policy/src/storage.rs:394:        std::os::unix::fs::symlink(&outside, payloads.join("dev.tilo.notes/link")).unwrap();
+crates/system/tilo-rollback/src/approval.rs:75:pub const DEFAULT_DIR: &str = "/var/lib/tilo/rollback/approvals";
+crates/system/tilo-rollback/src/keyslots.rs:17://! `tilo-rollback unlock` and writes the passphrase to `/run/cryptsetup-keys.d/<volume>.key`,
+crates/system/tilo-rollback/src/keyslots.rs:48:/// Returns an error if `/dev/urandom` cannot be opened or read.
+crates/system/tilo-rollback/src/keyslots.rs:51:    let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
+crates/system/tilo-rollback/src/keyslots.rs:53:    f.read_exact(&mut bytes).context("reading /dev/urandom")?;
+crates/system/tilo-rollback/src/keyslots.rs:284:    // — passing it literally would put it in /proc/<pid>/cmdline for every process to read.
+crates/system/tilo-rollback/src/keyslots.rs:825:            Path::new("/run/work/policy.ctx"),
+crates/system/tilo-rollback/src/keyslots.rs:826:            Some(Path::new("/run/work/pin")),
+crates/system/tilo-rollback/src/keyslots.rs:828:        assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
+crates/system/tilo-rollback/src/confirm.rs:59:    PathBuf::from("/var/lib/tilo/rollback/state.json")
+crates/system/tilo-rollback/src/confirm.rs:316:        use std::os::unix::fs::PermissionsExt;
+crates/system/bounded-command/src/lib.rs:10:#[cfg(unix)]
+crates/system/bounded-command/src/lib.rs:11:use std::os::unix::process::CommandExt as _;
+crates/system/bounded-command/src/lib.rs:180:    let mut command = Command::new(program);
+crates/system/bounded-command/src/lib.rs:199:    let mut command = Command::new(program);
+crates/system/bounded-command/src/lib.rs:292:    #[cfg(unix)]
+crates/system/bounded-command/src/lib.rs:324:            #[cfg(unix)]
+crates/system/bounded-command/src/lib.rs:330:                unsafe { libc::kill(group, libc::SIGKILL) };
+crates/system/bounded-command/src/lib.rs:374:    use std::os::unix::fs::PermissionsExt as _;
+crates/system/bounded-command/src/lib.rs:389:            ("#!/bin/sh\nhead -c 8192 /dev/zero\n", "stdout"),
+crates/system/bounded-command/src/lib.rs:390:            ("#!/bin/sh\nhead -c 8192 /dev/zero >&2\n", "stderr"),
+crates/system/bounded-command/src/lib.rs:410:        let mut command = Command::new("sh");
+crates/system/bounded-command/src/lib.rs:411:        command.args(["-c", "head -c 32 /dev/zero; head -c 128 /dev/zero >&2"]);
+crates/system/bounded-command/src/lib.rs:427:            Command::new("cat"),
+crates/system/bounded-command/src/lib.rs:440:                Command::new("cat"),
+crates/system/bounded-command/src/lib.rs:508:        let mut command = Command::new("sh");
+crates/system/tilo-rollback/src/counter.rs:24://! recorded in every sealed LUKS2 token and `/var/lib/tilo/rollback/state.json`.
+crates/system/tilo-rollback/src/generation.rs:47:/// Parse the generation out of a `/proc/cmdline`-shaped string. Returns `None` when the key
+crates/system/tilo-rollback/src/generation.rs:86:/// Read the running system's generation from `/proc/cmdline`.
+crates/system/tilo-rollback/src/generation.rs:90:/// Returns an error if `/proc/cmdline` cannot be read, if it fails [`from_cmdline`]'s checks,
+crates/system/tilo-rollback/src/generation.rs:93:    let cmdline = std::fs::read_to_string("/proc/cmdline").context("reading /proc/cmdline")?;
+crates/system/tilo-rollback/src/generation.rs:116:        let c = "root=/dev/mapper/root tilo.generation=42 quiet";
+crates/system/os-actions/src/network.rs:519:/// Signal strength comes from `/proc/net/wireless` instead, one file read the kernel keeps
+crates/system/os-actions/src/network.rs:576:                    // Bucket 4 until /proc/net/wireless refines it, so a connected radio never draws as "no signal".
+crates/system/os-actions/src/network.rs:589:/// Best link quality across every wireless interface, as a percentage. `/proc/net/wireless`
+crates/system/os-actions/src/network.rs:594:    let raw = std::fs::read_to_string("/proc/net/wireless").ok()?;
+crates/system/os-actions/src/network.rs:727:        let connection = zbus::Connection::system()
+crates/system/os-actions/src/network.rs:730:        let proxy = zbus::Proxy::new(
+crates/system/os-actions/src/network.rs:1003:        let c = zbus::Connection::system()
+crates/system/os-actions/src/network.rs:1006:        let p = zbus::Proxy::new(
+crates/system/os-actions/src/network.rs:1433:    // metacharacters data, while keeping the WPA key out of `/proc/*/cmdline`.
+crates/system/os-actions/src/network.rs:2170:    /// Real `/proc/net/wireless`, wext scale (quality out of 70).
+crates/system/power/src/history.rs:69:/// Returns an error if no private per-user state directory is available (no `XDG_STATE_HOME`
+crates/system/power/src/history.rs:95:    let base = std::env::var_os("XDG_STATE_HOME")
+crates/system/power/src/history.rs:99:            std::env::var_os("HOME")
+crates/system/power/src/history.rs:170:        use std::os::unix::fs::PermissionsExt;
+crates/system/tilo-native-certs/src/lib.rs:16:const TILO_CA_BUNDLE: &str = "/etc/pki/tls/certs/ca-bundle.crt";
+crates/system/swipe/src/lib.rs:44:    unsafe extern "C" {
+crates/system/bounded-command/Cargo.toml:13:[target.'cfg(unix)'.dependencies]
+crates/system/tilo-rollback/src/lockout.rs:289:/// Returns an error if `/dev/urandom` cannot be opened or read.
+crates/system/tilo-rollback/src/lockout.rs:292:    let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
+crates/system/tilo-rollback/src/lockout.rs:294:    f.read_exact(&mut b).context("reading /dev/urandom")?;
+crates/system/windows-vm/src/portal_files.rs:12:use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+crates/system/windows-vm/src/portal_files.rs:13:use std::os::unix::io::AsRawFd as _;
+crates/system/windows-vm/src/portal_files.rs:14:use std::os::unix::io::OwnedFd;
+crates/system/windows-vm/src/portal_files.rs:72:/// directory is deliberate: a root-owned `/run/tilo/windows-vm/leases` cannot
+crates/system/windows-vm/src/portal_files.rs:74:/// sessions. If logind did not export `XDG_RUNTIME_DIR`, use that same user's
+crates/system/windows-vm/src/portal_files.rs:75:/// conventional `/run/user/<uid>` root; never fall back into the root-owned
+crates/system/windows-vm/src/portal_files.rs:76:/// appliance-control namespace below `/run/tilo/windows-vm`.
+crates/system/windows-vm/src/portal_files.rs:79:    std::env::var_os("XDG_RUNTIME_DIR")
+crates/system/windows-vm/src/portal_files.rs:85:                let uid = unsafe { libc::geteuid() };
+crates/system/windows-vm/src/portal_files.rs:86:                PathBuf::from(format!("/run/user/{uid}"))
+crates/system/windows-vm/src/portal_files.rs:131:            let flags = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_GETFL) };
+crates/system/windows-vm/src/portal_files.rs:132:            if flags < 0 || flags & libc::O_ACCMODE == libc::O_RDONLY {
+crates/system/windows-vm/src/portal_files.rs:420:        .custom_flags(libc::O_NOFOLLOW)
+crates/system/windows-vm/src/portal_files.rs:468:    use std::os::unix::fs::PermissionsExt as _;
+crates/system/windows-vm/src/portal_files.rs:597:        std::os::unix::fs::symlink(&unrelated_path, &projection).unwrap();
+crates/system/os-actions/src/modem.rs:10:#[zbus::proxy(interface = "org.freedesktop.ModemManager1.Sim")]
+crates/system/os-actions/src/modem.rs:12:    fn send_pin(&self, pin: &str) -> zbus::Result<()>;
+crates/system/os-actions/src/modem.rs:97:        let connection = zbus::Connection::system()
+crates/system/tilo-cli/src/main.rs:17://! * a desktop session — `systemctl start tilo-deployment-rollback.service`, which polkit
+crates/system/tilo-cli/src/main.rs:19://!   (`os/etc/polkit-1/rules.d/49-tilo-updates.rules`)
+crates/system/tilo-cli/src/main.rs:147:    // No libc dependency for one number: /proc/self/status is where it is anyway, and this
+crates/system/tilo-cli/src/main.rs:149:    std::fs::read_to_string("/proc/self/status")
+crates/system/tilo-cli/src/main.rs:161:    let status = Command::new(&helper)
+crates/system/tilo-cli/src/main.rs:181:    let _ = Command::new(helper()).arg("caveats").status();
+crates/system/tilo-cli/src/main.rs:195:    // systemctl says so far more usefully than a guess would.
+crates/system/tilo-cli/src/main.rs:196:    let status = Command::new("systemctl")
+crates/system/tilo-cli/src/main.rs:199:        .context("running systemctl start")?;
+crates/system/tilo-cli/src/main.rs:209:        let _ = Command::new("journalctl")
+crates/system/tilo-cli/src/main.rs:214:    let _ = Command::new("journalctl")
+crates/system/power/src/profiles.rs:9:    proxy: zbus::Proxy<'static>,
+crates/system/power/src/profiles.rs:16:    pub async fn with_connection(connection: &zbus::Connection) -> zbus::Result<Self> {
+crates/system/power/src/profiles.rs:17:        let proxy = zbus::Proxy::new(connection, DEST, PATH, IFACE).await?;
+crates/system/power/src/profiles.rs:24:    pub async fn active_profile(&self) -> zbus::Result<String> {
+crates/system/power/src/profiles.rs:28:    pub async fn receive_active_profile_changed(&self) -> zbus::proxy::PropertyStream<'_, String> {
+crates/system/tilo-rollback/src/bin/tilo-rollback.rs:31:const PROOF_FILE: &str = "/run/tilo-rollback/proof.key";
+crates/system/tilo-rollback/src/bin/tilo-rollback.rs:39:    /// TPM2 TCTI. Omit for the default kernel resource manager at /dev/tpmrm0; set to reach an
+crates/system/tilo-rollback/src/bin/tilo-rollback.rs:90:        #[arg(long, default_value = "/var/lib/tilo/rollback/lockout-auth")]
+crates/system/tilo-rollback/src/bin/tilo-rollback.rs:126:        /// `/run/cryptsetup-keys.d/<volume>.key`, which `systemd-cryptsetup` picks up as a key file.
+crates/system/tilo-rollback/src/bin/tilo-rollback.rs:850:        #[cfg(unix)]
+crates/system/tilo-rollback/src/bin/tilo-rollback.rs:852:            use std::os::unix::fs::PermissionsExt;
+crates/system/tilo-rollback/src/lib.rs:102:    /// and the default 2 GiB ESP (`ESP_SIZE` in `os/dev/disk-image.sh`) holds a window of 10
+crates/system/tinker/src/diff.rs:134:        "/var/lib/dpkg",
+crates/system/tinker/src/diff.rs:135:        "/var/lib/apt",
+crates/system/tinker/src/diff.rs:136:        "/var/cache/apt",
+crates/system/tinker/src/diff.rs:137:        "/var/cache/debconf",
+crates/system/tinker/src/diff.rs:138:        "/var/lib/rpm",
+crates/system/tinker/src/diff.rs:139:        "/var/cache/dnf",
+crates/system/tinker/src/diff.rs:140:        "/var/cache/libdnf5",
+crates/system/tinker/src/diff.rs:141:        "/var/lib/dnf",
+crates/system/tinker/src/diff.rs:142:        "/var/log/apt",
+crates/system/tinker/src/diff.rs:143:        "/var/log/dpkg.log",
+crates/system/tinker/src/diff.rs:242:    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+crates/system/tinker/src/diff.rs:256:    use std::os::unix::ffi::OsStrExt;
+crates/system/tinker/src/diff.rs:263:        libc::lgetxattr(
+crates/system/tinker/src/diff.rs:266:            buf.as_mut_ptr().cast::<libc::c_void>(),
+crates/system/tinker/src/diff.rs:280:/// dpkg writes one `<pkg>.list` per installed package under `/var/lib/dpkg/info`, its
+crates/system/tinker/src/diff.rs:429:        assert_eq!(substantive, vec![PathBuf::from("/etc/my-tweak.conf")]);
+crates/system/tinker/src/diff.rs:486:        // `/var/lib/dpkg-custom` is not dpkg's database and must stay visible.
+crates/system/tinker/src/diff.rs:487:        assert!(is_pkg_metadata(Path::new("/var/lib/dpkg/status")));
+crates/system/tinker/src/diff.rs:488:        assert!(is_pkg_metadata(Path::new("/var/lib/dpkg")));
+crates/system/tinker/src/diff.rs:489:        assert!(!is_pkg_metadata(Path::new("/var/lib/dpkg-custom/thing")));
+crates/system/windows-vm/src/https_guest.rs:13:use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+crates/system/windows-vm/src/https_guest.rs:250:            bootstrap_secret: PathBuf::from("/var/lib/tilo/windows/bridge/bootstrap.secret"),
+crates/system/windows-vm/src/https_guest.rs:251:            pin_directory: PathBuf::from("/var/lib/tilo/windows/bridge"),
+crates/system/windows-vm/src/https_guest.rs:1282:        || metadata.file_type().is_symlink()
+crates/system/windows-vm/src/https_guest.rs:1298:    let effective_uid = unsafe { libc::geteuid() };
+crates/system/windows-vm/src/https_guest.rs:1308:fn process_has_group(group: libc::gid_t) -> bool {
+crates/system/windows-vm/src/https_guest.rs:1310:    if unsafe { libc::getegid() } == group {
+crates/system/windows-vm/src/https_guest.rs:1314:    let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+crates/system/windows-vm/src/https_guest.rs:1318:    let mut groups = vec![0 as libc::gid_t; count];
+crates/system/windows-vm/src/https_guest.rs:1321:        libc::getgroups(
+crates/system/windows-vm/src/https_guest.rs:1645:        use std::os::unix::fs::PermissionsExt as _;
+crates/system/tilo-cli/Cargo.toml:15:# systemctl, and /usr/libexec/tilo-deployment. Nothing links against a system
+crates/system/projector/Cargo.toml:16:zbus = { workspace = true, features = ["tokio", "p2p"] }
+crates/system/tilo-rollback/src/exec.rs:6://! passphrase into `/proc/<pid>/cmdline`.
+crates/system/tilo-rollback/src/exec.rs:77:    /// to `/dev/tpmrm0` — and that is the one you want on real hardware: the
+crates/system/tilo-rollback/src/exec.rs:103:        let mut cmd = Command::new(program);
+crates/system/projector/src/main.rs:26:use std::os::unix::fs::PermissionsExt;
+crates/system/projector/src/main.rs:27:use std::os::unix::net::UnixListener;
+crates/system/projector/src/main.rs:28:use std::os::unix::process::CommandExt;
+crates/system/projector/src/main.rs:185:    connection: &zbus::Connection,
+crates/system/projector/src/main.rs:187:) -> zbus::Result<Vec<ProjectionDevice>> {
+crates/system/projector/src/main.rs:188:    use zbus::zvariant::OwnedObjectPath;
+crates/system/projector/src/main.rs:190:    let manager = zbus::Proxy::new(connection, NM_DESTINATION, NM_PATH, NM_INTERFACE).await?;
+crates/system/projector/src/main.rs:195:        let device = zbus::Proxy::new(
+crates/system/projector/src/main.rs:203:            let p2p = zbus::Proxy::new(connection, NM_DESTINATION, path.as_str(), NM_P2P_INTERFACE)
+crates/system/projector/src/main.rs:207:                zbus::zvariant::Value::from(timeout.as_secs().clamp(1, 600) as i32),
+crates/system/projector/src/main.rs:218:            zbus::Proxy::new(connection, NM_DESTINATION, path.as_str(), NM_P2P_INTERFACE).await?;
+crates/system/projector/src/main.rs:221:            let peer = zbus::Proxy::new(
+crates/system/projector/src/main.rs:272:        let Ok(connection) = zbus::Connection::system().await else {
+crates/system/projector/src/main.rs:358:                std::env::var_os("XDG_RUNTIME_DIR")
+crates/system/projector/src/main.rs:361:            .ok_or_else(|| "XDG_RUNTIME_DIR is unavailable".to_owned())?;
+crates/system/projector/src/main.rs:466:        let mut child = Command::new(executable)
+crates/system/projector/src/main.rs:929:        std::env::var_os("XDG_STATE_HOME"),
+crates/system/projector/src/main.rs:930:        std::env::var_os("HOME"),
+crates/system/projector/src/main.rs:1053:    let mut command = Command::new(executable);
+crates/system/projector/src/main.rs:1156:    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
+crates/system/projector/src/main.rs:1417:    let _ = std::os::unix::net::UnixStream::connect(&paths.video_socket);
+crates/system/projector/src/main.rs:1440:    let mut child = Command::new(executable)
+crates/system/projector/src/main.rs:1578:        reason = "zbus::interface's generated dispatcher binds start_find's _options parameter \
+crates/system/projector/src/main.rs:1585:    use zbus::connection::Builder;
+crates/system/projector/src/main.rs:1586:    use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+crates/system/projector/src/main.rs:1596:        reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
+crates/system/projector/src/main.rs:1598:    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+crates/system/projector/src/main.rs:1609:        reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
+crates/system/projector/src/main.rs:1611:    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
+crates/system/projector/src/main.rs:1613:        #[zbus(property)]
+crates/system/projector/src/main.rs:1623:        reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
+crates/system/projector/src/main.rs:1625:    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device.WifiP2P")]
+crates/system/projector/src/main.rs:1631:        #[zbus(property)]
+crates/system/projector/src/main.rs:1641:        reason = "zbus::interface dispatches by instance method, even for a stateless mock reply"
+crates/system/projector/src/main.rs:1643:    #[zbus::interface(name = "org.freedesktop.NetworkManager.WifiP2PPeer")]
+crates/system/projector/src/main.rs:1645:        #[zbus(property)]
+crates/system/projector/src/main.rs:1650:        #[zbus(property)]
+crates/system/projector/src/main.rs:1655:        #[zbus(property)]
+crates/system/projector/src/main.rs:1660:        #[zbus(property)]
+crates/system/projector/src/main.rs:1665:        #[zbus(property)]
+crates/system/projector/src/main.rs:1670:        #[zbus(property, name = "WfdIEs")]
+crates/system/projector/src/main.rs:1679:    async fn simulated_network_manager() -> (zbus::Connection, zbus::Connection) {
+crates/system/projector/src/main.rs:1909:        if Command::new("gst-inspect-1.0")
+crates/system/projector/src/main.rs:1920:                Command::new("gst-inspect-1.0")
+crates/system/accounts/src/vault.rs:6://! stored as `vault.enc` under `$XDG_CONFIG_HOME/tilo/accounts/vault/`. A fresh random nonce
+crates/system/accounts/src/vault.rs:85:    /// Open the vault at the default location (`$XDG_CONFIG_HOME/tilo/accounts/vault`). An empty
+crates/system/accounts/src/vault.rs:544:    #[cfg(unix)]
+crates/system/accounts/src/vault.rs:547:        use std::os::unix::fs::PermissionsExt;
+crates/system/tilo-crypto/src/main.rs:6:    os::unix::ffi::OsStrExt,
+crates/system/tilo-crypto/src/main.rs:7:    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+crates/system/tilo-crypto/src/main.rs:37:    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+crates/system/tilo-crypto/src/main.rs:47:        libc::syscall(
+crates/system/tilo-crypto/src/main.rs:48:            libc::SYS_openat2,
+crates/system/tilo-crypto/src/main.rs:49:            libc::AT_FDCWD,
+crates/system/tilo-crypto/src/main.rs:107:    if metadata.uid() != unsafe { libc::geteuid() } {
+crates/system/tilo-crypto/src/main.rs:113:    if metadata.nlink() != 1 {
+crates/system/tilo-crypto/src/main.rs:117:            metadata.nlink()
+crates/system/tilo-crypto/src/main.rs:179:    if !metadata.is_file() || metadata.file_type().is_symlink() {
+crates/system/tilo-crypto/src/main.rs:186:    if metadata.uid() != unsafe { libc::geteuid() } {
+crates/system/tilo-crypto/src/main.rs:195:    options.custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW);
+crates/system/tilo-crypto/src/main.rs:228:    if !metadata.is_file() || metadata.file_type().is_symlink() {
+crates/system/tilo-crypto/src/main.rs:243:    options.custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW);
+crates/system/tilo-crypto/src/main.rs:266:    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+crates/system/tilo-crypto/src/main.rs:398:        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+crates/system/tilo-crypto/src/main.rs:794:    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+crates/system/tilo-crypto/src/main.rs:809:    use std::os::unix::fs::{PermissionsExt, symlink};
+crates/system/tilo-crypto/src/main.rs:865:        symlink(&cross_source, &link).expect("source symlink");
+crates/system/tilo-crypto/src/main.rs:880:        symlink(&key, &link).expect("key symlink");
+crates/system/tilo-crypto/src/main.rs:1001:        symlink(&input, &variable).expect("create variable symlink");
+crates/system/tilo-crypto/src/main.rs:1026:        symlink(&key, &link).expect("private key symlink");
+crates/system/tilo-crypto/src/main.rs:1031:        fs::hard_link(&key, &hard_link).expect("private key hard link");
+crates/system/tilo-crypto/src/main.rs:1037:        symlink(temp.path(), &linked_parent).expect("parent-directory symlink");
+crates/system/power/src/service.rs:14://! * drains [`PowerCommand::Suspend`] requests and issues `logind.Suspend`;
+crates/system/power/src/service.rs:160:    ) -> zbus::Result<Self> {
+crates/system/power/src/service.rs:161:        let conn = zbus::Connection::system().await?;
+crates/system/power/src/service.rs:258:                        // power-profiles-daemon's zbus property stream has
+crates/system/power/src/service.rs:376:    async fn handle_prepare_for_sleep(&mut self, msg: &zbus::Message) {
+crates/system/power/src/service.rs:398:                PowerCommand::Suspend => self.start_suspend().await,
+crates/system/power/src/service.rs:399:                PowerCommand::LockScreenDrawn => {
+crates/system/power/src/service.rs:403:                PowerCommand::UpdatePolicy(policy) => self.policy = policy,
+crates/system/tilo-rollback/src/policy.rs:211:/// no resource manager and runs out of object slots after three loads (`/dev/tpmrm0` on real
+crates/system/tinker/src/main.rs:263:        let status = Command::new("bwrap")
+crates/system/tinker/src/main.rs:471:    let ok = Command::new("podman")
+crates/system/tinker/src/main.rs:519:    let mut export = Command::new("podman")
+crates/system/tinker/src/main.rs:530:    let mut unpack = match Command::new("tar")
+crates/system/tilo-bluez/src/model.rs:9:use zbus::zvariant::{OwnedValue, Value};
+crates/system/windows-vm/src/appliance.rs:753:                "/var/lib/tilo/windows/system.qcow2",
+crates/system/windows-vm/src/appliance.rs:754:                "/var/lib/tilo/windows/nvram.fd",
+crates/system/accounts/src/secrets.rs:819:            "file:///etc/passwd",
+crates/system/power/src/upower.rs:1://! `UPower` integration (`org.freedesktop.UPower`) over `zbus`.
+crates/system/power/src/upower.rs:8:use zbus::Connection;
+crates/system/power/src/upower.rs:36:    connection: zbus::Connection,
+crates/system/power/src/upower.rs:37:    manager: zbus::Proxy<'static>,
+crates/system/power/src/upower.rs:38:    display: zbus::Proxy<'static>,
+crates/system/power/src/upower.rs:49:    pub async fn connect() -> zbus::Result<Self> {
+crates/system/power/src/upower.rs:59:    pub async fn with_connection(conn: &Connection) -> zbus::Result<Self> {
+crates/system/power/src/upower.rs:60:        let manager = zbus::Proxy::new(conn, DEST, MGR_PATH, MGR_IFACE).await?;
+crates/system/power/src/upower.rs:61:        let display = zbus::Proxy::new(conn, DEST, DISPLAY_DEVICE_PATH, DEVICE_IFACE).await?;
+crates/system/power/src/upower.rs:75:    pub async fn lid_is_closed(&self) -> zbus::Result<bool> {
+crates/system/power/src/upower.rs:84:    pub async fn lid_is_present(&self) -> zbus::Result<bool> {
+crates/system/power/src/upower.rs:93:    pub async fn on_battery(&self) -> zbus::Result<bool> {
+crates/system/power/src/upower.rs:112:    pub async fn battery_snapshot(&self) -> zbus::Result<BatterySnapshot> {
+crates/system/power/src/upower.rs:144:    pub async fn history_sample(&self) -> zbus::Result<Option<PowerHistorySample>> {
+crates/system/power/src/upower.rs:185:    pub async fn history_samples(&self) -> zbus::Result<Vec<PowerHistorySample>> {
+crates/system/power/src/upower.rs:197:        let paths: Vec<zbus::zvariant::OwnedObjectPath> =
+crates/system/power/src/upower.rs:203:            let device = zbus::Proxy::new(&self.connection, DEST, path, DEVICE_IFACE).await?;
+crates/system/os-actions/src/tool_intent.rs:8:use std::os::fd::BorrowedFd;
+crates/system/os-actions/src/tool_intent.rs:9:use std::os::unix::net::UnixStream;
+crates/system/tinker/src/idmap.rs:8://! `/etc/passwd` inside the layer a distinct uid.
+crates/system/tinker/src/idmap.rs:15:use std::os::unix::process::CommandExt;
+crates/system/tinker/src/idmap.rs:28:/// Parsed from `/etc/subuid` / `/etc/subgid`. A user with no allocation can
+crates/system/tinker/src/idmap.rs:52:/// `unshare(1)`'s `--map-auto` reads `/etc/subuid` and delegates the actual map
+crates/system/tinker/src/idmap.rs:64:    let mut cmd = Command::new("unshare");
+crates/system/tinker/src/idmap.rs:81:         range in /etc/subuid."
+crates/system/tinker/src/idmap.rs:94:/// id range in `/etc/subuid`).
+crates/system/windows-vm/src/lifecycle.rs:216:                "/var/lib/tilo/windows/system.qcow2",
+crates/system/windows-vm/src/lifecycle.rs:217:                "/var/lib/tilo/windows/nvram.fd",
+crates/system/windows-vm/src/lifecycle.rs:267:                "/var/lib/tilo/windows/system.qcow2",
+crates/system/windows-vm/src/lifecycle.rs:268:                "/var/lib/tilo/windows/nvram.fd",
+crates/system/tilo-bluez/src/agent.rs:18:use zbus::zvariant::ObjectPath;
+crates/system/tilo-bluez/src/agent.rs:19:use zbus::{Connection, DBusError, interface};
+crates/system/tilo-bluez/src/agent.rs:77:#[zbus(prefix = "org.bluez.Error")]
+crates/system/tilo-bluez/src/agent.rs:80:    #[zbus(error)]
+crates/system/tilo-bluez/src/agent.rs:81:    ZBus(zbus::Error),
+crates/system/tilo-bluez/src/agent.rs:627:    pub async fn register(connection: &Connection, agent: PairingAgent) -> zbus::Result<Self> {
+crates/system/tilo-bluez/src/agent.rs:642:    ) -> zbus::Result<Self> {
+crates/system/tilo-bluez/src/agent.rs:645:        let manager = zbus::Proxy::new(
+crates/system/tilo-bluez/src/agent.rs:676:    pub async fn unregister(self) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/agent.rs:678:        let manager = zbus::Proxy::new(
+crates/system/accounts/Cargo.toml:20:# Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
+crates/system/accounts/src/status.rs:9:use std::os::fd::AsRawFd;
+crates/system/accounts/src/status.rs:10:use std::os::unix::fs::OpenOptionsExt;
+crates/system/accounts/src/status.rs:155:        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+crates/system/accounts/src/status.rs:165:        let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+crates/system/power/src/lib.rs:17://! * [`logind`] / [`upower`] — the `zbus` proxies (suspend, inhibit
+crates/system/power/src/lib.rs:31://! loop turns into a [`bridge::PowerCommand::Suspend`] — gated by
+crates/system/tinker/src/store.rs:78:    /// `XDG_DATA_HOME` nor `HOME` can be resolved.
+crates/system/tinker/src/store.rs:360:    if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
+crates/system/tinker/src/store.rs:366:    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
+crates/system/tinker/src/store.rs:483:        s.revert_path("a", Path::new("/etc/hosts")).unwrap();
+crates/system/tinker/src/store.rs:492:        let err = s.revert_path("a", Path::new("/etc/nope")).unwrap_err();
+crates/system/tinker/src/store.rs:500:        assert!(s.revert_path("a", Path::new("/../../etc/passwd")).is_err());
+crates/system/tilo-rollback/tests/mechanism.rs:35:    Command::new("sh")
+crates/system/tilo-rollback/tests/mechanism.rs:37:        .arg(format!("command -v {tool} >/dev/null 2>&1"))
+crates/system/tilo-rollback/tests/mechanism.rs:116:        let _ = Command::new("swtpm_setup")
+crates/system/tilo-rollback/tests/mechanism.rs:130:        let child = Command::new("swtpm")
+crates/system/tilo-rollback/tests/mechanism.rs:162:            match Command::new("tpm2_getcap")
+crates/system/tilo-rollback/tests/mechanism.rs:474:    let ok = Command::new("cryptsetup")
+crates/system/os-actions/src/process.rs:46:        use std::os::unix::fs::PermissionsExt;
+crates/system/os-actions/src/process.rs:155:        let args = ["-c", bytes.as_str(), "/dev/zero"];
+crates/system/accounts/src/lib.rs:17://!   `$XDG_CONFIG_HOME/tilo/accounts/store.json`, holding every account plus the per-type
+crates/system/accounts/src/lib.rs:330:/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo` or `~/.config/tilo`.
+crates/system/accounts/src/lib.rs:333:    let base = std::env::var_os("XDG_CONFIG_HOME")
+crates/system/windows-vm/src/state.rs:2:use std::os::unix::fs::OpenOptionsExt;
+crates/system/windows-vm/src/state.rs:146:    use std::os::unix::fs::MetadataExt;
+crates/system/tilo-bluez/src/client.rs:4://! (`/usr/share/dbus-1/system.d/bluetooth.conf`) grants `send_destination="org.bluez"` to
+crates/system/tilo-bluez/src/client.rs:13:use zbus::Connection;
+crates/system/tilo-bluez/src/client.rs:14:use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
+crates/system/tilo-bluez/src/client.rs:46:    pub async fn connect() -> zbus::Result<Self> {
+crates/system/tilo-bluez/src/client.rs:66:    async fn managed_objects(&self) -> zbus::Result<ManagedObjects> {
+crates/system/tilo-bluez/src/client.rs:67:        let proxy = zbus::Proxy::new(&self.connection, DEST, "/", OBJECT_MANAGER_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:78:    pub async fn adapters(&self) -> zbus::Result<Vec<AdapterInfo>> {
+crates/system/tilo-bluez/src/client.rs:94:    pub async fn default_adapter(&self) -> zbus::Result<Option<AdapterInfo>> {
+crates/system/tilo-bluez/src/client.rs:105:    pub async fn devices(&self) -> zbus::Result<Vec<DeviceInfo>> {
+crates/system/tilo-bluez/src/client.rs:123:    pub async fn paired_devices(&self) -> zbus::Result<Vec<DeviceInfo>> {
+crates/system/tilo-bluez/src/client.rs:132:    async fn adapter_prop<T>(&self, path: &str, name: &str) -> zbus::Result<T>
+crates/system/tilo-bluez/src/client.rs:135:        T::Error: Into<zbus::Error>,
+crates/system/tilo-bluez/src/client.rs:138:            zbus::Proxy::new(&self.connection, DEST, path.to_string(), ADAPTER_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:142:    async fn set_adapter_prop(&self, path: &str, name: &str, value: bool) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:143:        let proxy = zbus::Proxy::new(&self.connection, DEST, path.to_string(), PROPS_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:147:                &(ADAPTER_IFACE, name, zbus::zvariant::Value::from(value)),
+crates/system/tilo-bluez/src/client.rs:157:    pub async fn set_powered(&self, adapter: &str, on: bool) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:165:    pub async fn is_powered(&self, adapter: &str) -> zbus::Result<bool> {
+crates/system/tilo-bluez/src/client.rs:176:    pub async fn set_discoverable(&self, adapter: &str, on: bool) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:184:    pub async fn set_pairable(&self, adapter: &str, on: bool) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:196:    pub async fn start_discovery(&self, adapter: &str) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:203:            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:207:            Err(zbus::Error::MethodError(name, _, _))
+crates/system/tilo-bluez/src/client.rs:220:    pub async fn stop_discovery(&self, adapter: &str) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:222:            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:226:            Err(zbus::Error::MethodError(name, _, _))
+crates/system/tilo-bluez/src/client.rs:242:    pub async fn is_discovering(&self, adapter: &str) -> zbus::Result<bool> {
+crates/system/tilo-bluez/src/client.rs:246:    async fn device_proxy(&self, device: &str) -> zbus::Result<zbus::Proxy<'_>> {
+crates/system/tilo-bluez/src/client.rs:247:        zbus::Proxy::new(&self.connection, DEST, device.to_string(), DEVICE_IFACE).await
+crates/system/tilo-bluez/src/client.rs:259:    pub async fn pair(&self, device: &str) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:263:            Err(zbus::Error::MethodError(name, _, _))
+crates/system/tilo-bluez/src/client.rs:279:    pub async fn cancel_pairing(&self, device: &str) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:283:            Err(zbus::Error::MethodError(name, _, _))
+crates/system/tilo-bluez/src/client.rs:296:    pub async fn connect_device(&self, device: &str) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:306:    pub async fn disconnect_device(&self, device: &str) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:321:    pub async fn set_trusted(&self, device: &str, trusted: bool) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:323:            zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:330:                    zbus::zvariant::Value::from(trusted),
+crates/system/tilo-bluez/src/client.rs:345:    pub async fn set_alias(&self, device: &str, alias: &str) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:348:            return Err(zbus::Error::Failure(
+crates/system/tilo-bluez/src/client.rs:353:            zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:357:                &(DEVICE_IFACE, "Alias", zbus::zvariant::Value::from(alias)),
+crates/system/tilo-bluez/src/client.rs:371:    pub async fn remove_device(&self, adapter: &str, device: &str) -> zbus::Result<()> {
+crates/system/tilo-bluez/src/client.rs:373:            zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:380:            Err(zbus::Error::MethodError(name, _, _))
+crates/system/tilo-bluez/src/client.rs:401:    pub async fn pair_and_connect(&self, adapter: &str, device: &str) -> zbus::Result<PairOutcome> {
+crates/system/tilo-bluez/src/client.rs:425:    pub async fn watch_devices<F>(&self, mut on_change: F) -> zbus::Result<()>
+crates/system/tilo-bluez/src/client.rs:429:        let proxy = zbus::Proxy::new(&self.connection, DEST, "/", OBJECT_MANAGER_IFACE).await?;
+crates/system/tilo-bluez/src/client.rs:460:pub fn error_text(e: &zbus::Error) -> String {
+crates/system/tilo-bluez/src/client.rs:462:        zbus::Error::MethodError(name, detail, _) => {
+crates/system/tilo-bluez/src/client.rs:470:/// directly rather than through a hand-built `zbus::Error` (whose `MethodError` carries a
+crates/system/tilo-bluez/src/client.rs:498:    fn pairing_failures_read_as_english_not_dbus_names() {
+crates/system/os-actions/src/bluez.rs:62:    F: std::future::Future<Output = Result<T, zbus::Error>>,
+crates/system/os-actions/src/users.rs:4://! never invokes `useradd` with UI strings, edits `/etc/passwd`, or stores a
+crates/system/os-actions/src/users.rs:9:use zbus::zvariant::OwnedObjectPath;
+crates/system/os-actions/src/users.rs:58:async fn manager_proxy(conn: &zbus::Connection) -> Result<zbus::Proxy<'_>, String> {
+crates/system/os-actions/src/users.rs:59:    zbus::Proxy::new(conn, DEST, ROOT, MANAGER)
+crates/system/os-actions/src/users.rs:64:async fn find_user(conn: &zbus::Connection, username: &str) -> Result<OwnedObjectPath, String> {
+crates/system/os-actions/src/users.rs:77:fn account_error(e: &zbus::Error) -> String {
+crates/system/os-actions/src/users.rs:98:        let conn = zbus::Connection::system()
+crates/system/os-actions/src/users.rs:128:        let conn = zbus::Connection::system()
+crates/system/os-actions/src/users.rs:140:// The returned future borrows `zbus::Proxy` internals that are not `Send`; that is fine here
+crates/system/os-actions/src/users.rs:150:    body: &(impl serde::ser::Serialize + zbus::zvariant::DynamicType),
+crates/system/os-actions/src/users.rs:152:    let conn = zbus::Connection::system()
+crates/system/os-actions/src/users.rs:156:    let proxy = zbus::Proxy::new(&conn, DEST, path, USER)
+crates/system/os-actions/src/users.rs:200:        let conn = zbus::Connection::system()
+crates/system/os-actions/src/users.rs:204:        let proxy = zbus::Proxy::new(&conn, DEST, path, USER)
+crates/system/power/src/config.rs:53:/// Resolve the shared settings path (`$XDG_CONFIG_HOME/tilo/settings.json`,
+crates/system/system-extension/src/lib.rs:481:        if metadata.file_type().is_symlink() || !metadata.is_file() {
+crates/system/system-extension/src/lib.rs:805:        use std::os::unix::fs::symlink;
+crates/system/system-extension/src/lib.rs:818:        symlink(&target, &path).unwrap();
+crates/system/system-extension/src/lib.rs:847:    #[cfg(unix)]
+crates/system/system-extension/src/lib.rs:850:        use std::os::unix::fs::PermissionsExt as _;
+crates/system/tinker/src/session.rs:13://! * `$HOME` is the layer's own home, not the user's. Sharing the host home
+crates/system/tinker/src/session.rs:134:            for f in ["/etc/resolv.conf"] {
+crates/system/tinker/src/session.rs:156:        push!("HOME");
+crates/system/tinker/src/session.rs:256:        let h = pos(&v, "HOME");
+crates/system/tinker/src/session.rs:310:        assert!(!v.iter().any(|x| x == "/etc/resolv.conf"));
+crates/system/desktop-entry/src/launch.rs:20://! writes to the user's real `$HOME`).
+crates/system/desktop-entry/src/launch.rs:45:    "HOME",
+crates/system/desktop-entry/src/launch.rs:59:    "XDG_DATA_HOME",
+crates/system/desktop-entry/src/launch.rs:60:    "XDG_CONFIG_HOME",
+crates/system/desktop-entry/src/launch.rs:61:    "XDG_CACHE_HOME",
+crates/system/desktop-entry/src/launch.rs:62:    "XDG_STATE_HOME",
+crates/system/desktop-entry/src/launch.rs:63:    "XDG_DATA_DIRS",
+crates/system/desktop-entry/src/launch.rs:64:    "XDG_CONFIG_DIRS",
+crates/system/desktop-entry/src/launch.rs:95:pub const XDG_CURRENT_DESKTOP: &str = "tilo";
+crates/system/desktop-entry/src/launch.rs:153:        let mut cmd = Command::new(&self.program);
+crates/system/desktop-entry/src/launch.rs:166:    /// Host path of the compositor's Wayland socket, e.g. `/run/user/1000/wayland-1`.
+crates/system/desktop-entry/src/launch.rs:167:    /// `WAYLAND_DISPLAY` is set to its file name and `XDG_RUNTIME_DIR` to its directory, so a
+crates/system/desktop-entry/src/launch.rs:255:    // WAYLAND_DISPLAY resolves relative to XDG_RUNTIME_DIR, so mixing sources here is how an
+crates/system/desktop-entry/src/launch.rs:266:                "XDG_RUNTIME_DIR".to_string(),
+crates/system/desktop-entry/src/launch.rs:270:    } else if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+crates/system/desktop-entry/src/launch.rs:272:            "XDG_RUNTIME_DIR".to_string(),
+crates/system/desktop-entry/src/launch.rs:277:        "XDG_CURRENT_DESKTOP".to_string(),
+crates/system/desktop-entry/src/launch.rs:278:        XDG_CURRENT_DESKTOP.to_string(),
+crates/system/desktop-entry/src/launch.rs:281:        "XDG_SESSION_DESKTOP".to_string(),
+crates/system/desktop-entry/src/launch.rs:282:        XDG_CURRENT_DESKTOP.to_string(),
+crates/system/desktop-entry/src/launch.rs:284:    env.insert("XDG_SESSION_TYPE".to_string(), "wayland".to_string());
+crates/system/desktop-entry/src/launch.rs:301:        env.insert("XDG_ACTIVATION_TOKEN".to_string(), token.to_string());
+crates/system/desktop-entry/src/launch.rs:311:        // installed xwayland-satellite also reads XDG_ACTIVATION_TOKEN above
+crates/system/desktop-entry/src/launch.rs:404:                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
+crates/system/desktop-entry/src/launch.rs:414:            launch.env.get("XDG_RUNTIME_DIR").map(String::as_str),
+crates/system/desktop-entry/src/launch.rs:415:            Some("/run/user/1000")
+crates/system/desktop-entry/src/launch.rs:418:            launch.env.get("XDG_CURRENT_DESKTOP").map(String::as_str),
+crates/system/desktop-entry/src/launch.rs:434:                x11_authority: Some(PathBuf::from("/run/user/1000/tilo/Xauthority")),
+crates/system/desktop-entry/src/launch.rs:440:            launch.env.get("XDG_ACTIVATION_TOKEN").map(String::as_str),
+crates/system/desktop-entry/src/launch.rs:446:            "classic X11 clients receive the startup-notification bridge too; xwayland-satellite itself reads XDG_ACTIVATION_TOKEN"
+crates/system/desktop-entry/src/launch.rs:456:                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
+crates/system/desktop-entry/src/launch.rs:458:                x11_authority: Some(PathBuf::from("/run/user/1000/tilo-session/Xauthority")),
+crates/system/desktop-entry/src/launch.rs:466:            Some("/run/user/1000/tilo-session/Xauthority")
+crates/system/desktop-entry/src/launch.rs:503:            launch.env.get("XDG_SESSION_DESKTOP").map(String::as_str),
+crates/system/desktop-entry/src/launch.rs:602:                wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-tilo")),
+crates/system/desktop-entry/src/launch.rs:604:                x11_authority: Some(PathBuf::from("/run/user/1000/tilo/Xauthority")),
+crates/system/desktop-entry/src/launch.rs:614:            "XDG_RUNTIME_DIR=/run/user/1000",
+crates/system/desktop-entry/src/launch.rs:616:            "XDG_CURRENT_DESKTOP=tilo",
+crates/system/desktop-entry/src/launch.rs:617:            "XDG_SESSION_DESKTOP=tilo",
+crates/system/windows-vm/src/graphics.rs:382:    use std::os::unix::fs::symlink;
+crates/system/windows-vm/src/graphics.rs:442:        symlink(&vf, pf.join("virtfn0")).unwrap();
+crates/system/windows-vm/src/graphics.rs:443:        symlink(&driver, vf.join("driver")).unwrap();
+crates/system/windows-vm/src/graphics.rs:444:        symlink(&group, vf.join("iommu_group")).unwrap();
+crates/system/os-actions/src/linux_physical_gamepad.rs:11:use std::os::fd::AsRawFd as _;
+crates/system/os-actions/src/linux_physical_gamepad.rs:12:use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, OpenOptionsExt as _};
+crates/system/os-actions/src/linux_physical_gamepad.rs:76:            input: PathBuf::from("/dev/input"),
+crates/system/os-actions/src/linux_physical_gamepad.rs:77:            udev_data: PathBuf::from("/run/udev/data"),
+crates/system/os-actions/src/linux_physical_gamepad.rs:78:            sys_class_input: PathBuf::from("/sys/class/input"),
+crates/system/os-actions/src/linux_physical_gamepad.rs:157:        let major = libc::major(rdev as libc::dev_t);
+crates/system/os-actions/src/linux_physical_gamepad.rs:158:        let minor = libc::minor(rdev as libc::dev_t);
+crates/system/os-actions/src/linux_physical_gamepad.rs:186:            .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
+crates/system/os-actions/src/linux_physical_gamepad.rs:194:                Err(error) if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOTTY)) => {
+crates/system/os-actions/src/linux_physical_gamepad.rs:295:    fn from_abs_info(info: libc::input_absinfo, kind: AxisKind) -> io::Result<Self> {
+crates/system/os-actions/src/linux_physical_gamepad.rs:382:fn query_abs_info(fd: libc::c_int, code: u16) -> io::Result<libc::input_absinfo> {
+crates/system/os-actions/src/linux_physical_gamepad.rs:386:    let mut info: libc::input_absinfo = unsafe { std::mem::zeroed() };
+crates/system/os-actions/src/linux_physical_gamepad.rs:387:    let request = nix::request_code_read!(
+crates/system/os-actions/src/linux_physical_gamepad.rs:390:        size_of::<libc::input_absinfo>()
+crates/system/os-actions/src/linux_physical_gamepad.rs:392:    let result = unsafe { libc::ioctl(fd, request as libc::c_ulong, &mut info) };
+crates/system/os-actions/src/linux_physical_gamepad.rs:400:fn read_event(file: &mut File) -> io::Result<Option<libc::input_event>> {
+crates/system/os-actions/src/linux_physical_gamepad.rs:403:    let mut event: libc::input_event = unsafe { std::mem::zeroed() };
+crates/system/os-actions/src/linux_physical_gamepad.rs:407:            size_of::<libc::input_event>(),
+crates/system/os-actions/src/linux_physical_gamepad.rs:429:    fn abs_info(minimum: i32, maximum: i32, flat: i32) -> libc::input_absinfo {
+crates/system/os-actions/src/linux_physical_gamepad.rs:430:        libc::input_absinfo {
+crates/system/tilo-bluez/examples/live_check.rs:20://! Fedora's `/usr/share/dbus-1/system.d/bluetooth.conf` grants
+crates/system/tilo-bluez/examples/live_check.rs:78:    let conn = zbus::Connection::system()
+crates/system/tilo-bluez/examples/live_check.rs:81:    let proxy = zbus::Proxy::new(&conn, unique_name, path, "org.bluez.Agent1")
+crates/system/tilo-bluez/examples/live_check.rs:84:    let device = zbus::zvariant::ObjectPath::try_from(DEV).map_err(|e| e.to_string())?;
+crates/system/tilo-bluez/examples/live_check.rs:90:        Err(zbus::Error::MethodError(name, detail, _)) => Ok(format!(
+crates/system/tilo-bluez/examples/live_check.rs:108:        let out = std::process::Command::new("sudo")
+crates/system/tilo-bluez/examples/live_check.rs:223:    let caller = zbus::Connection::system()
+crates/system/tilo-bluez/examples/live_check.rs:226:    let proxy = zbus::Proxy::new(&caller, unique, tilo_bluez::AGENT_PATH, "org.bluez.Agent1")
+crates/system/tilo-bluez/examples/live_check.rs:229:    let device = zbus::zvariant::ObjectPath::try_from(DEV).map_err(|e| e.to_string())?;
+crates/system/tilo-bluez/examples/live_check.rs:239:        Err(zbus::Error::MethodError(name, _, _))
+crates/system/tilo-bluez/examples/live_check.rs:260:    let conn2 = zbus::Connection::system()
+crates/system/tilo-bluez/examples/live_check.rs:293:    let conn3 = zbus::Connection::system()
+crates/system/tilo-bluez/examples/live_check.rs:370:    let conn4 = zbus::Connection::system()
+crates/system/power/src/logind.rs:1://! `systemd-logind` integration (`org.freedesktop.login1`) over `zbus`.
+crates/system/power/src/logind.rs:18:use zbus::Connection;
+crates/system/power/src/logind.rs:19:use zbus::zvariant::OwnedFd;
+crates/system/power/src/logind.rs:29:    proxy: zbus::Proxy<'static>,
+crates/system/power/src/logind.rs:39:    pub async fn connect() -> zbus::Result<Self> {
+crates/system/power/src/logind.rs:50:    pub async fn with_connection(conn: &Connection) -> zbus::Result<Self> {
+crates/system/power/src/logind.rs:51:        let proxy = zbus::Proxy::new(conn, DEST, PATH, IFACE).await?;
+crates/system/power/src/logind.rs:66:    pub async fn can_suspend(&self) -> zbus::Result<String> {
+crates/system/power/src/logind.rs:79:    pub async fn suspend(&self, interactive: bool) -> zbus::Result<()> {
+crates/system/power/src/logind.rs:100:    ) -> zbus::Result<LogindInhibitor> {
+crates/system/power/src/logind.rs:117:    ) -> zbus::Result<Vec<(String, String, String, String, u32, u32)>> {
+crates/system/power/src/logind.rs:129:    ) -> zbus::Result<zbus::proxy::SignalStream<'static>> {
+crates/system/power/src/logind.rs:140:    pub async fn delegate_handled_keys(&self) -> zbus::Result<LogindInhibitor> {
+crates/system/os-actions/src/battery.rs:54:    power_devices_from(Path::new("/sys/class/power_supply"))
+crates/system/os-actions/src/battery.rs:111:        Self::from_root(Path::new("/sys/class/power_supply"))
+crates/system/os-actions/src/battery.rs:311:    crate::process::run("systemctl", &["start", "--wait", &unit])
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:12:use std::os::unix::process::CommandExt as _;
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:27:const PCI_DEVICES_PATH: &str = "/sys/bus/pci/devices";
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:28:const STAGE_PATH: &str = "/var/lib/tilo/system-extensions/boot-pack-stage.json";
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:29:const REQUEST_PATH: &str = "/var/lib/tilo/system-extensions/boot-pack-request";
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:30:const STATUS_PATH: &str = "/run/tilo/system-extension-api/status.json";
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:493:    if metadata.file_type().is_symlink()
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:509:    let mut command = Command::new(program);
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:546:                    unsafe { libc::kill(process_group, libc::SIGKILL) };
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:603:    let status = Command::new(program)
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:788:    #[cfg(unix)]
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:790:        use std::os::unix::fs::PermissionsExt;
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:810:    #[cfg(unix)]
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:812:        use std::os::unix::fs::PermissionsExt;
+crates/system/system-extension/src/bin/tilo-system-extension-manager.rs:816:        fs::write(&overflow, "#!/bin/sh\nhead -c 8192 /dev/zero\n").unwrap();
+crates/system/tilo-bluez/Cargo.toml:22:# unit-testable without a bus, and a thin async zbus layer over it.
+crates/system/tilo-bluez/Cargo.toml:26:# Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
+crates/system/tilo-bluez/Cargo.toml:28:zbus = { version = "4", default-features = false, features = ["tokio"] }
+crates/system/desktop-entry/src/scan.rs:3://! The search path is the XDG one: `$XDG_DATA_HOME/applications` first, then each
+crates/system/desktop-entry/src/scan.rs:4://! `$XDG_DATA_DIRS` entry's `applications` in order. Flatpak's two export roots are appended
+crates/system/desktop-entry/src/scan.rs:6://! `XDG_DATA_DIRS` itself, but a compositor started from a bare service manager may not have
+crates/system/desktop-entry/src/scan.rs:24:/// `XDG_CURRENT_DESKTOP` this desktop announces, and the name `OnlyShowIn` / `NotShowIn`
+crates/system/desktop-entry/src/scan.rs:94:    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+crates/system/desktop-entry/src/scan.rs:97:    push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+crates/system/desktop-entry/src/scan.rs:102:    if let Some(dir) = std::env::var_os("XDG_DATA_HOME")
+crates/system/desktop-entry/src/scan.rs:107:    let home = std::env::var_os("HOME")?;
+crates/system/desktop-entry/src/scan.rs:115:    let raw = std::env::var_os("XDG_DATA_DIRS")
+crates/system/desktop-entry/src/scan.rs:281:        let is_dir = if file_type.is_symlink() {
+crates/system/desktop-entry/src/scan.rs:328:    use std::os::unix::fs::PermissionsExt;
+crates/system/desktop-entry/src/scan.rs:569:             XDG_DATA_DIRS does not name them: {dirs:?}"
+crates/system/os-actions/src/privacy.rs:5:use std::os::unix::process::CommandExt as _;
+crates/system/os-actions/src/privacy.rs:66:    let mut status = get_privacy_status_from(Path::new("/sys/class/rfkill"), Path::new("/dev"));
+crates/system/os-actions/src/privacy.rs:129:    let mut child = Command::new("pw-dump")
+crates/system/os-actions/src/privacy.rs:186:        unsafe { libc::kill(group, libc::SIGKILL) };
+crates/system/os-actions/src/privacy.rs:212:    std::fs::read_to_string("/proc/self/status")
+crates/system/os-actions/src/privacy.rs:337:    let binary = std::fs::read_link(root.join("exe")).ok()?;
+crates/system/os-actions/src/privacy.rs:383:    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+crates/system/os-actions/src/privacy.rs:444:        use std::os::unix::fs::symlink;
+crates/system/os-actions/src/privacy.rs:453:        symlink("/usr/bin/tilo-video-chat", process.join("exe")).unwrap();
+crates/system/os-actions/src/privacy.rs:484:        use std::os::unix::fs::symlink;
+crates/system/os-actions/src/privacy.rs:489:        symlink("/app/bin/chat", process.join("exe")).unwrap();
+crates/system/power/src/sysfs.rs:1://! Reading the battery straight off `/sys/class/power_supply`.
+crates/system/power/src/sysfs.rs:26:const POWER_SUPPLY: &str = "/sys/class/power_supply";
+crates/system/power/src/sysfs.rs:133:/// Every `/sys/class/power_supply/*` entry whose `type` matches.
+crates/system/tts/src/speechd.rs:18:use std::os::unix::net::UnixStream;
+crates/system/os-actions/src/linux_virtual_gamepad.rs:7://! and never require `/dev/uinput`.
+crates/system/os-actions/src/linux_virtual_gamepad.rs:121:#[cfg(target_os = "linux")]
+crates/system/os-actions/src/linux_virtual_gamepad.rs:126:    use std::os::fd::AsRawFd as _;
+crates/system/os-actions/src/linux_virtual_gamepad.rs:127:    use std::os::unix::fs::OpenOptionsExt as _;
+crates/system/os-actions/src/linux_virtual_gamepad.rs:171:    nix::ioctl_write_int!(ui_set_evbit, UINPUT_IOCTL_BASE, 100);
+crates/system/os-actions/src/linux_virtual_gamepad.rs:172:    nix::ioctl_write_int!(ui_set_keybit, UINPUT_IOCTL_BASE, 101);
+crates/system/os-actions/src/linux_virtual_gamepad.rs:173:    nix::ioctl_write_int!(ui_set_absbit, UINPUT_IOCTL_BASE, 103);
+crates/system/os-actions/src/linux_virtual_gamepad.rs:174:    nix::ioctl_none!(ui_dev_create, UINPUT_IOCTL_BASE, 1);
+crates/system/os-actions/src/linux_virtual_gamepad.rs:175:    nix::ioctl_none!(ui_dev_destroy, UINPUT_IOCTL_BASE, 2);
+crates/system/os-actions/src/linux_virtual_gamepad.rs:194:                .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
+crates/system/os-actions/src/linux_virtual_gamepad.rs:195:                .open("/dev/uinput")?;
+crates/system/os-actions/src/linux_virtual_gamepad.rs:210:            let mut setup: libc::uinput_user_dev = unsafe { std::mem::zeroed() };
+crates/system/os-actions/src/linux_virtual_gamepad.rs:213:                *target = libc::c_char::try_from(source).unwrap_or_default();
+crates/system/os-actions/src/linux_virtual_gamepad.rs:226:                    size_of::<libc::uinput_user_dev>(),
+crates/system/os-actions/src/linux_virtual_gamepad.rs:230:            // SAFETY: fd refers to `/dev/uinput`; this no-argument ioctl is
+crates/system/os-actions/src/linux_virtual_gamepad.rs:241:            let event = libc::input_event {
+crates/system/os-actions/src/linux_virtual_gamepad.rs:242:                time: libc::timeval {
+crates/system/os-actions/src/linux_virtual_gamepad.rs:255:                    size_of::<libc::input_event>(),
+crates/system/os-actions/src/linux_virtual_gamepad.rs:307:            // SAFETY: fd is the same `/dev/uinput` file used to create this
+crates/system/os-actions/src/linux_virtual_gamepad.rs:322:        fd: libc::c_int,
+crates/system/os-actions/src/linux_virtual_gamepad.rs:324:            libc::c_int,
+crates/system/os-actions/src/linux_virtual_gamepad.rs:325:            nix::sys::ioctl::ioctl_param_type,
+crates/system/os-actions/src/linux_virtual_gamepad.rs:326:        ) -> nix::Result<libc::c_int>,
+crates/system/os-actions/src/linux_virtual_gamepad.rs:332:        unsafe { ioctl(fd, nix::sys::ioctl::ioctl_param_type::from(code)) }
+crates/system/os-actions/src/linux_virtual_gamepad.rs:337:    fn configure_axes(setup: &mut libc::uinput_user_dev) -> io::Result<()> {
+crates/system/os-actions/src/linux_virtual_gamepad.rs:388:#[cfg(not(target_os = "linux"))]
+crates/system/os-actions/src/linux_virtual_gamepad.rs:400:#[cfg(not(target_os = "linux"))]
+crates/system/os-actions/src/linux_virtual_gamepad.rs:403:#[cfg(not(target_os = "linux"))]
+crates/system/os-actions/src/printing.rs:177:    let mut command = Command::new("scanimage");
+crates/system/os-actions/src/printing.rs:712:        assert!(validate_uri("file:///etc/shadow").is_err());
+crates/system/windows-vm/src/command.rs:155:        let mut command = Command::new(&request.program);
+crates/system/windows-vm/src/command.rs:197:        let mut oversized = CommandRequest::new("sh").args(["-c", "head -c 4096 /dev/zero"]);
+crates/system/desktop-entry/src/entry.rs:557:            Path::new("/var/lib/flatpak/exports/share/applications/org.old.App.desktop"),
+crates/system/tts/src/factory.rs:31:    #[cfg(unix)]
+crates/system/os-actions/Cargo.toml:35:zbus = { version = "4", default-features = false, features = ["tokio"] }
+crates/system/os-actions/src/display.rs:14://! Writing `/sys/class/backlight/<dev>/brightness` is what `brightnessctl` does anyway. The
+crates/system/os-actions/src/display.rs:29:const BACKLIGHT: &str = "/sys/class/backlight";
+crates/system/os-actions/src/display.rs:30:const IIO_DEVICES: &str = "/sys/bus/iio/devices";
+crates/system/tts/src/speaker.rs:37:#[cfg(unix)]
+crates/system/tts/src/speaker.rs:197:    #[cfg(unix)]
+crates/system/tts/Cargo.toml:29:[target.'cfg(unix)'.dependencies]
+crates/system/windows-vm/src/config.rs:73:        let architecture = if cfg!(target_arch = "aarch64") {
+crates/system/windows-vm/src/config.rs:215:            "/var/lib/tilo/windows/system.qcow2",
+crates/system/windows-vm/src/config.rs:216:            "/var/lib/tilo/windows/nvram.fd",
+crates/system/power/src/bridge.rs:109:        self.lock().commands.push(PowerCommand::Suspend);
+crates/system/power/src/bridge.rs:113:        self.lock().commands.push(PowerCommand::LockScreenDrawn);
+crates/system/power/src/bridge.rs:119:            .push(PowerCommand::UpdatePolicy(policy));
+crates/system/power/src/bridge.rs:164:        assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
+crates/system/power/src/bridge.rs:174:        assert_eq!(b.drain_commands(), vec![PowerCommand::Suspend]);
+crates/system/power/src/bridge.rs:184:            vec![PowerCommand::UpdatePolicy(policy)]
+crates/system/os-actions/src/time.rs:200:        assert!(!valid_timezone("../../etc/passwd"));
+crates/system/os-actions/src/time.rs:201:        assert!(!valid_timezone("/etc/localtime"));
+crates/system/os-actions/src/session.rs:7:use std::os::unix::fs::OpenOptionsExt as _;
+crates/system/os-actions/src/session.rs:9:use std::os::unix::fs::PermissionsExt as _;
+crates/system/os-actions/src/session.rs:32:/// Returns an error message if `loginctl`/`systemctl` is not installed, is not authorised, or
+crates/system/os-actions/src/session.rs:36:        SessionAction::Lock => run("loginctl", &["lock-session"]),
+crates/system/os-actions/src/session.rs:41:        // in `/usr/share/dbus-1/system.d/gdm.conf`.
+crates/system/os-actions/src/session.rs:52:        SessionAction::Suspend => run("systemctl", &["suspend"]),
+crates/system/os-actions/src/session.rs:53:        SessionAction::Restart => run("systemctl", &["reboot"]),
+crates/system/os-actions/src/session.rs:54:        SessionAction::ShutDown => run("systemctl", &["poweroff"]),
+crates/system/os-actions/src/session.rs:114:                binary: "loginctl",
+crates/system/os-actions/src/session.rs:129:                binary: "systemctl",
+crates/system/os-actions/src/session.rs:133:                binary: "systemctl",
+crates/system/os-actions/src/session.rs:137:                binary: "systemctl",
+crates/system/os-actions/src/session.rs:152:    fn logout_request_is_private_atomic_and_never_calls_loginctl() {
+crates/system/os-actions/src/lib.rs:47:#[cfg(target_os = "linux")]
+crates/system/os-actions/src/lib.rs:49:#[cfg(not(target_os = "linux"))]
+crates/system/tts/src/lib.rs:87:#[cfg(unix)]
+crates/system/tts/src/lib.rs:96:#[cfg(unix)]
+crates/system/power/Cargo.toml:23:    "dep:zbus",
+crates/system/power/Cargo.toml:29:# thin zbus actuator. Depended on by `shell`; the Settings pane shares
+crates/system/power/Cargo.toml:41:# Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
+crates/system/power/Cargo.toml:43:zbus = { version = "4", default-features = false, features = ["tokio"], optional = true }
+crates/system/tts/src/espeak.rs:14:use std::os::unix::process::CommandExt as _;
+crates/system/tts/src/espeak.rs:103:                let _ = nix::sys::signal::killpg(
+crates/system/tts/src/espeak.rs:104:                    nix::unistd::Pid::from_raw(pid),
+crates/system/tts/src/espeak.rs:105:                    nix::sys::signal::Signal::SIGKILL,
+crates/system/tts/src/espeak.rs:114:        let mut cmd = Command::new(self.bin);
+crates/system/os-actions/src/firmware.rs:8:use std::os::unix::process::CommandExt as _;
+crates/system/os-actions/src/firmware.rs:170:    let mut child = Command::new("fwupdmgr")
+crates/system/os-actions/src/firmware.rs:275:        unsafe { libc::kill(group, libc::SIGKILL) };
+crates/system/windows-vm/src/libvirt.rs:15:const INSTALL_MEDIA: &str = "/var/lib/tilo/windows/install-media.iso";
+crates/system/windows-vm/src/libvirt.rs:16:const GUEST_TOOLS_MEDIA: &str = "/var/lib/tilo/windows/tilo-guest-tools.iso";
+crates/system/windows-vm/src/libvirt.rs:189:                "/dev/stdin",
+crates/system/windows-vm/src/libvirt.rs:223:                "/dev/stdin",
+crates/system/windows-vm/src/libvirt.rs:275:            .args(["--connect", LIBVIRT_URI, "define", "/dev/stdin"])
+crates/system/windows-vm/src/libvirt.rs:578:<rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
+crates/system/windows-vm/src/libvirt.rs:673:            "/var/lib/tilo/windows/a&b.qcow2",
+crates/system/windows-vm/src/libvirt.rs:674:            "/var/lib/tilo/windows/nvram.fd",
+crates/system/windows-vm/src/libvirt.rs:720:                        "/var/lib/qos/windows/system.qcow2",
+crates/system/windows-vm/src/libvirt.rs:721:                        "/var/lib/qos/windows/firmware-state",
+crates/system/windows-vm/src/libvirt.rs:740:            "/var/lib/qos/windows/system.qcow2",
+crates/system/windows-vm/src/libvirt.rs:741:            "/var/lib/qos/windows/vars.json",
+crates/system/windows-vm/src/libvirt.rs:746:        assert!(xml.contains("<varstore path='/var/lib/qos/windows/vars.json'/>"));
+crates/system/windows-vm/src/libvirt.rs:793:        assert!(requests[1].args.iter().any(|arg| arg == "/dev/stdin"));
+crates/system/windows-vm/examples/domain-xml.rs:17:        "/var/lib/qos/windows/system.qcow2",
+crates/system/windows-vm/examples/domain-xml.rs:18:        "/var/lib/qos/windows/firmware-variables",
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:5:use std::os::fd::AsRawFd;
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:6:use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:17:const ROOT: &str = "/var/lib/tilo/windows";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:18:const UUID_FILE: &str = "/var/lib/tilo/windows/domain.uuid";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:19:const SYSTEM_DISK: &str = "/var/lib/tilo/windows/system.qcow2";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:20:const NVRAM: &str = "/var/lib/tilo/windows/nvram.fd";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:22:// projections below `$XDG_RUNTIME_DIR/tilo/windows-vm`.
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:23:const EGRESS_RUNTIME_ROOT: &str = "/run/tilo/windows-egress";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:24:const LEASE_ROOT: &str = "/run/tilo/windows-egress/leases";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:25:const EGRESS_SUMMARY: &str = "/run/tilo/windows-egress/summary.json";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:26:const STATUS_SUMMARY: &str = "/run/tilo/windows-egress/status.json";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:27:const CONTROLLER_LOCK: &str = "/run/tilo/windows-egress/controller.lock";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:28:const GRAPHICS_ASSIGNMENT: &str = "/var/lib/tilo/windows/graphics-assignment.json";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:428:    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:725:    use std::os::fd::AsRawFd;
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:744:        assert_eq!(unsafe { libc::flock(first.as_raw_fd(), libc::LOCK_EX) }, 0);
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:747:            unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:751:        assert_eq!(unsafe { libc::flock(first.as_raw_fd(), libc::LOCK_UN) }, 0);
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:12:use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:56:    let mut satellite = Command::new(SATELLITE)
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:148:    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:161:        Command::new(FREERDP)
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:163:        let mut sandbox = Command::new(BWRAP);
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:178:    let runtime = env::var_os("XDG_RUNTIME_DIR")
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:180:        .ok_or_else(|| "XDG_RUNTIME_DIR is not set".to_string())?;
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:182:        return Err("XDG_RUNTIME_DIR is not absolute".to_string());
+crates/system/settings-store/Cargo.toml:15:# Resolves `$HOME` for the XDG fallback. `dirs::config_dir()` is deliberately
+crates/system/settings-store/Cargo.toml:17:# handling of a relative `XDG_CONFIG_HOME` differs from the XDG basedir spec.
+crates/system/settings-store/src/hardware.rs:112:    /// Linux `/proc/<pid>/stat` start-time ticks. Paired with the PID so a
+crates/system/settings-store/src/hardware.rs:129:    /// Returns an error if `XDG_RUNTIME_DIR` is unset or relative, `self`
+crates/system/settings-store/src/hardware.rs:133:            .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is unavailable"))?;
+crates/system/settings-store/src/hardware.rs:141:    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+crates/system/settings-store/src/hardware.rs:272:/// Private session state path. A relative or absent `XDG_RUNTIME_DIR` is not
+crates/system/settings-store/src/hardware.rs:276:    std::env::var_os("XDG_RUNTIME_DIR")
+crates/system/settings-store/src/hardware.rs:910:        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/hardware.rs:913:        unsafe { std::env::set_var("XDG_CONFIG_HOME", temp.path()) };
+crates/system/settings-store/src/hardware.rs:940:            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+crates/system/settings-store/src/hardware.rs:941:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/settings-store/src/hardware.rs:1498:        let previous = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/hardware.rs:1499:        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+crates/system/settings-store/src/hardware.rs:1509:            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+crates/system/settings-store/src/hardware.rs:1510:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/settings-store/src/lib.rs:8://! the file lives in three different ways — hand-rolled `XDG_CONFIG_HOME` → `$HOME/.config`,
+crates/system/settings-store/src/lib.rs:10://! The XDG spec says `XDG_CONFIG_HOME` must be **absolute** and a relative value must be
+crates/system/settings-store/src/lib.rs:13://! `XDG_CONFIG_HOME`, the compositor and power policy read one file while other apps read
+crates/system/settings-store/src/lib.rs:55:/// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
+crates/system/settings-store/src/lib.rs:56:/// only when neither variable yields a usable path. Per the XDG spec, `XDG_CONFIG_HOME` is
+crates/system/settings-store/src/lib.rs:58:/// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
+crates/system/settings-store/src/lib.rs:61:    let base = std::env::var_os("XDG_CONFIG_HOME")
+crates/system/settings-store/src/lib.rs:266:        let prev = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/lib.rs:267:        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+crates/system/settings-store/src/lib.rs:274:            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+crates/system/settings-store/src/lib.rs:275:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/settings-store/src/lib.rs:285:        // `$HOME/.config` — one file, two locations, silently.
+crates/system/settings-store/src/lib.rs:286:        let prev = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/lib.rs:287:        unsafe { std::env::set_var("XDG_CONFIG_HOME", "relative/config") };
+crates/system/settings-store/src/lib.rs:289:        let root = config_root().expect("falls back to $HOME/.config");
+crates/system/settings-store/src/lib.rs:296:            "a relative XDG_CONFIG_HOME must be ignored, got {root:?}"
+crates/system/settings-store/src/lib.rs:302:            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+crates/system/settings-store/src/lib.rs:303:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/settings-store/src/lib.rs:310:        let prev = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/lib.rs:311:        unsafe { std::env::set_var("XDG_CONFIG_HOME", "") };
+crates/system/settings-store/src/lib.rs:312:        let root = config_root().expect("falls back to $HOME/.config");
+crates/system/settings-store/src/lib.rs:315:            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+crates/system/settings-store/src/lib.rs:316:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/swipe/csrc/swipe_ffi.cpp:55:extern "C" {
+crates/system/swipe/csrc/swipe_ffi.cpp:150:}  // extern "C"
+crates/system/tinker/demo.sh:9:# id range in /etc/subuid. Nothing here asks for a password.
+crates/system/tinker/demo.sh:21:unshare --user --map-root-user --map-auto --mount -- rm -rf "$TILO_TINKER_ROOT" 2>/dev/null
+crates/system/tinker/demo.sh:35:  echo "tuned = yes" > /etc/my-tweak.conf
+crates/system/tinker/demo.sh:36:  rm -f /etc/motd
+crates/system/tinker/demo.sh:47:"$TINKER" revert cowbox /etc/my-tweak.conf
+crates/system/tinker/demo.sh:49:  printf "my-tweak.conf  : %s\n" "$(cat /etc/my-tweak.conf 2>/dev/null || echo reverted)"
+crates/system/tinker/demo.sh:50:  printf "motd           : %s\n" "$(cat /etc/motd 2>/dev/null || echo still deleted)"
+crates/system/tinker/demo.sh:51:  printf "cowsay         : %s\n" "$(ls /usr/games/cowsay 2>/dev/null || echo missing)"'
+crates/system/tinker/demo.sh:55:  ls /usr/games/cowsay >/dev/null && echo "buildbox can see cowbox underneath it"

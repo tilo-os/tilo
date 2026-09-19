@@ -1,0 +1,58 @@
+{
+  "head": "6e5721c6ce73460a282f40b3a265828f5dd28072",
+  "prior_manifest": "task-3-after.json",
+  "files": [
+    {
+      "path": "dist/verify-payload.sh",
+      "before_sha256": "a12a768980a3b7e18401f2d5b4a34cd3162adc6e37eb0e5c07545b379c27a00e",
+      "after_sha256": "01fefef47ada378dcdcdfb8b1727a8b7262f61fcbdf5d801e423fc3524c01298",
+      "bytes": 4408
+    },
+    {
+      "path": "dist/ci/verify-nix-result.sh",
+      "before_sha256": "4095eb5684bfb0a859165e7e89bd09b1bba94bf1151c075d8bc01f201c970d96",
+      "after_sha256": "13e0164bf0714a395678aad6db389c690eb9ce90be7f197b501364a520fdd351",
+      "bytes": 4050
+    },
+    {
+      "path": "dist/ci/run-payload-contract-tests.sh",
+      "before_sha256": "7668d8d54345056c94a42d77b363ee00900fd5e5a1c9d2f78d75d42082686e1f",
+      "after_sha256": "7b9447b0d70844d535fe37cf7b4fec22ec0395e2cf33726dc89927f551fe1640",
+      "bytes": 12168
+    },
+    {
+      "path": "dist/ci/install-build-deps.sh",
+      "before_sha256": "e6d3071bb659ad0847492962c6d6a5ec810a95fded38eac90a6961a18a2ad22b",
+      "after_sha256": "3f3675bb11dd5e11a2d4284af964d14acb034303b1a9a3c059f2d4d7d76b9c52",
+      "bytes": 3682
+    },
+    {
+      "path": "dist/ci/run-package-job.sh",
+      "before_sha256": "d2d73404ec298767a6b5b9bbc9b45a46226706291300b100eda1c0740ccb55bf",
+      "after_sha256": "8b4eb16c68b3dc5fe0ee934d95fb5fe9c5f0277e49b817c71666267d7409e96a",
+      "bytes": 19966
+    },
+    {
+      "path": "dist/ci/verify-installed-imager.py",
+      "before_sha256": null,
+      "after_sha256": "2afd698d4befcd2b5ce1b03e87540bc6821e952e108cbdc231bf2c563d718ae0",
+      "bytes": 1595
+    },
+    {
+      "path": "dist/ci/test-installed-imager.py",
+      "before_sha256": null,
+      "after_sha256": "745eac28225cd1a5e28d402a8133c3849bddc994edcdd3c3a96442bb1da7595b",
+      "bytes": 5771
+    },
+    {
+      "path": "dist/ci/fixtures/import-smoke.c",
+      "before_sha256": null,
+      "after_sha256": "1a1c19906a614f33d3f4cc8a90a57e2ab19addc77c63ab37bcdf2ed55df3a29c",
+      "bytes": 1316
+    }
+  ],
+  "source_diff_sha256": "55a573167d9c0a00368eaa625672ab911a465035a3641bd0b6018b36498ac818",
+  "snapshot_sha256": "f92d22163b6488539fb5bb49196aa5a285b83fcb84b1fa29f12d5ab1414c4505",
+  "unchanged_workflow_sha256": "a8a1ba4a03e333df966ca23d942ddc4203fc1becd5379d0be33ba4c3a3eb40ed",
+  "unchanged_cargo_lock_sha256": "496c440cc52bee9d9f3bf3a97f89303260c4df5365be132d1f677132b624731b"
+}

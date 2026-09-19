@@ -1,0 +1,4285 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "path": "apps/agent/src/wire.rs",
+      "line": 8,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::IntoRawFd;",
+      "count": 1,
+      "finding_id": "A03-04",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A03-04: Agent diagnostic endpoints expose Unix transport (medium). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/agent/src/wire.rs",
+      "line": 9,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::net::UnixStream;",
+      "count": 1,
+      "finding_id": "A03-04",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A03-04: Agent diagnostic endpoints expose Unix transport (medium). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/backups/src/engine.rs",
+      "line": 924,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&elsewhere, repository_path(&destination)).unwrap();",
+      "count": 1,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/backups/src/engine.rs",
+      "line": 908,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&outside, restore.join(\" \")).unwrap();",
+      "count": 1,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/backups/src/engine.rs",
+      "line": 878,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&outside, source.join(\" \")).unwrap();",
+      "count": 1,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/backups/src/engine.rs",
+      "line": 720,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(target, path)?;",
+      "count": 1,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/backups/src/engine.rs",
+      "line": 205,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 2,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/backups/src/engine.rs",
+      "line": 724,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(unix))",
+      "count": 1,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/backups/src/engine.rs",
+      "line": 76,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 10,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/Cargo.toml",
+      "line": 41,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:libc->libc",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/Cargo.toml",
+      "line": 25,
+      "rule": "native-feature",
+      "fingerprint": "feature:wpe:ui/webview-wpe",
+      "count": 1,
+      "finding_id": "A03-13",
+      "removal_task": "E01",
+      "rationale": "Existing exact site from A03-13: Browser private process launch and WPE composition remain app-owned (medium). Remove this exception when E01 migrates it."
+    },
+    {
+      "path": "apps/browser/src/autofill.rs",
+      "line": 184,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::OpenOptionsExt;",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/autofill.rs",
+      "line": 295,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/autofill.rs",
+      "line": 182,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 2,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/browser_widget.rs",
+      "line": 3845,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg!(target_os = \" \")",
+      "count": 2,
+      "finding_id": "A03-11",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A03-11: App shortcut OS choice and Git credential bridge (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/browser/src/browser_widget.rs",
+      "line": 9348,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 2,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/browser/src/capabilities.rs",
+      "line": 55,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg!(target_os = \" \")",
+      "count": 2,
+      "finding_id": "A03-01",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A03-01: External URI/file launching belongs to a host capability (high). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/browser/src/native_blocker.rs",
+      "line": 259,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/browser/src/native_blocker.rs",
+      "line": 257,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 2,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/browser/src/private_window.rs",
+      "line": 58,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/browser/src/private_window.rs",
+      "line": 56,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/browser/src/session.rs",
+      "line": 125,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::OpenOptionsExt;",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/session.rs",
+      "line": 123,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/storage.rs",
+      "line": 148,
+      "rule": "native-api",
+      "fingerprint": "source:if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } != 0 {",
+      "count": 2,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/storage.rs",
+      "line": 166,
+      "rule": "native-api",
+      "fingerprint": "source:let result = unsafe { libc::kill(pid, 0) };",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/storage.rs",
+      "line": 167,
+      "rule": "native-api",
+      "fingerprint": "source:result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/storage.rs",
+      "line": 132,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::AsRawFd;",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/storage.rs",
+      "line": 118,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::OpenOptionsExt;",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/storage.rs",
+      "line": 69,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/storage.rs",
+      "line": 157,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(unix))",
+      "count": 2,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/browser/src/storage.rs",
+      "line": 67,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 11,
+      "finding_id": "A03-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A03-07: Browser private storage safety relies on Unix permissions, flock and PID liveness (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/chat/Cargo.toml",
+      "line": 73,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:ashpd->ashpd",
+      "count": 1,
+      "finding_id": "A03-05",
+      "removal_task": "M02",
+      "rationale": "Existing exact site from A03-05: Chat capture selection and media availability are Linux-shaped (high). Remove this exception when M02 migrates it."
+    },
+    {
+      "path": "apps/chat/src/media.rs",
+      "line": 641,
+      "rule": "native-api",
+      "fingerprint": "source:.map(ashpd::desktop::screencast::Stream::pipe_wire_node_id)",
+      "count": 1,
+      "finding_id": "A03-05",
+      "removal_task": "M02",
+      "rationale": "Existing exact site from A03-05: Chat capture selection and media availability are Linux-shaped (high). Remove this exception when M02 migrates it."
+    },
+    {
+      "path": "apps/chat/src/media.rs",
+      "line": 605,
+      "rule": "native-api",
+      "fingerprint": "source:use ashpd::WindowIdentifier;",
+      "count": 1,
+      "finding_id": "A03-05",
+      "removal_task": "M02",
+      "rationale": "Existing exact site from A03-05: Chat capture selection and media availability are Linux-shaped (high). Remove this exception when M02 migrates it."
+    },
+    {
+      "path": "apps/chat/src/media.rs",
+      "line": 606,
+      "rule": "native-api",
+      "fingerprint": "source:use ashpd::desktop::PersistMode;",
+      "count": 1,
+      "finding_id": "A03-05",
+      "removal_task": "M02",
+      "rationale": "Existing exact site from A03-05: Chat capture selection and media availability are Linux-shaped (high). Remove this exception when M02 migrates it."
+    },
+    {
+      "path": "apps/chat/src/media.rs",
+      "line": 607,
+      "rule": "native-api",
+      "fingerprint": "source:use ashpd::desktop::screencast::{CursorMode, Screencast, SourceType};",
+      "count": 1,
+      "finding_id": "A03-05",
+      "removal_task": "M02",
+      "rationale": "Existing exact site from A03-05: Chat capture selection and media availability are Linux-shaped (high). Remove this exception when M02 migrates it."
+    },
+    {
+      "path": "apps/clocks/src/lib.rs",
+      "line": 11,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};",
+      "count": 2,
+      "finding_id": "A01-03",
+      "removal_task": "I03",
+      "rationale": "Existing exact site from A01-03: Clocks implements authenticated-session transport and private writes (extract backend; high). Remove this exception when I03 migrates it."
+    },
+    {
+      "path": "apps/clocks/src/lib.rs",
+      "line": 10,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 6,
+      "finding_id": "A01-03",
+      "removal_task": "I03",
+      "rationale": "Existing exact site from A01-03: Clocks implements authenticated-session transport and private writes (extract backend; high). Remove this exception when I03 migrates it."
+    },
+    {
+      "path": "apps/code-editor/Cargo.toml",
+      "line": 58,
+      "rule": "native-dependency",
+      "fingerprint": "target.cfg(unix).dependencies:libc->libc",
+      "count": 1,
+      "finding_id": "A01-06",
+      "removal_task": "C01",
+      "rationale": "Existing exact site from A01-06: Code editor owns Unix subprocess-group lifecycle (extract backend; high). Remove this exception when C01 migrates it."
+    },
+    {
+      "path": "apps/code-editor/src/lsp.rs",
+      "line": 904,
+      "rule": "native-api",
+      "fingerprint": "source:unsafe { libc::kill(group, libc::SIGKILL) };",
+      "count": 2,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/code-editor/src/lsp.rs",
+      "line": 29,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::process::CommandExt as _;",
+      "count": 1,
+      "finding_id": "A01-06",
+      "removal_task": "C01",
+      "rationale": "Existing exact site from A01-06: Code editor owns Unix subprocess-group lifecycle (extract backend; high). Remove this exception when C01 migrates it."
+    },
+    {
+      "path": "apps/code-editor/src/lsp.rs",
+      "line": 28,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 3,
+      "finding_id": "A01-06",
+      "removal_task": "C01",
+      "rationale": "Existing exact site from A01-06: Code editor owns Unix subprocess-group lifecycle (extract backend; high). Remove this exception when C01 migrates it."
+    },
+    {
+      "path": "apps/contacts/Cargo.toml",
+      "line": 37,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:zbus->zbus",
+      "count": 1,
+      "finding_id": "A01-04",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A01-04: Contacts directly speaks a custom notification D-Bus extension (extract backend; high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/contacts/src/priority_contacts.rs",
+      "line": 23,
+      "rule": "native-api",
+      "fingerprint": "source:let Ok(connection) = zbus::blocking::Connection::session() else {",
+      "count": 1,
+      "finding_id": "A01-04",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A01-04: Contacts directly speaks a custom notification D-Bus extension (extract backend; high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/contacts/src/priority_contacts.rs",
+      "line": 26,
+      "rule": "native-api",
+      "fingerprint": "source:let Ok(proxy) = zbus::blocking::Proxy::new(",
+      "count": 1,
+      "finding_id": "A01-04",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A01-04: Contacts directly speaks a custom notification D-Bus extension (extract backend; high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/contacts/src/priority_contacts.rs",
+      "line": 34,
+      "rule": "native-api",
+      "fingerprint": "source:let published: Result<zbus::Message, _> =",
+      "count": 1,
+      "finding_id": "A01-04",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A01-04: Contacts directly speaks a custom notification D-Bus extension (extract backend; high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/containers/src/terminal.rs",
+      "line": 82,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 2,
+      "finding_id": "A04-12",
+      "removal_task": "H04",
+      "rationale": "Existing exact site from A04-12: Containers owns Podman/Distrobox backend and shell launcher scripts (high). Remove this exception when H04 migrates it."
+    },
+    {
+      "path": "apps/containers/src/terminal.rs",
+      "line": 88,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(unix))",
+      "count": 1,
+      "finding_id": "A04-12",
+      "removal_task": "H04",
+      "rationale": "Existing exact site from A04-12: Containers owns Podman/Distrobox backend and shell launcher scripts (high). Remove this exception when H04 migrates it."
+    },
+    {
+      "path": "apps/containers/src/terminal.rs",
+      "line": 80,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 2,
+      "finding_id": "A04-12",
+      "removal_task": "H04",
+      "rationale": "Existing exact site from A04-12: Containers owns Podman/Distrobox backend and shell launcher scripts (high). Remove this exception when H04 migrates it."
+    },
+    {
+      "path": "apps/disks/Cargo.toml",
+      "line": 40,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:zbus->zbus",
+      "count": 1,
+      "finding_id": "A04-08",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A04-08: Disks contains Linux block-device discovery and privileged operations (high). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/disks/src/ops.rs",
+      "line": 201,
+      "rule": "native-api",
+      "fingerprint": "source:use zbus::blocking::Connection;",
+      "count": 1,
+      "finding_id": "A04-08",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A04-08: Disks contains Linux block-device discovery and privileged operations (high). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/disks/src/ops.rs",
+      "line": 202,
+      "rule": "native-api",
+      "fingerprint": "source:use zbus::zvariant::Value;",
+      "count": 1,
+      "finding_id": "A04-08",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A04-08: Disks contains Linux block-device discovery and privileged operations (high). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/Cargo.toml",
+      "line": 59,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:libc->libc",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/Cargo.toml",
+      "line": 58,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:xattr->xattr",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/archive.rs",
+      "line": 514,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(\" \", folder.join(\" \")).unwrap();",
+      "count": 1,
+      "finding_id": "A04-03",
+      "removal_task": "D03",
+      "rationale": "Existing exact site from A04-03: Files trash, known folders, and symlinks contain target policy (high). Remove this exception when D03 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/archive.rs",
+      "line": 513,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A04-03",
+      "removal_task": "D03",
+      "rationale": "Existing exact site from A04-03: Files trash, known folders, and symlinks contain target policy (high). Remove this exception when D03 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/fileops.rs",
+      "line": 332,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::symlink;",
+      "count": 2,
+      "finding_id": "A04-03",
+      "removal_task": "D03",
+      "rationale": "Existing exact site from A04-03: Files trash, known folders, and symlinks contain target policy (high). Remove this exception when D03 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/fileops.rs",
+      "line": 10,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 6,
+      "finding_id": "A04-03",
+      "removal_task": "D03",
+      "rationale": "Existing exact site from A04-03: Files trash, known folders, and symlinks contain target policy (high). Remove this exception when D03 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/fileops.rs",
+      "line": 340,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(unix))",
+      "count": 1,
+      "finding_id": "A04-03",
+      "removal_task": "D03",
+      "rationale": "Existing exact site from A04-03: Files trash, known folders, and symlinks contain target policy (high). Remove this exception when D03 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/fileops.rs",
+      "line": 350,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 3,
+      "finding_id": "A04-03",
+      "removal_task": "D03",
+      "rationale": "Existing exact site from A04-03: Files trash, known folders, and symlinks contain target policy (high). Remove this exception when D03 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/fileops.rs",
+      "line": 330,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 2,
+      "finding_id": "A04-03",
+      "removal_task": "D03",
+      "rationale": "Existing exact site from A04-03: Files trash, known folders, and symlinks contain target policy (high). Remove this exception when D03 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10936,
+      "rule": "native-api",
+      "fingerprint": "source:assert_eq!(xattr::get(&file, crate::model::PIN_XATTR).unwrap(), None);",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10862,
+      "rule": "native-api",
+      "fingerprint": "source:assert_eq!(xattr::get(&pinned, crate::model::PIN_XATTR).unwrap(), None);",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 2005,
+      "rule": "native-api",
+      "fingerprint": "source:if error.raw_os_error() == Some(libc::EBUSY) {",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 2049,
+      "rule": "native-api",
+      "fingerprint": "source:if let Err(error) = xattr::set(",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 1951,
+      "rule": "native-api",
+      "fingerprint": "source:if let Err(error) = xattr::set(path, crate::model::PIN_XATTR, value) {",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 11372,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::net::UnixListener;",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10857,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&automatic, crate::model::PIN_XATTR)",
+      "count": 2,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 12811,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR)",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 12800,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10676,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&file, crate::model::PIN_XATTR)",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10742,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&local, crate::model::AVAILABILITY_CONTROL_XATTR)",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10864,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),",
+      "count": 2,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10877,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&pinned, crate::model::PIN_XATTR)",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10748,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&remote, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10706,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(",
+      "count": 8,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10773,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&after, crate::model::SYNC_XATTR, b\" \").unwrap();",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10765,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&before, crate::model::RECORD_ID_XATTR, record.as_bytes()).unwrap();",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10766,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&before, crate::model::SYNC_XATTR, b\" \").unwrap();",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 10661,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();",
+      "count": 2,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 11301,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&file, crate::model::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();",
+      "count": 1,
+      "finding_id": "A04-04",
+      "removal_task": "D02",
+      "rationale": "Existing exact site from A04-04: Files launch integration and drag handoff assume the Tilo host layout (medium). Remove this exception when D02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/files_app.rs",
+      "line": 2003,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b\" \")",
+      "count": 2,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 303,
+      "rule": "native-api",
+      "fingerprint": "source:&xattr::get(&path, CHECKED_HISTORY_RESTORE_XATTR)",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 33,
+      "rule": "native-api",
+      "fingerprint": "source:.ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENODATA))",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 101,
+      "rule": "native-api",
+      "fingerprint": "source:Err(error) if error.raw_os_error() == Some(libc::EALREADY) => {",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 146,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::E2BIG) => FileHistoryReadErrorV1::TooLarge,",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 131,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::EAGAIN) => CheckedHistoryOutcomeV1::PendingWrites,",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 130,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::EBUSY) => CheckedHistoryOutcomeV1::ReviewRequired,",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 144,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::EBUSY) => FileHistoryReadErrorV1::Stale,",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 137,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::EINVAL) => CheckedHistoryOutcomeV1::InvalidRequest,",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 147,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::EINVAL) => FileHistoryReadErrorV1::InvalidRequest,",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 145,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::ENODATA) => FileHistoryReadErrorV1::MissingVersion,",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 143,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::ENOENT | libc::EACCES | libc::EPERM) => FileHistoryReadErrorV1::NotVisible,",
+      "count": 3,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 132,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::ENOENT) => CheckedHistoryOutcomeV1::NotVisible,",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 134,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::ENOTSUP) => CheckedHistoryOutcomeV1::UnsupportedOwner {",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 133,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::EROFS | libc::EACCES | libc::EPERM) => CheckedHistoryOutcomeV1::ReadOnly,",
+      "count": 3,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 7,
+      "rule": "native-api",
+      "fingerprint": "source:use xattr::FileExt;",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 317,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 293,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history.rs",
+      "line": 334,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&path, &name, b\" \").unwrap();",
+      "count": 2,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history_tests.rs",
+      "line": 480,
+      "rule": "native-api",
+      "fingerprint": "source:&xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)",
+      "count": 4,
+      "finding_id": "A04-22",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A04-22: Preserve existing shared boundaries; target-scope deployment and native certification (medium migration coordination). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/framework_history_tests.rs",
+      "line": 389,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(",
+      "count": 5,
+      "finding_id": "A04-22",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A04-22: Preserve existing shared boundaries; target-scope deployment and native certification (medium migration coordination). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/history_control.rs",
+      "line": 85,
+      "rule": "native-api",
+      "fingerprint": "source:&xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/history_control.rs",
+      "line": 64,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/history_control.rs",
+      "line": 38,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(path, crate::model::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/main.rs",
+      "line": 491,
+      "rule": "native-api",
+      "fingerprint": "source:let _ = xattr::set(&p, \" \", &gradient_png(112, 84, kind));",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/main.rs",
+      "line": 326,
+      "rule": "native-api",
+      "fingerprint": "source:let _ = xattr::set(&p, \" \", state.as_bytes());",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/main.rs",
+      "line": 492,
+      "rule": "native-api",
+      "fingerprint": "source:let _ = xattr::set(&p, \" \", sync.as_bytes());",
+      "count": 2,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/main.rs",
+      "line": 364,
+      "rule": "native-api",
+      "fingerprint": "source:let _ = xattr::set(&path, \" \", b\" \");",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/main.rs",
+      "line": 363,
+      "rule": "native-api",
+      "fingerprint": "source:let _ = xattr::set(&path, file_explorer::model::HISTORY_XATTR, &history);",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 155,
+      "rule": "native-api",
+      "fingerprint": "source:MetadataProjection::parse(&xattr::get(path, METADATA_XATTR).ok()??)",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 713,
+      "rule": "native-api",
+      "fingerprint": "source:if let Some(bytes) = xattr::get(root, RECORD_INDEX_V3_XATTR).ok().flatten() {",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 735,
+      "rule": "native-api",
+      "fingerprint": "source:if let Some(bytes) = xattr::get(root, name).ok().flatten() {",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 667,
+      "rule": "native-api",
+      "fingerprint": "source:let Some(bytes) = xattr::get(root, name).ok().flatten() else {",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 421,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(path, AVAILABILITY_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 426,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(path, CONTENT_HASH_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 322,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(path, HISTORY_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 431,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(path, RECORD_ID_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 317,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(path, SHARE_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 99,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(path, name).ok()??;",
+      "count": 2,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 602,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(root, &name).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 582,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(root, RECORD_INDEX_V2_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 622,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(root, RECORD_INDEX_V3_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 573,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(root, RECORD_INDEX_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1282,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(root, SHARE_CONTROL_XATTR).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 640,
+      "rule": "native-api",
+      "fingerprint": "source:let bytes = xattr::get(root, name).ok()??;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 50,
+      "rule": "native-api",
+      "fingerprint": "source:match xattr::get(path, SYNC_XATTR) {",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1200,
+      "rule": "native-api",
+      "fingerprint": "source:match xattr::get(path, THUMB_XATTR) {",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 694,
+      "rule": "native-api",
+      "fingerprint": "source:match xattr::get(root, RECORD_INDEX_V2_XATTR).ok().flatten() {",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 704,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::OsStrExt as _;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 2004,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::remove(root.path(), RECORD_INDEX_XATTR).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1902,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(",
+      "count": 7,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1784,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&downloading, SYNC_XATTR, b\" \").unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1650,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&f, CONTENT_HASH_XATTR, &[1u8; 31]).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1647,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&f, CONTENT_HASH_XATTR, &hash).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1667,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&f, RECORD_ID_XATTR, &[0u8; 15]).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1665,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&f, RECORD_ID_XATTR, &id).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1615,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&f, SYNC_XATTR, b\" \").unwrap();",
+      "count": 2,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1631,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&f, THUMB_XATTR, &png).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1791,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&projected, AVAILABILITY_XATTR, &projected_availability).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1787,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&projected, CONTENT_HASH_XATTR, &projected_hash).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1789,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&projected, RECORD_ID_XATTR, &projected_record).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1799,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&projected, SHARE_XATTR, &projected_share).unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1785,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&projected, SYNC_XATTR, b\" \").unwrap();",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/model.rs",
+      "line": 1052,
+      "rule": "native-api",
+      "fingerprint": "source:|| xattr::get(&root, RECORD_INDEX_V2_XATTR)",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/native_proof_tests.rs",
+      "line": 47,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&directory, &alias).unwrap();",
+      "count": 1,
+      "finding_id": "A04-22",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A04-22: Preserve existing shared boundaries; target-scope deployment and native certification (medium migration coordination). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/native_proof_tests.rs",
+      "line": 44,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A04-22",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A04-22: Preserve existing shared boundaries; target-scope deployment and native certification (medium migration coordination). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/nearby_send.rs",
+      "line": 91,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::OsStrExt as _;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/nearby_send.rs",
+      "line": 382,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/received_shares.rs",
+      "line": 118,
+      "rule": "native-api",
+      "fingerprint": "source:let stream = std::os::unix::net::UnixStream::from(owned);",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/received_shares.rs",
+      "line": 7,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::{BorrowedFd, RawFd};",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/search_provider.rs",
+      "line": 49,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::OsStrExt;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/sharing.rs",
+      "line": 298,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::net::UnixListener;",
+      "count": 1,
+      "finding_id": "A04-02",
+      "removal_task": "I02",
+      "rationale": "Existing exact site from A04-02: Files Unix service channels and path-byte encoding live in app code (high). Remove this exception when I02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/src/views/file_view.rs",
+      "line": 2577,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::set(&entry.path, crate::model::THUMB_XATTR, &png).unwrap();",
+      "count": 1,
+      "finding_id": "A04-01",
+      "removal_task": "W02",
+      "rationale": "Existing exact site from A04-01: Files owns the collaborative filesystem's xattr transport and errno ABI (high). Remove this exception when W02 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/tests/live_collaborative_mount.rs",
+      "line": 29,
+      "rule": "native-api",
+      "fingerprint": "source:assert!(std::os::unix::fs::FileTypeExt::is_char_device(",
+      "count": 1,
+      "finding_id": "A04-22",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A04-22: Preserve existing shared boundaries; target-scope deployment and native certification (medium migration coordination). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/file-explorer/tests/live_collaborative_mount.rs",
+      "line": 129,
+      "rule": "native-api",
+      "fingerprint": "source:xattr::get(mount.join(\" \"), fs::syncstate::PIN_XATTR)",
+      "count": 1,
+      "finding_id": "A04-22",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A04-22: Preserve existing shared boundaries; target-scope deployment and native certification (medium migration coordination). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/Cargo.toml",
+      "line": 50,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:zbus->zbus",
+      "count": 1,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/Cargo.toml",
+      "line": 53,
+      "rule": "native-dependency",
+      "fingerprint": "target.cfg(unix).dependencies:libc->libc",
+      "count": 1,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/Cargo.toml",
+      "line": 62,
+      "rule": "native-dependency",
+      "fingerprint": "target.cfg(windows).dependencies:windows-sys->windows-sys",
+      "count": 1,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/profile-tool/Cargo.toml",
+      "line": 23,
+      "rule": "native-dependency",
+      "fingerprint": "target.cfg(unix).dependencies:libc->libc",
+      "count": 1,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/profile-tool/tests/embed.rs",
+      "line": 74,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&file, &link).unwrap();",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/profile-tool/tests/embed.rs",
+      "line": 35,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/profile-tool/tests/embed.rs",
+      "line": 67,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/app.rs",
+      "line": 4433,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/app.rs",
+      "line": 43,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/host.rs",
+      "line": 10,
+      "rule": "native-ffi",
+      "fingerprint": "source:unsafe extern \" \" {",
+      "count": 1,
+      "finding_id": "A05-02",
+      "removal_task": "L03",
+      "rationale": "Existing exact site from A05-02: Host architecture and build target are conflated outside Windows (medium; extract). Remove this exception when L03 migrates it."
+    },
+    {
+      "path": "apps/imager/src/host.rs",
+      "line": 54,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(target_os = \" \", test))",
+      "count": 1,
+      "finding_id": "A05-02",
+      "removal_task": "L03",
+      "rationale": "Existing exact site from A05-02: Host architecture and build target are conflated outside Windows (medium; extract). Remove this exception when L03 migrates it."
+    },
+    {
+      "path": "apps/imager/src/host.rs",
+      "line": 41,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-02",
+      "removal_task": "L03",
+      "rationale": "Existing exact site from A05-02: Host architecture and build target are conflated outside Windows (medium; extract). Remove this exception when L03 migrates it."
+    },
+    {
+      "path": "apps/imager/src/host.rs",
+      "line": 5,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 1,
+      "finding_id": "A05-02",
+      "removal_task": "L03",
+      "rationale": "Existing exact site from A05-02: Host architecture and build target are conflated outside Windows (medium; extract). Remove this exception when L03 migrates it."
+    },
+    {
+      "path": "apps/imager/src/main.rs",
+      "line": 120,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg!(target_os = \" \")",
+      "count": 1,
+      "finding_id": "A05-04",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A05-04: Local storage roots and protected directory policy leak into view/flow (medium; extract). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 79,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::MetadataExt;",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 88,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::windows::io::AsRawHandle;",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 89,
+      "rule": "native-api",
+      "fingerprint": "source:use windows_sys::Win32::Storage::FileSystem::{",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 1223,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(unix, target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 1188,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(unix, windows))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 357,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(any(target_os = \" \", target_os = \" \")))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 104,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(any(unix, target_os = \" \")))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 86,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 3,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/model.rs",
+      "line": 77,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 808,
+      "rule": "native-api",
+      "fingerprint": "source:assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 143,
+      "rule": "native-api",
+      "fingerprint": "source:let Ok(block) = zbus::blocking::Proxy::new(",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 162,
+      "rule": "native-api",
+      "fingerprint": "source:let Ok(filesystem) = zbus::blocking::Proxy::new(",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 110,
+      "rule": "native-api",
+      "fingerprint": "source:let Ok(proxy) = zbus::blocking::Proxy::new(",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 107,
+      "rule": "native-api",
+      "fingerprint": "source:let connection = zbus::blocking::Connection::system().ok()?;",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 125,
+      "rule": "native-api",
+      "fingerprint": "source:let root_filesystem = zbus::blocking::Proxy::new(",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 510,
+      "rule": "native-api",
+      "fingerprint": "source:options.custom_flags(libc::O_NONBLOCK);",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 795,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::OsStrExt;",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 507,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::OpenOptionsExt;",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 105,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(all(target_os = \" \", feature = \" \"))",
+      "count": 6,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 13,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(target_os = \" \", target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 418,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(any(target_os = \" \", target_os = \" \", target_os = \" \")))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 23,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 38,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 6,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/probe.rs",
+      "line": 505,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/profile_cli.rs",
+      "line": 60,
+      "rule": "native-api",
+      "fingerprint": "source:options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);",
+      "count": 2,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/profile_cli.rs",
+      "line": 59,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::OpenOptionsExt;",
+      "count": 1,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/profile_cli.rs",
+      "line": 64,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::windows::fs::OpenOptionsExt;",
+      "count": 2,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/profile_cli.rs",
+      "line": 68,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(any(unix, target_os = \" \")))",
+      "count": 1,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/profile_cli.rs",
+      "line": 62,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 1,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/profile_cli.rs",
+      "line": 57,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A05-10",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-10: Build graph and standalone profile tool need a narrow shared codec seam (medium; extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/controller.rs",
+      "line": 308,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(windows))",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/controller.rs",
+      "line": 306,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(windows)",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_catalog.rs",
+      "line": 16,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_continuation.rs",
+      "line": 484,
+      "rule": "native-api",
+      "fingerprint": "source:let uid = unsafe { libc::getuid() };",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_continuation.rs",
+      "line": 901,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::OsStringExt;",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_continuation.rs",
+      "line": 480,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::MetadataExt;",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_continuation.rs",
+      "line": 11,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 3,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_continuation.rs",
+      "line": 1040,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_download.rs",
+      "line": 98,
+      "rule": "native-api",
+      "fingerprint": "source:.custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)",
+      "count": 2,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_download.rs",
+      "line": 103,
+      "rule": "native-api",
+      "fingerprint": "source:if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o700 {",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_download.rs",
+      "line": 595,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::{PermissionsExt, symlink};",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_download.rs",
+      "line": 78,
+      "rule": "native-api",
+      "fingerprint": "source:use std::{ fs::{self, File}, io::{Read, Seek, SeekFrom, Write}, os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt as StdOpenOptionsExt}, sync::atomic::AtomicU64, time::Duration, };",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_download.rs",
+      "line": 122,
+      "rule": "native-api",
+      "fingerprint": "source:|| metadata.uid() != unsafe { libc::geteuid() }",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_download.rs",
+      "line": 58,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(all(test, unix))",
+      "count": 2,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_download.rs",
+      "line": 38,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(unix))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_download.rs",
+      "line": 9,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 5,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 248,
+      "rule": "native-api",
+      "fingerprint": "source:.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)",
+      "count": 4,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 238,
+      "rule": "native-api",
+      "fingerprint": "source:.custom_flags(libc::O_NONBLOCK)",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 226,
+      "rule": "native-api",
+      "fingerprint": "source:.custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)",
+      "count": 3,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 1241,
+      "rule": "native-api",
+      "fingerprint": "source:assert_eq!(unsafe { libc::geteuid() }, 0);",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 700,
+      "rule": "native-api",
+      "fingerprint": "source:if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0",
+      "count": 3,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 284,
+      "rule": "native-api",
+      "fingerprint": "source:if metadata.uid() != unsafe { libc::geteuid() }",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 849,
+      "rule": "native-api",
+      "fingerprint": "source:if unsafe { libc::geteuid() } != 0 {",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 699,
+      "rule": "native-api",
+      "fingerprint": "source:let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };",
+      "count": 2,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 854,
+      "rule": "native-api",
+      "fingerprint": "source:let flags = unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_GETFL) };",
+      "count": 3,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 1492,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&path, &link).unwrap();",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 221,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::AsRawFd;",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 1408,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 1090,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::symlink;",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 357,
+      "rule": "native-api",
+      "fingerprint": "source:use std::{ ffi::OsString, fs::OpenOptions, io::Read, os::{ fd::AsRawFd, unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt}, }, path::Path, process::{Command, Stdio}, time::{Duration, Instant}, };",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 63,
+      "rule": "native-api",
+      "fingerprint": "source:use std::{ fs::{File, OpenOptions}, io::{Read, Write}, os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt}, path::{Path, PathBuf}, };",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 856,
+      "rule": "native-api",
+      "fingerprint": "source:|| unsafe { libc::fcntl(libc::STDOUT_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0",
+      "count": 4,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 50,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(all(test, target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 47,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(all(test, unix))",
+      "count": 2,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 44,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(target_os = \" \", all(test, unix)))",
+      "count": 3,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 242,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 219,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 3,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_install.rs",
+      "line": 350,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg_attr(not(target_os = \" \"), allow(dead_code))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 540,
+      "rule": "native-api",
+      "fingerprint": "source:.custom_flags(libc::O_NONBLOCK)",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 954,
+      "rule": "native-api",
+      "fingerprint": "source:assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 623,
+      "rule": "native-api",
+      "fingerprint": "source:if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 627,
+      "rule": "native-api",
+      "fingerprint": "source:if unsafe { stat.assume_init() }.f_flag & libc::ST_RDONLY != 0 {",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 463,
+      "rule": "native-api",
+      "fingerprint": "source:let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };",
+      "count": 2,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 621,
+      "rule": "native-api",
+      "fingerprint": "source:let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 427,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::AsRawFd;",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 949,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::OsStrExt;",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 428,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 465,
+      "rule": "native-api",
+      "fingerprint": "source:|| unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0",
+      "count": 3,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 1092,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg!(target_os = \" \")",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 418,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(target_os = \" \", all(test, unix)))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 337,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(target_os = \" \", test))",
+      "count": 2,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 320,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 316,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 2,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 909,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 4,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_probe.rs",
+      "line": 419,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg_attr(not(target_os = \" \"), allow(dead_code))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_worker.rs",
+      "line": 14,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg!(target_os = \" \")",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_worker.rs",
+      "line": 195,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(all(test, unix))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_worker.rs",
+      "line": 188,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_worker.rs",
+      "line": 181,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 1,
+      "finding_id": "A05-05",
+      "removal_task": "N04",
+      "rationale": "Existing exact site from A05-05: Desktop installation is a deliberate Linux service backend (high; backend). Remove this exception when N04 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/folders.rs",
+      "line": 10,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 4,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/folders.rs",
+      "line": 208,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 3,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/import_view.rs",
+      "line": 222,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(",
+      "count": 1,
+      "finding_id": "A05-04",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A05-04: Local storage roots and protected directory policy leak into view/flow (medium; extract). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/import_view.rs",
+      "line": 302,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(source.join(\" \"), source.join(\" \"))",
+      "count": 1,
+      "finding_id": "A05-04",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A05-04: Local storage roots and protected directory policy leak into view/flow (medium; extract). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/import_view.rs",
+      "line": 2459,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::symlink;",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/import_view.rs",
+      "line": 220,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 3,
+      "finding_id": "A05-04",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A05-04: Local storage roots and protected directory policy leak into view/flow (medium; extract). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/internal_download_flow.rs",
+      "line": 901,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::MetadataExt;",
+      "count": 2,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/internal_download_flow.rs",
+      "line": 746,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(all(test, unix))",
+      "count": 1,
+      "finding_id": "A05-07",
+      "removal_task": "N02",
+      "rationale": "Existing exact site from A05-07: Verified persistent download cache and bundle handle operations (high; backend). Remove this exception when N02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/known_folders.rs",
+      "line": 7,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(target_os = \" \", target_os = \" \"))",
+      "count": 2,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/known_folders.rs",
+      "line": 185,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(target_os = \" \", target_os = \" \", test))",
+      "count": 1,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/known_folders.rs",
+      "line": 46,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(target_os = \" \", test))",
+      "count": 2,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/known_folders.rs",
+      "line": 160,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(any(target_os = \" \", target_os = \" \")))",
+      "count": 1,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/known_folders.rs",
+      "line": 36,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 4,
+      "finding_id": "A05-03",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A05-03: Native pickers and known folders live inside the app (medium; backend). Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/model.rs",
+      "line": 265,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(windows))",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/model.rs",
+      "line": 263,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(windows)",
+      "count": 1,
+      "finding_id": "A05-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A05-12: Native tests must move with backend ownership, not disappear (high; test). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/view.rs",
+      "line": 145,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg!(target_os = \" \")",
+      "count": 2,
+      "finding_id": "A05-04",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A05-04: Local storage roots and protected directory policy leak into view/flow (medium; extract). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/view.rs",
+      "line": 1979,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(windows))",
+      "count": 3,
+      "finding_id": "A05-04",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A05-04: Local storage roots and protected directory policy leak into view/flow (medium; extract). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/view.rs",
+      "line": 1567,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 2,
+      "finding_id": "A05-04",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A05-04: Local storage roots and protected directory policy leak into view/flow (medium; extract). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/setup/view.rs",
+      "line": 1586,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(windows)",
+      "count": 4,
+      "finding_id": "A05-04",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A05-04: Local storage roots and protected directory policy leak into view/flow (medium; extract). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 298,
+      "rule": "native-api",
+      "fingerprint": "source:.is_some_and(|code| code == libc::EAGAIN || code == libc::EWOULDBLOCK)",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1030,
+      "rule": "native-api",
+      "fingerprint": "source:connection: &zbus::blocking::Connection,",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1042,
+      "rule": "native-api",
+      "fingerprint": "source:let block = zbus::blocking::Proxy::new(",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1087,
+      "rule": "native-api",
+      "fingerprint": "source:let connection = zbus::blocking::Connection::system()",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1101,
+      "rule": "native-api",
+      "fingerprint": "source:let flags = libc::O_EXCL | libc::O_SYNC | libc::O_CLOEXEC;",
+      "count": 3,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1055,
+      "rule": "native-api",
+      "fingerprint": "source:let proxy = zbus::blocking::Proxy::new(",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 293,
+      "rule": "native-api",
+      "fingerprint": "source:let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };",
+      "count": 3,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1107,
+      "rule": "native-api",
+      "fingerprint": "source:let std_fd: std::os::fd::OwnedFd = fd.into();",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 276,
+      "rule": "native-api",
+      "fingerprint": "source:libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 272,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::AsRawFd;",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 284,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::OpenOptionsExt;",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 313,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::{MetadataExt, PermissionsExt};",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1034,
+      "rule": "native-api",
+      "fingerprint": "source:use zbus::zvariant::Value;",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1084,
+      "rule": "native-api",
+      "fingerprint": "source:use zbus::zvariant::{OwnedFd, Value};",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 353,
+      "rule": "native-ffi",
+      "fingerprint": "source:unsafe extern \" \" {",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 92,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg!(all(target_os = \" \", feature = \" \"))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1012,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(all(target_os = \" \", feature = \" \"))",
+      "count": 7,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 750,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(test, all(target_os = \" \", feature = \" \")))",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1173,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(test, target_os = \" \"))",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 34,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(any(test, target_os = \" \", target_os = \" \"))",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1761,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(all(target_os = \" \", feature = \" \")))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1719,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(any(target_os = \" \", target_os = \" \")))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 1548,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(any(target_os = \" \", target_os = \" \", target_os = \" \")))",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 388,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(any(unix, target_os = \" \")))",
+      "count": 2,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 317,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 315,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 17,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/imager/src/write.rs",
+      "line": 265,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 7,
+      "finding_id": "A05-01",
+      "removal_task": "N01",
+      "rationale": "Existing exact site from A05-01: Device inventory, identity and destructive media authorization (high; backend + extract). Remove this exception when N01 migrates it."
+    },
+    {
+      "path": "apps/logs/src/journal.rs",
+      "line": 756,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::OsStringExt;",
+      "count": 1,
+      "finding_id": "A04-10",
+      "removal_task": "H01",
+      "rationale": "Existing exact site from A04-10: Logs owns journalctl execution/parsing (medium). Remove this exception when H01 migrates it."
+    },
+    {
+      "path": "apps/logs/src/journal.rs",
+      "line": 753,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A04-10",
+      "removal_task": "H01",
+      "rationale": "Existing exact site from A04-10: Logs owns journalctl execution/parsing (medium). Remove this exception when H01 migrates it."
+    },
+    {
+      "path": "apps/mail/Cargo.toml",
+      "line": 75,
+      "rule": "native-feature",
+      "fingerprint": "feature:html-webview:ui/webview-wpe",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/mail/src/app.rs",
+      "line": 8305,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&target, &link).unwrap();",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/mail/src/app.rs",
+      "line": 8300,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/maps/Cargo.toml",
+      "line": 36,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:ashpd->ashpd",
+      "count": 1,
+      "finding_id": "A02-03",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A02-03: Maps embeds the XDG location implementation (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/maps/src/location.rs",
+      "line": 145,
+      "rule": "native-api",
+      "fingerprint": "source:ashpd::Error::Response(_) => \" \".to_string(),",
+      "count": 1,
+      "finding_id": "A02-03",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A02-03: Maps embeds the XDG location implementation (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/maps/src/location.rs",
+      "line": 143,
+      "rule": "native-api",
+      "fingerprint": "source:fn portal_reason(e: ashpd::Error) -> String {",
+      "count": 1,
+      "finding_id": "A02-03",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A02-03: Maps embeds the XDG location implementation (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/maps/src/location.rs",
+      "line": 92,
+      "rule": "native-api",
+      "fingerprint": "source:use ashpd::WindowIdentifier;",
+      "count": 1,
+      "finding_id": "A02-03",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A02-03: Maps embeds the XDG location implementation (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/maps/src/location.rs",
+      "line": 93,
+      "rule": "native-api",
+      "fingerprint": "source:use ashpd::desktop::location::{Accuracy, LocationProxy};",
+      "count": 1,
+      "finding_id": "A02-03",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A02-03: Maps embeds the XDG location implementation (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/monitor/src/sampler.rs",
+      "line": 299,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 2,
+      "finding_id": "A04-11",
+      "removal_task": "H01",
+      "rationale": "Existing exact site from A04-11: Monitor mixes portable sampling with Linux enrichment and POSIX termination (medium). Remove this exception when H01 migrates it."
+    },
+    {
+      "path": "apps/monitor/src/sampler.rs",
+      "line": 294,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 2,
+      "finding_id": "A04-11",
+      "removal_task": "H01",
+      "rationale": "Existing exact site from A04-11: Monitor mixes portable sampling with Linux enrichment and POSIX termination (medium). Remove this exception when H01 migrates it."
+    },
+    {
+      "path": "apps/music/Cargo.toml",
+      "line": 63,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:zbus->zbus",
+      "count": 1,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 509,
+      "rule": "native-api",
+      "fingerprint": "source:) -> zbus::Result<()> {",
+      "count": 2,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 748,
+      "rule": "native-api",
+      "fingerprint": "source:.cache_properties(zbus::proxy::CacheProperties::No)",
+      "count": 1,
+      "finding_id": "A02-13",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A02-13: Native-media test environment assumptions must remain explicit. Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 412,
+      "rule": "native-api",
+      "fingerprint": "source:async fn seeked(ctxt: &SignalContext<'_>, position: i64) -> zbus::Result<()>;",
+      "count": 1,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 506,
+      "rule": "native-api",
+      "fingerprint": "source:connection: &zbus::Connection,",
+      "count": 2,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 760,
+      "rule": "native-api",
+      "fingerprint": "source:let metadata: std::collections::HashMap<String, zbus::zvariant::OwnedValue> = player_proxy",
+      "count": 1,
+      "finding_id": "A02-13",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A02-13: Native-media test environment assumptions must remain explicit. Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 741,
+      "rule": "native-api",
+      "fingerprint": "source:let player_proxy: zbus::Proxy = zbus::proxy::Builder::new(&client_conn)",
+      "count": 2,
+      "finding_id": "A02-13",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A02-13: Native-media test environment assumptions must remain explicit. Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 698,
+      "rule": "native-api",
+      "fingerprint": "source:use zbus::connection::Builder;",
+      "count": 1,
+      "finding_id": "A02-13",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A02-13: Native-media test environment assumptions must remain explicit. Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 277,
+      "rule": "native-api",
+      "fingerprint": "source:use zbus::interface;",
+      "count": 1,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 278,
+      "rule": "native-api",
+      "fingerprint": "source:use zbus::object_server::SignalContext;",
+      "count": 1,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 279,
+      "rule": "native-api",
+      "fingerprint": "source:use zbus::zvariant::{ObjectPath, OwnedValue, Value};",
+      "count": 1,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/music/src/mpris.rs",
+      "line": 588,
+      "rule": "native-api",
+      "fingerprint": "source:zbus::connection::Builder::session()?",
+      "count": 1,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/music/src/net.rs",
+      "line": 68,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 1,
+      "finding_id": "A02-04",
+      "removal_task": "H01",
+      "rationale": "Existing exact site from A02-04: Music network policy probes NetworkManager itself (medium). Remove this exception when H01 migrates it."
+    },
+    {
+      "path": "apps/music/src/net.rs",
+      "line": 36,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 1,
+      "finding_id": "A02-04",
+      "removal_task": "H01",
+      "rationale": "Existing exact site from A02-04: Music network policy probes NetworkManager itself (medium). Remove this exception when H01 migrates it."
+    },
+    {
+      "path": "apps/osk/Cargo.toml",
+      "line": 49,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:libc->libc",
+      "count": 1,
+      "finding_id": "A04-06",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A04-06: OSK has an unguarded Wayland/Linux injection backend (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/osk/src/inject.rs",
+      "line": 420,
+      "rule": "native-api",
+      "fingerprint": "source:let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };",
+      "count": 2,
+      "finding_id": "A04-06",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A04-06: OSK has an unguarded Wayland/Linux injection backend (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/osk/src/inject.rs",
+      "line": 248,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::AsFd;",
+      "count": 1,
+      "finding_id": "A04-06",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A04-06: OSK has an unguarded Wayland/Linux injection backend (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/osk/src/inject.rs",
+      "line": 426,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::FromRawFd;",
+      "count": 1,
+      "finding_id": "A04-06",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A04-06: OSK has an unguarded Wayland/Linux injection backend (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/osk/src/inject.rs",
+      "line": 247,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(target_os = \" \"))",
+      "count": 6,
+      "finding_id": "A04-06",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A04-06: OSK has an unguarded Wayland/Linux injection backend (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/osk/src/inject.rs",
+      "line": 345,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 2,
+      "finding_id": "A04-06",
+      "removal_task": "H02",
+      "rationale": "Existing exact site from A04-06: OSK has an unguarded Wayland/Linux injection backend (high). Remove this exception when H02 migrates it."
+    },
+    {
+      "path": "apps/passwords/src/showcase.rs",
+      "line": 6276,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/passwords/src/showcase.rs",
+      "line": 6274,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/pdf-viewer/src/source.rs",
+      "line": 2844,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::symlink;",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/pdf-viewer/src/source.rs",
+      "line": 2841,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/print-centre/src/surface.rs",
+      "line": 6,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::OpenOptionsExt;",
+      "count": 1,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/print-centre/src/surface.rs",
+      "line": 3973,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/print-centre/src/surface.rs",
+      "line": 5,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 3,
+      "finding_id": "A04-21",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A04-21: Backup metadata and private temporary output use Unix-specific primitives (medium). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/remote/src/ssh.rs",
+      "line": 181,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 4,
+      "finding_id": "A03-10",
+      "removal_task": "K02",
+      "rationale": "Existing exact site from A03-10: Remote SSH trust-store and default identity paths assume Unix layout (high). Remove this exception when K02 migrates it."
+    },
+    {
+      "path": "apps/remote/src/ssh.rs",
+      "line": 211,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(not(unix))",
+      "count": 1,
+      "finding_id": "A03-10",
+      "removal_task": "K02",
+      "rationale": "Existing exact site from A03-10: Remote SSH trust-store and default identity paths assume Unix layout (high). Remove this exception when K02 migrates it."
+    },
+    {
+      "path": "apps/remote/src/ssh.rs",
+      "line": 179,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 4,
+      "finding_id": "A03-10",
+      "removal_task": "K02",
+      "rationale": "Existing exact site from A03-10: Remote SSH trust-store and default identity paths assume Unix layout (high). Remove this exception when K02 migrates it."
+    },
+    {
+      "path": "apps/settings/Cargo.toml",
+      "line": 55,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:runtime-portal-xdg->runtime-portal-xdg",
+      "count": 1,
+      "finding_id": "A08-05",
+      "removal_task": "D01",
+      "rationale": "Existing exact site from A08-05: XDG portals are a deliberate backend, not the portable capability API. Remove this exception when D01 migrates it."
+    },
+    {
+      "path": "apps/terminal/Cargo.toml",
+      "line": 34,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:libc->libc",
+      "count": 1,
+      "finding_id": "A03-03",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-03: Terminal shell/PTY/confinement probing is a platform backend (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 208,
+      "rule": "native-api",
+      "fingerprint": "source:(&raw const address).cast::<libc::sockaddr>(),",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 139,
+      "rule": "native-api",
+      "fingerprint": "source:) -> std::io::Result<std::os::unix::net::UnixStream> {",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 147,
+      "rule": "native-api",
+      "fingerprint": "source:- std::mem::offset_of!(libc::sockaddr_un, sun_path)",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 146,
+      "rule": "native-api",
+      "fingerprint": "source:>= std::mem::size_of::<libc::sockaddr_un>()",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 227,
+      "rule": "native-api",
+      "fingerprint": "source:Ok(std::os::unix::net::UnixStream::from(fd))",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 216,
+      "rule": "native-api",
+      "fingerprint": "source:Some(libc::EINPROGRESS | libc::EALREADY | libc::EAGAIN)",
+      "count": 3,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 190,
+      "rule": "native-api",
+      "fingerprint": "source:address.sun_family = libc::AF_UNIX as libc::sa_family_t;",
+      "count": 2,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 195,
+      "rule": "native-api",
+      "fingerprint": "source:bytes.as_ptr().cast::<libc::c_char>(),",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 240,
+      "rule": "native-api",
+      "fingerprint": "source:events: libc::POLLOUT,",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 231,
+      "rule": "native-api",
+      "fingerprint": "source:fd: std::os::fd::RawFd,",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 95,
+      "rule": "native-api",
+      "fingerprint": "source:fn discover_ush(runtime: &std::path::Path) -> std::io::Result<std::os::unix::net::UnixStream> {",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 253,
+      "rule": "native-api",
+      "fingerprint": "source:if error.raw_os_error() == Some(libc::EINTR) {",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 174,
+      "rule": "native-api",
+      "fingerprint": "source:if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {",
+      "count": 3,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 183,
+      "rule": "native-api",
+      "fingerprint": "source:if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, status | libc::O_NONBLOCK) } < 0 {",
+      "count": 3,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 224,
+      "rule": "native-api",
+      "fingerprint": "source:if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, status) } < 0 {",
+      "count": 2,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 200,
+      "rule": "native-api",
+      "fingerprint": "source:let address_len = libc::socklen_t::try_from(",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 169,
+      "rule": "native-api",
+      "fingerprint": "source:let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };",
+      "count": 2,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 189,
+      "rule": "native-api",
+      "fingerprint": "source:let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 238,
+      "rule": "native-api",
+      "fingerprint": "source:let mut event = libc::pollfd {",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 259,
+      "rule": "native-api",
+      "fingerprint": "source:let mut length = libc::socklen_t::try_from(std::mem::size_of_val(&socket_error))",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 109,
+      "rule": "native-api",
+      "fingerprint": "source:let owner = unsafe { libc::geteuid() };",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 162,
+      "rule": "native-api",
+      "fingerprint": "source:let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };",
+      "count": 3,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 244,
+      "rule": "native-api",
+      "fingerprint": "source:let result = unsafe { libc::poll(&raw mut event, 1, timeout_ms) };",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 178,
+      "rule": "native-api",
+      "fingerprint": "source:let status = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };",
+      "count": 2,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 265,
+      "rule": "native-api",
+      "fingerprint": "source:libc::SOL_SOCKET,",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 266,
+      "rule": "native-api",
+      "fingerprint": "source:libc::SO_ERROR,",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 206,
+      "rule": "native-api",
+      "fingerprint": "source:libc::connect(",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 263,
+      "rule": "native-api",
+      "fingerprint": "source:libc::getsockopt(",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 66,
+      "rule": "native-api",
+      "fingerprint": "source:pub ush: Option<std::os::unix::net::UnixStream>,",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 201,
+      "rule": "native-api",
+      "fingerprint": "source:std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1,",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 140,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 141,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::ffi::OsStrExt;",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/lib.rs",
+      "line": 96,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::{FileTypeExt, MetadataExt};",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6890,
+      "rule": "native-api",
+      "fingerprint": "source:let mut ws: libc::winsize = unsafe { std::mem::zeroed() };",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6520,
+      "rule": "native-api",
+      "fingerprint": "source:let pw = libc::getpwuid(uid);",
+      "count": 1,
+      "finding_id": "A03-03",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-03: Terminal shell/PTY/confinement probing is a platform backend (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6738,
+      "rule": "native-api",
+      "fingerprint": "source:let rc = unsafe { libc::fcntl(raw, libc::F_GETFD) };",
+      "count": 2,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6931,
+      "rule": "native-api",
+      "fingerprint": "source:let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCGPGRP, &mut pgrp) };",
+      "count": 2,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6891,
+      "rule": "native-api",
+      "fingerprint": "source:let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCGWINSZ, &mut ws) };",
+      "count": 2,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6912,
+      "rule": "native-api",
+      "fingerprint": "source:let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCSWINSZ, &ws) };",
+      "count": 2,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6519,
+      "rule": "native-api",
+      "fingerprint": "source:let uid = libc::getuid();",
+      "count": 1,
+      "finding_id": "A03-03",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-03: Terminal shell/PTY/confinement probing is a platform backend (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6905,
+      "rule": "native-api",
+      "fingerprint": "source:let ws = libc::winsize {",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6841,
+      "rule": "native-api",
+      "fingerprint": "source:stream: &std::os::unix::net::UnixStream,",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6843,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::AsRawFd;",
+      "count": 5,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6829,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::{FromRawFd, RawFd};",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/main_body.rs",
+      "line": 6830,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::net::UnixStream;",
+      "count": 1,
+      "finding_id": "A03-02",
+      "removal_task": "C02",
+      "rationale": "Existing exact site from A03-02: Terminal owns the Unix service discovery and descriptor transport (high). Remove this exception when C02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3638,
+      "rule": "native-api",
+      "fingerprint": "source:fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3668,
+      "rule": "native-api",
+      "fingerprint": "source:let (master, _peer) = std::os::unix::net::UnixStream::pair().unwrap();",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3648,
+      "rule": "native-api",
+      "fingerprint": "source:let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3434,
+      "rule": "native-api",
+      "fingerprint": "source:let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };",
+      "count": 3,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3461,
+      "rule": "native-api",
+      "fingerprint": "source:libc::close(fds[0]);",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3462,
+      "rule": "native-api",
+      "fingerprint": "source:libc::close(fds[1]);",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3656,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::AsRawFd;",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3639,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 3711,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::net::UnixStream;",
+      "count": 1,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/terminal/src/tests.rs",
+      "line": 933,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(target_os = \" \")",
+      "count": 3,
+      "finding_id": "A03-12",
+      "removal_task": "V02",
+      "rationale": "Existing exact site from A03-12: Keep native deployment/test boundaries explicit (medium). Remove this exception when V02 migrates it."
+    },
+    {
+      "path": "apps/totp/src/storage.rs",
+      "line": 570,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::PermissionsExt;",
+      "count": 1,
+      "finding_id": "A01-05",
+      "removal_task": "K01",
+      "rationale": "Existing exact site from A01-05: TOTP chooses key custody using secret-tool availability (extract backend; high). Remove this exception when K01 migrates it."
+    },
+    {
+      "path": "apps/totp/src/storage.rs",
+      "line": 567,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A01-05",
+      "removal_task": "K01",
+      "rationale": "Existing exact site from A01-05: TOTP chooses key custody using secret-tool availability (extract backend; high). Remove this exception when K01 migrates it."
+    },
+    {
+      "path": "apps/tube/Cargo.toml",
+      "line": 44,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:libc->libc",
+      "count": 1,
+      "finding_id": "A02-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A02-07: Tube private persistence contains Unix security primitives (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/tube/Cargo.toml",
+      "line": 60,
+      "rule": "native-dependency",
+      "fingerprint": "dependencies:runtime-portal-xdg->runtime-portal-xdg",
+      "count": 1,
+      "finding_id": "A02-08",
+      "removal_task": "K01",
+      "rationale": "Existing exact site from A02-08: Tube explicitly binds account/device secret acquisition to XDG (high). Remove this exception when K01 migrates it."
+    },
+    {
+      "path": "apps/tube/Cargo.toml",
+      "line": 81,
+      "rule": "native-feature",
+      "fingerprint": "feature:media:ui/mpris",
+      "count": 1,
+      "finding_id": "A02-05",
+      "removal_task": "M03",
+      "rationale": "Existing exact site from A02-05: Music duplicates native playback and media-session backends (high). Remove this exception when M03 migrates it."
+    },
+    {
+      "path": "apps/tube/src/history_store.rs",
+      "line": 432,
+      "rule": "native-api",
+      "fingerprint": "source:.custom_flags(libc::O_NOFOLLOW)",
+      "count": 1,
+      "finding_id": "A02-09",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A02-09: Multiple apps duplicate platform directory selection (medium). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/tube/src/history_store.rs",
+      "line": 542,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(&target, &link).unwrap();",
+      "count": 1,
+      "finding_id": "A02-09",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A02-09: Multiple apps duplicate platform directory selection (medium). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/tube/src/history_store.rs",
+      "line": 409,
+      "rule": "native-api",
+      "fingerprint": "source:unsafe { libc::geteuid() }",
+      "count": 1,
+      "finding_id": "A02-09",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A02-09: Multiple apps duplicate platform directory selection (medium). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/tube/src/history_store.rs",
+      "line": 9,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};",
+      "count": 1,
+      "finding_id": "A02-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A02-07: Tube private persistence contains Unix security primitives (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/tube/src/sync/lifecycle.rs",
+      "line": 12,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};",
+      "count": 1,
+      "finding_id": "A02-07",
+      "removal_task": "S03",
+      "rationale": "Existing exact site from A02-07: Tube private persistence contains Unix security primitives (high). Remove this exception when S03 migrates it."
+    },
+    {
+      "path": "apps/vpn/src/local.rs",
+      "line": 74,
+      "rule": "native-api",
+      "fingerprint": "source:file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))",
+      "count": 1,
+      "finding_id": "A04-05",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A04-05: Workspace and user-directory defaults are duplicated in apps (medium). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/vpn/src/local.rs",
+      "line": 64,
+      "rule": "native-api",
+      "fingerprint": "source:fs::set_permissions(parent, std::os::unix::fs::PermissionsExt::from_mode(0o700))",
+      "count": 1,
+      "finding_id": "A04-05",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A04-05: Workspace and user-directory defaults are duplicated in apps (medium). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/vpn/src/local.rs",
+      "line": 63,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 2,
+      "finding_id": "A04-05",
+      "removal_task": "L02",
+      "rationale": "Existing exact site from A04-05: Workspace and user-directory defaults are duplicated in apps (medium). Remove this exception when L02 migrates it."
+    },
+    {
+      "path": "apps/windows/src/main.rs",
+      "line": 117,
+      "rule": "native-api",
+      "fingerprint": "source:.contains(windows::actions::WINDOWS_ACTION_TYPE),",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/windows/src/main.rs",
+      "line": 37,
+      "rule": "native-api",
+      "fingerprint": "source:.map_or_else(windows::app_root, |path| {",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/windows/src/main.rs",
+      "line": 18,
+      "rule": "native-api",
+      "fingerprint": "source:Ok(windows::app_root_scenario(",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/windows/src/main.rs",
+      "line": 111,
+      "rule": "native-api",
+      "fingerprint": "source:assert_eq!(encoded.type_id, windows::actions::WINDOWS_ACTION_TYPE);",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/windows/src/main.rs",
+      "line": 113,
+      "rule": "native-api",
+      "fingerprint": "source:let mut app = ui::App::new(ui::State::new(), windows::app_root_offline());",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/windows/src/main.rs",
+      "line": 79,
+      "rule": "native-api",
+      "fingerprint": "source:let surface = windows::app_root_offline();",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/windows/src/main.rs",
+      "line": 65,
+      "rule": "native-api",
+      "fingerprint": "source:windows::actions::register(app.action_registry_mut());",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/windows/src/main.rs",
+      "line": 38,
+      "rule": "native-api",
+      "fingerprint": "source:windows::app_root_open(std::path::Path::new(path))",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/windows/src/provider.rs",
+      "line": 4,
+      "rule": "native-api",
+      "fingerprint": "source:use std::os::fd::{FromRawFd, OwnedFd};",
+      "count": 1,
+      "finding_id": "A04-20",
+      "removal_task": "B03",
+      "rationale": "Existing exact site from A04-20: Windows app owns Linux appliance helpers and Unix service handle adoption (high). Remove this exception when B03 migrates it."
+    },
+    {
+      "path": "apps/word-processor/src/lib.rs",
+      "line": 476,
+      "rule": "native-api",
+      "fingerprint": "source:std::os::unix::fs::symlink(dir.join(\" \"), dir.join(\" \")).unwrap();",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 migrates it."
+    },
+    {
+      "path": "apps/word-processor/src/lib.rs",
+      "line": 466,
+      "rule": "platform-cfg",
+      "fingerprint": "source:cfg(unix)",
+      "count": 1,
+      "finding_id": "A01-12",
+      "removal_task": "V01",
+      "rationale": "Existing exact site from A01-12: Platform-dependent test fixtures need capability-specific verification (test-only; medium). Remove this exception when V01 migrates it."
+    }
+  ]
+}

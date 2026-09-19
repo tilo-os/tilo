@@ -1,0 +1,35 @@
+{
+  "reports": 15,
+  "finding_groups": 194,
+  "report_counts": {
+    "01-apps-productivity.md": 13,
+    "02-apps-media.md": 14,
+    "03-apps-communication.md": 13,
+    "04-apps-system.md": 22,
+    "05-imager.md": 12,
+    "06-shell-state.md": 18,
+    "07-shell-backends.md": 8,
+    "08-runtime-packaging.md": 24,
+    "09-system.md": 16,
+    "10-collab-identity.md": 11,
+    "11-media-browser-text.md": 11,
+    "12-other-crates.md": 10,
+    "13-filesystem.md": 8,
+    "14-os-tooling.md": 7,
+    "15-vendor-site.md": 7
+  },
+  "unique_explicit_source_anchors_checked": 1500,
+  "source_reference_errors": [],
+  "validation_type": "file existence and line range only; not semantic or runtime verification",
+  "builds_run": false,
+  "tests_run": false,
+  "markdown_local_links_checked": 112,
+  "markdown_link_errors": [],
+  "all_55_app_directories_assigned": true,
+  "all_crate_domains_assigned_or_explicitly_excluded": true,
+  "parent_semantic_spot_checks": [
+    "A08-15 installer non-Linux liveness fallback",
+    "A08-16 checkpoint and moderation lock fallbacks",
+    "A05-10 profile-tool native dependency closure"
+  ]
+}

@@ -1,0 +1,214 @@
+{
+  ".forgejo/workflows/release-imager.yml": {
+    "reviewed": "22be49c98d6cc052af4e2bb0aceeb7723303f4d179f9bd1b606611bffdeaecb4",
+    "after": "22be49c98d6cc052af4e2bb0aceeb7723303f4d179f9bd1b606611bffdeaecb4"
+  },
+  "Cargo.lock": {
+    "reviewed": "4ea03c4be01006d0079381240a24e1dce3d25182942ea1656603c6efa1ab0497",
+    "after": "4ea03c4be01006d0079381240a24e1dce3d25182942ea1656603c6efa1ab0497"
+  },
+  "Cargo.toml": {
+    "reviewed": "d4498c7ad71ae9e1f073af347a5418aaf8ee9c515e60c8ee2fcc1ac3a1ea31a8",
+    "after": "d4498c7ad71ae9e1f073af347a5418aaf8ee9c515e60c8ee2fcc1ac3a1ea31a8"
+  },
+  "apps/imager/Cargo.toml": {
+    "reviewed": "ebe092e674bc3ccf79967f0f065128168720ecb315e6bc7ff8271b69c2f9d3f9",
+    "after": "ebe092e674bc3ccf79967f0f065128168720ecb315e6bc7ff8271b69c2f9d3f9"
+  },
+  "apps/imager/packaging/test_release_catalog.py": {
+    "reviewed": "4d38aebde4b7728119d57f8b736d9d0d22f2f6bcfa859f02b70a95631504c42e",
+    "after": "4d38aebde4b7728119d57f8b736d9d0d22f2f6bcfa859f02b70a95631504c42e"
+  },
+  "apps/imager/release-catalog.json": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/release.rs": {
+    "reviewed": "17d3c377e6bbdb60626c141c1b27f89b4b1573f686a4977e735b23d2f788bf42",
+    "after": "17d3c377e6bbdb60626c141c1b27f89b4b1573f686a4977e735b23d2f788bf42"
+  },
+  "apps/imager/src/setup/internal_bundle.rs": {
+    "reviewed": "e2d1f6575564998b9074d58f9870cc667598768c8f0fc76e0ae05feb1f8e507e",
+    "after": "e2d1f6575564998b9074d58f9870cc667598768c8f0fc76e0ae05feb1f8e507e"
+  },
+  "apps/imager/src/setup/internal_cache.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_cache/checkpoint.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_cache/coordinator.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_cache/coordinator/tests.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_cache/linux.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_cache/linux/tests.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_cache/tests.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_cache/windows.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_cache/windows/tests.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_download.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_download/tests.rs": {
+    "reviewed": null,
+    "after": null
+  },
+  "apps/imager/src/setup/internal_download_flow.rs": {
+    "reviewed": "19d14a935fc4e29b7a400b761016e4dd1e859582aeffb10ef670001fbfc8226c",
+    "after": "fca44de65229ef8cf07c805b0176a9a2516225f4ea56e618de1227c2324673fb"
+  },
+  "apps/imager/src/setup/mod.rs": {
+    "reviewed": "0368f38a1038ff1ff4f370f5ec8c392319989cf0b94c87b37b7283100aba2601",
+    "after": "0368f38a1038ff1ff4f370f5ec8c392319989cf0b94c87b37b7283100aba2601"
+  },
+  "apps/imager/src/setup/view.rs": {
+    "reviewed": "8155ff1ec94e189c2c3ad33f2a53451b1e865c0065172d39e75b72d078d4489f",
+    "after": "8155ff1ec94e189c2c3ad33f2a53451b1e865c0065172d39e75b72d078d4489f"
+  },
+  "crates/app/tilo-app/Cargo.toml": {
+    "reviewed": "178039840f30c5a3df848e147ce73e55b045a6c4dcffe741ca019543c246eab6",
+    "after": "178039840f30c5a3df848e147ce73e55b045a6c4dcffe741ca019543c246eab6"
+  },
+  "crates/app/tilo-app/src/install_artifacts.rs": {
+    "reviewed": "5e6b198c9682a04ea180db878b1bdb0d38f021d0c7ba719312f6af17a421f114",
+    "after": "5e6b198c9682a04ea180db878b1bdb0d38f021d0c7ba719312f6af17a421f114"
+  },
+  "crates/app/tilo-app/src/lib.rs": {
+    "reviewed": "24d12ef475ae7b9ffc5f8e8c4a4b0b62d51830621251e52bb7f21873849e2d81",
+    "after": "24d12ef475ae7b9ffc5f8e8c4a4b0b62d51830621251e52bb7f21873849e2d81"
+  },
+  "crates/packaging/install-artifacts/Cargo.toml": {
+    "reviewed": "dfbdfcac7b258c9572210d64ed452655bbbc9bcd6b525cc4846ec6a9b9062ef0",
+    "after": "dfbdfcac7b258c9572210d64ed452655bbbc9bcd6b525cc4846ec6a9b9062ef0"
+  },
+  "crates/packaging/install-artifacts/release-catalog.json": {
+    "reviewed": "3aa2c12d568e82557b278a17f9488f55f45e16f40e0c0e3159b369bad44e9f41",
+    "after": "3aa2c12d568e82557b278a17f9488f55f45e16f40e0c0e3159b369bad44e9f41"
+  },
+  "crates/packaging/install-artifacts/src/bundle.rs": {
+    "reviewed": "67f21ddc56813e3346e81798e68b9c44e931c8193b3f052dbb8e23ae2f3dccda",
+    "after": "67f21ddc56813e3346e81798e68b9c44e931c8193b3f052dbb8e23ae2f3dccda"
+  },
+  "crates/packaging/install-artifacts/src/cache.rs": {
+    "reviewed": "ffa822f87bed9b96a91e3efba44b5239217bc148118ca597de6725d081fd6f23",
+    "after": "86910bbd5618fccdd80d535d0c17af25ac1894e30852b71012e387333eacd67a"
+  },
+  "crates/packaging/install-artifacts/src/cache/checkpoint.rs": {
+    "reviewed": "73800f770f79431b8f771e7c1533a4c7f393567a53daa57dfa029dc991095c73",
+    "after": "73800f770f79431b8f771e7c1533a4c7f393567a53daa57dfa029dc991095c73"
+  },
+  "crates/packaging/install-artifacts/src/cache/coordinator.rs": {
+    "reviewed": "c2edd0c11b5f1b3cdc17010ae7f0084330ea68666d53f45a79f2307130a74e72",
+    "after": "c2edd0c11b5f1b3cdc17010ae7f0084330ea68666d53f45a79f2307130a74e72"
+  },
+  "crates/packaging/install-artifacts/src/cache/coordinator/tests.rs": {
+    "reviewed": "65e0a561846b8b658b42d57e87eda43e3a8ae02e636f7accc6aa6d68a68636bd",
+    "after": "65e0a561846b8b658b42d57e87eda43e3a8ae02e636f7accc6aa6d68a68636bd"
+  },
+  "crates/packaging/install-artifacts/src/cache/fixture_coordinator.rs": {
+    "reviewed": "e19998bd32b75a8993a936eca5bff6ba138378bd0ef762f0d6f716941d71092a",
+    "after": "e19998bd32b75a8993a936eca5bff6ba138378bd0ef762f0d6f716941d71092a"
+  },
+  "crates/packaging/install-artifacts/src/cache/fixture_platform.rs": {
+    "reviewed": "96c576cc23444261aed4a85633ba002f1e0202dc40df48a6285500fa1c732d9e",
+    "after": "96c576cc23444261aed4a85633ba002f1e0202dc40df48a6285500fa1c732d9e"
+  },
+  "crates/packaging/install-artifacts/src/cache/fixture_storage.rs": {
+    "reviewed": "605895e2d81fea649c9042670347cedab4a689a18ca577baac61c48385ae6947",
+    "after": "605895e2d81fea649c9042670347cedab4a689a18ca577baac61c48385ae6947"
+  },
+  "crates/packaging/install-artifacts/src/cache/linux.rs": {
+    "reviewed": "61eb8027dca72165a7c479ab1ada3639ab5cb1d19db3cffab641dd1e5ffa2002",
+    "after": "8d4fa08684143c2210875b1093eec5a12de35ac1e54094fb0e1bbbe747341fed"
+  },
+  "crates/packaging/install-artifacts/src/cache/linux/tests.rs": {
+    "reviewed": "36af8a4c82f744191f5cb60fe9199dc79612affb4d340243782f238996b59b46",
+    "after": "36af8a4c82f744191f5cb60fe9199dc79612affb4d340243782f238996b59b46"
+  },
+  "crates/packaging/install-artifacts/src/cache/native_coordinator.rs": {
+    "reviewed": "2f62dfc398f8c21642838ab7707860ce151199e624a6f4fe012fa86487e28578",
+    "after": "2f62dfc398f8c21642838ab7707860ce151199e624a6f4fe012fa86487e28578"
+  },
+  "crates/packaging/install-artifacts/src/cache/tests.rs": {
+    "reviewed": "eaa6831d3d18a8c2141828dd476e56d3f1687be15ee0d852958f3db100b372fe",
+    "after": "eaa6831d3d18a8c2141828dd476e56d3f1687be15ee0d852958f3db100b372fe"
+  },
+  "crates/packaging/install-artifacts/src/cache/windows.rs": {
+    "reviewed": "4d6536cd1ca02c9e79946af88b1af11026e6da524f6f430166f21c5187a0f319",
+    "after": "de0e062f297ee33ede29e41c95a74fd7a522b4d042c13738f79105f0d30a7f91"
+  },
+  "crates/packaging/install-artifacts/src/cache/windows/tests.rs": {
+    "reviewed": "4bfe0d4c6e10b2db186b3cbb9afe09cefbd6098374d2d39d893e05de4e856a82",
+    "after": "4bfe0d4c6e10b2db186b3cbb9afe09cefbd6098374d2d39d893e05de4e856a82"
+  },
+  "crates/packaging/install-artifacts/src/catalog.rs": {
+    "reviewed": "e1187fafe446a4ad47b9d23c8d42f6d1011346a494dab15dcc6e46fe4541be05",
+    "after": "e1187fafe446a4ad47b9d23c8d42f6d1011346a494dab15dcc6e46fe4541be05"
+  },
+  "crates/packaging/install-artifacts/src/catalog_data.rs": {
+    "reviewed": "b7195e0c91d33fabc35b400755d3b5e0546e43ef5bdce927e2d869127efa244d",
+    "after": "b7195e0c91d33fabc35b400755d3b5e0546e43ef5bdce927e2d869127efa244d"
+  },
+  "crates/packaging/install-artifacts/src/download.rs": {
+    "reviewed": "8b5e742d464d6249bd5f8ae8f2175dbeee91a62408f08f2d8cfa416ecd77924d",
+    "after": "8b5e742d464d6249bd5f8ae8f2175dbeee91a62408f08f2d8cfa416ecd77924d"
+  },
+  "crates/packaging/install-artifacts/src/error.rs": {
+    "reviewed": "994a3a9ee9dcccc43c525120b6c37e0e7956af6385a3470b31be0d4a2193a678",
+    "after": "3847f18ad2774bfb9e8026298a108a2128c66ae8c51ca98906be55f0d72c058c"
+  },
+  "crates/packaging/install-artifacts/src/format.rs": {
+    "reviewed": "6a5c597cddec264a44f738b1b76f301d86cade5f46bddbcc7dd035a20edc168b",
+    "after": "6a5c597cddec264a44f738b1b76f301d86cade5f46bddbcc7dd035a20edc168b"
+  },
+  "crates/packaging/install-artifacts/src/lib.rs": {
+    "reviewed": "3f132923fe71334456113bcf62e4822d8ced93ddd94d2355b2e53e873f04c98d",
+    "after": "3f132923fe71334456113bcf62e4822d8ced93ddd94d2355b2e53e873f04c98d"
+  },
+  "crates/packaging/install-artifacts/src/test_support.rs": {
+    "reviewed": "24ff060e07bcd83894731e238204846a41c5fbdb00e4635b87fb3975974535c6",
+    "after": "24ff060e07bcd83894731e238204846a41c5fbdb00e4635b87fb3975974535c6"
+  },
+  "crates/packaging/install-artifacts/src/transport.rs": {
+    "reviewed": "e1d03977541a2a54eb0873836c495d7f4c9a790a64eaf10db81d90de9d3f9f40",
+    "after": "e1d03977541a2a54eb0873836c495d7f4c9a790a64eaf10db81d90de9d3f9f40"
+  },
+  "crates/packaging/install-artifacts/src/transport/tests.rs": {
+    "reviewed": "73a6e9e0028742d62f24dc79f6fd5be187ab7c4228063fbf93876191fc298d27",
+    "after": "73a6e9e0028742d62f24dc79f6fd5be187ab7c4228063fbf93876191fc298d27"
+  },
+  "crates/packaging/install-artifacts/tests/api_surface.rs": {
+    "reviewed": "22bb9f4de706090b4cd307e43dd646fa562fa53cacbadf4b865182d2e018c6ba",
+    "after": "22bb9f4de706090b4cd307e43dd646fa562fa53cacbadf4b865182d2e018c6ba"
+  },
+  "crates/packaging/install-artifacts/tests/catalog_surface.rs": {
+    "reviewed": "290c8916d5dc18b512f7a4622421d78e47f6c48c772a1b0e42fbda1d622ad578",
+    "after": "290c8916d5dc18b512f7a4622421d78e47f6c48c772a1b0e42fbda1d622ad578"
+  },
+  "tools/app_platform_baseline.json": {
+    "reviewed": "cf3b7e7bc85cacdba9364fb792268904dcc6b48ad6ed39c3d69ae892e2513e68",
+    "after": "cf3b7e7bc85cacdba9364fb792268904dcc6b48ad6ed39c3d69ae892e2513e68"
+  }
+}

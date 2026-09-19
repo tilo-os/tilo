@@ -1,0 +1,18 @@
+{
+  "crates/system/atomic-file/Cargo.toml": "0b80376630a12ec55dd2ab37a0b0a09ce94a4e230c313d95ec80b6299ecefe4e",
+  "crates/system/atomic-file/src/directory.rs": "ab958cc4ca4dfc344a58e90eccbca1927b708c00749fdce6ba5a5f6d5b3ffc75",
+  "crates/system/atomic-file/src/identity.rs": "2aaae6b6624bf33a15b374f9af9cabc26077419636d880fde7160f8b20283115",
+  "crates/system/atomic-file/src/lease.rs": "d46e920fd25a2c418ff6d89bad9f702cb139c5f35bfa13a643c7bee9984c5a4a",
+  "crates/system/atomic-file/src/legacy.rs": "711f36c2242521b81ce5e7ba01ad56b9150a7b5fea6b97e3611481bbda95ddeb",
+  "crates/system/atomic-file/src/lib.rs": "402fada3b52777f982aacf9a7a6cdd9c0b2164b1ba1ab2c2b8d8835788a15d96",
+  "crates/system/atomic-file/src/native/mod.rs": "a335b9ffd4003da8683adcdd58da0d93eb3dc593e7caa5abc3b1dee7c3bee49e",
+  "crates/system/atomic-file/src/native/unix.rs": "69a96ccf7ba881ef73a897274b78a334078fd0708d7a6dea7a3b9e9729ca3fe7",
+  "crates/system/atomic-file/src/native/windows/acl.rs": "fa495527fb62be4a5224d095d9fd02ee64063ecabaca51731f876da77335ffb9",
+  "crates/system/atomic-file/src/native/windows/tests.rs": "b0707c9506c9f4bebaac41bd9628a195c04c029eb036ec99b0fc7c58eb8604e0",
+  "crates/system/atomic-file/src/native/windows.rs": "6fcde4288324ac576f3fde9561173c8c91b37f5254cb81babfa3b45b913966f5",
+  "crates/system/atomic-file/src/publication.rs": "5803d5dd5aa0d5caae22d86684c4f2fc5df25520bdc12fad23975417516cbc9b",
+  "crates/system/atomic-file/src/test_support.rs": "a8c25036081a77d5c7b9699bafb07684417c68729db0ddfcd83c8b7e88408402",
+  "crates/system/atomic-file/tests/file_lease.rs": "34dbc8ec11583dc786dc49b9f283d5f53255c696cd76c894f073efd008a26aff",
+  "crates/system/atomic-file/tests/native_publication.rs": "4f5db73e7b25448ea9012f867ec394031d96add1db189bacae28b48bba6d472a",
+  "Cargo.lock": "03eaa702219899fdca6db75769ab7c994b0d090c4a9b6cecdf3e6ec87cb993dc"
+}

@@ -1,0 +1,11 @@
+{
+  "apps/settings/src/panes/accounts.rs": "91e49a559451d61736d9569cea5cbdc89c3fb56b3e00a42a9177479db84cb92b",
+  "crates/system/accounts/Cargo.toml": "f9567e59387de3b7f1abc314a2d872bc4e4a61588431fb4bbece0f9ca78b4d79",
+  "crates/system/accounts/src/vault.rs": "131ac513729b19237b3619fab5373edbed43a2a4374bf80f826ae90c192c8b22",
+  "crates/system/accounts/src/vault/unix_storage.rs": "d20657551931759f2c0a69f4a4201c4a7abb909b1026c68cbb9ca67dd06d9199",
+  "crates/system/accounts/src/vault/unix_tests.rs": "1dc36211306004ae1c8b70b58c365951eddb29a5d122559a51b61b1e0f4f2e9a",
+  "crates/system/atomic-file/src/directory.rs": "fa01cd05b1095041e6733d2536b9fb41425e6f72a4b26d887719f8dd81dbccbb",
+  "crates/system/atomic-file/src/native/unix.rs": "38e0908201a4c91d10be0f03fe9262b602e02e9afda43aef9c66b1248d3dc4e5",
+  "crates/system/atomic-file/tests/namespace_control.rs": "432ffbf40245ed584a7d320a6b6d0344d8378006365c2e89875d996bb584a4fe",
+  "crates/system/settings-store/src/lib.rs": "3a358338891c3c38d9ba8fc05b4f5fb6941a7a1f08c15c7e8f2ccb5bbc234bff"
+}

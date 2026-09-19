@@ -11,7 +11,6 @@ use winit::event::WindowEvent;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::time::Instant;
 
 /// Shared disabled-state opacity: wrap draw output in
@@ -124,6 +123,9 @@ pub(crate) fn collect_widget_resources(
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
         resources: &mut Vec<tilo_actions::Resource>,
     ) {
+        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+            return;
+        }
         let boundary = widget.callback_binding();
         let binding = boundary.clone().or(inherited);
         let Ok(_entry) = binding
@@ -290,11 +292,13 @@ pub(crate) fn humanize_control_id(id: &str) -> String {
 }
 
 /// A reusable action-intent queue for controls, including custom widgets.
-/// Widgets call [`emit`](Self::emit) from any interaction path and expose the
-/// queue through [`Widget::take_control_invocation`].
+/// Widgets call [`emit`](Self::emit) from any interaction path. Mounted shared
+/// controls install independent host custody; custom producers should use
+/// [`new_in`](Self::new_in) with their actual owner domain. The private `take`
+/// path remains only as explicitly unqualified migration compatibility.
 pub struct ActionEmitter<I> {
     binding: tilo_actions::ActionBinding<I>,
-    pending: VecDeque<tilo_actions::ControlInvocation>,
+    pending: crate::control_custody::ControlHolder,
     available: bool,
 }
 
@@ -304,9 +308,32 @@ impl<I> ActionEmitter<I> {
     pub fn new(binding: tilo_actions::ActionBinding<I>) -> Self {
         Self {
             binding,
-            pending: VecDeque::new(),
+            pending: crate::control_custody::ControlHolder::new(
+                crate::control_custody::ControlProducerDiscipline::Fifo {
+                    limit: ACTION_EMITTER_QUEUE_LIMIT,
+                },
+            ),
             available: true,
         }
+    }
+
+    /// Construct already registered, including for emitting inside a builder.
+    pub fn new_in(binding: tilo_actions::ActionBinding<I>, domain: &crate::ControlDomain) -> Self {
+        let mut emitter = Self::new(binding);
+        emitter.pending = crate::control_custody::ControlHolder::registered(
+            domain,
+            crate::control_custody::ControlProducerDiscipline::Fifo {
+                limit: ACTION_EMITTER_QUEUE_LIMIT,
+            },
+        );
+        emitter
+    }
+    pub fn install_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) -> Result<(), crate::control_custody::CustodyError> {
+        self.pending.install(domain, attachment)
     }
 
     /// Queues the typed invocation when the action is currently available.
@@ -318,21 +345,13 @@ impl<I> ActionEmitter<I> {
     pub fn emit(&mut self, input: I) -> Result<(), tilo_actions::ActionBindingError> {
         if self.available {
             let invocation = self.binding.invoke(input)?;
-            if self.pending.len() >= ACTION_EMITTER_QUEUE_LIMIT {
-                self.pending.pop_front();
-                tracing::warn!(
-                    action = ?self.binding.address(),
-                    limit = ACTION_EMITTER_QUEUE_LIMIT,
-                    "control invocation backlog full; evicting oldest intent"
-                );
-            }
-            self.pending.push_back(invocation);
+            self.pending.emit(invocation);
         }
         Ok(())
     }
 
     pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.pending.pop_front()
+        self.pending.take()
     }
 
     pub fn binding(&self) -> &tilo_actions::ActionBinding<I> {
@@ -465,6 +484,15 @@ pub trait Widget {
     > {
         Ok(None)
     }
+    /// Additional read-only veto for uncommitted app-local drafts in this scope.
+    /// This does not confer authority or recursively consult independent owners.
+    ///
+    /// # Errors
+    /// Returns a reason when this exact root is not ready to restore the scope.
+    fn history_restore_readiness(&self, _scope: &str) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Presentation declaration for a legacy tile's eventual checked record.
     /// The `TileHost` resolves custody after binding; this grants no authority.
     fn document_history_definition(
@@ -595,6 +623,32 @@ pub trait Widget {
                 break;
             }
             child.visit_components(request)?;
+        }
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners(
+        &self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        request.visit(self)
+    }
+    #[doc(hidden)]
+    #[allow(
+        private_interfaces,
+        reason = "finite toolkit resource ownership requests"
+    )]
+    fn visit_resource_owners_mut(
+        &mut self,
+        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        for child in self.children_mut() {
+            request.visit(child)?;
         }
         Ok(())
     }
@@ -1217,6 +1271,17 @@ pub trait Widget {
             .into_iter()
             .find_map(Widget::take_commit_context)
     }
+    /// Bind retained producers before their first callback. Private holders must
+    /// override this hook; child traversal alone never certifies full coverage.
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        for child in self.children_mut() {
+            child.install_control_custody(domain, attachment);
+        }
+    }
     /// Drain one queued action-bound control intent from this subtree.
     /// Custom-painted widgets can own an [`ActionEmitter`] and override this
     /// method; they do not need to use the toolkit's [`Button`].
@@ -1235,7 +1300,9 @@ pub trait Widget {
         result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
     ) {
         for child in self.children_mut() {
-            child.on_control_invocation_result(address, result);
+            if !child.has_separate_document_owner() {
+                child.on_control_invocation_result(address, result);
+            }
         }
     }
     /// Recursively inventory action-native and explicitly legacy controls.
@@ -1434,6 +1501,19 @@ pub trait Widget {
     /// collides between them, so a peer's caret lands in whichever
     /// instance drew last.
     fn set_record_scope(&mut self, _record: &crate::record::RecordId) {}
+
+    /// Detach every receiver, queued result and deferred document write owned by
+    /// the current record before a host can retain this root under another
+    /// record owner. This runs without a document loan. Returning `Ok(())`
+    /// certifies that no later lifecycle callback can apply old-owner work to a
+    /// replacement document. Opaque roots refuse by default.
+    ///
+    /// # Errors
+    /// Returns an explanatory refusal when the widget cannot yet detach every
+    /// continuation associated with its current record owner.
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        Err("This application cannot release retained work from its current document owner".into())
+    }
 
     // --- Collab / DnD contract extensions ---
     /// Stable identity for presence/permission lookup. Default: opt-out.
@@ -2453,12 +2533,13 @@ mod tests {
             emitter.emit(false).expect("valid boolean intent");
         }
         emitter.emit(true).expect("valid boolean intent");
-        assert_eq!(emitter.pending.len(), ACTION_EMITTER_QUEUE_LIMIT);
-
+        let mut count = 0;
         let mut last = None;
         while let Some(invocation) = emitter.take() {
+            count += 1;
             last = invocation.arguments.get("value").cloned();
         }
+        assert_eq!(count, ACTION_EMITTER_QUEUE_LIMIT);
         assert_eq!(last, Some(serde_json::Value::Bool(true)));
     }
 }
@@ -2467,6 +2548,7 @@ mod tests {
 pub(crate) mod control_result_probe {
     use super::*;
     use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
     use std::rc::Rc;
 
     #[derive(Clone, Default)]

@@ -6682,6 +6682,264 @@ fn file_ux_cancelling_a_resource_open_closes_its_unsaved_prompt() {
 }
 
 #[test]
+fn owner_release_refuses_active_edit_then_detaches_file_work_without_losing_draft() {
+    let mut wp = WordProcessorWidget::new();
+    let invocation = tilo_actions::InvocationId::new();
+    let selected = PathBuf::from("selected.md");
+    wp.path = Some(selected.clone());
+    wp.save_status = DocumentSaveStatus::Modified;
+    wp.editing_field = Some(NumField::Size);
+    wp.pending_resource_open = Some((invocation, PathBuf::from("pending.md")));
+    wp.resource_file_invocation = Some(invocation);
+    assert!(wp.release_record_scope().is_err());
+    assert!(wp.pending_resource_open.is_some());
+    assert_eq!(wp.resource_file_invocation, Some(invocation));
+    assert_eq!(wp.path, Some(selected.clone()));
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
+
+    wp.editing_field = None;
+    wp.pending_replacement = Some(PendingReplacement::Open(PathBuf::from("replacement.md")));
+    wp.replace_after_save = true;
+    wp.unsaved_changes.open();
+    wp.resource_file_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+        invocation,
+        output: tilo_actions::ActionOutput::default(),
+    });
+    wp.release_record_scope().unwrap();
+    assert!(wp.pending_resource_open.is_none());
+    assert!(wp.pending_replacement.is_none());
+    assert!(!wp.replace_after_save);
+    assert!(!wp.unsaved_changes.is_open());
+    assert!(wp.resource_file_invocation.is_none());
+    assert!(wp.resource_file_result.is_none());
+    assert_eq!(wp.path, Some(selected));
+    assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
+}
+
+#[test]
+fn tile_host_preserves_completed_direct_open_result_across_record_intent_release() {
+    let directory = std::env::temp_dir().join(format!(
+        "qos-owner-release-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let target = directory.join("opened.md");
+    std::fs::write(&target, "Opened through the real direct path").unwrap();
+    let mut owners = ui::record::RecordOwners::new(directory.join("records"));
+    let store = owners.open("word-processor", "owner-release").unwrap();
+    let first =
+        ui::RecordCheckout::new(ui::RecordId::for_tab(9101), ui::RecordKind::new("document"));
+    let selected = ui::RecordCheckout::new(
+        ui::RecordId::for_file(&target),
+        ui::RecordKind::new("document"),
+    );
+    store
+        .reserve_record(&first)
+        .unwrap()
+        .initialize(|_| Ok(()))
+        .unwrap();
+    let mut word_processor = WordProcessorWidget::new();
+    word_processor
+        .recovery
+        .set_base_dir(directory.join("recovery"));
+    let mut tile =
+        ui::widget::TileHost::new(ui::widget::TileContent::App(Box::new(word_processor)));
+    tile.bind_record(store.clone(), first.clone());
+    let mut outer = AutoCommit::new();
+    tile.sync(&mut outer, &automerge::ROOT);
+    store
+        .reserve_record(&selected)
+        .unwrap()
+        .initialize(|doc| {
+            let mut candidate = WordProcessorWidget::new();
+            candidate
+                .recovery
+                .set_base_dir(directory.join("candidate-recovery"));
+            candidate.sync(doc, &automerge::ROOT);
+            Ok(())
+        })
+        .unwrap();
+    let invocation = tilo_actions::InvocationId::new();
+    let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::Open {
+        path: Some(target.to_string_lossy().into_owned()),
+    })
+    .unwrap();
+    assert!(matches!(
+        tile.start_resource_operation_with_document(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+            &payload,
+            &mut outer,
+            &automerge::ROOT,
+        )
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Accepted)
+    ));
+    tile.sync(&mut outer, &automerge::ROOT);
+    tile.sync(&mut outer, &automerge::ROOT);
+    assert!(tile.record_transition_error().is_none());
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
+            if completed == invocation
+    ));
+    assert!(
+        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
+            .is_none()
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the controlled Open, refusal, managed Escape event and one-shot result form one lifecycle proof"
+)]
+fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Size, TaffyTree};
+    use winit::keyboard::{NativeKeyCode, PhysicalKey};
+
+    let directory = std::env::temp_dir().join(format!(
+        "qos-owner-recovery-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let target = directory.join("opened.md");
+    std::fs::write(&target, "Opened after the draft is cancelled").unwrap();
+    let mut owners = ui::record::RecordOwners::new(directory.join("records"));
+    let store = owners.open("word-processor", "owner-recovery").unwrap();
+    let first =
+        ui::RecordCheckout::new(ui::RecordId::for_tab(9102), ui::RecordKind::new("document"));
+    let selected = ui::RecordCheckout::new(
+        ui::RecordId::for_file(&target),
+        ui::RecordKind::new("document"),
+    );
+    store
+        .reserve_record(&first)
+        .unwrap()
+        .initialize(|_| Ok(()))
+        .unwrap();
+    store
+        .reserve_record(&selected)
+        .unwrap()
+        .initialize(|doc| {
+            let mut candidate = WordProcessorWidget::new();
+            candidate
+                .recovery
+                .set_base_dir(directory.join("candidate-recovery"));
+            candidate.sync(doc, &automerge::ROOT);
+            Ok(())
+        })
+        .unwrap();
+
+    let mut word_processor = Box::new(WordProcessorWidget::new());
+    word_processor
+        .recovery
+        .set_base_dir(directory.join("recovery"));
+    word_processor.lifecycle.focused = true;
+    let word_processor_ptr = std::ptr::from_mut(word_processor.as_mut());
+    let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(word_processor));
+    tile.bind_record(store, first);
+    let mut outer = AutoCommit::new();
+    tile.sync(&mut outer, &automerge::ROOT);
+
+    let invocation = tilo_actions::InvocationId::new();
+    let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::Open {
+        path: Some(target.to_string_lossy().into_owned()),
+    })
+    .unwrap();
+    assert!(matches!(
+        tile.start_resource_operation_with_document(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+            &payload,
+            &mut outer,
+            &automerge::ROOT,
+        )
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Accepted)
+    ));
+    tile.sync(&mut outer, &automerge::ROOT);
+    // SAFETY: the boxed Writer allocation remains owned by `tile` for the
+    // rest of this test; no reference survives a widget callback.
+    unsafe {
+        (*word_processor_ptr).editing_field = Some(NumField::Size);
+        (*word_processor_ptr).edit_buf = "24".into();
+    }
+    tile.sync(&mut outer, &automerge::ROOT);
+    assert!(tile.record_transition_error().is_some());
+    let status = tile
+        .accessibility()
+        .expect("transition refusal is accessible");
+    assert_eq!(status.name.as_deref(), Some("Document switch blocked"));
+
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = tile.build_layout(&mut tree, &ui::Theme::default(), &mut nodes);
+    tree.compute_layout(
+        node,
+        Size {
+            width: AvailableSpace::Definite(1000.0),
+            height: AvailableSpace::Definite(700.0),
+        },
+    )
+    .unwrap();
+    tile.apply_layout(&tree, node, vello::kurbo::Point::ZERO);
+
+    let mut key: KeyEvent = unsafe { std::mem::zeroed() };
+    key.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+    key.logical_key = Key::Named(NamedKey::Escape);
+    key.text = None;
+    key.location = winit::keyboard::KeyLocation::Standard;
+    key.state = ElementState::Pressed;
+    key.repeat = false;
+    let mut handled = false;
+    let mut focus = None;
+    tile.handle_event(
+        &WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: key,
+            is_synthetic: false,
+        },
+        1.0,
+        &Modifiers::default(),
+        &mut outer,
+        &automerge::ROOT,
+        &mut handled,
+        &mut focus,
+        node,
+        &tree,
+    );
+    assert!(handled);
+    // SAFETY: same stable boxed allocation as above.
+    assert!(unsafe { (*word_processor_ptr).editing_field.is_none() });
+
+    tile.sync(&mut outer, &automerge::ROOT);
+    assert!(tile.record_transition_error().is_none());
+    assert!(matches!(
+        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT),
+        Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
+            if completed == invocation
+    ));
+    assert!(
+        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
+            .is_none()
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn file_ux_save_then_open_writes_the_draft_before_replacing_it() {
     for corrupt in [false, true] {
         let (mut state, mut wp) = bound();

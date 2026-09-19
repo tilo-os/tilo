@@ -1,0 +1,163 @@
+crates/hosting/tilo-relay/src/process_lease.rs:4://! PID and the kernel start-time tick from `/proc/<pid>/stat`. The privileged
+crates/hosting/tilo-relay/src/process_lease.rs:78:    #[cfg(unix)]
+crates/hosting/tilo-relay/src/process_lease.rs:80:        use std::os::unix::fs::MetadataExt as _;
+crates/hosting/tilo-relay/src/process_lease.rs:95:    PathBuf::from("/proc").join(pid.to_string())
+crates/hosting/tilo-relay/src/process_lease.rs:122:        use std::os::unix::fs::MetadataExt as _;
+crates/hosting/tilo-relay/src/process_lease.rs:126:        let uid = std::fs::metadata("/proc/self").unwrap().uid();
+crates/hosting/tilo-relay/src/process_lease.rs:139:        let mut child = Command::new("/bin/sh")
+crates/hosting/tilo-relay/src/admin.rs:476:    let config = std::env::var_os("XDG_CONFIG_HOME")
+crates/hosting/tilo-relay/src/admin.rs:478:        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+crates/hosting/tilo-relay/src/admin.rs:721:    use std::os::unix::fs::PermissionsExt as _;
+crates/hosting/tilo-relay/src/enroll.rs:89:        /// `/proc/<pid>/stat` start-time tick, preventing PID-reuse bypass.
+crates/hosting/tilo-relay/src/enroll.rs:309:    #[cfg(unix)]
+crates/hosting/tilo-relay/src/enroll.rs:311:        use std::os::unix::ffi::OsStrExt as _;
+crates/hosting/tilo-relay/src/enroll.rs:312:        use std::os::unix::fs::MetadataExt as _;
+crates/hosting/tilo-relay/src/enroll.rs:318:        if unsafe { libc::chown(path.as_ptr(), owner.uid(), owner.gid()) } != 0 {
+crates/hosting/tilo-relay/src/enroll.rs:323:    #[cfg(not(unix))]
+crates/hosting/tilo-relay/src/enroll.rs:379:    #[cfg(unix)]
+crates/hosting/tilo-relay/src/enroll.rs:381:        use std::os::unix::fs::MetadataExt as _;
+crates/hosting/tilo-relay/src/enroll.rs:387:    #[cfg(unix)]
+crates/hosting/tilo-relay/src/enroll.rs:389:        use std::os::unix::ffi::OsStrExt as _;
+crates/hosting/tilo-relay/src/enroll.rs:393:        if unsafe { libc::chown(path.as_ptr(), owner.0, owner.1) } != 0 {
+crates/hosting/tilo-relay/src/enroll.rs:1002:    #[cfg(unix)]
+crates/hosting/tilo-relay/src/enroll.rs:2590:        #[cfg(unix)]
+crates/hosting/tilo-relay/src/enroll.rs:2592:            use std::os::unix::fs::MetadataExt as _;
+crates/hosting/tilo-relay/src/enroll.rs:2593:            let uid = unsafe { libc::geteuid() };
+crates/hosting/tilo-relay/src/enroll.rs:2638:        let mut requester = std::process::Command::new("/bin/sh")
+crates/hosting/tilo-relay/src/enroll.rs:2720:        let mut requester = std::process::Command::new("/bin/sh")
+crates/hosting/tilo-relay/src/enroll.rs:2766:        let mut requester = std::process::Command::new("/bin/sh")
+crates/hosting/tilo-relay/src/enroll.rs:3067:        use std::os::unix::fs::PermissionsExt as _;
+crates/hosting/tilo-relay/src/compute_worker.rs:12:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+crates/hosting/tilo-relay/src/compute_worker.rs:90:                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+crates/hosting/tilo-relay/src/compute_worker.rs:115:            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+crates/hosting/tilo-relay/src/compute_worker.rs:561:    if Path::new("/run/tilo/energy-saver").exists() {
+crates/hosting/tilo-relay/src/compute_worker.rs:608:    ["/usr/bin/bwrap", "/bin/bwrap"]
+crates/hosting/tilo-relay/src/compute_worker.rs:614:    let root = Path::new("/sys/class/power_supply");
+crates/collab/collab-types/src/caps.rs:279:    /// A hardware/system device class the portal brokers: `"camera"`,
+crates/identity/tilo-user-identity/src/persist.rs:30:#[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:34:#[cfg(target_os = "linux")]
+crates/identity/tilo-user-identity/src/persist.rs:35:use std::os::fd::FromRawFd as _;
+crates/identity/tilo-user-identity/src/persist.rs:36:#[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:37:use std::os::unix::ffi::OsStrExt;
+crates/identity/tilo-user-identity/src/persist.rs:51:    #[cfg(target_os = "linux")]
+crates/identity/tilo-user-identity/src/persist.rs:58:        if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+crates/identity/tilo-user-identity/src/persist.rs:65:#[cfg(target_os = "linux")]
+crates/identity/tilo-user-identity/src/persist.rs:83:    let flags = u64::try_from(libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK)
+crates/identity/tilo-user-identity/src/persist.rs:93:        libc::syscall(
+crates/identity/tilo-user-identity/src/persist.rs:94:            libc::SYS_openat2,
+crates/identity/tilo-user-identity/src/persist.rs:95:            libc::AT_FDCWD,
+crates/identity/tilo-user-identity/src/persist.rs:114:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:116:        use std::os::unix::fs::OpenOptionsExt as _;
+crates/identity/tilo-user-identity/src/persist.rs:117:        let flags = libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+crates/identity/tilo-user-identity/src/persist.rs:120:        #[cfg(target_os = "macos")]
+crates/identity/tilo-user-identity/src/persist.rs:121:        let flags = (flags & !libc::O_NOFOLLOW) | libc::O_NOFOLLOW_ANY;
+crates/identity/tilo-user-identity/src/persist.rs:356:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:358:        use std::os::unix::fs::MetadataExt;
+crates/identity/tilo-user-identity/src/persist.rs:366:            let reader = unsafe { libc::geteuid() };
+crates/identity/tilo-user-identity/src/persist.rs:406:#[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:585:    #[cfg(target_os = "linux")]
+crates/identity/tilo-user-identity/src/persist.rs:587:        libc::syscall(
+crates/identity/tilo-user-identity/src/persist.rs:588:            libc::SYS_renameat2,
+crates/identity/tilo-user-identity/src/persist.rs:589:            libc::AT_FDCWD,
+crates/identity/tilo-user-identity/src/persist.rs:591:            libc::AT_FDCWD,
+crates/identity/tilo-user-identity/src/persist.rs:593:            libc::RENAME_NOREPLACE,
+crates/identity/tilo-user-identity/src/persist.rs:596:    #[cfg(target_os = "macos")]
+crates/identity/tilo-user-identity/src/persist.rs:600:        libc::renameatx_np(
+crates/identity/tilo-user-identity/src/persist.rs:601:            libc::AT_FDCWD,
+crates/identity/tilo-user-identity/src/persist.rs:603:            libc::AT_FDCWD,
+crates/identity/tilo-user-identity/src/persist.rs:605:            libc::RENAME_EXCL,
+crates/identity/tilo-user-identity/src/persist.rs:653:        #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:655:            use std::os::unix::fs::OpenOptionsExt;
+crates/identity/tilo-user-identity/src/persist.rs:660:                #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:662:                    use std::os::unix::fs::PermissionsExt;
+crates/identity/tilo-user-identity/src/persist.rs:767:#[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:773:    use std::os::unix::fs::PermissionsExt;
+crates/identity/tilo-user-identity/src/persist.rs:796:    #[cfg(target_os = "linux")]
+crates/identity/tilo-user-identity/src/persist.rs:801:        assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) }, 0);
+crates/identity/tilo-user-identity/src/persist.rs:814:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:817:        use std::os::unix::fs::symlink;
+crates/identity/tilo-user-identity/src/persist.rs:837:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:840:        use std::os::unix::fs::PermissionsExt;
+crates/identity/tilo-user-identity/src/persist.rs:856:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:859:        use std::os::unix::fs::PermissionsExt;
+crates/identity/tilo-user-identity/src/persist.rs:872:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:875:        use std::os::unix::fs::symlink;
+crates/identity/tilo-user-identity/src/persist.rs:885:            PersistError::Io(error) => assert_eq!(error.raw_os_error(), Some(libc::ELOOP)),
+crates/identity/tilo-user-identity/src/persist.rs:892:            PersistError::Io(error) => assert_eq!(error.raw_os_error(), Some(libc::ELOOP)),
+crates/identity/tilo-user-identity/src/persist.rs:897:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:913:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:989:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:992:        use std::os::unix::fs::PermissionsExt;
+crates/identity/tilo-user-identity/src/persist.rs:1019:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:1038:    #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:1041:        use std::os::unix::fs::PermissionsExt;
+crates/identity/tilo-user-identity/src/persist.rs:1073:        #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:1075:            use std::os::unix::fs::MetadataExt;
+crates/identity/tilo-user-identity/src/persist.rs:1133:        #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:1135:            use std::os::unix::fs::PermissionsExt;
+crates/identity/tilo-user-identity/src/persist.rs:1157:        #[cfg(unix)]
+crates/identity/tilo-user-identity/src/persist.rs:1159:            use std::os::unix::fs::MetadataExt;
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:28:    flags: libc::c_int,
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:29:    mode: libc::mode_t,
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:57:        libc::syscall(
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:58:            libc::SYS_openat2,
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:59:            libc::AT_FDCWD,
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:75:    open_without_symlinks(path, libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK, 0)
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:81:        libc::O_RDWR | libc::O_CREAT | libc::O_CLOEXEC | libc::O_NONBLOCK,
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:265:        || metadata.uid() != unsafe { libc::geteuid() }
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:574:        || metadata.uid() != unsafe { libc::geteuid() }
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:608:        || PathBuf::from("/run/tilo-verified-update.lock"),
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:626:        || metadata.uid() != unsafe { libc::geteuid() }
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:638:        || update_lock_metadata.uid() != unsafe { libc::geteuid() }
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:646:    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&update_lock), libc::LOCK_EX) } != 0 {
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:660:        || lock_metadata.uid() != unsafe { libc::geteuid() }
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:669:    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } != 0 {
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:889:    if metadata.uid() != unsafe { libc::geteuid() }
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:898:    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) } != 0 {
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:920:    if metadata.uid() != unsafe { libc::geteuid() }
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:972:    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:1055:        std::os::unix::fs::symlink(temp.path(), &linked_parent).expect("marker parent symlink");
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:1080:        use std::os::unix::fs::symlink;
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:1113:        use std::os::unix::fs::{PermissionsExt, symlink};
+crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs:1139:        use std::os::unix::fs::symlink;
+crates/hosting/tilo-relay/src/home_peer_control.rs:4:use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+crates/hosting/tilo-relay/src/home_peer_control.rs:15:const HOME_PEER_CONFIG: &str = "/etc/tilo/home-peer.toml";
+crates/hosting/tilo-relay/src/home_peer_control.rs:17:const MAX_HOME_PEER_EXPORT: u64 = 8 * 1024 * 1024;
+crates/hosting/tilo-relay/src/home_peer_control.rs:87:    if std::fs::metadata("/proc/self")?.uid() != 0 {
+crates/hosting/tilo-relay/src/home_peer_control.rs:155:        "systemctl",
+crates/hosting/tilo-relay/src/home_peer_control.rs:162:        bail!("systemctl {action} {unit} failed");
+crates/hosting/tilo-relay/src/home_peer_control.rs:180:    let mut command = Command::new("/usr/bin/fs");
+crates/hosting/tilo-relay/src/home_peer_control.rs:200:                .take(MAX_HOME_PEER_EXPORT.saturating_add(1))
+crates/hosting/tilo-relay/src/home_peer_control.rs:202:            if bytes.len() as u64 > MAX_HOME_PEER_EXPORT {
+crates/hosting/tilo-relay/src/home_peer_control.rs:261:            "systemctl",
+crates/hosting/tilo-relay/src/home_peer_control.rs:347:    let home_bytes = if Path::new(HOME_PEER_CONFIG).is_file() {
+crates/hosting/tilo-relay/src/home_peer_control.rs:348:        let bytes = std::fs::read(HOME_PEER_CONFIG)?;
+crates/hosting/tilo-relay/src/home_peer_control.rs:365:        Path::new(HOME_PEER_CONFIG),
+crates/hosting/tilo-relay/src/home_peer_control.rs:433:    let mut command = Command::new("/usr/bin/tilo-enroll");
+crates/hosting/tilo-relay/src/home_peer_control.rs:503:    let mut command = Command::new("/usr/bin/tilo-enroll");
+crates/hosting/tilo-relay/src/home_peer_control.rs:667:        let uid = std::fs::metadata("/proc/self").unwrap().uid();
+crates/identity/tilo-user-identity/src/bin/tilo-device-key-init.rs:20:    if unsafe { libc::geteuid() } != 0 {
+crates/identity/tilo-user-identity/src/bin/tilo-device-key-init.rs:78:    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+crates/hosting/tilo-relay/src/compute.rs:17:use std::os::fd::AsRawFd;
+crates/hosting/tilo-relay/src/compute.rs:18:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+crates/hosting/tilo-relay/src/compute.rs:28:#[cfg(target_os = "linux")]
+crates/hosting/tilo-relay/src/compute.rs:355:        #[cfg(target_os = "linux")]
+crates/hosting/tilo-relay/src/compute.rs:378:                        "/run/tilo/app/.tilo-compute/request.json".into(),
+crates/hosting/tilo-relay/src/compute.rs:380:                        "/run/tilo/app/.tilo-compute/outputs".into(),
+crates/hosting/tilo-relay/src/compute.rs:793:        let pinned_dir = PathBuf::from(format!("/proc/self/fd/{}", output_dir.as_raw_fd()));
+crates/hosting/tilo-relay/src/compute.rs:806:                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+crates/hosting/tilo-relay/src/compute.rs:931:                    .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+crates/hosting/tilo-relay/src/compute.rs:991:        output_directory: "/run/tilo/app/.tilo-compute/outputs",
+crates/hosting/tilo-relay/src/compute.rs:1018:    use std::os::unix::process::ExitStatusExt;
+crates/hosting/tilo-relay/src/compute.rs:1148:                std::os::unix::fs::symlink("inputs", output_dir)
+crates/hosting/tilo-relay/src/main.rs:229:    #[cfg(unix)]
+crates/hosting/tilo-relay/src/main.rs:239:    #[cfg(not(unix))]
+crates/collab/channel-crypto/README.md:87:under the launcher-supplied `XDG_STATE_HOME`; missing/locked Secret Service or
+crates/collab/channel-crypto/src/governance.rs:5:#[cfg(unix)]
+crates/collab/channel-crypto/src/governance.rs:6:use std::os::unix::fs::OpenOptionsExt as _;
+crates/collab/channel-crypto/src/governance.rs:281:        #[cfg(unix)]
+crates/collab/channel-crypto/src/persistence.rs:9:#[cfg(unix)]
+crates/collab/channel-crypto/src/persistence.rs:10:use std::os::unix::fs::OpenOptionsExt as _;
+crates/collab/channel-crypto/src/persistence.rs:135:            #[cfg(unix)]
+crates/collab/channel-crypto/src/persistence.rs:137:                use std::os::unix::fs::PermissionsExt as _;
+crates/collab/channel-crypto/src/persistence.rs:144:        #[cfg(unix)]

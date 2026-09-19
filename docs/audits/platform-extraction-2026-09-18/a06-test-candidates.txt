@@ -1,0 +1,219 @@
+shell/tests/dmabuf_feedback_protocol.rs:11://! Runs an in-process wayland-client through a `UnixStream` pair into a
+shell/tests/dmabuf_feedback_protocol.rs:27:use std::os::unix::net::UnixStream;
+shell/tests/dmabuf_feedback_protocol.rs:121:                    libc::mmap(
+shell/tests/dmabuf_feedback_protocol.rs:124:                        libc::PROT_READ,
+shell/tests/dmabuf_feedback_protocol.rs:125:                        libc::MAP_PRIVATE,
+shell/tests/dmabuf_feedback_protocol.rs:126:                        std::os::fd::AsRawFd::as_raw_fd(&fd),
+shell/tests/dmabuf_feedback_protocol.rs:130:                assert_ne!(map, libc::MAP_FAILED, "format table memfd must be mappable");
+shell/tests/dmabuf_feedback_protocol.rs:139:                    libc::munmap(map, len);
+shell/tests/dmabuf_feedback_protocol.rs:194:    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+shell/tests/dmabuf_feedback_protocol.rs:261:    use std::os::unix::fs::MetadataExt as _;
+shell/tests/flatpak_share_e2e.rs:3://! In-process rather than two netns/processes: gossip transport is
+shell/tests/flatpak_share_encoder_probe.rs:59:/// Explicit openh264 skips the hardware probes — no `/dev/dri` open, no
+shell/tests/flatpak_share_encoder_probe.rs:97:    // On a vaapi build with a real `/dev/dri` the probe may pick VA-API
+shell/tests/flatpak_share_encoder_probe.rs:126:/// `#[ignore]`d (CI runners lack `/dev/dri`); run with `--include-ignored`
+shell/tests/flatpak_share_encoder_probe.rs:129:#[ignore = "requires --features vaapi + a real /dev/dri render node; run with --include-ignored on a workstation"]
+shell/tests/wayland_test.rs:118:    cmd.env("WAYLAND_DEBUG", "1");
+shell/tests/leak_probe.rs:21:    let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+shell/tests/portal_file_chooser_e2e.rs:32:use tokio::net::UnixStream;
+shell/tests/portal_file_chooser_e2e.rs:191:    let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
+shell/tests/it.rs:3:#![cfg(target_os = "linux")]
+shell/tests/nvenc_hardware_encode.rs:2://! self-skips without a working H.264 NVENC encoder — `/dev/nvidia0` can
+shell/tests/opening_configure_carries_the_tab_size.rs:22:use std::os::unix::net::UnixStream;
+shell/tests/opening_configure_carries_the_tab_size.rs:142:        let (server_side, client_side) = UnixStream::pair().expect("socketpair");
+shell/tests/advertised_globals.rs:22:use std::os::unix::net::UnixStream;
+shell/tests/advertised_globals.rs:57:    let (server_side, client_side) = UnixStream::pair().expect("socketpair");
+shell/tests/keyboard_focus_wire.rs:14:use std::os::unix::net::UnixStream;
+shell/tests/keyboard_focus_wire.rs:173:        let (server, client) = UnixStream::pair().expect("socket pair");
+shell/tests/apps_integration.rs:18:#[cfg(target_os = "macos")]
+shell/tests/apps_integration.rs:72:    command.env("PATH", "/usr/bin:/bin");
+shell/tests/fractional_scale_protocol.rs:2://! wayland-client through a `UnixStream` pair into a headless smithay
+shell/tests/fractional_scale_protocol.rs:23:use std::os::unix::net::UnixStream;
+shell/tests/fractional_scale_protocol.rs:204:    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+shell/tests/fractional_scale_protocol.rs:247:    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+shell/tests/native_atspi_smoke.sh:1:#!/usr/bin/env bash
+shell/tests/native_atspi_smoke.sh:13:command -v busctl >/dev/null
+shell/tests/native_atspi_smoke.sh:14:command -v gdbus >/dev/null
+shell/tests/native_atspi_smoke.sh:20:  DBUS_SESSION_BUS_ADDRESS=$(systemctl --user show-environment \
+shell/tests/native_atspi_smoke.sh:31:  shell_pid=$(pgrep -o -f '^/usr/bin/shell --backend drm( |$)' || true)
+shell/tests/native_atspi_smoke.sh:49:  kill -0 "$shell_pid" 2>/dev/null || break
+shell/tests/native_atspi_smoke.sh:126:        node_named "$expected" >/dev/null || missing+=" $expected"
+shell/tests/native_atspi_smoke.sh:148:      --method org.a11y.atspi.Action.GetActions 2>/dev/null) || continue
+shell/tests/native_atspi_smoke.sh:173:    interfaces=$(property "$candidate" Interfaces 2>/dev/null) || continue
+shell/tests/native_atspi_smoke.sh:215:      --method org.a11y.atspi.Accessible.GetState 2>/dev/null) || {
+shell/tests/native_atspi_smoke.sh:256:      --method org.a11y.atspi.Text.GetText 0 -1 2>/dev/null) || {
+shell/tests/portal_prompt_drain_e2e.rs:47:use tokio::net::UnixStream;
+shell/tests/portal_prompt_drain_e2e.rs:76:    let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
+shell/tests/color_management_protocol.rs:2://! wayland-client wired through a `UnixStream` pair into a headless smithay
+shell/tests/color_management_protocol.rs:18:use std::os::unix::net::UnixStream;
+shell/tests/color_management_protocol.rs:235:    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+shell/tests/color_management_protocol.rs:304:    let (client_side, server_side) = UnixStream::pair().expect("socket pair");
+shell/tests/document_open_e2e.rs:206:    use std::os::unix::fs::PermissionsExt;
+shell/tests/document_open_e2e.rs:261:    let old_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+shell/tests/document_open_e2e.rs:268:        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
+shell/tests/document_open_e2e.rs:381:            Some(value) => std::env::set_var("XDG_RUNTIME_DIR", value),
+shell/tests/document_open_e2e.rs:382:            None => std::env::remove_var("XDG_RUNTIME_DIR"),
+shell/tests/document_open_e2e.rs:409:        std::env::set_var("XDG_RUNTIME_DIR", &runtime);
+shell/tests/identity_startup.rs:11:use std::os::unix::fs::PermissionsExt;
+shell/tests/identity_startup.rs:51:    let status = Command::new(env!("CARGO_BIN_EXE_shell"))
+shell/tests/identity_startup.rs:54:        .env("XDG_CONFIG_HOME", &config)
+shell/tests/clipboard_e2e.rs:3://! `UnixStream` inside the
+shell/tests/clipboard_e2e.rs:5://! `WAYLAND_DISPLAY`.
+shell/tests/clipboard_e2e.rs:26:use std::os::unix::io::{FromRawFd, OwnedFd};
+shell/tests/clipboard_e2e.rs:27:use std::os::unix::net::UnixStream;
+shell/tests/clipboard_e2e.rs:28:use std::os::unix::process::CommandExt as _;
+shell/tests/clipboard_e2e.rs:150:        // short — `/run/user/$UID` also keeps a stray socket out of the repo.
+shell/tests/clipboard_e2e.rs:152:            "/run/user/{}/tilo-clip-{}-{}",
+shell/tests/clipboard_e2e.rs:153:            unsafe { libc::getuid() },
+shell/tests/clipboard_e2e.rs:285:        let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
+shell/tests/clipboard_e2e.rs:296:                .env("XWAYLAND_NO_GLAMOR", "1")
+shell/tests/clipboard_e2e.rs:299:            // Mixing `/run/host/usr/bin` into a build container's PATH can
+shell/tests/clipboard_e2e.rs:307:            .env("XDG_RUNTIME_DIR", runtime_dir)
+shell/tests/clipboard_e2e.rs:311:            .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
+shell/tests/clipboard_e2e.rs:312:            .env("XDG_DATA_HOME", runtime_dir.join("data"))
+shell/tests/clipboard_e2e.rs:313:            .env("XDG_STATE_HOME", runtime_dir.join("state"))
+shell/tests/clipboard_e2e.rs:314:            .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+shell/tests/clipboard_e2e.rs:333:            .env_remove("WAYLAND_DISPLAY")
+shell/tests/clipboard_e2e.rs:419:            UnixStream::connect(&self.control_socket).expect("connect to the test-control socket");
+shell/tests/clipboard_e2e.rs:568:        let stream = UnixStream::connect(path)
+shell/tests/clipboard_e2e.rs:964:        use std::os::unix::io::AsFd;
+shell/tests/clipboard_e2e.rs:975:        let raw = unsafe { libc::memfd_create(c"tilo-clipboard-e2e".as_ptr(), 0) };
+shell/tests/clipboard_e2e.rs:989:            use std::os::unix::fs::FileExt;
+shell/tests/clipboard_e2e.rs:1275:    fn as_fd_ref(&self) -> std::os::unix::io::BorrowedFd<'_> {
+shell/tests/clipboard_e2e.rs:1276:        use std::os::unix::io::AsFd;
+shell/tests/clipboard_e2e.rs:1282:    let mut fds = [0 as libc::c_int; 2];
+shell/tests/clipboard_e2e.rs:1284:    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+shell/tests/clipboard_e2e.rs:1303:    use std::os::unix::io::AsRawFd;
+shell/tests/clipboard_e2e.rs:1307:        let flags = libc::fcntl(fd.0.as_raw_fd(), libc::F_GETFL);
+shell/tests/clipboard_e2e.rs:1308:        libc::fcntl(fd.0.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+shell/tests/clipboard_e2e.rs:1857:            let _ = unsafe { libc::kill(-*group, libc::SIGTERM) };
+shell/tests/clipboard_e2e.rs:1859:        let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+shell/tests/clipboard_e2e.rs:1869:            let _ = unsafe { libc::kill(-*group, libc::SIGKILL) };
+shell/tests/clipboard_e2e.rs:1883:    let Ok(entries) = std::fs::read_dir("/proc") else {
+shell/tests/clipboard_e2e.rs:1899:            let Ok(stat) = std::fs::read_to_string(format!("/proc/{ancestor}/stat")) else {
+shell/tests/clipboard_e2e.rs:1929:            let group = unsafe { libc::getpgid(pid) };
+shell/tests/clipboard_e2e.rs:1944:        Command::new("/usr/bin/xprop")
+shell/tests/clipboard_e2e.rs:1949:            .env("PATH", "/usr/bin:/bin")
+shell/tests/clipboard_e2e.rs:1981:            let has_token = std::fs::read(format!("/proc/{pid}/environ"))
+shell/tests/clipboard_e2e.rs:1985:                        .any(|item| item.starts_with(b"XDG_ACTIVATION_TOKEN="))
+shell/tests/clipboard_e2e.rs:2053:    // is visible under `/run/host`, while production tilo-launcher runs on the
+shell/tests/clipboard_e2e.rs:2054:    // host where its `Exec=/usr/bin/chatgpt` is correct.  Preserve every
+shell/tests/clipboard_e2e.rs:2059:        PathBuf::from("/usr/share/applications/chatgpt.desktop"),
+shell/tests/clipboard_e2e.rs:2060:        PathBuf::from("/run/host/usr/share/applications/chatgpt.desktop"),
+shell/tests/clipboard_e2e.rs:2068:        .map(|_| "Exec=/run/host/usr/bin/chatgpt %U")?;
+shell/tests/clipboard_e2e.rs:2077:    let mut preflight = Command::new(&launcher);
+shell/tests/clipboard_e2e.rs:2090:        .env("PATH", "/usr/bin:/bin")
+shell/tests/clipboard_e2e.rs:2093:        .env("XDG_CONFIG_HOME", profile.join("config"))
+shell/tests/clipboard_e2e.rs:2094:        .env("XDG_DATA_HOME", &data_home)
+shell/tests/clipboard_e2e.rs:2095:        .env("XDG_DATA_DIRS", xdg_data_dirs)
+shell/tests/clipboard_e2e.rs:2096:        .env("XDG_CACHE_HOME", profile.join("cache"))
+shell/tests/clipboard_e2e.rs:2097:        .env("XDG_STATE_HOME", profile.join("state"))
+shell/tests/clipboard_e2e.rs:2098:        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir);
+shell/tests/clipboard_e2e.rs:2106:    let mut command = Command::new(launcher);
+shell/tests/clipboard_e2e.rs:2122:        .env("PATH", "/usr/bin:/bin")
+shell/tests/clipboard_e2e.rs:2125:        .env("XDG_CONFIG_HOME", profile.join("config"))
+shell/tests/clipboard_e2e.rs:2126:        .env("XDG_DATA_HOME", &data_home)
+shell/tests/clipboard_e2e.rs:2127:        .env("XDG_DATA_DIRS", xdg_data_dirs)
+shell/tests/clipboard_e2e.rs:2128:        .env("XDG_CACHE_HOME", profile.join("cache"))
+shell/tests/clipboard_e2e.rs:2129:        .env("XDG_STATE_HOME", profile.join("state"))
+shell/tests/clipboard_e2e.rs:2130:        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+shell/tests/clipboard_e2e.rs:2131:        .env_remove("WAYLAND_DISPLAY")
+shell/tests/clipboard_e2e.rs:2161:    let program = Path::new("/usr/bin/zenity");
+shell/tests/clipboard_e2e.rs:2167:    let mut command = Command::new(program);
+shell/tests/clipboard_e2e.rs:2178:        .env("XDG_ACTIVATION_TOKEN", activation_token)
+shell/tests/clipboard_e2e.rs:2181:        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+shell/tests/clipboard_e2e.rs:2182:        .env("PATH", "/usr/bin:/bin")
+shell/tests/clipboard_e2e.rs:2191:            if libc::setpgid(0, 0) == -1 {
+shell/tests/clipboard_e2e.rs:2234:            private_process_group_has_env(&mut child, b"XDG_ACTIVATION_TOKEN=");
+shell/tests/clipboard_e2e.rs:2256:        "the ChatGPT launcher/Electron process group discarded XDG_ACTIVATION_TOKEN before satellite could read it"
+shell/tests/clipboard_e2e.rs:2265:            "the mapped Electron _NET_WM_PID has no XDG_ACTIVATION_TOKEN; X11 facts (pid, has_token, has_startup_id): {x11_facts:?}"
+shell/tests/clipboard_e2e.rs:3548:        "/run/user/{}/tilo-dnd-home-{}-{}",
+shell/tests/clipboard_e2e.rs:3549:        unsafe { libc::getuid() },
+shell/tests/clipboard_e2e.rs:3649:    let mut app = Command::new(word_processor)
+shell/tests/clipboard_e2e.rs:3650:        .env("WAYLAND_DISPLAY", &socket_name)
+shell/tests/clipboard_e2e.rs:3655:        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+shell/tests/clipboard_e2e.rs:3656:        .env("XDG_CONFIG_HOME", compositor.runtime_dir.join("app-config"))
+shell/tests/clipboard_e2e.rs:3657:        .env("XDG_DATA_HOME", compositor.runtime_dir.join("app-data"))
+shell/tests/clipboard_e2e.rs:3658:        .env("XDG_CACHE_HOME", compositor.runtime_dir.join("app-cache"))
+shell/tests/clipboard_e2e.rs:3723:        "/run/user/{}/tilo-dnd-wp-{}-{}",
+shell/tests/clipboard_e2e.rs:3724:        unsafe { libc::getuid() },
+shell/tests/session_lock_e2e.rs:31:use std::os::unix::net::UnixStream;
+shell/tests/session_lock_e2e.rs:45:        "/run/user/{}/tilo-lock-{}",
+shell/tests/session_lock_e2e.rs:46:        unsafe { libc::getuid() },
+shell/tests/session_lock_e2e.rs:59:    let mut child = Command::new(&binary)
+shell/tests/session_lock_e2e.rs:69:        .env("XDG_RUNTIME_DIR", &runtime_dir)
+shell/tests/session_lock_e2e.rs:70:        .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
+shell/tests/session_lock_e2e.rs:71:        .env("XDG_DATA_HOME", runtime_dir.join("data"))
+shell/tests/session_lock_e2e.rs:72:        .env("XDG_STATE_HOME", runtime_dir.join("state"))
+shell/tests/session_lock_e2e.rs:73:        .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
+shell/tests/session_lock_e2e.rs:74:        .env_remove("WAYLAND_DISPLAY")
+shell/tests/session_lock_e2e.rs:147:fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> serde_json::Value {
+shell/tests/session_lock_e2e.rs:161:fn is_locked(stream: &mut UnixStream) -> bool {
+shell/tests/session_lock_e2e.rs:168:fn poll_until_locked(stream: &mut UnixStream, want: bool, timeout: Duration) -> bool {
+shell/tests/session_lock_e2e.rs:201:    let host_socket = PathBuf::from("/run/host").join(
+shell/tests/session_lock_e2e.rs:208:        if let Ok(stream) = UnixStream::connect(&socket_path) {
+shell/tests/session_lock_e2e.rs:211:        if let Ok(stream) = UnixStream::connect(&host_socket) {
+shell/tests/server_side_decorations.rs:20:use std::os::unix::net::UnixStream;
+shell/tests/server_side_decorations.rs:132:        let (server_side, client_side) = UnixStream::pair().expect("socketpair");
+shell/tests/control_socket_test.rs:25:use std::os::unix::net::UnixStream;
+shell/tests/control_socket_test.rs:52:    let mut child = Command::new(&binary)
+shell/tests/control_socket_test.rs:116:fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> serde_json::Value {
+shell/tests/control_socket_test.rs:123:    stream: &mut UnixStream,
+shell/tests/control_socket_test.rs:147:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:185:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:205:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:227:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:272:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:295:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:319:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:367:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:413:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/control_socket_test.rs:451:    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
+shell/tests/compositor_test.rs:101:    let mut child = Command::new(&bin)
+shell/tests/compositor_test.rs:108:        .env_remove("WAYLAND_DISPLAY")
+shell/tests/compositor_test.rs:172:        Command::new(env!("CARGO_BIN_EXE_shell"))
+shell/tests/compositor_test.rs:175:            .env("XDG_RUNTIME_DIR", runtime.path())
+shell/tests/compositor_test.rs:176:            .env("XDG_CONFIG_HOME", runtime.path().join("config"))
+shell/tests/compositor_test.rs:177:            .env("XDG_DATA_HOME", runtime.path().join("data"))
+shell/tests/compositor_test.rs:178:            .env("XDG_STATE_HOME", runtime.path().join("state"))
+shell/tests/compositor_test.rs:179:            .env("XDG_CACHE_HOME", runtime.path().join("cache"))
+shell/tests/compositor_test.rs:184:            .env_remove("WAYLAND_DISPLAY")
+shell/tests/compositor_test.rs:385:#[ignore = "requires a host display server (WAYLAND_DISPLAY or DISPLAY) to back winit"]
+shell/tests/compositor_test.rs:409:    // Connect to the freshly-bound socket via `WAYLAND_DISPLAY`, which
+shell/tests/compositor_test.rs:412:    unsafe { std::env::set_var("WAYLAND_DISPLAY", socket_name) };
+shell/tests/headless_examples_smoke.rs:54:    Command::new("python3")
+shell/tests/dmabuf_encode_path_integration.rs:8://! reports unavailable — no `/dev/dri/renderD*` (typical on CI), no
+shell/tests/dmabuf_encode_path_integration.rs:48:fn make_red_memfd(width: u32, height: u32) -> std::os::fd::OwnedFd {
+shell/tests/dmabuf_encode_path_integration.rs:49:    use std::os::fd::FromRawFd;
+shell/tests/dmabuf_encode_path_integration.rs:53:    let raw = unsafe { libc::syscall(libc::SYS_memfd_create, name.as_ptr(), 1u32) } as i32;
+shell/tests/dmabuf_encode_path_integration.rs:59:    let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+shell/tests/dmabuf_encode_path_integration.rs:71:    use std::os::fd::AsRawFd;
+shell/tests/dmabuf_encode_path_integration.rs:73:    let rc = unsafe { libc::ftruncate(fd.as_raw_fd(), size as libc::off_t) };
+shell/tests/dmabuf_encode_path_integration.rs:76:    let dup_raw = unsafe { libc::dup(fd.as_raw_fd()) };
+shell/tests/dmabuf_encode_path_integration.rs:86:#[ignore = "requires /dev/dri renderD* with H264 VAAPI encode; self-skips otherwise"]
+shell/tests/dmabuf_encode_path_integration.rs:104:    use std::os::fd::AsRawFd;
+shell/tests/sandbox_check.rs:19:        let mut cmd = Command::new("bwrap");
+shell/tests/sandbox_check.rs:36:            .arg("/proc")
+shell/tests/sandbox_check.rs:43:            .arg("echo 'Hello from Sandbox'; ls /usr/lib64/libwayland-client.so.0");
+shell/tests/sandbox_check.rs:53:    /// A GPU-less machine cannot prove that about `/dev/dri`, and asserting it
+shell/tests/sandbox_check.rs:55:    /// test is whichever one the host actually has: `/dev/dri` where there is
+shell/tests/sandbox_check.rs:56:    /// a GPU, `/dev/null` otherwise. Either way the assertion runs and the
+shell/tests/sandbox_check.rs:67:        let host_has_render_node = std::fs::read_dir("/dev/dri")
+shell/tests/sandbox_check.rs:74:            "/dev/dri"
+shell/tests/sandbox_check.rs:76:            "/dev/null"
+shell/tests/sandbox_check.rs:79:        let mut cmd = Command::new("bwrap");
+shell/tests/sandbox_check.rs:109:            "sandbox /dev/dri contains no render node: {}",
+shell/tests/interaction_test.rs:201:        std::path::Path::new("/usr/bin/gnome-text-editor").exists(),
+shell/tests/interaction_test.rs:310:    let _ = std::process::Command::new("cargo")
+shell/tests/portal_test.rs:5://! `tokio::net::UnixStream::pair()`, so no broker and no real file dialog.
+shell/tests/portal_test.rs:32:use tokio::net::UnixStream;
+shell/tests/portal_test.rs:115:    let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
+shell/tests/portal_test.rs:1038:        zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(dup)),
+shell/tests/xdg_activation.rs:9:use std::os::unix::net::UnixStream;
+shell/tests/xdg_activation.rs:159:        let (server, client) = UnixStream::pair().expect("socket pair");
+shell/tests/xdg_activation.rs:372:    // XDG_ACTIVATION_TOKEN after mapping its toplevel.
+shell/tests/runtime_host.rs:9:        let status = std::process::Command::new(std::env::current_exe().unwrap())
+shell/tests/runtime_host.rs:16:            .env("XDG_CONFIG_HOME", root.path().join("config"))
+shell/tests/tilo_e2e_test.rs:57:        // /dev/ptmx in a sandbox), and it says so in its label.
+shell/tests/two_netns_share.rs:92:    let mut time = libc::timespec {
+shell/tests/two_netns_share.rs:98:    let status = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) };

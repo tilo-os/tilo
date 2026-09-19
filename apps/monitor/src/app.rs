@@ -26,6 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::control_custody::RawControlSlot;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
@@ -67,6 +68,13 @@ enum ProcAction {
     Kill(u32),
     CopyPid(u32),
     ShowDetails(u32),
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryControlArm {
+    Kill(u32),
+    Refresh,
 }
 
 /// Canonical wire operation for every system effect Monitor exposes through
@@ -769,7 +777,13 @@ pub struct MonitorApp {
     pending_action: Arc<Mutex<Option<ProcAction>>>,
     /// Visible process controls emit inert resource addresses; the host
     /// resolves the latest action contract before any OS signal is sent.
-    pending_control_invocation: Option<ControlInvocation>,
+    pending_control_invocation: RawControlSlot,
+    #[cfg(test)]
+    history_control_arm: Option<Rc<Cell<Option<HistoryControlArm>>>>,
+    #[cfg(test)]
+    controlled_sampler: bool,
+    #[cfg(test)]
+    controlled_refresh_attempts: Option<Rc<Cell<usize>>>,
     /// The pid most recently "Copy PID"'d. The pid itself is written to the OS
     /// clipboard via [`ui::clipboard_copy`]; this field records it so the
     /// transient "PID N copied" toast (and tests) can observe the action.
@@ -861,7 +875,13 @@ impl MonitorApp {
         let model = MonitorModel::sample();
         // "now" ⇒ the first (screenshot) frame skips the live refresh and
         // renders the seeded sample untouched.
-        let mut app = Self::build(model, None, Instant::now(), Sampler::inert());
+        let mut app = Self::build(
+            model,
+            None,
+            Instant::now(),
+            Sampler::inert(),
+            Self::production_search_input(),
+        );
         // The default tree starts collapsed. Select a row from that *visible*
         // projection rather than the globally busiest process, which may be a
         // hidden descendant. A detail pane with destructive controls must
@@ -886,7 +906,32 @@ impl MonitorApp {
         let stale = Instant::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
-        Self::build(MonitorModel::empty(), None, stale, Sampler::new())
+        Self::build(
+            MonitorModel::empty(),
+            None,
+            stale,
+            Sampler::new(),
+            Self::production_search_input(),
+        )
+    }
+
+    fn production_search_input() -> TextInput {
+        TextInput::local()
+            .with_kind(ui::widget::TextInputKind::Search)
+            .with_id("monitor.search")
+            .with_placeholder("Search processes…")
+            .with_plain_chrome()
+    }
+
+    #[cfg(test)]
+    fn controlled_search_input() -> TextInput {
+        TextInput::local_with_language("en_US")
+            .with_spellcheck(false)
+            .with_autocorrect(false)
+            .with_kind(ui::widget::TextInputKind::Search)
+            .with_id("monitor.search")
+            .with_placeholder("Search processes…")
+            .with_plain_chrome()
     }
 
     fn build(
@@ -894,6 +939,7 @@ impl MonitorApp {
         selected_pid: Option<u32>,
         last_refresh: Instant,
         sampler: Sampler,
+        search_input: TextInput,
     ) -> Self {
         let process_search = MonitorProcessSearchProvider::new(&model.processes);
         Self {
@@ -904,11 +950,7 @@ impl MonitorApp {
             tab: Tab::Processes,
             sort_key: SortKey::Cpu,
             sort_desc: true,
-            search_input: TextInput::local()
-                .with_kind(ui::widget::TextInputKind::Search)
-                .with_id("monitor.search")
-                .with_placeholder("Search processes…")
-                .with_plain_chrome(),
+            search_input,
             selected_pid,
             scroll_off: 0.0,
             table_scroll_x: 0.0,
@@ -923,7 +965,13 @@ impl MonitorApp {
             context: ContextMenu::new(),
             context_pid: None,
             pending_action: Arc::new(Mutex::new(None)),
-            pending_control_invocation: None,
+            pending_control_invocation: RawControlSlot::replace_one(),
+            #[cfg(test)]
+            history_control_arm: None,
+            #[cfg(test)]
+            controlled_sampler: false,
+            #[cfg(test)]
+            controlled_refresh_attempts: None,
             copied_pid: None,
             copied_at: None,
             scroll_drag: None,
@@ -958,7 +1006,10 @@ impl MonitorApp {
             None,
             Instant::now(),
             Sampler::controlled(signal_probe),
+            Self::controlled_search_input(),
         );
+        app.controlled_sampler = true;
+        app.controlled_refresh_attempts = Some(Rc::new(Cell::new(0)));
         app.prefs.auto_refresh = false;
         let process = app.model.processes.first().expect("sample process").clone();
         app.selected_pid = Some(process.pid);
@@ -972,6 +1023,36 @@ impl MonitorApp {
         )
         .expect("sample kill confirmation");
         (app, process.pid, process.started_at)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn history_test_controlled_root(
+        signal_probe: crate::sampler::SignalProbe,
+    ) -> (
+        Self,
+        u32,
+        u64,
+        Rc<Cell<Option<HistoryControlArm>>>,
+        Rc<Cell<usize>>,
+    ) {
+        let mut app = Self::build(
+            MonitorModel::sample(),
+            None,
+            Instant::now(),
+            Sampler::controlled(signal_probe),
+            Self::controlled_search_input(),
+        );
+        app.prefs.auto_refresh = false;
+        app.controlled_sampler = true;
+        let refresh_attempts = Rc::new(Cell::new(0));
+        app.controlled_refresh_attempts = Some(refresh_attempts.clone());
+        let process = app.model.processes.first().expect("sample process");
+        let pid = process.pid;
+        let started_at = process.started_at;
+        app.selected_pid = Some(pid);
+        let arm = Rc::new(Cell::new(None));
+        app.history_control_arm = Some(arm.clone());
+        (app, pid, started_at, arm, refresh_attempts)
     }
 
     /// Refresh from sysinfo at most once per preference interval. The very
@@ -993,6 +1074,14 @@ impl MonitorApp {
     /// leave no action surface silently pointed at the replacement process.
     fn refresh_live_snapshot(&mut self) {
         let selected_before = self.selected_identity();
+        #[cfg(test)]
+        if let Some(attempts) = &self.controlled_refresh_attempts {
+            attempts.set(attempts.get().saturating_add(1));
+            self.model = MonitorModel::sample();
+        } else {
+            self.sampler.refresh(&mut self.model);
+        }
+        #[cfg(not(test))]
         self.sampler.refresh(&mut self.model);
         self.process_search.refresh(&self.model.processes);
         self.last_refresh = Instant::now();
@@ -1201,7 +1290,7 @@ impl MonitorApp {
             .iter()
             .find(|process| process.pid == pid)
         {
-            self.pending_control_invocation = Some(ControlInvocation {
+            let _ = self.pending_control_invocation.emit(ControlInvocation {
                 address: ActionAddress::new(process_resource_id(pid, process.started_at), action),
                 arguments: serde_json::Map::new(),
             });
@@ -1213,7 +1302,7 @@ impl MonitorApp {
     /// history, collaboration, and agents through the same contract as the
     /// visible header button.
     fn request_monitor_control(&mut self, action: &'static str) {
-        self.pending_control_invocation = Some(ControlInvocation {
+        let _ = self.pending_control_invocation.emit(ControlInvocation {
             address: ActionAddress::new("processes", action),
             arguments: serde_json::Map::new(),
         });
@@ -1302,10 +1391,16 @@ impl MonitorApp {
         // cannot find their pids. Treat their action as a local simulation;
         // live rows only disappear when the following sampler snapshot no
         // longer contains that exact process generation.
-        if !self.sample_only && !self.sampler.signal_if_current(pid, started_at, kind) {
+        #[cfg(test)]
+        let controlled_sampler = self.controlled_sampler;
+        #[cfg(not(test))]
+        let controlled_sampler = false;
+        if (!self.sample_only || controlled_sampler)
+            && !self.sampler.signal_if_current(pid, started_at, kind)
+        {
             return false;
         }
-        if self.sample_only {
+        if self.sample_only || controlled_sampler {
             self.model
                 .processes
                 .retain(|p| p.pid != pid || p.started_at != started_at);
@@ -5491,11 +5586,28 @@ impl Widget for MonitorApp {
         vec![Box::new(self.process_search.clone())]
     }
 
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        let _ = self
+            .pending_control_invocation
+            .install_custody(domain, attachment);
+    }
+
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_control_invocation.take()
+        self.pending_control_invocation.take_legacy_compatibility()
     }
 
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        #[cfg(test)]
+        if let Some(arm) = self.history_control_arm.as_ref().and_then(|arm| arm.take()) {
+            match arm {
+                HistoryControlArm::Kill(pid) => self.request_process_control(pid, "kill"),
+                HistoryControlArm::Refresh => self.request_monitor_control("refresh"),
+            }
+        }
         // Monitor's observation and safety preferences are device-local, so a
         // shared document sync must never overwrite this window's state.
         self.clear_selection_if_filtered_out();
@@ -6365,6 +6477,60 @@ mod tests {
 
     fn app() -> MonitorApp {
         MonitorApp::new()
+    }
+
+    #[test]
+    fn control_custody_monitor_replace_one_copies_generation_and_missing_pid_preserves_output() {
+        let probe = crate::sampler::SignalProbe::default();
+        let (mut app, pid, started_at, _, _) = MonitorApp::history_test_controlled_root(probe);
+
+        app.request_process_control(pid, "stop");
+        app.request_process_control(pid, "kill");
+        let copied_kill = app
+            .pending_control_invocation
+            .controlled_pending_for_test()
+            .expect("Kill replaces Stop");
+        assert_eq!(
+            copied_kill.address,
+            ActionAddress::new(process_resource_id(pid, started_at), "kill")
+        );
+        assert!(copied_kill.arguments.is_empty());
+
+        let replacement_generation = started_at.saturating_add(1);
+        app.model
+            .processes
+            .iter_mut()
+            .find(|process| process.pid == pid)
+            .expect("sample process remains present")
+            .started_at = replacement_generation;
+        app.process_search.refresh(&app.model.processes);
+        app.request_process_control(u32::MAX, "kill");
+        assert_eq!(
+            app.pending_control_invocation.controlled_pending_for_test(),
+            Some(copied_kill.clone()),
+            "a missing PID does not clear the older complete descriptor"
+        );
+        assert!(!Widget::perform_semantic_action(
+            &mut app,
+            &format!("monitor.process:{pid}:started:{started_at}:stop"),
+            &ui::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.pending_control_invocation.controlled_pending_for_test(),
+            Some(copied_kill),
+            "the copied Kill descriptor survives a generation change"
+        );
+
+        app.request_monitor_control("refresh");
+        assert_eq!(
+            app.pending_control_invocation
+                .controlled_pending_for_test()
+                .map(|invocation| invocation.address),
+            Some(ActionAddress::new("processes", "refresh")),
+            "root Refresh replaces the older process descriptor"
+        );
     }
 
     fn resource_id_for(a: &MonitorApp, pid: u32) -> String {

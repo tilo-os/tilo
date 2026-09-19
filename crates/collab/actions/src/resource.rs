@@ -347,6 +347,52 @@ pub enum ActionInput {
     },
 }
 
+/// Collision-free, provider-defined identity for one continuation target or
+/// handler. Tuple components remain separate; callers never join or hash them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContinuationKey {
+    namespace: String,
+    parts: Vec<Vec<u8>>,
+}
+
+impl ContinuationKey {
+    pub fn new(
+        namespace: impl Into<String>,
+        parts: impl IntoIterator<Item = impl Into<Vec<u8>>>,
+    ) -> Self {
+        Self {
+            namespace: namespace.into(),
+            parts: parts.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+pub enum ContinuationArguments<'a> {
+    Immediate,
+    Text(&'a str),
+    Json(&'a serde_json::Map<String, serde_json::Value>),
+}
+
+pub enum ContinuationQuery<'a> {
+    Exact(ContinuationArguments<'a>),
+    Draft,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContinuationEvidence {
+    Exact {
+        target: ContinuationKey,
+        handler: ContinuationKey,
+    },
+    Draft {
+        resolution_domain: ContinuationKey,
+        handler: ContinuationKey,
+    },
+}
+
+type ContinuationResolver =
+    Arc<dyn for<'a> Fn(ContinuationQuery<'a>) -> Option<ContinuationEvidence> + Send + Sync>;
+
 /// One action a resource exports to the palette.
 #[derive(Clone)]
 pub struct ActionSpec {
@@ -377,6 +423,7 @@ pub struct ActionSpec {
     /// the app's closure with `input` rather than duplicating it, which is what
     /// makes the palette path and the external path provably one function.
     build: ArgsBuilder,
+    continuation_resolver: Option<ContinuationResolver>,
 }
 
 struct TypedActionSeed {
@@ -422,6 +469,7 @@ impl ActionSpec {
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
+            continuation_resolver: None,
         })
     }
 
@@ -451,6 +499,7 @@ impl ActionSpec {
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
+            continuation_resolver: None,
         }
     }
 
@@ -494,6 +543,7 @@ impl ActionSpec {
                 collects: Collects::Words,
                 build,
             },
+            continuation_resolver: None,
         }
     }
 
@@ -531,6 +581,7 @@ impl ActionSpec {
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: Arc::new(move |_| for_build.clone()),
+            continuation_resolver: None,
         })
     }
 
@@ -575,6 +626,7 @@ impl ActionSpec {
                 collects: Collects::Words,
                 build,
             },
+            continuation_resolver: None,
         }
     }
 
@@ -673,6 +725,35 @@ impl ActionSpec {
             input,
             params: seed.params,
             build,
+            continuation_resolver: None,
+        }
+    }
+
+    /// Opt one action into inert, provider-defined continuation evidence.
+    #[must_use]
+    pub fn with_continuation_identity(
+        mut self,
+        resolver: impl for<'a> Fn(ContinuationQuery<'a>) -> Option<ContinuationEvidence>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.continuation_resolver = Some(Arc::new(resolver));
+        self
+    }
+
+    /// Resolve comparison-only evidence for the exact input or draft domain.
+    /// A mismatched response variant is rejected as unsupported.
+    pub fn continuation_identity(
+        &self,
+        query: ContinuationQuery<'_>,
+    ) -> Option<ContinuationEvidence> {
+        let exact = matches!(query, ContinuationQuery::Exact(_));
+        let evidence = self.continuation_resolver.as_ref()?(query)?;
+        match (exact, &evidence) {
+            (true, ContinuationEvidence::Exact { .. })
+            | (false, ContinuationEvidence::Draft { .. }) => Some(evidence),
+            _ => None,
         }
     }
 
@@ -1097,5 +1178,98 @@ mod tests {
             }
             .is_valid()
         );
+    }
+
+    #[test]
+    fn continuation_identity_is_explicit_argument_aware_and_variant_checked() {
+        let plain =
+            ActionSpec::operation("run", "Run", OperationKind::Effect, "test.run", &()).unwrap();
+        assert!(
+            plain
+                .continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
+                .is_none()
+        );
+        let immediate = ActionSpec::immediate_encoded(
+            "open",
+            "Open",
+            ExecutionLocus::ClientLocal,
+            EncodedAction::encode_operation("test.open", &()).unwrap(),
+        );
+        let prompted = ActionSpec::prompted(
+            "rename",
+            "Rename",
+            "Name",
+            "name",
+            ExecutionLocus::ClientLocal,
+            |value| EncodedAction::encode_operation("test.rename", &value).unwrap(),
+        );
+        let typed = ActionSpec::typed(
+            "count",
+            "Count",
+            "count",
+            ExecutionLocus::ClientLocal,
+            vec![ActionParam::required("count", ParamType::Integer, "Count")],
+            |args| EncodedAction::encode_operation("test.count", &args.integer("count")).unwrap(),
+        );
+        for spec in [&immediate, &prompted, &typed] {
+            assert!(
+                spec.continuation_identity(ContinuationQuery::Draft)
+                    .is_none(),
+                "every constructor is unsupported unless its provider opts in"
+            );
+        }
+
+        let spec = plain.with_continuation_identity(|query| match query {
+            ContinuationQuery::Exact(ContinuationArguments::Text(value)) => {
+                Some(ContinuationEvidence::Exact {
+                    target: ContinuationKey::new("target", [value.as_bytes()]),
+                    handler: ContinuationKey::new("handler", [b"v1".as_slice()]),
+                })
+            }
+            ContinuationQuery::Draft => Some(ContinuationEvidence::Draft {
+                resolution_domain: ContinuationKey::new("domain", [b"aliases-v4".as_slice()]),
+                handler: ContinuationKey::new("handler", [b"v1".as_slice()]),
+            }),
+            ContinuationQuery::Exact(_) => None,
+        });
+        assert!(matches!(
+            spec.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Text("a"))),
+            Some(ContinuationEvidence::Exact { target, .. })
+                if target == ContinuationKey::new("target", [b"a".as_slice()])
+        ));
+        assert!(matches!(
+            spec.continuation_identity(ContinuationQuery::Draft),
+            Some(ContinuationEvidence::Draft { .. })
+        ));
+        assert!(
+            spec.continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Json(
+                serde_json::json!({PROMPTED_PARAM:"a"}).as_object().unwrap()
+            )))
+            .is_none(),
+            "exact Text and exact JSON remain distinct provider inputs"
+        );
+
+        let mismatched =
+            ActionSpec::operation("run", "Run", OperationKind::Effect, "test.run", &())
+                .unwrap()
+                .with_continuation_identity(|_| {
+                    Some(ContinuationEvidence::Draft {
+                        resolution_domain: ContinuationKey::new("domain", [b"v1".as_slice()]),
+                        handler: ContinuationKey::new("handler", [b"v1".as_slice()]),
+                    })
+                });
+        assert!(
+            mismatched
+                .continuation_identity(ContinuationQuery::Exact(ContinuationArguments::Immediate))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn continuation_keys_preserve_tuple_boundaries_and_clone_by_value() {
+        let first = ContinuationKey::new("scope", [b"ab".as_slice(), b"c".as_slice()]);
+        let second = ContinuationKey::new("scope", [b"a".as_slice(), b"bc".as_slice()]);
+        assert_ne!(first, second);
+        assert_eq!(first, first.clone());
     }
 }

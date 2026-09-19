@@ -1113,7 +1113,7 @@ struct ViewPreferences {
     auto_fit_page: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DocumentSaveStatus {
     Clean,
     Modified,
@@ -9457,6 +9457,23 @@ impl Widget for WordProcessorWidget {
         self.path.as_ref().map(|p| {
             ui::RecordCheckout::new(ui::RecordId::for_file(p), ui::RecordKind::new("document"))
         })
+    }
+
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.guide_drag.is_some() || self.scrub.is_some() || self.editing_field.is_some() {
+            return Err(
+                "Finish or cancel the active document edit before switching documents".into(),
+            );
+        }
+        self.portal_rx = None;
+        self.portal_purpose = None;
+        self.pending_resource_open = None;
+        self.pending_replacement = None;
+        self.replace_after_save = false;
+        self.unsaved_changes.close();
+        self.resource_file_invocation = None;
+        self.resource_file_result = None;
+        Ok(())
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {

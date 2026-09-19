@@ -456,7 +456,8 @@ nix)
     stage=build-nix
     nix build --print-build-logs .#tilo-session
     stage=inspect-nix
-    dist/ci/verify-nix-result.sh result "$arch"
+    # Provide the verifier runtime explicitly, outside the shipped closure.
+    nix shell nixpkgs#python3 --command bash dist/ci/verify-nix-result.sh result "$arch"
     nix flake check --no-build --all-systems
     stage=export-nix-closure
     mapfile -t requisites < <(nix-store --query --requisites result)

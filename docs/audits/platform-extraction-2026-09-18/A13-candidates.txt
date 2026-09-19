@@ -1,0 +1,248 @@
+fs/src/checked_restore/tests.rs:1129:            Err(libc::ENOTSUP)
+fs/src/share_control.rs:25:use tokio::net::{UnixListener, UnixStream};
+fs/src/share_control.rs:147:    pub async fn serve(self: Arc<Self>, listener: UnixListener) -> std::io::Result<()> {
+fs/src/share_control.rs:164:    async fn handle_connection(self: Arc<Self>, mut stream: UnixStream) -> std::io::Result<()> {
+fs/src/share_control.rs:406:    stream: &mut UnixStream,
+fs/src/share_control.rs:418:    stream: &mut UnixStream,
+fs/src/share_control.rs:525:            let (mut client, server_stream) = UnixStream::pair().unwrap();
+fs/src/share_control.rs:637:        let (mut client, server_stream) = UnixStream::pair().unwrap();
+fs/src/caps_file.rs:4://! `/var/workspace` stays mounted for the whole session, so binding the list
+fs/src/caps_file.rs:38:        use std::os::unix::fs::MetadataExt;
+fs/src/fs.rs:36:use libc::{EBUSY, EEXIST, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
+fs/src/fs.rs:41:use std::os::unix::ffi::OsStrExt;
+fs/src/fs.rs:1486:            return Err(libc::ENOTSUP);
+fs/src/fs.rs:1488:        let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1512:        if qdoc::Document::load(&data).is_ok() { return Err(libc::ENOTSUP); }
+fs/src/fs.rs:1517:            if qdoc::Document::load(&current).is_ok() { return Err(libc::ENOTSUP); }
+fs/src/fs.rs:1578:        let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1603:            return Err(libc::E2BIG);
+fs/src/fs.rs:1618:        let (history, _) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1632:            .ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1634:            return Err(libc::ENOTSUP);
+fs/src/fs.rs:1665:                return Err(libc::E2BIG);
+fs/src/fs.rs:1684:                    .map_err(|_| libc::ENOTSUP)?;
+fs/src/fs.rs:1723:            return Err(libc::E2BIG);
+fs/src/fs.rs:1752:            return Err(libc::ENOTSUP);
+fs/src/fs.rs:1767:            return Err(libc::ENOTSUP);
+fs/src/fs.rs:1769:        let (history, actor) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1770:        let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1841:            return Err(libc::ENOTSUP);
+fs/src/fs.rs:1917:        let (history, actor) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1918:        let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1922:            .ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1940:            .ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:1942:            return Err(libc::ENOTSUP);
+fs/src/fs.rs:2012:                return Err(libc::ENOTSUP);
+fs/src/fs.rs:2016:                .ok_or(libc::ENOTSUP)?
+fs/src/fs.rs:2020:                    .map_err(|_| libc::ENOTSUP)?;
+fs/src/fs.rs:2030:                return Err(libc::ENOTSUP);
+fs/src/fs.rs:2034:                .ok_or(libc::ENOTSUP)?
+fs/src/fs.rs:2055:            return Err(libc::ENOTSUP);
+fs/src/fs.rs:2155:        let (history, actor) = self.history.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:2156:        let publisher = self.record_publisher.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:2160:            .ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:2281:            return Err(libc::ENOTSUP);
+fs/src/fs.rs:2467:        let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?;
+fs/src/fs.rs:2526:        let registry = self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone();
+fs/src/fs.rs:2543:                return Err(libc::EALREADY);
+fs/src/fs.rs:2680:            self.availability.as_ref().ok_or(libc::ENOTSUP)?.clone(),
+fs/src/fs.rs:2681:            self.eviction_queue.as_ref().ok_or(libc::ENOTSUP)?.clone(),
+fs/src/fs.rs:3878:        reply.error(to_errno(libc::ERANGE));
+fs/src/fs.rs:4912:        #[cfg(target_os = "linux")]
+fs/src/fs.rs:4914:        #[cfg(not(target_os = "linux"))]
+fs/src/fs.rs:4917:            reply.error(to_errno(libc::ENOTSUP));
+fs/src/fs.rs:4920:        #[cfg(target_os = "linux")]
+fs/src/fs.rs:4985:                reply.error(to_errno(libc::E2BIG));
+fs/src/fs.rs:5017:            reply.error(to_errno(libc::ENOTSUP));
+fs/src/fs.rs:5105:                _ => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5117:                _ => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5125:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5133:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5140:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5146:                reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5152:                reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5157:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5163:                reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5168:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5178:                reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5183:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5194:                reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5199:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5215:                reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5222:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5228:                reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5233:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5240:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5247:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5254:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5260:                reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5281:                None => reply.error(to_errno(libc::ENODATA)),
+fs/src/fs.rs:5286:            reply.error(to_errno(libc::ENODATA));
+fs/src/fs.rs:5376:            reply.error(to_errno(libc::ERANGE));
+fs/src/history_read.rs:252:        Error::MissingVersion | Error::NoContent => libc::ENODATA,
+fs/src/history_read.rs:255:        Error::TooLarge => libc::E2BIG,
+fs/src/transport_gate.rs:5:use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+fs/src/transport_gate.rs:13:use tokio::net::UnixListener;
+fs/src/transport_gate.rs:56:    let listener = UnixListener::bind(&path)?;
+fs/src/transport_gate.rs:67:            if credential.uid() != unsafe { libc::geteuid() } {
+fs/src/record_subscription.rs:406:#[cfg(unix)]
+fs/src/record_subscription.rs:410:    use std::os::unix::fs::PermissionsExt;
+fs/src/record_subscription.rs:417:#[cfg(not(unix))]
+fs/src/record_subscription.rs:517:        #[cfg(unix)]
+fs/src/record_subscription.rs:519:            use std::os::unix::fs::PermissionsExt;
+fs/src/record_subscription.rs:550:        #[cfg(unix)]
+fs/src/record_subscription.rs:552:            use std::os::unix::fs::PermissionsExt;
+fs/src/record_subscription.rs:583:    #[cfg(unix)]
+fs/src/record_subscription.rs:586:        use std::os::unix::fs::PermissionsExt;
+fs/src/storage.rs:40:pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthority) {
+fs/src/storage.rs:72:    stream: &mut tokio::net::UnixStream,
+fs/src/storage.rs:86:    stream: &mut tokio::net::UnixStream,
+fs/src/recipient_control.rs:22:use tokio::net::{UnixListener, UnixStream};
+fs/src/recipient_control.rs:116:    pub fn bind(path: impl AsRef<Path>) -> std::io::Result<UnixListener> {
+fs/src/recipient_control.rs:118:        let listener = UnixListener::bind(path)?;
+fs/src/recipient_control.rs:119:        #[cfg(unix)]
+fs/src/recipient_control.rs:121:            use std::os::unix::fs::PermissionsExt;
+fs/src/recipient_control.rs:141:    pub async fn serve(self: Arc<Self>, listener: UnixListener) -> std::io::Result<()> {
+fs/src/recipient_control.rs:158:    async fn handle_connection(self: Arc<Self>, mut stream: UnixStream) -> std::io::Result<()> {
+fs/src/recipient_control.rs:371:    stream: &mut UnixStream,
+fs/src/recipient_control.rs:384:    stream: &mut UnixStream,
+fs/src/recipient_control.rs:407:    let mut stream = UnixStream::connect(socket).await?;
+fs/src/recipient_control.rs:468:        let (mut client, server_stream) = UnixStream::pair().unwrap();
+fs/src/recipient_control.rs:589:        let (mut client, server_stream) = UnixStream::pair().unwrap();
+fs/src/recipient_control.rs:611:        let (mut client, server_stream) = UnixStream::pair().unwrap();
+fs/src/recipient_control.rs:643:    #[cfg(unix)]
+fs/src/recipient_control.rs:646:        use std::os::unix::fs::PermissionsExt;
+fs/src/recipient_control.rs:683:    #[cfg(unix)]
+fs/src/recipient_control.rs:686:        use std::os::unix::fs::PermissionsExt;
+fs/src/recipient_control.rs:692:                "#!/bin/sh\n/bin/cat >/dev/null\nprintf '%s\\n' '{}'\nexec /bin/sleep 60\n",
+fs/src/workspace_authority.rs:445:#[cfg(unix)]
+fs/src/workspace_authority.rs:459:    use std::os::unix::fs::PermissionsExt;
+fs/src/workspace_authority.rs:464:    let listener = tokio::net::UnixListener::bind(socket)?;
+fs/src/workspace_authority.rs:545:#[cfg(unix)]
+fs/src/workspace_authority.rs:558:    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+fs/src/workspace_authority.rs:579:#[cfg(unix)]
+fs/src/workspace_authority.rs:590:    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+fs/src/workspace_authority.rs:608:#[cfg(unix)]
+fs/src/workspace_authority.rs:619:    use std::os::unix::fs::PermissionsExt;
+fs/src/workspace_authority.rs:624:    let listener = tokio::net::UnixListener::bind(socket)?;
+fs/src/workspace_authority.rs:655:#[cfg(unix)]
+fs/src/workspace_authority.rs:665:    let mut stream = tokio::net::UnixStream::connect(socket).await?;
+fs/src/workspace_authority.rs:825:    #[cfg(unix)]
+fs/src/workspace_authority.rs:886:    #[cfg(unix)]
+fs/src/workspace_authority.rs:936:    #[cfg(unix)]
+fs/src/workspace_authority.rs:1002:    #[cfg(unix)]
+fs/src/identity.rs:18:/// Overrides the identity root (`/var/lib/tilo`) — two mounts acting as two devices point this at two roots; tests use a tempdir.
+fs/src/identity.rs:369:    #[cfg(unix)]
+fs/src/identity.rs:372:        use std::os::unix::fs::PermissionsExt;
+fs/src/clock.rs:30:    #[cfg(unix)]
+fs/src/clock.rs:32:    #[cfg(unix)]
+fs/src/clock.rs:85:            #[cfg(unix)]
+fs/src/clock.rs:87:                use std::os::unix::fs::MetadataExt;
+fs/src/clock.rs:90:            #[cfg(unix)]
+fs/src/clock.rs:92:                use std::os::unix::fs::MetadataExt;
+fs/src/clock.rs:142:    #[cfg(unix)]
+fs/src/clock.rs:144:        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+fs/src/clock.rs:145:        if metadata.uid() != unsafe { libc::geteuid() }
+fs/src/clock.rs:167:    #[cfg(unix)]
+fs/src/clock.rs:169:        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+fs/src/clock.rs:170:        if metadata.uid() != unsafe { libc::geteuid() }
+fs/src/clock.rs:206:    #[cfg(unix)]
+fs/src/clock.rs:208:        use std::os::unix::fs::PermissionsExt;
+fs/src/clock.rs:217:        #[cfg(unix)]
+fs/src/clock.rs:236:        #[cfg(unix)]
+fs/src/clock.rs:239:        #[cfg(unix)]
+fs/src/clock.rs:246:    #[cfg(unix)]
+fs/src/clock.rs:249:        use std::os::unix::fs::{PermissionsExt, symlink};
+fs/src/named_share_delivery.rs:840:#[cfg(unix)]
+fs/src/named_share_delivery.rs:842:    use std::os::unix::fs::PermissionsExt;
+fs/src/named_share_delivery.rs:848:#[cfg(not(unix))]
+fs/src/named_share_delivery.rs:938:        #[cfg(unix)]
+fs/src/named_share_delivery.rs:940:            use std::os::unix::fs::PermissionsExt;
+fs/src/checked_restore.rs:444:            Outcome::Unchanged { .. } => Err(libc::EALREADY),
+fs/src/checked_restore.rs:448:            Outcome::PendingWrites => Err(libc::EAGAIN),
+fs/src/checked_restore.rs:449:            Outcome::UnsupportedOwner { .. } => Err(libc::ENOTSUP),
+fs/src/smart_monitor.rs:7:use std::os::unix::ffi::OsStrExt;
+fs/src/smart_monitor.rs:117:    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+fs/src/smart_monitor.rs:120:    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+fs/src/smart_monitor.rs:125:    #[cfg(target_os = "linux")]
+fs/src/smart_monitor.rs:127:    #[cfg(not(target_os = "linux"))]
+fs/src/namespace.rs:1856:            uid: unsafe { libc::getuid() },
+fs/src/namespace.rs:1857:            gid: unsafe { libc::getgid() },
+fs/src/main.rs:42:use std::os::fd::FromRawFd;
+fs/src/main.rs:79:            "/var/workspace/shared",
+fs/src/main.rs:82:            "/var/cache/shared",
+fs/src/main.rs:87:            Command::MountShare {
+fs/src/main.rs:138:        assert!(matches!(cli.command, Command::RecipientService { .. }));
+fs/src/main.rs:141:    #[cfg(unix)]
+fs/src/main.rs:146:        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+fs/src/main.rs:420:        #[arg(long, default_value = "/var/lib/tilo/full-replica")]
+fs/src/main.rs:423:        #[arg(long, default_value = "/var/lib/tilo/full-replica/status.json")]
+fs/src/main.rs:467:        Command::Serve {
+fs/src/main.rs:485:        Command::Mount {
+fs/src/main.rs:503:        Command::MountShare {
+fs/src/main.rs:509:        Command::MountNamedShare {
+fs/src/main.rs:514:        Command::RecipientService {
+fs/src/main.rs:520:        Command::Replica { config } => replica(config).await,
+fs/src/main.rs:521:        Command::ExportHomePeer {
+fs/src/main.rs:538:        Command::PublishAuthority { cache_dir, acl } => publish_authority(cache_dir, acl).await,
+fs/src/main.rs:539:        Command::RegisterContentPeer {
+fs/src/main.rs:543:        Command::UnregisterContentPeer {
+fs/src/main.rs:864:    match tokio::net::UnixListener::bind(sock) {
+fs/src/main.rs:867:            use std::os::unix::fs::PermissionsExt;
+fs/src/main.rs:888:    use std::os::unix::fs::PermissionsExt;
+fs/src/main.rs:894:    let listener = tokio::net::UnixListener::bind(socket)
+fs/src/main.rs:2322:fn recipient_service_listener(socket: &Path) -> Result<tokio::net::UnixListener> {
+fs/src/main.rs:2323:    const SYSTEMD_LISTEN_FD: libc::c_int = 3;
+fs/src/main.rs:2337:        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_GETFD) } != -1,
+fs/src/main.rs:2341:    let listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(SYSTEMD_LISTEN_FD) };
+fs/src/main.rs:2349:        unsafe { libc::fcntl(SYSTEMD_LISTEN_FD, libc::F_SETFD, libc::FD_CLOEXEC) } != -1,
+fs/src/main.rs:2358:    tokio::net::UnixListener::from_std(listener).map_err(Into::into)
+fs/src/main.rs:2370:    #[cfg(unix)]
+fs/src/main.rs:2372:        use std::os::unix::fs::PermissionsExt;
+fs/src/main.rs:2378:fn bind_recipient_service_socket(socket: &Path) -> Result<tokio::net::UnixListener> {
+fs/src/main.rs:2379:    use std::os::unix::fs::FileTypeExt;
+fs/src/main.rs:2388:            match std::os::unix::net::UnixStream::connect(socket) {
+fs/src/main.rs:2991:            match tokio::net::UnixListener::bind(&sock) {
+fs/src/main.rs:2993:                    use std::os::unix::fs::PermissionsExt;
+fs/src/main.rs:3013:    // mutating host `/etc/fuse.conf`.
+fs/src/main.rs:3058:        _ = tokio::signal::ctrl_c() => {
+fs/src/main.rs:3159:        let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
+fs/src/main.rs:3182:        let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
+fs/src/main.rs:3235:            Command::Serve {
+fs/src/main.rs:3241:                assert_eq!(mount_point, PathBuf::from("/var/workspace"));
+fs/src/main.rs:3242:                assert_eq!(cache_dir, Some(PathBuf::from("/var/cache/quick-fs")));
+fs/src/main.rs:3255:        let Command::Serve { acl, .. } = cli.command else {
+fs/src/main.rs:3260:            Some(Path::new("/var/lib/tilo/fs-capabilities.json")),
+fs/src/main.rs:3265:            "the shipped mount must re-read its capability list; /var/workspace is mounted once \
+fs/src/main.rs:3283:            .find(|l| l.starts_with("C ") && l.contains("/var/lib/tilo/fs-capabilities.json"))
+fs/src/main.rs:3285:                panic!("no tmpfiles line creates /var/lib/tilo/fs-capabilities.json:\n{conf}")
+fs/src/main.rs:3344:            "/var/workspace",
+fs/src/main.rs:3348:            "/var/cache/quick-fs",
+fs/src/main.rs:3351:        assert!(matches!(cli.command, Command::Mount { .. }));
+fs/src/main.rs:3357:        let mut full = vec!["fs", "serve", "--mount-point", "/var/workspace"];
+fs/src/main.rs:3361:            Command::Serve { acl, .. } => acl,
+fs/src/control.rs:21:use tokio::net::{UnixListener, UnixStream};
+fs/src/control.rs:220:    stream: UnixStream,
+fs/src/control.rs:285:    listener: UnixListener,
+fs/src/control.rs:320:    stream: UnixStream,
+fs/src/control.rs:329:            stream: UnixStream::connect(path).await?,
+fs/src/control.rs:456:        let listener = UnixListener::bind(&sock).unwrap();
+fs/src/control.rs:512:        let listener = UnixListener::bind(&sock).unwrap();
+fs/src/control.rs:613:        let listener = UnixListener::bind(&sock).unwrap();
+fs/src/control.rs:650:        let listener2 = UnixListener::bind(&sock2).unwrap();
+fs/src/control.rs:723:            UnixListener::bind(&sock_a).unwrap(),
+fs/src/control.rs:729:            UnixListener::bind(&sock_b).unwrap(),
+fs/src/recipient_mount.rs:212:        let mut child = Command::new(&self.executable)
+fs/src/recipient_mount.rs:389:    #[cfg(unix)]
+fs/src/recipient_mount.rs:391:        use std::os::unix::fs::PermissionsExt;
+fs/src/recipient_mount.rs:434:    #[cfg(unix)]
+fs/src/recipient_mount.rs:436:        use std::os::unix::fs::PermissionsExt;
+fs/src/recipient_mount.rs:469:    #[cfg(unix)]
+fs/src/recipient_mount.rs:504:    #[cfg(unix)]
+fs/src/recipient_mount.rs:540:    #[cfg(unix)]
+fs/src/recipient_mount.rs:550:                "#!/bin/sh\nprintf 'call\\n' >> '{}'\n/bin/cat >/dev/null\nwhile [ ! -f '{}' ]; do sleep 0.01; done\nprintf '%s\\n' '{}'\nsleep 30\n",
+fs/src/recipient_mount.rs:597:    #[cfg(unix)]
+fs/src/recipient_mount.rs:602:        write_executable_script(&script, "#!/bin/sh\n/bin/cat >/dev/null\nsleep 30\n");
+fs/src/recipient_mount.rs:638:        #[cfg(unix)]
+fs/src/recipient_mount.rs:649:            std::os::unix::fs::symlink(other.path(), mount.parent().unwrap()).unwrap();
+fs/src/lib.rs:179:#[cfg(all(test, target_os = "macos"))]

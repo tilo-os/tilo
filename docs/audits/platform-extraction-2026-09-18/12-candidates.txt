@@ -1,0 +1,590 @@
+crates/format/format-provider-wit/src/lib.rs:13:#![cfg_attr(
+crates/format/format-provider-wit/src/lib.rs:130:#[cfg(test)]
+crates/windows/compat-catalogue/src/lib.rs:1583:#[cfg(test)]
+crates/windows/compat-catalogue/src/lib.rs:1973:        let recipe = "Name: Bad\nExecutable: /home/user/evil.exe\n";
+crates/agent/model-gateway/src/main.rs:81:        std::process::exit(1);
+crates/agent/model-gateway/src/main.rs:120:    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))
+crates/agent/model-gateway/src/main.rs:128:    let pid_matches = std::env::var("LISTEN_PID")
+crates/agent/model-gateway/src/main.rs:131:        == Some(std::process::id());
+crates/agent/model-gateway/src/main.rs:135:    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
+crates/agent/model-gateway/src/main.rs:157:        std::env::remove_var("LISTEN_PID");
+crates/agent/model-gateway/src/main.rs:158:        std::env::remove_var("LISTEN_FDS");
+crates/agent/model-gateway/src/main.rs:159:        std::env::remove_var("LISTEN_FDNAMES");
+crates/agent/model-gateway/src/main.rs:773:#[cfg(test)]
+crates/dev/tilo-dev/src/main.rs:5:use std::process::{Command as ProcessCommand, ExitCode, Stdio};
+crates/dev/tilo-dev/src/main.rs:23:    command: Command,
+crates/dev/tilo-dev/src/main.rs:27:enum Command {
+crates/dev/tilo-dev/src/main.rs:61:    command: Option<AddCommand>,
+crates/dev/tilo-dev/src/main.rs:65:enum AddCommand {
+crates/dev/tilo-dev/src/main.rs:142:    command: LocaleCommand,
+crates/dev/tilo-dev/src/main.rs:148:    command: ScenarioCommand,
+crates/dev/tilo-dev/src/main.rs:152:enum ScenarioCommand {
+crates/dev/tilo-dev/src/main.rs:174:enum LocaleCommand {
+crates/dev/tilo-dev/src/main.rs:197:    command: UiCommand,
+crates/dev/tilo-dev/src/main.rs:201:enum UiCommand {
+crates/dev/tilo-dev/src/main.rs:572:        Command::New(args) => run_new(args),
+crates/dev/tilo-dev/src/main.rs:573:        Command::Add(args) => run_add(args),
+crates/dev/tilo-dev/src/main.rs:574:        Command::Locale(args) => run_locale(args),
+crates/dev/tilo-dev/src/main.rs:575:        Command::Scenario(args) => run_scenario(args),
+crates/dev/tilo-dev/src/main.rs:576:        Command::Doctor(args) => run_doctor(args),
+crates/dev/tilo-dev/src/main.rs:577:        Command::Check(args) => run_check(args),
+crates/dev/tilo-dev/src/main.rs:578:        Command::Certify(args) => run_certify(args),
+crates/dev/tilo-dev/src/main.rs:579:        Command::Run(args) => run_app_task(args, tilo_dev::AppTask::Run),
+crates/dev/tilo-dev/src/main.rs:580:        Command::Test(args) => run_app_task(args, tilo_dev::AppTask::Test),
+crates/dev/tilo-dev/src/main.rs:581:        Command::Dev(args) => run_dev(args),
+crates/dev/tilo-dev/src/main.rs:582:        Command::Shot(args) => run_shot(args),
+crates/dev/tilo-dev/src/main.rs:583:        Command::Inspect(args) => run_inspect(args),
+crates/dev/tilo-dev/src/main.rs:584:        Command::Ui(args) => run_ui(args),
+crates/dev/tilo-dev/src/main.rs:585:        Command::Package(args) => run_package(args),
+crates/dev/tilo-dev/src/main.rs:598:        ScenarioCommand::Run {
+crates/dev/tilo-dev/src/main.rs:605:            let start = app.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:640:        LocaleCommand::Sync {
+crates/dev/tilo-dev/src/main.rs:647:            let start = app.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:689:        let start = std::env::current_dir()?;
+crates/dev/tilo-dev/src/main.rs:695:        AddCommand::Screen {
+crates/dev/tilo-dev/src/main.rs:715:        AddCommand::Scenario {
+crates/dev/tilo-dev/src/main.rs:720:        AddCommand::Locale { locale, options } => {
+crates/dev/tilo-dev/src/main.rs:723:        AddCommand::Component {
+crates/dev/tilo-dev/src/main.rs:770:    let start = options.app.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:800:        UiCommand::Edit { file, builder } => {
+crates/dev/tilo-dev/src/main.rs:804:        UiCommand::Init { file, title, force } => {
+crates/dev/tilo-dev/src/main.rs:808:        UiCommand::Tree { file } => print!("{}", tilo_dev::ui_graph_tree(&file)?),
+crates/dev/tilo-dev/src/main.rs:809:        UiCommand::Validate { file } => {
+crates/dev/tilo-dev/src/main.rs:817:        UiCommand::Format { file } => {
+crates/dev/tilo-dev/src/main.rs:821:        UiCommand::Insert {
+crates/dev/tilo-dev/src/main.rs:838:        UiCommand::Component {
+crates/dev/tilo-dev/src/main.rs:855:        UiCommand::Remove { file, id } => {
+crates/dev/tilo-dev/src/main.rs:859:        UiCommand::Replace { file, id, source } => {
+crates/dev/tilo-dev/src/main.rs:864:        UiCommand::Move {
+crates/dev/tilo-dev/src/main.rs:873:        UiCommand::Set {
+crates/dev/tilo-dev/src/main.rs:891:        UiCommand::Apply { file, edits } => run_ui_apply(&file, &edits)?,
+crates/dev/tilo-dev/src/main.rs:928:    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:945:    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:957:    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:971:    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:1006:    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:1011:    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:1021:    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:1079:    let path = args.path.map_or_else(std::env::current_dir, Ok)?;
+crates/dev/tilo-dev/src/main.rs:1141:    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+crates/dev/tilo-dev/src/main.rs:1142:    let mut build = ProcessCommand::new(cargo);
+crates/dev/tilo-dev/src/main.rs:1208:        let status = ProcessCommand::new(executable)
+crates/dev/tilo-dev/src/main.rs:1222:                let mut command = ProcessCommand::new(executable);
+crates/dev/tilo-dev/src/main.rs:1254:                    let mut audit = ProcessCommand::new(executable);
+crates/dev/tilo-dev/src/main.rs:1425:#[cfg(test)]
+crates/dev/tilo-dev/src/main.rs:1433:        let Command::New(args) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:1443:        let Command::New(args) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:1453:        let Command::New(args) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:1463:        let Command::New(args) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:1479:        let Command::New(args) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:1489:        let Command::New(args) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:1516:        let Command::Add(AddArgs {
+crates/dev/tilo-dev/src/main.rs:1518:                Some(AddCommand::Screen {
+crates/dev/tilo-dev/src/main.rs:1549:        let Command::Add(AddArgs {
+crates/dev/tilo-dev/src/main.rs:1551:                Some(AddCommand::Component {
+crates/dev/tilo-dev/src/main.rs:1577:            Command::Add(AddArgs {
+crates/dev/tilo-dev/src/main.rs:1578:                command: Some(AddCommand::Component {
+crates/dev/tilo-dev/src/main.rs:1587:        let Command::Add(AddArgs {
+crates/dev/tilo-dev/src/main.rs:1588:            command: Some(AddCommand::Locale { locale, options }),
+crates/dev/tilo-dev/src/main.rs:1597:        let Command::Add(AddArgs { command: None }) = wizard.command else {
+crates/dev/tilo-dev/src/main.rs:1623:            Command::Add(AddArgs {
+crates/dev/tilo-dev/src/main.rs:1624:                command: Some(AddCommand::Component {
+crates/dev/tilo-dev/src/main.rs:1661:            Command::Add(AddArgs {
+crates/dev/tilo-dev/src/main.rs:1662:                command: Some(AddCommand::Component {
+crates/dev/tilo-dev/src/main.rs:1684:            Command::Add(AddArgs {
+crates/dev/tilo-dev/src/main.rs:1685:                command: Some(AddCommand::Component {
+crates/dev/tilo-dev/src/main.rs:1707:            Command::Add(AddArgs {
+crates/dev/tilo-dev/src/main.rs:1708:                command: Some(AddCommand::Component {
+crates/dev/tilo-dev/src/main.rs:1730:        let Command::Locale(LocaleArgs {
+crates/dev/tilo-dev/src/main.rs:1732:                LocaleCommand::Sync {
+crates/dev/tilo-dev/src/main.rs:1761:        let Command::Run(run) = run.command else {
+crates/dev/tilo-dev/src/main.rs:1772:        let Command::Test(test) = test.command else {
+crates/dev/tilo-dev/src/main.rs:1783:        let Command::Certify(app) = app.command else {
+crates/dev/tilo-dev/src/main.rs:1799:        let Command::Certify(workspace) = workspace.command else {
+crates/dev/tilo-dev/src/main.rs:1911:        let Command::Shot(shot) = shot.command else {
+crates/dev/tilo-dev/src/main.rs:1940:        let Command::Inspect(inspect) = inspect.command else {
+crates/dev/tilo-dev/src/main.rs:1970:        let Command::Scenario(ScenarioArgs {
+crates/dev/tilo-dev/src/main.rs:1972:                ScenarioCommand::Run {
+crates/dev/tilo-dev/src/main.rs:2005:        let Command::Check(args) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:2030:        let Command::Dev(dev) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:2063:        let Command::Package(package) = cli.command else {
+crates/dev/tilo-dev/src/main.rs:2076:        let Command::Package(defaults) = defaults.command else {
+crates/dev/tilo-dev/src/main.rs:2091:            "/opt/tilo-ui-builder",
+crates/dev/tilo-dev/src/main.rs:2094:        let Command::Ui(UiArgs {
+crates/dev/tilo-dev/src/main.rs:2095:            command: UiCommand::Edit { file, builder },
+crates/dev/tilo-dev/src/main.rs:2101:        assert_eq!(builder, Some(OsString::from("/opt/tilo-ui-builder")));
+crates/dev/tilo-dev/src/main.rs:2116:        let Command::Ui(UiArgs {
+crates/dev/tilo-dev/src/main.rs:2118:                UiCommand::Insert {
+crates/dev/tilo-dev/src/main.rs:2143:        let Command::Ui(UiArgs {
+crates/dev/tilo-dev/src/main.rs:2145:                UiCommand::Component {
+crates/dev/tilo-dev/src/main.rs:2204:            Command::Ui(UiArgs {
+crates/dev/tilo-dev/src/main.rs:2205:                command: UiCommand::Set {
+crates/dev/tilo-dev/src/main.rs:2259:            Command::Ui(UiArgs {
+crates/dev/tilo-dev/src/main.rs:2260:                command: UiCommand::Apply { file, edits }
+crates/dev/tilo-dev/src/main.rs:2282:            command: UiCommand::Apply {
+crates/agent/model-gateway/src/lib.rs:117:    std::env::var(SERVICE_FD_ENV)
+crates/agent/model-gateway/src/lib.rs:132:    let fd = std::env::var(SERVICE_FD_ENV)
+crates/doc/qdoc-epub/src/lib.rs:5:#[cfg(test)]
+crates/windows/compat-service/src/installer.rs:200:#[cfg(test)]
+crates/format/format-host/src/main.rs:5:#![cfg_attr(
+crates/windows/compat-service/src/dxvk.rs:19:const PAYLOAD: &str = "/opt/tilo/x86/usr/share/tilo/dxvk";
+crates/windows/compat-service/src/dxvk.rs:20:const BUILD_METADATA: &str = "/opt/tilo/x86/usr/lib/tilo/windows-guest/installed-packages.tsv";
+crates/windows/compat-service/src/dxvk.rs:110:    validate_prefix(std::env::var_os("WINEPREFIX").as_deref())?;
+crates/windows/compat-service/src/dxvk.rs:506:            std::process::id(),
+crates/windows/compat-service/src/dxvk.rs:529:#[cfg(test)]
+crates/windows/compat-service/src/dxvk.rs:912:            .join(format!(".tilo-dxvk-{}-0", std::process::id()));
+crates/windows/compat-service/src/dxvk.rs:919:            format!(".tilo-dxvk-{}-1", std::process::id())
+crates/windows/compat-service/src/dxvk.rs:938:                    .join(format!(".tilo-dxvk-{}-{index}", std::process::id())),
+crates/windows/compat-service/src/protocol.rs:138:#[cfg(test)]
+crates/format/format-host/src/transport.rs:16:    let base = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+crates/format/format-host/src/transport.rs:40:    let _ = std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600));
+crates/doc/qdoc-codec-markdown-wasm/src/lib.rs:14://! The crate is gated to `target_arch = "wasm32"`. Building it for the host
+crates/doc/qdoc-codec-markdown-wasm/src/lib.rs:18:#![cfg_attr(
+crates/doc/qdoc-codec-markdown-wasm/src/lib.rs:31:#[cfg(target_arch = "wasm32")]
+crates/windows/compat-service/src/resources.rs:54:    #[cfg(test)]
+crates/windows/compat-service/src/resources.rs:67:        format!("{}-{sequence}", std::process::id())
+crates/windows/compat-service/src/resources.rs:145:#[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:12:use std::os::unix::process::CommandExt as _;
+crates/dev/tilo-dev/src/lib.rs:14:use std::process::{Child, Command as ProcessCommand, Stdio};
+crates/dev/tilo-dev/src/lib.rs:1124:        if let Some(target_entry) = translation
+crates/dev/tilo-dev/src/lib.rs:1129:            changed |= synchronize_fluent_entry(source_entry, target_entry, prune, reset_variables);
+crates/dev/tilo-dev/src/lib.rs:1242:        if let Some(target_attribute) = translation
+crates/dev/tilo-dev/src/lib.rs:1248:                    != fluent_pattern_variables(&target_attribute.value)
+crates/dev/tilo-dev/src/lib.rs:1250:                target_attribute.value = source_attribute.value.clone();
+crates/dev/tilo-dev/src/lib.rs:1922:    let rustfmt = std::env::var_os("RUSTFMT").unwrap_or_else(|| OsString::from("rustfmt"));
+crates/dev/tilo-dev/src/lib.rs:1923:    let mut child = ProcessCommand::new(&rustfmt)
+crates/dev/tilo-dev/src/lib.rs:2531:#[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:2695:#[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:2851:#[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:2979:#[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:3130:#[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:3308:#[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:3774:    } else if let Some(program) = std::env::var_os("TILO_UI_BUILDER") {
+crates/dev/tilo-dev/src/lib.rs:3777:        let current = std::env::current_exe().context("locating tilo-dev executable")?;
+crates/dev/tilo-dev/src/lib.rs:3779:            current.with_file_name(format!("tilo-ui-builder{}", std::env::consts::EXE_SUFFIX));
+crates/dev/tilo-dev/src/lib.rs:3784:                std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+crates/dev/tilo-dev/src/lib.rs:3804:        std::env::current_dir()
+crates/dev/tilo-dev/src/lib.rs:3831:        let status = ProcessCommand::new(&self.program)
+crates/dev/tilo-dev/src/lib.rs:3891:        |_| std::fs::Permissions::from_mode(0o644),
+crates/dev/tilo-dev/src/lib.rs:3923:        let status = ProcessCommand::new(&self.program)
+crates/dev/tilo-dev/src/lib.rs:3992:    #[cfg(not(test))]
+crates/dev/tilo-dev/src/lib.rs:3994:    #[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:4039:    let output = ProcessCommand::new("capnp")
+crates/dev/tilo-dev/src/lib.rs:4250:        program: std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+crates/dev/tilo-dev/src/lib.rs:4276:    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+crates/dev/tilo-dev/src/lib.rs:4573:            let status = ProcessCommand::new(&case.cargo.program)
+crates/dev/tilo-dev/src/lib.rs:4762:    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+crates/dev/tilo-dev/src/lib.rs:4763:    let mut command = ProcessCommand::new(&cargo);
+crates/dev/tilo-dev/src/lib.rs:4866:    let program = std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-pkg"));
+crates/dev/tilo-dev/src/lib.rs:4867:    let mut command = ProcessCommand::new(&program);
+crates/dev/tilo-dev/src/lib.rs:4888:    let program = std::env::var_os("TILO_PKG").unwrap_or_else(|| OsString::from("tilo-pkg"));
+crates/dev/tilo-dev/src/lib.rs:4889:    let mut command = ProcessCommand::new(&program);
+crates/dev/tilo-dev/src/lib.rs:4895:    command: &mut ProcessCommand,
+crates/dev/tilo-dev/src/lib.rs:5094:    let mut command = ProcessCommand::new(&plan.program);
+crates/dev/tilo-dev/src/lib.rs:5358:    let child = ProcessCommand::new(&plan.program)
+crates/dev/tilo-dev/src/lib.rs:5361:        .process_group(0)
+crates/dev/tilo-dev/src/lib.rs:5379:    let child = ProcessCommand::new(executable)
+crates/dev/tilo-dev/src/lib.rs:5382:        .process_group(0)
+crates/dev/tilo-dev/src/lib.rs:5593:    let target_dependencies = manifest
+crates/dev/tilo-dev/src/lib.rs:5643:        .chain(target_dependencies)
+crates/dev/tilo-dev/src/lib.rs:6419:    let current_dir = std::env::current_dir().context("reading current directory")?;
+crates/dev/tilo-dev/src/lib.rs:6517:    let current_dir = std::env::current_dir().context("reading current directory")?;
+crates/dev/tilo-dev/src/lib.rs:7051:    if let Some(configured) = std::env::var_os("TILO_UI_PATH") {
+crates/dev/tilo-dev/src/lib.rs:7063:    if let Ok(executable) = std::env::current_exe()
+crates/dev/tilo-dev/src/lib.rs:8045:#[cfg(test)]
+crates/dev/tilo-dev/src/lib.rs:9535:                program: OsString::from("/bin/sh"),
+crates/dev/tilo-dev/src/lib.rs:10289:            Some(OsString::from("/opt/tilo-ui-builder")),
+crates/dev/tilo-dev/src/lib.rs:10292:        assert_eq!(plan.program, OsString::from("/opt/tilo-ui-builder"));
+crates/dev/tilo-dev/src/lib.rs:10298:        let current = std::env::current_exe().expect("test executable");
+crates/dev/tilo-dev/src/lib.rs:10311:            std::fs::metadata(&graph).unwrap().permissions().mode() & 0o777,
+crates/dev/tilo-dev/src/lib.rs:10320:        std::fs::set_permissions(&graph, std::fs::Permissions::from_mode(0o640)).unwrap();
+crates/dev/tilo-dev/src/lib.rs:10323:            std::fs::metadata(&graph).unwrap().permissions().mode() & 0o777,
+crates/dev/tilo-dev/src/lib.rs:10599:            std::fs::Permissions::from_mode(0o750),
+crates/dev/tilo-dev/src/lib.rs:10632:                .mode()
+crates/dev/tilo-dev/src/lib.rs:10658:        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o750)).unwrap();
+crates/dev/tilo-dev/src/lib.rs:10680:                .mode()
+crates/dev/tilo-dev/src/lib.rs:10734:    fn doctor_finds_tilo_app_sdk_in_target_specific_dependencies() {
+crates/dev/tilo-dev/src/lib.rs:10750:            [target.'cfg(unix)'.dependencies]
+crates/dev/tilo-dev/src/lib.rs:10762:    fn doctor_rejects_one_invalid_target_specific_ui_dependency() {
+crates/dev/tilo-dev/src/lib.rs:10769:            [target.'cfg(unix)'.dependencies]
+crates/dev/tilo-dev/src/lib.rs:10772:            [target.'cfg(windows)'.dependencies]
+crates/dev/tilo-dev/src/lib.rs:11746:        #[cfg(unix)]
+crates/dev/tilo-dev/src/lib.rs:11896:                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncat <<'TILO_JSON'\n{message}\nTILO_JSON\n",
+crates/dev/tilo-dev/src/lib.rs:11901:        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+crates/dev/tilo-dev/src/lib.rs:11913:        std::fs::write(&failing_cargo, "#!/bin/sh\nexit 9\n").unwrap();
+crates/dev/tilo-dev/src/lib.rs:11914:        std::fs::set_permissions(&failing_cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+crates/dev/tilo-dev/src/lib.rs:11932:                "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$1\" \"$2\" > '{}'\n",
+crates/dev/tilo-dev/src/lib.rs:11937:        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+crates/format/format-host/src/runner.rs:69:        let mut cfg = wasmtime::Config::new();
+crates/format/format-host/src/runner.rs:70:        cfg.wasm_component_model(true);
+crates/format/format-host/src/runner.rs:71:        cfg.epoch_interruption(true);
+crates/format/format-host/src/runner.rs:80:                cfg.cache(Some(cache));
+crates/format/format-host/src/runner.rs:83:        Engine::new(&cfg).map_err(|e| anyhow::anyhow!("building wasmtime engine: {e:#}"))
+crates/format/format-host/src/runner.rs:220:    dirs::cache_dir().map(|d| d.join("tilo").join("wasmtime"))
+crates/format/format-host/src/runner.rs:236:#[cfg(test)]
+crates/windows/compat-service/src/execute.rs:5:use std::os::unix::process::CommandExt;
+crates/windows/compat-service/src/execute.rs:6:use std::process::{Command, Stdio};
+crates/windows/compat-service/src/execute.rs:10:use crate::CapsuleCommandPlan;
+crates/windows/compat-service/src/execute.rs:28:    fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError>;
+crates/windows/compat-service/src/execute.rs:35:    fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
+crates/windows/compat-service/src/execute.rs:84:        let mut command = Command::new("/usr/bin/bwrap");
+crates/windows/compat-service/src/execute.rs:142:                "tilo:x:{uid}:{gid}:Tilo capsule:{}:/usr/bin/nologin\n",
+crates/windows/compat-service/src/execute.rs:190:#[cfg(test)]
+crates/windows/compat-service/src/execute.rs:201:                    "tilo:x:{uid}:{gid}:Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\n"
+crates/format/format-host/build.rs:6:    capnpc::CompilerCommand::new()
+crates/format/format-host/src/registry.rs:114:#[cfg(test)]
+crates/windows/compat-service/src/catalogue.rs:186:#[cfg(test)]
+crates/agent/local-model-service/src/main.rs:15:use std::process::Command;
+crates/agent/local-model-service/src/main.rs:26:    SignedRuntime, VllmCommand,
+crates/agent/local-model-service/src/main.rs:393:/// [`VllmCommand`], itself constructed only from a verified signed catalog.
+crates/agent/local-model-service/src/main.rs:395:fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
+crates/agent/local-model-service/src/main.rs:443:        let mut load = Command::new("podman");
+crates/agent/local-model-service/src/main.rs:453:        let mut inspect = Command::new("podman");
+crates/agent/local-model-service/src/main.rs:479:    fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
+crates/agent/local-model-service/src/main.rs:482:        let mut launch = Command::new("systemd-run");
+crates/agent/local-model-service/src/main.rs:524:        let mut stop = Command::new("systemctl");
+crates/agent/local-model-service/src/main.rs:532:        let mut stop = Command::new("systemctl");
+crates/agent/local-model-service/src/main.rs:565:    let mut nvidia = Command::new("nvidia-smi");
+crates/agent/local-model-service/src/main.rs:586:    let rocm = std::fs::read_to_string("/opt/rocm/.info/version")
+crates/agent/local-model-service/src/main.rs:862:            std::process::exit(1);
+crates/agent/local-model-service/src/main.rs:868:    let raw = std::env::var(MODELS_SERVICE_FD)
+crates/agent/local-model-service/src/main.rs:1112:    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
+crates/agent/local-model-service/src/main.rs:1120:    let pid_matches = std::env::var("LISTEN_PID")
+crates/agent/local-model-service/src/main.rs:1123:        == Some(std::process::id());
+crates/agent/local-model-service/src/main.rs:1127:    if std::env::var("LISTEN_FDS").as_deref() != Ok("1") {
+crates/agent/local-model-service/src/main.rs:1149:        std::env::remove_var("LISTEN_PID");
+crates/agent/local-model-service/src/main.rs:1150:        std::env::remove_var("LISTEN_FDS");
+crates/agent/local-model-service/src/main.rs:1151:        std::env::remove_var("LISTEN_FDNAMES");
+crates/agent/local-model-service/src/main.rs:1175:    if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+crates/agent/local-model-service/src/main.rs:1178:    std::env::var_os("HOME")
+crates/agent/local-model-service/src/main.rs:1460:    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+crates/agent/local-model-service/src/main.rs:1463:    let mut command = Command::new("systemd-run");
+crates/agent/local-model-service/src/main.rs:1499:    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+crates/agent/local-model-service/src/main.rs:1502:    let mut command = Command::new("systemd-run");
+crates/agent/local-model-service/src/main.rs:1527:#[cfg(test)]
+crates/agent/local-model-service/src/main.rs:1572:        let command = VllmCommand {
+crates/agent/local-model-service/src/main.rs:1576:            model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
+crates/agent/local-model-service/src/main.rs:1585:                "type=bind,src=/home/ada/.local/share/tilo/models/sha256/abc,dst=/models/model,ro"
+crates/agent/local-model-service/src/main.rs:1595:                .any(|arg| arg == "/home/ada/.local/share/tilo/models/sha256/abc")
+crates/windows/compat-service/src/plan.rs:18:const SHIM_HOST: &str = "/usr/bin/tilo-launcher";
+crates/windows/compat-service/src/plan.rs:23:const PROTON_MOUNT: &str = "/opt/tilo/proton";
+crates/windows/compat-service/src/plan.rs:75:            runtime_bind("/usr/bin/FEX", "/usr/bin/FEX"),
+crates/windows/compat-service/src/plan.rs:76:            runtime_bind("/usr/bin/FEXServer", "/usr/bin/FEXServer"),
+crates/windows/compat-service/src/plan.rs:77:            runtime_bind("/usr/bin/FEXOfflineCompiler", "/usr/bin/FEXOfflineCompiler"),
+crates/windows/compat-service/src/plan.rs:137:        Self::resolve_for_host(layer, runner, std::env::consts::ARCH)
+crates/windows/compat-service/src/plan.rs:162:                    runtime_bind("/usr/bin/wine", "/usr/bin/wine"),
+crates/windows/compat-service/src/plan.rs:163:                    runtime_bind("/usr/bin/wineserver", "/usr/bin/wineserver"),
+crates/windows/compat-service/src/plan.rs:164:                    runtime_bind("/usr/bin/wineboot", "/usr/bin/wineboot"),
+crates/windows/compat-service/src/plan.rs:166:                sandbox_entrypoint: PathBuf::from("/usr/bin/wine"),
+crates/windows/compat-service/src/plan.rs:183:                        // The pinned zipapp's shebang is `/usr/bin/env python3`.
+crates/windows/compat-service/src/plan.rs:184:                        runtime_bind("/usr/bin/env", "/usr/bin/env"),
+crates/windows/compat-service/src/plan.rs:185:                        runtime_bind("/usr/bin/python3", "/usr/bin/python3"),
+crates/windows/compat-service/src/plan.rs:186:                        runtime_bind("/bin/sh", "/bin/sh"),
+crates/windows/compat-service/src/plan.rs:189:                        runtime_bind("/usr/bin/readlink", "/usr/bin/readlink"),
+crates/windows/compat-service/src/plan.rs:190:                        runtime_bind("/usr/bin/getopt", "/usr/bin/getopt"),
+crates/windows/compat-service/src/plan.rs:192:                        runtime_bind("/usr/bin/true", "/usr/bin/true"),
+crates/windows/compat-service/src/plan.rs:193:                        runtime_bind("/usr/bin/bwrap", "/usr/bin/bwrap"),
+crates/windows/compat-service/src/plan.rs:396:pub struct CapsuleCommandPlan {
+crates/windows/compat-service/src/plan.rs:421:impl CapsuleCommandPlan {
+crates/windows/compat-service/src/plan.rs:467:    ) -> Result<CapsuleCommandPlan, PlanError> {
+crates/windows/compat-service/src/plan.rs:506:            "/opt/tilo",
+crates/windows/compat-service/src/plan.rs:515:            (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
+crates/windows/compat-service/src/plan.rs:516:            (crate::execute::GROUP_CHILD_FD, "/etc/group"),
+crates/windows/compat-service/src/plan.rs:563:        landlock_read.extend([PathBuf::from("/etc/passwd"), PathBuf::from("/etc/group")]);
+crates/windows/compat-service/src/plan.rs:650:        Ok(CapsuleCommandPlan {
+crates/windows/compat-service/src/plan.rs:756:        ("XDG_DATA_HOME", "/run/tilo/capsule/home/.local/share"),
+crates/windows/compat-service/src/plan.rs:757:        ("XDG_CONFIG_HOME", "/run/tilo/capsule/home/.config"),
+crates/windows/compat-service/src/plan.rs:758:        ("XDG_CACHE_HOME", "/run/tilo/capsule/home/.cache"),
+crates/windows/compat-service/src/plan.rs:909:#[cfg(test)]
+crates/windows/compat-service/src/plan.rs:976:                .any(|path| path == Path::new("/usr/bin/wine"))
+crates/windows/compat-service/src/plan.rs:978:        assert_eq!(wine.sandbox_entrypoint(), Path::new("/usr/bin/wine"));
+crates/windows/compat-service/src/plan.rs:994:                .any(|path| path == Path::new("/usr/bin/env"))
+crates/windows/compat-service/src/plan.rs:1077:                            assert!(!command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine"));
+crates/windows/compat-service/src/plan.rs:1190:            serde_json::json!(["/usr/bin/FEX"])
+crates/windows/compat-service/src/plan.rs:1216:            .insert("LD_PRELOAD".to_string(), "/home/user/evil.so".to_string());
+crates/windows/compat-service/src/plan.rs:1260:            (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
+crates/windows/compat-service/src/plan.rs:1261:            (crate::execute::GROUP_CHILD_FD, "/etc/group"),
+crates/windows/compat-service/src/plan.rs:1301:        let expected_entry = if std::env::consts::ARCH == "aarch64" {
+crates/windows/compat-service/src/plan.rs:1304:            "/usr/bin/wine"
+crates/windows/compat-service/src/plan.rs:1317:                .any(|arg| arg.contains("/home/user"))
+crates/windows/compat-service/src/plan.rs:1368:            "/bin/sh", "-ec",
+crates/windows/compat-service/src/plan.rs:1369:            "test \"$(cat /prefix/value)\" = original-prefix; test \"$(cat /home/value)\" = original-home",
+crates/windows/compat-service/src/plan.rs:1388:                "/etc/passwd".to_string(),
+crates/windows/compat-service/src/plan.rs:1391:                "/etc/group".to_string(),
+crates/windows/compat-service/src/plan.rs:1403:            "; test \"$(getent passwd $(id -u))\" = \"tilo:x:$(id -u):$(id -g):Tilo capsule:/run/tilo/capsule/home:/usr/bin/nologin\"; test \"$(getent group $(id -g))\" = \"tilo:x:$(id -g):\"; test \"$(wc -l < /etc/passwd)\" = 1; test \"$(wc -l < /etc/group)\" = 1; if (printf bad >> /etc/passwd) 2>/dev/null; then exit 1; fi; if (printf bad >> /etc/group) 2>/dev/null; then exit 1; fi; test ! -e /etc/shadow",
+crates/windows/compat-service/src/plan.rs:1480:        assert_eq!(std::env::consts::ARCH, "aarch64");
+crates/windows/compat-service/src/plan.rs:1501:            std::env::var("TILO_ARM_CAPSULE_WINEDEBUG").unwrap_or_else(|_| "-all".into()),
+crates/windows/compat-service/src/plan.rs:1522:        let socket = runtime.join(format!("tilo-console-{}", std::process::id()));
+crates/windows/compat-service/src/plan.rs:1594:        let source = std::env::var_os("TILO_ARM_CAPSULE_CMD_EXE")
+crates/format/format-host/src/lib.rs:4:#![cfg_attr(
+crates/format/format-host/src/lib.rs:46:    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+crates/format/format-host/tests/integration.rs:13:#![allow(
+crates/windows/compat-service/src/vm_adapter.rs:347:        let lease_id = format!("rail-{}-{sequence}", std::process::id());
+crates/windows/compat-service/src/vm_adapter.rs:421:            std::process::id()
+crates/windows/compat-service/src/vm_adapter.rs:463:impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolatedRailLauncher<R> {
+crates/windows/compat-service/src/vm_adapter.rs:472:                .join(format!("rail-{}-{sequence}", std::process::id())),
+crates/windows/compat-service/src/vm_adapter.rs:525:impl<R: windows_vm::CommandRunner> windows_vm::RemoteAppLauncher for AudioIsolatedSpiceLauncher<R> {
+crates/windows/compat-service/src/vm_adapter.rs:533:            self.root.join(format!("{}-{sequence}", std::process::id())),
+crates/windows/compat-service/src/vm_adapter.rs:1249:#[cfg(test)]
+crates/windows/compat-service/src/lib.rs:13:#![cfg_attr(
+crates/windows/compat-service/src/lib.rs:25:#![allow(
+crates/windows/compat-service/src/lib.rs:55:    AudioBinding, AudioProtocol, CapsuleCommandPlan, HostSession, LaunchLease,
+crates/windows/compat-service/src/service.rs:16:    CapsuleCommandPlan, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore, ExecutionError,
+crates/windows/compat-service/src/service.rs:764:        let result: Result<(CapsuleCommandPlan, ExecutionOutcome), ServiceError> = (|| {
+crates/windows/compat-service/src/service.rs:778:        let (command, outcome): (CapsuleCommandPlan, ExecutionOutcome) = result?;
+crates/windows/compat-service/src/service.rs:1675:#[cfg(test)]
+crates/windows/compat-service/src/service.rs:1701:        fn execute(&self, _: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
+crates/agent/local-model-service/src/lib.rs:9:#![cfg_attr(
+crates/agent/local-model-service/src/lib.rs:22:#[cfg(unix)]
+crates/agent/local-model-service/src/lib.rs:54:/// A supervised runtime boundary. `VllmCommand` is data assembled exclusively
+crates/agent/local-model-service/src/lib.rs:65:    fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError>;
+crates/agent/local-model-service/src/lib.rs:77:pub struct VllmCommand {
+crates/agent/local-model-service/src/lib.rs:288:        set_private_directory_mode(&staging)?;
+crates/agent/local-model-service/src/lib.rs:564:        let command = VllmCommand {
+crates/agent/local-model-service/src/lib.rs:775:            set_private_directory_mode(&path)?;
+crates/agent/local-model-service/src/lib.rs:793:        set_private_directory_mode(parent)?;
+crates/agent/local-model-service/src/lib.rs:804:        set_private_file_mode(&path)?;
+crates/agent/local-model-service/src/lib.rs:812:#[cfg(unix)]
+crates/agent/local-model-service/src/lib.rs:813:fn set_private_directory_mode(path: &Path) -> Result<(), ServiceError> {
+crates/agent/local-model-service/src/lib.rs:817:    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+crates/agent/local-model-service/src/lib.rs:821:#[cfg(not(unix))]
+crates/agent/local-model-service/src/lib.rs:822:fn set_private_directory_mode(_path: &Path) -> Result<(), ServiceError> {
+crates/agent/local-model-service/src/lib.rs:826:#[cfg(unix)]
+crates/agent/local-model-service/src/lib.rs:827:fn set_private_file_mode(path: &Path) -> Result<(), ServiceError> {
+crates/agent/local-model-service/src/lib.rs:828:    fs::set_permissions(path, fs::Permissions::from_mode(0o400))?;
+crates/agent/local-model-service/src/lib.rs:832:#[cfg(not(unix))]
+crates/agent/local-model-service/src/lib.rs:833:fn set_private_file_mode(_path: &Path) -> Result<(), ServiceError> {
+crates/agent/local-model-service/src/lib.rs:917:#[cfg(test)]
+crates/agent/local-model-service/src/lib.rs:956:            header.set_mode(0o644);
+crates/agent/local-model-service/src/lib.rs:971:        tar.append_link(&mut header, "config.json", "/etc/passwd")
+crates/agent/local-model-service/src/lib.rs:1018:        command: Option<VllmCommand>,
+crates/agent/local-model-service/src/lib.rs:1025:        fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
+crates/agent/local-model-service/src/lib.rs:1136:            safe_snapshot_path(Path::new("/etc/passwd")),
+crates/agent/local-model-service/src/lib.rs:1272:        let command = VllmCommand {
+crates/windows/compat-service/src/session.rs:399:        // Registration happens immediately after `Command::spawn`; the child
+crates/windows/compat-service/src/session.rs:502:        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+crates/windows/compat-service/src/session.rs:511:    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+crates/windows/compat-service/src/session.rs:1294:        let raw = std::env::var("TILO_SVC_COMPAT_FD")
+crates/windows/compat-service/src/session.rs:1561:#[cfg(test)]
+crates/windows/compat-service/src/session.rs:1744:            LauncherAuthenticator::new(executable, std::process::id(), Arc::new(DenyRegistry));
+crates/windows/compat-service/src/bin/tilo-windows-runtime.rs:1:fn main() -> std::process::ExitCode {
+crates/windows/compat-service/src/bin/tilo-windows-runtime.rs:2:    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+crates/windows/compat-service/src/bin/tilo-windows-runtime.rs:4:        Ok(code) => std::process::ExitCode::from(u8::try_from(code).unwrap_or(1)),
+crates/windows/compat-service/src/bin/tilo-windows-runtime.rs:7:            std::process::ExitCode::FAILURE
+crates/windows/compat-service/src/store.rs:563:            std::process::id(),
+crates/windows/compat-service/src/store.rs:572:                .mode(0o600)
+crates/windows/compat-service/src/store.rs:707:        std::process::id(),
+crates/windows/compat-service/src/store.rs:1046:#[cfg(test)]
+crates/windows/compat-service/src/translated.rs:9:use std::os::unix::process::{CommandExt, ExitStatusExt};
+crates/windows/compat-service/src/translated.rs:10:use std::process::{Child, Command, ExitStatus, Stdio};
+crates/windows/compat-service/src/translated.rs:15:pub(crate) const ROOTFS: &str = "/opt/tilo/x86";
+crates/windows/compat-service/src/translated.rs:35:            vec![OsString::from("/usr/bin/wine32")],
+crates/windows/compat-service/src/translated.rs:38:                loader: "/usr/bin/wine32",
+crates/windows/compat-service/src/translated.rs:39:                server: "/usr/bin/wineserver32",
+crates/windows/compat-service/src/translated.rs:43:            vec![OsString::from("/usr/bin/wine64")],
+crates/windows/compat-service/src/translated.rs:46:                loader: "/usr/bin/wine64",
+crates/windows/compat-service/src/translated.rs:47:                server: "/usr/bin/wineserver64",
+crates/windows/compat-service/src/translated.rs:52:                OsString::from("/usr/bin/python3"),
+crates/windows/compat-service/src/translated.rs:67:    let mut server_command = Command::new("/usr/bin/FEXServer");
+crates/windows/compat-service/src/translated.rs:223:        let self_pidfd = owned_pidfd(std::process::id().cast_signed())?;
+crates/windows/compat-service/src/translated.rs:384:    fn apply(self, command: &mut Command) {
+crates/windows/compat-service/src/translated.rs:421:    let mut command = Command::new("/usr/bin/FEX");
+crates/windows/compat-service/src/translated.rs:422:    command.args(arguments).process_group(0);
+crates/windows/compat-service/src/translated.rs:448:fn configure_environment(command: &mut Command) {
+crates/windows/compat-service/src/translated.rs:523:    process_group: bool,
+crates/windows/compat-service/src/translated.rs:527:    const fn new(child: Child, process_group: bool) -> Self {
+crates/windows/compat-service/src/translated.rs:530:            process_group,
+crates/windows/compat-service/src/translated.rs:544:        // are created with process_group(0), never inherited from the caller.
+crates/windows/compat-service/src/translated.rs:547:                if self.process_group {
+crates/windows/compat-service/src/translated.rs:564:        if self.process_group {
+crates/windows/compat-service/src/translated.rs:574:#[cfg(test)]
+crates/windows/compat-service/src/translated.rs:587:        if std::env::var_os(CHILD).is_none() {
+crates/windows/compat-service/src/translated.rs:590:            let status = Command::new(std::env::current_exe().unwrap())
+crates/windows/compat-service/src/translated.rs:631:        let mut existing = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+crates/windows/compat-service/src/translated.rs:640:            "#!/bin/sh\n/bin/sleep 30 &\nprintf '%s %s' \"$$\" \"$!\" > \"$1\"\nwait\n",
+crates/windows/compat-service/src/translated.rs:643:        let status = Command::new("/bin/sh")
+crates/windows/compat-service/src/translated.rs:646:                "setsid /bin/sh \"$1\" \"$2\" </dev/null >/dev/null 2>&1 &",
+crates/windows/compat-service/src/translated.rs:733:            let mut boot = Command::new("/bin/true");
+crates/windows/compat-service/src/translated.rs:744:            let mut cleanup = Command::new("/bin/true");
+crates/windows/compat-service/src/translated.rs:751:            let mut application = Command::new("/bin/true");
+crates/windows/compat-service/src/translated.rs:768:        let mut proton = Command::new("/bin/true");
+crates/windows/compat-service/src/translated.rs:775:        let mut child = Command::new("/usr/bin/env");
+crates/windows/compat-service/src/translated.rs:810:        ManagedChild::new(Command::new("/bin/sleep").arg("5").spawn().unwrap(), false)
+crates/windows/compat-service/src/translated.rs:845:        let mut server = Command::new("/bin/true").spawn().unwrap();
+crates/windows/compat-service/src/translated.rs:856:            vec![OsString::from("/bin/sh"), OsString::from("app.exe")],
+crates/windows/compat-service/src/audio_proxy.rs:21:use std::process::{Child, Command, Stdio};
+crates/windows/compat-service/src/audio_proxy.rs:27:const PIPEWIRE_BIN: &str = "/usr/bin/pipewire";
+crates/windows/compat-service/src/audio_proxy.rs:28:const PIPEWIRE_PULSE_BIN: &str = "/usr/bin/pipewire-pulse";
+crates/windows/compat-service/src/audio_proxy.rs:111:    let mut command = Command::new(PIPEWIRE_BIN);
+crates/windows/compat-service/src/audio_proxy.rs:122:    let mut command = Command::new(PIPEWIRE_PULSE_BIN);
+crates/windows/compat-service/src/audio_proxy.rs:131:fn private_process_environment(command: &mut Command, runtime: &Path, config: &Path) {
+crates/windows/compat-service/src/audio_proxy.rs:136:        if let Some(value) = std::env::var_os(key) {
+crates/windows/compat-service/src/audio_proxy.rs:183:    fs::set_permissions(config_root.join(file), fs::Permissions::from_mode(0o600))
+crates/windows/compat-service/src/audio_proxy.rs:234:    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(AudioProxyError::Io)
+crates/windows/compat-service/src/audio_proxy.rs:241:        .mode(0o600)
+crates/windows/compat-service/src/audio_proxy.rs:301:#[cfg(test)]
+crates/doc/qdoc-pdf/src/lib.rs:27:#![cfg_attr(
+crates/doc/qdoc-pdf/src/lib.rs:824:#[cfg(test)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:10:#![allow(
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:14:#![cfg_attr(
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:25:#[cfg(target_os = "linux")]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:27:#[cfg(not(target_os = "linux"))]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:31:#[cfg(target_os = "linux")]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:33:#[cfg(target_os = "linux")]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:35:#[cfg(all(unix, not(target_os = "linux")))]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:37:#[cfg(unix)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:58:#[cfg(target_os = "linux")]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:104:#[cfg(not(target_os = "linux"))]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:108:    #[cfg(unix)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:231:fn main() -> std::process::ExitCode {
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:234:        return std::process::ExitCode::FAILURE;
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:236:    std::process::ExitCode::SUCCESS
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:253:    atomic_file::write_creating_parent_with_mode(&cli.catalog_out, &catalog_bytes, 0o644)
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:255:    atomic_file::write_creating_parent_with_mode(&cli.trust_out, &trust_bytes, 0o644)
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:576:    #[cfg(target_os = "linux")]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:600:    #[cfg(unix)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:602:        if metadata.permissions().mode() & 0o077 != 0 {
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:641:#[cfg(test)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:748:    #[cfg(unix)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:806:    #[cfg(unix)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:812:        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:818:        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:822:    #[cfg(unix)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:832:        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:863:        #[cfg(unix)]
+crates/agent/local-model-service/src/bin/tilo-model-catalog.rs:864:        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+crates/doc/qdoc-html/src/lib.rs:5:#[cfg(test)]
+crates/doc/qdoc-pdf/examples/sample.rs:28:    let out = std::env::args()
+crates/doc/qdoc-rtf/src/lib.rs:5:#[cfg(test)]
+crates/dev/ui-graph/src/lib.rs:742:#[cfg(test)]
+crates/doc/qdoc/tests/independent_documents.rs:16:#![allow(
+crates/doc/qdoc/tests/blobstore_fixture.rs:9:#![allow(
+crates/doc/qdoc/src/blobstore.rs:279:        if let Ok(v) = std::env::var("TILO_BLOB_STORE")
+crates/doc/qdoc/src/blobstore.rs:284:        let base = std::env::var("XDG_CACHE_HOME")
+crates/doc/qdoc/src/blobstore.rs:289:                std::env::var("HOME")
+crates/doc/qdoc/src/blobstore.rs:293:            .unwrap_or_else(std::env::temp_dir);
+crates/doc/qdoc/src/blobstore.rs:554:    dir.join(format!(".{hash}.partial-{}-{serial}", std::process::id()))
+crates/doc/qdoc/src/blobstore.rs:574:#[cfg(test)]
+crates/doc/qdoc/src/blobstore.rs:579:        if let Ok(stage) = std::env::var("QOS_BLOB_PROOF_STAGE") {
+crates/doc/qdoc/src/blobstore.rs:592:            let status = std::process::Command::new(std::env::current_exe().unwrap())
+crates/doc/qdoc/src/blobstore.rs:605:            match std::env::var_os("TILO_BLOB_STORE").filter(|path| !path.is_empty()) {
+crates/doc/qdoc/src/blobstore.rs:968:#[cfg(test)]
+crates/doc/qdoc/src/blobstore.rs:1017:        assert!(s.get("../../etc/passwd").is_none());
+crates/dev/frame-link/Cargo.toml:15:path = "src/bin/flatpak-share-demo.rs"
+crates/dev/collab-probe/src/main.rs:15:#![cfg_attr(
+crates/dev/collab-probe/src/main.rs:28:use std::process::ExitCode;
+crates/dev/collab-probe/src/main.rs:51:    let args: Vec<String> = std::env::args().skip(1).collect();
+crates/dev/collab-probe/src/main.rs:61:    let channel = match std::env::var("TILO_WORKSPACE_ID") {
+crates/dev/collab-probe/src/main.rs:82:            std::env::var("TILO_SVC_COLLAB_FD").ok(),
+crates/dev/collab-probe/src/main.rs:328:#[cfg(test)]
+crates/doc/qdoc/tests/sheet_roundtrip.rs:7:#![allow(
+crates/doc/qdoc/tests/sheet_roundtrip.rs:415:        if !cfg!(debug_assertions) {
+crates/dev/headless-schema/src/lib.rs:507:#[cfg(test)]
+crates/doc/qdoc/tests/blob_state.rs:12:#![allow(
+crates/dev/frame-link/src/lib.rs:41:#![cfg_attr(
+crates/dev/frame-link/src/lib.rs:218:    pub fn with_config(cfg: &LinkConfig) -> Self {
+crates/dev/frame-link/src/lib.rs:227:        let bytes_per_sec = if cfg.throughput_kbps == 0 {
+crates/dev/frame-link/src/lib.rs:230:            cfg.throughput_kbps.saturating_mul(1000) / 8
+crates/dev/frame-link/src/lib.rs:232:        let token_bucket_bytes = cfg.token_bucket_bytes.max(1);
+crates/dev/frame-link/src/lib.rs:234:            latency: Duration::from_millis(u64::from(cfg.latency_ms)),
+crates/dev/frame-link/src/lib.rs:235:            jitter: Duration::from_millis(u64::from(cfg.jitter_ms)),
+crates/dev/frame-link/src/lib.rs:238:            queue_capacity: cfg.queue_capacity.max(1),
+crates/dev/frame-link/src/lib.rs:239:            queue: VecDeque::with_capacity(cfg.queue_capacity.max(1)),
+crates/dev/frame-link/src/lib.rs:244:            rng_state: cfg.jitter_seed.wrapping_add(1), // avoid all-zero
+crates/dev/frame-link/src/lib.rs:443:    cfg: LinkConfig,
+crates/dev/frame-link/src/lib.rs:454:        let mut link: FrameLink<T> = FrameLink::with_config(&cfg);
+crates/dev/frame-link/src/lib.rs:495:#[cfg(test)]
+crates/dev/frame-link/src/lib.rs:671:#[cfg(test)]
+crates/dev/tilo-dev-template-smoke/src/lib.rs:273:#[cfg(test)]
+crates/agent/provider-config/src/lib.rs:471:#[cfg(test)]
+crates/doc/qdoc/tests/it.rs:3:#![allow(
+crates/doc/qdoc/tests/convergence.rs:12:#![allow(
+crates/doc/qdoc/tests/convergence.rs:159:    #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
+crates/doc/qdoc/src/history.rs:149:#[cfg(test)]
+crates/agent/provider-config/src/local.rs:549:#[cfg(test)]
+crates/dev/tilo-dev-template-smoke/build.rs:3:        std::env::var_os("OUT_DIR")
+crates/doc/qdoc/src/model.rs:2872:#[cfg(test)]
+crates/doc/qdoc/src/model.rs:3026:#[cfg(test)]
+crates/doc/qdoc/src/model.rs:3094:#[cfg(test)]
+crates/doc/qdoc/src/model.rs:3924:#[cfg(test)]
+crates/doc/qdoc/src/document.rs:683:#[cfg(test)]
+crates/doc/qdoc/src/lib.rs:7:#![cfg_attr(
+crates/doc/qdoc/src/lib.rs:56:#[cfg(test)]
+crates/doc/qdoc/tests/office_roundtrip.rs:8:#![allow(
+crates/doc/qdoc/tests/office_roundtrip.rs:382:    const N: usize = if cfg!(debug_assertions) { 400 } else { 4_000 };
+crates/doc/qdoc/tests/office_roundtrip.rs:428:    if cfg!(debug_assertions) {
+crates/doc/qdoc/src/order.rs:104:#[cfg(test)]
+crates/dev/frame-link/src/bin/flatpak-share-demo.rs:42:use std::process::{Command, Stdio};
+crates/dev/frame-link/src/bin/flatpak-share-demo.rs:53:/// Command-line surface. `Default` picks numbers matching the task spec
+crates/dev/frame-link/src/bin/flatpak-share-demo.rs:113:    let mut it = env::args().skip(1);
+crates/dev/frame-link/src/bin/flatpak-share-demo.rs:835:) -> Result<std::process::Child, String> {
+crates/dev/frame-link/src/bin/flatpak-share-demo.rs:840:    let child = Command::new("ffmpeg")
+crates/dev/frame-link/src/bin/flatpak-share-demo.rs:1084:    mux_stdin: std::process::ChildStdin,
+crates/dev/frame-link/src/bin/flatpak-share-demo.rs:1104:    fn new(args: &Args) -> Result<(Self, std::process::Child), String> {
+crates/doc/qdoc/tests/blob_reference.rs:13:#![allow(
+crates/dev/collab-link/src/main.rs:36:#![cfg_attr(
+crates/dev/collab-link/src/main.rs:90:    let mut args = std::env::args().skip(1);
+crates/dev/collab-link/src/main.rs:118:    let cfg = match parse_args() {
+crates/dev/collab-link/src/main.rs:122:            std::process::exit(0);
+crates/dev/collab-link/src/main.rs:126:            std::process::exit(2);
+crates/dev/collab-link/src/main.rs:130:    let _ = std::fs::remove_file(&cfg.listen);
+crates/dev/collab-link/src/main.rs:131:    let listener = match UnixListener::bind(&cfg.listen) {
+crates/dev/collab-link/src/main.rs:136:                cfg.listen.display()
+crates/dev/collab-link/src/main.rs:138:            std::process::exit(1);
+crates/dev/collab-link/src/main.rs:141:    let lat_ms = cfg.latency.as_millis();
+crates/dev/collab-link/src/main.rs:142:    let bps = cfg.throughput_bps;
+crates/dev/collab-link/src/main.rs:151:        cfg.listen.display(),
+crates/dev/collab-link/src/main.rs:152:        cfg.upstream.display(),
+crates/dev/collab-link/src/main.rs:154:    let cfg = Arc::new(cfg);
+crates/dev/collab-link/src/main.rs:160:                let cfg = Arc::clone(&cfg);
+crates/dev/collab-link/src/main.rs:164:                    .spawn(move || handle_connection(id, &client, &cfg))
+crates/dev/collab-link/src/main.rs:179:fn handle_connection(id: u64, client: &UnixStream, cfg: &Config) {
+crates/dev/collab-link/src/main.rs:180:    let upstream = match UnixStream::connect(&cfg.upstream) {
+crates/dev/collab-link/src/main.rs:185:                cfg.upstream.display()
+crates/dev/collab-link/src/main.rs:207:        cfg.latency,
+crates/dev/collab-link/src/main.rs:208:        cfg.throughput_bps,
+crates/dev/collab-link/src/main.rs:216:        cfg.latency,
+crates/dev/collab-link/src/main.rs:217:        cfg.throughput_bps,
+crates/doc/qdoc/src/diff.rs:488:#[cfg(test)]
+crates/doc/qdoc/src/diff.rs:824:#[cfg(test)]
+crates/doc/qdoc/src/export_html/base64.rs:47:#[cfg(test)]
+crates/dev/ui-builder/src/main.rs:46:    #[cfg(unix)]
+crates/dev/ui-builder/src/main.rs:50:        let mode = std::fs::metadata(path).map_or(0o644, |metadata| metadata.permissions().mode());
+crates/dev/ui-builder/src/main.rs:51:        atomic_file::write_with_mode(path, canonical.as_bytes(), mode)
+crates/dev/ui-builder/src/main.rs:53:    #[cfg(not(unix))]
+crates/dev/ui-builder/src/main.rs:62:#[cfg(test)]
+crates/dev/ui-builder/src/main.rs:65:    #[cfg(unix)]
+crates/dev/ui-builder/src/main.rs:70:        let directory = std::env::temp_dir().join(format!(
+crates/dev/ui-builder/src/main.rs:72:            std::process::id(),
+crates/dev/ui-builder/src/main.rs:78:        #[cfg(unix)]
+crates/dev/ui-builder/src/main.rs:80:            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+crates/dev/ui-builder/src/main.rs:84:        #[cfg(unix)]
+crates/dev/ui-builder/src/main.rs:86:            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+crates/doc/qdoc/src/bin/tilo-doc-text.rs:13:use std::process::ExitCode;
+crates/doc/qdoc/src/bin/tilo-doc-text.rs:21:    let mut args = std::env::args().skip(1);
+crates/doc/qdoc/src/bin/tilo-doc-text.rs:167:#[cfg(test)]
+crates/doc/qdoc/src/export.rs:372:#[cfg(test)]
+crates/doc/qdoc/src/format.rs:86:#[cfg(test)]
+crates/doc/qdoc/src/sheet/a1.rs:63:#[cfg(test)]
+crates/doc/qdoc/src/codecs/safety.rs:149:#[cfg(test)]
+crates/doc/qdoc/src/codecs/docx/content.rs:751:#[cfg(test)]
+crates/doc/qdoc/src/codecs/mod.rs:86:#[cfg(test)]
+crates/doc/qdoc/src/codecs/mod.rs:208:        #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+crates/doc/qdoc/src/codecs/docx/container.rs:68:#[cfg(test)]
+crates/doc/qdoc/src/codecs/docx/container.rs:77:#[cfg(test)]
+crates/doc/qdoc/src/codecs/docx/container.rs:83:#[cfg(test)]
+crates/doc/qdoc/src/codecs/docx/container.rs:89:#[cfg(test)]
+crates/doc/qdoc/src/codecs/docx/container.rs:98:#[cfg(test)]
+crates/doc/qdoc/src/codecs/docx/container.rs:146:#[cfg(test)]
+crates/doc/qdoc/src/codecs/html.rs:1037:#[cfg(test)]
+crates/doc/qdoc/src/codecs/docx/styles.rs:762:#[cfg(test)]
+crates/doc/qdoc/src/codecs/odt/content.rs:1112:#[cfg(test)]
+crates/doc/qdoc/src/codecs/odt/container.rs:75:#[cfg(test)]
+crates/doc/qdoc/src/codecs/odt/container.rs:81:#[cfg(test)]
+crates/doc/qdoc/src/codecs/odt/container.rs:105:#[cfg(test)]
+crates/doc/qdoc/src/codecs/docx/export.rs:1529:#[cfg(test)]
+crates/doc/qdoc/src/codecs/odt/styles.rs:693:#[cfg(test)]
+crates/doc/qdoc/src/codecs/rtf.rs:742:#[cfg(test)]
+crates/doc/qdoc/src/codecs/markdown.rs:1054:#[cfg(test)]
+crates/doc/qdoc/src/codecs/markdown.rs:1705:        #![proptest_config(ProptestConfig { cases: 96, ..ProptestConfig::default() })]
+crates/doc/qdoc/src/codecs/odt/export.rs:1198:#[cfg(test)]

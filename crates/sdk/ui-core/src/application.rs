@@ -59,6 +59,7 @@ pub struct HostContext {
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
+    control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
 }
 /// Presentation owned by a runner. Authority comes only from the component context.
@@ -150,8 +151,24 @@ impl HostContext {
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
+            control_domain: crate::control_custody::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
         })
+    }
+    /// Explicit owner-bound producer capability, available before factory work.
+    pub fn control_domain(&self) -> crate::ControlDomain {
+        self.control_domain
+            .set_owner(crate::control_custody::ControlOwner::Component(
+                self.callback_binding(),
+            ));
+        self.control_domain.clone()
+    }
+    /// Establish presentation scope before constructing a nested component.
+    pub fn inherit_control_custody(
+        &self,
+        parent: &crate::ControlDomain,
+    ) -> Result<(), crate::control_custody::CustodyError> {
+        self.control_domain().attach_to(parent)
     }
     pub fn record(&self) -> &RecordCheckout {
         &self.record
@@ -198,6 +215,7 @@ impl HostContext {
             registry_owner: Rc::downgrade(&self.construction),
             lifetime_id: self.lifetime_id,
             queued_controls: self.queued_controls.clone(),
+            control_domain: self.control_domain.downgrade(),
             instance_id: self.instance_id,
             app_id: self.app_id.clone(),
             records: self.records.clone(),
@@ -253,6 +271,7 @@ impl HostContext {
 }
 impl Drop for HostContext {
     fn drop(&mut self) {
+        self.control_domain.close();
         self.wake_scope.close();
     }
 }
@@ -474,9 +493,14 @@ impl AppComponent {
 
     pub fn new(
         context: HostContext,
-        root: Box<dyn AppWidget>,
+        mut root: Box<dyn AppWidget>,
         registry: tilo_actions::ActionRegistry,
     ) -> Self {
+        root.install_control_custody(
+            &context.control_domain(),
+            crate::control_custody::CustodyAttachment::Initial,
+        );
+        context.control_domain().finish_initial_installation();
         let registry_owner = context.construction.clone();
         Self {
             history: None,
@@ -542,6 +566,12 @@ impl AppComponent {
     ) -> Result<(), LaunchError> {
         if !self.prepared {
             return Err(LaunchError::BindingMismatch);
+        }
+        if let Some(root) = &mut self.root {
+            root.install_control_custody(
+                &self.context.control_domain(),
+                crate::control_custody::CustodyAttachment::Dynamic,
+            );
         }
         self.context
             .wake_scope
@@ -662,6 +692,7 @@ impl AppComponent {
             record_retry_target: None,
             teardown_error: None,
         };
+        self.context.control_domain.close();
         self.context.closing.set(true);
         match self.capture_local_pair_owned(&self.local_view) {
             Ok((view, application)) => {
@@ -725,6 +756,7 @@ impl AppComponent {
         self.close_report.as_ref()
     }
     fn teardown(&mut self) -> Result<(), String> {
+        self.context.control_domain.close();
         self.context.closing.set(true);
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();

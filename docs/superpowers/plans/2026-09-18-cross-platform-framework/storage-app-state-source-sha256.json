@@ -1,0 +1,14 @@
+{
+  "Cargo.lock": "8011893fde82c925ab031c68709a7b168ffdf07fe8e42ff89b585ca2234cd908",
+  "crates/system/app-state/Cargo.toml": "5ec5e033bdfdf0d30b0cb5475dd9080150a07e39a00c447d03dd4443ce83bbe5",
+  "crates/system/app-state/src/autosave.rs": "498fd0d23ac61b4aa60c237ad3f356acb308b1aad22aed6c0787b120b0aef0ab",
+  "crates/system/app-state/src/lib.rs": "cdcac14b6d30b6cb7638f70f18f7119a1111f32d9a29d8d922b0c32d2ae80e9c",
+  "crates/system/atomic-file/src/directory.rs": "937999987eeec178e5fa1470cc38bc28d5bbdbaa885b77aae7796151d5a2d278",
+  "crates/system/atomic-file/src/existing.rs": "c2bfaaf793bac202ae9cf9c9d0937dbca3419a01f65fe5447779150775a99b68",
+  "crates/system/atomic-file/src/lib.rs": "0bdb0e222a2c7f68c4ea7ed52d1d2fbc9bf138b3c91f1645c7695144a161406b",
+  "crates/system/atomic-file/src/native/unix.rs": "358046d15b8768d5d87e42b06a9c066e623363153d5442eef364bc814ae56e11",
+  "crates/system/atomic-file/src/provision.rs": "3e74af81af46814913e73f253a9b5542245bbac75f1406bea42a37375b24e0d6",
+  "crates/system/atomic-file/src/test_support.rs": "4feac83a62ec8e83c6f1c61969961075bd892cc55abab6635a18146bf962524d",
+  "crates/system/atomic-file/tests/existing_commit.rs": "1f12f828c58300714d916315fb3a4acb5b40987c351f2c5c0e289a41500908bb",
+  "crates/system/atomic-file/tests/native_publication.rs": "e96f63bd0504a21a99bfd8ffd16149fe728b562f70f92c593d7ea08a5ea432ca"
+}

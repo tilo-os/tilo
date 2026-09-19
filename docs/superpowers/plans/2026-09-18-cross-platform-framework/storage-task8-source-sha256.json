@@ -1,0 +1,14 @@
+{
+  "Cargo.lock": "5b8f36b9c5698482f5fbd072cc98fc68b957f2ca115ceec66c71061755fd3890",
+  "crates/runtime/runtime-fs/Cargo.toml": "c881a3eeb3255cefc0850d557a0edd93d7015efe2a6785e8c88ac904a9a811d0",
+  "crates/runtime/runtime-fs/src/grants.rs": "d3e261ecef11bf59f4f199ca3a8ad1fd0bbeaac67a6de2e540a22cee0b554a78",
+  "crates/runtime/runtime-fs/src/operations.rs": "39aacfc192bea66eaaabba6edb84aec526144e1467780a1267b88fa4ee937aa2",
+  "crates/runtime/runtime-fs/src/recovery.rs": "6538bb6a0540f994dbecd4f163da851cf56490c7759449bb6528e4da0ab81a2d",
+  "crates/runtime/runtime-fs/tests/native_operations.rs": "9972f9c4d2fa53e771889e2eb2e4073447c40af2952b9f5437126cfd2659d2bd",
+  "crates/system/atomic-file/src/directory.rs": "446b229a1b8172a0240637b087b6826bccf0fe8cc342aa73c8ed18eadeb49c6e",
+  "crates/system/atomic-file/src/native/unix.rs": "ec0e9d81676268e99911c8c0b31fab8da2a00c33f9e4550da6d0602ce5e2fff3",
+  "crates/system/atomic-file/src/native/windows.rs": "05bec78cc7e1c95fdd0110c48ec08a7a5b66dc2eb2760439335faded1856a4ca",
+  "crates/system/atomic-file/src/native/windows/tests.rs": "5349a043fdb06314c6d0925e37010f09b29607b14d68ee89d81558ccf3fd3486",
+  "crates/system/atomic-file/src/publication.rs": "6663de9f6b5a628f93efddf05a44ca4b67004cc0360d6b0c2709da926a4daa8d",
+  "crates/system/atomic-file/tests/native_publication.rs": "2decbadf6ad1a704f1d7c2d6d6f20a716d0810af306098e7ff2c05bf7d2c805f"
+}

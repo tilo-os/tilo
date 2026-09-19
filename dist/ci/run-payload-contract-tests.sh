@@ -14,6 +14,51 @@ case "$native_arch" in
     *) echo "unsupported fixture architecture: $native_arch" >&2; exit 1 ;;
 esac
 
+# Test prerequisites: Python 3 plus the native C compiler, never a shipped
+# application runtime. This fixture remains a real dynamically linked ELF,
+# subject to the same architecture and library checks as every other binary.
+python3 "$repo_root/dist/ci/test-installed-imager.py" -v
+import_fixture=$work/import-fixture
+cc -Wall -Wextra -Werror "$repo_root/dist/ci/fixtures/import-smoke.c" -o "$import_fixture"
+
+verify_import_contract() {
+    local installed_import=$1
+    shift
+    # A caller may have arbitrary authority descriptors open, including the
+    # reserved receiver channel. Neither installed subprocess may inherit them.
+    "$@" 3</dev/null 9</dev/null 57</dev/null
+    install -m755 "$true_bin" "$installed_import"
+    if "$@" >"$work/import-negative.log" 2>&1; then
+        echo "package verifier accepted an always-zero import executable" >&2
+        exit 1
+    fi
+    grep -Fq -- '--qos-connected-lease-receiver: expected exit 2, got 0' "$work/import-negative.log"
+    install -m755 "$import_fixture" "$installed_import"
+    local mode expected
+    for mode in receiver-wrong receiver-timeout smoke-wrong smoke-timeout; do
+        case "$mode" in
+            receiver-wrong) expected='--qos-connected-lease-receiver: expected exit 2, got 1' ;;
+            receiver-timeout) expected='--qos-connected-lease-receiver timed out' ;;
+            smoke-wrong) expected='--tilo-package-smoke: expected exit 0, got 2' ;;
+            smoke-timeout) expected='--tilo-package-smoke timed out' ;;
+        esac
+        if TILO_IMPORT_FIXTURE_MODE="$mode" "$@" >"$work/import-negative.log" 2>&1; then
+            echo "package verifier accepted $mode" >&2
+            exit 1
+        fi
+        # A failure elsewhere (for example ELF inspection) is not evidence
+        # that the startup assertion observed and rejected this control.
+        grep -Fq -- "$expected" "$work/import-negative.log"
+    done
+    mv "$installed_import" "$work/import-held"
+    if "$@" >"$work/import-negative.log" 2>&1; then
+        echo "package verifier accepted a missing import executable" >&2
+        exit 1
+    fi
+    grep -Eq 'missing executable: .*/tilo-import-folders' "$work/import-negative.log"
+    mv "$work/import-held" "$installed_import"
+}
+
 # Minimal distro images need not install Git merely to make the reusable OS
 # payload reproducible. The outer runner resolves both source values and passes
 # them through the packaging boundary.
@@ -76,6 +121,7 @@ for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/b
               "$fhs/usr/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
 done
+install -m755 "$import_fixture" "$fhs/usr/bin/tilo-import-folders"
 install -m644 "$repo_root/dist/session/tilo-import-folders.desktop" "$fhs/usr/share/applications/tilo-import-folders.desktop"
 install -m755 "$repo_root/dist/session/tilo-session" "$fhs/usr/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/tilo-session-runner"
@@ -91,7 +137,13 @@ install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
 install -m644 "$repo_root/os/usr/lib/systemd/user/tilo-graphical-session.target" \
     "$fhs/usr/lib/systemd/user/tilo-graphical-session.target"
 install -m644 "$repo_root/LICENSE" "$fhs/usr/share/licenses/tilo-session/LICENSE"
-TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs"
+(
+    # Exercise the supported relative staging-root interface, including full
+    # native ELF/library acceptance and every startup negative control.
+    cd "$work"
+    verify_import_contract "$fhs/usr/bin/tilo-import-folders" \
+        env TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" fhs
+)
 if TILO_EXPECT_ARCH="$other_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
     echo "payload verifier accepted the other architecture's native binaries" >&2
     exit 1
@@ -129,21 +181,44 @@ done
 # Both legitimate static forms bypass ldd only after real ELF inspection.
 # Build minimal native executables; a missing compiler/inspector fails this
 # contract rather than silently skipping an architecture's coverage.
-# The import executable is also smoke-tested, so static fixtures must exit
-# successfully without depending on libc or a dynamic loader.
+# The import executable is also startup-tested. The freestanding fixture
+# rejects a receiver without authority and accepts package smoke, without libc
+# or a dynamic loader. The separate dynamic fixture covers descriptor closure
+# and the wrong-status/timeout negative controls above.
 cat > "$work/static.c" <<'EOF'
-void _start(void) {
+static int equal(const char *left, const char *right) {
+    while (*left && *left == *right) {
+        ++left;
+        ++right;
+    }
+    return *left == *right;
+}
+
+int fixture_status(unsigned long *initial_stack) {
+    if (initial_stack[0] != 2) return 92;
+    const char *argument = (const char *)initial_stack[2];
+    if (equal(argument, "--qos-connected-lease-receiver")) return 2;
+    if (equal(argument, "--tilo-package-smoke")) return 0;
+    return 93;
+}
+
 #if defined(__x86_64__)
-    __asm__ volatile("xor %%edi, %%edi\n\tmov $60, %%eax\n\tsyscall"
-                     ::: "rax", "rdi", "rcx", "r11", "memory");
+__asm__(".global _start\n.hidden fixture_status\n_start:\n"
+        "mov %rsp, %rdi\n"
+        "and $-16, %rsp\n"
+        "call fixture_status\n"
+        "mov %eax, %edi\n"
+        "mov $60, %eax\n"
+        "syscall\n");
 #elif defined(__aarch64__)
-    __asm__ volatile("mov x0, #0\n\tmov x8, #93\n\tsvc #0"
-                     ::: "x0", "x8", "memory");
+__asm__(".global _start\n.hidden fixture_status\n_start:\n"
+        "mov x0, sp\n"
+        "bl fixture_status\n"
+        "mov x8, #93\n"
+        "svc #0\n");
 #else
 #error unsupported fixture architecture
 #endif
-    __builtin_unreachable();
-}
 EOF
 for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
@@ -185,6 +260,7 @@ for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/b
               "$fhs/usr/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
 done
+install -m755 "$import_fixture" "$fhs/usr/bin/tilo-import-folders"
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
 # A tool failure cannot masquerade as a complete runtime dependency closure.
 mkdir "$work/fake-tools"
@@ -197,11 +273,6 @@ printf '#!/bin/sh\necho "libmissing.so => not found"\n' > "$work/fake-tools/ldd"
 if PATH="$work/fake-tools:$PATH" TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
     echo "payload verifier accepted a missing shared library" >&2; exit 1
 fi
-mv "$fhs/usr/bin/tilo-import-folders" "$work/import-held"
-if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
-    echo "payload verifier accepted missing import executable" >&2; exit 1
-fi
-mv "$work/import-held" "$fhs/usr/bin/tilo-import-folders"
 sed -i 's#^Exec=.*#Exec=/missing --import-folders#' "$fhs/usr/share/applications/tilo-import-folders.desktop"
 if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
     echo "payload verifier accepted wrong import entry" >&2; exit 1
@@ -220,6 +291,7 @@ for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" "$nix/bin/tilo-impo
               "$nix/libexec/tilo-unlock-helper"; do
     install -m755 "$true_bin" "$target"
 done
+install -m755 "$import_fixture" "$nix/bin/tilo-import-folders"
 sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/dist/session/tilo-import-folders.desktop" > "$nix/share/applications/tilo-import-folders.desktop"
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
@@ -247,7 +319,8 @@ sed -i \
     -e "s#Exec=/usr/libexec/tilo-session#Exec=$nix/libexec/tilo-session#" \
     -e "s#TryExec=/usr/bin/tilo-shell#TryExec=$nix/bin/tilo-shell#" \
     "$nix/share/wayland-sessions/tilo.desktop"
-"$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$package_arch"
+verify_import_contract "$nix/bin/tilo-import-folders" \
+    "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$package_arch"
 if "$repo_root/dist/ci/verify-nix-result.sh" "$nix" "$other_arch" >/dev/null 2>&1; then
     echo "Nix verifier accepted the other architecture's native binaries" >&2
     exit 1

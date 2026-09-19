@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "check",
+    "--offline",
+    "--locked",
+    "-p",
+    "shell",
+    "--tests"
+  ],
+  "PKG_CONFIG_PATH": "/opt/homebrew/opt/ffmpeg@8/lib/pkgconfig",
+  "exit_code": 0,
+  "seconds": 24.81644296646118,
+  "input_count": 3502,
+  "changed_inputs": [],
+  "shell_log_sha256": "209c067aabbc5da9fdf9fd7e390699935044ca0c3a20f40e955a8d11ff8adf5d",
+  "start_sha256": "5cc3d4210a1ffb66bc4d626a342105e9a578ee8ff5e3acbcca9430a6beb375d2",
+  "end_sha256": "5cc3d4210a1ffb66bc4d626a342105e9a578ee8ff5e3acbcca9430a6beb375d2",
+  "qualification": "Native macOS shell test-target compile; not native runtime or other-host qualification."
+}

@@ -1,0 +1,524 @@
+{
+  "head": "6e5721c6ce73460a282f40b3a265828f5dd28072",
+  "files": [
+    {
+      "path": ".forgejo/workflows/release-imager.yml",
+      "state": "present",
+      "sha256": "a8a1ba4a03e333df966ca23d942ddc4203fc1becd5379d0be33ba4c3a3eb40ed"
+    },
+    {
+      "path": "Cargo.lock",
+      "state": "present",
+      "sha256": "496c440cc52bee9d9f3bf3a97f89303260c4df5365be132d1f677132b624731b"
+    },
+    {
+      "path": "Cargo.toml",
+      "state": "present",
+      "sha256": "b4266d7744f136703dcfed8ef64aad9fa743b209006c516a7e78d385c71526ea"
+    },
+    {
+      "path": "apps/imager/Cargo.toml",
+      "state": "present",
+      "sha256": "2d3397a7e28e5ecebbdf8c86dfd31f9858dcbb80a4b3f42261f5ae0dba7e3fca"
+    },
+    {
+      "path": "apps/imager/src/main.rs",
+      "state": "present",
+      "sha256": "c7d9f5d12736233f6756458e9e1b90c72496190313d884c9c4fab980eaaa464a"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/endpoint.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/endpoint/linux.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/endpoint/linux/ntfs.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/endpoint/unsupported.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/endpoint/windows.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/mod.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/model.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/reconcile.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store/directory.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store/directory_tests.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store/format.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store/recovery.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store/recovery/directory.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store/storage.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store/storage/windows.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/store/tests.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/directory.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/descriptor.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/descriptor/directory.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/directory.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/linux.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/linux/directory.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/linux/directory/tests.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/linux/lease_process.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/linux/witness.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/mod.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/native/witness.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/transaction/tests.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/connection/windows_native.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/desktop_continuation.rs",
+      "state": "present",
+      "sha256": "6974dd9fade15db1d9f119aebd17cffc3f45b86223038f8411f6fd4e716768b6"
+    },
+    {
+      "path": "apps/imager/src/setup/destination_security/macos_acl.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/destination_security/mod.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/destination_security/unix.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/destination_security/windows.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/folders.rs",
+      "state": "present",
+      "sha256": "e65a9215239b2520ec99d00120f3dfa9dbc1f1e0eac79776bbab1c69c85bf2f4"
+    },
+    {
+      "path": "apps/imager/src/setup/import_view.rs",
+      "state": "present",
+      "sha256": "4fc46a6457460760e914b98c43a774df6ef5ad9fba5c4f3c4aaa928a08785e2a"
+    },
+    {
+      "path": "apps/imager/src/setup/migration.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_durability.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_journal.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_journal_log.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_native.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_native_journal.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_review.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_source.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_store.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/migration_worker.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "apps/imager/src/setup/mod.rs",
+      "state": "present",
+      "sha256": "a600108cd3a820463f2882817c92fce601035deb3beccbb1c3a40d4f89ecf6e3"
+    },
+    {
+      "path": "apps/imager/src/setup/nofollow.rs",
+      "state": "deleted"
+    },
+    {
+      "path": "crates/app/tilo-app/Cargo.toml",
+      "state": "present",
+      "sha256": "df814cdaa902350b6930ec88657c8125975a1685d8bffae4ac476593b72c986a"
+    },
+    {
+      "path": "crates/app/tilo-app/src/lib.rs",
+      "state": "present",
+      "sha256": "416c19d0631384eec6ac048ad4a263036447915596c8a46e1b9f7389f89dd7b6"
+    },
+    {
+      "path": "crates/system/folder-service/Cargo.toml",
+      "state": "present",
+      "sha256": "748e678c9b4f61b989c80c9b793bac4777db98f0772204a8ad6097e4e1d8df4a"
+    },
+    {
+      "path": "crates/system/folder-service/examples/early-host.rs",
+      "state": "present",
+      "sha256": "bc503711769c0e79e9ff481c071eeaa8031ac94b3c0186e863b62e1654d9922f"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/endpoint.rs",
+      "state": "present",
+      "sha256": "b490924d29c80146e4cc221a4b5869983dbb5904ec734886c805b309d053b4b0"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/endpoint/linux.rs",
+      "state": "present",
+      "sha256": "d3a3837b0b05937c4c3e2c54134e4ecebbdbe6cecc1ae6823ff9681cc1c00b04"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/endpoint/linux/ntfs.rs",
+      "state": "present",
+      "sha256": "2c010c1be378a214da137979956c5e0d7c7ce425d5807cb9d2300cfaf0d10238"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/endpoint/unsupported.rs",
+      "state": "present",
+      "sha256": "24a14508642479ae1c44392755f8e0c021f9e35a38920feb1c047c493d9b9525"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/endpoint/windows.rs",
+      "state": "present",
+      "sha256": "643e417c392b377472163e6873ad016e1ea3f6f156c6ac20fdf409ed9a566a00"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/mod.rs",
+      "state": "present",
+      "sha256": "81f231ae685e2f2f94195df23051f3a51c649de06ded2bd2950dc5420393eb23"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/model.rs",
+      "state": "present",
+      "sha256": "80388aa479228d22867f1186db0e9d2d94c76137858060e180400c7f1e566779"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/reconcile.rs",
+      "state": "present",
+      "sha256": "d3551297d0e9ea774cc2aff76ea78536cec24cab6bc06f87bc6d8e0cef66510e"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store.rs",
+      "state": "present",
+      "sha256": "f9f58e007aaa12af97f0831c7e16879bf7db2cb7dec13fea74106b5442fdbd66"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store/directory.rs",
+      "state": "present",
+      "sha256": "f978715a2a6a9990d3c05f1b583413269ec2b1a2f12cf9594c19d730a46b4d90"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store/directory_tests.rs",
+      "state": "present",
+      "sha256": "a8d4f6e73e9525285baf8cdce66dbe52c62f708e23a1ffb7d829c097e7cc1ffb"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store/format.rs",
+      "state": "present",
+      "sha256": "8660c6c4992cadc694cbd2e4c9024c2188a67944f98810c11c9a8f47eb312962"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store/recovery.rs",
+      "state": "present",
+      "sha256": "38ce4086bcaee9cec7e0e5538ad83486eedbed4b32e55213136834beb0d9694c"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store/recovery/directory.rs",
+      "state": "present",
+      "sha256": "872187207ed196f2af627444edfd26045a1e3964c3bbe56dc1f67bc199b7b81e"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store/storage.rs",
+      "state": "present",
+      "sha256": "60648c87326aca06a2902e4fcf6b89173867f4f8636d443d2c926fc462672e09"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store/storage/windows.rs",
+      "state": "present",
+      "sha256": "9e208bc2bc577c1030335e379293aaffb241eb7f8c333bc4c3298c190d4b2793"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/store/tests.rs",
+      "state": "present",
+      "sha256": "d74c46f8648cf506c4b4fc57c6c5e12f92c40bb7327f9dca18c93fcc217af3cf"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction.rs",
+      "state": "present",
+      "sha256": "489dd0bcfa29678ab11a17fcd7704d112eff9c2c9d38605057f89523972ffe69"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/directory.rs",
+      "state": "present",
+      "sha256": "777d7d75ee59c49486f5ea55c6838c2762e34e34ed23bd2a4a478dcd0658e8c2"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/descriptor.rs",
+      "state": "present",
+      "sha256": "a7b286c2940d329dfb9d1b71f65cb444d224fc94acbeca57dd5a12c70caf2a1a"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/descriptor/directory.rs",
+      "state": "present",
+      "sha256": "ec56daa1eb872a94772074ddc59c6dcc2076052378bb1465c50fc3638a37cdb5"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/directory.rs",
+      "state": "present",
+      "sha256": "6b8eb29c606284fcda0d3131f7e26fd51da853f6c40611278753f67e20c9a4a0"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/linux.rs",
+      "state": "present",
+      "sha256": "22faeb0d97193f13de4e60b7e7d3a5f9e59a01a2ca24938dd92e48f4664676f8"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/linux/directory.rs",
+      "state": "present",
+      "sha256": "41e0b05e73d002317356c966b0ceb689d05ff5fa23f2a1dc7aae9b69c49699fc"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/linux/directory/tests.rs",
+      "state": "present",
+      "sha256": "c1a61fd713a7378bc1015cbdfab77019dcbe6732d77ff43e7c47eec2a1b13d41"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/linux/lease_process.rs",
+      "state": "present",
+      "sha256": "8c23c632c7b5443bfca2bb8f122d9850a928823d6174cf737a9484665acfa846"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/linux/witness.rs",
+      "state": "present",
+      "sha256": "5d6ac35ff61efac2cc9cccf95752b0b1bb1ce6ce43eca5577ef3d3eb253e2999"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/mod.rs",
+      "state": "present",
+      "sha256": "37fd0b6df015836f947169b8205364ec146e1a60e6afd5c32502c53f51e41648"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/native/witness.rs",
+      "state": "present",
+      "sha256": "edacd53ce7e352a217c864a23cbee42409bc0a13318e01e90d884c41baaa0fbd"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/transaction/tests.rs",
+      "state": "present",
+      "sha256": "44f75e94b2953bc28c35b0beac7ba766d3690036ebdd9031dfd9f90e2e305382"
+    },
+    {
+      "path": "crates/system/folder-service/src/connection/windows_native.rs",
+      "state": "present",
+      "sha256": "3292a54f64017cfc3e0421b5992e1ff76b8541870c7e3b08180764547e849032"
+    },
+    {
+      "path": "crates/system/folder-service/src/copy.rs",
+      "state": "present",
+      "sha256": "d701b86b2f3cd9cd6c51d05c8005715948519456da4b9482943cad9183e50466"
+    },
+    {
+      "path": "crates/system/folder-service/src/destination_security/macos_acl.rs",
+      "state": "present",
+      "sha256": "b0952c2d83ab3ea330f59b37502233c30c893f27aef010afa34ba17d68a37722"
+    },
+    {
+      "path": "crates/system/folder-service/src/destination_security/mod.rs",
+      "state": "present",
+      "sha256": "5721734b264a3afefd6fc78293393e09d9204fba8100a4df9d61c2f84ecf924a"
+    },
+    {
+      "path": "crates/system/folder-service/src/destination_security/unix.rs",
+      "state": "present",
+      "sha256": "64182b55f6a52fd7eb7445296b64604153a3d4a0c90223a5d437cc5c56164fcb"
+    },
+    {
+      "path": "crates/system/folder-service/src/destination_security/windows.rs",
+      "state": "present",
+      "sha256": "cb7a5d739b9dcb2a2a0b435ee361aa03f0a88fcb9e3ebbbde799d8abb222dbf0"
+    },
+    {
+      "path": "crates/system/folder-service/src/lib.rs",
+      "state": "present",
+      "sha256": "6fb89ba11184e008711fb8be56b3a04748b58970d58e451a5166764d960dbb86"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration.rs",
+      "state": "present",
+      "sha256": "feeacde3a33eb7cfe14d94a87ec2e2ed2225c85856c891316c82d4ed58a2cea8"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_durability.rs",
+      "state": "present",
+      "sha256": "834c8c97673786f49cadcf93e091da181355af76598971c88984211d253ceaa7"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_journal.rs",
+      "state": "present",
+      "sha256": "43b4ce50e48765ba4b1d3c54af8827ac79d767cb7ca3332227419f0a5e9254b9"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_journal_log.rs",
+      "state": "present",
+      "sha256": "eb2d1079d1566cdec9c18089a6e2b5b236249028b129d633209bdce06f9b41c9"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_native.rs",
+      "state": "present",
+      "sha256": "0e08833cfe9c43f7dc0f758bf1df65c3c70e9e976fcea004f74dcf035857a99f"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_native_journal.rs",
+      "state": "present",
+      "sha256": "3aba01c70215d368cf29642a96987d9c085e7f1f3e4668cb9fb640f296999b67"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_review.rs",
+      "state": "present",
+      "sha256": "29f3ec6ed0bd21ba9e5d9cfd8558f5c6af48ca07de65be6685531099a8e61654"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_source.rs",
+      "state": "present",
+      "sha256": "8e54bea34bb3717bf4c5dbd80a91bb0384fdde22a806ae7853b515551ff2e0d6"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_store.rs",
+      "state": "present",
+      "sha256": "089b1db17cef929928695e609a56e29fa4ecfbf562d57b1df6b3d7eabe133f07"
+    },
+    {
+      "path": "crates/system/folder-service/src/migration_worker.rs",
+      "state": "present",
+      "sha256": "eeafc8a31fc5c8ece8dd3a3cddd715c94dd39bed8f8d3369034c1554d497e83e"
+    },
+    {
+      "path": "crates/system/folder-service/src/nofollow.rs",
+      "state": "present",
+      "sha256": "7b6dd829edf3094f3769557d8e5cac83fd3a3f830c795691629b3e4faf51e9e1"
+    },
+    {
+      "path": "crates/system/folder-service/src/review.rs",
+      "state": "present",
+      "sha256": "9d326480a38d4df0effde03388c880b3472b2ec8dcacbc6520f149848eec468d"
+    },
+    {
+      "path": "crates/system/folder-service/src/scan.rs",
+      "state": "present",
+      "sha256": "501eba589ac35c95b78c2112389b82b0cb1df7b7944d2035621b0159b4b22584"
+    },
+    {
+      "path": "crates/system/folder-service/src/session.rs",
+      "state": "present",
+      "sha256": "3b7d38c3855a6c34a5dfe847be25653016c1ae3a2510047ccf93dd1a5e79bbd3"
+    },
+    {
+      "path": "crates/system/folder-service/src/startup.rs",
+      "state": "present",
+      "sha256": "361763dc98e974e58d81ed85b07a0c18398760970e6002d3615efe9d0b7605a1"
+    },
+    {
+      "path": "crates/system/folder-service/src/test_support.rs",
+      "state": "present",
+      "sha256": "8732494d85af6e9de640ae18dab9364708a669223ef13041ac1c9c470dc4df17"
+    },
+    {
+      "path": "tools/app_platform_baseline.json",
+      "state": "present",
+      "sha256": "cf3b7e7bc85cacdba9364fb792268904dcc6b48ad6ed39c3d69ae892e2513e68"
+    }
+  ]
+}

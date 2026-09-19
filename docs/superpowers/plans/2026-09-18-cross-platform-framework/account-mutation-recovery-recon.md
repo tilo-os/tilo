@@ -1,0 +1,18 @@
+# Additional finding X01 — Settings account mutation recovery
+
+Source-only discovery during Task7 caller inspection; no product edits or behavioral tests. This is additional to the original194 audit IDs and is assigned to existing delivery unit S03, with S01/S02 and vault custody dependencies. It must be implemented/verified before overall completion, not silently folded into a completed vault slice.
+
+`apps/settings/src/accounts.rs:49–155` owns AccountMutationJournal, capture, durable intent publication, finish and recovery. The journal contains previous account/status models and optional vault ciphertext. These storage/recovery mechanisms belong with the existing framework accounts domain; the app retains product choices/UI/actions. Extract the coherent protocol and compatibility tests, not just individual fs calls.
+
+Concrete source risks to reproduce before migration:
+
+- begin_account_mutation captures the previous ciphertext using fs::read(...).ok(). Permission/I/O failures become the same None used for absence. Recovery's None branch removes vault.enc; failed observation must not become authority to delete data.
+- finish_account_mutation removes the journal, attempts an ordinary directory File::open/sync_all and ignores both open/flush errors. This is platform-specific directory durability and a false success path; native removal/commit authority and unknown effects need framework semantics.
+- The protocol currently has no single owned cross-process transaction lease covering begin/mutations/finish/recovery. Verify concurrent ownership before any destructive recovery. Do not infer that an in-process caller or app action means exclusive native authority.
+- apps/settings/src/panes/accounts.rs:1099 onward compensates credentials on every shared AccountStore.save error, then clears intent in a later branch. AccountStore::save_in propagates atomic_file's typed error, so a published/uncertain metadata error is not proof that metadata remained old. A credential rollback followed by intent removal can leave new metadata referencing reverted credentials. Review this with the complete recovery protocol; do not add a single ErrorKind guess or a blind cleanup guard without its recovery evidence.
+
+Current positive ordering: vault.try_save errors return before the later metadata upsert/save in the Settings add path. Preserve this requirement and exercise it through real production faults. Broker in-memory grant rollback is a distinct policy from deleting native credential data; do not conflate them.
+
+Required next design: framework-owned mutation API using existing account/status/vault models and paths, retained transaction exclusion, bounded validated intent/ciphertext reads, typed stage/commit/error ownership, durable intent removal and restart recovery. Preserve journal field names/format and user-facing app behavior. The shared accounts service must own native mechanics; no new application OS branch, duplicate permission registry or rewrite of immutable key custody. Existing Windows directory/removal qualification is part of the complete protocol, not satisfied by ordinary File::open or a permanent Unsupported endpoint.
+
+Tests should reproduce read-error-versus-absence, real postpublication metadata failure, finish/remove commit failure, dropped-error restart and two-process contention. Assert original ciphertext/key identity and recoverable intent are retained whenever effects are uncertain, and verify complete coherent recovery through the production service. Source inspection establishes the risks; native behavior and final fixes are unverified.

@@ -1,0 +1,6 @@
+{
+  "apps/imager/src/setup/migration.rs": "c96d8a399b2c145c833eb70710e72c90ef9d7cb90f381008f8afa0fca78108c8",
+  "apps/imager/src/setup/migration_store.rs": "cea6be01195557d8d3f17074db9d0d406a2f4eb1c606ff6a26900812562919dc",
+  "apps/imager/src/setup/desktop_continuation.rs": "3266a3ffe207843d6855d1c347c7760eae45428a1c09bef0f23ccb6c76f526d5",
+  "apps/imager/src/setup/import_view.rs": "9abd337c320115f69cabcfd40eb9523539e48e1023a66b0ff211cd13c345ec4e"
+}

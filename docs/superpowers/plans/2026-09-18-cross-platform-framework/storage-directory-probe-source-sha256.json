@@ -1,0 +1,21 @@
+{
+  "Cargo.lock": "e219549923f53ce1253ac4ee42a1a13e54630c38d9fbf6719625123dacbebc00",
+  "crates/system/atomic-file/Cargo.toml": "18c585e525d25294001002893605a10596861ab88386edc1afa785726123da07",
+  "crates/system/atomic-file/examples/directory_commit_probe.rs": "cc60b82cabbad0af7a4fa9856e8fb61a05c361ff9094e6fb18f81b6115d3a5e2",
+  "crates/system/atomic-file/src/directory.rs": "ab958cc4ca4dfc344a58e90eccbca1927b708c00749fdce6ba5a5f6d5b3ffc75",
+  "crates/system/atomic-file/src/directory_probe.rs": "8fcd3edef7ab149ef0765c5ccc598a608d4a691feb5d867cecdd320b140687bd",
+  "crates/system/atomic-file/src/identity.rs": "2aaae6b6624bf33a15b374f9af9cabc26077419636d880fde7160f8b20283115",
+  "crates/system/atomic-file/src/lease.rs": "d46e920fd25a2c418ff6d89bad9f702cb139c5f35bfa13a643c7bee9984c5a4a",
+  "crates/system/atomic-file/src/legacy.rs": "711f36c2242521b81ce5e7ba01ad56b9150a7b5fea6b97e3611481bbda95ddeb",
+  "crates/system/atomic-file/src/lib.rs": "f134df5eae216d97e2dbeca4ebeb49ace1c0dbedad44b9019880d4657cf57b64",
+  "crates/system/atomic-file/src/native/mod.rs": "f207ebeb4886eb7a610522556d5b86ac6a46589f0e6eb2a354c4f546d1424db5",
+  "crates/system/atomic-file/src/native/unix.rs": "69a96ccf7ba881ef73a897274b78a334078fd0708d7a6dea7a3b9e9729ca3fe7",
+  "crates/system/atomic-file/src/native/windows.rs": "b234983c2cdcbc9561dbb70cd0eb85a68a6d8b7962f980c6b48299fb275bfd12",
+  "crates/system/atomic-file/src/native/windows/acl.rs": "e5be1fed4e11c8861a9700c0983289540c42204b3cc53bfa9737dc6d144a2796",
+  "crates/system/atomic-file/src/native/windows/directory_probe.rs": "9ed3bc605f7eb09535cfc6ed36280df65a175c9e83ba9a3cdb8dfb5d52d4a784",
+  "crates/system/atomic-file/src/native/windows/tests.rs": "b0707c9506c9f4bebaac41bd9628a195c04c029eb036ec99b0fc7c58eb8604e0",
+  "crates/system/atomic-file/src/publication.rs": "5803d5dd5aa0d5caae22d86684c4f2fc5df25520bdc12fad23975417516cbc9b",
+  "crates/system/atomic-file/src/test_support.rs": "5608ca57253bfaca391daf8fcd359ede7c575a520f09fd57b6c7cee0f3cbc7f8",
+  "crates/system/atomic-file/tests/file_lease.rs": "34dbc8ec11583dc786dc49b9f283d5f53255c696cd76c894f073efd008a26aff",
+  "crates/system/atomic-file/tests/native_publication.rs": "4f5db73e7b25448ea9012f867ec394031d96add1db189bacae28b48bba6d472a"
+}

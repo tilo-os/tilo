@@ -2143,6 +2143,10 @@ const HISTORY_TRIM_SLACK: usize = 256;
 const HISTORY_TRIM_SLACK: usize = 8;
 
 impl Widget for TerminalWidget {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("terminal")
     }

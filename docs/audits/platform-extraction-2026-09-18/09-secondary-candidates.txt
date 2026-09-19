@@ -1,0 +1,296 @@
+crates/system/power/src/inhibit.rs:40:pub struct InhibitRegistry {
+crates/system/power/src/inhibit.rs:133:pub struct InhibitToken {
+crates/system/power/src/inhibit.rs:157:#[cfg(test)]
+crates/system/windows-vm/src/portal_files.rs:12:use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+crates/system/windows-vm/src/portal_files.rs:13:use std::os::unix::io::AsRawFd as _;
+crates/system/windows-vm/src/portal_files.rs:14:use std::os::unix::io::OwnedFd;
+crates/system/windows-vm/src/portal_files.rs:55:pub struct PortalDocumentStore {
+crates/system/windows-vm/src/portal_files.rs:79:    std::env::var_os("XDG_RUNTIME_DIR")
+crates/system/windows-vm/src/portal_files.rs:285:pub struct PortalRailCapabilityBroker {
+crates/system/windows-vm/src/portal_files.rs:409:        .and_then(|_| output.sync_all())
+crates/system/windows-vm/src/portal_files.rs:442:        .and_then(|()| source.sync_all())
+crates/system/windows-vm/src/portal_files.rs:465:#[cfg(test)]
+crates/system/windows-vm/src/portal_files.rs:468:    use std::os::unix::fs::PermissionsExt as _;
+crates/system/windows-vm/src/portal_files.rs:597:        std::os::unix::fs::symlink(&unrelated_path, &projection).unwrap();
+crates/system/accounts/src/vault.rs:32:pub struct Secret {
+crates/system/accounts/src/vault.rs:70:pub struct SecretVault {
+crates/system/accounts/src/vault.rs:456:#[cfg(test)]
+crates/system/accounts/src/vault.rs:461:        std::env::temp_dir().join(format!("tilo-accounts-vault-{}", uuid::Uuid::new_v4()))
+crates/system/accounts/src/vault.rs:544:    #[cfg(unix)]
+crates/system/accounts/src/vault.rs:547:        use std::os::unix::fs::PermissionsExt;
+crates/system/settings-store/src/hardware.rs:24:pub struct OutputMode {
+crates/system/settings-store/src/hardware.rs:43:pub struct OutputDescriptor {
+crates/system/settings-store/src/hardware.rs:86:pub struct DisplayOutputSnapshot {
+crates/system/settings-store/src/hardware.rs:108:pub struct DisplayHardwareSnapshot {
+crates/system/settings-store/src/hardware.rs:112:    /// Linux `/proc/<pid>/stat` start-time ticks. Paired with the PID so a
+crates/system/settings-store/src/hardware.rs:141:    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+crates/system/settings-store/src/hardware.rs:169:pub struct DisplayTransaction {
+crates/system/settings-store/src/hardware.rs:276:    std::env::var_os("XDG_RUNTIME_DIR")
+crates/system/settings-store/src/hardware.rs:302:pub struct OutputConfig {
+crates/system/settings-store/src/hardware.rs:337:pub struct DisplayConfig {
+crates/system/settings-store/src/hardware.rs:525:pub struct RichInputConfig {
+crates/system/settings-store/src/hardware.rs:599:pub struct KeyboardInputSource {
+crates/system/settings-store/src/hardware.rs:792:pub struct DesktopControlsConfig {
+crates/system/settings-store/src/hardware.rs:833:pub struct QuickSettingsConfig {
+crates/system/settings-store/src/hardware.rs:877:#[cfg(test)]
+crates/system/settings-store/src/hardware.rs:910:        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/hardware.rs:913:        unsafe { std::env::set_var("XDG_CONFIG_HOME", temp.path()) };
+crates/system/settings-store/src/hardware.rs:940:            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+crates/system/settings-store/src/hardware.rs:941:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/settings-store/src/hardware.rs:967:pub struct KeyChord {
+crates/system/settings-store/src/hardware.rs:1054:pub struct ShortcutConfig {
+crates/system/settings-store/src/hardware.rs:1234:#[cfg(test)]
+crates/system/settings-store/src/hardware.rs:1387:            .expect("the current Linux process has /proc stat data");
+crates/system/settings-store/src/hardware.rs:1489:        let dir = std::env::temp_dir().join(format!(
+crates/system/settings-store/src/hardware.rs:1498:        let previous = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/hardware.rs:1499:        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+crates/system/settings-store/src/hardware.rs:1509:            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+crates/system/settings-store/src/hardware.rs:1510:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/power/src/history.rs:20:pub struct BatteryHistoryPoint {
+crates/system/power/src/history.rs:28:pub struct BatteryHistory {
+crates/system/power/src/history.rs:95:    let base = std::env::var_os("XDG_STATE_HOME")
+crates/system/power/src/history.rs:99:            std::env::var_os("HOME")
+crates/system/power/src/history.rs:131:#[cfg(test)]
+crates/system/power/src/history.rs:170:        use std::os::unix::fs::PermissionsExt;
+crates/system/desktop-policy/src/defaults.rs:10:pub struct ResourceKind(String);
+crates/system/desktop-policy/src/defaults.rs:118:pub struct AppCandidate {
+crates/system/desktop-policy/src/defaults.rs:152:pub struct PersonalDefaults {
+crates/system/desktop-policy/src/defaults.rs:158:pub struct WorkspaceDefaults {
+crates/system/desktop-policy/src/defaults.rs:166:pub struct DefaultAppSelection {
+crates/system/desktop-policy/src/defaults.rs:197:pub struct DefaultAppResolver<'a> {
+crates/system/desktop-policy/src/defaults.rs:362:    let root = std::env::var_os("XDG_CONFIG_HOME")
+crates/system/desktop-policy/src/defaults.rs:365:        .or_else(|| dirs::home_dir().map(|p| p.join(".config")))?;
+crates/system/desktop-policy/src/defaults.rs:390:#[cfg(test)]
+crates/system/accounts/src/secrets.rs:34:pub struct SecretId(pub String);
+crates/system/accounts/src/secrets.rs:62:pub struct SecretItem {
+crates/system/accounts/src/secrets.rs:117:pub struct SecretStore {
+crates/system/accounts/src/secrets.rs:274:pub struct AccessRequest {
+crates/system/accounts/src/secrets.rs:284:pub struct CredentialCandidate {
+crates/system/accounts/src/secrets.rs:309:pub struct CredentialGrant {
+crates/system/accounts/src/secrets.rs:356:pub struct CredentialBroker {
+crates/system/accounts/src/secrets.rs:364:pub struct ClipboardLease {
+crates/system/accounts/src/secrets.rs:480:pub struct GeneratedPasswordPolicy {
+crates/system/accounts/src/secrets.rs:609:#[cfg(test)]
+crates/system/accounts/src/secrets.rs:613:        std::env::temp_dir().join(format!("tilo-secret-store-{}", uuid::Uuid::new_v4()))
+crates/system/windows-vm/src/https_guest.rs:13:use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+crates/system/windows-vm/src/https_guest.rs:67:pub struct InstallerPackage {
+crates/system/windows-vm/src/https_guest.rs:110:pub struct StagedInstaller {
+crates/system/windows-vm/src/https_guest.rs:129:pub struct InstallationOperationId(String);
+crates/system/windows-vm/src/https_guest.rs:150:pub struct PreparedInstallation {
+crates/system/windows-vm/src/https_guest.rs:157:pub struct UninstallationOperationId(String);
+crates/system/windows-vm/src/https_guest.rs:176:pub struct PreparedUninstallation {
+crates/system/windows-vm/src/https_guest.rs:182:pub struct UninstallationStatus {
+crates/system/windows-vm/src/https_guest.rs:201:pub struct DiscoveredUninstaller {
+crates/system/windows-vm/src/https_guest.rs:210:pub struct DiscoveredApplication {
+crates/system/windows-vm/src/https_guest.rs:220:pub struct InstallationStatus {
+crates/system/windows-vm/src/https_guest.rs:228:pub struct PublicationResult {
+crates/system/windows-vm/src/https_guest.rs:237:pub struct GuestBridgeConfig {
+crates/system/windows-vm/src/https_guest.rs:276:pub struct HttpsGuestBridge {
+crates/system/windows-vm/src/https_guest.rs:1365:        .and_then(|()| file.sync_all())
+crates/system/windows-vm/src/https_guest.rs:1448:#[cfg(test)]
+crates/system/windows-vm/src/https_guest.rs:1645:        use std::os::unix::fs::PermissionsExt as _;
+crates/system/power/src/profiles.rs:8:pub struct PowerProfilesMonitor {
+crates/system/desktop-policy/src/storage.rs:9:use std::os::unix::fs::MetadataExt;
+crates/system/desktop-policy/src/storage.rs:13:pub struct StorageRoots {
+crates/system/desktop-policy/src/storage.rs:22:        let data = std::env::var_os("XDG_DATA_HOME")
+crates/system/desktop-policy/src/storage.rs:25:            .or_else(|| dirs::home_dir().map(|p| p.join(".local/share")));
+crates/system/desktop-policy/src/storage.rs:26:        let cache = std::env::var_os("XDG_CACHE_HOME")
+crates/system/desktop-policy/src/storage.rs:29:            .or_else(|| dirs::home_dir().map(|p| p.join(".cache")));
+crates/system/desktop-policy/src/storage.rs:30:        let payload_root = std::env::var_os("TILO_APPS_DATA_DIR")
+crates/system/desktop-policy/src/storage.rs:66:pub struct StorageEntry {
+crates/system/desktop-policy/src/storage.rs:76:pub struct StorageSnapshot {
+crates/system/desktop-policy/src/storage.rs:219:pub struct CleanupItem {
+crates/system/desktop-policy/src/storage.rs:231:pub struct CleanupPreview {
+crates/system/desktop-policy/src/storage.rs:238:pub struct CleanupReport {
+crates/system/desktop-policy/src/storage.rs:382:#[cfg(test)]
+crates/system/desktop-policy/src/storage.rs:394:        std::os::unix::fs::symlink(&outside, payloads.join("dev.tilo.notes/link")).unwrap();
+crates/system/settings-store/src/continuity.rs:37:pub struct ContinuityPolicy {
+crates/system/settings-store/src/continuity.rs:197:pub struct SettingKey(&'static ContinuityPolicy);
+crates/system/settings-store/src/continuity.rs:285:#[cfg(test)]
+crates/system/accounts/src/status.rs:9:use std::os::fd::AsRawFd;
+crates/system/accounts/src/status.rs:10:use std::os::unix::fs::OpenOptionsExt;
+crates/system/accounts/src/status.rs:21:pub struct AccountSyncReporter {
+crates/system/accounts/src/status.rs:182:pub struct AccountSyncStatus {
+crates/system/accounts/src/status.rs:211:pub struct AccountSyncStatusStore {
+crates/system/accounts/src/status.rs:291:#[cfg(test)]
+crates/system/accounts/src/status.rs:298:            std::env::temp_dir().join(format!("tilo-account-status-{}", uuid::Uuid::new_v4()));
+crates/system/accounts/src/status.rs:321:            std::env::temp_dir().join(format!("tilo-account-reporter-{}", uuid::Uuid::new_v4()));
+crates/system/accounts/src/status.rs:343:        let root = std::env::temp_dir().join(format!(
+crates/system/windows-vm/src/presentation.rs:53:#[cfg(test)]
+crates/system/power/src/service.rs:122:pub struct PowerService {
+crates/system/power/src/service.rs:530:#[cfg(test)]
+crates/system/settings-store/src/notification_policy.rs:12:pub struct AppNotificationRule {
+crates/system/settings-store/src/notification_policy.rs:44:pub struct FocusSchedule {
+crates/system/settings-store/src/notification_policy.rs:115:pub struct NotificationPolicy {
+crates/system/settings-store/src/notification_policy.rs:162:pub struct EffectiveNotificationPolicy {
+crates/system/settings-store/src/notification_policy.rs:230:#[cfg(test)]
+crates/system/accounts/src/lib.rs:57:pub struct AccountTypeId(pub String);
+crates/system/accounts/src/lib.rs:89:pub struct AccountId(pub String);
+crates/system/accounts/src/lib.rs:120:pub struct Account {
+crates/system/accounts/src/lib.rs:180:pub struct AccountStore {
+crates/system/accounts/src/lib.rs:333:    let base = std::env::var_os("XDG_CONFIG_HOME")
+crates/system/accounts/src/lib.rs:336:        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
+crates/system/accounts/src/lib.rs:368:#[cfg(test)]
+crates/system/accounts/src/lib.rs:390:        std::env::temp_dir().join(format!("tilo-accounts-store-{}", uuid::Uuid::new_v4()))
+crates/system/windows-vm/src/guest.rs:17:pub struct Secret(Vec<u8>);
+crates/system/windows-vm/src/guest.rs:44:pub struct AgentHealth {
+crates/system/windows-vm/src/guest.rs:52:pub struct GuestSession {
+crates/system/windows-vm/src/guest.rs:59:pub struct RdpEndpoint {
+crates/system/windows-vm/src/guest.rs:68:pub struct GuestLaunch {
+crates/system/windows-vm/src/guest.rs:82:pub trait GuestAgent: Send + Sync {
+crates/system/power/src/sysfs.rs:1://! Reading the battery straight off `/sys/class/power_supply`.
+crates/system/power/src/sysfs.rs:11://! testing/sysfs-class-power`), present on every laptop, and readable by
+crates/system/power/src/sysfs.rs:26:const POWER_SUPPLY: &str = "/sys/class/power_supply";
+crates/system/power/src/sysfs.rs:133:/// Every `/sys/class/power_supply/*` entry whose `type` matches.
+crates/system/power/src/sysfs.rs:189:#[cfg(test)]
+crates/system/power/src/upower.rs:18:const DISPLAY_DEVICE_PATH: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
+crates/system/power/src/upower.rs:26:pub struct PowerHistorySample {
+crates/system/power/src/upower.rs:35:pub struct UPowerMonitor {
+crates/system/power/src/upower.rs:232:#[cfg(test)]
+crates/system/power/src/config.rs:220:#[cfg(test)]
+crates/system/settings-store/src/lib.rs:9://! the same via `dirs::home_dir()`, and `dirs::config_dir()` — and those are not equivalent.
+crates/system/settings-store/src/lib.rs:11://! ignored; `dirs::config_dir()` implements that, the hand-rolled resolvers did not (they
+crates/system/settings-store/src/lib.rs:61:    let base = std::env::var_os("XDG_CONFIG_HOME")
+crates/system/settings-store/src/lib.rs:64:        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
+crates/system/settings-store/src/lib.rs:85:#[cfg(test)]
+crates/system/settings-store/src/lib.rs:237:#[cfg(test)]
+crates/system/settings-store/src/lib.rs:247:        let p = std::env::temp_dir().join(format!(
+crates/system/settings-store/src/lib.rs:266:        let prev = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/lib.rs:267:        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+crates/system/settings-store/src/lib.rs:274:            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+crates/system/settings-store/src/lib.rs:275:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/settings-store/src/lib.rs:284:        // moved with the working directory while `dirs::config_dir()` readers stayed on
+crates/system/settings-store/src/lib.rs:286:        let prev = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/lib.rs:287:        unsafe { std::env::set_var("XDG_CONFIG_HOME", "relative/config") };
+crates/system/settings-store/src/lib.rs:298:        let home = dirs::home_dir().expect("test needs a home dir");
+crates/system/settings-store/src/lib.rs:302:            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+crates/system/settings-store/src/lib.rs:303:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/settings-store/src/lib.rs:310:        let prev = std::env::var_os("XDG_CONFIG_HOME");
+crates/system/settings-store/src/lib.rs:311:        unsafe { std::env::set_var("XDG_CONFIG_HOME", "") };
+crates/system/settings-store/src/lib.rs:313:        assert_eq!(root, dirs::home_dir().unwrap().join(".config").join("tilo"));
+crates/system/settings-store/src/lib.rs:315:            Some(v) => unsafe { std::env::set_var("XDG_CONFIG_HOME", v) },
+crates/system/settings-store/src/lib.rs:316:            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+crates/system/windows-vm/src/appliance.rs:23:pub struct VmLaunchGrants {
+crates/system/windows-vm/src/appliance.rs:59:pub struct PortalDocumentGrant {
+crates/system/windows-vm/src/appliance.rs:67:pub struct LaunchRequest {
+crates/system/windows-vm/src/appliance.rs:74:pub struct ShareBinding {
+crates/system/windows-vm/src/appliance.rs:87:pub struct BrokeredLaunch {
+crates/system/windows-vm/src/appliance.rs:154:pub trait CapabilityBroker: Send + Sync {
+crates/system/windows-vm/src/appliance.rs:164:pub struct RunningRemoteApp {
+crates/system/windows-vm/src/appliance.rs:171:pub struct WindowsAppliance<B, A, C, L> {
+crates/system/windows-vm/src/appliance.rs:619:#[cfg(test)]
+crates/system/windows-vm/src/appliance.rs:753:                "/var/lib/tilo/windows/system.qcow2",
+crates/system/power/src/lib.rs:50:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:52:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:54:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:57:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:60:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:62:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:65:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:69:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:71:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:73:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:79:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:82:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:84:#[cfg(feature = "service")]
+crates/system/power/src/lib.rs:87:#[cfg(feature = "service")]
+crates/system/power/src/policy.rs:57:pub struct PowerPolicy {
+crates/system/power/src/policy.rs:128:#[cfg(test)]
+crates/system/power/src/battery.rs:54:pub struct BatterySnapshot {
+crates/system/power/src/battery.rs:92:pub struct BatteryMonitor {
+crates/system/power/src/battery.rs:159:#[cfg(test)]
+crates/system/power/src/logind.rs:28:pub struct LogindManager {
+crates/system/power/src/logind.rs:154:pub struct LogindInhibitor {
+crates/system/power/src/logind.rs:166:#[cfg(test)]
+crates/system/settings-store/src/roaming_provenance.rs:20:pub struct Origin {
+crates/system/settings-store/src/roaming_provenance.rs:28:pub struct SettingResolution {
+crates/system/settings-store/src/roaming_provenance.rs:38:pub struct WifiResolution {
+crates/system/settings-store/src/roaming_provenance.rs:50:pub struct RoamingProvenance {
+crates/system/settings-store/src/roaming_provenance.rs:276:#[cfg(test)]
+crates/system/windows-vm/src/lifecycle.rs:28:pub struct VmStatus {
+crates/system/windows-vm/src/lifecycle.rs:59:pub struct WindowsVmService<B> {
+crates/system/windows-vm/src/lifecycle.rs:153:#[cfg(test)]
+crates/system/windows-vm/src/lifecycle.rs:216:                "/var/lib/tilo/windows/system.qcow2",
+crates/system/windows-vm/src/lifecycle.rs:267:                "/var/lib/tilo/windows/system.qcow2",
+crates/system/windows-vm/src/command.rs:12:pub struct CommandRequest {
+crates/system/windows-vm/src/command.rs:97:pub struct CommandOutput {
+crates/system/windows-vm/src/command.rs:144:pub trait CommandRunner: Send + Sync {
+crates/system/windows-vm/src/command.rs:151:pub struct StdCommandRunner;
+crates/system/windows-vm/src/command.rs:178:#[cfg(test)]
+crates/system/windows-vm/src/command.rs:197:        let mut oversized = CommandRequest::new("sh").args(["-c", "head -c 4096 /dev/zero"]);
+crates/system/power/src/bridge.rs:21:pub struct PowerNotification {
+crates/system/power/src/bridge.rs:76:pub struct PowerBridge {
+crates/system/power/src/bridge.rs:139:#[cfg(test)]
+crates/system/windows-vm/src/remote_app.rs:12:pub struct RemoteAppProcess {
+crates/system/windows-vm/src/remote_app.rs:18:pub trait RemoteAppLauncher: Send + Sync {
+crates/system/windows-vm/src/remote_app.rs:27:pub struct FreeRdpLauncher<R> {
+crates/system/windows-vm/src/remote_app.rs:64:        // or `/proc`. The guest service invalidates it after this connection.
+crates/system/windows-vm/src/remote_app.rs:175:pub struct AppFocusedSpiceLauncher<R> {
+crates/system/windows-vm/src/remote_app.rs:219:                "qemu:///system",
+crates/system/windows-vm/src/remote_app.rs:324:#[cfg(test)]
+crates/system/windows-vm/src/config.rs:45:pub struct PerformanceConfig {
+crates/system/windows-vm/src/config.rs:53:pub struct ApplianceConfig {
+crates/system/windows-vm/src/config.rs:208:#[cfg(test)]
+crates/system/windows-vm/src/config.rs:215:            "/var/lib/tilo/windows/system.qcow2",
+crates/system/windows-vm/examples/domain-xml.rs:5:    let mut arguments = std::env::args().skip(1);
+crates/system/windows-vm/examples/domain-xml.rs:17:        "/var/lib/qos/windows/system.qcow2",
+crates/system/windows-vm/src/libvirt.rs:11:const LIBVIRT_URI: &str = "qemu:///system";
+crates/system/windows-vm/src/libvirt.rs:57:pub struct EgressLease {
+crates/system/windows-vm/src/libvirt.rs:63:pub trait VmBackend: Send + Sync {
+crates/system/windows-vm/src/libvirt.rs:117:pub struct LibvirtBackend<R> {
+crates/system/windows-vm/src/libvirt.rs:189:                "/dev/stdin",
+crates/system/windows-vm/src/libvirt.rs:223:                "/dev/stdin",
+crates/system/windows-vm/src/libvirt.rs:275:            .args(["--connect", LIBVIRT_URI, "define", "/dev/stdin"])
+crates/system/windows-vm/src/libvirt.rs:556:<entry name='uuid'>{}</entry></system></sysinfo>\
+crates/system/windows-vm/src/libvirt.rs:578:<rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
+crates/system/windows-vm/src/libvirt.rs:584:<memballoon model='virtio'/></devices></domain>",
+crates/system/windows-vm/src/libvirt.rs:641:#[cfg(test)]
+crates/system/windows-vm/src/libvirt.rs:720:                        "/var/lib/qos/windows/system.qcow2",
+crates/system/windows-vm/src/libvirt.rs:740:            "/var/lib/qos/windows/system.qcow2",
+crates/system/windows-vm/src/libvirt.rs:793:        assert!(requests[1].args.iter().any(|arg| arg == "/dev/stdin"));
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:1:use std::env;
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:5:use std::os::fd::AsRawFd;
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:6:use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:19:const SYSTEM_DISK: &str = "/var/lib/tilo/windows/system.qcow2";
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:226:            if let Err(error) = fs::rename(pending_path, active_path) {
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:319:        .and_then(|()| file.sync_all())
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:369:        .and_then(|()| file.sync_all())
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:396:        .and_then(|()| file.sync_all())
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:401:    if let Err(error) = fs::rename(&temporary, summary) {
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:473:        .and_then(|()| file.sync_all())
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:478:    if let Err(error) = fs::rename(&temporary, STATUS_SUMMARY) {
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:722:#[cfg(test)]
+crates/system/windows-vm/src/bin/tilo-windows-vm-control.rs:725:    use std::os::fd::AsRawFd;
+crates/system/windows-vm/src/guest_network.rs:33:pub struct GuestNetworkBinding {
+crates/system/windows-vm/src/guest_network.rs:64:pub struct GuestNetworkProxy {
+crates/system/windows-vm/src/guest_network.rs:282:    #[cfg(test)]
+crates/system/windows-vm/src/guest_network.rs:344:#[cfg(test)]
+crates/system/windows-vm/src/graphics.rs:31:pub struct GraphicsCapabilities {
+crates/system/windows-vm/src/graphics.rs:40:pub struct GraphicsDeviceCapability {
+crates/system/windows-vm/src/graphics.rs:52:pub struct SriovCapability {
+crates/system/windows-vm/src/graphics.rs:62:pub struct MediatedTypeCapability {
+crates/system/windows-vm/src/graphics.rs:91:        Self::probe_sysfs(Path::new("/sys"))
+crates/system/windows-vm/src/graphics.rs:95:        let pci_root = sysfs.join("bus/pci/devices");
+crates/system/windows-vm/src/graphics.rs:380:#[cfg(test)]
+crates/system/windows-vm/src/graphics.rs:382:    use std::os::unix::fs::symlink;
+crates/system/windows-vm/src/graphics.rs:396:        let gpu = sysfs.path().join("bus/pci/devices/0000:00:02.0");
+crates/system/windows-vm/src/graphics.rs:409:        let gpu = sysfs.path().join("bus/pci/devices/0000:01:00.0");
+crates/system/windows-vm/src/graphics.rs:431:        let pci = sysfs.path().join("bus/pci/devices");
+crates/system/windows-vm/src/graphics.rs:479:        let gpu = sysfs.path().join("bus/pci/devices/0000:01:00.0");
+crates/system/windows-vm/src/graphics.rs:500:        let nic = sysfs.path().join("bus/pci/devices/0000:04:00.0");
+crates/system/windows-vm/src/state.rs:2:use std::os::unix::fs::OpenOptionsExt;
+crates/system/windows-vm/src/state.rs:33:pub struct ApplianceState {
+crates/system/windows-vm/src/state.rs:67:pub struct ProvisioningStore {
+crates/system/windows-vm/src/state.rs:119:            file.sync_all()?;
+crates/system/windows-vm/src/state.rs:121:        if let Err(error) = fs::rename(&temp, &self.path) {
+crates/system/windows-vm/src/state.rs:126:            let _ = directory.sync_all();
+crates/system/windows-vm/src/state.rs:144:#[cfg(test)]
+crates/system/windows-vm/src/state.rs:146:    use std::os::unix::fs::MetadataExt;
+crates/system/windows-vm/src/publication.rs:15:pub struct Association {
+crates/system/windows-vm/src/publication.rs:21:pub struct PublishedApplication {
+crates/system/windows-vm/src/publication.rs:62:pub struct Catalog {
+crates/system/windows-vm/src/publication.rs:162:#[cfg(test)]
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:8:use std::env;
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:12:use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:263:        .and_then(|()| file.sync_all())
+crates/system/windows-vm/src/bin/tilo-windows-rail.rs:340:#[cfg(test)]

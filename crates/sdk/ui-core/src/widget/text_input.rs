@@ -470,6 +470,19 @@ impl TextInput {
         self.crdt_bound = true;
     }
 
+    /// Detach an explicit nested-Text binding without changing live input state.
+    ///
+    /// A direct binding replaces any earlier local or flat-path mode. Detaching
+    /// therefore leaves the input intentionally unbound until an owner calls
+    /// [`Self::bind_text`] again; it does not revive a discarded fallback.
+    pub fn clear_text_binding(&mut self) {
+        if self.bound_text.take().is_none() {
+            return;
+        }
+        self.crdt_bound = false;
+        self.path_was_present = false;
+    }
+
     /// For `BlockEditor` to match local blocks to doc list elements by object identity.
     pub fn bound_obj(&self) -> Option<&ObjId> {
         self.bound_text.as_ref()
@@ -956,7 +969,8 @@ impl TextInput {
     }
 
     /// Explicit host language without discovery or background dictionary warmup.
-    pub(crate) fn local_with_language(language: &str) -> Self {
+    #[doc(hidden)]
+    pub fn local_with_language(language: &str) -> Self {
         Self::with_language(Vec::new(), language.to_owned())
     }
 
@@ -2460,6 +2474,10 @@ impl TextInput {
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
         self
+    }
+
+    pub(crate) fn set_id(&mut self, id: &str) {
+        self.id = id.to_string();
     }
 
     /// Bind this input to one root-level document string.
@@ -4059,6 +4077,15 @@ impl Widget for TextInput {
         "TextInput"
     }
 
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
@@ -7483,6 +7510,100 @@ mod tests {
         assert_eq!(doc.text(&text).expect("document text"), "before");
     }
 
+    #[test]
+    fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object() {
+        let mut doc = AutoCommit::new();
+        let stale = doc
+            .put_object(&automerge::ROOT, "stale", ObjType::Text)
+            .expect("stale text");
+        doc.splice_text(&stale, 0, 0, "draft")
+            .expect("seed stale text");
+        let mut input = TextInput::from_document_string("fallback");
+        input.bind_text(stale.clone());
+        input.sync(&mut doc, &automerge::ROOT);
+        input.set_focus(true);
+        input.cursor_pos = 4;
+        input.selection_anchor = Some(1);
+        input.preedit = "編".into();
+        input.preedit_cursor = Some((0, "編".len()));
+        input.scroll_x = 17.0;
+        input.scroll_y = 23.0;
+
+        let heads = doc.get_heads();
+        input.clear_text_binding();
+        assert_eq!(
+            doc.get_heads(),
+            heads,
+            "detach does not mutate the document"
+        );
+        assert_eq!(input.bound_obj(), None);
+        assert_eq!(input.value(), "draft");
+        assert!(input.is_focused);
+        assert_eq!(input.cursor_pos, 4);
+        assert_eq!(input.selection_anchor, Some(1));
+        assert_eq!(input.preedit, "編");
+        assert_eq!(input.preedit_cursor, Some((0, "編".len())));
+        assert_eq!(input.scroll_x, 17.0);
+        assert_eq!(input.scroll_y, 23.0);
+
+        doc.splice_text(&stale, 0, 5, "historical")
+            .expect("replace stale text");
+        input.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(input.value(), "draft", "sync ignores the stale object");
+
+        input.preedit.clear();
+        input.preedit_cursor = None;
+        input.selection_anchor = None;
+        input.cursor_pos = input.value().len();
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &char_key_event("!"),
+            mods(false, false)
+        ));
+        assert_eq!(input.value(), "draft!");
+        assert_eq!(doc.text(&stale).expect("stale text"), "historical");
+        assert!(
+            doc.get(&automerge::ROOT, "fallback")
+                .expect("fallback lookup")
+                .is_none(),
+            "detach disables the discarded path fallback"
+        );
+    }
+
+    #[test]
+    fn clearing_without_direct_binding_is_a_noop_for_path_and_local_users() {
+        let mut doc = AutoCommit::new();
+        let path = doc
+            .put_object(&automerge::ROOT, "path", ObjType::Text)
+            .expect("path text");
+        doc.splice_text(&path, 0, 0, "path")
+            .expect("seed path text");
+        let mut path_input = TextInput::from_document_string("path");
+        path_input.sync(&mut doc, &automerge::ROOT);
+        path_input.set_focus(true);
+        path_input.set_cursor_pos(path_input.value().len());
+        path_input.clear_text_binding();
+        assert!(drive(
+            &mut path_input,
+            &mut doc,
+            &char_key_event("!"),
+            mods(false, false)
+        ));
+        assert_eq!(doc.text(&path).expect("path text"), "path!");
+
+        let state = crate::LocalState::new(String::from("local"));
+        let mut local_input = TextInput::from_state(&state);
+        local_input.clear_text_binding();
+        assert!(Widget::perform_action(
+            &mut local_input,
+            &crate::a11y::Action::SetValue("updated".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(state.get(), "updated");
+    }
+
     /// Unfocused, so `scroll_x` stays 0 and click math is simple.
     fn draw_to_populate(ti: &mut TextInput) {
         draw_with_theme(ti, &Theme::dark());
@@ -8939,5 +9060,32 @@ mod tests {
         doc.splice_text(&object, 0, 0, "Remote title").unwrap();
         Widget::sync(&mut input, &mut doc, &automerge::ROOT);
         assert_eq!(input.value(), "Remote title");
+    }
+    #[test]
+    fn controlled_local_input_opt_outs_survive_draw_without_dictionary_work() {
+        let mut input = TextInput::local_with_language("en_US")
+            .with_spellcheck(false)
+            .with_autocorrect(false)
+            .with_initial_value("teh mispeled words");
+        input.set_focus(true);
+        input.rect = Rect::new(0.0, 0.0, 360.0, 42.0);
+        let mut scene = Scene::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        input.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &Theme::dark(),
+            &crate::PresenceCtx::empty(),
+        );
+        assert!(input.is_focused);
+        assert!(!input.text.is_empty());
+        assert!(input.rect.width() > 0.0);
+        assert!(input.spell_dictionary.is_none());
+        assert!(input.spell_cache_key.is_none());
+        assert!(input.spell_spans.is_empty());
+        assert!(input.autocorrection_preview_key.is_none());
+        assert!(input.autocorrection_preview.is_none());
+        assert_eq!(input.text, "teh mispeled words");
     }
 }

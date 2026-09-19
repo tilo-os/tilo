@@ -1,0 +1,537 @@
+apps/camera/src/capture.rs:24:use gstreamer as gst;
+apps/camera/src/capture.rs:25:use gstreamer::prelude::*;
+apps/camera/src/capture.rs:26:use gstreamer_app as gst_app;
+apps/camera/src/capture.rs:81:    let Ok(entries) = std::fs::read_dir("/dev") else {
+apps/camera/src/capture.rs:106:    pipeline: gst::Pipeline,
+apps/camera/src/capture.rs:119:        gst::init().context("gst init")?;
+apps/camera/src/capture.rs:123:        let pipeline = gst::parse::launch(&desc)
+apps/camera/src/capture.rs:125:            .downcast::<gst::Pipeline>()
+apps/camera/src/capture.rs:140:                    let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+apps/camera/src/capture.rs:141:                    let caps = sample.caps().ok_or(gst::FlowError::Error)?;
+apps/camera/src/capture.rs:142:                    let info = gstreamer_video::VideoInfo::from_caps(caps)
+apps/camera/src/capture.rs:143:                        .map_err(|_| gst::FlowError::Error)?;
+apps/camera/src/capture.rs:144:                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+apps/camera/src/capture.rs:145:                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+apps/camera/src/capture.rs:149:                        return Err(gst::FlowError::Error);
+apps/camera/src/capture.rs:156:                    *callback_slot.lock().map_err(|_| gst::FlowError::Error)? = Some(frame);
+apps/camera/src/capture.rs:163:                        Err(TrySendError::Disconnected(())) => return Err(gst::FlowError::Eos),
+apps/camera/src/capture.rs:165:                    Ok(gst::FlowSuccess::Ok)
+apps/camera/src/capture.rs:171:            .set_state(gst::State::Playing)
+apps/camera/src/capture.rs:182:        let _ = self.pipeline.set_state(gst::State::Null);
+apps/photos/src/model.rs:746:        let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 1, 1);
+apps/video-player/src/app.rs:4186:        app.open_path(&PathBuf::from("/tmp/Holiday.mp4"))
+apps/video-player/src/app.rs:4192:            Some(&media::Source::LocalFile(PathBuf::from("/tmp/Holiday.mp4")))
+apps/video-player/src/app.rs:4202:                "/tmp/Chosen.webm",
+apps/video-player/src/app.rs:4229:        app.open_path(Path::new("/tmp/Direct.mp4"))
+apps/video-player/src/app.rs:4250:        app.open_path(Path::new("/tmp/Original.mp4"))
+apps/video-player/src/app.rs:4262:            .open_path(Path::new("/tmp/New.mp4"))
+apps/video-player/src/app.rs:4289:        let path = Path::new("/tmp/review-cut.mp4");
+apps/video-player/src/app.rs:4308:        app.open_path(Path::new("/tmp/review-cut.mp4"))
+apps/video-player/src/app.rs:4332:        app.open_path(Path::new("/tmp/review-cut.mp4"))
+apps/video-player/src/app.rs:4397:                "/tmp/Stale.webm",
+apps/video-player/src/app.rs:4589:        app.open_path(Path::new("/tmp/Clip.mp4"))
+apps/video-player/src/app.rs:4621:        app.open_path(Path::new("/tmp/Clip.mp4"))
+apps/video-player/src/app.rs:4769:        app.open_path(Path::new("/tmp/Clip.mp4"))
+apps/video-player/src/app.rs:5095:        app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
+apps/video-player/src/app.rs:5244:        app.open_path(Path::new("/tmp/Clip.mp4"))
+apps/video-player/src/app.rs:5270:        app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
+apps/video-player/src/app.rs:5298:        app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
+apps/video-player/src/app.rs:5313:        app.open_path(Path::new("/tmp/Clip.mp4"))
+apps/video-player/src/app.rs:5324:        app.open_path(&PathBuf::from("/tmp/Clip.mp4"))
+apps/tube/src/sync/lifecycle.rs:12:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+apps/tube/src/sync/lifecycle.rs:152:        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+apps/tube/src/sync/lifecycle.rs:163:            .mode(0o600)
+apps/tube/src/sync/lifecycle.rs:410:        runtime_portal_xdg::Secret::retrieve()
+apps/camera/src/app.rs:1393:            Action::SetMode(m) => self.apply_set_mode(m, doc, root),
+apps/camera/src/app.rs:2019:    fn apply_set_mode(&mut self, m: CaptureMode, doc: &mut AutoCommit, _root: &ObjId) {
+apps/camera/src/app.rs:3099:            self.mode = doc::read_mode(state, path);
+apps/camera/src/app.rs:6983:            && std::fs::read_dir(&dir).map_or(true, |entries| {
+apps/camera/src/app.rs:6995:        let files: Vec<_> = std::fs::read_dir(&dir)
+apps/camera/src/app.rs:7127:        assert_eq!(doc::read_mode(&doc, &root), CaptureMode::Video);
+apps/camera/src/app.rs:7138:    fn document_route_captures_real_session_pages_in_sample_mode() {
+apps/camera/src/app.rs:7490:        let avis: Vec<_> = std::fs::read_dir(&dir)
+apps/camera/src/app.rs:7971:        assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
+apps/camera/src/app.rs:8050:        assert!(std::fs::read_dir(&dir).map_or(true, |entries| {
+apps/video-player/src/main.rs:5://!   * `--open PATH`     — open a local or `/var/workspace` file on launch.
+apps/maps/src/app.rs:438:            && !(self.overlay_mode() && self.nav_open)
+apps/maps/src/app.rs:949:    pub fn set_travel_mode(&mut self, mode: TravelMode) {
+apps/maps/src/app.rs:1066:    fn overlay_mode(&self) -> bool {
+apps/maps/src/app.rs:1076:        !self.overlay_mode() || self.nav_open
+apps/maps/src/app.rs:1083:        !self.overlay_mode() && !self.panel_collapsed
+apps/maps/src/app.rs:1096:        if self.overlay_mode() {
+apps/maps/src/app.rs:1115:        if !self.overlay_mode() {
+apps/maps/src/app.rs:1125:        if self.overlay_mode() {
+apps/maps/src/app.rs:1735:    fn set_mode(&mut self, mode: TravelMode, doc: &mut AutoCommit) {
+apps/maps/src/app.rs:1851:        let w = if self.overlay_mode() {
+apps/maps/src/app.rs:2386:            Hit::Mode(m) => self.set_mode(*m, doc),
+apps/maps/src/app.rs:2609:        let overlay = self.overlay_mode();
+apps/maps/src/app.rs:2800:        } else if self.overlay_mode() && self.nav_open {
+apps/maps/src/app.rs:3151:        if self.overlay_mode() && self.nav_open {
+apps/maps/src/app.rs:3375:        let docked = !self.overlay_mode();
+apps/maps/src/app.rs:5024:        if self.overlay_mode() && self.nav_open {
+apps/maps/src/app.rs:6167:        assert!(docked.navigation_surface_visible_in_app() && !docked.overlay_mode());
+apps/maps/src/app.rs:6192:        assert!(tiny.overlay_mode());
+apps/maps/src/app.rs:6216:        assert!(!a.overlay_mode());
+apps/maps/src/app.rs:6223:        assert!(!a.overlay_mode(), "the breakpoint is the theme's, unscaled");
+apps/maps/src/app.rs:6240:        assert!(!mid.overlay_mode());
+apps/maps/src/app.rs:6249:        assert!(narrow.overlay_mode());
+apps/maps/src/app.rs:6256:        assert!(wide_drawer.overlay_mode());
+apps/maps/src/app.rs:7264:            a.set_mode(mode, &mut AutoCommit::new());
+apps/maps/src/app.rs:7283:        a.set_mode(TravelMode::Car, &mut AutoCommit::new());
+apps/maps/src/app.rs:7299:        a.set_mode(TravelMode::Foot, &mut AutoCommit::new());
+apps/maps/src/app.rs:7346:        assert!(!a.overlay_mode());
+apps/maps/src/app.rs:7363:        assert!(a.overlay_mode());
+apps/maps/src/app.rs:7380:        assert!(!a.overlay_mode());
+apps/maps/src/app.rs:7392:        assert!(a.overlay_mode());
+apps/maps/src/app.rs:7410:        assert!(a.overlay_mode());
+apps/maps/src/app.rs:7512:        a.set_mode(TravelMode::Transit, &mut AutoCommit::new());
+apps/maps/src/app.rs:8781:        a.set_travel_mode(TravelMode::Transit);
+apps/maps/src/app.rs:8810:        a.set_travel_mode(TravelMode::Transit);
+apps/video-editor/src/model.rs:935:    /// (`/var/workspace/<path>`). This — not the bytes — is what the CRDT
+apps/photos/src/app.rs:4083:                    let Ok(entries) = std::fs::read_dir(directory) else {
+apps/photos/src/app.rs:11210:        let image = OpenImage::from_path("/tmp/accessible.png", 100, 50);
+apps/photos/src/app.rs:11212:        app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
+apps/photos/src/app.rs:11248:        let image = OpenImage::from_path("/tmp/compact.png", 100, 50);
+apps/photos/src/app.rs:11250:        app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
+apps/maps/src/doc.rs:223:    pub fn set_travel_mode(doc: &mut AutoCommit, mode: TravelMode) {
+apps/tube/src/sync/transport.rs:363:        let transport = hs.into_transport_mode().map_err(|error| snow_err(&error))?;
+apps/tube/src/sync/transport.rs:489:        let transport = hs.into_transport_mode().map_err(|error| snow_err(&error))?;
+apps/camera/src/doc.rs:87:pub fn read_mode(doc: &AutoCommit, root: &ObjId) -> CaptureMode {
+apps/camera/src/doc.rs:91:pub fn write_mode(doc: &mut AutoCommit, root: &ObjId, mode: CaptureMode) {
+apps/camera/src/doc.rs:386:    write_mode(doc, root, CaptureMode::Photo);
+apps/camera/src/doc.rs:476:        assert_eq!(read_mode(&doc, &root), CaptureMode::Photo);
+apps/photos/src/reference.rs:79:    const PATH: &str = "/var/workspace/photos/harbour.png";
+apps/photos/src/reference.rs:96:            "photos.image:/var/workspace/photos/harbour.png"
+apps/photos/src/reference.rs:155:        let a = image_reference(&doc_with_image("/var/workspace/a/harbour.png")).unwrap();
+apps/photos/src/reference.rs:156:        let b = image_reference(&doc_with_image("/var/workspace/b/harbour.png")).unwrap();
+apps/music/src/app.rs:2777:    /// The `file://` URI never crosses the resource/action boundary; it stays
+apps/music/src/app.rs:2783:        let uri = format!("file://{}", path.display());
+apps/music/src/app.rs:5181:        assert!(!cover.contains("/tmp/"));
+apps/music/src/app.rs:5188:        assert!(embedded_cover_bytes("file:///tmp/cover.png").is_none());
+apps/music/src/app.rs:5189:        assert!(embedded_cover_bytes("/tmp/cover.png").is_none());
+apps/music/src/app.rs:5215:        assert!(!persisted.contains("/tmp/"));
+apps/music/src/app.rs:5938:                .is_some_and(|uri| uri.starts_with("file://")),
+apps/music/src/app.rs:7407:    /// honestly when it isn't — a stock build without `gstreamer1-libav` can't
+apps/music/src/app.rs:7411:        let _ = gstreamer::init();
+apps/music/src/app.rs:7421:            .all(|n| gstreamer::ElementFactory::find(n).is_some());
+apps/music/src/app.rs:7422:        let have_aac = gstreamer::ElementFactory::find("avdec_aac").is_some()
+apps/music/src/app.rs:7423:            || gstreamer::ElementFactory::find("faad").is_some();
+apps/weather/src/app.rs:239:        let collapsible = self.nav.mode() == ShellMode::Wide;
+apps/weather/src/app.rs:1150:        assert_eq!(h.app.nav.mode(), ShellMode::Wide);
+apps/weather/src/app.rs:1158:            h.app.nav.mode(),
+apps/weather/src/app.rs:1167:            h.app.nav.mode(),
+apps/weather/src/app.rs:1372:        assert_eq!(h.app.nav.mode(), ShellMode::Narrow);
+apps/maps/src/main.rs:120:        app.set_travel_mode(maps::TravelMode::Transit);
+apps/photos/src/doc.rs:1419:        let origin = "/var/home/alice/Private/harbour.png";
+apps/photos/src/doc.rs:1739:            let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
+apps/photos/src/doc.rs:1810:        let img = OpenImage::from_path("/var/tmp/tilo/workspace/harbour.png", 800, 600);
+apps/photos/src/doc.rs:1840:        let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 4000, 3000);
+apps/tube/src/history_store.rs:9:use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+apps/tube/src/history_store.rs:248:        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+apps/tube/src/history_store.rs:257:        atomic_file::write_creating_parent_with_mode(path, &bytes, 0o600)
+apps/tube/src/history_store.rs:405:fn current_uid() -> u32 {
+apps/tube/src/history_store.rs:409:    unsafe { libc::geteuid() }
+apps/tube/src/history_store.rs:421:    if metadata.uid() != current_uid() {
+apps/tube/src/history_store.rs:437:        || opened.uid() != current_uid()
+apps/tube/src/history_store.rs:445:    if opened.permissions().mode() & 0o777 != 0o600 {
+apps/tube/src/history_store.rs:446:        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+apps/tube/src/history_store.rs:447:        if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
+apps/tube/src/history_store.rs:502:            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+apps/tube/src/history_store.rs:520:        fs::set_permissions(&unsafe_path, fs::Permissions::from_mode(0o600)).unwrap();
+apps/tube/src/history_store.rs:540:        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+apps/tube/src/history_store.rs:562:        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+apps/tube/src/history_store.rs:566:            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+apps/weather/src/framework_history.rs:94:fn uuid(s: &str) -> Result<LocationId, String> {
+apps/weather/src/framework_history.rs:98:    let id = uuid(&string(d, o, "id")?)?;
+apps/weather/src/framework_history.rs:99:    if key.is_some_and(|k| uuid(k).ok() != Some(id)) {
+apps/weather/src/framework_history.rs:193:            if !ids.insert(uuid(&string(d, &o, i)?)?) {
+apps/weather/src/framework_history.rs:201:            if uuid(&key)? != uuid(&string(d, &row, "id")?)? {
+apps/tube/src/backend/ytdlp.rs:60:        let out = bounded_command::run(
+apps/tube/src/backend/ytdlp.rs:78:        let out = bounded_command::run(&self.bin, args, None, YTDLP_OUTPUT_LIMIT, timeout)
+apps/video-editor/src/audio.rs:585:    use gstreamer_app as gst_app;
+apps/video-editor/src/audio.rs:587:    use media::gst::prelude::*;
+apps/video-editor/src/audio.rs:589:    gst::init().ok()?;
+apps/video-editor/src/audio.rs:590:    let pipeline = gst::Pipeline::new();
+apps/video-editor/src/audio.rs:591:    let src = gst::ElementFactory::make("uridecodebin")
+apps/video-editor/src/audio.rs:595:    let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
+apps/video-editor/src/audio.rs:596:    let resample = gst::ElementFactory::make("audioresample").build().ok()?;
+apps/video-editor/src/audio.rs:599:            &gst::Caps::builder("audio/x-raw")
+apps/video-editor/src/audio.rs:611:    gst::Element::link_many([&convert, &resample, sink.upcast_ref()]).ok()?;
+apps/video-editor/src/audio.rs:644:    if pipeline.set_state(gst::State::Playing).is_err() {
+apps/video-editor/src/audio.rs:664:                if let gst::MessageView::Error(e) = msg.view() {
+apps/video-editor/src/audio.rs:673:        match sink.try_pull_sample(gst::ClockTime::from_mseconds(500)) {
+apps/video-editor/src/audio.rs:704:    let _ = pipeline.set_state(gst::State::Null);
+apps/video-editor/src/audio.rs:1198:    pipeline: media::gst::Pipeline,
+apps/video-editor/src/audio.rs:1199:    src: gstreamer_app::AppSrc,
+apps/video-editor/src/audio.rs:1207:        use media::gst::prelude::*;
+apps/video-editor/src/audio.rs:1209:        gst::init().ok()?;
+apps/video-editor/src/audio.rs:1210:        let pipeline = gst::Pipeline::new();
+apps/video-editor/src/audio.rs:1211:        let src = gstreamer_app::AppSrc::builder()
+apps/video-editor/src/audio.rs:1213:                &gst::Caps::builder("audio/x-raw")
+apps/video-editor/src/audio.rs:1224:            .format(gst::Format::Time)
+apps/video-editor/src/audio.rs:1227:        let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
+apps/video-editor/src/audio.rs:1228:        let resample = gst::ElementFactory::make("audioresample").build().ok()?;
+apps/video-editor/src/audio.rs:1229:        let out = gst::ElementFactory::make("autoaudiosink").build().ok()?;
+apps/video-editor/src/audio.rs:1233:        gst::Element::link_many([src.upcast_ref(), &convert, &resample, &out]).ok()?;
+apps/video-editor/src/audio.rs:1234:        pipeline.set_state(gst::State::Playing).ok()?;
+apps/video-editor/src/audio.rs:1252:        let Ok(mut buffer) = gst::Buffer::with_size(bytes.len()) else {
+apps/video-editor/src/audio.rs:1261:            bref.set_pts(gst::ClockTime::from_nseconds(ns(self.pushed)));
+apps/video-editor/src/audio.rs:1262:            bref.set_duration(gst::ClockTime::from_nseconds(ns(frames)));
+apps/video-editor/src/audio.rs:1277:        use media::gst::prelude::*;
+apps/video-editor/src/audio.rs:1278:        let _ = self.pipeline.set_state(gst::State::Null);
+apps/tube/src/app.rs:1142:        .with_mode(SplitMode::Adaptive)
+apps/camera/src/media.rs:52:        assert!(!is_media_id("/tmp/not-a-shared-media-file"));
+apps/video-editor/src/waveform.rs:87:/// `/var/workspace` FUSE is read *through* the mount and hydrates on demand,
+apps/video-editor/src/waveform.rs:91:    use gstreamer as gst;
+apps/video-editor/src/waveform.rs:92:    use gstreamer::prelude::*;
+apps/video-editor/src/waveform.rs:93:    use gstreamer_app as gst_app;
+apps/video-editor/src/waveform.rs:95:    gst::init().ok()?;
+apps/video-editor/src/waveform.rs:98:    let src = gst::ElementFactory::make("uridecodebin")
+apps/video-editor/src/waveform.rs:102:    let convert = gst::ElementFactory::make("audioconvert").build().ok()?;
+apps/video-editor/src/waveform.rs:103:    let resample = gst::ElementFactory::make("audioresample").build().ok()?;
+apps/video-editor/src/waveform.rs:104:    let caps = gst::Caps::builder("audio/x-raw")
+apps/video-editor/src/waveform.rs:117:    let pipeline = gst::Pipeline::new();
+apps/video-editor/src/waveform.rs:118:    let sink_el: gst::Element = appsink.clone().upcast();
+apps/video-editor/src/waveform.rs:122:    gst::Element::link_many([&convert, &resample, &sink_el]).ok()?;
+apps/video-editor/src/waveform.rs:147:    if pipeline.set_state(gst::State::Playing).is_err() {
+apps/video-editor/src/waveform.rs:148:        let _ = pipeline.set_state(gst::State::Null);
+apps/video-editor/src/waveform.rs:165:        match appsink.try_pull_sample(gst::ClockTime::from_mseconds(200)) {
+apps/video-editor/src/waveform.rs:198:    let _ = pipeline.set_state(gst::State::Null);
+apps/video-editor/src/portal.rs:12://! `/var/workspace/...` pick resolves through the FUSE mount and hydrates on
+apps/video-editor/src/portal.rs:16://! mapped URIs with `strip_prefix("file://")`, which turns
+apps/video-editor/src/portal.rs:17://! `file://evil-host/etc/passwd` into a working-directory-relative path from a
+apps/photos/src/import.rs:129:        let entries = match fs::read_dir(&directory) {
+apps/music/src/main.rs:369:    use gstreamer::prelude::*;
+apps/music/src/main.rs:371:    if gstreamer::init().is_err() {
+apps/music/src/main.rs:372:        println!("   [decode] gstreamer init failed — skipping");
+apps/music/src/main.rs:381:        .filter(|n| gstreamer::ElementFactory::find(n).is_none())
+apps/music/src/main.rs:383:    let no_http = gstreamer::ElementFactory::find("souphttpsrc").is_none()
+apps/music/src/main.rs:384:        && gstreamer::ElementFactory::find("curlhttpsrc").is_none();
+apps/music/src/main.rs:385:    let no_aac = gstreamer::ElementFactory::find("avdec_aac").is_none()
+apps/music/src/main.rs:386:        && gstreamer::ElementFactory::find("faad").is_none();
+apps/music/src/main.rs:393:    let Ok(playbin) = gstreamer::ElementFactory::make("playbin").build() else {
+apps/music/src/main.rs:398:    if let Ok(fake) = gstreamer::ElementFactory::make("fakesink").build() {
+apps/music/src/main.rs:401:    if playbin.set_state(gstreamer::State::Playing).is_err() {
+apps/music/src/main.rs:421:        if let Some(p) = playbin.query_position::<gstreamer::ClockTime>() {
+apps/music/src/main.rs:428:    let _ = playbin.set_state(gstreamer::State::Null);
+apps/video-editor/src/export.rs:402:/// unit-tested on every build even where gstreamer can't link.
+apps/video-editor/src/export.rs:762:    use gstreamer as gst;
+apps/video-editor/src/export.rs:763:    use gstreamer::prelude::*;
+apps/video-editor/src/export.rs:764:    use gstreamer_app as gst_app;
+apps/video-editor/src/export.rs:790:        gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
+apps/video-editor/src/export.rs:805:        // vah264enc is installed" rather than a guess. `gst::init` above has
+apps/video-editor/src/export.rs:812:        let pipeline = gst::parse::launch(&desc)
+apps/video-editor/src/export.rs:814:            .downcast::<gst::Pipeline>()
+apps/video-editor/src/export.rs:821:        appsrc.set_format(gst::Format::Time);
+apps/video-editor/src/export.rs:829:                    a.set_format(gst::Format::Time);
+apps/video-editor/src/export.rs:839:            .set_state(gst::State::Playing)
+apps/video-editor/src/export.rs:875:        let frame_dur = gst::ClockTime::from_nseconds(ns_per_frame);
+apps/video-editor/src/export.rs:882:                let _ = pipeline.set_state(gst::State::Null);
+apps/video-editor/src/export.rs:891:            let mut buffer = gst::Buffer::with_size(frame_bytes)
+apps/video-editor/src/export.rs:895:                bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
+apps/video-editor/src/export.rs:903:                let _ = pipeline.set_state(gst::State::Null);
+apps/video-editor/src/export.rs:912:                let mut buffer = gst::Buffer::with_size(bytes.len())
+apps/video-editor/src/export.rs:916:                    bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
+apps/video-editor/src/export.rs:924:                    let _ = pipeline.set_state(gst::State::Null);
+apps/video-editor/src/export.rs:976:            let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(200)) else {
+apps/video-editor/src/export.rs:980:            use gst::MessageView;
+apps/video-editor/src/export.rs:994:        let _ = pipeline.set_state(gst::State::Null);
+apps/video-editor/src/export.rs:1197:        use gstreamer as gst;
+apps/video-editor/src/export.rs:1198:        use gstreamer::prelude::*;
+apps/video-editor/src/export.rs:1199:        gst::init().expect("gstreamer init");
+apps/video-editor/src/export.rs:1209:        let pipeline = gst::parse::launch(&desc)
+apps/video-editor/src/export.rs:1211:            .downcast::<gst::Pipeline>()
+apps/video-editor/src/export.rs:1214:            .set_state(gst::State::Playing)
+apps/video-editor/src/export.rs:1217:        for msg in bus.iter_timed(gst::ClockTime::from_seconds(30)) {
+apps/video-editor/src/export.rs:1218:            use gst::MessageView;
+apps/video-editor/src/export.rs:1225:        let _ = pipeline.set_state(gst::State::Null);
+apps/video-editor/src/export.rs:1323:            let silent = pipeline_desc_with_audio(&s, 64, 64, "/tmp/o", false);
+apps/video-editor/src/export.rs:1329:            let voiced = pipeline_desc_with_audio(&s, 64, 64, "/tmp/o", true);
+apps/video-editor/src/export.rs:1490:                let d = pipeline_desc(&s, 1920, 1080, "/tmp/o");
+apps/video-editor/src/export.rs:1568:                let desc = pipeline_desc(&s, 640, 360, "/tmp/o");
+apps/video-editor/src/export.rs:1858:                    reason.to_lowercase().contains("gstreamer"),
+apps/video-editor/src/export.rs:1872:        let d = pipeline_desc(&mp4, 1920, 1080, "/tmp/out.mp4");
+apps/video-editor/src/export.rs:1908:            d.contains("filesink location=/tmp/out.mp4"),
+apps/video-editor/src/export.rs:1916:        let dw = pipeline_desc(&webm, 640, 360, "/tmp/o.webm");
+apps/video-editor/src/export.rs:1936:            pipeline_desc(&mov, 2, 2, "/tmp/o.mov").contains("qtmux"),
+apps/video-editor/src/preview.rs:230:/// decoded frame. The engine's synthesized fallback needs no gstreamer, so this
+apps/video-editor/src/preview.rs:1141:        use gstreamer as gst;
+apps/video-editor/src/preview.rs:1142:        use gstreamer::prelude::*;
+apps/video-editor/src/preview.rs:1144:        gst::init().expect("gstreamer init");
+apps/video-editor/src/preview.rs:1153:        let pipeline = gst::parse::launch(&desc)
+apps/video-editor/src/preview.rs:1155:            .downcast::<gst::Pipeline>()
+apps/video-editor/src/preview.rs:1158:            .set_state(gst::State::Playing)
+apps/video-editor/src/preview.rs:1161:        for msg in bus.iter_timed(gst::ClockTime::from_seconds(30)) {
+apps/video-editor/src/preview.rs:1162:            use gst::MessageView;
+apps/video-editor/src/preview.rs:1169:        let _ = pipeline.set_state(gst::State::Null);
+apps/photos/src/actions.rs:2787:        let img = OpenImage::from_path("/var/tmp/tilo/home/quinten/harbour.png", 800, 400);
+apps/photos/src/actions.rs:3251:            "photos.image:/var/tmp/tilo/home/quinten/harbour.png"
+apps/music/src/audio.rs:28://! [`spawn_stream_download`] and [`AudioEngine::pump`]. A `file://` uri (a
+apps/music/src/audio.rs:38://! - a `GStreamer` **audio sink** plugin — `gstreamer1-plugin-pipewire`
+apps/music/src/audio.rs:39://!   (`pipewiresink`) and/or `gstreamer1-plugins-good` (`pulsesink`), plus a
+apps/music/src/audio.rs:43://!   `gstreamer1-libav` (`avdec_aac`, `avdec_opus`) and/or
+apps/music/src/audio.rs:44://!   `gstreamer1-plugins-bad-free` (`faad`). `gstreamer1-plugins-base` +
+apps/music/src/audio.rs:187:    playbin: gstreamer::Element,
+apps/music/src/audio.rs:192:    sink: Option<gstreamer::Element>,
+apps/music/src/audio.rs:211:    /// temp file before playback. `None` for a local (`file://`) uri, which is
+apps/music/src/audio.rs:258:    /// audio`, `playbin` is a core `GStreamer` element (`gstreamer1-plugins-base`)
+apps/music/src/audio.rs:268:    /// `gstreamer1-plugins-base` runtime package is missing or unusable.
+apps/music/src/audio.rs:273:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:274:            if let Err(e) = gstreamer::init() {
+apps/music/src/audio.rs:275:                tracing::error!(target: "music::audio", error = %e, "gstreamer::init failed — the `audio` feature needs a working GStreamer runtime");
+apps/music/src/audio.rs:277:            let playbin = match gstreamer::ElementFactory::make("playbin").build() {
+apps/music/src/audio.rs:281:                     gstreamer1-plugins-base runtime package: {error}"
+apps/music/src/audio.rs:322:    /// direct googlevideo URL). `fallback` is ignored for a `file://` uri and in
+apps/music/src/audio.rs:329:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:332:            let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+apps/music/src/audio.rs:350:            // once the download is ready). A `file://` uri plays directly.
+apps/music/src/audio.rs:370:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:380:            let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
+apps/music/src/audio.rs:391:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:396:            let _ = self.inner.playbin.set_state(gstreamer::State::Paused);
+apps/music/src/audio.rs:409:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:410:            let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+apps/music/src/audio.rs:439:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:447:                gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::KEY_UNIT,
+apps/music/src/audio.rs:448:                gstreamer::ClockTime::from_mseconds(target),
+apps/music/src/audio.rs:462:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:484:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:487:                .query_position::<gstreamer::ClockTime>()
+apps/music/src/audio.rs:488:                .map(gstreamer::ClockTime::mseconds)
+apps/music/src/audio.rs:500:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:503:                .query_duration::<gstreamer::ClockTime>()
+apps/music/src/audio.rs:504:                .map(gstreamer::ClockTime::mseconds)
+apps/music/src/audio.rs:524:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:538:            let (_, current, pending) = self.inner.playbin.state(gstreamer::ClockTime::ZERO);
+apps/music/src/audio.rs:539:            current == gstreamer::State::Playing || pending == gstreamer::State::Playing
+apps/music/src/audio.rs:554:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:565:                        let uri = format!("file://{}", path.display());
+apps/music/src/audio.rs:568:                        let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+apps/music/src/audio.rs:575:                            let _ = self.inner.playbin.set_state(gstreamer::State::Playing);
+apps/music/src/audio.rs:598:                        gstreamer::MessageView::Error(err) => {
+apps/music/src/audio.rs:607:                        gstreamer::MessageView::Eos(_) => {
+apps/music/src/audio.rs:613:                        gstreamer::MessageView::StateChanged(sc) => {
+apps/music/src/audio.rs:669:    /// no in-flight staging (a local `file://` uri, or nothing loaded).
+apps/music/src/audio.rs:761:            use gstreamer::prelude::*;
+apps/music/src/audio.rs:765:            let proxy = sink.dynamic_cast_ref::<gstreamer::ChildProxy>()?;
+apps/music/src/audio.rs:770:            let elem = child.downcast::<gstreamer::Element>().ok()?;
+apps/music/src/audio.rs:793:        use gstreamer::prelude::*;
+apps/music/src/audio.rs:798:                return self.inner.playbin.current_state() == gstreamer::State::Playing;
+apps/music/src/audio.rs:804:                .state(gstreamer::ClockTime::from_mseconds(step.as_millis() as u64));
+apps/music/src/audio.rs:805:            if current == gstreamer::State::Playing {
+apps/music/src/audio.rs:1149:    playbin: &gstreamer::Element,
+apps/music/src/audio.rs:1151:) -> Option<gstreamer::Element> {
+apps/music/src/audio.rs:1152:    use gstreamer::prelude::*;
+apps/music/src/audio.rs:1156:    let bin = gstreamer::parse::bin_from_description(
+apps/music/src/audio.rs:1165:        pad.add_probe(gstreamer::PadProbeType::BUFFER, move |_, _| {
+apps/music/src/audio.rs:1167:            gstreamer::PadProbeReturn::Ok
+apps/music/src/audio.rs:1183:        use gstreamer::prelude::*;
+apps/music/src/audio.rs:1184:        let _ = self.inner.playbin.set_state(gstreamer::State::Null);
+apps/music/src/audio.rs:1311:        assert!(gstreamer::init().is_ok(), "gstreamer initialises");
+apps/music/src/audio.rs:1322:            .all(|n| gstreamer::ElementFactory::find(n).is_some());
+apps/music/src/audio.rs:1336:        let uri = format!("file://{}", path.display());
+apps/music/src/audio.rs:1395:        assert!(gstreamer::init().is_ok(), "gstreamer initialises");
+apps/music/src/audio.rs:1405:            .all(|n| gstreamer::ElementFactory::find(n).is_some())
+apps/music/src/audio.rs:1418:        let uri = format!("file://{}", path.display());
+apps/video-editor/src/media.rs:4://! `/var/workspace`** (see the workspace `fs` crate), *not* in the editor's
+apps/video-editor/src/media.rs:36:pub const WORKSPACE_ROOT: &str = "/var/workspace";
+apps/video-editor/src/media.rs:99:/// before this both silently resolved to a `/var/workspace/<path>` that did
+apps/video-editor/src/media.rs:130:///   2. **FUSE mount** — `/var/workspace/<path>`, when it is really there.
+apps/video-editor/src/media.rs:138:///   4. Failing all of that, the canonical `/var/workspace/<path>`, reported
+apps/video-editor/src/lib.rs:10://!                   (`/var/workspace/…`); bytes hydrate on demand.
+apps/camera/src/actions.rs:208:            CameraAction::SetMode { mode } => doc::write_mode(doc, &ROOT, *mode),
+apps/maps/src/tiles.rs:947:/// bootc-friendly `/var/cache/tilo-maps` location and finally a temp dir.
+apps/maps/src/tiles.rs:966:    let Ok(entries) = std::fs::read_dir(dir) else {
+apps/music/src/actions.rs:2025:        assert!(!cover.contains("/tmp/"));
+apps/music/src/actions.rs:2055:            "file:///tmp/cover.png",
+apps/music/src/actions.rs:2056:            "/tmp/cover.png",
+apps/video-editor/src/app/tests.rs:1712:        path: Some("/tmp/wrong-kind.mp4".into()),
+apps/music/src/net.rs:38:    let out = bounded_command::run(
+apps/maps/src/app/tests.rs:998:        a.set_mode(mode, &mut doc);
+apps/maps/src/app/tests.rs:1017:    a.set_mode(TravelMode::Car, &mut doc);
+apps/maps/src/app/tests.rs:1034:    a.set_mode(TravelMode::Foot, &mut doc);
+apps/maps/src/app/tests.rs:1081:    assert!(!a.overlay_mode());
+apps/maps/src/app/tests.rs:1098:    assert!(a.overlay_mode());
+apps/maps/src/app/tests.rs:1115:    assert!(!a.overlay_mode());
+apps/maps/src/app/tests.rs:1127:    assert!(a.overlay_mode());
+apps/maps/src/app/tests.rs:1145:    assert!(a.overlay_mode());
+apps/maps/src/app/tests.rs:1248:    a.set_mode(TravelMode::Transit, &mut doc);
+apps/maps/src/app/tests.rs:2550:    a.set_travel_mode(TravelMode::Transit);
+apps/maps/src/app/tests.rs:2579:    a.set_travel_mode(TravelMode::Transit);
+apps/video-editor/src/gpu/mod.rs:50:    pub texture: Arc<wgpu::Texture>,
+apps/video-editor/src/gpu/mod.rs:51:    pub view: Arc<wgpu::TextureView>,
+apps/video-editor/src/gpu/mod.rs:69:        device: &wgpu::Device,
+apps/video-editor/src/gpu/mod.rs:70:        queue: &wgpu::Queue,
+apps/video-editor/src/gpu/mod.rs:83:        _device: &wgpu::Device,
+apps/video-editor/src/gpu/mod.rs:84:        _queue: &wgpu::Queue,
+apps/video-editor/src/gpu/mod.rs:138:        device: &wgpu::Device,
+apps/video-editor/src/gpu/mod.rs:139:        queue: &wgpu::Queue,
+apps/video-editor/src/gpu/mod.rs:162:/// its own — parallel `wgpu::Instance` creation races inside Mesa and has
+apps/video-editor/src/presence.rs:148:fn tagged_uuid(key: &PresenceKey, tag: &str) -> Option<Uuid> {
+apps/video-editor/src/presence.rs:160:    tagged_uuid(key, CLIP)
+apps/video-editor/src/presence.rs:165:    tagged_uuid(key, MEDIA)
+apps/video-editor/src/presence.rs:569:    fn uid(s: &str) -> UserId {
+apps/video-editor/src/presence.rs:798:        assert_eq!(heads[0].user, uid("ada"));
+apps/video-editor/src/presence.rs:840:            vec![(uid("ada"), 3)],
+apps/video-editor/src/presence.rs:865:        assert_eq!(heads[0].user, uid("ada"));
+apps/video-editor/src/presence.rs:867:        assert_eq!(heads[1].user, uid("bo"));
+apps/video-editor/src/presence.rs:875:            ctx.color_for(&uid("ada")),
+apps/video-editor/src/presence.rs:876:            ctx.color_for(&uid("bo")),
+apps/video-editor/src/presence.rs:889:            uid("ada"),
+apps/maps/src/app/interaction.rs:183:                } else if self.overlay_mode() && self.nav_open {
+apps/maps/src/app/navigation_surface.rs:55:            && !(self.overlay_mode() && self.nav_open)
+apps/video-editor/src/gpu/media_source.rs:271:        device: &wgpu::Device,
+apps/video-editor/src/gpu/media_source.rs:272:        queue: &wgpu::Queue,
+apps/video-editor/src/gpu/media_source.rs:284:                        .push(YuvConverter::new(device, wgpu::TextureFormat::Rgba8Unorm));
+apps/video-editor/src/gpu/media_source.rs:289:                let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+apps/video-editor/src/gpu/media_source.rs:334:        device: &wgpu::Device,
+apps/video-editor/src/gpu/media_source.rs:335:        queue: &wgpu::Queue,
+apps/maps/src/actions.rs:127:            MapsAction::SetTravelMode { mode } => MapsDoc::set_travel_mode(doc, *mode),
+apps/video-editor/src/gpu/compositor.rs:52:    layer_pipeline: wgpu::ComputePipeline,
+apps/video-editor/src/gpu/compositor.rs:53:    present_pipeline: wgpu::ComputePipeline,
+apps/video-editor/src/gpu/compositor.rs:54:    bgl: wgpu::BindGroupLayout,
+apps/video-editor/src/gpu/compositor.rs:55:    sampler: wgpu::Sampler,
+apps/video-editor/src/gpu/compositor.rs:58:    dummy: wgpu::TextureView,
+apps/video-editor/src/gpu/compositor.rs:65:    textures: [wgpu::Texture; 2],
+apps/video-editor/src/gpu/compositor.rs:66:    views: [wgpu::TextureView; 2],
+apps/video-editor/src/gpu/compositor.rs:77:    texture: wgpu::Texture,
+apps/video-editor/src/gpu/compositor.rs:78:    view: wgpu::TextureView,
+apps/video-editor/src/gpu/compositor.rs:90:    uniform: Option<(wgpu::Buffer, u32)>,
+apps/video-editor/src/gpu/compositor.rs:110:    readback: Option<(wgpu::Buffer, u32, u32)>,
+apps/video-editor/src/gpu/compositor.rs:118:    fn ensure_gpu(&mut self, device: &wgpu::Device) -> &Gpu {
+apps/video-editor/src/gpu/compositor.rs:125:    fn ensure_accum(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+apps/video-editor/src/gpu/compositor.rs:134:            device.create_texture(&wgpu::TextureDescriptor {
+apps/video-editor/src/gpu/compositor.rs:136:                size: wgpu::Extent3d {
+apps/video-editor/src/gpu/compositor.rs:143:                dimension: wgpu::TextureDimension::D2,
+apps/video-editor/src/gpu/compositor.rs:144:                format: wgpu::TextureFormat::Rgba8Unorm,
+apps/video-editor/src/gpu/compositor.rs:145:                usage: wgpu::TextureUsages::STORAGE_BINDING
+apps/video-editor/src/gpu/compositor.rs:146:                    | wgpu::TextureUsages::TEXTURE_BINDING
+apps/video-editor/src/gpu/compositor.rs:147:                    | wgpu::TextureUsages::COPY_SRC,
+apps/video-editor/src/gpu/compositor.rs:153:        let va = a.create_view(&wgpu::TextureViewDescriptor::default());
+apps/video-editor/src/gpu/compositor.rs:154:        let vb = b.create_view(&wgpu::TextureViewDescriptor::default());
+apps/video-editor/src/gpu/compositor.rs:163:    fn ensure_uniform(&mut self, device: &wgpu::Device, stride: u32, count: usize) {
+apps/video-editor/src/gpu/compositor.rs:172:        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+apps/video-editor/src/gpu/compositor.rs:175:            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+apps/video-editor/src/gpu/compositor.rs:188:    fn ensure_lut(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, layers: &[Layer]) -> bool {
+apps/video-editor/src/gpu/compositor.rs:203:            let texture = device.create_texture(&wgpu::TextureDescriptor {
+apps/video-editor/src/gpu/compositor.rs:205:                size: wgpu::Extent3d {
+apps/video-editor/src/gpu/compositor.rs:212:                dimension: wgpu::TextureDimension::D2,
+apps/video-editor/src/gpu/compositor.rs:213:                format: wgpu::TextureFormat::Rgba8Unorm,
+apps/video-editor/src/gpu/compositor.rs:214:                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+apps/video-editor/src/gpu/compositor.rs:217:            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+apps/video-editor/src/gpu/compositor.rs:230:                wgpu::TexelCopyTextureInfo {
+apps/video-editor/src/gpu/compositor.rs:233:                    origin: wgpu::Origin3d::ZERO,
+apps/video-editor/src/gpu/compositor.rs:234:                    aspect: wgpu::TextureAspect::All,
+apps/video-editor/src/gpu/compositor.rs:237:                wgpu::TexelCopyBufferLayout {
+apps/video-editor/src/gpu/compositor.rs:242:                wgpu::Extent3d {
+apps/video-editor/src/gpu/compositor.rs:263:        device: &wgpu::Device,
+apps/video-editor/src/gpu/compositor.rs:264:        queue: &wgpu::Queue,
+apps/video-editor/src/gpu/compositor.rs:265:        target: &wgpu::TextureView,
+apps/video-editor/src/gpu/compositor.rs:288:        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+apps/video-editor/src/gpu/compositor.rs:292:                wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:294:                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+apps/video-editor/src/gpu/compositor.rs:300:                wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:302:                    resource: wgpu::BindingResource::TextureView(&accum.views[last]),
+apps/video-editor/src/gpu/compositor.rs:304:                wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:306:                    resource: wgpu::BindingResource::TextureView(&gpu.dummy),
+apps/video-editor/src/gpu/compositor.rs:308:                wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:310:                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+apps/video-editor/src/gpu/compositor.rs:312:                wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:314:                    resource: wgpu::BindingResource::TextureView(target),
+apps/video-editor/src/gpu/compositor.rs:318:                wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:320:                    resource: wgpu::BindingResource::TextureView(&gpu.dummy),
+apps/video-editor/src/gpu/compositor.rs:325:        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+apps/video-editor/src/gpu/compositor.rs:329:            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+apps/video-editor/src/gpu/compositor.rs:348:        device: &wgpu::Device,
+apps/video-editor/src/gpu/compositor.rs:349:        queue: &wgpu::Queue,
+apps/video-editor/src/gpu/compositor.rs:364:        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+apps/video-editor/src/gpu/compositor.rs:372:                device.create_buffer(&wgpu::BufferDescriptor {
+apps/video-editor/src/gpu/compositor.rs:375:                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+apps/video-editor/src/gpu/compositor.rs:388:        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+apps/video-editor/src/gpu/compositor.rs:392:            wgpu::TexelCopyTextureInfo {
+apps/video-editor/src/gpu/compositor.rs:395:                origin: wgpu::Origin3d::ZERO,
+apps/video-editor/src/gpu/compositor.rs:396:                aspect: wgpu::TextureAspect::All,
+apps/video-editor/src/gpu/compositor.rs:398:            wgpu::TexelCopyBufferInfo {
+apps/video-editor/src/gpu/compositor.rs:400:                layout: wgpu::TexelCopyBufferLayout {
+apps/video-editor/src/gpu/compositor.rs:406:            wgpu::Extent3d {
+apps/video-editor/src/gpu/compositor.rs:416:        slice.map_async(wgpu::MapMode::Read, move |r| {
+apps/video-editor/src/gpu/compositor.rs:419:        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+apps/video-editor/src/gpu/compositor.rs:438:        device: &wgpu::Device,
+apps/video-editor/src/gpu/compositor.rs:439:        queue: &wgpu::Queue,
+apps/video-editor/src/gpu/compositor.rs:466:        device: &wgpu::Device,
+apps/video-editor/src/gpu/compositor.rs:467:        queue: &wgpu::Queue,
+apps/video-editor/src/gpu/compositor.rs:501:        let lut_view: &wgpu::TextureView = match (has_lut, self.lut.as_ref()) {
+apps/video-editor/src/gpu/compositor.rs:614:            let src_view: &wgpu::TextureView = tex.map(|t| t.view.as_ref()).unwrap_or(&gpu.dummy);
+apps/video-editor/src/gpu/compositor.rs:615:            bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+apps/video-editor/src/gpu/compositor.rs:619:                    wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:621:                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+apps/video-editor/src/gpu/compositor.rs:627:                    wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:629:                        resource: wgpu::BindingResource::TextureView(&accum.views[src_accum]),
+apps/video-editor/src/gpu/compositor.rs:631:                    wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:633:                        resource: wgpu::BindingResource::TextureView(src_view),
+apps/video-editor/src/gpu/compositor.rs:635:                    wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:637:                        resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+apps/video-editor/src/gpu/compositor.rs:639:                    wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:641:                        resource: wgpu::BindingResource::TextureView(&accum.views[dst]),
+apps/video-editor/src/gpu/compositor.rs:643:                    wgpu::BindGroupEntry {
+apps/video-editor/src/gpu/compositor.rs:645:                        resource: wgpu::BindingResource::TextureView(lut_view),
+apps/video-editor/src/gpu/compositor.rs:651:        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+apps/video-editor/src/gpu/compositor.rs:655:            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+apps/video-editor/src/gpu/compositor.rs:758:fn build_gpu(device: &wgpu::Device) -> Gpu {
+apps/video-editor/src/gpu/compositor.rs:759:    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+apps/video-editor/src/gpu/compositor.rs:761:        source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
+apps/video-editor/src/gpu/compositor.rs:763:    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+apps/video-editor/src/gpu/compositor.rs:766:            wgpu::BindGroupLayoutEntry {
+apps/video-editor/src/gpu/compositor.rs:768:                visibility: wgpu::ShaderStages::COMPUTE,
+apps/video-editor/src/gpu/compositor.rs:769:                ty: wgpu::BindingType::Buffer {
+apps/video-editor/src/gpu/compositor.rs:770:                    ty: wgpu::BufferBindingType::Uniform,
+apps/video-editor/src/gpu/compositor.rs:776:            wgpu::BindGroupLayoutEntry {
+apps/video-editor/src/gpu/compositor.rs:778:                visibility: wgpu::ShaderStages::COMPUTE,
+apps/video-editor/src/gpu/compositor.rs:779:                ty: wgpu::BindingType::Texture {
+apps/video-editor/src/gpu/compositor.rs:780:                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+apps/video-editor/src/gpu/compositor.rs:781:                    view_dimension: wgpu::TextureViewDimension::D2,
+apps/video-editor/src/gpu/compositor.rs:786:            wgpu::BindGroupLayoutEntry {
+apps/video-editor/src/gpu/compositor.rs:788:                visibility: wgpu::ShaderStages::COMPUTE,
+apps/video-editor/src/gpu/compositor.rs:789:                ty: wgpu::BindingType::Texture {
+apps/video-editor/src/gpu/compositor.rs:790:                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+apps/video-editor/src/gpu/compositor.rs:791:                    view_dimension: wgpu::TextureViewDimension::D2,
+apps/video-editor/src/gpu/compositor.rs:796:            wgpu::BindGroupLayoutEntry {
+apps/video-editor/src/gpu/compositor.rs:798:                visibility: wgpu::ShaderStages::COMPUTE,
+apps/video-editor/src/gpu/compositor.rs:799:                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+apps/video-editor/src/gpu/compositor.rs:802:            wgpu::BindGroupLayoutEntry {
+apps/video-editor/src/gpu/compositor.rs:804:                visibility: wgpu::ShaderStages::COMPUTE,
+apps/video-editor/src/gpu/compositor.rs:805:                ty: wgpu::BindingType::StorageTexture {
+apps/video-editor/src/gpu/compositor.rs:806:                    access: wgpu::StorageTextureAccess::WriteOnly,
+apps/video-editor/src/gpu/compositor.rs:807:                    format: wgpu::TextureFormat::Rgba8Unorm,
+apps/video-editor/src/gpu/compositor.rs:808:                    view_dimension: wgpu::TextureViewDimension::D2,
+apps/video-editor/src/gpu/compositor.rs:814:            wgpu::BindGroupLayoutEntry {
+apps/video-editor/src/gpu/compositor.rs:816:                visibility: wgpu::ShaderStages::COMPUTE,
+apps/video-editor/src/gpu/compositor.rs:817:                ty: wgpu::BindingType::Texture {
+apps/video-editor/src/gpu/compositor.rs:818:                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+apps/video-editor/src/gpu/compositor.rs:819:                    view_dimension: wgpu::TextureViewDimension::D2,
+apps/video-editor/src/gpu/compositor.rs:826:    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+apps/video-editor/src/gpu/compositor.rs:832:        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+apps/video-editor/src/gpu/compositor.rs:844:    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+apps/video-editor/src/gpu/compositor.rs:846:        address_mode_u: wgpu::AddressMode::ClampToEdge,
+apps/video-editor/src/gpu/compositor.rs:847:        address_mode_v: wgpu::AddressMode::ClampToEdge,
+apps/video-editor/src/gpu/compositor.rs:848:        mag_filter: wgpu::FilterMode::Linear,
+apps/video-editor/src/gpu/compositor.rs:849:        min_filter: wgpu::FilterMode::Linear,
+apps/video-editor/src/gpu/compositor.rs:853:    let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+apps/video-editor/src/gpu/compositor.rs:855:        size: wgpu::Extent3d {
+apps/video-editor/src/gpu/compositor.rs:862:        dimension: wgpu::TextureDimension::D2,
+apps/video-editor/src/gpu/compositor.rs:863:        format: wgpu::TextureFormat::Rgba8Unorm,
+apps/video-editor/src/gpu/compositor.rs:864:        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+apps/video-editor/src/gpu/compositor.rs:867:    let dummy = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+apps/video-editor/src/gpu/compositor.rs:884:    device: &wgpu::Device,
+apps/video-editor/src/gpu/compositor.rs:885:    queue: &wgpu::Queue,
+apps/video-editor/src/gpu/compositor.rs:894:    let texture = device.create_texture(&wgpu::TextureDescriptor {
+apps/video-editor/src/gpu/compositor.rs:896:        size: wgpu::Extent3d {
+apps/video-editor/src/gpu/compositor.rs:903:        dimension: wgpu::TextureDimension::D2,
+apps/video-editor/src/gpu/compositor.rs:904:        format: wgpu::TextureFormat::Rgba8Unorm,
+apps/video-editor/src/gpu/compositor.rs:905:        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+apps/video-editor/src/gpu/compositor.rs:909:        wgpu::TexelCopyTextureInfo {
+apps/video-editor/src/gpu/compositor.rs:912:            origin: wgpu::Origin3d::ZERO,
+apps/video-editor/src/gpu/compositor.rs:913:            aspect: wgpu::TextureAspect::All,
+apps/video-editor/src/gpu/compositor.rs:916:        wgpu::TexelCopyBufferLayout {
+apps/video-editor/src/gpu/compositor.rs:921:        wgpu::Extent3d {
+apps/video-editor/src/gpu/compositor.rs:927:    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));

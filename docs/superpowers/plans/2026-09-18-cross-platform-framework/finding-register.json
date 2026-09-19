@@ -1,0 +1,6226 @@
+{
+  "schema_version": 1,
+  "status": "implementation_in_progress",
+  "audit": "../../../audits/platform-extraction-2026-09-18/README.md",
+  "tasks": [
+    {
+      "id": "G01",
+      "title": "Framework ownership and support contract",
+      "depends_on": [],
+      "implementation_unit": "Define the public SDK versus internal backend boundary in crates/app/tilo-app, ui and the existing service crates; record required/optional capabilities for Linux/macOS/Windows and applicable architectures. Services under crates/system/runtime/media can be framework-owned without moving them into the renderer.",
+      "acceptance": "One reviewed capability/host matrix identifies required implementations, optional absence, existing evidence and release status; every backend has an owner; no app must select an OS implementation.",
+      "status": "in_progress"
+    },
+    {
+      "id": "G02",
+      "title": "Scoped host service composition",
+      "depends_on": [
+        "G01"
+      ],
+      "implementation_unit": "Extend ui/src/application.rs::HostContext and ui/src/launch.rs to carry host-selected service clients bound to existing app/workspace/instance permissions and lifetime; integrate native runtime bootstrap in crates/runtime/runtime-portal/src/native.rs.",
+      "acceptance": "Two instances cannot access each other's grants; revocation invalidates pending operations; close releases owned work; packaged startup never invokes Cargo; invalid inherited authority is rejected.",
+      "status": "planned"
+    },
+    {
+      "id": "G03",
+      "title": "SDK surface and no-new-leaks enforcement",
+      "depends_on": [
+        "G01"
+      ],
+      "implementation_unit": "Curate crates/app/tilo-app/src/lib.rs exports in migration-sized steps; replace backend-named app features with semantic features; add tools/check_app_platform_contract.py beside the existing resource/action checker. Keep native windowing/GPU adapters and upstream patches inside framework dependencies.",
+      "acceptance": "Fixture tests reject app OS imports/selection and direct backend dependencies, permit native framework adapters and portable fixture data, and expire exact migrated exceptions; consumer compile tests reject native types through SDK aliases.",
+      "status": "in_progress"
+    },
+    {
+      "id": "G04",
+      "title": "Target and feature dependency gates",
+      "depends_on": [
+        "G01",
+        "G03"
+      ],
+      "implementation_unit": "Add target-resolved graph checks and SDK consumer fixtures under crates/app/tilo-app/tests; coordinate .forgejo/workflows/check.yml and lint.yml with native runner configuration.",
+      "acceptance": "Minimal SDK consumers exclude unrelated FUSE/DRM/media stacks; semantic browser/media features resolve correct target backends; resolve build-host tools separately; reject framework-to-app edges and native API leaks.",
+      "status": "planned"
+    },
+    {
+      "id": "L01",
+      "title": "Known folders, locale and time zones",
+      "depends_on": [
+        "G02"
+      ],
+      "implementation_unit": "Extend ui/src/sysdirs.rs and ui/src/i18n.rs using framework host providers; migrate word-processor/src/i18n.rs and settings input_sources/time_date discovery.",
+      "acceptance": "Redirected/localized folders and native language preferences work without POSIX environment requirements; suggestions confer no grant; unknown current zone stays unknown; old IANA identifiers remain compatible.",
+      "status": "planned"
+    },
+    {
+      "id": "L02",
+      "title": "Private locations and state migration",
+      "depends_on": [
+        "L01",
+        "S01"
+      ],
+      "implementation_unit": "Centralize data/state/config/cache/runtime roots using settings-store, app-state and runtime identity seams; migrate app path resolvers and service defaults inventoried in the register.",
+      "acceptance": "Old profiles/history/journals remain discoverable; concurrent upgrade has one winner; no private cwd/shared-temp fallback; per-user/app/workspace isolation and explicit test roots hold on each host.",
+      "status": "planned"
+    },
+    {
+      "id": "L03",
+      "title": "Host architecture and executable capability selection",
+      "depends_on": [
+        "G02"
+      ],
+      "implementation_unit": "Consolidate apps/imager/src/host.rs, crates/packaging/install/src/isa.rs and app-registry/src/index.rs around process/native architecture and usable instruction-set observations.",
+      "acceptance": "Windows emulation and macOS translated-process fixtures select native architecture correctly; identical usable-feature sets produce identical package selection; unknown is never x86 by default.",
+      "status": "planned"
+    },
+    {
+      "id": "S01",
+      "title": "Private and durable filesystem primitives",
+      "depends_on": [
+        "G01"
+      ],
+      "implementation_unit": "Extend crates/system/atomic-file and crates/runtime/runtime-fs native seams with semantic privacy, bounded no-follow reads, held-directory identity, exclusive creation and durable publication; preserve distinct user-key and machine-key policies.",
+      "acceptance": "Native Linux/macOS/Windows tests cover owner/ACL, ancestor and leaf links/reparse points, hardlinks, race replacement, create-new contention and post-publication flush failures; missing guarantee refuses before unsafe mutation.",
+      "status": "in_progress"
+    },
+    {
+      "id": "S02",
+      "title": "Cross-process locks and process incarnation",
+      "depends_on": [
+        "S01"
+      ],
+      "implementation_unit": "Unify app-state/accounts leases and repair packaging install recovery, app-catalogue checkpoints, registry moderation and relay requester lifetime observation.",
+      "acceptance": "Real concurrent processes cannot recover a live transaction or regress checkpoints; crash releases locks; PID reuse is rejected; unknown observation cannot mean dead; process-local mutex is never accepted as cross-process protection.",
+      "status": "in_progress"
+    },
+    {
+      "id": "S03",
+      "title": "Migrate durable storage consumers",
+      "depends_on": [
+        "S01",
+        "S02",
+        "L01"
+      ],
+      "implementation_unit": "Move native storage mechanics from Browser, Tube, PDF, backups, VPN/print, shell identity/nearby transfer, collab persistence and fs subscription/share state into the framework storage APIs. Extract Settings account mutation journal/recovery and its caller compensation as a coherent accounts framework service (additional finding X01).",
+      "acceptance": "Existing on-disk fixtures round-trip unchanged; production symlink/ownership/collision/restart tests follow backends; PDF pathname staging retains private publication; browser helper and app share the same cleanup lease protocol.",
+      "status": "in_progress"
+    },
+    {
+      "id": "I01",
+      "title": "Owned authenticated local connections",
+      "depends_on": [
+        "G01",
+        "S01",
+        "S02"
+      ],
+      "implementation_unit": "Evolve crates/runtime/runtime-portal around owned authenticated connections; keep fd_transport and UnixCapnpClient as backend internals; add host implementations without replacing trusted transport with ambient localhost connections.",
+      "acceptance": "Malformed/surplus handles close, transferred authority is adopted once, caller identity and incarnation are verified, framing limits hold, children cannot reuse inherited metadata; alternate hosts require native authentication evidence.",
+      "status": "planned"
+    },
+    {
+      "id": "I02",
+      "title": "Migrate brokers and typed service clients",
+      "depends_on": [
+        "I01"
+      ],
+      "implementation_unit": "Move direct sockets/descriptors out of runtime clients, shell runtime host, Files/Agent, model gateway, format host, fs services and compatibility session callers. Retain each existing domain protocol and stronger per-service authorization.",
+      "acceptance": "Existing RPC round trips and adversarial peer tests pass; endpoint permission failure prevents startup; same-user identity alone cannot substitute for a certified launcher/workspace; portable clients expose no raw descriptor.",
+      "status": "planned"
+    },
+    {
+      "id": "I03",
+      "title": "Control and session activity transport",
+      "depends_on": [
+        "I01",
+        "I02"
+      ],
+      "implementation_unit": "Keep tilo-control protocol; migrate its connection layer and scripts/headless-examples/_control.py consumers. Move Clocks publisher/command receiver and shell topbar reader together into a session service.",
+      "acceptance": "Actions list/invoke/cancel and streaming retain protocol behavior; Clocks producer lifetime and command dedup remain authenticated; draw does no native file/proc I/O; one automation surface remains.",
+      "status": "planned"
+    },
+    {
+      "id": "C01",
+      "title": "Managed process trees and tools",
+      "depends_on": [
+        "G01",
+        "S02"
+      ],
+      "implementation_unit": "Extend crates/system/bounded-command with backend-owned tree supervision and streaming jobs; migrate LSP, OCR/tool runners and harness reaper guarantees while keeping domain argv/format policy where appropriate.",
+      "acceptance": "Controlled descendant helper proves timeout, output limit, cancellation and abrupt-owner-death guarantees separately; pipes unblock, children reap, secrets stay off argv, unrelated processes survive; unavailable required lifetime protection refuses.",
+      "status": "planned"
+    },
+    {
+      "id": "C02",
+      "title": "Terminal session service",
+      "depends_on": [
+        "I01",
+        "C01"
+      ],
+      "implementation_unit": "Move apps/terminal/src/main_body.rs service discovery, shell selection, PTY and confinement into runtime session providers; retain portable-pty and Linux ush as implementations.",
+      "acceptance": "Same terminal app/emulation drives native resize/read/write/exit; mandatory confined routes never fall back to ambient shell; macOS lacks Linux namespace support unless actually implemented; service and trusted hosted modes stay distinct.",
+      "status": "planned"
+    },
+    {
+      "id": "D01",
+      "title": "Host-native choose, open and reveal",
+      "depends_on": [
+        "G02",
+        "I01",
+        "L01"
+      ],
+      "implementation_unit": "Split ui/src/portal.rs semantic requests/delivery from host picker/opener implementations; move Imager native dialogs and app xdg-open/open selection into providers.",
+      "acceptance": "Same app request produces native chooser and explicit handoff on each supported host; cancel/denied/unavailable/error remain distinct; granted handles are retained; Unicode paths round-trip; no UI-thread blocking or sandbox bypass.",
+      "status": "planned"
+    },
+    {
+      "id": "D02",
+      "title": "Application discovery, launch and semantic shortcuts",
+      "depends_on": [
+        "D01",
+        "C01"
+      ],
+      "implementation_unit": "Extend desktop-entry/tool-intent authorities for installed app catalogues and authorized launch; migrate shell search, Files terminal intent and Browser shortcuts; keep Git credential bridge integrated with K01/K02.",
+      "acceptance": "Catalogue identity and invalidation hold; launch strips unrelated inherited authority; exact granted working directory preserved; semantic command modifier consistent; app submits intent rather than shell strings.",
+      "status": "planned"
+    },
+    {
+      "id": "D03",
+      "title": "Trash and owned drag artifacts",
+      "depends_on": [
+        "D01",
+        "S01"
+      ],
+      "implementation_unit": "Move Files trash/symlink mechanics and word-processor spool heuristics into host providers; add framework-owned temporary artifact lease at ui DnD/vendor-winit handoff.",
+      "acceptance": "Delete/list/restore/purge refer to the same native item; ordinary winit-dnd-named files are never deleted; genuine spool releases exactly once on completion/cancel; unreadable cross-sandbox source transfers bytes without broad grants.",
+      "status": "planned"
+    },
+    {
+      "id": "K01",
+      "title": "Credential custody and scoped secrets",
+      "depends_on": [
+        "S01",
+        "S02",
+        "I01",
+        "G02"
+      ],
+      "implementation_unit": "Reuse accounts vault/SecretCustody and runtime-identity SecretProvider; integrate Browser credential worker/Keychain, TOTP and Tube secret mediation through scoped providers.",
+      "acceptance": "Stable restart identity and existing ciphertext survive; origin/profile/app namespaces and consent hold; locked/denied never silently downgrade custody; no secrets in CRDT/logs/argv; native keychain tests run on each claimed host.",
+      "status": "planned"
+    },
+    {
+      "id": "K02",
+      "title": "Host trust and SSH identity discovery",
+      "depends_on": [
+        "K01",
+        "L01"
+      ],
+      "implementation_unit": "Separate tilo-native-certs immutable Fedora trust policy from native host trust loading; migrate Remote known-host private storage and user-key discovery plus authorized Git agent integration.",
+      "acceptance": "Image trust cannot be environment-redirected; native stores load intended roots; changed SSH host key still needs explicit trust; private trust files satisfy ACL/no-link policy; no unchecked root-user fallback.",
+      "status": "planned"
+    },
+    {
+      "id": "H01",
+      "title": "Read-only system observations",
+      "depends_on": [
+        "G02",
+        "C01",
+        "L01"
+      ],
+      "implementation_unit": "Move Settings facts/security/users, Monitor sampling/identity, Logs journal reader and shared network/power/free-space observations into services; retain sysinfo and bounded Linux parsers.",
+      "acceptance": "Unavailable differs from false/empty; PID reuse blocks signaling; optional fd counts can be unknown; hardware memory is not invented; hydration/compute policy uses unknown conservatively; real host probes have native fixtures/integration evidence.",
+      "status": "planned"
+    },
+    {
+      "id": "H02",
+      "title": "Hardware and desktop service providers",
+      "depends_on": [
+        "G02",
+        "C01",
+        "I01"
+      ],
+      "implementation_unit": "Extend os-actions Dispatcher and existing BlueZ/power/input/portal traits; move native defaults, Contacts priority notifications, OSK injection and shell hardware selection behind host factories.",
+      "acceptance": "No trait default dispatches Linux commands on another host; native user authorization, hotplug, pairing lifetime, input revocation and lock-before-suspend hold; optional unsupported devices remain explicit.",
+      "status": "planned"
+    },
+    {
+      "id": "H03",
+      "title": "Firewall and VPN operations",
+      "depends_on": [
+        "H01",
+        "H02",
+        "S01"
+      ],
+      "implementation_unit": "Move apps/firewall/src/backend.rs and VPN native probes/profile storage behind semantic preview/apply/profile telemetry; retain os-actions NetworkManager authority.",
+      "acceptance": "Explicit apply gates and exact argv preserved; absent engine never succeeds; profile/interface identity is exact; partial failure/unknown counters observable; no unrelated tun-interface fallback.",
+      "status": "planned"
+    },
+    {
+      "id": "H04",
+      "title": "Package, container, model and enrollment administration",
+      "depends_on": [
+        "H01",
+        "C01",
+        "I02",
+        "K01"
+      ],
+      "implementation_unit": "Use app-host snapshots and existing model ProcessSupervisor/LocalModelControl, container backend and relay privileged broker to replace app helper paths, scripts, systemctl and Flatpak probes.",
+      "acceptance": "Discovery and mutations use same authority; fixed privileged operation vocabulary, caller lifetime and granted inputs retained; cancellations reap helpers; missing tools explicit; model capacity measured on the selected store volume.",
+      "status": "planned"
+    },
+    {
+      "id": "M01",
+      "title": "Portable media and native-frame contract",
+      "depends_on": [
+        "G01",
+        "G02",
+        "G04"
+      ],
+      "implementation_unit": "Refine crates/media/core engine/frame APIs and ui import integration: opaque native image ownership, negotiation and accounting; hide gst::Element, DMA-BUF and decoder factory details from ordinary apps.",
+      "acceptance": "CPU frame fallback preserves color/format; Linux zero-copy identity/modifiers/lifetime tests stay valid; other hosts never import Linux DMA-BUF merely because they are Unix; native codec wire behavior stays unchanged.",
+      "status": "planned"
+    },
+    {
+      "id": "M02",
+      "title": "Capture and device sessions",
+      "depends_on": [
+        "M01",
+        "H02",
+        "I01",
+        "C01"
+      ],
+      "implementation_unit": "Move Camera/Chat and shell remote capture/audio concrete implementations into providers with owned consent-bound sessions and bounded streams.",
+      "acceptance": "Real selected camera/mic/screen sources produce frames/audio; portal remains alive until capture ends; denial/revocation stops resources; no environment-variable availability guess; shots never open real devices.",
+      "status": "planned"
+    },
+    {
+      "id": "M03",
+      "title": "Playback, audio graphs and desktop media sessions",
+      "depends_on": [
+        "M01",
+        "C01",
+        "H02"
+      ],
+      "implementation_unit": "Consolidate Music playback/MPRIS, shared audio_runtime, Settings audio and event sounds into media providers; native IDs become opaque handles and node roles.",
+      "acceptance": "Load/seek/gain/default-device controls retain behavior; accessibility transform restores previous graph on close; no unintended mic monitor; live output proof differs from fake sink; now-playing commands work through one semantic interface.",
+      "status": "planned"
+    },
+    {
+      "id": "M04",
+      "title": "Decode, waveform and export jobs",
+      "depends_on": [
+        "M01",
+        "C01"
+      ],
+      "implementation_unit": "Move Video Editor native audio/waveform/export implementations and GStreamer tuning into shared media backend jobs; retain timeline/project transforms and codec preferences in app.",
+      "acceptance": "Generated clips prove waveform, accurate seek and audio/video export fidelity; codec unavailable and cancellation are explicit; reported acceleration is observed, not inferred from plugin names.",
+      "status": "planned"
+    },
+    {
+      "id": "E01",
+      "title": "Browser engine, private instances and bundle ownership",
+      "depends_on": [
+        "M01",
+        "C01",
+        "S02",
+        "D01",
+        "K01"
+      ],
+      "implementation_unit": "Relocate apps/browser/chromium with CMake, resources and native tests under framework browser ownership; migrate scripts/browser/build-host.py; move WPE composition/environment and private-instance supervision out of apps.",
+      "acceptance": "Existing helper IPC, nested bundle, input/download/private-storage and secure-form tests pass; sandbox bootstrap and stripped capabilities remain; installed browser launches without checkout/developer PATH on each claimed host.",
+      "status": "planned"
+    },
+    {
+      "id": "E02",
+      "title": "One native PDF engine owner",
+      "depends_on": [
+        "G02",
+        "S01",
+        "C01"
+      ],
+      "implementation_unit": "Consolidate apps/pdf-viewer/src/source.rs and crates/media/thumbnail/src/pdf.rs native loader/lifetime behind framework document engine ownership; preserve portable PDF domain processing.",
+      "acceptance": "Viewer/thumbnail concurrency uses one lifetime strategy; packaged native discovery works by target ABI; real page rasterization/edit/save tested; text-only fallback is not counted as rasterizer proof.",
+      "status": "planned"
+    },
+    {
+      "id": "E03",
+      "title": "Speech, OCR, spellcheck and model assets",
+      "depends_on": [
+        "G02",
+        "C01",
+        "L01"
+      ],
+      "implementation_unit": "Move TTS Unix factories, Tesseract/Hunspell execution and OSK model lookup behind existing speaker/text/media seams; retain built-in portable algorithms.",
+      "acceptance": "Native supported speech actually audible/observed; stop/priority and worker timeout/restart hold; language inventory truthful; OCR geometry and output bounds unchanged; minimal non-native consumers compile.",
+      "status": "planned"
+    },
+    {
+      "id": "W01",
+      "title": "Filesystem semantics independent of FUSE",
+      "depends_on": [
+        "G01",
+        "S01",
+        "I01"
+      ],
+      "implementation_unit": "Separate fs/src/namespace.rs and production history/access/restore operations from fuser representations; keep collab_types filenames, records, ACL and domain outcomes.",
+      "acceptance": "Identical checked-restore/history/access outcomes through semantic API and Linux mount; raw names preserved; hidden names stay hidden; no fuser types/errno in public semantic contracts.",
+      "status": "planned"
+    },
+    {
+      "id": "W02",
+      "title": "App workspace clients and hydration",
+      "depends_on": [
+        "W01",
+        "I02",
+        "G02"
+      ],
+      "implementation_unit": "Migrate Files xattr/history/sharing, Ebook workspace classification, Video Editor and media::Source resolution to authorized workspace/resource clients.",
+      "acceptance": "Projected metadata is not hydration; foreground read hydrates; stale cursor/identity, checked operations and ACL handling preserved; same app works without /var/workspace or xattr knowledge.",
+      "status": "planned"
+    },
+    {
+      "id": "W03",
+      "title": "Native projections and filesystem service lifecycle",
+      "depends_on": [
+        "W01",
+        "I02",
+        "C01",
+        "H01"
+      ],
+      "implementation_unit": "Retain Linux FUSE/app-fs as backend; isolate mount/unmount, recipient projection subprocess, publisher helper and service activation from reusable filesystem logic.",
+      "acceptance": "Actual kernel mount suite retains owner/read-only policy, revoke/unmount cleanup and readiness; hosted semantic access does not require a mount; no projection advertises ready when unsupported; bearer data stays off argv.",
+      "status": "planned"
+    },
+    {
+      "id": "N01",
+      "title": "Imager profile codec and authorized media service",
+      "depends_on": [
+        "L03",
+        "S01",
+        "C01",
+        "H01"
+      ],
+      "implementation_unit": "Extract profile model/codec normally from apps/imager/profile-tool path includes; move Imager and Disks inventory/raw writer native operations into optional framework installer/media services.",
+      "acceptance": "App and standalone codec share production format tests without GUI closure; UI/helper confirmation agrees; stale/system/live-device writes refused; native host test uses safe provisioned media and no mutation in shots.",
+      "status": "planned"
+    },
+    {
+      "id": "N02",
+      "title": "Imager private cache and migration storage",
+      "depends_on": [
+        "S01",
+        "S02",
+        "L02"
+      ],
+      "implementation_unit": "Move setup/destination_security, nofollow, migration storage/journals and internal_cache providers with required sealed types/tests; preserve held-handle bundle validation.",
+      "acceptance": "Existing checkpoint/journal bytes remain valid; Linux/macOS/Windows guarantee differences explicit; collision/ACL/reparse/race/disk-full/resume tests exercise moved code; never claim durability beyond evidence.",
+      "status": "in_progress"
+    },
+    {
+      "id": "N03",
+      "title": "Imager connected-folder transaction closure",
+      "depends_on": [
+        "N02",
+        "I01",
+        "C01"
+      ],
+      "implementation_unit": "Move setup/connection endpoint/model/reconcile/store/transaction and native witness/lease receiver with necessary migration_source/native journal and NTFS broker contracts as a coherent service.",
+      "acceptance": "No framework-to-app imports or public evidence constructors; Linux lease-break/helper-death/inotify-overflow/crash recovery tests remain; Windows read/store availability is distinct from transaction execution; helpers preserve confinement.",
+      "status": "in_progress"
+    },
+    {
+      "id": "N04",
+      "title": "Desktop and Bootc installation providers",
+      "depends_on": [
+        "N01",
+        "N02",
+        "C01",
+        "I02"
+      ],
+      "implementation_unit": "Move Imager desktop probe/install/continuation/worker and session installer OS effects to deployment providers; keep UI/product choices app-side.",
+      "acceptance": "Pinned package/device identity, authenticated continuation, destructive confirmation and cancel/reap remain; Linux installation tests use isolated images; other hosts do not invoke Linux installers merely to satisfy an API.",
+      "status": "planned"
+    },
+    {
+      "id": "B01",
+      "title": "Sandbox and compositor backend boundaries",
+      "depends_on": [
+        "G04",
+        "I01",
+        "C01",
+        "S01"
+      ],
+      "implementation_unit": "Retain Wayland/DRM and launcher/ush Linux enforcement as framework/platform backends; isolate shared launch/compute policy and eliminate duplicate unused enforcement APIs only after caller verification.",
+      "acceptance": "Production confinement/netgate/FD inheritance tests pass; native hosted mode cannot be a sandbox failure fallback; compute pinned output collection survives swaps; minimal portable clients avoid native compositor closure.",
+      "status": "planned"
+    },
+    {
+      "id": "B02",
+      "title": "Login, boot, update and privileged deployment",
+      "depends_on": [
+        "H02",
+        "C01",
+        "I02",
+        "S01"
+      ],
+      "implementation_unit": "Move UI invocation of greetd/PAM/Bootc/systemd and identity enrollment mechanics behind fixed semantic operations; retain OS helpers, units, image/trust and signing tooling as target deployment owners.",
+      "acceptance": "Wrong password/helper crash cannot unlock; update/rollback formats and monotonic trust preserved; service restore works on failure; Linux boot/privilege tests stay mandatory; no arbitrary privileged exec API.",
+      "status": "planned"
+    },
+    {
+      "id": "B03",
+      "title": "Compatibility, VM and projection backends",
+      "depends_on": [
+        "B01",
+        "I02",
+        "C01",
+        "S01",
+        "M01"
+      ],
+      "implementation_unit": "Keep Wine/FEX/DXVK/libvirt/RAIL and private audio implementation as explicit Linux framework backends; expose existing registry/executor/delegate/resource contracts and migrate Windows app/shell callers.",
+      "acceptance": "Explain/catalogue policy independent of Linux; exact file/audio/network grants and guest trust maintained; detached descendants reap without affecting unrelated children; Windows guest support never labeled Windows host support.",
+      "status": "planned"
+    },
+    {
+      "id": "V01",
+      "title": "Portable and native verification suites",
+      "depends_on": [
+        "G04"
+      ],
+      "implementation_unit": "For every extraction, move native tests with backend, retain app-level action/resource tests, split fuzz targets and remove success-on-unobserved-subject paths without weakening assertions.",
+      "acceptance": "Required native lane fails missing prerequisites; portable fixture tests never counted as real device/security proof; all affected test targets compile; final cargo check -p shell --tests --locked runs.",
+      "status": "planned"
+    },
+    {
+      "id": "V02",
+      "title": "Framework distribution and host tooling",
+      "depends_on": [
+        "G04"
+      ],
+      "implementation_unit": "Centralize helper/bundle/native dependency ownership, semantic app packaging inputs and target prerequisites; retain Fedora/PE/Mach-O/ELF release mechanics and approved vendor tooling at explicit platform owners.",
+      "acceptance": "Installed artifacts on clean host locate helpers/SDKs/assets; no developer PATH or build-on-launch; native target+ABI correct; sandbox/signing rules unchanged; canonical install/release metadata distinguishes published support.",
+      "status": "planned"
+    },
+    {
+      "id": "V03",
+      "title": "Closure audit and final support certification",
+      "depends_on": [
+        "L02",
+        "L03",
+        "S03",
+        "I03",
+        "C02",
+        "D02",
+        "D03",
+        "K02",
+        "H03",
+        "H04",
+        "M02",
+        "M03",
+        "M04",
+        "E01",
+        "E02",
+        "E03",
+        "W02",
+        "W03",
+        "N03",
+        "N04",
+        "B02",
+        "B03",
+        "V01",
+        "V02"
+      ],
+      "implementation_unit": "Close each finding with source diff and evidence; remove migration exceptions; compile identical app sources and semantic features under supported target profiles; verify distribution/action parity.",
+      "acceptance": "All 194 audit dispositions accounted for plus framework findings; no app-native implementation or backend selection; required host matrix fully passes; unavailable native tests remain outstanding and cannot be reported complete.",
+      "status": "planned"
+    }
+  ],
+  "findings": [
+    {
+      "id": "A01-01",
+      "title": "Per-app host directory discovery (extract; medium)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/calendar/src/store.rs",
+          "line": 20
+        },
+        {
+          "path": "apps/clocks/src/lib.rs",
+          "line": 274
+        },
+        {
+          "path": "apps/contacts/src/storage.rs",
+          "line": 45
+        },
+        {
+          "path": "apps/notes/src/storage.rs",
+          "line": 78
+        },
+        {
+          "path": "apps/scratchpad/src/main.rs",
+          "line": 31
+        },
+        {
+          "path": "apps/sheets/src/app.rs",
+          "line": 5601
+        },
+        {
+          "path": "apps/totp/src/storage.rs",
+          "line": 79
+        },
+        {
+          "path": "apps/typst-editor/src/app.rs",
+          "line": 582
+        },
+        {
+          "path": "apps/word-processor/src/lib.rs",
+          "line": 396
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-02",
+      "title": "Calendar hardcodes the Downloads folder (extract; medium)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "D01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/calendar/src/store.rs",
+          "line": 60
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-03",
+      "title": "Clocks implements authenticated-session transport and private writes (extract backend; high)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "I03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/clocks/src/app.rs",
+          "line": 1223
+        },
+        {
+          "path": "apps/clocks/src/lib.rs",
+          "line": 149
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-04",
+      "title": "Contacts directly speaks a custom notification D-Bus extension (extract backend; high)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "H02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/contacts/Cargo.toml",
+          "line": 37
+        },
+        {
+          "path": "apps/contacts/src/priority_contacts.rs",
+          "line": 14
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-05",
+      "title": "TOTP chooses key custody using secret-tool availability (extract backend; high)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "K01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/totp/Cargo.toml",
+          "line": 23
+        },
+        {
+          "path": "apps/totp/src/storage.rs",
+          "line": 232
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "storage.rs",
+          "line": 567
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A01-06",
+      "title": "Code editor owns Unix subprocess-group lifecycle (extract backend; high)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "C01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/code-editor/Cargo.toml",
+          "line": 31
+        },
+        {
+          "path": "apps/code-editor/Cargo.toml",
+          "line": 57
+        },
+        {
+          "path": "apps/code-editor/src/lsp.rs",
+          "line": 28
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-07",
+      "title": "Ebook equates sharing with a Linux mount path and POSIX path-list syntax (extract; high)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "W02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/ebook/src/app.rs",
+          "line": 1552
+        },
+        {
+          "path": "apps/ebook/src/content.rs",
+          "line": 41
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-08",
+      "title": "PDFium dynamic library discovery is Linux-centric (extract loader backend; medium)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "E02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/pdf-viewer/Cargo.toml",
+          "line": 37
+        },
+        {
+          "path": "apps/pdf-viewer/src/source.rs",
+          "line": 2514
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-09",
+      "title": "PDF save requires directory fsync with ordinary File::open (extract durable-file operation; high)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/pdf-viewer/src/source.rs",
+          "line": 128
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-10",
+      "title": "Word processor guesses toolkit drag payload ownership (extract ownership capability; high)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "D03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/word-processor/src/widget.rs",
+          "line": 2406
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-11",
+      "title": "Word processor discovers locale from POSIX environment itself (extract discovery; medium)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "L01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/slides/src/strings.rs",
+          "line": 42
+        },
+        {
+          "path": "apps/totp/src/i18n.rs",
+          "line": 31
+        },
+        {
+          "path": "apps/word-processor/src/i18n.rs",
+          "line": 83
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-12",
+      "title": "Platform-dependent test fixtures need capability-specific verification (test-only; medium)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/code-editor/src/editor_view.rs",
+          "line": 3172
+        },
+        {
+          "path": "apps/code-editor/src/lsp.rs",
+          "line": 1172
+        },
+        {
+          "path": "apps/code-editor/tests/language_server.rs",
+          "line": 89
+        },
+        {
+          "path": "apps/contacts/src/app.rs",
+          "line": 13156
+        },
+        {
+          "path": "apps/contacts/src/app/tests.rs",
+          "line": 2817
+        },
+        {
+          "path": "apps/contacts/src/main.rs",
+          "line": 280
+        },
+        {
+          "path": "apps/notes/tests/framework_history.rs",
+          "line": 481
+        },
+        {
+          "path": "apps/pdf-viewer/src/app.rs",
+          "line": 5482
+        },
+        {
+          "path": "apps/pdf-viewer/src/app_events.rs",
+          "line": 3050
+        },
+        {
+          "path": "apps/pdf-viewer/src/source.rs",
+          "line": 2841
+        },
+        {
+          "path": "apps/sheets/src/app.rs",
+          "line": 7873
+        },
+        {
+          "path": "apps/slides/src/framework_history_tests.rs",
+          "line": 455
+        },
+        {
+          "path": "apps/typst-editor/src/framework_history_tests.rs",
+          "line": 151
+        },
+        {
+          "path": "apps/word-processor/src/lib.rs",
+          "line": 466
+        },
+        {
+          "path": "apps/word-processor/src/widget/tests.rs",
+          "line": 3774
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A01-13",
+      "title": "Linux packaging and macOS bundle tooling are intentional target backends (retain target-specific)",
+      "report": "01-apps-productivity.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/scratchpad/README.md",
+          "line": 11
+        },
+        {
+          "path": "apps/scratchpad/build-macos.sh",
+          "line": 4
+        },
+        {
+          "path": "apps/word-processor/Cargo.toml",
+          "line": 21
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-01",
+      "title": "Camera owns Linux V4L2 enumeration and capture (high)",
+      "report": "02-apps-media.md",
+      "primary_task": "M02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/camera/Cargo.toml",
+          "line": 20
+        },
+        {
+          "path": "apps/camera/src/actions.rs",
+          "line": 1146
+        },
+        {
+          "path": "apps/camera/src/app.rs",
+          "line": 2404
+        },
+        {
+          "path": "apps/camera/src/capture.rs",
+          "line": 18
+        },
+        {
+          "path": "apps/camera/src/search.rs",
+          "line": 288
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-02",
+      "title": "Camera launches xdg-open directly (high)",
+      "report": "02-apps-media.md",
+      "primary_task": "D01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/camera/src/app.rs",
+          "line": 2541
+        },
+        {
+          "path": "apps/camera/tilo-app.toml",
+          "line": 51
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-03",
+      "title": "Maps embeds the XDG location implementation (high)",
+      "report": "02-apps-media.md",
+      "primary_task": "H02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/maps/Cargo.toml",
+          "line": 36
+        },
+        {
+          "path": "apps/maps/src/location.rs",
+          "line": 53
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-04",
+      "title": "Music network policy probes NetworkManager itself (medium)",
+      "report": "02-apps-media.md",
+      "primary_task": "H01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/music/Cargo.toml",
+          "line": 73
+        },
+        {
+          "path": "apps/music/src/net.rs",
+          "line": 14
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-05",
+      "title": "Music duplicates native playback and media-session backends (high)",
+      "report": "02-apps-media.md",
+      "primary_task": "M03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/music/Cargo.toml",
+          "line": 23
+        },
+        {
+          "path": "apps/music/src/audio.rs",
+          "line": 187
+        },
+        {
+          "path": "apps/music/src/mpris.rs",
+          "line": 264
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-06",
+      "title": "Editor owns native decode, PCM output and export plumbing (high)",
+      "report": "02-apps-media.md",
+      "primary_task": "M04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/video-editor/Cargo.toml",
+          "line": 57
+        },
+        {
+          "path": "apps/video-editor/src/audio.rs",
+          "line": 585
+        },
+        {
+          "path": "apps/video-editor/src/export.rs",
+          "line": 757
+        },
+        {
+          "path": "apps/video-editor/src/waveform.rs",
+          "line": 91
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "export.rs",
+          "line": 402
+        },
+        {
+          "path": "preview.rs",
+          "line": 240
+        },
+        {
+          "path": "thumbnail.rs",
+          "line": 838
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A02-07",
+      "title": "Tube private persistence contains Unix security primitives (high)",
+      "report": "02-apps-media.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/tube/src/history_store.rs",
+          "line": 9
+        },
+        {
+          "path": "apps/tube/src/sync/lifecycle.rs",
+          "line": 12
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "history_store.rs",
+          "line": 463
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A02-08",
+      "title": "Tube explicitly binds account/device secret acquisition to XDG (high)",
+      "report": "02-apps-media.md",
+      "primary_task": "K01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/tube/Cargo.toml",
+          "line": 57
+        },
+        {
+          "path": "apps/tube/src/sync/lifecycle.rs",
+          "line": 408
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-09",
+      "title": "Multiple apps duplicate platform directory selection (medium)",
+      "report": "02-apps-media.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/camera/src/library.rs",
+          "line": 25
+        },
+        {
+          "path": "apps/maps/src/tiles.rs",
+          "line": 948
+        },
+        {
+          "path": "apps/music/src/backend/live.rs",
+          "line": 152
+        },
+        {
+          "path": "apps/music/src/storage.rs",
+          "line": 400
+        },
+        {
+          "path": "apps/photos/src/app.rs",
+          "line": 493
+        },
+        {
+          "path": "apps/tube/src/app.rs",
+          "line": 64
+        },
+        {
+          "path": "apps/tube/src/history_store.rs",
+          "line": 121
+        },
+        {
+          "path": "apps/tube/src/sync/lifecycle.rs",
+          "line": 425
+        },
+        {
+          "path": "apps/video-editor/src/project_file.rs",
+          "line": 294
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-10",
+      "title": "Editor resolver hardcodes FUSE mount and equates stat with hydration (high)",
+      "report": "02-apps-media.md",
+      "primary_task": "W02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/video-editor/src/media.rs",
+          "line": 36
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-11",
+      "title": "Music hand-builds file URIs (medium)",
+      "report": "02-apps-media.md",
+      "primary_task": "M03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/music/src/app.rs",
+          "line": 2783
+        },
+        {
+          "path": "apps/music/src/audio.rs",
+          "line": 565
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "audio.rs",
+          "line": 1336
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A02-12",
+      "title": "yt-dlp availability/execution is a host integration requirement (medium)",
+      "report": "02-apps-media.md",
+      "primary_task": "C01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/tube/Cargo.toml",
+          "line": 77
+        },
+        {
+          "path": "apps/tube/src/backend/ytdlp.rs",
+          "line": 58
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A02-13",
+      "title": "Native-media test environment assumptions must remain explicit",
+      "report": "02-apps-media.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/camera/src/capture.rs",
+          "line": 248
+        },
+        {
+          "path": "apps/music/src/app.rs",
+          "line": 7399
+        },
+        {
+          "path": "apps/music/src/audio.rs",
+          "line": 1290
+        },
+        {
+          "path": "apps/music/src/mpris.rs",
+          "line": 693
+        },
+        {
+          "path": "apps/photos/tests/framework_history_launch.rs",
+          "line": 48
+        },
+        {
+          "path": "apps/video-editor/src/export.rs",
+          "line": 1197
+        },
+        {
+          "path": "apps/video-editor/src/preview.rs",
+          "line": 1141
+        },
+        {
+          "path": "apps/video-editor/src/project_file.rs",
+          "line": 662
+        },
+        {
+          "path": "apps/video-editor/tests/export_fidelity.rs",
+          "line": 47
+        },
+        {
+          "path": "apps/video-editor/tests/headless_action_no_window.rs",
+          "line": 33
+        },
+        {
+          "path": "apps/video-editor/tests/support/generated_clip.rs",
+          "line": 7
+        },
+        {
+          "path": "apps/video-player/tests/real_decode.rs",
+          "line": 44
+        },
+        {
+          "path": "apps/weather/src/framework_history_tests.rs",
+          "line": 451
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "audio.rs",
+          "line": 1323
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A02-14",
+      "title": "App manifests intentionally describe Linux deployment",
+      "report": "02-apps-media.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-01",
+      "title": "External URI/file launching belongs to a host capability (high)",
+      "report": "03-apps-communication.md",
+      "primary_task": "D01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/browser/src/capabilities.rs",
+          "line": 51
+        },
+        {
+          "path": "apps/feeds/src/app.rs",
+          "line": 2996
+        },
+        {
+          "path": "apps/mail/src/engine.rs",
+          "line": 811
+        },
+        {
+          "path": "apps/terminal/src/main_body.rs",
+          "line": 149
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-02",
+      "title": "Terminal owns the Unix service discovery and descriptor transport (high)",
+      "report": "03-apps-communication.md",
+      "primary_task": "C02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/terminal/src/lib.rs",
+          "line": 61
+        },
+        {
+          "path": "apps/terminal/src/main_body.rs",
+          "line": 6727
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-03",
+      "title": "Terminal shell/PTY/confinement probing is a platform backend (high)",
+      "report": "03-apps-communication.md",
+      "primary_task": "C02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/terminal/Cargo.toml",
+          "line": 30
+        },
+        {
+          "path": "apps/terminal/src/main_body.rs",
+          "line": 6482
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-04",
+      "title": "Agent diagnostic endpoints expose Unix transport (medium)",
+      "report": "03-apps-communication.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/agent/src/wire.rs",
+          "line": 8
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-05",
+      "title": "Chat capture selection and media availability are Linux-shaped (high)",
+      "report": "03-apps-communication.md",
+      "primary_task": "M02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/chat/Cargo.toml",
+          "line": 19
+        },
+        {
+          "path": "apps/chat/src/audio.rs",
+          "line": 259
+        },
+        {
+          "path": "apps/chat/src/call.rs",
+          "line": 91
+        },
+        {
+          "path": "apps/chat/src/media.rs",
+          "line": 368
+        },
+        {
+          "path": "apps/chat/src/video.rs",
+          "line": 108
+        },
+        {
+          "path": "apps/chat/src/video.rs",
+          "line": 17
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-06",
+      "title": "Chat host identity and workspace mount discovery (medium)",
+      "report": "03-apps-communication.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/chat/src/identity.rs",
+          "line": 106
+        },
+        {
+          "path": "apps/chat/src/picker.rs",
+          "line": 16
+        },
+        {
+          "path": "apps/chat/src/storage.rs",
+          "line": 31
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "identity.rs",
+          "line": 83
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A03-07",
+      "title": "Browser private storage safety relies on Unix permissions, flock and PID liveness (high)",
+      "report": "03-apps-communication.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/browser/src/autofill.rs",
+          "line": 182
+        },
+        {
+          "path": "apps/browser/src/session.rs",
+          "line": 123
+        },
+        {
+          "path": "apps/browser/src/storage.rs",
+          "line": 58
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "storage.rs",
+          "line": 40
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A03-08",
+      "title": "Repository-owned Chromium native host is already a backend, located under an app (high)",
+      "report": "03-apps-communication.md",
+      "primary_task": "E01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/browser/chromium/src/main_mac.mm",
+          "line": 1
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "capabilities.h",
+          "line": 94
+        },
+        {
+          "path": "helper_mac.cc",
+          "line": 1
+        },
+        {
+          "path": "host.cc",
+          "line": 1058
+        },
+        {
+          "path": "host.cc",
+          "line": 172
+        },
+        {
+          "path": "host.cc",
+          "line": 80
+        },
+        {
+          "path": "key_mapping.h",
+          "line": 11
+        },
+        {
+          "path": "main_linux.cc",
+          "line": 1
+        },
+        {
+          "path": "renderer.cc",
+          "line": 26
+        },
+        {
+          "path": "startup_diagnostics.h",
+          "line": 50
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A03-09",
+      "title": "macOS Keychain implementation belongs behind credential-store capability (high)",
+      "report": "03-apps-communication.md",
+      "primary_task": "K01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/browser/chromium/CMakeLists.txt",
+          "line": 99
+        },
+        {
+          "path": "apps/browser/chromium/src/credentials_mac.h",
+          "line": 8
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "credentials_mac.mm",
+          "line": 1
+        },
+        {
+          "path": "host.cc",
+          "line": 1078
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A03-10",
+      "title": "Remote SSH trust-store and default identity paths assume Unix layout (high)",
+      "report": "03-apps-communication.md",
+      "primary_task": "K02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/remote/src/app.rs",
+          "line": 1567
+        },
+        {
+          "path": "apps/remote/src/session.rs",
+          "line": 96
+        },
+        {
+          "path": "apps/remote/src/ssh.rs",
+          "line": 135
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-11",
+      "title": "App shortcut OS choice and Git credential bridge (medium)",
+      "report": "03-apps-communication.md",
+      "primary_task": "D02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/browser/src/browser_tabs.rs",
+          "line": 818
+        },
+        {
+          "path": "apps/browser/src/browser_widget.rs",
+          "line": 3845
+        },
+        {
+          "path": "apps/git-client/src/repo.rs",
+          "line": 1066
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-13",
+      "title": "Browser private process launch and WPE composition remain app-owned (medium)",
+      "report": "03-apps-communication.md",
+      "primary_task": "E01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/browser/src/compositor.rs",
+          "line": 14
+        },
+        {
+          "path": "apps/browser/src/main.rs",
+          "line": 75
+        },
+        {
+          "path": "apps/browser/src/private_window.rs",
+          "line": 11
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A03-12",
+      "title": "Keep native deployment/test boundaries explicit (medium)",
+      "report": "03-apps-communication.md",
+      "primary_task": "V02",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/browser/Cargo.toml",
+          "line": 21
+        },
+        {
+          "path": "apps/browser/chromium/CMakeLists.txt",
+          "line": 18
+        },
+        {
+          "path": "apps/browser/src/main.rs",
+          "line": 75
+        },
+        {
+          "path": "apps/mail/Cargo.toml",
+          "line": 73
+        },
+        {
+          "path": "apps/terminal/src/main.rs",
+          "line": 127
+        },
+        {
+          "path": "apps/terminal/tests/shots_smoke.rs",
+          "line": 20
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "app.rs",
+          "line": 8300
+        },
+        {
+          "path": "autofill.rs",
+          "line": 293
+        },
+        {
+          "path": "browser_widget.rs",
+          "line": 9348
+        },
+        {
+          "path": "credential_secure_forms.py",
+          "line": 252
+        },
+        {
+          "path": "dmabuf_composite_probe.rs",
+          "line": 8
+        },
+        {
+          "path": "download_lifetime.py",
+          "line": 180
+        },
+        {
+          "path": "native_blocker.rs",
+          "line": 257
+        },
+        {
+          "path": "nested_bundle.py",
+          "line": 10
+        },
+        {
+          "path": "private_window.rs",
+          "line": 56
+        },
+        {
+          "path": "showcase.rs",
+          "line": 6274
+        },
+        {
+          "path": "src/tests.rs",
+          "line": 933
+        },
+        {
+          "path": "ssh.rs",
+          "line": 702
+        },
+        {
+          "path": "storage.rs",
+          "line": 256
+        },
+        {
+          "path": "tabs.py",
+          "line": 65
+        },
+        {
+          "path": "tests/edit_shortcuts.py",
+          "line": 50
+        },
+        {
+          "path": "tests/macos_bundle.py",
+          "line": 10
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A04-01",
+      "title": "Files owns the collaborative filesystem's xattr transport and errno ABI (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "W02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/file-explorer/Cargo.toml",
+          "line": 58
+        },
+        {
+          "path": "apps/file-explorer/src/files_app.rs",
+          "line": 1951
+        },
+        {
+          "path": "apps/file-explorer/src/framework_history.rs",
+          "line": 7
+        },
+        {
+          "path": "apps/file-explorer/src/history_control.rs",
+          "line": 38
+        },
+        {
+          "path": "apps/file-explorer/src/model.rs",
+          "line": 50
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-02",
+      "title": "Files Unix service channels and path-byte encoding live in app code (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/file-explorer/src/identity_directory.rs",
+          "line": 19
+        },
+        {
+          "path": "apps/file-explorer/src/model.rs",
+          "line": 704
+        },
+        {
+          "path": "apps/file-explorer/src/nearby_send.rs",
+          "line": 91
+        },
+        {
+          "path": "apps/file-explorer/src/received_shares.rs",
+          "line": 7
+        },
+        {
+          "path": "apps/file-explorer/src/search_provider.rs",
+          "line": 49
+        },
+        {
+          "path": "apps/file-explorer/src/sharing.rs",
+          "line": 196
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-03",
+      "title": "Files trash, known folders, and symlinks contain target policy (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "D03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/file-explorer/src/fileops.rs",
+          "line": 55
+        },
+        {
+          "path": "apps/file-explorer/src/templates.rs",
+          "line": 14
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-04",
+      "title": "Files launch integration and drag handoff assume the Tilo host layout (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "D02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/file-explorer/src/external_drag.rs",
+          "line": 1
+        },
+        {
+          "path": "apps/file-explorer/src/files_app.rs",
+          "line": 4435
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-05",
+      "title": "Workspace and user-directory defaults are duplicated in apps (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/backups/src/app.rs",
+          "line": 443
+        },
+        {
+          "path": "apps/disk-usage/src/app.rs",
+          "line": 81
+        },
+        {
+          "path": "apps/file-explorer/src/model.rs",
+          "line": 8
+        },
+        {
+          "path": "apps/vpn/src/local.rs",
+          "line": 20
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-06",
+      "title": "OSK has an unguarded Wayland/Linux injection backend (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "H02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/osk/Cargo.toml",
+          "line": 45
+        },
+        {
+          "path": "apps/osk/src/imclient.rs",
+          "line": 206
+        },
+        {
+          "path": "apps/osk/src/inject.rs",
+          "line": 235
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-07",
+      "title": "OSK native swipe model asset discovery is host-specific (low)",
+      "report": "04-apps-system.md",
+      "primary_task": "E03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/osk/Cargo.toml",
+          "line": 32
+        },
+        {
+          "path": "apps/osk/src/futo.rs",
+          "line": 17
+        },
+        {
+          "path": "apps/osk/src/widget.rs",
+          "line": 63
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-08",
+      "title": "Disks contains Linux block-device discovery and privileged operations (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "N01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/disks/Cargo.toml",
+          "line": 24
+        },
+        {
+          "path": "apps/disks/src/app.rs",
+          "line": 1178
+        },
+        {
+          "path": "apps/disks/src/model.rs",
+          "line": 213
+        },
+        {
+          "path": "apps/disks/src/ops.rs",
+          "line": 46
+        },
+        {
+          "path": "apps/disks/src/probe.rs",
+          "line": 26
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-09",
+      "title": "Firewall's firewalld backend is app-local (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "H03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/firewall/src/backend.rs",
+          "line": 80
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-10",
+      "title": "Logs owns journalctl execution/parsing (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "H01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/logs/src/journal.rs",
+          "line": 382
+        },
+        {
+          "path": "apps/logs/tilo-app.toml",
+          "line": 3
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-11",
+      "title": "Monitor mixes portable sampling with Linux enrichment and POSIX termination (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "H01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/monitor/Cargo.toml",
+          "line": 33
+        },
+        {
+          "path": "apps/monitor/src/sampler.rs",
+          "line": 13
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-12",
+      "title": "Containers owns Podman/Distrobox backend and shell launcher scripts (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "H04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/containers/src/podman.rs",
+          "line": 465
+        },
+        {
+          "path": "apps/containers/src/terminal.rs",
+          "line": 25
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-13",
+      "title": "VPN telemetry and local profile persistence retain Linux assumptions (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "H03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/vpn/src/app.rs",
+          "line": 629
+        },
+        {
+          "path": "apps/vpn/src/config.rs",
+          "line": 260
+        },
+        {
+          "path": "apps/vpn/src/local.rs",
+          "line": 20
+        },
+        {
+          "path": "apps/vpn/src/net.rs",
+          "line": 25
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-14",
+      "title": "Settings embeds host identity, account, security and hardware discovery (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "H01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/settings/src/panes/about.rs",
+          "line": 46
+        },
+        {
+          "path": "apps/settings/src/panes/agent_models.rs",
+          "line": 289
+        },
+        {
+          "path": "apps/settings/src/panes/permissions.rs",
+          "line": 46
+        },
+        {
+          "path": "apps/settings/src/panes/users.rs",
+          "line": 145
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-15",
+      "title": "Settings audio extends os-actions with direct wpctl logic (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "M03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/settings/Cargo.toml",
+          "line": 69
+        },
+        {
+          "path": "apps/settings/src/panes/audio.rs",
+          "line": 145
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-16",
+      "title": "Settings input-source/timezone catalogs and fallback paths are native (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "L01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/settings/src/input_sources.rs",
+          "line": 25
+        },
+        {
+          "path": "apps/settings/src/panes/time_date.rs",
+          "line": 95
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-17",
+      "title": "Settings embeds Bootc/systemd deployment management (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "B02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/settings/src/panes/updates.rs",
+          "line": 76
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-18",
+      "title": "Settings device mesh and local model admin owns Linux helper locations/processes (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "H04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/settings/src/panes/agent_models.rs",
+          "line": 33
+        },
+        {
+          "path": "apps/settings/src/panes/device_mesh.rs",
+          "line": 28
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-19",
+      "title": "Store has host Flatpak probes outside its existing app-host broker (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "H04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/store/src/actions.rs",
+          "line": 174
+        },
+        {
+          "path": "apps/store/src/app.rs",
+          "line": 1047
+        },
+        {
+          "path": "apps/store/src/flathub_client.rs",
+          "line": 353
+        },
+        {
+          "path": "apps/store/src/installed.rs",
+          "line": 27
+        },
+        {
+          "path": "apps/store/src/worker.rs",
+          "line": 172
+        },
+        {
+          "path": "apps/store/src/worker.rs",
+          "line": 256
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-20",
+      "title": "Windows app owns Linux appliance helpers and Unix service handle adoption (high)",
+      "report": "04-apps-system.md",
+      "primary_task": "B03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/windows/src/appliance_owner.rs",
+          "line": 13
+        },
+        {
+          "path": "apps/windows/src/provider.rs",
+          "line": 4
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-21",
+      "title": "Backup metadata and private temporary output use Unix-specific primitives (medium)",
+      "report": "04-apps-system.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/backups/src/engine.rs",
+          "line": 76
+        },
+        {
+          "path": "apps/print-centre/src/surface.rs",
+          "line": 5
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A04-22",
+      "title": "Preserve existing shared boundaries; target-scope deployment and native certification (medium migration coordination)",
+      "report": "04-apps-system.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/file-explorer/tests/atspi_smoke.sh",
+          "line": 7
+        },
+        {
+          "path": "apps/settings/src/accounts.rs",
+          "line": 863
+        },
+        {
+          "path": "apps/settings/src/dispatcher.rs",
+          "line": 12
+        },
+        {
+          "path": "apps/settings/src/panes/storage.rs",
+          "line": 9
+        },
+        {
+          "path": "apps/store/verify-open-flow.sh",
+          "line": 1
+        },
+        {
+          "path": "apps/themes/Cargo.toml",
+          "line": 22
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "panes/display.rs",
+          "line": 247
+        },
+        {
+          "path": "panes/display.rs",
+          "line": 44
+        },
+        {
+          "path": "panes/network.rs",
+          "line": 2538
+        },
+        {
+          "path": "panes/network.rs",
+          "line": 27
+        },
+        {
+          "path": "panes/power.rs",
+          "line": 38
+        },
+        {
+          "path": "panes/printers.rs",
+          "line": 105
+        },
+        {
+          "path": "tests/live_collaborative_mount.rs",
+          "line": 21
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A05-01",
+      "title": "Device inventory, identity and destructive media authorization (high; backend + extract)",
+      "report": "05-imager.md",
+      "primary_task": "N01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/imager/src/app.rs",
+          "line": 880
+        },
+        {
+          "path": "apps/imager/src/model.rs",
+          "line": 77
+        },
+        {
+          "path": "apps/imager/src/probe.rs",
+          "line": 75
+        },
+        {
+          "path": "apps/imager/src/write.rs",
+          "line": 151
+        },
+        {
+          "path": "apps/imager/src/write.rs",
+          "line": 72
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A05-02",
+      "title": "Host architecture and build target are conflated outside Windows (medium; extract)",
+      "report": "05-imager.md",
+      "primary_task": "L03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/imager/src/host.rs",
+          "line": 5
+        },
+        {
+          "path": "apps/imager/src/setup/desktop_probe.rs",
+          "line": 100
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A05-03",
+      "title": "Native pickers and known folders live inside the app (medium; backend)",
+      "report": "05-imager.md",
+      "primary_task": "D01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/imager/src/app.rs",
+          "line": 4418
+        },
+        {
+          "path": "apps/imager/src/probe.rs",
+          "line": 24
+        },
+        {
+          "path": "apps/imager/src/setup/folders.rs",
+          "line": 233
+        },
+        {
+          "path": "apps/imager/src/setup/known_folders.rs",
+          "line": 93
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A05-04",
+      "title": "Local storage roots and protected directory policy leak into view/flow (medium; extract)",
+      "report": "05-imager.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/imager/src/release.rs",
+          "line": 439
+        },
+        {
+          "path": "apps/imager/src/setup/view.rs",
+          "line": 1562
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "setup/connection/store.rs",
+          "line": 558
+        },
+        {
+          "path": "setup/desktop_flow.rs",
+          "line": 515
+        },
+        {
+          "path": "setup/import_view.rs",
+          "line": 156
+        },
+        {
+          "path": "setup/internal_cache/windows.rs",
+          "line": 854
+        },
+        {
+          "path": "setup/internal_download_flow.rs",
+          "line": 670
+        },
+        {
+          "path": "setup/migration_store.rs",
+          "line": 422
+        },
+        {
+          "path": "setup/model.rs",
+          "line": 35
+        },
+        {
+          "path": "src/main.rs",
+          "line": 120
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A05-05",
+      "title": "Desktop installation is a deliberate Linux service backend (high; backend)",
+      "report": "05-imager.md",
+      "primary_task": "N04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/imager/src/setup/desktop_probe.rs",
+          "line": 405
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "setup/desktop_continuation.rs",
+          "line": 452
+        },
+        {
+          "path": "setup/desktop_download.rs",
+          "line": 74
+        },
+        {
+          "path": "setup/desktop_install.rs",
+          "line": 219
+        },
+        {
+          "path": "setup/desktop_worker.rs",
+          "line": 14
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A05-06",
+      "title": "Private filesystem ownership, durable receipts and native names (high; backend + mixed seams)",
+      "report": "05-imager.md",
+      "primary_task": "N02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "apps/imager/src/setup/destination_security/mod.rs",
+          "line": 11
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "macos_acl.rs",
+          "line": 14
+        },
+        {
+          "path": "setup/connection/store/format.rs",
+          "line": 48
+        },
+        {
+          "path": "setup/migration_durability.rs",
+          "line": 13
+        },
+        {
+          "path": "setup/migration_journal.rs",
+          "line": 142
+        },
+        {
+          "path": "setup/migration_review.rs",
+          "line": 26
+        },
+        {
+          "path": "setup/migration_source.rs",
+          "line": 26
+        },
+        {
+          "path": "setup/migration_store.rs",
+          "line": 42
+        },
+        {
+          "path": "setup/nofollow.rs",
+          "line": 6
+        },
+        {
+          "path": "unix.rs",
+          "line": 18
+        },
+        {
+          "path": "windows.rs",
+          "line": 12
+        }
+      ],
+      "evidence": [
+        "Destination security, nofollow, native name/durability and migration journal/source/review/store implementations physically moved into crates/system/folder-service with the approved N03 invariant closure. Shared-storage/lease/location consolidation and native equivalence remain open under N02/S01/S02/L02; do not attempt a second extraction from now-deleted app paths. See connected-folder-relocation-review.md/source-manifest."
+      ]
+    },
+    {
+      "id": "A05-07",
+      "title": "Verified persistent download cache and bundle handle operations (high; backend)",
+      "report": "05-imager.md",
+      "primary_task": "N02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "apps/imager/src/setup/internal_cache.rs",
+          "line": 8
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "internal_cache/linux.rs",
+          "line": 40
+        },
+        {
+          "path": "internal_cache/windows.rs",
+          "line": 137
+        },
+        {
+          "path": "setup/internal_bundle.rs",
+          "line": 359
+        }
+      ],
+      "evidence": [
+        "Private-cache Task 1 source extraction in crates/packaging/install-artifacts is independently accepted after correcting native typed-error branches and Windows unit-hook configuration; all review findings are addressed. Task 2 worker-owned preference persistence is starting. Original app cache/transport implementations are removed; catalog bytes and all 176 moved test names/ignore reasons are preserved. Host checkpoints passed 155 service Rust test invocations, 40 Imager tests and 9 Python tests; service all-targets, Imager test-target and shared shell test-target compilation passed. Shell checkpoint 71659 recorded 3531 unchanged inputs. Linux/Windows cross-checks stopped in missing C toolchains/headers before service compilation. Preference migration (Task 2), boundary/package qualification (Task 3), native backends, G02 and full N02 acceptance remain open. See execution.md and 2026-09-18-private-cache-extraction.md.",
+        "Task 2 worker-owned preference persistence is source-accepted after full review and fix re-review. App idle loading and explicit retry defects were reproduced and corrected with 3 RED/GREEN regressions and 26 covering Imager tests; final Imager test-target compile passed under unchanged causal sources. Independent namespace/publication outcomes and matching-token acknowledgement are preserved. Task 3 source-boundary/privacy/release checks, native/G02/distribution gates and full N02 acceptance remain open. See private-cache-preference-report.md and private-cache-preference-fix-review.md.",
+        "Task3 source boundary independently PASS/APPROVED: 37 exact consumer probe outcomes,55-app boundary check/32checker tests,84obsolete exceptions removed with zero additions,159service and29view tests,service/SDK docs and test-target builds. Parent shell checkpoint95911 passed with2548unchanged inputs. Public evidence: private-cache-boundary-report.md/review.md/source-manifest.json. Combined three-task source review follows; native macOS implementation, Linux/Windows qualification, G02/storage/location and installed-distribution gates remain open. No finding/unit completion claim."
+      ]
+    },
+    {
+      "id": "A05-08",
+      "title": "Connected-folder endpoint evidence and NTFS source bridge (high; backend)",
+      "report": "05-imager.md",
+      "primary_task": "N03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "apps/imager/src/setup/connection/endpoint.rs",
+          "line": 23
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "endpoint/linux.rs",
+          "line": 14
+        },
+        {
+          "path": "endpoint/linux/ntfs.rs",
+          "line": 1
+        },
+        {
+          "path": "endpoint/unsupported.rs",
+          "line": 1
+        },
+        {
+          "path": "endpoint/windows.rs",
+          "line": 11
+        },
+        {
+          "path": "setup/migration_native.rs",
+          "line": 25
+        },
+        {
+          "path": "setup/migration_native_journal.rs",
+          "line": 1
+        }
+      ],
+      "evidence": [
+        "N03 source relocation implemented and frozen for independent review: complete 46-file closure now in crates/system/folder-service, including endpoint and transaction/store native code; semantic SDK/caller/startup migration and 444 baseline retirements/shrinks. Current checker passes55apps/32checker tests;313native macOS service tests and25Imager regressions pass,14compiler privacy probes pass under434unchanged inputs. Linux/Windows service compilation only. Full native/platform/distribution and foundational capability gates remain open; no delivery-unit completion claim. See docs/superpowers/plans/2026-09-18-connected-folder-extraction.md and execution.md.",
+        "Independent relocation review now PASS/APPROVED, no Critical/Important findings, preserving full native/distribution and foundational gates. Public evidence: connected-folder-relocation-review.md.",
+        "Packaging source independently approved after relative-FHS-root fix; 10 portable real-child tests pass, including inherited-descriptor closure and exact receiver/smoke exits/timeouts. Public evidence: connected-folder-packaging-fix-review.md and connected-folder-packaging-source-manifest.json. Complete extraction source review, coordinated shell check, full Linux package harness and actual installed/native qualification remain open."
+      ]
+    },
+    {
+      "id": "A05-09",
+      "title": "Transaction witnesses, leases and durable connection storage (high; backend)",
+      "report": "05-imager.md",
+      "primary_task": "N03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "apps/imager/src/setup/connection/transaction.rs",
+          "line": 549
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "connection/windows_native.rs",
+          "line": 91
+        },
+        {
+          "path": "native/linux/lease_process.rs",
+          "line": 49
+        },
+        {
+          "path": "native/linux/witness.rs",
+          "line": 54
+        },
+        {
+          "path": "setup/connection/mod.rs",
+          "line": 13
+        },
+        {
+          "path": "setup/connection/store/storage.rs",
+          "line": 71
+        },
+        {
+          "path": "src/main.rs",
+          "line": 65
+        },
+        {
+          "path": "transaction/native/linux.rs",
+          "line": 8345
+        },
+        {
+          "path": "transaction/native/mod.rs",
+          "line": 15
+        }
+      ],
+      "evidence": [
+        "Fresh app-boundary scan after checker review detected seven new-site violations from concurrent changes in apps/imager/src/setup/connection/transaction/directory.rs and transaction/native/linux/directory.rs. Preserve and include these directory mechanisms in N03 extraction; current live baseline is not green.",
+        "N03 source relocation implemented and frozen for independent review: complete 46-file closure now in crates/system/folder-service, including endpoint and transaction/store native code; semantic SDK/caller/startup migration and 444 baseline retirements/shrinks. Current checker passes55apps/32checker tests;313native macOS service tests and25Imager regressions pass,14compiler privacy probes pass under434unchanged inputs. Linux/Windows service compilation only. Full native/platform/distribution and foundational capability gates remain open; no delivery-unit completion claim. See docs/superpowers/plans/2026-09-18-connected-folder-extraction.md and execution.md.",
+        "Independent relocation review now PASS/APPROVED, no Critical/Important findings, preserving full native/distribution and foundational gates. Public evidence: connected-folder-relocation-review.md.",
+        "Packaging source independently approved after relative-FHS-root fix; 10 portable real-child tests pass, including inherited-descriptor closure and exact receiver/smoke exits/timeouts. Public evidence: connected-folder-packaging-fix-review.md and connected-folder-packaging-source-manifest.json. Complete extraction source review, coordinated shell check, full Linux package harness and actual installed/native qualification remain open."
+      ]
+    },
+    {
+      "id": "A05-10",
+      "title": "Build graph and standalone profile tool need a narrow shared codec seam (medium; extract)",
+      "report": "05-imager.md",
+      "primary_task": "N01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/imager/Cargo.toml",
+          "line": 45
+        },
+        {
+          "path": "apps/imager/profile-tool/src/main.rs",
+          "line": 6
+        },
+        {
+          "path": "apps/imager/src/profile_cli.rs",
+          "line": 57
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "model.rs",
+          "line": 89
+        },
+        {
+          "path": "profile-tool/Cargo.toml",
+          "line": 19
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A05-11",
+      "title": "Packaging and credentials are target deployment tooling (retain; deployment)",
+      "report": "05-imager.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "apps/imager/packaging/package-host.sh",
+          "line": 7
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "Acquire-ReleaseCredentials.ps1",
+          "line": 1
+        },
+        {
+          "path": "acquire-release-credentials.sh",
+          "line": 5
+        },
+        {
+          "path": "acquire-release-token.sh",
+          "line": 1
+        },
+        {
+          "path": "flatpak/org.tilo.Imager.yml",
+          "line": 1
+        },
+        {
+          "path": "package-flatpak.sh",
+          "line": 27
+        },
+        {
+          "path": "package-host.ps1",
+          "line": 1
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A05-12",
+      "title": "Native tests must move with backend ownership, not disappear (high; test)",
+      "report": "05-imager.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "internal_cache/linux/tests.rs",
+          "line": 68
+        },
+        {
+          "path": "profile-tool/tests/embed.rs",
+          "line": 1
+        },
+        {
+          "path": "setup/desktop_continuation.rs",
+          "line": 654
+        },
+        {
+          "path": "windows/tests.rs",
+          "line": 77
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A06-01",
+      "title": "File-search fallback directly invokes Linux desktop opener",
+      "report": "06-shell-state.md",
+      "primary_task": "D01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/shell/search/providers/files.rs",
+          "line": 1285
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-02",
+      "title": "Host-app catalogue and launch model expose desktop-entry backend",
+      "report": "06-shell-state.md",
+      "primary_task": "D02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/shell/host_apps.rs",
+          "line": 23
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-03",
+      "title": "Process launch, service descriptors and runtime directories mixed with shell policy",
+      "report": "06-shell-state.md",
+      "primary_task": "B01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/shell/launcher.rs",
+          "line": 141
+        },
+        {
+          "path": "shell/src/shell/room_records.rs",
+          "line": 964
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-04",
+      "title": "General brokers bind Unix transport and peer identity directly",
+      "report": "06-shell-state.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/identity_broker.rs",
+          "line": 4
+        },
+        {
+          "path": "shell/src/shell/collab_broker_capnp.rs",
+          "line": 398
+        },
+        {
+          "path": "shell/src/shell/desktop_continuation.rs",
+          "line": 59
+        },
+        {
+          "path": "shell/src/shell/mod.rs",
+          "line": 38
+        },
+        {
+          "path": "shell/src/shell/tool_intents.rs",
+          "line": 4
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-05",
+      "title": "Native runtime host already has a Unix seam, but daemon and MCP bypass it",
+      "report": "06-shell-state.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/runtime_host.rs",
+          "line": 46
+        },
+        {
+          "path": "shell/src/runtime_host/daemon.rs",
+          "line": 14
+        },
+        {
+          "path": "shell/src/runtime_host/mcp_process.rs",
+          "line": 9
+        },
+        {
+          "path": "shell/src/runtime_host/unix.rs",
+          "line": 1
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "daemon.rs",
+          "line": 69
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A06-06",
+      "title": "Secure persistence primitives duplicated across domain modules",
+      "report": "06-shell-state.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/device_fleet.rs",
+          "line": 422
+        },
+        {
+          "path": "shell/src/identity_registry.rs",
+          "line": 199
+        },
+        {
+          "path": "shell/src/network/behaviour.rs",
+          "line": 184
+        },
+        {
+          "path": "shell/src/priority_contacts.rs",
+          "line": 197
+        },
+        {
+          "path": "shell/src/shell/collab_mls_authority.rs",
+          "line": 168
+        },
+        {
+          "path": "shell/src/shell/device_fabric_runtime.rs",
+          "line": 4647
+        },
+        {
+          "path": "shell/src/shell/identity_provisioning.rs",
+          "line": 274
+        },
+        {
+          "path": "shell/src/shell/network.rs",
+          "line": 3116
+        },
+        {
+          "path": "shell/src/shell/session_policy.rs",
+          "line": 98
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-07",
+      "title": "Onboarding UI owns privileged enrollment processes and mount discovery",
+      "report": "06-shell-state.md",
+      "primary_task": "H04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/onboarding_view.rs",
+          "line": 15
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-08",
+      "title": "First boot, config and machine identity encode Linux deployment locations",
+      "report": "06-shell-state.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/config.rs",
+          "line": 112
+        },
+        {
+          "path": "shell/src/firstboot.rs",
+          "line": 44
+        },
+        {
+          "path": "shell/src/network/behaviour.rs",
+          "line": 35
+        },
+        {
+          "path": "shell/src/runtime_host/daemon.rs",
+          "line": 67
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-09",
+      "title": "Filesystem publication helpers hard-coded into state and network actor",
+      "report": "06-shell-state.md",
+      "primary_task": "W03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/network/actor.rs",
+          "line": 2833
+        },
+        {
+          "path": "shell/src/shell/state.rs",
+          "line": 27
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-10",
+      "title": "Nearby transfer and cache space use OS filesystem implementation",
+      "report": "06-shell-state.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/shell/nearby_transfer.rs",
+          "line": 63
+        },
+        {
+          "path": "shell/src/shell/network.rs",
+          "line": 327
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-11",
+      "title": "Topbar performs Linux process liveness and private file IPC during draw",
+      "report": "06-shell-state.md",
+      "primary_task": "I03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/shell/topbar_chrome.rs",
+          "line": 10
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-12",
+      "title": "Hardware capabilities and device class selected in shell",
+      "report": "06-shell-state.md",
+      "primary_task": "H02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/shell/device_fabric_runtime.rs",
+          "line": 38
+        },
+        {
+          "path": "shell/src/shell/physical_gamepad.rs",
+          "line": 12
+        },
+        {
+          "path": "shell/src/shell/qs_actions.rs",
+          "line": 43
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-13",
+      "title": "Remote audio and capture should reuse existing target adapter seams",
+      "report": "06-shell-state.md",
+      "primary_task": "M02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/shell/remote_audio.rs",
+          "line": 870
+        },
+        {
+          "path": "shell/src/shell/remote_capture_adapter.rs",
+          "line": 41
+        },
+        {
+          "path": "shell/src/shell/remote_capture_source.rs",
+          "line": 36
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-14",
+      "title": "Desktop service adapters live with notification/media/Bluetooth models",
+      "report": "06-shell-state.md",
+      "primary_task": "H02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/bluetooth.rs",
+          "line": 20
+        },
+        {
+          "path": "shell/src/notifications.rs",
+          "line": 901
+        },
+        {
+          "path": "shell/src/shell/mpris.rs",
+          "line": 327
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-15",
+      "title": "Projection, catalogue and Windows compatibility select packaged helpers",
+      "report": "06-shell-state.md",
+      "primary_task": "B03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/shell/catalogue.rs",
+          "line": 124
+        },
+        {
+          "path": "shell/src/shell/projection.rs",
+          "line": 37
+        },
+        {
+          "path": "shell/src/shell/windows_compat.rs",
+          "line": 16
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-16",
+      "title": "Compositor/network graphics are deliberate platform backend",
+      "report": "06-shell-state.md",
+      "primary_task": "M01",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/collab/encoder/mod.rs",
+          "line": 169
+        },
+        {
+          "path": "shell/src/collab/encoder/nvenc.rs",
+          "line": 85
+        },
+        {
+          "path": "shell/src/collab/encoder/vaapi.rs",
+          "line": 172
+        },
+        {
+          "path": "shell/src/collab/flatpak_share.rs",
+          "line": 8
+        },
+        {
+          "path": "shell/src/network/decoder.rs",
+          "line": 244
+        },
+        {
+          "path": "shell/src/network/surface_tracker.rs",
+          "line": 47
+        },
+        {
+          "path": "shell/src/network/wayland.rs",
+          "line": 546
+        },
+        {
+          "path": "shell/src/shell/foreign.rs",
+          "line": 86
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-17",
+      "title": "Entry points are already appropriate platform composition roots",
+      "report": "06-shell-state.md",
+      "primary_task": "G02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/lib.rs",
+          "line": 44
+        },
+        {
+          "path": "shell/src/linux_main.rs",
+          "line": 251
+        },
+        {
+          "path": "shell/src/main.rs",
+          "line": 3
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A06-18",
+      "title": "Test/platform suite separation and pre-existing hardware skip constraints",
+      "report": "06-shell-state.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/collab/encoder/vaapi.rs",
+          "line": 1237
+        },
+        {
+          "path": "shell/src/runtime_host/daemon_process_tests.rs",
+          "line": 6
+        },
+        {
+          "path": "shell/tests/hevc_hardware_encode.rs",
+          "line": 1
+        },
+        {
+          "path": "shell/tests/interaction_test.rs",
+          "line": 12
+        },
+        {
+          "path": "shell/tests/native_atspi_smoke.sh",
+          "line": 13
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "mcp_process_tests.rs",
+          "line": 24
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A07-01",
+      "title": "Extract Unix local transport from portable control/capture contracts",
+      "report": "07-shell-backends.md",
+      "primary_task": "I03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/src/bin/tilo-control.rs",
+          "line": 13
+        },
+        {
+          "path": "shell/src/compositor/projection_capture.rs",
+          "line": 9
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "compositor/mod.rs",
+          "line": 53
+        },
+        {
+          "path": "portal/capture_broker.rs",
+          "line": 10
+        },
+        {
+          "path": "projection_capture.rs",
+          "line": 282
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A07-02",
+      "title": "Host paths and private persistence are embedded in shared portal services",
+      "report": "07-shell-backends.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "background.rs",
+          "line": 12
+        },
+        {
+          "path": "desktop_services.rs",
+          "line": 13
+        },
+        {
+          "path": "desktop_services.rs",
+          "line": 946
+        },
+        {
+          "path": "doc_store.rs",
+          "line": 43
+        },
+        {
+          "path": "lockdown.rs",
+          "line": 10
+        },
+        {
+          "path": "permission_store.rs",
+          "line": 14
+        },
+        {
+          "path": "picker_queue.rs",
+          "line": 146
+        },
+        {
+          "path": "portal/mod.rs",
+          "line": 183
+        },
+        {
+          "path": "remote_desktop.rs",
+          "line": 424
+        },
+        {
+          "path": "screencast.rs",
+          "line": 279
+        },
+        {
+          "path": "secret.rs",
+          "line": 11
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A07-03",
+      "title": "Retain Wayland/DRM compositor as explicit Linux platform backend",
+      "report": "07-shell-backends.md",
+      "primary_task": "B01",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "accessibility.rs",
+          "line": 91
+        },
+        {
+          "path": "backend/drm/runtime.rs",
+          "line": 2485
+        },
+        {
+          "path": "backend/mod.rs",
+          "line": 13
+        },
+        {
+          "path": "backend/mod.rs",
+          "line": 15
+        },
+        {
+          "path": "bridge.rs",
+          "line": 14
+        },
+        {
+          "path": "compositor/mod.rs",
+          "line": 9
+        },
+        {
+          "path": "gpu_import.rs",
+          "line": 80
+        },
+        {
+          "path": "native.rs",
+          "line": 212
+        },
+        {
+          "path": "osk_service.rs",
+          "line": 210
+        },
+        {
+          "path": "render_node.rs",
+          "line": 59
+        },
+        {
+          "path": "selection.rs",
+          "line": 1000
+        },
+        {
+          "path": "xwayland.rs",
+          "line": 378
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A07-04",
+      "title": "Keep sandbox enforcement Linux-specific; eliminate misleading duplicate construction APIs",
+      "report": "07-shell-backends.md",
+      "primary_task": "B01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "landlock_shim.rs",
+          "line": 363
+        },
+        {
+          "path": "profile.rs",
+          "line": 181
+        },
+        {
+          "path": "sandbox/mod.rs",
+          "line": 5
+        },
+        {
+          "path": "seccomp.rs",
+          "line": 79
+        },
+        {
+          "path": "security/container.rs",
+          "line": 19
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A07-05",
+      "title": "Host service implementations should plug into existing semantic traits",
+      "report": "07-shell-backends.md",
+      "primary_task": "H02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "compositor/audio_capture.rs",
+          "line": 55
+        },
+        {
+          "path": "compositor/capture.rs",
+          "line": 982
+        },
+        {
+          "path": "lock_auth.rs",
+          "line": 37
+        },
+        {
+          "path": "portal/desktop_services.rs",
+          "line": 48
+        },
+        {
+          "path": "portal/print.rs",
+          "line": 105
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A07-06",
+      "title": "Portal protocol is Linux; capture/control authority is not",
+      "report": "07-shell-backends.md",
+      "primary_task": "M02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "clipboard.rs",
+          "line": 4
+        },
+        {
+          "path": "input_capture.rs",
+          "line": 15
+        },
+        {
+          "path": "portal/mod.rs",
+          "line": 1
+        },
+        {
+          "path": "remote_desktop.rs",
+          "line": 33
+        },
+        {
+          "path": "screencast_pipewire.rs",
+          "line": 39
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A07-07",
+      "title": "Cargo and native bundle boundaries",
+      "report": "07-shell-backends.md",
+      "primary_task": "V02",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "shell/Cargo.toml",
+          "line": 18
+        },
+        {
+          "path": "shell/README.md",
+          "line": 47
+        },
+        {
+          "path": "shell/build-macos.sh",
+          "line": 4
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "compositor/macos.rs",
+          "line": 35
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A07-08",
+      "title": "Test tools/examples carry intentional native prerequisites",
+      "report": "07-shell-backends.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "bin/click_test_client.rs",
+          "line": 1
+        },
+        {
+          "path": "bin/shots/driver.rs",
+          "line": 24
+        },
+        {
+          "path": "bin/tilo-loadclient.rs",
+          "line": 1
+        },
+        {
+          "path": "bin/ux-bench.rs",
+          "line": 2
+        },
+        {
+          "path": "examples/pairing_e2e.rs",
+          "line": 124
+        },
+        {
+          "path": "examples/runtime-mcp-inspect.rs",
+          "line": 48
+        },
+        {
+          "path": "lock_auth.rs",
+          "line": 387
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-01",
+      "title": "Service discovery and connected-handle transport",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "I01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/runtime/runtime-fs/src/lib.rs",
+          "line": 99
+        },
+        {
+          "path": "crates/runtime/runtime-identity/src/broker.rs",
+          "line": 8
+        },
+        {
+          "path": "crates/runtime/runtime-portal/src/lib.rs",
+          "line": 38
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/fd_transport.rs",
+          "line": 3
+        },
+        {
+          "path": "src/native.rs",
+          "line": 34
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-02",
+      "title": "Automatic native attachment mixes bootstrap policy with Unix exec/build machinery",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "G02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/runtime/runtime-portal/src/native.rs",
+          "line": 53
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A08-03",
+      "title": "Granted filesystem implementation is a valuable existing security seam",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "S01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "crates/runtime/runtime-fs/src/lib.rs",
+          "line": 64
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/grants.rs",
+          "line": 4
+        },
+        {
+          "path": "src/native.rs",
+          "line": 11
+        },
+        {
+          "path": "src/operations.rs",
+          "line": 630
+        },
+        {
+          "path": "src/recovery.rs",
+          "line": 164
+        }
+      ],
+      "evidence": [
+        "Receipt journal consumer now uses held-directory privacy admission and shared typed durable publication; independent Task8 source review approved. Native macOS runtime-fs54 library and16 integration tests passed, with one unchanged ignored cross-volume qualification unexecuted. Shared publication19 tests passed; Windows/Linux validator tests compile only. v1 format, worker error custody and poison semantics covered. See receipt-publication-report.md, receipt-publication-review.md and storage-task8-source-sha256.json. Granted-filesystem Windows backend, actual production journal binding, native cross-host/principal/crash qualification and current coordinated shell check remain outstanding; this is not finding closure."
+      ]
+    },
+    {
+      "id": "A08-04",
+      "title": "Storage service escapes the guarded native filesystem boundary",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/runtime/runtime-fs/src/lib.rs",
+          "line": 81
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/storage.rs",
+          "line": 9
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-05",
+      "title": "XDG portals are a deliberate backend, not the portable capability API",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "D01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/runtime/runtime-portal-xdg/Cargo.toml",
+          "line": 22
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/lib.rs",
+          "line": 85
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-06",
+      "title": "Identity private storage has an existing provider contract to reuse",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "K01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/runtime/runtime-identity/src/secure_store.rs",
+          "line": 16
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/backup.rs",
+          "line": 525
+        },
+        {
+          "path": "src/broker.rs",
+          "line": 8
+        },
+        {
+          "path": "src/lib.rs",
+          "line": 263
+        },
+        {
+          "path": "src/lib.rs",
+          "line": 49
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-07",
+      "title": "ush is an entire intentional Linux runtime backend",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "C02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/runtime/ush/src/guest.rs",
+          "line": 13
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/guard.rs",
+          "line": 119
+        },
+        {
+          "path": "src/layer.rs",
+          "line": 119
+        },
+        {
+          "path": "src/main.rs",
+          "line": 280
+        },
+        {
+          "path": "src/profile.rs",
+          "line": 102
+        },
+        {
+          "path": "src/supervisor.rs",
+          "line": 456
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-08",
+      "title": "Launcher security machinery must move as a coherent Linux backend",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "B01",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/launcher/src/lib.rs",
+          "line": 44
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/landlock.rs",
+          "line": 64
+        },
+        {
+          "path": "src/landlock_shim.rs",
+          "line": 298
+        },
+        {
+          "path": "src/run.rs",
+          "line": 929
+        },
+        {
+          "path": "src/sandbox.rs",
+          "line": 400
+        },
+        {
+          "path": "src/seccomp.rs",
+          "line": 56
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-09",
+      "title": "Launcher shared modules still expose Unix IPC and Linux environment plans",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "B01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/launcher/src/lib.rs",
+          "line": 54
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/appdir.rs",
+          "line": 97
+        },
+        {
+          "path": "src/host.rs",
+          "line": 147
+        },
+        {
+          "path": "src/netgate.rs",
+          "line": 110
+        },
+        {
+          "path": "src/profile.rs",
+          "line": 103
+        },
+        {
+          "path": "src/services.rs",
+          "line": 33
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-10",
+      "title": "GPU selection, runtime hardening and performance are host adapters",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "B01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/launcher/src/gpu.rs",
+          "line": 59
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/hardening.rs",
+          "line": 46
+        },
+        {
+          "path": "src/performance.rs",
+          "line": 56
+        },
+        {
+          "path": "src/sandbox.rs",
+          "line": 211
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-11",
+      "title": "App-host daemon mixes package operations, Linux launchers and service-manager plumbing",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "H04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/app-host/src/main.rs",
+          "line": 108
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/lib.rs",
+          "line": 98
+        },
+        {
+          "path": "src/service.rs",
+          "line": 27
+        },
+        {
+          "path": "src/transport.rs",
+          "line": 12
+        },
+        {
+          "path": "transport.rs",
+          "line": 37
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-12",
+      "title": "app-fs is an intentional FUSE adapter over reusable verified content storage",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "W03",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/app-fs/Cargo.toml",
+          "line": 14
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/bin/tilo-app-mount.rs",
+          "line": 118
+        },
+        {
+          "path": "src/fs.rs",
+          "line": 191
+        },
+        {
+          "path": "src/mount.rs",
+          "line": 24
+        },
+        {
+          "path": "src/store.rs",
+          "line": 19
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-13",
+      "title": "Runtime bundles are Linux ELF/glibc artifacts, not generic host runtimes",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/hello/build-thin.sh",
+          "line": 42
+        },
+        {
+          "path": "crates/packaging/runtime-bundle/src/lib.rs",
+          "line": 166
+        },
+        {
+          "path": "crates/runtime/runtime-dylib/Cargo.toml",
+          "line": 7
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A08-14",
+      "title": "CPU capability detection is duplicated and inconsistent",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "L03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/app-registry/src/index.rs",
+          "line": 173
+        },
+        {
+          "path": "crates/packaging/install/src/isa.rs",
+          "line": 20
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A08-15",
+      "title": "Recovery must not equate unavailable process observation with death",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "S02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/install/src/main.rs",
+          "line": 1437
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A08-16",
+      "title": "Cross-process registry locking disappears on non-Unix targets",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "S02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "crates/packaging/app-catalogue/src/client.rs",
+          "line": 273
+        },
+        {
+          "path": "crates/packaging/registry-server/src/moderation.rs",
+          "line": 529
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": [
+        "Framework FileLease primitive and catalogue/moderation production callers independently reviewed. Catalogue checkpoint and moderation transaction guards now retain framework leases across validation/publication on all compiled hosts. Obsolete libc dependencies and exactly two lockfile dependency edges removed. macOS catalogue tests 7/7, registry moderation 14/14 and affected test-target compilation passed after dependency removal; shell test-target check passed with compatible installed FFmpeg 8. Primitive Linux ARM64 and Windows x64 test targets compile; native Linux/Windows transactions and Windows storage privacy/durability remain outstanding."
+      ]
+    },
+    {
+      "id": "A08-17",
+      "title": "Package path/executable and private-key semantics need platform-aware validation",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "S01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/cli-shim/src/main.rs",
+          "line": 50
+        },
+        {
+          "path": "crates/packaging/install/src/shim.rs",
+          "line": 167
+        },
+        {
+          "path": "crates/packaging/pkg-cli/src/main.rs",
+          "line": 710
+        },
+        {
+          "path": "crates/packaging/pkg/src/unpack.rs",
+          "line": 144
+        },
+        {
+          "path": "crates/packaging/registry-server/src/main.rs",
+          "line": 244
+        },
+        {
+          "path": "crates/packaging/runtime-bundle/src/main.rs",
+          "line": 276
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A08-18",
+      "title": "Directory and installed-tool discovery is scattered",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/packaging/pkg/src/trust.rs",
+          "line": 370
+        },
+        {
+          "path": "crates/runtime/cli/src/lib.rs",
+          "line": 137
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "app-catalogue/src/config.rs",
+          "line": 49
+        },
+        {
+          "path": "app-registry/src/config.rs",
+          "line": 272
+        },
+        {
+          "path": "install/src/main.rs",
+          "line": 430
+        },
+        {
+          "path": "install/src/shim.rs",
+          "line": 146
+        },
+        {
+          "path": "launcher/src/registry.rs",
+          "line": 141
+        },
+        {
+          "path": "registry-server/src/lib.rs",
+          "line": 116
+        },
+        {
+          "path": "src/workspace.rs",
+          "line": 20
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-19",
+      "title": "Greeter login/session discovery and power commands are Linux session providers",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "B02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/session/greeter/src/greetd_client.rs",
+          "line": 31
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/greeter_app.rs",
+          "line": 1257
+        },
+        {
+          "path": "src/local_users.rs",
+          "line": 25
+        },
+        {
+          "path": "src/sessions.rs",
+          "line": 108
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-20",
+      "title": "In-session unlock is a Linux PAM privileged helper",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "B02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/session/tilo-unlock-helper/src/pam.rs",
+          "line": 161
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/main.rs",
+          "line": 43
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-21",
+      "title": "Installer inventory and install execution belong to Fedora Bootc deployment provider",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "N04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/session/installer/src/disks.rs",
+          "line": 475
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/install.rs",
+          "line": 69
+        },
+        {
+          "path": "src/installer_network.rs",
+          "line": 54
+        },
+        {
+          "path": "src/media_profile.rs",
+          "line": 12
+        },
+        {
+          "path": "src/timezones.rs",
+          "line": 45
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-22",
+      "title": "NTFS broker/parser boundary must remain stronger than a generic file reader",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "N03",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "crates/session/qos-ntfs-helper/src/broker.rs",
+          "line": 6
+        },
+        {
+          "path": "crates/session/qos-ntfs-protocol/src/lib.rs",
+          "line": 161
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "native/sandbox.c",
+          "line": 29
+        },
+        {
+          "path": "src/broker/ipc.rs",
+          "line": 43
+        },
+        {
+          "path": "src/broker/linux.rs",
+          "line": 56
+        },
+        {
+          "path": "src/broker/session.rs",
+          "line": 42
+        },
+        {
+          "path": "src/reader.rs",
+          "line": 8
+        },
+        {
+          "path": "src/socket.rs",
+          "line": 18
+        }
+      ],
+      "evidence": [
+        "N03 source relocation implemented and frozen for independent review: complete 46-file closure now in crates/system/folder-service, including endpoint and transaction/store native code; semantic SDK/caller/startup migration and 444 baseline retirements/shrinks. Current checker passes55apps/32checker tests;313native macOS service tests and25Imager regressions pass,14compiler privacy probes pass under434unchanged inputs. Linux/Windows service compilation only. Full native/platform/distribution and foundational capability gates remain open; no delivery-unit completion claim. See docs/superpowers/plans/2026-09-18-connected-folder-extraction.md and execution.md.",
+        "Independent relocation review now PASS/APPROVED, no Critical/Important findings, preserving full native/distribution and foundational gates. Public evidence: connected-folder-relocation-review.md."
+      ]
+    },
+    {
+      "id": "A08-23",
+      "title": "NTFS native build and staging are explicit target tooling; vendor is not extraction fodder",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/session/qos-ntfs-helper/build.rs",
+          "line": 3
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "build_native.py",
+          "line": 20
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A08-24",
+      "title": "Power governor daemon is a Linux image component",
+      "report": "08-runtime-packaging.md",
+      "primary_task": "H02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/session/tilo-power/src/main.rs",
+          "line": 58
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A09-01",
+      "title": "Durable/private file replacement is already centralized, but exposes Unix semantics",
+      "report": "09-system.md",
+      "primary_task": "S01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "crates/system/atomic-file/src/lib.rs",
+          "line": 97
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": [
+        "Shared atomic-file held-directory publication, owned phase errors, native identity/privacy and Windows existing-parent engine have accepted source reviews; see publication-unix-review.md, publication-identity-review.md and publication-windows-review.md. Real identity and receipt consumers migrated. Unix parent provisioning is in implementation with behavioral RED evidence; Windows first-launch bootstrap and native directory protocol qualification remain unresolved. Compile-only cross-host checks do not establish native support. Full owner/ACL/ancestor/crash and distribution acceptance remains outstanding."
+      ]
+    },
+    {
+      "id": "A09-02",
+      "title": "Persistence locking, file identity and canonical-path ownership",
+      "report": "09-system.md",
+      "primary_task": "S02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "crates/system/accounts/src/status.rs",
+          "line": 155
+        },
+        {
+          "path": "crates/system/desktop-policy/src/storage.rs",
+          "line": 9
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": [
+        "Task5 bounded Unix production migration active after accepted Task4 provisioning and exact-checkpoint shell compilation. Approved app-state-migration-design.md covers owned FileLease/identity, canonical source-before-actor admission, existing-only directory reconciliation, held writes, actual worker durability frontiers and immutable claim winner commit. No Task5 implementation/test/review completion claimed yet; Windows existing-name/ancestor reconciliation and native qualification remain open.",
+        "Task5 Unix app-state source independently accepted with 60 app-state tests, 86 atomic-file tests and exact-checkpoint shell --tests compilation; see app-state-unix-review.md. Task7 Windows accounts check now observes unconditional Unix imports, mode and flock in unchanged accounts/src/status.rs, already part of this finding. This is an observed portability failure, not a separately reproduced known-red baseline. StatusLock blocking semantics, canonical sentinel and complete read-modify-write exclusion must migrate to the shared owned lease/private-open services. Full Windows reconciliation and native qualification remain open."
+      ]
+    },
+    {
+      "id": "A09-03",
+      "title": "User/config/cache/runtime directories and process identity leak into policy stores",
+      "report": "09-system.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "desktop-policy/src/defaults.rs",
+          "line": 362
+        },
+        {
+          "path": "desktop-policy/src/storage.rs",
+          "line": 22
+        },
+        {
+          "path": "power/src/history.rs",
+          "line": 95
+        },
+        {
+          "path": "settings-store/src/hardware.rs",
+          "line": 141
+        },
+        {
+          "path": "settings-store/src/lib.rs",
+          "line": 61
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-04",
+      "title": "Bounded child execution must keep process-tree cancellation semantics",
+      "report": "09-system.md",
+      "primary_task": "C01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "bounded-command/src/lib.rs",
+          "line": 292
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-05",
+      "title": "Hardware/session action facade mixes portable contracts with Linux commands",
+      "report": "09-system.md",
+      "primary_task": "H02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "os-actions/src/lib.rs",
+          "line": 151
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-06",
+      "title": "Bluetooth and power already have strong separation seams",
+      "report": "09-system.md",
+      "primary_task": "H02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "agent.rs",
+          "line": 24
+        },
+        {
+          "path": "power/src/lib.rs",
+          "line": 43
+        },
+        {
+          "path": "tilo-bluez/src/client.rs",
+          "line": 67
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-07",
+      "title": "Media privacy and trusted client identity are Linux-specific security mechanisms",
+      "report": "09-system.md",
+      "primary_task": "M02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "os-actions/src/privacy.rs",
+          "line": 66
+        },
+        {
+          "path": "settings-store/src/hardware.rs",
+          "line": 141
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-08",
+      "title": "Gamepad forwarding has reusable semantic interfaces and explicit Linux backends",
+      "report": "09-system.md",
+      "primary_task": "H02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "linux_physical_gamepad.rs",
+          "line": 76
+        },
+        {
+          "path": "linux_virtual_gamepad.rs",
+          "line": 121
+        },
+        {
+          "path": "os-actions/src/lib.rs",
+          "line": 47
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-09",
+      "title": "Tool launching and desktop application discovery are freedesktop integrations",
+      "report": "09-system.md",
+      "primary_task": "D02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "desktop-entry/src/scan.rs",
+          "line": 97
+        },
+        {
+          "path": "launch.rs",
+          "line": 44
+        },
+        {
+          "path": "os-actions/src/tool_intent.rs",
+          "line": 8
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-10",
+      "title": "Credential custody is Secret Service-specific with local-key fallback",
+      "report": "09-system.md",
+      "primary_task": "K01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "accounts/src/vault.rs",
+          "line": 12
+        },
+        {
+          "path": "status.rs",
+          "line": 9
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-11",
+      "title": "Native TLS trust is deliberately fixed to the Tilo Fedora image",
+      "report": "09-system.md",
+      "primary_task": "K02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "tilo-native-certs/src/lib.rs",
+          "line": 16
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-12",
+      "title": "TTS factory's purported subprocess portability still depends on Unix process APIs",
+      "report": "09-system.md",
+      "primary_task": "E03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "speechd.rs",
+          "line": 18
+        },
+        {
+          "path": "tts/src/espeak.rs",
+          "line": 14
+        },
+        {
+          "path": "tts/src/factory.rs",
+          "line": 31
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-13",
+      "title": "Windows appliance is a Linux host service, not a Windows-native host backend",
+      "report": "09-system.md",
+      "primary_task": "B03",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "windows-vm/src/libvirt.rs",
+          "line": 15
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-14",
+      "title": "Projector combines portable protocols with Linux discovery/capture process management",
+      "report": "09-system.md",
+      "primary_task": "M02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "projector/src/main.rs",
+          "line": 26
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-15",
+      "title": "Image boot/rollback/extension tools should remain explicit Linux deployment backends",
+      "report": "09-system.md",
+      "primary_task": "B02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "system-extension/src/bin/tilo-system-extension-manager.rs",
+          "line": 21
+        },
+        {
+          "path": "tilo-cli/src/main.rs",
+          "line": 49
+        },
+        {
+          "path": "tilo-crypto/src/main.rs",
+          "line": 48
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A09-16",
+      "title": "Tinker and optional swipe native build have explicit Linux/host-toolchain contracts",
+      "report": "09-system.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [],
+      "report_relative_source_hints": [
+        {
+          "path": "setup-futo.sh",
+          "line": 26
+        },
+        {
+          "path": "src/diff.rs",
+          "line": 242
+        },
+        {
+          "path": "src/idmap.rs",
+          "line": 64
+        },
+        {
+          "path": "src/lib.rs",
+          "line": 44
+        },
+        {
+          "path": "src/main.rs",
+          "line": 263
+        },
+        {
+          "path": "src/session.rs",
+          "line": 113
+        },
+        {
+          "path": "swipe/build.rs",
+          "line": 32
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A10-01",
+      "title": "secure identity persistence contains platform backends in the identity domain (high)",
+      "report": "10-collab-identity.md",
+      "primary_task": "S01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "in_progress",
+      "source_references": [
+        {
+          "path": "crates/identity/tilo-user-identity/Cargo.toml",
+          "line": 76
+        },
+        {
+          "path": "crates/identity/tilo-user-identity/src/persist.rs",
+          "line": 50
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": [
+        "Identity private metadata writer delegates to atomic-file OwnerOnly with typed publication errors; provider-key cleanup, imported-record cleanup and preferred-provider fallback preserve uncertain effects. Independent source review approved; focused native macOS cleanup8/8 plus secure-record/privacy checks and three guard-mutation regressions recorded in publication-identity-consumer-review.md and storage-native-evidence.md. Task6 frozen-checkpoint shell test compilation verified separately. Platform credential transports, first-launch provisioning and native Windows qualification remain outstanding; only the storage slice is accepted."
+      ]
+    },
+    {
+      "id": "A10-02",
+      "title": "image trust and machine provisioning are explicitly Linux deployment backends (high boundary priority)",
+      "report": "10-collab-identity.md",
+      "primary_task": "B02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/identity/tilo-user-identity/Cargo.toml",
+          "line": 13
+        },
+        {
+          "path": "crates/identity/tilo-user-identity/src/bin/tilo-device-key-init.rs",
+          "line": 19
+        },
+        {
+          "path": "crates/identity/tilo-user-identity/src/bin/tilo-image-trust.rs",
+          "line": 3
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-03",
+      "title": "requester lifetime and ownership are Linux procfs concepts exposed by the relay (high)",
+      "report": "10-collab-identity.md",
+      "primary_task": "S02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/hosting/tilo-relay/src/enroll.rs",
+          "line": 89
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/home_peer_control.rs",
+          "line": 503
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/lib.rs",
+          "line": 86
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/process_lease.rs",
+          "line": 17
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-04",
+      "title": "polkit user resolution, service control, helper execution and ownership restoration belong in a privileged platform broker (high)",
+      "report": "10-collab-identity.md",
+      "primary_task": "H04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/hosting/tilo-relay/src/enroll.rs",
+          "line": 304
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/home_peer_control.rs",
+          "line": 4
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-05",
+      "title": "filesystem locations and daemon lifecycle are embedded in domain defaults (medium)",
+      "report": "10-collab-identity.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/hosting/tilo-relay/Cargo.toml",
+          "line": 109
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/admin.rs",
+          "line": 15
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/config.rs",
+          "line": 215
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/enroll.rs",
+          "line": 53
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/main.rs",
+          "line": 38
+        },
+        {
+          "path": "crates/identity/tilo-user-identity/src/persist.rs",
+          "line": 149
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-06",
+      "title": "compute has a good sandbox trait but still embeds Linux filesystem mechanics outside it (high)",
+      "report": "10-collab-identity.md",
+      "primary_task": "B01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/hosting/tilo-relay/Cargo.toml",
+          "line": 56
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/compute.rs",
+          "line": 17
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/compute_worker.rs",
+          "line": 12
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/lib.rs",
+          "line": 75
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-07",
+      "title": "compute eligibility probes Linux power and launcher paths directly (medium)",
+      "report": "10-collab-identity.md",
+      "primary_task": "H01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/hosting/tilo-relay/src/compute_worker.rs",
+          "line": 555
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-08",
+      "title": "enrollment LAN discovery relies on platform socket delivery semantics (medium)",
+      "report": "10-collab-identity.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/hosting/tilo-relay/Cargo.toml",
+          "line": 103
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/enroll.rs",
+          "line": 16
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-09",
+      "title": "collaboration persistence repeats Unix private-file and durable-replace mechanics (medium)",
+      "report": "10-collab-identity.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/collab/channel-crypto/src/governance.rs",
+          "line": 268
+        },
+        {
+          "path": "crates/collab/channel-crypto/src/persistence.rs",
+          "line": 3
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/admin.rs",
+          "line": 296
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/daemon.rs",
+          "line": 1250
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/store.rs",
+          "line": 643
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-10",
+      "title": "native codec dependency needs an intentional media backend boundary (low/architecture)",
+      "report": "10-collab-identity.md",
+      "primary_task": "M01",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/collab/tilo-callstream/Cargo.toml",
+          "line": 14
+        },
+        {
+          "path": "crates/collab/tilo-callstream/src/decoder.rs",
+          "line": 1
+        },
+        {
+          "path": "crates/collab/tilo-callstream/src/encoder.rs",
+          "line": 1
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A10-11",
+      "title": "native tests are not consistently isolated to their actual backend (medium)",
+      "report": "10-collab-identity.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/hosting/tilo-relay/src/admin.rs",
+          "line": 718
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/compute.rs",
+          "line": 1018
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/enroll.rs",
+          "line": 2590
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/home_peer_control.rs",
+          "line": 667
+        },
+        {
+          "path": "crates/hosting/tilo-relay/src/process_lease.rs",
+          "line": 114
+        },
+        {
+          "path": "crates/hosting/tilo-relay/tests/personal_device_process.rs",
+          "line": 248
+        },
+        {
+          "path": "crates/identity/tilo-user-identity/src/persist.rs",
+          "line": 796
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/bin/tilo-device-key-init.rs",
+          "line": 74
+        },
+        {
+          "path": "src/bin/tilo-image-trust.rs",
+          "line": 1055
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A11-01",
+      "title": "PipeWire graph backend and identifiers leak into the shared audio surface",
+      "report": "11-media-browser-text.md",
+      "primary_task": "M03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/core/src/audio.rs",
+          "line": 36
+        },
+        {
+          "path": "crates/media/core/src/audio_pw_dump_fixture.json",
+          "line": 1
+        },
+        {
+          "path": "crates/media/core/src/lib.rs",
+          "line": 85
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-02",
+      "title": "Audio diagnostics own unguarded Unix process machinery; accessibility policy recognizes a backend sink name",
+      "report": "11-media-browser-text.md",
+      "primary_task": "M03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/core/Cargo.toml",
+          "line": 25
+        },
+        {
+          "path": "crates/media/core/src/audio_runtime.rs",
+          "line": 9
+        },
+        {
+          "path": "crates/media/core/src/lib.rs",
+          "line": 60
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-03",
+      "title": "GStreamer playback is already a backend but the public engine exports its native controls",
+      "report": "11-media-browser-text.md",
+      "primary_task": "M01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/core/Cargo.toml",
+          "line": 10
+        },
+        {
+          "path": "crates/media/core/src/engine.rs",
+          "line": 52
+        },
+        {
+          "path": "crates/media/core/src/gst_backend.rs",
+          "line": 17
+        },
+        {
+          "path": "crates/media/core/src/lib.rs",
+          "line": 77
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-04",
+      "title": "DMA-BUF is the only GPU frame handle and is guarded as Unix rather than Linux",
+      "report": "11-media-browser-text.md",
+      "primary_task": "M01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/core/src/cache.rs",
+          "line": 93
+        },
+        {
+          "path": "crates/media/core/src/dmabuf.rs",
+          "line": 17
+        },
+        {
+          "path": "crates/media/core/src/frame.rs",
+          "line": 81
+        },
+        {
+          "path": "crates/media/core/src/gst_backend.rs",
+          "line": 23
+        },
+        {
+          "path": "crates/media/core/src/lib.rs",
+          "line": 93
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-05",
+      "title": "Codec capabilities and tuning are GStreamer adapter data embedded in shared encode/decode policy",
+      "report": "11-media-browser-text.md",
+      "primary_task": "M04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/core/src/encode.rs",
+          "line": 32
+        },
+        {
+          "path": "crates/media/core/src/gst_backend.rs",
+          "line": 51
+        },
+        {
+          "path": "crates/media/core/src/hw.rs",
+          "line": 21
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-06",
+      "title": "Event sound selection and native playback belong in platform adapters",
+      "report": "11-media-browser-text.md",
+      "primary_task": "M03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/core/src/notification_sound.rs",
+          "line": 23
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-07",
+      "title": "PDFium discovery and process-global native lifetime are duplicated backend responsibilities",
+      "report": "11-media-browser-text.md",
+      "primary_task": "E02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/thumbnail/Cargo.toml",
+          "line": 20
+        },
+        {
+          "path": "crates/media/thumbnail/src/pdf.rs",
+          "line": 25
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-08",
+      "title": "OCR preparation is portable; Tesseract execution is a replaceable native engine adapter",
+      "report": "11-media-browser-text.md",
+      "primary_task": "E03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/ocr/Cargo.toml",
+          "line": 9
+        },
+        {
+          "path": "crates/media/ocr/src/lib.rs",
+          "line": 327
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-09",
+      "title": "Spellcheck combines portable English engine with native Hunspell, POSIX locale and XDG persistence",
+      "report": "11-media-browser-text.md",
+      "primary_task": "E03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/text/spellcheck/src/dictionary.rs",
+          "line": 165
+        },
+        {
+          "path": "crates/text/spellcheck/src/lib.rs",
+          "line": 359
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "dictionary.rs",
+          "line": 8
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A11-10",
+      "title": "Workspace mount resolution and process identity hints belong to platform/session context",
+      "report": "11-media-browser-text.md",
+      "primary_task": "W02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/core/src/handoff.rs",
+          "line": 286
+        },
+        {
+          "path": "crates/media/core/src/source.rs",
+          "line": 15
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A11-11",
+      "title": "Native verification must move with adapters, and successful early returns do not verify DMA-BUF",
+      "report": "11-media-browser-text.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/media/core/src/audio_runtime.rs",
+          "line": 791
+        },
+        {
+          "path": "crates/media/core/src/encode.rs",
+          "line": 889
+        },
+        {
+          "path": "crates/media/core/tests/common/mod.rs",
+          "line": 98
+        },
+        {
+          "path": "crates/media/core/tests/fixtures/generate-h264-aac.sh",
+          "line": 1
+        },
+        {
+          "path": "crates/media/core/tests/hardware_decode.rs",
+          "line": 20
+        },
+        {
+          "path": "crates/media/ocr/src/lib.rs",
+          "line": 547
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A12-01",
+      "title": "Model gateway transport exposes Unix descriptors and Linux peer authentication",
+      "report": "12-other-crates.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/agent/model-gateway/Cargo.toml",
+          "line": 26
+        },
+        {
+          "path": "crates/agent/model-gateway/src/lib.rs",
+          "line": 8
+        },
+        {
+          "path": "crates/agent/model-gateway/src/main.rs",
+          "line": 108
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "tests/security_boundary.rs",
+          "line": 3
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A12-02",
+      "title": "Local model provisioning already has a boundary, but daemon mixes hardware, Bootc and service management",
+      "report": "12-other-crates.md",
+      "primary_task": "H04",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/agent/local-model-service/Cargo.toml",
+          "line": 30
+        },
+        {
+          "path": "crates/agent/local-model-service/src/lib.rs",
+          "line": 43
+        },
+        {
+          "path": "crates/agent/local-model-service/src/main.rs",
+          "line": 242
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A12-03",
+      "title": "Private model files and release signer need semantic secure-file operations",
+      "report": "12-other-crates.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/agent/local-model-service/src/bin/tilo-model-catalog.rs",
+          "line": 58
+        },
+        {
+          "path": "crates/agent/local-model-service/src/lib.rs",
+          "line": 812
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "RELEASE.md",
+          "line": 18
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A12-04",
+      "title": "Format host's public transport module and configuration fallback leak local OS choices",
+      "report": "12-other-crates.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "Cargo.toml",
+          "line": 18
+        },
+        {
+          "path": "README.md",
+          "line": 25
+        },
+        {
+          "path": "crates/format/format-host/src/lib.rs",
+          "line": 35
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "build.rs",
+          "line": 6
+        },
+        {
+          "path": "format-router.capnp",
+          "line": 5
+        },
+        {
+          "path": "src/main.rs",
+          "line": 35
+        },
+        {
+          "path": "src/runner.rs",
+          "line": 220
+        },
+        {
+          "path": "src/transport.rs",
+          "line": 8
+        },
+        {
+          "path": "src/watch.rs",
+          "line": 36
+        },
+        {
+          "path": "tests/integration.rs",
+          "line": 87
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A12-05",
+      "title": "Document blobstore chooses Linux-style cache root itself",
+      "report": "12-other-crates.md",
+      "primary_task": "L02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/doc/qdoc/src/blobstore.rs",
+          "line": 277
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A12-06",
+      "title": "Windows compatibility planning exposes the Linux capsule representation",
+      "report": "12-other-crates.md",
+      "primary_task": "B03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "Cargo.toml",
+          "line": 16
+        },
+        {
+          "path": "crates/windows/compat-service/src/lib.rs",
+          "line": 30
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/catalogue.rs",
+          "line": 23
+        },
+        {
+          "path": "src/execute.rs",
+          "line": 26
+        },
+        {
+          "path": "src/plan.rs",
+          "line": 15
+        },
+        {
+          "path": "src/service.rs",
+          "line": 330
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A12-07",
+      "title": "Wine prefix store/DXVK deployment contain deliberate secure Unix filesystem implementations",
+      "report": "12-other-crates.md",
+      "primary_task": "B03",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/windows/compat-service/src/store.rs",
+          "line": 5
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/dxvk.rs",
+          "line": 11
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A12-08",
+      "title": "Compatibility session authentication and fd-passing are Linux IPC",
+      "report": "12-other-crates.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/windows/compat-service/src/session.rs",
+          "line": 4
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A12-09",
+      "title": "Compatibility audio, VM presentation and translated process lifecycle are native backend implementations",
+      "report": "12-other-crates.md",
+      "primary_task": "B03",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/windows/compat-service/src/resources.rs",
+          "line": 14
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "src/audio_proxy.rs",
+          "line": 19
+        },
+        {
+          "path": "src/bin/tilo-windows-runtime.rs",
+          "line": 3
+        },
+        {
+          "path": "src/translated.rs",
+          "line": 20
+        },
+        {
+          "path": "src/vm_adapter.rs",
+          "line": 439
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A12-10",
+      "title": "Developer tooling can stay host-specific, but its reusable library/build consumers inherit it",
+      "report": "12-other-crates.md",
+      "primary_task": "V02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "crates/dev/collab-link/src/main.rs",
+          "line": 50
+        },
+        {
+          "path": "crates/dev/collab-probe/src/main.rs",
+          "line": 82
+        },
+        {
+          "path": "crates/dev/frame-link/src/bin/flatpak-share-demo.rs",
+          "line": 299
+        },
+        {
+          "path": "crates/dev/tilo-dev-template-smoke/build.rs",
+          "line": 7
+        },
+        {
+          "path": "crates/dev/tilo-dev/Cargo.toml",
+          "line": 18
+        },
+        {
+          "path": "crates/dev/tilo-dev/src/lib.rs",
+          "line": 11
+        },
+        {
+          "path": "crates/dev/tilo-dev/src/main.rs",
+          "line": 1142
+        },
+        {
+          "path": "crates/dev/ui-builder/src/main.rs",
+          "line": 46
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A13-01",
+      "title": "FUSE dependency and native mount lifecycle must become an explicit backend (high)",
+      "report": "13-filesystem.md",
+      "primary_task": "W03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "Cargo.toml",
+          "line": 381
+        },
+        {
+          "path": "fs/Cargo.toml",
+          "line": 52
+        },
+        {
+          "path": "fs/Cargo.toml",
+          "line": 56
+        },
+        {
+          "path": "fs/src/fs.rs",
+          "line": 30
+        },
+        {
+          "path": "fs/src/fs.rs",
+          "line": 41
+        },
+        {
+          "path": "fs/src/fs.rs",
+          "line": 4317
+        },
+        {
+          "path": "fs/src/fs.rs",
+          "line": 4912
+        },
+        {
+          "path": "fs/src/lib.rs",
+          "line": 179
+        },
+        {
+          "path": "fs/src/lib.rs",
+          "line": 26
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 3005
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 3014
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 3027
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 3058
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 40
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A13-02",
+      "title": "Namespace and business operations expose FUSE/POSIX representations (high)",
+      "report": "13-filesystem.md",
+      "primary_task": "W01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "fs/src/checked_restore.rs",
+          "line": 350
+        },
+        {
+          "path": "fs/src/checked_restore.rs",
+          "line": 435
+        },
+        {
+          "path": "fs/src/fs.rs",
+          "line": 2921
+        },
+        {
+          "path": "fs/src/history_read.rs",
+          "line": 252
+        },
+        {
+          "path": "fs/src/history_read.rs",
+          "line": 84
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 2640
+        },
+        {
+          "path": "fs/src/namespace.rs",
+          "line": 110
+        },
+        {
+          "path": "fs/src/namespace.rs",
+          "line": 1833
+        },
+        {
+          "path": "fs/src/namespace.rs",
+          "line": 1865
+        },
+        {
+          "path": "fs/src/namespace.rs",
+          "line": 23
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A13-03",
+      "title": "Multiple local protocols hard-code Unix sockets and Unix authorization (high)",
+      "report": "13-filesystem.md",
+      "primary_task": "I02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "fs/src/control.rs",
+          "line": 21
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 864
+        },
+        {
+          "path": "fs/src/recipient_control.rs",
+          "line": 22
+        },
+        {
+          "path": "fs/src/share_control.rs",
+          "line": 25
+        },
+        {
+          "path": "fs/src/storage.rs",
+          "line": 40
+        },
+        {
+          "path": "fs/src/transport_gate.rs",
+          "line": 5
+        },
+        {
+          "path": "fs/src/workspace_authority.rs",
+          "line": 445
+        }
+      ],
+      "report_relative_source_hints": [
+        {
+          "path": "main.rs",
+          "line": 2994
+        },
+        {
+          "path": "main.rs",
+          "line": 868
+        },
+        {
+          "path": "main.rs",
+          "line": 896
+        }
+      ],
+      "evidence": []
+    },
+    {
+      "id": "A13-04",
+      "title": "Deployment paths, system identity selection and systemd activation belong at host composition (medium)",
+      "report": "13-filesystem.md",
+      "primary_task": "G02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "fs/src/identity.rs",
+          "line": 80
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 2322
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 3159
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 420
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 964
+        },
+        {
+          "path": "fs/src/workspace_authority.rs",
+          "line": 29
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A13-05",
+      "title": "Predictive hydration probes Linux network/power and POSIX storage directly (high)",
+      "report": "13-filesystem.md",
+      "primary_task": "H01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "fs/Cargo.toml",
+          "line": 28
+        },
+        {
+          "path": "fs/src/smart_monitor.rs",
+          "line": 147
+        },
+        {
+          "path": "fs/src/smart_monitor.rs",
+          "line": 51
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A13-06",
+      "title": "Private storage, file identity and durable directory flush need shared platform semantics (high)",
+      "report": "13-filesystem.md",
+      "primary_task": "S03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "fs/src/caps_file.rs",
+          "line": 38
+        },
+        {
+          "path": "fs/src/clock.rs",
+          "line": 85
+        },
+        {
+          "path": "fs/src/main.rs",
+          "line": 2361
+        },
+        {
+          "path": "fs/src/named_share_delivery.rs",
+          "line": 390
+        },
+        {
+          "path": "fs/src/recipient_mount.rs",
+          "line": 384
+        },
+        {
+          "path": "fs/src/record_subscription.rs",
+          "line": 347
+        },
+        {
+          "path": "fs/src/record_transaction.rs",
+          "line": 432
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A13-07",
+      "title": "Recipient mounting is coupled to spawning the filesystem CLI (medium)",
+      "report": "13-filesystem.md",
+      "primary_task": "W03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "fs/src/main.rs",
+          "line": 2275
+        },
+        {
+          "path": "fs/src/recipient_mount.rs",
+          "line": 205
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A13-08",
+      "title": "Native integration tests need an explicit Linux test lane; current guards are insufficient (high)",
+      "report": "13-filesystem.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "fs/src/lib.rs",
+          "line": 179
+        },
+        {
+          "path": "fs/src/recipient_control.rs",
+          "line": 643
+        },
+        {
+          "path": "fs/src/recipient_mount.rs",
+          "line": 434
+        },
+        {
+          "path": "fs/tests/collab_release_matrix.rs",
+          "line": 8
+        },
+        {
+          "path": "fs/tests/corruption_matrix.rs",
+          "line": 146
+        },
+        {
+          "path": "fs/tests/exact_share_process_fuse.rs",
+          "line": 13
+        },
+        {
+          "path": "fs/tests/integration_test.rs",
+          "line": 15
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A14-01",
+      "title": "Control clients encode Unix transport and filesystem endpoint discovery throughout automation",
+      "report": "14-os-tooling.md",
+      "primary_task": "I03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "release/local-models/smolvlm2-500m/smoke-gateway.py",
+          "line": 52
+        },
+        {
+          "path": "scripts/headless-examples/_control.py",
+          "line": 23
+        },
+        {
+          "path": "scripts/headless-examples/tilo_client.py",
+          "line": 176
+        },
+        {
+          "path": "scripts/tilo-mcp-server.py",
+          "line": 38
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A14-02",
+      "title": "Shared harness process-lifetime helper silently loses its Linux guarantee",
+      "report": "14-os-tooling.md",
+      "primary_task": "C01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "os/usr/share/tilo/windows/guest/Tilo-ProcessJob.ps1",
+          "line": 1
+        },
+        {
+          "path": "scripts/app-launch-sweep.py",
+          "line": 412
+        },
+        {
+          "path": "scripts/headless-examples/reaper.py",
+          "line": 57
+        },
+        {
+          "path": "scripts/install-on-open-demo.py",
+          "line": 254
+        },
+        {
+          "path": "scripts/sandboxed-app-collab.py",
+          "line": 193
+        },
+        {
+          "path": "scripts/two-shell-app-collab.py",
+          "line": 169
+        },
+        {
+          "path": "tools/run-imager-ephemeral-runner.sh",
+          "line": 84
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A14-03",
+      "title": "Generic build/benchmark entry points carry host diagnostics and GNU tool assumptions",
+      "report": "14-os-tooling.md",
+      "primary_task": "V02",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "scripts/headless-examples/install-open-timing.py",
+          "line": 549
+        },
+        {
+          "path": "scripts/perf/runtime_benchmark.py",
+          "line": 123
+        },
+        {
+          "path": "tools/cargo-shim",
+          "line": 43
+        },
+        {
+          "path": "tools/check-build-env.sh",
+          "line": 12
+        },
+        {
+          "path": "tools/ci-measure.sh",
+          "line": 16
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A14-04",
+      "title": "Fuzz harness manifest ties independent wire fuzzing to Linux sandbox dependencies",
+      "report": "14-os-tooling.md",
+      "primary_task": "V01",
+      "disposition": "migrate_verification_or_build_boundary",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "fuzz/Cargo.toml",
+          "line": 12
+        },
+        {
+          "path": "fuzz/fuzz_targets/sandbox_policy.rs",
+          "line": 3
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A14-05",
+      "title": "Privileged Linux service, hardware, session and appliance helpers are existing backend entry points",
+      "report": "14-os-tooling.md",
+      "primary_task": "B02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "dist/session/tilo-session-runner",
+          "line": 24
+        },
+        {
+          "path": "os/usr/libexec/tilo-battery-cap",
+          "line": 12
+        },
+        {
+          "path": "os/usr/libexec/tilo-power",
+          "line": 21
+        },
+        {
+          "path": "os/usr/libexec/tilo-session",
+          "line": 8
+        },
+        {
+          "path": "os/usr/libexec/tilo-windows-owner",
+          "line": 13
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A14-06",
+      "title": "Fedora images, native packages and toolchain flags are intentionally target-specific",
+      "report": "14-os-tooling.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": ".cargo/config.toml",
+          "line": 8
+        },
+        {
+          "path": ".forgejo/workflows/release-imager.yml",
+          "line": 437
+        },
+        {
+          "path": "Cargo.toml",
+          "line": 377
+        },
+        {
+          "path": "dist/nix/package.nix",
+          "line": 62
+        },
+        {
+          "path": "flake.nix",
+          "line": 8
+        },
+        {
+          "path": "scripts/browser/build-host.py",
+          "line": 20
+        },
+        {
+          "path": "scripts/browser/package.py",
+          "line": 31
+        },
+        {
+          "path": "tools/run-imager-ephemeral-runner.sh",
+          "line": 91
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A14-07",
+      "title": "Native browser engine build wiring is application-owned and must follow backend extraction",
+      "report": "14-os-tooling.md",
+      "primary_task": "E01",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "scripts/browser/build-host.py",
+          "line": 20
+        },
+        {
+          "path": "scripts/browser/package.py",
+          "line": 31
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A15-01",
+      "title": "Destination is a proposed facade plus focused service crates, not an existing monolithic platform crate",
+      "report": "15-vendor-site.md",
+      "primary_task": "G01",
+      "disposition": "architecture_constraint",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "docs/superpowers/specs/2026-09-18-framework-platform-services-design.md",
+          "line": 3
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A15-02",
+      "title": "Tilo-specific Wayland drag/drop includes storage policy inside the vendor backend",
+      "report": "15-vendor-site.md",
+      "primary_task": "D03",
+      "disposition": "extract_or_extend_framework_service",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "vendor/winit/src/platform/wayland.rs",
+          "line": 100
+        },
+        {
+          "path": "vendor/winit/src/platform_impl/linux/wayland/seat/data_device.rs",
+          "line": 1
+        },
+        {
+          "path": "vendor/winit/src/platform_impl/linux/wayland/seat/mod.rs",
+          "line": 153
+        },
+        {
+          "path": "vendor/winit/src/platform_impl/linux/wayland/state.rs",
+          "line": 170
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A15-03",
+      "title": "Gesture normalization is an intentional vendor platform boundary",
+      "report": "15-vendor-site.md",
+      "primary_task": "G03",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "Cargo.toml",
+          "line": 469
+        },
+        {
+          "path": "vendor/winit/src/event.rs",
+          "line": 316
+        },
+        {
+          "path": "vendor/winit/src/platform_impl/linux/wayland/seat/mod.rs",
+          "line": 135
+        },
+        {
+          "path": "vendor/winit/src/platform_impl/linux/wayland/seat/pointer/gestures.rs",
+          "line": 5
+        },
+        {
+          "path": "vendor/winit/src/platform_impl/linux/wayland/state.rs",
+          "line": 212
+        },
+        {
+          "path": "vendor/winit/src/platform_impl/macos/view.rs",
+          "line": 706
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A15-04",
+      "title": "Opt-in Metal presentation feedback must retain its asynchronous native contract",
+      "report": "15-vendor-site.md",
+      "primary_task": "G03",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "Cargo.toml",
+          "line": 472
+        },
+        {
+          "path": "vendor/wgpu-hal/Cargo.toml",
+          "line": 53
+        },
+        {
+          "path": "vendor/wgpu-hal/src/metal/mod.rs",
+          "line": 502
+        },
+        {
+          "path": "vendor/wgpu-hal/src/metal/surface.rs",
+          "line": 28
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A15-05",
+      "title": "Site platform choices are release/provisioning contracts, not runtime detection to move into Rust",
+      "report": "15-vendor-site.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "flake.nix",
+          "line": 8
+        },
+        {
+          "path": "site/scripts/check-install-contract.mjs",
+          "line": 29
+        },
+        {
+          "path": "site/scripts/check-package-guides.mjs",
+          "line": 25
+        },
+        {
+          "path": "site/scripts/check-release-manifest.mjs",
+          "line": 19
+        },
+        {
+          "path": "site/src/data/install-contract.json",
+          "line": 5
+        },
+        {
+          "path": "site/src/data/install-guides.ts",
+          "line": 12
+        },
+        {
+          "path": "site/src/pages/docs/verify-release.astro",
+          "line": 36
+        },
+        {
+          "path": "site/src/scripts/start-path.ts",
+          "line": 340
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A15-06",
+      "title": "Media capture has intentional Linux host escape/tool discovery, outside app runtime",
+      "report": "15-vendor-site.md",
+      "primary_task": "V02",
+      "disposition": "retain_native_backend_or_deployment_owner",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "site/docs/media-capture.md",
+          "line": 6
+        },
+        {
+          "path": "site/scripts/books-continuity-demo.py",
+          "line": 133
+        },
+        {
+          "path": "site/scripts/media",
+          "line": 1
+        },
+        {
+          "path": "site/scripts/media.py",
+          "line": 91
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    },
+    {
+      "id": "A15-07",
+      "title": "Portable renderer patches and compiler compatibility are false positives for OS extraction",
+      "report": "15-vendor-site.md",
+      "primary_task": "G03",
+      "disposition": "retain_portable_dependency_patch",
+      "status": "planned",
+      "source_references": [
+        {
+          "path": "Cargo.toml",
+          "line": 474
+        },
+        {
+          "path": "vendor/PATCHES.md",
+          "line": 5
+        },
+        {
+          "path": "vendor/genawaiter-proc-macro/README.md",
+          "line": 1
+        },
+        {
+          "path": "vendor/vello/src/lib.rs",
+          "line": 387
+        },
+        {
+          "path": "vendor/vello/src/render.rs",
+          "line": 371
+        },
+        {
+          "path": "vendor/vello/src/wgpu_engine.rs",
+          "line": 2775
+        },
+        {
+          "path": "vendor/vello_encoding/src/config.rs",
+          "line": 599
+        }
+      ],
+      "report_relative_source_hints": [],
+      "evidence": []
+    }
+  ],
+  "additional_findings": [
+    {
+      "id": "X01",
+      "title": "Settings account mutation journal, recovery exclusion and phase-aware compensation",
+      "primary_task": "S03",
+      "status": "planned",
+      "disposition": "extract_coherent_framework_account_recovery",
+      "source_references": [
+        {
+          "path": "apps/settings/src/accounts.rs",
+          "line": 49
+        },
+        {
+          "path": "apps/settings/src/panes/accounts.rs",
+          "line": 1099
+        },
+        {
+          "path": "crates/system/accounts/src/lib.rs",
+          "line": 228
+        }
+      ],
+      "evidence": [
+        "Source-only discovery; see account-mutation-recovery-recon.md. Ignored directory commit errors, read-error-to-absence and uncertain metadata compensation require real regression evidence and coherent framework extraction. No implementation/native validation claimed."
+      ]
+    }
+  ]
+}

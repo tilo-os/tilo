@@ -1,0 +1,13 @@
+{
+  "crates/system/atomic-file/src/lib.rs": "38cc757f15b4139f59170bcd35d857a5e428d6e910bbba10f44c3fcf1468cc4e",
+  "crates/system/atomic-file/src/native/mod.rs": "3341a69647084f6b87f4a752204494922e5c02999bf8873f07e22c71fa536257",
+  "crates/system/atomic-file/src/native/unix.rs": "99074d3e491ec2e739da0ca05e4998b949942dd29fc36edb99ca76bb78021451",
+  "crates/system/atomic-file/src/provision.rs": "60b99da8cc11198a51fa5c22027eacae2f7e61148a9d150b2017a3ab99197eff",
+  "crates/system/atomic-file/src/test_support.rs": "14a4486fce361f0e8999461975220563214128c9d84ad8fa103cb0d2a747d12d",
+  "crates/system/atomic-file/tests/parent_provision.rs": "3427396f8e95803b44be0028d9f3ca6652078e540f833418130ea3e2cf5c98f8",
+  "crates/system/settings-store/Cargo.toml": "9e7c781800cae9bf993e51e0fb70483fb0e7d936e539840fe55a81b36df3e621",
+  "crates/system/settings-store/src/lib.rs": "91474cc78d55a027e334a3bd61f4814d0d2d49c799aaef4747fe94f9aef31082",
+  "Cargo.lock": "5b8f36b9c5698482f5fbd072cc98fc68b957f2ca115ceec66c71061755fd3890",
+  "crates/system/app-state/src/lib.rs": "5f670150399ffea85f93759b8b540698b883ee82adb427e2c9cbfe4b6f171923",
+  "crates/system/app-state/src/autosave.rs": "762c11605a636609048539df6d0c7ab08c9250328d5c6d88ab1f9f9b7cc04847"
+}

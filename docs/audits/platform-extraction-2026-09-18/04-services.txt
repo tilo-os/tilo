@@ -1,0 +1,489 @@
+apps/disks/src/ops.rs:170:        let mut command = Command::new(&spec.program);
+apps/disks/src/ops.rs:172:        match bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(5 * 60))
+apps/vpn/src/app.rs:443:    pending_tool_intent: Option<os_actions::ToolIntent>,
+apps/vpn/src/app.rs:475:        app.pending_tool_intent = os_actions::tool_intent_from_env();
+apps/vpn/src/app.rs:552:        let os_actions::ToolIntent::Vpn { route, profile } = intent else {
+apps/vpn/src/app.rs:556:            os_actions::VpnRoute::Overview | os_actions::VpnRoute::Import => {}
+apps/vpn/src/app.rs:557:            os_actions::VpnRoute::Profile | os_actions::VpnRoute::DnsRouting => {
+apps/vpn/src/app.rs:629:        let Ok(profiles) = os_actions::list_vpn_connections() else {
+apps/vpn/src/app.rs:1032:                            match os_actions::list_vpn_connections() {
+apps/vpn/src/app.rs:1046:                            os_actions::import_vpn_config(nm_kind, &path.to_string_lossy())
+apps/vpn/src/app.rs:1056:                                let discovered = os_actions::list_vpn_connections()
+apps/vpn/src/app.rs:3282:            self.completed_delete = Some(match os_actions::delete_vpn_connection_uuid(&uuid) {
+apps/vpn/src/app.rs:4329:        app.pending_tool_intent = Some(os_actions::ToolIntent::Vpn {
+apps/vpn/src/app.rs:4330:            route: os_actions::VpnRoute::Profile,
+apps/windows/src/appliance_owner.rs:23:) -> Result<bounded_command::Output, String> {
+apps/windows/src/appliance_owner.rs:24:    bounded_command::run_prepared(command, None, OWNER_OUTPUT_LIMIT, timeout)
+apps/windows/src/appliance_owner.rs:358:            let mut command = Command::new("pkexec");
+apps/windows/src/appliance_owner.rs:410:            let mut command = Command::new("pkexec");
+apps/windows/src/appliance_owner.rs:440:            let mut command = Command::new("pkexec");
+apps/windows/src/appliance_owner.rs:470:            let mut command = Command::new("pkexec");
+apps/windows/src/appliance_owner.rs:489:            let mut command = Command::new("pkexec");
+apps/windows/src/appliance_owner.rs:494:                    Command::new(RECOVERY_CONSOLE)
+apps/windows/src/appliance_owner.rs:598:    let mut command = Command::new(OWNER);
+apps/windows/src/appliance_owner.rs:617:fn success_bounded_output(output: &bounded_command::Output) -> Result<(), String> {
+apps/windows/src/appliance_owner.rs:726:        let mut command = Command::new("sh");
+apps/settings/src/panes/network.rs:10://! Plumbs `os_actions::network::{get_wifi, set_wifi,
+apps/settings/src/panes/network.rs:27:use os_actions::{
+apps/settings/src/panes/network.rs:127:) -> HashMap<String, os_actions::ConnectionProfileSettings> {
+apps/settings/src/panes/network.rs:131:            os_actions::connection_profile_settings(&p.uuid)
+apps/settings/src/panes/network.rs:208:    security: os_actions::WifiSecurity,
+apps/settings/src/panes/network.rs:211:        os_actions::WifiSecurity::Wpa2 => Some(ui::collaboration::PortableWifiSecurity::Wpa2),
+apps/settings/src/panes/network.rs:212:        os_actions::WifiSecurity::Wpa3 => Some(ui::collaboration::PortableWifiSecurity::Wpa3),
+apps/settings/src/panes/network.rs:265:    os_actions::list_vpn_connections()
+apps/settings/src/panes/network.rs:319:    radios: os_actions::RadioState,
+apps/settings/src/panes/network.rs:322:    profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
+apps/settings/src/panes/network.rs:325:    sims: Vec<os_actions::SimInfo>,
+apps/settings/src/panes/network.rs:326:    diagnostics: Option<os_actions::ConnectionDiagnostics>,
+apps/settings/src/panes/network.rs:356:    hotspot_clients: Vec<os_actions::HotspotClient>,
+apps/settings/src/panes/network.rs:394:        let lister: NetworkLister = Arc::new(os_actions::list_wifi_networks);
+apps/settings/src/panes/network.rs:396:        let initial_wifi = os_actions::get_wifi().unwrap_or(true);
+apps/settings/src/panes/network.rs:397:        let wired = os_actions::get_wired().unwrap_or_default();
+apps/settings/src/panes/network.rs:398:        let radios = os_actions::get_radio_state().unwrap_or_default();
+apps/settings/src/panes/network.rs:399:        let connectivity = os_actions::get_connectivity().unwrap_or_default();
+apps/settings/src/panes/network.rs:400:        let profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
+apps/settings/src/panes/network.rs:423:            sims: os_actions::list_mobile_sims().unwrap_or_default(),
+apps/settings/src/panes/network.rs:429:            tool_opener: Arc::new(os_actions::open_tool),
+apps/settings/src/panes/network.rs:448:            hotspot_clients: os_actions::list_hotspot_clients().unwrap_or_default(),
+apps/settings/src/panes/network.rs:473:            radios: os_actions::RadioState::default(),
+apps/settings/src/panes/network.rs:485:            tool_opener: Arc::new(os_actions::open_tool),
+apps/settings/src/panes/network.rs:524:            radios: os_actions::RadioState::default(),
+apps/settings/src/panes/network.rs:536:            tool_opener: Arc::new(os_actions::open_tool),
+apps/settings/src/panes/network.rs:1552:        security: os_actions::WifiSecurity,
+apps/settings/src/panes/network.rs:1693:                    self.profiles = os_actions::list_saved_network_profiles()
+apps/settings/src/panes/network.rs:1869:                    os_actions::MeteredPolicy::Automatic => "Automatic",
+apps/settings/src/panes/network.rs:1870:                    os_actions::MeteredPolicy::Metered => "Metered",
+apps/settings/src/panes/network.rs:1871:                    os_actions::MeteredPolicy::Unmetered => "Unmetered",
+apps/settings/src/panes/network.rs:1880:                    os_actions::MacPolicy::Stable => "Stable per network",
+apps/settings/src/panes/network.rs:1881:                    os_actions::MacPolicy::Random => "Random each connection",
+apps/settings/src/panes/network.rs:1882:                    os_actions::MacPolicy::Permanent => "Permanent hardware address",
+apps/settings/src/panes/network.rs:2098:                match os_actions::set_network_autoconnect(&profile.uuid, enabled) {
+apps/settings/src/panes/network.rs:2116:                match os_actions::forget_network_profile(&profile.uuid) {
+apps/settings/src/panes/network.rs:2178:            Ok(config) => match os_actions::configure_hotspot(&config) {
+apps/settings/src/panes/network.rs:2181:                    self.hotspot_clients = os_actions::list_hotspot_clients().unwrap_or_default();
+apps/settings/src/panes/network.rs:2279:            match os_actions::configure_ipv4(&profile.uuid, &config) {
+apps/settings/src/panes/network.rs:2302:            let result = os_actions::create_mobile_profile(&name, &apn);
+apps/settings/src/panes/network.rs:2346:        match os_actions::connection_diagnostics() {
+apps/settings/src/panes/network.rs:2383:                Some("Metered") => os_actions::MeteredPolicy::Metered,
+apps/settings/src/panes/network.rs:2384:                Some("Unmetered") => os_actions::MeteredPolicy::Unmetered,
+apps/settings/src/panes/network.rs:2385:                Some("Automatic") => os_actions::MeteredPolicy::Automatic,
+apps/settings/src/panes/network.rs:2395:                Some("Random each connection") => Some(os_actions::MacPolicy::Random),
+apps/settings/src/panes/network.rs:2396:                Some("Permanent hardware address") => Some(os_actions::MacPolicy::Permanent),
+apps/settings/src/panes/network.rs:2397:                Some("Stable per network") => Some(os_actions::MacPolicy::Stable),
+apps/settings/src/panes/network.rs:2410:                    .map(|old| os_actions::ProxyConfiguration {
+apps/settings/src/panes/network.rs:2414:            let patch = os_actions::ConnectionPolicyPatch {
+apps/settings/src/panes/network.rs:2428:            match os_actions::configure_connection_policy_patch(&profile.uuid, &patch) {
+apps/settings/src/panes/network.rs:2468:                .and_then(|sim| os_actions::unlock_mobile_sim_on(&sim, &pin));
+apps/settings/src/panes/network.rs:2492:                Some("TTLS") => os_actions::EnterpriseEapMethod::Ttls,
+apps/settings/src/panes/network.rs:2493:                Some("TLS") => os_actions::EnterpriseEapMethod::Tls,
+apps/settings/src/panes/network.rs:2494:                _ => os_actions::EnterpriseEapMethod::Peap,
+apps/settings/src/panes/network.rs:2517:            let result = os_actions::connect_enterprise_wifi(&config, &password);
+apps/settings/src/panes/network.rs:2538:                    runtime_portal_xdg::FileChooser::open("Choose organization CA certificate")
+apps/settings/src/panes/network.rs:2557:        let result = os_actions::captive_portal_uri().and_then(|uri| {
+apps/settings/src/panes/network.rs:2558:            runtime_portal_xdg::OpenUri::open(&uri).map_err(|error| {
+apps/settings/src/panes/network.rs:2625:        if let Ok(wired) = os_actions::get_wired() {
+apps/settings/src/panes/network.rs:2633:        if let Ok(radios) = os_actions::get_radio_state() {
+apps/settings/src/panes/network.rs:2636:        self.hotspot_clients = os_actions::list_hotspot_clients().unwrap_or_default();
+apps/settings/src/panes/network.rs:2637:        self.connectivity = os_actions::get_connectivity().unwrap_or_default();
+apps/settings/src/panes/network.rs:2638:        self.profiles = os_actions::list_saved_network_profiles().unwrap_or_default();
+apps/settings/src/panes/network.rs:2676:        let nets: Vec<(String, bool, os_actions::WifiSecurity)> = self
+apps/settings/src/panes/network.rs:2921:                security: os_actions::WifiSecurity::Wpa3,
+apps/settings/src/panes/network.rs:2928:                security: os_actions::WifiSecurity::Open,
+apps/settings/src/panes/network.rs:2935:                security: os_actions::WifiSecurity::Wpa2,
+apps/settings/src/panes/network.rs:3148:            security: os_actions::WifiSecurity::Open,
+apps/settings/src/panes/network.rs:3190:        fn set_power_profile(&self, _p: os_actions::PowerProfile) -> Result<(), String> {
+apps/settings/src/panes/network.rs:3481:            os_actions::ConnectionProfileSettings {
+apps/settings/src/panes/network.rs:3482:                metered: Some(os_actions::MeteredPolicy::Metered),
+apps/settings/src/panes/network.rs:3483:                mac: Some(os_actions::MacPolicy::Random),
+apps/settings/src/panes/network.rs:3484:                proxy: Some(os_actions::ProxyConfiguration {
+apps/settings/src/panes/network.rs:3493:            os_actions::ConnectionProfileSettings {
+apps/disks/src/probe.rs:26:fn run_probe(program: &str, args: &[&str]) -> Option<bounded_command::Output> {
+apps/disks/src/probe.rs:27:    bounded_command::run(program, args, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT).ok()
+apps/windows/src/provider.rs:463:        let raw = runtime_portal::service_fd("compat")
+apps/windows/src/provider.rs:465:        // SAFETY: `runtime_portal::service_fd` verified that the inherited slot
+apps/settings/src/panes/permissions.rs:48:        bounded_command::run(program, args, None, 1024 * 1024, Duration::from_secs(5)).ok()?;
+apps/settings/src/panes/permissions.rs:108:fn kill_label(state: os_actions::KillState, present: bool) -> &'static str {
+apps/settings/src/panes/permissions.rs:109:    use os_actions::KillState;
+apps/settings/src/panes/permissions.rs:320:fn privacy_hardware_card(privacy: &os_actions::PrivacyStatus) -> El {
+apps/settings/src/panes/permissions.rs:345:fn active_privacy_use_card(privacy: &os_actions::PrivacyStatus) -> El {
+apps/settings/src/panes/permissions.rs:358:                        os_actions::MediaKind::Camera => "Using camera",
+apps/settings/src/panes/permissions.rs:359:                        os_actions::MediaKind::Microphone => "Using microphone",
+apps/settings/src/panes/permissions.rs:425:                    let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+apps/settings/src/panes/permissions.rs:426:                        route: os_actions::WorkspaceSettingsRoute::PrivacySecurity,
+apps/settings/src/panes/permissions.rs:536:    let privacy = os_actions::get_privacy_status();
+apps/print-centre/src/surface.rs:185:    queues: Result<Vec<os_actions::printing::PrinterQueue>, String>,
+apps/print-centre/src/surface.rs:186:    jobs: Result<Vec<os_actions::printing::PrintJob>, String>,
+apps/print-centre/src/surface.rs:187:    scanners: Result<Vec<os_actions::printing::Scanner>, String>,
+apps/print-centre/src/surface.rs:198:    DiscoveryFinished(Result<Vec<os_actions::printing::DiscoveredPrinter>, String>),
+apps/print-centre/src/surface.rs:199:    AddPrinter(os_actions::printing::DiscoveredPrinter),
+apps/print-centre/src/surface.rs:258:fn job_title(job: &os_actions::printing::PrintJob) -> String {
+apps/print-centre/src/surface.rs:400:fn printer_resource(queue: &os_actions::printing::PrinterQueue) -> Resource {
+apps/print-centre/src/surface.rs:441:fn job_resource(job: &os_actions::printing::PrintJob) -> Resource {
+apps/print-centre/src/surface.rs:455:            os_actions::printing::JobState::Pending
+apps/print-centre/src/surface.rs:456:                | os_actions::printing::JobState::Held
+apps/print-centre/src/surface.rs:457:                | os_actions::printing::JobState::Processing
+apps/print-centre/src/surface.rs:458:                | os_actions::printing::JobState::Stopped
+apps/print-centre/src/surface.rs:471:            os_actions::printing::JobState::Stopped
+apps/print-centre/src/surface.rs:472:                | os_actions::printing::JobState::Canceled
+apps/print-centre/src/surface.rs:473:                | os_actions::printing::JobState::Aborted
+apps/print-centre/src/surface.rs:486:fn scanner_resource(scanner: &os_actions::printing::Scanner) -> Resource {
+apps/print-centre/src/surface.rs:774:fn friendly_queue_state(queue: &os_actions::printing::PrinterQueue) -> &'static str {
+apps/print-centre/src/surface.rs:775:    use os_actions::printing::QueueState;
+apps/print-centre/src/surface.rs:785:fn supply_level(queue: &os_actions::printing::PrinterQueue) -> Option<(f32, u8)> {
+apps/print-centre/src/surface.rs:811:fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiCommand>) -> El {
+apps/print-centre/src/surface.rs:820:        Some(os_actions::printing::JobState::Held) => "Waiting to print",
+apps/print-centre/src/surface.rs:821:        Some(os_actions::printing::JobState::Stopped) => "Needs attention",
+apps/print-centre/src/surface.rs:897:                    os_actions::printing::JobState::Pending
+apps/print-centre/src/surface.rs:898:                        | os_actions::printing::JobState::Held
+apps/print-centre/src/surface.rs:899:                        | os_actions::printing::JobState::Processing
+apps/print-centre/src/surface.rs:900:                        | os_actions::printing::JobState::Stopped
+apps/print-centre/src/surface.rs:1035:                            matches!(job.state, Some(os_actions::printing::JobState::Completed))
+apps/print-centre/src/surface.rs:1081:                    os_actions::printing::JobState::Completed
+apps/print-centre/src/surface.rs:1082:                        | os_actions::printing::JobState::Canceled
+apps/print-centre/src/surface.rs:1083:                        | os_actions::printing::JobState::Aborted
+apps/print-centre/src/surface.rs:1107:                Some(os_actions::printing::JobState::Completed) => "Printed",
+apps/print-centre/src/surface.rs:1108:                Some(os_actions::printing::JobState::Canceled) => "Canceled",
+apps/print-centre/src/surface.rs:1367:                Some(os_actions::printing::JobState::Completed) => "Printed",
+apps/print-centre/src/surface.rs:1368:                Some(os_actions::printing::JobState::Canceled) => "Canceled",
+apps/print-centre/src/surface.rs:1369:                Some(os_actions::printing::JobState::Aborted) => "Could not print",
+apps/print-centre/src/surface.rs:1370:                Some(os_actions::printing::JobState::Held) => "Waiting",
+apps/print-centre/src/surface.rs:1371:                Some(os_actions::printing::JobState::Stopped) => "Needs attention",
+apps/print-centre/src/surface.rs:1378:                    os_actions::printing::JobState::Stopped
+apps/print-centre/src/surface.rs:1379:                        | os_actions::printing::JobState::Canceled
+apps/print-centre/src/surface.rs:1380:                        | os_actions::printing::JobState::Aborted
+apps/print-centre/src/surface.rs:1393:                    os_actions::printing::JobState::Completed
+apps/print-centre/src/surface.rs:1394:                        | os_actions::printing::JobState::Canceled
+apps/print-centre/src/surface.rs:1459:fn device_view(queue: &os_actions::printing::PrinterQueue, tx: &mpsc::Sender<UiCommand>) -> El {
+apps/print-centre/src/surface.rs:1461:        queue.accepting_jobs && !matches!(queue.state, os_actions::printing::QueueState::Paused);
+apps/print-centre/src/surface.rs:1548:    result: Option<&Result<Vec<os_actions::printing::DiscoveredPrinter>, String>>,
+apps/print-centre/src/surface.rs:2163:    use os_actions::printing::{
+apps/print-centre/src/surface.rs:2268:            os_actions::printing::DiscoveredPrinter {
+apps/print-centre/src/surface.rs:2273:            os_actions::printing::DiscoveredPrinter {
+apps/print-centre/src/surface.rs:2413:            queue.state = os_actions::printing::QueueState::Ready;
+apps/print-centre/src/surface.rs:2418:            job.state = Some(os_actions::printing::JobState::Completed);
+apps/print-centre/src/surface.rs:2425:            queue.state = os_actions::printing::QueueState::Paused;
+apps/print-centre/src/surface.rs:2432:            job.state = Some(os_actions::printing::JobState::Stopped);
+apps/print-centre/src/surface.rs:2446:                queues: os_actions::printing::queues(),
+apps/print-centre/src/surface.rs:2447:                jobs: os_actions::printing::jobs(),
+apps/print-centre/src/surface.rs:2448:                scanners: os_actions::printing::scanners(),
+apps/print-centre/src/surface.rs:2801:                            os_actions::printing::discover_driverless(),
+apps/print-centre/src/surface.rs:2816:                    move || os_actions::printing::add_driverless(&printer.uri, &printer.name),
+apps/print-centre/src/surface.rs:2827:                    move || os_actions::printing::set_default(&name),
+apps/print-centre/src/surface.rs:2848:                move || os_actions::printing::set_enabled(&name, enabled),
+apps/print-centre/src/surface.rs:2869:                    move || os_actions::printing::cancel_job(&id),
+apps/print-centre/src/surface.rs:2878:                move || os_actions::printing::retry_job(&id),
+apps/print-centre/src/surface.rs:2922:                        os_actions::printing::print_document(
+apps/print-centre/src/surface.rs:2925:                            os_actions::printing::PrintSettings { copies, two_sided },
+apps/print-centre/src/surface.rs:2968:                    1 => os_actions::printing::ScanColor::Grayscale,
+apps/print-centre/src/surface.rs:2969:                    2 => os_actions::printing::ScanColor::LineArt,
+apps/print-centre/src/surface.rs:2970:                    _ => os_actions::printing::ScanColor::Color,
+apps/print-centre/src/surface.rs:2973:                    1 => os_actions::printing::ScanSource::Feeder,
+apps/print-centre/src/surface.rs:2974:                    2 => os_actions::printing::ScanSource::FeederDuplex,
+apps/print-centre/src/surface.rs:2975:                    _ => os_actions::printing::ScanSource::Flatbed,
+apps/print-centre/src/surface.rs:2989:                        let result = os_actions::printing::scan_page(
+apps/print-centre/src/surface.rs:2991:                            os_actions::printing::ScanSettings {
+apps/print-centre/src/surface.rs:3497:        state: os_actions::printing::QueueState,
+apps/print-centre/src/surface.rs:3499:    ) -> os_actions::printing::PrinterQueue {
+apps/print-centre/src/surface.rs:3500:        os_actions::printing::PrinterQueue {
+apps/print-centre/src/surface.rs:3506:            telemetry: os_actions::printing::PrinterTelemetry::default(),
+apps/print-centre/src/surface.rs:3787:        use os_actions::printing::QueueState;
+apps/print-centre/src/surface.rs:3804:        let mut printer = queue(os_actions::printing::QueueState::Ready, true);
+apps/print-centre/src/surface.rs:3806:            os_actions::printing::PrinterSupply {
+apps/print-centre/src/surface.rs:3811:            os_actions::printing::PrinterSupply {
+apps/print-centre/src/surface.rs:3824:        let printer = queue(os_actions::printing::QueueState::Ready, true);
+apps/settings/src/panes/bluetooth.rs:109:        os_actions::bluez::devices()
+apps/settings/src/panes/bluetooth.rs:112:        os_actions::bluez::is_powered()
+apps/settings/src/panes/bluetooth.rs:115:        os_actions::bluez::is_scanning()
+apps/settings/src/panes/bluetooth.rs:118:        os_actions::bluez::set_powered(on)
+apps/settings/src/panes/bluetooth.rs:121:        os_actions::bluez::start_scan()
+apps/settings/src/panes/bluetooth.rs:124:        os_actions::bluez::stop_scan()
+apps/settings/src/panes/bluetooth.rs:127:        os_actions::bluez::pair(path)
+apps/settings/src/panes/bluetooth.rs:130:        os_actions::bluez::cancel_pairing(path)
+apps/settings/src/panes/bluetooth.rs:133:        os_actions::bluez::connect(path)
+apps/settings/src/panes/bluetooth.rs:136:        os_actions::bluez::disconnect(path)
+apps/settings/src/panes/bluetooth.rs:139:        os_actions::bluez::set_trusted(path, v)
+apps/settings/src/panes/bluetooth.rs:142:        os_actions::bluez::set_alias(path, alias)
+apps/settings/src/panes/bluetooth.rs:145:        os_actions::bluez::forget(path)
+apps/vpn/src/config.rs:93:    let profiles = os_actions::list_vpn_connections()?;
+apps/vpn/src/config.rs:420:        os_actions::set_vpn_connection_uuid(value, up_down == "up")?;
+apps/file-explorer/src/favorites.rs:21:use ui::sysdirs::UserDir;
+apps/file-explorer/src/favorites.rs:27:pub use ui::sysdirs::UserDirs;
+apps/file-explorer/src/framework_history_tests.rs:389:        xattr::set(
+apps/file-explorer/src/framework_history_tests.rs:399:        xattr::set(
+apps/file-explorer/src/framework_history_tests.rs:413:        xattr::set(
+apps/file-explorer/src/framework_history_tests.rs:423:        xattr::set(
+apps/file-explorer/src/framework_history_tests.rs:480:        &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+apps/file-explorer/src/framework_history_tests.rs:499:        &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+apps/file-explorer/src/framework_history_tests.rs:520:            &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+apps/file-explorer/src/framework_history_tests.rs:547:    xattr::set(
+apps/file-explorer/src/framework_history_tests.rs:578:        &xattr::get(&a, CHECKED_HISTORY_RESTORE_XATTR)
+apps/vpn/src/net.rs:25:fn run_probe(program: &str, args: &[&str]) -> Option<bounded_command::Output> {
+apps/vpn/src/net.rs:26:    bounded_command::run(program, args, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT).ok()
+apps/vpn/src/net.rs:314:        Command::new("ip")
+apps/settings/src/panes/device_mesh.rs:208:    management_child: Option<bounded_command::AsyncCommand>,
+apps/settings/src/panes/device_mesh.rs:212:    apply_child: Option<bounded_command::AsyncCommand>,
+apps/settings/src/panes/device_mesh.rs:214:    pairing_child: Option<bounded_command::AsyncCommand>,
+apps/settings/src/panes/device_mesh.rs:251:    let path = dirs::config_dir().map_or_else(
+apps/settings/src/panes/device_mesh.rs:477:                dirs::data_dir()
+apps/settings/src/panes/device_mesh.rs:1438:    fn spawn_apply(&self) -> Result<bounded_command::AsyncCommand, String> {
+apps/settings/src/panes/device_mesh.rs:1457:        let mut command = Command::new("pkexec");
+apps/settings/src/panes/device_mesh.rs:1459:        bounded_command::spawn_prepared(
+apps/settings/src/panes/device_mesh.rs:1488:            let mut command = Command::new("/usr/bin/tilo-enroll");
+apps/settings/src/panes/device_mesh.rs:1490:            self.load_status = match bounded_command::spawn_prepared(
+apps/settings/src/panes/device_mesh.rs:1514:        let mut command = Command::new("pkexec");
+apps/settings/src/panes/device_mesh.rs:1557:        self.load_status = match bounded_command::spawn_prepared(
+apps/settings/src/panes/device_mesh.rs:1585:        let mut command = Command::new(RELAY_ADMIN);
+apps/settings/src/panes/device_mesh.rs:1595:        match bounded_command::spawn_prepared(
+apps/settings/src/panes/device_mesh.rs:1625:            let mut command = Command::new(RELAY_ADMIN);
+apps/settings/src/panes/device_mesh.rs:1630:            if let Ok(child) = bounded_command::spawn_prepared(
+apps/settings/src/panes/device_mesh.rs:1660:            .and_then(bounded_command::AsyncCommand::try_wait);
+apps/settings/src/panes/device_mesh.rs:1692:            .and_then(bounded_command::AsyncCommand::try_wait);
+apps/settings/src/panes/device_mesh.rs:1748:            .and_then(bounded_command::AsyncCommand::try_wait);
+apps/settings/src/panes/device_mesh.rs:2477:        let mut command = Command::new("sleep");
+apps/settings/src/panes/device_mesh.rs:2480:            bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
+apps/settings/src/panes/device_mesh.rs:2498:            bounded_command::spawn_prepared(Command::new("true"), None, 64, Duration::from_secs(1))
+apps/settings/src/panes/device_mesh.rs:2516:        let mut command = Command::new("sleep");
+apps/settings/src/panes/device_mesh.rs:2519:            bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
+apps/file-explorer/src/model.rs:50:    match xattr::get(path, SYNC_XATTR) {
+apps/file-explorer/src/model.rs:99:    let bytes = xattr::get(path, name).ok()??;
+apps/file-explorer/src/model.rs:119:    let bytes = xattr::get(path, name).ok()??;
+apps/file-explorer/src/model.rs:155:    MetadataProjection::parse(&xattr::get(path, METADATA_XATTR).ok()??)
+apps/file-explorer/src/model.rs:317:    let bytes = xattr::get(path, SHARE_XATTR).ok()??;
+apps/file-explorer/src/model.rs:322:    let bytes = xattr::get(path, HISTORY_XATTR).ok()??;
+apps/file-explorer/src/model.rs:421:    let bytes = xattr::get(path, AVAILABILITY_XATTR).ok()??;
+apps/file-explorer/src/model.rs:426:    let bytes = xattr::get(path, CONTENT_HASH_XATTR).ok()??;
+apps/file-explorer/src/model.rs:431:    let bytes = xattr::get(path, RECORD_ID_XATTR).ok()??;
+apps/file-explorer/src/model.rs:573:    let bytes = xattr::get(root, RECORD_INDEX_XATTR).ok()??;
+apps/file-explorer/src/model.rs:582:    let bytes = xattr::get(root, RECORD_INDEX_V2_XATTR).ok()??;
+apps/file-explorer/src/model.rs:602:    let bytes = xattr::get(root, &name).ok()??;
+apps/file-explorer/src/model.rs:622:    let bytes = xattr::get(root, RECORD_INDEX_V3_XATTR).ok()??;
+apps/file-explorer/src/model.rs:640:    let bytes = xattr::get(root, name).ok()??;
+apps/file-explorer/src/model.rs:667:        let Some(bytes) = xattr::get(root, name).ok().flatten() else {
+apps/file-explorer/src/model.rs:694:    match xattr::get(root, RECORD_INDEX_V2_XATTR).ok().flatten() {
+apps/file-explorer/src/model.rs:713:    if let Some(bytes) = xattr::get(root, RECORD_INDEX_V3_XATTR).ok().flatten() {
+apps/file-explorer/src/model.rs:735:        if let Some(bytes) = xattr::get(root, name).ok().flatten() {
+apps/file-explorer/src/model.rs:1052:                || xattr::get(&root, RECORD_INDEX_V2_XATTR)
+apps/file-explorer/src/model.rs:1200:    match xattr::get(path, THUMB_XATTR) {
+apps/file-explorer/src/model.rs:1282:    let bytes = xattr::get(root, SHARE_CONTROL_XATTR).ok()??;
+apps/file-explorer/src/model.rs:1560:    ui::sysdirs::user_home_override().or_else(dirs::home_dir)
+apps/file-explorer/src/model.rs:1615:        xattr::set(&f, SYNC_XATTR, b"projected").unwrap();
+apps/file-explorer/src/model.rs:1617:        xattr::set(&f, SYNC_XATTR, b"local").unwrap();
+apps/file-explorer/src/model.rs:1631:        xattr::set(&f, THUMB_XATTR, &png).unwrap();
+apps/file-explorer/src/model.rs:1647:        xattr::set(&f, CONTENT_HASH_XATTR, &hash).unwrap();
+apps/file-explorer/src/model.rs:1650:        xattr::set(&f, CONTENT_HASH_XATTR, &[1u8; 31]).unwrap();
+apps/file-explorer/src/model.rs:1665:        xattr::set(&f, RECORD_ID_XATTR, &id).unwrap();
+apps/file-explorer/src/model.rs:1667:        xattr::set(&f, RECORD_ID_XATTR, &[0u8; 15]).unwrap();
+apps/file-explorer/src/model.rs:1784:        xattr::set(&downloading, SYNC_XATTR, b"downloading").unwrap();
+apps/file-explorer/src/model.rs:1785:        xattr::set(&projected, SYNC_XATTR, b"projected").unwrap();
+apps/file-explorer/src/model.rs:1787:        xattr::set(&projected, CONTENT_HASH_XATTR, &projected_hash).unwrap();
+apps/file-explorer/src/model.rs:1789:        xattr::set(&projected, RECORD_ID_XATTR, &projected_record).unwrap();
+apps/file-explorer/src/model.rs:1791:        xattr::set(&projected, AVAILABILITY_XATTR, &projected_availability).unwrap();
+apps/file-explorer/src/model.rs:1799:        xattr::set(&projected, SHARE_XATTR, &projected_share).unwrap();
+apps/file-explorer/src/model.rs:1902:        xattr::set(
+apps/file-explorer/src/model.rs:1928:        xattr::set(
+apps/file-explorer/src/model.rs:1996:        xattr::set(
+apps/file-explorer/src/model.rs:2004:        xattr::remove(root.path(), RECORD_INDEX_XATTR).unwrap();
+apps/file-explorer/src/model.rs:2029:        xattr::set(
+apps/file-explorer/src/model.rs:2050:        xattr::set(
+apps/file-explorer/src/model.rs:2083:            xattr::set(
+apps/file-explorer/src/model.rs:2134:            xattr::set(
+apps/settings/src/panes/printers.rs:18:use os_actions::printing::{
+apps/settings/src/panes/printers.rs:106:        os_actions::printing::queues()
+apps/settings/src/panes/printers.rs:109:        os_actions::printing::jobs()
+apps/settings/src/panes/printers.rs:112:        os_actions::printing::discover_driverless()
+apps/settings/src/panes/printers.rs:115:        os_actions::printing::scanners()
+apps/settings/src/panes/printers.rs:118:        os_actions::printing::add_driverless(&p.uri, &p.name)
+apps/settings/src/panes/printers.rs:121:        os_actions::printing::set_default(name)
+apps/settings/src/panes/printers.rs:124:        os_actions::printing::set_enabled(name, enabled)
+apps/settings/src/panes/printers.rs:127:        os_actions::printing::remove_queue(name)
+apps/settings/src/panes/printers.rs:130:        os_actions::printing::cancel_job(id)
+apps/settings/src/panes/printers.rs:133:        os_actions::printing::retry_job(id)
+apps/settings/src/panes/printers.rs:882:            telemetry: os_actions::printing::PrinterTelemetry::default(),
+apps/logs/src/journal.rs:417:    let output = bounded_command::run(
+apps/logs/src/journal.rs:425:        bounded_command::Error::Process(ref io_error)
+apps/file-explorer/src/received_shares.rs:128:    runtime_portal::service_fd("tilo-fs").or_else(|| runtime_portal::service_fd("fs"))
+apps/file-explorer/src/views/file_view.rs:2577:        xattr::set(&entry.path, crate::model::THUMB_XATTR, &png).unwrap();
+apps/settings/src/panes/storage.rs:8:use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
+apps/settings/src/panes/storage.rs:9:use runtime_fs::storage::{
+apps/settings/src/panes/storage.rs:512:                let result = os_actions::open_tool(ToolIntent::Disks {
+apps/settings/src/panes/storage.rs:522:                let result = os_actions::open_tool(ToolIntent::Backups {
+apps/settings/src/panes/storage.rs:668:        let file = |identity: &str, reclaimable_bytes| runtime_fs::storage::SyncedFileState {
+apps/file-explorer/src/templates.rs:20:    dirs::home_dir().map(|h| h.join("Templates"))
+apps/store/src/flathub_client.rs:383:    let output = bounded_command::run(program, args, None, 1024 * 1024, timeout).ok()?;
+apps/file-explorer/src/main.rs:326:        let _ = xattr::set(&p, "user.tilo.sync", state.as_bytes());
+apps/file-explorer/src/main.rs:363:    let _ = xattr::set(&path, file_explorer::model::HISTORY_XATTR, &history);
+apps/file-explorer/src/main.rs:364:    let _ = xattr::set(&path, "user.tilo.sync", b"local");
+apps/file-explorer/src/main.rs:491:        let _ = xattr::set(&p, "user.tilo.thumb", &gradient_png(112, 84, kind));
+apps/file-explorer/src/main.rs:492:        let _ = xattr::set(&p, "user.tilo.sync", sync.as_bytes());
+apps/file-explorer/src/main.rs:498:        let _ = xattr::set(&p, "user.tilo.sync", sync.as_bytes());
+apps/firewall/src/backend.rs:125:            let mut command = Command::new(invocation.program);
+apps/firewall/src/backend.rs:128:                bounded_command::run_prepared(command, None, COMMAND_OUTPUT_LIMIT, APPLY_TIMEOUT)
+apps/firewall/src/backend.rs:138:fn command_failure(invocation: &Invocation, output: &bounded_command::Output) -> String {
+apps/firewall/src/backend.rs:177:    let out = bounded_command::run(
+apps/settings/src/panes/audio.rs:14://! - **Volume / Mute** forward to `os_actions` (`wpctl` on the default
+apps/settings/src/panes/audio.rs:67:use os_actions::Dispatcher;
+apps/settings/src/panes/audio.rs:145:/// `os_actions::Dispatcher` only covers the sink, so the pane carries this
+apps/settings/src/panes/audio.rs:170:/// the binary is missing or the call fails, mirroring `os_actions`.
+apps/settings/src/panes/audio.rs:172:    let out = bounded_command::run("wpctl", args, None, 1024 * 1024, Duration::from_secs(5))
+apps/settings/src/panes/audio.rs:311:    let Ok(out) = bounded_command::run(
+apps/settings/src/panes/audio.rs:358:    let out = bounded_command::run(
+apps/settings/src/panes/audio.rs:484:        let initial_state = os_actions::get_volume_state().unwrap_or(os_actions::VolumeState {
+apps/store/src/installed.rs:27:    dirs::data_dir().map(|d| d.join("tilo-apps").join("registry.toml"))
+apps/file-explorer/src/config.rs:17:    dirs::config_dir().map(|d| d.join("tilo-files"))
+apps/settings/src/settings_app.rs:664:                        let available = os_actions::charge_capability()
+apps/settings/src/settings_app.rs:745:                    let wired = os_actions::get_wired()?;
+apps/settings/src/settings_app.rs:781:                        let device = os_actions::bluez::devices()?
+apps/settings/src/settings_app.rs:1135:                        if !os_actions::printing::queues()
+apps/settings/src/settings_app.rs:1145:                        let queue = os_actions::printing::queues()
+apps/settings/src/settings_app.rs:1151:                            (queue.state == os_actions::printing::QueueState::Paused) == enabled;
+apps/settings/src/settings_app.rs:1158:                        if !os_actions::printing::queues()
+apps/settings/src/settings_app.rs:1168:                        if !os_actions::printing::jobs()
+apps/settings/src/settings_app.rs:1178:                        if !os_actions::printing::jobs()
+apps/settings/src/settings_app.rs:1424:                os_actions::set_ntp(enabled)
+apps/settings/src/settings_app.rs:1429:                if !os_actions::list_timezones()
+apps/settings/src/settings_app.rs:1436:                os_actions::set_timezone(&timezone)
+apps/settings/src/panes/time_date.rs:16://!   `os_actions::time::{now_clock, now_date}` at build time, so the panel
+apps/settings/src/panes/time_date.rs:24://!   `os_actions::set_ntp`; its initial state is sampled via
+apps/settings/src/panes/time_date.rs:25://!   `os_actions::get_ntp`. The setter needs privilege, so a denial is
+apps/settings/src/panes/time_date.rs:622:/// forwards to `os_actions::set_ntp` (`timedatectl set-ntp`); tests inject a
+apps/settings/src/panes/time_date.rs:636:        os_actions::set_timezone(timezone)
+apps/settings/src/panes/time_date.rs:645:        os_actions::set_ntp(enabled)
+apps/settings/src/panes/time_date.rs:726:    sync_status: os_actions::TimeSyncStatus,
+apps/settings/src/panes/time_date.rs:748:        let sync_status = os_actions::get_time_sync_status();
+apps/settings/src/panes/time_date.rs:751:            .or_else(|| os_actions::get_ntp().ok())
+apps/settings/src/panes/time_date.rs:759:        let mut timezones = os_actions::list_timezones().unwrap_or_default();
+apps/settings/src/panes/time_date.rs:802:            sync_status: os_actions::TimeSyncStatus {
+apps/settings/src/panes/time_date.rs:823:        let now = os_actions::now_clock(self.h24).unwrap_or_else(|_| "—".to_string());
+apps/settings/src/panes/time_date.rs:824:        let today = os_actions::now_date().unwrap_or_else(|_| "—".to_string());
+apps/settings/src/panes/mod.rs:10://!   `os_actions::Dispatcher` and drive real `nmcli`/`wpctl`/`brightnessctl`/
+apps/settings/src/panes/about.rs:25:pub(crate) fn portable_identity_backup_intent() -> os_actions::ToolIntent {
+apps/settings/src/panes/about.rs:26:    os_actions::ToolIntent::IdentityBackup
+apps/settings/src/panes/about.rs:175:                        let _ = os_actions::open_tool(portable_identity_backup_intent());
+apps/settings/src/panes/about.rs:391:        assert_eq!(intent, os_actions::ToolIntent::IdentityBackup);
+apps/settings/src/panes/display.rs:16://! - **Brightness** forwards to `os_actions::set_brightness`
+apps/settings/src/panes/display.rs:44:use os_actions::Dispatcher;
+apps/settings/src/panes/display.rs:326:                    os_actions::get_brightness().unwrap_or(0.5),
+apps/settings/src/panes/display.rs:327:                    os_actions::has_ambient_light_sensor(),
+apps/settings/src/panes/agent_models.rs:33:fn manager_run(args: &[&str], timeout: Duration) -> Result<bounded_command::Output, String> {
+apps/settings/src/panes/agent_models.rs:34:    bounded_command::run(
+apps/settings/src/panes/updates.rs:76:) -> Result<bounded_command::Output, String> {
+apps/settings/src/panes/updates.rs:77:    bounded_command::run(program, args, None, MAX_HELPER_OUTPUT, timeout)
+apps/settings/src/panes/updates.rs:342:            Vec<os_actions::FirmwareUpdate>,
+apps/settings/src/panes/updates.rs:343:            Vec<os_actions::FirmwareHistoryEntry>,
+apps/settings/src/panes/updates.rs:577:            Vec<os_actions::FirmwareUpdate>,
+apps/settings/src/panes/updates.rs:578:            Vec<os_actions::FirmwareHistoryEntry>,
+apps/settings/src/panes/updates.rs:582:        os_actions::refresh_firmware_metadata()
+apps/settings/src/panes/updates.rs:583:            .and_then(|()| os_actions::get_firmware_updates())
+apps/settings/src/panes/updates.rs:585:                os_actions::get_firmware_history().map(|history| (updates, history))
+apps/settings/src/panes/updates.rs:652:        Vec<os_actions::FirmwareUpdate>,
+apps/settings/src/panes/updates.rs:653:        Vec<os_actions::FirmwareHistoryEntry>,
+apps/settings/src/panes/updates.rs:660:    let date = os_actions::now_date().unwrap_or_default();
+apps/settings/src/panes/updates.rs:661:    let time = os_actions::now_clock(true).unwrap_or_default();
+apps/settings/src/panes/updates.rs:690:    firmware_updates: Result<Vec<os_actions::FirmwareUpdate>, String>,
+apps/settings/src/panes/updates.rs:691:    firmware_history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
+apps/settings/src/panes/updates.rs:693:    firmware_events: Option<std::sync::mpsc::Receiver<os_actions::FirmwareEvent>>,
+apps/settings/src/panes/updates.rs:741:        let firmware_updates = os_actions::get_firmware_updates();
+apps/settings/src/panes/updates.rs:742:        let firmware_history = os_actions::get_firmware_history();
+apps/settings/src/panes/updates.rs:1320:    fn firmware_card_available(&self, updates: &[os_actions::FirmwareUpdate]) -> El {
+apps/settings/src/panes/updates.rs:1501:                    os_actions::FirmwareEvent::Started { total } => {
+apps/settings/src/panes/updates.rs:1507:                    os_actions::FirmwareEvent::Progress { percent, message } => {
+apps/settings/src/panes/updates.rs:1524:                    os_actions::FirmwareEvent::Completed(outcome) => {
+apps/settings/src/panes/updates.rs:1533:                        self.firmware_updates = os_actions::get_firmware_updates();
+apps/settings/src/panes/updates.rs:1534:                        self.firmware_history = os_actions::get_firmware_history();
+apps/settings/src/panes/updates.rs:1541:                    os_actions::FirmwareEvent::Failed(error) => {
+apps/settings/src/panes/updates.rs:1800:            .and_then(os_actions::start_firmware_install)
+apps/settings/src/panes/updates.rs:2558:                Vec<os_actions::FirmwareUpdate>,
+apps/settings/src/panes/updates.rs:2559:                Vec<os_actions::FirmwareHistoryEntry>,
+apps/settings/src/actions.rs:3338:    if let Some(capability) = os_actions::charge_capability() {
+apps/settings/src/actions.rs:3879:    for device in os_actions::bluez::devices()
+apps/settings/src/actions.rs:4031:    for queue in os_actions::printing::queues()
+apps/settings/src/actions.rs:4050:                if queue.state == os_actions::printing::QueueState::Paused {
+apps/settings/src/actions.rs:4055:                if queue.state == os_actions::printing::QueueState::Paused {
+apps/settings/src/actions.rs:4062:                    enabled: queue.state == os_actions::printing::QueueState::Paused,
+apps/settings/src/actions.rs:4089:    for job in os_actions::printing::jobs()
+apps/settings/src/dispatcher.rs:4://! network, bluetooth) holds an `Arc<dyn os_actions::Dispatcher + Send +
+apps/settings/src/dispatcher.rs:8://! pass `None` from production to get `os_actions::RealDispatcher`.
+apps/settings/src/dispatcher.rs:12:use os_actions::{Dispatcher, RealDispatcher};
+apps/settings/src/dispatcher.rs:32:    use os_actions::{Dispatcher, PowerProfile};
+apps/file-explorer/src/history_control.rs:38:    xattr::set(path, crate::model::HISTORY_CONTROL_XATTR, &bytes).map_err(|error| {
+apps/file-explorer/src/history_control.rs:64:        let bytes = xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+apps/file-explorer/src/history_control.rs:85:            &xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+apps/settings/src/panes/personal_apps.rs:129:                        let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+apps/settings/src/panes/personal_apps.rs:130:                            route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+apps/settings/src/panes/power.rs:20://!   `powerprofilesctl` through the shared `os_actions::Dispatcher`
+apps/settings/src/panes/power.rs:38:use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, Dispatcher, PowerProfile};
+apps/settings/src/panes/power.rs:177:    devices: Vec<os_actions::PowerDevice>,
+apps/settings/src/panes/power.rs:178:    history: os_actions::BatteryHistory,
+apps/settings/src/panes/power.rs:376:        let profile_result = os_actions::get_power_profile();
+apps/settings/src/panes/power.rs:377:        let available_result = os_actions::available_power_profiles();
+apps/settings/src/panes/power.rs:407:        let history = os_actions::load_battery_history();
+apps/settings/src/panes/power.rs:411:            devices: os_actions::power_devices(),
+apps/settings/src/panes/power.rs:413:            charge_cap: os_actions::charge_capability(),
+apps/settings/src/panes/power.rs:451:            history: os_actions::BatteryHistory::default(),
+apps/settings/src/panes/power.rs:769:                os_actions::PowerSupplyKind::Battery => "Battery",
+apps/settings/src/panes/power.rs:770:                os_actions::PowerSupplyKind::Ups => "UPS",
+apps/settings/src/panes/power.rs:897:        match os_actions::set_charge_limit_checked(limit) {
+apps/file-explorer/src/fileops.rs:56:    dirs::data_dir().map(|d| d.join("Trash").join("files"))
+apps/file-explorer/src/fileops.rs:97:    let items = trash::os_limited::list().map_err(|e| e.to_string())?;
+apps/file-explorer/src/fileops.rs:99:    trash::os_limited::purge_all(items).map_err(|e| e.to_string())?;
+apps/file-explorer/src/fileops.rs:107:fn trash_item_backs(item: &trash::TrashItem, files_name: &OsStr) -> bool {
+apps/file-explorer/src/fileops.rs:118:fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String> {
+apps/file-explorer/src/fileops.rs:123:    Ok(trash::os_limited::list()
+apps/file-explorer/src/fileops.rs:142:    trash::os_limited::restore_all(items).map_err(|e| e.to_string())?;
+apps/file-explorer/src/fileops.rs:157:    trash::os_limited::purge_all(items).map_err(|e| e.to_string())?;
+apps/file-explorer/src/fileops.rs:244:    trash::delete_all(paths).map_err(|e| e.to_string())
+apps/settings/src/panes/users.rs:74:        os_actions::users::create_user(username, full_name, os_actions::AccountRole::Standard)?;
+apps/settings/src/panes/users.rs:77:        os_actions::users::set_password(username, password)
+apps/settings/src/panes/users.rs:81:        os_actions::users::delete_user(&user.username, user.uid, remove_files)
+apps/settings/src/panes/users.rs:85:        os_actions::users::set_role(
+apps/settings/src/panes/users.rs:88:                os_actions::AccountRole::Administrator
+apps/settings/src/panes/users.rs:90:                os_actions::AccountRole::Standard
+apps/settings/src/panes/users.rs:96:        os_actions::users::set_automatic_login(username, enabled)
+apps/settings/src/panes/users.rs:185:        user.automatic_login = os_actions::users::automatic_login(&user.username).unwrap_or(false);
+apps/settings/src/shots.rs:106:    use os_actions::{WifiNetworkInfo, WiredInfo};
+apps/settings/src/shots.rs:112:            security: os_actions::WifiSecurity::Wpa3,
+apps/settings/src/shots.rs:119:            security: os_actions::WifiSecurity::Open,
+apps/settings/src/shots.rs:126:            security: os_actions::WifiSecurity::Wpa2,
+apps/file-explorer/src/framework_history.rs:7:use xattr::FileExt;
+apps/file-explorer/src/framework_history.rs:293:        xattr::set(
+apps/file-explorer/src/framework_history.rs:303:            &xattr::get(&path, CHECKED_HISTORY_RESTORE_XATTR)
+apps/file-explorer/src/framework_history.rs:317:            xattr::get(&path, crate::model::HISTORY_CONTROL_XATTR)
+apps/file-explorer/src/framework_history.rs:334:        xattr::set(&path, &name, b"old immutable bytes").unwrap();
+apps/file-explorer/src/framework_history.rs:338:        xattr::set(&path, &name, b"wrong replacement history").unwrap();
+apps/file-explorer/src/files_app.rs:585:        // `TILO_USER_HOME`. Reading `dirs::home_dir()` here made the two
+apps/file-explorer/src/files_app.rs:1951:                    if let Err(error) = xattr::set(path, crate::model::PIN_XATTR, value) {
+apps/file-explorer/src/files_app.rs:2003:                        xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"evict")
+apps/file-explorer/src/files_app.rs:2049:                    if let Err(error) = xattr::set(
+apps/file-explorer/src/files_app.rs:2093:                        xattr::set(path, crate::model::AVAILABILITY_CONTROL_XATTR, b"retry")
+apps/file-explorer/src/files_app.rs:3839:    /// (`open::that`, via `CommandRunner::open_default`).
+apps/file-explorer/src/files_app.rs:4435:        std::process::Command::new(program)
+apps/file-explorer/src/files_app.rs:4448:        std::process::Command::new(program)
+apps/file-explorer/src/files_app.rs:4457:        open::that(path)
+apps/file-explorer/src/files_app.rs:10661:        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+apps/file-explorer/src/files_app.rs:10676:            xattr::get(&file, crate::model::PIN_XATTR)
+apps/file-explorer/src/files_app.rs:10706:        xattr::set(
+apps/file-explorer/src/files_app.rs:10712:        xattr::set(
+apps/file-explorer/src/files_app.rs:10742:            xattr::get(&local, crate::model::AVAILABILITY_CONTROL_XATTR)
+apps/file-explorer/src/files_app.rs:10748:            xattr::get(&remote, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+apps/file-explorer/src/files_app.rs:10765:        xattr::set(&before, crate::model::RECORD_ID_XATTR, record.as_bytes()).unwrap();
+apps/file-explorer/src/files_app.rs:10766:        xattr::set(&before, crate::model::SYNC_XATTR, b"projected").unwrap();
+apps/file-explorer/src/files_app.rs:10773:        xattr::set(&after, crate::model::SYNC_XATTR, b"local").unwrap();
+apps/file-explorer/src/files_app.rs:10817:        xattr::set(
+apps/file-explorer/src/files_app.rs:10823:        xattr::set(
+apps/file-explorer/src/files_app.rs:10857:            xattr::get(&automatic, crate::model::PIN_XATTR)
+apps/file-explorer/src/files_app.rs:10862:        assert_eq!(xattr::get(&pinned, crate::model::PIN_XATTR).unwrap(), None);
+apps/file-explorer/src/files_app.rs:10864:            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
+apps/file-explorer/src/files_app.rs:10877:            xattr::get(&pinned, crate::model::PIN_XATTR)
+apps/file-explorer/src/files_app.rs:10883:            xattr::get(&automatic, crate::model::PIN_XATTR)
+apps/file-explorer/src/files_app.rs:10890:            xattr::get(&ordinary, crate::model::PIN_XATTR).unwrap(),
+apps/file-explorer/src/files_app.rs:10914:        xattr::set(&file, crate::model::AVAILABILITY_XATTR, &availability).unwrap();
+apps/file-explorer/src/files_app.rs:10936:        assert_eq!(xattr::get(&file, crate::model::PIN_XATTR).unwrap(), None);
+apps/file-explorer/src/files_app.rs:11091:        xattr::set(
+apps/file-explorer/src/files_app.rs:11301:        xattr::set(&file, crate::model::RECORD_ID_XATTR, record_id.as_bytes()).unwrap();
+apps/file-explorer/src/files_app.rs:11311:        xattr::set(
+apps/file-explorer/src/files_app.rs:11378:        xattr::set(
+apps/file-explorer/src/files_app.rs:11688:        xattr::set(
+apps/file-explorer/src/files_app.rs:12800:            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR).unwrap(),
+apps/file-explorer/src/files_app.rs:12811:            xattr::get(&file, crate::model::AVAILABILITY_CONTROL_XATTR)
+apps/file-explorer/src/files_app.rs:12840:        // to win over whatever `dirs::home_dir()` says, and it does not say
+apps/file-explorer/src/files_app.rs:12859:            dirs::home_dir().as_deref(),

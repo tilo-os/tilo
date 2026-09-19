@@ -43,11 +43,33 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod engine;
+pub mod framework_history;
+#[cfg(test)]
+mod framework_history_tests;
 pub mod model;
 pub mod paint;
+pub mod presentation;
 pub mod search_provider;
 
 pub use app::BackupsApp;
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_root() -> BackupsApp {
+    BackupsApp::history_test_root()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_job_root() -> BackupsApp {
+    BackupsApp::history_test_job_root()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn history_test_staged_root() -> (
+    BackupsApp,
+    std::rc::Rc<std::cell::RefCell<app::HistoryViewSnapshot>>,
+) {
+    BackupsApp::history_test_staged_root()
+}
 
 use ui::widget::Widget;
 

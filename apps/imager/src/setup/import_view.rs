@@ -23,10 +23,10 @@ use winit::event::{Modifiers, WindowEvent};
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
-use super::migration_store::{
+use ui::folders::copy::{
     IssuePage, MigrationStore, OperationRecord, OperationState, StoreWriter,
 };
-use super::migration_worker::{
+use ui::folders::copy::{
     MigrationJob, MigrationWorker, WorkerEvent, WorkerOutcome, durable_copy_available,
 };
 use super::view::system_folder_reason;
@@ -672,12 +672,7 @@ impl ImportApp {
                         c.select_destination_parent(index, &parent)?;
                         parent
                     } else {
-                        let parent = dirs::data_local_dir()
-                            .ok_or("No local user data directory")?
-                            .join("qos/files");
-                        super::migration_store::ensure_private_root(&parent)
-                            .map_err(|e| e.to_string())?;
-                        parent
+                        ui::folders::review::prepare_managed_import_parent()?
                     };
                     c.resolve(index, &parent, true)?;
                     Ok(c)
@@ -812,7 +807,7 @@ impl ImportApp {
             }
             Err(error) => {
                 if let Some(operation) = self.operations.get_mut(index) {
-                    operation.apply_outcome(super::migration_worker::WorkerOutcome::Failed(
+                    operation.apply_outcome(ui::folders::copy::WorkerOutcome::Failed(
                         error.clone(),
                     ));
                 }
@@ -871,7 +866,7 @@ impl ImportApp {
             }
             Err(error) => {
                 if let Some(operation) = self.operations.get_mut(index) {
-                    operation.apply_outcome(super::migration_worker::WorkerOutcome::Failed(
+                    operation.apply_outcome(ui::folders::copy::WorkerOutcome::Failed(
                         error.clone(),
                     ));
                 }
@@ -1971,7 +1966,7 @@ mod tests {
         // Either ordering of the two durable writes may survive a crash.
         for (continuation, record) in [(new, old_record), (old, new_record)] {
             continuation.save(app.store.as_ref().unwrap()).unwrap();
-            app.store.as_ref().unwrap().save(&[record]).unwrap();
+            tilo_folder_service::test_support::save_snapshot(&app.store.as_ref().unwrap(), &[record]).unwrap();
             app.continuation = Continuation::load(app.store.as_ref().unwrap()).unwrap();
             app.operations = app.store.as_ref().unwrap().load().unwrap();
             app.identity_ready = true;
@@ -2213,7 +2208,7 @@ mod tests {
             .unwrap();
         op.approve();
         op.mark_running().unwrap();
-        app.store.as_ref().unwrap().save(&[op]).unwrap();
+        tilo_folder_service::test_support::save_snapshot(&app.store.as_ref().unwrap(), &[op]).unwrap();
         app.operations = app.store.as_ref().unwrap().load().unwrap();
         c.save(app.store.as_ref().unwrap()).unwrap();
         app.continuation = Some(c);
@@ -2273,7 +2268,7 @@ mod tests {
         app.prepare_review().unwrap();
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
-        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 1);
+        let (entered, release) = tilo_folder_service::test_support::hold_save(&root, 1);
         let started = Instant::now();
         app.start_operation(0).unwrap();
         assert!(started.elapsed() < Duration::from_millis(200));
@@ -2308,7 +2303,7 @@ mod tests {
         app.prepare_review().unwrap();
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
-        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
+        let (entered, release) = tilo_folder_service::test_support::hold_save(&root, 2);
         app.start_operation(0).unwrap();
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
         let started = Instant::now();
@@ -2330,7 +2325,7 @@ mod tests {
         app.prepare_review().unwrap();
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
-        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
+        let (entered, release) = tilo_folder_service::test_support::hold_save(&root, 2);
         app.start_operation(0).unwrap();
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
         fs::rename(root.join("ownership.lock"), root.join("old-lock")).unwrap();

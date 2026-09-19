@@ -1,0 +1,1302 @@
+shell/src/security/container.rs:3:use std::process::{Command, Stdio};
+shell/src/security/container.rs:20:        let mut cmd = Command::new("bwrap");
+shell/src/security/container.rs:40:        cmd.arg("--proc").arg("/proc");
+shell/src/security/container.rs:42:        if Path::new("/sys").exists() {
+shell/src/security/container.rs:43:            cmd.arg("--ro-bind").arg("/sys").arg("/sys");
+shell/src/security/container.rs:46:        if Path::new("/dev/dri").exists() {
+shell/src/security/container.rs:47:            cmd.arg("--dev-bind").arg("/dev/dri").arg("/dev/dri");
+shell/src/security/container.rs:52:        if Path::new("/dev/shm").exists() {
+shell/src/security/container.rs:53:            cmd.arg("--bind").arg("/dev/shm").arg("/dev/shm");
+shell/src/security/container.rs:57:        cmd.arg("--tmpfs").arg("/tmp");
+shell/src/security/container.rs:63:            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
+shell/src/security/container.rs:66:        let sandbox_runtime_dir = "/tmp/runtime";
+shell/src/security/container.rs:75:        cmd.env("XDG_RUNTIME_DIR", sandbox_runtime_dir);
+shell/src/security/container.rs:77:        cmd.env("XDG_SESSION_TYPE", "wayland");
+shell/src/security/container.rs:86:        cmd.env("XDG_CURRENT_DESKTOP", "tilo");
+shell/src/security/container.rs:119:    ) -> std::io::Result<std::process::Child> {
+shell/src/security/container.rs:122:        let log_path = format!("/tmp/tilo-desktop-app-{tab_id}.log");
+shell/src/security/container.rs:127:        println!("DEBUG: Spawning Tab {tab_id} Log: /tmp/tilo-desktop-app-{tab_id}.log");
+shell/src/sandbox/landlock_shim.rs:40:///   unrestricted, so granted hardware (`/dev/video*`, `/dev/snd`) keeps
+shell/src/sandbox/landlock_shim.rs:303:            std::process::exit(2);
+shell/src/sandbox/landlock_shim.rs:340:        std::process::exit(2);
+shell/src/sandbox/landlock_shim.rs:345:        std::process::exit(2);
+shell/src/sandbox/landlock_shim.rs:354:        std::process::exit(2);
+shell/src/sandbox/landlock_shim.rs:357:    let mut argv_ptrs: Vec<*const libc::c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
+shell/src/sandbox/landlock_shim.rs:363:        libc::execvp(cprogram.as_ptr(), argv_ptrs.as_ptr());
+shell/src/sandbox/landlock_shim.rs:368:    std::process::exit(127);
+shell/src/sandbox/landlock_shim.rs:371:#[cfg(test)]
+shell/src/sandbox/landlock_shim.rs:572:        use std::os::unix::ffi::OsStrExt;
+shell/src/sandbox/landlock_shim.rs:576:            std::process::id(),
+shell/src/sandbox/landlock_shim.rs:588:        let pid = unsafe { libc::fork() };
+shell/src/sandbox/landlock_shim.rs:606:                unsafe { libc::_exit(42) };
+shell/src/sandbox/landlock_shim.rs:611:            let rfd = unsafe { libc::open(read_path.as_ptr(), libc::O_RDONLY) };
+shell/src/sandbox/landlock_shim.rs:613:                unsafe { libc::_exit(10) }; // granted read unexpectedly denied
+shell/src/sandbox/landlock_shim.rs:615:            unsafe { libc::close(rfd) };
+shell/src/sandbox/landlock_shim.rs:619:                unsafe { libc::open(write_path.as_ptr(), libc::O_WRONLY | libc::O_CREAT, 0o600) };
+shell/src/sandbox/landlock_shim.rs:621:                unsafe { libc::close(wfd) };
+shell/src/sandbox/landlock_shim.rs:622:                unsafe { libc::_exit(11) }; // write should have been denied!
+shell/src/sandbox/landlock_shim.rs:625:            unsafe { libc::_exit(0) };
+shell/src/sandbox/landlock_shim.rs:629:        let mut status: libc::c_int = 0;
+shell/src/sandbox/landlock_shim.rs:630:        unsafe { libc::waitpid(pid, &raw mut status, 0) };
+shell/src/sandbox/landlock_shim.rs:633:        assert!(libc::WIFEXITED(status), "child did not exit normally");
+shell/src/sandbox/landlock_shim.rs:634:        let code = libc::WEXITSTATUS(status);
+shell/src/wayland/color_management.rs:27:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:34:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:37:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:60:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:96:    #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:131:            #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:143:    #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:158:    #[cfg(any(test, feature = "hosted-test-control"))]
+shell/src/wayland/color_management.rs:194:        not(target_os = "linux"),
+shell/src/wayland/color_management.rs:212:        not(target_os = "linux"),
+shell/src/wayland/color_management.rs:325:    #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:342:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:355:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:455:    #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:531:        not(target_os = "linux"),
+shell/src/wayland/color_management.rs:553:    #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:560:    #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:573:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:595:    #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:608:            #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:619:    #[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:656:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:664:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:677:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:684:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:697:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:747:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:857:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:997:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1013:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1046:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1074:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1117:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1206:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1245:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1274:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1301:#[cfg(target_os = "linux")]
+shell/src/wayland/color_management.rs:1354:#[cfg(test)]
+shell/src/compositor/hosted_test_control.rs:27:use std::os::unix::net::{UnixListener, UnixStream};
+shell/src/bin/shots/mode.rs:427:#[cfg(test)]
+shell/src/sandbox/seccomp.rs:111:    let blanket_denies: [libc::c_long; 10] = [
+shell/src/sandbox/seccomp.rs:112:        libc::SYS_ptrace,
+shell/src/sandbox/seccomp.rs:113:        libc::SYS_mount,
+shell/src/sandbox/seccomp.rs:114:        libc::SYS_umount2,
+shell/src/sandbox/seccomp.rs:115:        libc::SYS_pivot_root,
+shell/src/sandbox/seccomp.rs:116:        libc::SYS_chroot,
+shell/src/sandbox/seccomp.rs:117:        libc::SYS_unshare,
+shell/src/sandbox/seccomp.rs:118:        libc::SYS_setns,
+shell/src/sandbox/seccomp.rs:119:        libc::SYS_bpf,
+shell/src/sandbox/seccomp.rs:120:        libc::SYS_keyctl,
+shell/src/sandbox/seccomp.rs:121:        libc::SYS_clone3,
+shell/src/sandbox/seccomp.rs:137:        libc::SYS_socket,
+shell/src/sandbox/seccomp.rs:142:            libc::AF_PACKET as u64,
+shell/src/sandbox/seccomp.rs:152:        SeccompAction::Errno(libc::EPERM as u32),
+shell/src/sandbox/seccomp.rs:227:#[cfg(test)]
+shell/src/sandbox/seccomp.rs:283:            std::process::id(),
+shell/src/sandbox/mod.rs:25:#[cfg(target_os = "linux")]
+shell/src/sandbox/mod.rs:28:#[cfg(target_os = "linux")]
+shell/src/sandbox/mod.rs:31:#[cfg(target_os = "linux")]
+shell/src/sandbox/mod.rs:35:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:19:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:21:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:24:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:26:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:28:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:30:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:36:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:39:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:42:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:48:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:59:#[cfg(target_os = "linux")]
+shell/src/portal/camera.rs:144:#[cfg(test)]
+shell/src/bin/shots/diff.rs:278:#[cfg(test)]
+shell/src/bin/shots/diff.rs:325:        let tmp = std::env::temp_dir().join(format!("shots-diff-test-{}", std::process::id()));
+shell/src/bin/shots/diff.rs:389:        let tmp = std::env::temp_dir().join(format!("shots-diff-skip-test-{}", std::process::id()));
+shell/src/wayland/edid.rs:324:#[cfg(test)]
+shell/src/portal/secret.rs:11:use std::os::unix::fs::OpenOptionsExt;
+shell/src/portal/secret.rs:12:use std::os::unix::fs::PermissionsExt;
+shell/src/portal/secret.rs:18:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:20:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:22:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:29:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:34:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:50:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:56:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:63:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:207:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:241:        let std_fd: std::os::fd::OwnedFd = fd.into();
+shell/src/portal/secret.rs:251:#[cfg(target_os = "linux")]
+shell/src/portal/secret.rs:254:        .unwrap_or_else(|| PathBuf::from("/dev/null"))
+shell/src/portal/secret.rs:274:#[cfg(test)]
+shell/src/wayland/mod.rs:11:#[cfg(any(test, target_os = "linux"))]
+shell/src/sandbox/profile.rs:25:/// capability-grant application (`/dev/video*` for camera, the
+shell/src/sandbox/profile.rs:26:/// pipewire socket + `/dev/snd` for microphone). `apply_grants` runs
+shell/src/sandbox/profile.rs:43:/// TTL for cached `/dev` and `XDG_RUNTIME_DIR` scans.
+shell/src/sandbox/profile.rs:49:#[cfg(test)]
+shell/src/sandbox/profile.rs:52:#[cfg(test)]
+shell/src/sandbox/profile.rs:57:#[cfg(test)]
+shell/src/sandbox/profile.rs:63:/// filter being applied (e.g. `"video"` for `/dev/video*`) — it keys the
+shell/src/sandbox/profile.rs:83:    #[cfg(test)]
+shell/src/sandbox/profile.rs:181:        env.insert("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string());
+shell/src/sandbox/profile.rs:210:    /// Apply a camera capability grant: bind `/dev/video*` device nodes
+shell/src/sandbox/profile.rs:218:    /// `/dev/video*` nodes (CI, headless servers) this is a no-op and
+shell/src/sandbox/profile.rs:239:    /// the legacy ALSA `/dev/snd` path when present, since some apps
+shell/src/sandbox/profile.rs:244:    /// Pipewire and without `/dev/snd` simply gets nothing bound, and
+shell/src/sandbox/profile.rs:249:            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", self.uid));
+shell/src/sandbox/profile.rs:254:        // Fallback: bind /dev/snd if it exists (legacy ALSA path).
+shell/src/sandbox/profile.rs:255:        let snd_path = std::path::PathBuf::from("/dev/snd");
+shell/src/sandbox/profile.rs:482:#[cfg(test)]
+shell/src/sandbox/profile.rs:493:        let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:512:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:521:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:532:        let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:546:        let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:549:        for key in ["WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "HOME"] {
+shell/src/sandbox/profile.rs:560:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:563:        // /dev/video* may or may not exist on CI; assert "no shrink".
+shell/src/sandbox/profile.rs:565:        if std::path::Path::new("/dev/video0").exists() {
+shell/src/sandbox/profile.rs:569:                    .any(|(src, _)| src == std::path::Path::new("/dev/video0"))
+shell/src/sandbox/profile.rs:577:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:587:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:601:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:618:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:630:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:643:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:659:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:678:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:703:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:732:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:758:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:776:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:800:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:833:    /// to actually execute a binary (`/bin`, `/lib`, `/lib64`, `/proc`,
+shell/src/sandbox/profile.rs:863:        // bwrap needs `--proc /proc` and `--dev /dev` to populate those
+shell/src/sandbox/profile.rs:870:                "/proc",
+shell/src/sandbox/profile.rs:879:        let mut child = std::process::Command::new("bwrap")
+shell/src/sandbox/profile.rs:917:            std::env::temp_dir().join(format!("quick-shell-sandbox-test-{}", std::process::id()));
+shell/src/sandbox/profile.rs:935:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:969:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:978:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:996:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:1040:        // (NOT the host `/tmp/ws` source) — Landlock runs inside the
+shell/src/sandbox/profile.rs:1052:            !readwrite_paths.iter().any(|p| p.as_str() == "/tmp/ws"),
+shell/src/sandbox/profile.rs:1074:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:1097:        let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/sandbox/profile.rs:1122:            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+shell/src/bin/shots/scenario.rs:886:            // `bar_mut_for_tests`, which is `cfg(any(test,
+shell/src/bin/shots/scenario.rs:893:            #[cfg(not(debug_assertions))]
+shell/src/bin/shots/scenario.rs:901:            #[cfg(debug_assertions)]
+shell/src/bin/shots/scenario.rs:3957:#[cfg(test)]
+shell/src/compositor/capture.rs:17:#[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:46:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:48:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:52:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:57:    #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:161:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:166:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:182:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:192:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:200:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:202:    #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:217:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:227:        #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:238:            #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:240:            #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:247:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:255:            #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:260:            #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:861:        #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:881:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:883:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:885:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:893:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:898:        #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:912:            #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:930:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:952:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:956:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:958:        #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:960:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:982:        std::process::Command::new("xdg-open")
+shell/src/compositor/capture.rs:984:            .stdin(std::process::Stdio::null())
+shell/src/compositor/capture.rs:985:            .stdout(std::process::Stdio::null())
+shell/src/compositor/capture.rs:986:            .stderr(std::process::Stdio::null())
+shell/src/compositor/capture.rs:997:        std::process::Command::new("xdg-open")
+shell/src/compositor/capture.rs:999:            .stdin(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1000:            .stdout(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1001:            .stderr(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1019:        #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:1035:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1037:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1055:            #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1074:            #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1078:            #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:1088:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1094:        #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:1103:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1110:            #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:1113:            #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1150:        std::process::Command::new("xdg-open")
+shell/src/compositor/capture.rs:1152:            .stdin(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1153:            .stdout(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1154:            .stderr(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1165:        std::process::Command::new("xdg-open")
+shell/src/compositor/capture.rs:1167:            .stdin(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1168:            .stdout(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1169:            .stderr(std::process::Stdio::null())
+shell/src/compositor/capture.rs:1470:        #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1508:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1553:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1575:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1603:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1619:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1631:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1902:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1904:    #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:1918:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/capture.rs:1920:    #[cfg(not(feature = "hdr-decode"))]
+shell/src/compositor/capture.rs:2036:#[cfg(test)]
+shell/src/compositor/capture.rs:2501:    #[cfg(feature = "hdr-decode")]
+shell/src/compositor/xwayland.rs:11:use std::os::unix::fs::{
+shell/src/compositor/xwayland.rs:15:use std::process::{Child, Command, Stdio};
+shell/src/compositor/xwayland.rs:358:    let child = Command::new(binary)
+shell/src/compositor/xwayland.rs:392:        let runtime_root = std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/compositor/xwayland.rs:395:            .ok_or_else(|| "XDG_RUNTIME_DIR is not an absolute path".to_string())?;
+shell/src/compositor/xwayland.rs:413:        let mut command = Command::new(&binary);
+shell/src/compositor/xwayland.rs:513:    let socket = PathBuf::from(format!("/tmp/.X11-unix/X{display}"));
+shell/src/compositor/xwayland.rs:540:/// directory, but `/tmp/.X11-unix` is intentionally shared by every login.
+shell/src/compositor/xwayland.rs:543:    let current_uid = unsafe { libc::geteuid() };
+shell/src/compositor/xwayland.rs:564:    #[cfg(feature = "hosted-test-control")]
+shell/src/compositor/xwayland.rs:604:        if Path::new(&format!("/tmp/.X11-unix/X{display}")).exists()
+shell/src/compositor/xwayland.rs:605:            || Path::new(&format!("/tmp/.X{display}-lock")).exists()
+shell/src/compositor/xwayland.rs:653:#[cfg(test)]
+shell/src/compositor/xwayland.rs:657:    use std::os::unix::net::UnixListener;
+shell/src/compositor/xwayland.rs:791:            std::thread::spawn(|| Command::new("/usr/bin/sleep").arg("30").spawn().unwrap())
+shell/src/compositor/xwayland.rs:819:        let child = Command::new("/usr/bin/true").spawn().unwrap();
+shell/src/compositor/xwayland.rs:868:        let bridge_child = Command::new("/usr/bin/sleep").arg("30").spawn().unwrap();
+shell/src/compositor/xwayland.rs:877:        let mut completed = Command::new("/usr/bin/true").spawn().unwrap();
+shell/src/compositor/xwayland.rs:981:        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+shell/src/compositor/xwayland.rs:1025:        let child = Command::new("/bin/sh")
+shell/src/compositor/mp4_recording.rs:322:#[cfg(test)]
+shell/src/compositor/backend/mod.rs:13:#[cfg(target_os = "linux")]
+shell/src/compositor/backend/mod.rs:15:#[cfg(not(target_os = "linux"))]
+shell/src/compositor/backend/mod.rs:19:#[cfg(target_os = "linux")]
+shell/src/compositor/backend/mod.rs:22:#[cfg(target_os = "linux")]
+shell/src/compositor/backend/mod.rs:25:#[cfg(target_os = "linux")]
+shell/src/compositor/backend/mod.rs:296:#[cfg(test)]
+shell/src/compositor/backend/mod.rs:373:#[cfg(test)]
+shell/src/bin/shots/main.rs:204:                std::process::exit(0);
+shell/src/bin/shots/main.rs:403:  shots --scenes desktop,palette --out /tmp/s\n\
+shell/src/bin/shots/main.rs:404:  TILO_SHOTS_THEME=high-contrast TILO_SHOTS_TEXT_SCALE=1.3 shots \\\n+    --scenes quick-settings,qs-compact,qs-wifi-long-labels,qs-bt-long-labels,qs-vpn-long-labels \\\n+    --sweep 1280x720,960x540 --out /tmp/quick-settings-a11y\n\
+shell/src/bin/shots/main.rs:406:  shots --mode offscreen --scenes desktop --sweep --out /tmp/sweep\n\
+shell/src/bin/shots/main.rs:409:  shots --mode recording --scenario palette_typing --out /tmp/out.h264\n\
+shell/src/bin/shots/main.rs:419:    // Same env-var contract as `shell`: TILO_STARTUP_METRICS_PATH=/tmp/x.json
+shell/src/bin/shots/main.rs:444:            std::process::exit(2);
+shell/src/bin/shots/main.rs:461:        std::process::exit(exit_code);
+shell/src/bin/shots/main.rs:623:        std::process::exit(2);
+shell/src/bin/shots/main.rs:627:#[cfg(test)]
+shell/src/compositor/activation.rs:97:#[cfg(test)]
+shell/src/portal/inhibit.rs:8:#[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:10:#[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:12:#[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:16:#[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:18:#[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:42:    not(target_os = "linux"),
+shell/src/portal/inhibit.rs:51:    #[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:54:        not(target_os = "linux"),
+shell/src/portal/inhibit.rs:64:        not(target_os = "linux"),
+shell/src/portal/inhibit.rs:73:    #[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:77:    #[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:79:        #[cfg(target_os = "linux")] ctx: PortalContext,
+shell/src/portal/inhibit.rs:108:#[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:247:#[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:292:#[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:296:#[cfg(test)]
+shell/src/portal/inhibit.rs:299:    #[cfg(target_os = "linux")]
+shell/src/portal/inhibit.rs:317:            #[cfg(target_os = "linux")]
+shell/src/compositor/backend/headless.rs:175:#[cfg(test)]
+shell/src/compositor/bridge.rs:9://! This utility spawns a UNIX listener at `$XDG_RUNTIME_DIR/tilo-ws-<ws_id>` and,
+shell/src/compositor/bridge.rs:14:use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+shell/src/compositor/bridge.rs:15:use std::os::unix::net::{UnixListener, UnixStream};
+shell/src/compositor/bridge.rs:66:            let owner = unsafe { libc::geteuid() };
+shell/src/compositor/bridge.rs:219:#[cfg(test)]
+shell/src/compositor/osk_service.rs:10:use std::os::unix::io::AsRawFd;
+shell/src/compositor/osk_service.rs:11:use std::os::unix::net::UnixStream;
+shell/src/compositor/osk_service.rs:12:use std::os::unix::process::CommandExt;
+shell/src/compositor/osk_service.rs:14:use std::process::{Command, Stdio};
+shell/src/compositor/osk_service.rs:114:                let mut cmd = Command::new(&command.program);
+shell/src/compositor/osk_service.rs:133:                let pgid = child.id() as libc::pid_t;
+shell/src/compositor/osk_service.rs:198:        let peer_group = unsafe { libc::getpgid(credentials.pid) };
+shell/src/compositor/osk_service.rs:199:        let expected_uid = unsafe { libc::geteuid() };
+shell/src/compositor/osk_service.rs:210:fn peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
+shell/src/compositor/osk_service.rs:211:    let mut credentials = libc::ucred {
+shell/src/compositor/osk_service.rs:218:    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+shell/src/compositor/osk_service.rs:222:        libc::getsockopt(
+shell/src/compositor/osk_service.rs:224:            libc::SOL_SOCKET,
+shell/src/compositor/osk_service.rs:225:            libc::SO_PEERCRED,
+shell/src/compositor/osk_service.rs:230:    (result == 0 && length as usize >= std::mem::size_of::<libc::ucred>()).then_some(credentials)
+shell/src/compositor/osk_service.rs:234:    expected_root_and_group: libc::pid_t,
+shell/src/compositor/osk_service.rs:235:    expected_uid: libc::uid_t,
+shell/src/compositor/osk_service.rs:236:    peer_uid: libc::uid_t,
+shell/src/compositor/osk_service.rs:237:    peer_group: libc::pid_t,
+shell/src/compositor/osk_service.rs:246:fn is_descendant_of(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
+shell/src/compositor/osk_service.rs:254:        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+shell/src/compositor/osk_service.rs:259:                .and_then(|value| value.trim().parse::<libc::pid_t>().ok())
+shell/src/compositor/osk_service.rs:297:fn terminate_group(child: &mut std::process::Child, pgid: libc::pid_t) {
+shell/src/compositor/osk_service.rs:305:            libc::kill(target, libc::SIGTERM);
+shell/src/compositor/osk_service.rs:323:            libc::kill(target, libc::SIGKILL);
+shell/src/compositor/osk_service.rs:329:#[cfg(test)]
+shell/src/compositor/osk_service.rs:366:        let uid = unsafe { libc::geteuid() };
+shell/src/compositor/osk_service.rs:382:        let parent_group = unsafe { libc::getpgrp() };
+shell/src/compositor/osk_service.rs:383:        let mut command = Command::new("/bin/sh");
+shell/src/compositor/osk_service.rs:391:        let pid = child.id() as libc::pid_t;
+shell/src/compositor/osk_service.rs:393:        assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+shell/src/bin/shots/driver.rs:20:#[cfg(test)]
+shell/src/bin/shots/driver.rs:24:#[cfg(target_os = "linux")]
+shell/src/bin/shots/driver.rs:57:    #[cfg(target_os = "linux")]
+shell/src/bin/shots/driver.rs:94:            #[cfg(target_os = "linux")]
+shell/src/bin/shots/driver.rs:167:    #[cfg(test)]
+shell/src/bin/shots/driver.rs:401:        #[cfg(target_os = "linux")]
+shell/src/bin/shots/driver.rs:415:        #[cfg(target_os = "linux")]
+shell/src/bin/shots/driver.rs:419:        #[cfg(not(target_os = "linux"))]
+shell/src/bin/shots/driver.rs:2399:#[cfg(test)]
+shell/src/compositor/backend/winit.rs:591:#[cfg(test)]
+shell/src/compositor/gpu_import.rs:79:/// path string, since `/dev/dri/renderD128` and a bind-mounted equivalent are the same device even though the strings differ.
+shell/src/compositor/gpu_import.rs:80:fn device_matches(device: &EGLDevice, want_rdev: libc::dev_t) -> bool {
+shell/src/compositor/gpu_import.rs:81:    let rdev_of = |p: PathBuf| -> Option<libc::dev_t> {
+shell/src/compositor/gpu_import.rs:82:        use std::os::unix::fs::MetadataExt as _;
+shell/src/compositor/gpu_import.rs:107:        use std::os::unix::fs::MetadataExt as _;
+shell/src/compositor/gpu_import.rs:310:#[cfg(test)]
+shell/src/compositor/gpu_import.rs:320:        let Ok(entries) = std::fs::read_dir("/proc/self/fdinfo") else {
+shell/src/compositor/gpu_import.rs:396:                "GL import works on {} but /proc/self/fdinfo reports no \
+shell/src/portal/settings.rs:2:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:6:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:8:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:10:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:13:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:17:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:44:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:86:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:155:#[cfg(target_os = "linux")]
+shell/src/portal/settings.rs:202:#[cfg(test)]
+shell/src/bin/click_test_client.rs:1:#[cfg(target_os = "linux")]
+shell/src/bin/click_test_client.rs:355:#[cfg(target_os = "linux")]
+shell/src/bin/click_test_client.rs:359:#[cfg(not(target_os = "linux"))]
+shell/src/compositor/lock_screen.rs:783:#[cfg(test)]
+shell/src/compositor/backend/drm/gestures.rs:207:#[cfg(test)]
+shell/src/compositor/backend/drm/gestures.rs:211:    fn cfg() -> GestureConfig {
+shell/src/compositor/backend/drm/gestures.rs:244:            swipe_action(3, (0.0, -150.0), &cfg()),
+shell/src/compositor/backend/drm/gestures.rs:248:            swipe_action(3, (0.0, 150.0), &cfg()),
+shell/src/compositor/backend/drm/gestures.rs:257:            swipe_action(3, (-150.0, 0.0), &cfg()),
+shell/src/compositor/backend/drm/gestures.rs:261:            swipe_action(3, (150.0, 0.0), &cfg()),
+shell/src/compositor/backend/drm/gestures.rs:269:            swipe_action(4, (0.0, -150.0), &cfg()),
+shell/src/compositor/backend/drm/gestures.rs:273:            swipe_action(4, (0.0, 150.0), &cfg()),
+shell/src/compositor/backend/drm/gestures.rs:281:        assert_eq!(swipe_action(4, (-300.0, 0.0), &cfg()), None);
+shell/src/compositor/backend/drm/gestures.rs:303:        assert_eq!(swipe_action(3, (0.0, -30.0), &cfg()), None);
+shell/src/compositor/backend/drm/gestures.rs:304:        assert_eq!(swipe_action(3, (20.0, -20.0), &cfg()), None);
+shell/src/compositor/backend/drm/gestures.rs:310:        assert_eq!(swipe_action(3, (150.0, -150.0), &cfg()), None);
+shell/src/compositor/backend/drm/gestures.rs:313:            swipe_action(3, (60.0, -150.0), &cfg()),
+shell/src/compositor/backend/drm/gestures.rs:338:        let mut t = GestureTracker::new(cfg());
+shell/src/compositor/backend/drm/gestures.rs:352:        let mut t = GestureTracker::new(cfg());
+shell/src/compositor/backend/drm/gestures.rs:364:        let mut t = GestureTracker::new(cfg());
+shell/src/compositor/backend/drm/gestures.rs:378:        let mut t = GestureTracker::new(cfg());
+shell/src/compositor/backend/drm/gestures.rs:390:        let mut t = GestureTracker::new(cfg());
+shell/src/compositor/backend/drm/gestures.rs:398:        let mut t = GestureTracker::new(cfg());
+shell/src/compositor/backend/drm/gestures.rs:409:        let mut t = GestureTracker::new(cfg());
+shell/src/compositor/backend/drm/gestures.rs:426:        let mut t = GestureTracker::new(cfg());
+shell/src/compositor/backend/drm/gestures.rs:433:        let mut t = GestureTracker::new(cfg());
+shell/src/portal/lifecycle.rs:460:#[cfg(test)]
+shell/src/compositor/output_globals.rs:271:#[cfg(test)]
+shell/src/bin/tilo-loadclient.rs:1:#[cfg(target_os = "linux")]
+shell/src/bin/tilo-loadclient.rs:322:                std::process::exit(1);
+shell/src/bin/tilo-loadclient.rs:394:    #[cfg(test)]
+shell/src/bin/tilo-loadclient.rs:445:#[cfg(target_os = "linux")]
+shell/src/bin/tilo-loadclient.rs:449:#[cfg(not(target_os = "linux"))]
+shell/src/compositor/render_node.rs:20://! The probe: (1) honours `TILO_DMABUF_DEVICE` if set, (2) otherwise walks `/dev/dri/renderD*` in
+shell/src/compositor/render_node.rs:56:    /// e.g. `/dev/dri/renderD128`.
+shell/src/compositor/render_node.rs:59:    pub dev: libc::dev_t,
+shell/src/compositor/render_node.rs:67:    /// `/dev/dri` has no `renderD*` entries (headless container, no GPU).
+shell/src/compositor/render_node.rs:79:                write!(f, "no /dev/dri/renderD* nodes exist on this system")
+shell/src/compositor/render_node.rs:100:/// Driver name for a render node, read out of sysfs: `/dev/dri/renderD128` →
+shell/src/compositor/render_node.rs:101:/// `/sys/class/drm/renderD128/device/driver` → symlink basename. `None` when the node isn't a
+shell/src/compositor/render_node.rs:102:/// `renderD*` name or sysfs has no such link (e.g. a container that bind-mounted `/dev/dri` without `/sys`).
+shell/src/compositor/render_node.rs:106:#[cfg(target_os = "linux")]
+shell/src/compositor/render_node.rs:116:#[cfg(target_os = "linux")]
+shell/src/compositor/render_node.rs:117:fn dev_of(path: &Path) -> std::io::Result<libc::dev_t> {
+shell/src/compositor/render_node.rs:118:    use std::os::unix::fs::MetadataExt as _;
+shell/src/compositor/render_node.rs:119:    // `metadata` follows symlinks, which is what we want: a caller may point `TILO_DMABUF_DEVICE` at `/dev/dri/by-path/...`.
+shell/src/compositor/render_node.rs:124:#[cfg(target_os = "linux")]
+shell/src/compositor/render_node.rs:133:/// Every `/dev/dri/renderD*` on the system, sorted by name so the selection is deterministic across boots.
+shell/src/compositor/render_node.rs:134:#[cfg(target_os = "linux")]
+shell/src/compositor/render_node.rs:136:    let Ok(entries) = std::fs::read_dir("/dev/dri") else {
+shell/src/compositor/render_node.rs:158:/// when `/dev/dri` has no `renderD*` entries; [`ProbeError::NoneUsable`] when
+shell/src/compositor/render_node.rs:160:#[cfg(target_os = "linux")]
+shell/src/compositor/render_node.rs:271:#[cfg(target_os = "linux")]
+shell/src/compositor/render_node.rs:308:#[cfg(test)]
+shell/src/compositor/render_node.rs:333:            PathBuf::from("/dev/dri/renderD129"),
+shell/src/compositor/render_node.rs:341:            ProbeError::NoRenderNodes.to_string().contains("/dev/dri"),
+shell/src/compositor/render_node.rs:347:    #[cfg(target_os = "linux")]
+shell/src/compositor/render_node.rs:349:        assert_eq!(driver_for(Path::new("/dev/null")), None);
+shell/src/compositor/render_node.rs:350:        assert_eq!(driver_for(Path::new("/dev/dri/renderD9999")), None);
+shell/src/compositor/render_node.rs:355:    #[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:3:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:5:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:7:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:10:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:12:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:14:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:17:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:22:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:31:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:63:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:68:#[cfg(target_os = "linux")]
+shell/src/portal/screenshot.rs:209:#[cfg(test)]
+shell/src/bin/qos-runtime-mcp.rs:46:fn main() -> std::process::ExitCode {
+shell/src/bin/qos-runtime-mcp.rs:48:        Ok(()) => std::process::ExitCode::SUCCESS,
+shell/src/bin/qos-runtime-mcp.rs:51:            std::process::ExitCode::FAILURE
+shell/src/compositor/backend/drm/hotplug.rs:146:#[cfg(test)]
+shell/src/bin/ux-bench.rs:2:#[cfg(target_os = "macos")]
+shell/src/bin/ux-bench.rs:4:use std::process::ExitCode;
+shell/src/bin/ux-bench.rs:6:#[cfg(target_os = "macos")]
+shell/src/bin/ux-bench.rs:20:#[cfg(not(target_os = "macos"))]
+shell/src/bin/ux-bench.rs:28:#[cfg(target_os = "macos")]
+shell/src/bin/ux-bench.rs:76:        ("XDG_CONFIG_HOME", home.join(".config")),
+shell/src/bin/ux-bench.rs:77:        ("XDG_DATA_HOME", home.join(".local/share")),
+shell/src/bin/ux-bench.rs:78:        ("XDG_CACHE_HOME", home.join(".cache")),
+shell/src/bin/tilo-control.rs:6://! falling back to `/tmp/tilo.sock`. No `clap`, no async, just stdlib +
+shell/src/bin/tilo-control.rs:13:use std::os::unix::net::UnixStream;
+shell/src/bin/tilo-control.rs:15:use std::process::ExitCode;
+shell/src/bin/tilo-control.rs:20:const DEFAULT_SOCKET: &str = "/tmp/tilo.sock";
+shell/src/bin/tilo-control.rs:569:            // it here to make `snapshot /tmp/x.png | xclip` work.
+shell/src/bin/tilo-control.rs:643:    #[cfg(unix)]
+shell/src/bin/tilo-control.rs:645:        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+shell/src/bin/tilo-control.rs:699:#[cfg(test)]
+shell/src/bin/tilo-control.rs:834:        let inv = parse(&["snapshot", "/tmp/x.png"]).unwrap();
+shell/src/bin/tilo-control.rs:838:                path: "/tmp/x.png".to_string()
+shell/src/portal/app_chooser.rs:3:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:5:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:8:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:10:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:12:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:14:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:17:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:19:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:21:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:24:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:30:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:44:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:66:#[cfg(target_os = "linux")]
+shell/src/portal/app_chooser.rs:218:#[cfg(test)]
+shell/src/portal/print.rs:31:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:33:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:35:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:37:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:39:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:41:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:45:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/print.rs:51:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/print.rs:55:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:134:    #[cfg(target_os = "linux")]
+shell/src/portal/print.rs:165:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:168:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:199:        use std::process::Command;
+shell/src/portal/print.rs:212:        let mut command = Command::new("lp");
+shell/src/portal/print.rs:252:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:346:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:352:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:429:#[cfg(target_os = "linux")]
+shell/src/portal/print.rs:620:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/print.rs:622:    let std_fd: std::os::fd::OwnedFd = fd.into();
+shell/src/portal/print.rs:734:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/print.rs:766:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/print.rs:772:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/print.rs:779:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/print.rs:787:#[cfg(test)]
+shell/src/portal/print.rs:790:    #[cfg(target_os = "linux")]
+shell/src/portal/print.rs:792:    #[cfg(target_os = "linux")]
+shell/src/portal/print.rs:797:    #[cfg(target_os = "linux")]
+shell/src/portal/print.rs:813:    #[cfg(target_os = "linux")]
+shell/src/portal/print.rs:922:        let owned: std::os::fd::OwnedFd = file.into();
+shell/src/portal/print.rs:930:        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+shell/src/portal/print.rs:931:        let owned: std::os::fd::OwnedFd = a.into();
+shell/src/portal/print.rs:943:        let owned: std::os::fd::OwnedFd = file.into();
+shell/src/portal/print.rs:953:        let owned: std::os::fd::OwnedFd = file.into();
+shell/src/portal/print.rs:1104:    #[cfg(target_os = "linux")]
+shell/src/portal/print.rs:1135:    #[cfg(target_os = "linux")]
+shell/src/portal/lockdown.rs:10:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+shell/src/portal/lockdown.rs:17:#[cfg(target_os = "linux")]
+shell/src/portal/lockdown.rs:38:    #[cfg(target_os = "linux")]
+shell/src/portal/lockdown.rs:166:        .unwrap_or_else(|| PathBuf::from("/dev/null"))
+shell/src/portal/lockdown.rs:178:#[cfg(test)]
+shell/src/bin/ux_bench_support/tests.rs:54:    use std::process::{Command, Stdio};
+shell/src/bin/ux_bench_support/tests.rs:60:        .join(format!("host-test-{}", std::process::id()));
+shell/src/bin/ux_bench_support/tests.rs:64:    let mut child = Command::new(binary)
+shell/src/bin/ux_bench_support/tests.rs:183:    use std::process::{Command, Stdio};
+shell/src/bin/ux_bench_support/tests.rs:189:        .join(format!("palette-semantics-repro-{}", std::process::id()));
+shell/src/bin/ux_bench_support/tests.rs:193:    let mut child = Command::new(binary)
+shell/src/compositor/switch_control.rs:139:#[cfg(test)]
+shell/src/portal/dynamic_launcher.rs:3:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:5:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:7:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:9:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:11:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:13:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:15:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:19:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:24:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:30:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:44:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:52:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:61:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:118:#[cfg(target_os = "linux")]
+shell/src/portal/dynamic_launcher.rs:297:#[cfg(test)]
+shell/src/portal/dynamic_launcher.rs:303:        assert!(!safe_web_target("file:///tmp/a"));
+shell/src/compositor/backend/drm/seat_diag.rs:41:pub const LOGIND_SEAT_DIR: &str = "/run/systemd/seats";
+shell/src/compositor/backend/drm/seat_diag.rs:50:    /// `XDG_SESSION_ID`. Empty/absent means the caller is not inside a
+shell/src/compositor/backend/drm/seat_diag.rs:53:    /// `XDG_SEAT`. logind writes `seat0` for a session attached to the
+shell/src/compositor/backend/drm/seat_diag.rs:57:    /// `XDG_VTNR` — the virtual terminal the session is on, when it has
+shell/src/compositor/backend/drm/seat_diag.rs:63:    /// Whether logind is managing seats (`/run/systemd/seats` exists).
+shell/src/compositor/backend/drm/seat_diag.rs:90:            session_id: var("XDG_SESSION_ID"),
+shell/src/compositor/backend/drm/seat_diag.rs:91:            seat: var("XDG_SEAT"),
+shell/src/compositor/backend/drm/seat_diag.rs:92:            vtnr: var("XDG_VTNR"),
+shell/src/compositor/backend/drm/seat_diag.rs:203:                "Check that you can open /dev/dri/card* and that a seat is free; `loginctl \
+shell/src/compositor/backend/drm/seat_diag.rs:217:             observed: XDG_SESSION_ID={session} XDG_SEAT={seat} XDG_VTNR={vtnr} \
+shell/src/compositor/backend/drm/seat_diag.rs:285:#[cfg(test)]
+shell/src/compositor/backend/drm/seat_diag.rs:299:        // A shell that exports XDG_SESSION_ID= (empty) is telling us the
+shell/src/compositor/backend/drm/seat_diag.rs:304:                "XDG_SESSION_ID" => Some(String::new()),
+shell/src/compositor/backend/drm/seat_diag.rs:305:                "XDG_SEAT" => Some("   ".to_string()),
+shell/src/compositor/backend/drm/seat_diag.rs:306:                "XDG_VTNR" => Some("2".to_string()),
+shell/src/compositor/backend/drm/seat_diag.rs:325:        // The reported failure: XDG_SESSION_ID empty, no seatd socket.
+shell/src/compositor/backend/drm/seat_diag.rs:462:            msg.contains("XDG_SESSION_ID=(unset)"),
+shell/src/compositor/backend/drm/seat_diag.rs:466:            msg.contains("XDG_VTNR=(unset)"),
+shell/src/compositor/backend/drm/seat_diag.rs:470:            msg.contains("XDG_SEAT=(unset)"),
+shell/src/compositor/backend/drm/seat_diag.rs:499:        assert!(msg.contains("XDG_SEAT=seat0"), "{msg}");
+shell/src/portal/desktop_services.rs:12:use std::os::unix::ffi::OsStringExt;
+shell/src/portal/desktop_services.rs:13:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+shell/src/portal/desktop_services.rs:947:    std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/portal/desktop_services.rs:957:    fs::read_to_string("/proc/self/status")
+shell/src/portal/desktop_services.rs:1044:        .unwrap_or_else(|| Path::new("/dev/null"))
+shell/src/portal/desktop_services.rs:1193:    let base = super::private_state_root().unwrap_or_else(|| PathBuf::from("/dev/null"));
+shell/src/portal/desktop_services.rs:1270:#[cfg(test)]
+shell/src/compositor/floating_service.rs:11:use std::os::unix::net::{UnixListener, UnixStream};
+shell/src/compositor/floating_service.rs:294:#[cfg(test)]
+shell/src/compositor/floating_service.rs:303:        let previous_runtime = std::env::var_os("XDG_RUNTIME_DIR");
+shell/src/compositor/floating_service.rs:306:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+shell/src/compositor/floating_service.rs:325:                std::env::set_var("XDG_RUNTIME_DIR", previous);
+shell/src/compositor/floating_service.rs:327:                std::env::remove_var("XDG_RUNTIME_DIR");
+shell/src/compositor/native.rs:15:use std::os::fd::AsRawFd;
+shell/src/compositor/native.rs:16:use std::os::unix::fs::MetadataExt;
+shell/src/compositor/native.rs:17:use std::os::unix::net::{UnixListener, UnixStream};
+shell/src/compositor/native.rs:212:fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
+shell/src/compositor/native.rs:213:    let mut credentials = libc::ucred {
+shell/src/compositor/native.rs:218:    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+shell/src/compositor/native.rs:222:        libc::getsockopt(
+shell/src/compositor/native.rs:224:            libc::SOL_SOCKET,
+shell/src/compositor/native.rs:225:            libc::SO_PEERCRED,
+shell/src/compositor/native.rs:230:    if result != 0 || usize::try_from(length).ok()? < std::mem::size_of::<libc::ucred>() {
+shell/src/compositor/native.rs:238:        let host = std::fs::metadata(format!("/proc/self/ns/{namespace}"));
+shell/src/compositor/native.rs:239:        let peer = std::fs::metadata(format!("/proc/{pid}/ns/{namespace}"));
+shell/src/compositor/native.rs:244:fn unattributed_host_client_allowed(peer_uid: libc::uid_t, shares_namespaces: bool) -> bool {
+shell/src/compositor/native.rs:246:    peer_uid == unsafe { libc::geteuid() } && shares_namespaces
+shell/src/compositor/native.rs:253:    if credentials.uid != unsafe { libc::geteuid() } {
+shell/src/compositor/native.rs:1045:/// Directory under `$XDG_RUNTIME_DIR` where a running compositor publishes
+shell/src/compositor/native.rs:1053:/// Where [`publish_wayland_display`] writes, given `$XDG_RUNTIME_DIR`. Split
+shell/src/compositor/native.rs:1056:/// `None` when the variable is unset or not absolute — guessing `/tmp`
+shell/src/compositor/native.rs:1067:/// `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. Last writer wins — the
+shell/src/compositor/native.rs:1072:    let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+shell/src/compositor/native.rs:1100:    let name = format!("tilo-privileged-{}", std::process::id());
+shell/src/compositor/native.rs:1117:        std::process::id(),
+shell/src/compositor/native.rs:1176:        let mut descriptor = libc::pollfd {
+shell/src/compositor/native.rs:1178:            events: libc::POLLOUT,
+shell/src/compositor/native.rs:1185:        let ready = unsafe { libc::poll(&raw mut descriptor, 1, 0) };
+shell/src/compositor/native.rs:1194:        descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+shell/src/compositor/native.rs:3126:#[cfg(test)]
+shell/src/compositor/native.rs:3183:        std::os::unix::fs::symlink(&path, &link).unwrap();
+shell/src/compositor/native.rs:3481:/// the same `XDG_RUNTIME_DIR` would steal the socket from the running
+shell/src/compositor/native.rs:3485:    path.exists() && std::os::unix::net::UnixStream::connect(path).is_ok()
+shell/src/compositor/native.rs:3511:             XDG_RUNTIME_DIR; refusing to take its socket. Apps will start without \
+shell/src/compositor/native.rs:4571:                    std::process::exit(1);
+shell/src/compositor/native.rs:4583:                std::process::exit(1);
+shell/src/compositor/native.rs:4594:                    std::process::exit(1);
+shell/src/compositor/native.rs:4614:/// name to `$XDG_RUNTIME_DIR/tilo-session/wayland-display`. Split out of
+shell/src/compositor/native.rs:4630:            std::process::exit(1);
+shell/src/compositor/native.rs:4659:#[cfg(test)]
+shell/src/compositor/native.rs:4707:            std::process::exit(1);
+shell/src/compositor/native.rs:4717:            std::process::exit(1);
+shell/src/compositor/native.rs:4745:            std::process::exit(1);
+shell/src/compositor/native.rs:4788:            std::process::exit(1);
+shell/src/compositor/native.rs:5001:        let uid = unsafe { libc::getuid() };
+shell/src/compositor/native.rs:5057:        std::process::exit(1);
+shell/src/compositor/native.rs:5185:            std::process::exit(1);
+shell/src/compositor/native.rs:5193:        std::process::exit(1);
+shell/src/compositor/native.rs:5366:                std::process::exit(1);
+shell/src/compositor/native.rs:5373:            std::process::exit(1);
+shell/src/compositor/native.rs:7454:#[cfg(test)]
+shell/src/compositor/native.rs:7784:        fb.enable_onboarding(std::path::PathBuf::from("/tmp/tilo-onboarding-test"));
+shell/src/compositor/native.rs:7803:        // test in this crate that writes `XDG_RUNTIME_DIR` names
+shell/src/compositor/native.rs:7808:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+shell/src/compositor/native.rs:7850:        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+shell/src/compositor/native.rs:7854:    /// compositors against one `XDG_RUNTIME_DIR` is what a second login (or
+shell/src/compositor/native.rs:7861:        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+shell/src/compositor/native.rs:7891:        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+shell/src/compositor/native.rs:7899:            test_control_path(false, Some(std::ffi::OsString::from("/tmp/ctl.sock"))),
+shell/src/compositor/native.rs:7908:            test_control_path(true, Some(std::ffi::OsString::from("/tmp/ctl.sock"))),
+shell/src/compositor/native.rs:7909:            Some(PathBuf::from("/tmp/ctl.sock")),
+shell/src/compositor/native.rs:8505:            test_state_dump_path(false, Some(std::ffi::OsString::from("/tmp/tree.json"))),
+shell/src/compositor/native.rs:8509:            test_state_dump_path(true, Some(std::ffi::OsString::from("/tmp/tree.json"))),
+shell/src/compositor/native.rs:8510:            Some(std::ffi::OsString::from("/tmp/tree.json")),
+shell/src/compositor/native.rs:8535:            i32::try_from(std::process::id()).ok()
+shell/src/compositor/native.rs:8549:        let uid = unsafe { libc::geteuid() };
+shell/src/compositor/native.rs:8578:        use std::os::unix::fs::PermissionsExt;
+shell/src/compositor/native.rs:8582:        let dir = std::env::temp_dir().join(format!("tilo-display-test-{}", std::process::id()));
+shell/src/compositor/native.rs:9483:#[cfg(test)]
+shell/src/compositor/native.rs:9576:#[cfg(test)]
+shell/src/compositor/native.rs:9681:            !run.contains("std::process::exit(0)"),
+shell/src/compositor/native.rs:9691:#[cfg(test)]
+shell/src/compositor/native.rs:9692:#[cfg(test)]
+shell/src/compositor/native.rs:9774:#[cfg(test)]
+shell/src/portal/wallpaper.rs:2:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:4:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:6:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:8:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:11:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:13:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:15:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:18:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:24:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:38:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:64:#[cfg(target_os = "linux")]
+shell/src/portal/wallpaper.rs:180:#[cfg(test)]
+shell/src/portal/wallpaper.rs:187:        assert!(!valid_uri("/tmp/a.png"));
+shell/src/portal/wallpaper.rs:188:        assert!(!valid_uri("file:///tmp/a\n.png"));
+shell/src/portal/file_chooser.rs:26:#[cfg(target_os = "linux")]
+shell/src/portal/file_chooser.rs:28:#[cfg(target_os = "linux")]
+shell/src/portal/file_chooser.rs:30:#[cfg(target_os = "linux")]
+shell/src/portal/file_chooser.rs:32:#[cfg(target_os = "linux")]
+shell/src/portal/file_chooser.rs:37:use std::os::unix::ffi::OsStrExt as _;
+shell/src/portal/file_chooser.rs:42:#[cfg(test)]
+shell/src/portal/file_chooser.rs:45:#[cfg(target_os = "linux")]
+shell/src/portal/file_chooser.rs:49:#[cfg(target_os = "linux")]
+shell/src/portal/file_chooser.rs:54:#[cfg(target_os = "linux")]
+shell/src/portal/file_chooser.rs:62:#[cfg(target_os = "linux")]
+shell/src/portal/file_chooser.rs:205:#[cfg(any(target_os = "linux", test))]
+shell/src/portal/file_chooser.rs:221:#[cfg(any(target_os = "linux", test))]
+shell/src/portal/file_chooser.rs:227:#[cfg(any(target_os = "linux", test))]
+shell/src/portal/file_chooser.rs:233:#[cfg(any(target_os = "linux", test))]
+shell/src/portal/file_chooser.rs:297:#[cfg(test)]
+shell/src/portal/file_chooser.rs:348:            Some(vec![PathBuf::from("/tmp/x.txt")]),
+shell/src/portal/file_chooser.rs:359:            Some(vec![PathBuf::from("/tmp/out.bin")]),
+shell/src/portal/file_chooser.rs:385:            paths_to_open_response(Some(vec![PathBuf::from("/tmp/a.txt")]), false);
+shell/src/portal/file_chooser.rs:389:        assert_eq!(uris, vec!["file:///tmp/a.txt".to_string()]);
+shell/src/portal/file_chooser.rs:396:        let path = PathBuf::from(OsStr::from_bytes(b"/tmp/a #\xff.txt"));
+shell/src/portal/file_chooser.rs:399:            Some("file:///tmp/a%20%23%FF.txt")
+shell/src/portal/file_chooser.rs:404:    /// Wires a `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
+shell/src/portal/file_chooser.rs:405:    /// backend's response builder, and asserts the response contains `file:///tmp/test.txt`.
+shell/src/portal/file_chooser.rs:410:            "/tmp/test.txt",
+shell/src/portal/file_chooser.rs:427:        assert_eq!(uris, vec!["file:///tmp/test.txt".to_string()]);
+shell/src/portal/file_chooser.rs:437:        let picked = PathBuf::from("/tmp/only-this-one.txt");
+shell/src/portal/file_chooser.rs:542:            let picked = PathBuf::from("/tmp/target.txt");
+shell/src/portal/auth.rs:201:#[cfg(test)]
+shell/src/compositor/backend/drm/scanout.rs:10:use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+shell/src/compositor/backend/drm/scanout.rs:73:pub(crate) fn device_id_from_dev_t(device: libc::dev_t) -> u64 {
+shell/src/compositor/backend/drm/scanout.rs:84:/// The last component of `/sys/class/drm/cardN/device` is normally a PCI BDF
+shell/src/compositor/backend/drm/scanout.rs:91:        std::fs::canonicalize(Path::new("/sys/class/drm").join(node).join("device")).ok()?;
+shell/src/compositor/backend/drm/scanout.rs:401:            let sysfs = Path::new("/sys/class/drm").join(format!("{card_name}-{connector}"));
+shell/src/compositor/backend/drm/scanout.rs:522:    if let Some(data) = std::env::var_os("XDG_DATA_HOME")
+shell/src/compositor/backend/drm/scanout.rs:1439:                if code == libc::EBUSY || code == libc::EAGAIN {
+shell/src/compositor/backend/drm/scanout.rs:1869:#[cfg(test)]
+shell/src/compositor/backend/drm/scanout.rs:1920:        // UdevEvent carries libc::dev_t and Card::dev_id reads
+shell/src/compositor/backend/drm/scanout.rs:1921:        // fstat(card_fd).st_rdev, also libc::dev_t.  This conversion is the
+shell/src/compositor/backend/drm/scanout.rs:1923:        let dev_t: libc::dev_t = 0x10203;
+shell/src/compositor/backend/drm/scanout.rs:1953:        let old_node = "/dev/dri/card0";
+shell/src/compositor/backend/drm/scanout.rs:1954:        let new_node = "/dev/dri/card1";
+shell/src/compositor/lock_auth.rs:17://! password on **stdin** (never argv, so it never lands in `/proc/*/cmdline`), exit code mapped
+shell/src/compositor/lock_auth.rs:22:#[cfg(target_os = "linux")]
+shell/src/compositor/lock_auth.rs:24:use std::process::Command;
+shell/src/compositor/lock_auth.rs:50:#[cfg(target_os = "linux")]
+shell/src/compositor/lock_auth.rs:55:#[cfg(target_os = "linux")]
+shell/src/compositor/lock_auth.rs:63:#[cfg(target_os = "linux")]
+shell/src/compositor/lock_auth.rs:150:        let mut cmd = Command::new(program);
+shell/src/compositor/lock_auth.rs:226:#[cfg(target_os = "linux")]
+shell/src/compositor/lock_auth.rs:253:#[cfg(not(target_os = "linux"))]
+shell/src/compositor/lock_auth.rs:258:#[cfg(test)]
+shell/src/compositor/lock_auth.rs:272:                Some("/tmp/helper".into()),
+shell/src/compositor/lock_auth.rs:299:            select_verifier(false, None, Some("/tmp/evil".into()), true, None),
+shell/src/compositor/lock_auth.rs:312:                Some("/tmp/evil".into()),
+shell/src/compositor/lock_auth.rs:323:            select_verifier(true, None, Some("/tmp/helper".into()), true, None),
+shell/src/compositor/lock_auth.rs:324:            VerifierChoice::Helper("/tmp/helper".into()),
+shell/src/compositor/lock_auth.rs:374:    #[cfg(target_os = "linux")]
+shell/src/compositor/lock_auth.rs:387:    use std::os::unix::fs::PermissionsExt as _;
+shell/src/compositor/lock_auth.rs:401:            std::process::id(),
+shell/src/compositor/lock_auth.rs:474:            std::process::id(),
+shell/src/compositor/idle.rs:327:#[cfg(test)]
+shell/src/compositor/idle.rs:331:    fn cfg(blank: Option<u64>, lock: Option<u64>) -> IdleConfig {
+shell/src/compositor/idle.rs:401:        let mut session = SessionManager::new(cfg(None, None), t0);
+shell/src/compositor/idle.rs:433:        let mut session = SessionManager::new(cfg(None, None).with_blank(policy.idle_blank), t0);
+shell/src/compositor/idle.rs:472:        let mut s = SessionManager::new(cfg(Some(300), None), t0);
+shell/src/compositor/idle.rs:498:        let mut s = SessionManager::new(cfg(None, None), t0);
+shell/src/compositor/idle.rs:506:        let mut s = SessionManager::new(cfg(Some(300), None), t0);
+shell/src/compositor/idle.rs:516:        let mut s = SessionManager::new(cfg(Some(300), Some(600)), t0);
+shell/src/compositor/idle.rs:530:        let mut s = SessionManager::new(cfg(None, Some(600)), t0);
+shell/src/compositor/idle.rs:540:        let mut never = SessionManager::new(cfg(None, Some(60)), t0);
+shell/src/compositor/idle.rs:553:        let mut s = SessionManager::new(cfg(Some(300), Some(300)), t0);
+shell/src/compositor/idle.rs:644:        let mut s = SessionManager::new(cfg(Some(300), None), t0);
+shell/src/compositor/idle.rs:654:        let mut s = SessionManager::new(cfg(Some(300), Some(300)), t0);
+shell/src/compositor/idle.rs:671:        let mut s = SessionManager::new(cfg(Some(300), None), t0);
+shell/src/compositor/idle.rs:678:        let mut s = SessionManager::new(cfg(Some(300), None), t0);
+shell/src/compositor/idle.rs:724:        let mut s = SessionManager::new(cfg(None, None), t0);
+shell/src/compositor/idle.rs:735:        let mut s = SessionManager::new(cfg(Some(300), None), t0);
+shell/src/bin/ux_bench_support/mod.rs:14:#[cfg(test)]
+shell/src/portal/doc_store.rs:202:#[cfg(test)]
+shell/src/portal/doc_store.rs:217:            &[PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")],
+shell/src/portal/doc_store.rs:222:            vec![PathBuf::from("/tmp/a.txt"), PathBuf::from("/tmp/b.txt")]
+shell/src/portal/doc_store.rs:237:            PathBuf::from("/tmp/1"),
+shell/src/portal/doc_store.rs:238:            PathBuf::from("/tmp/2"),
+shell/src/portal/doc_store.rs:239:            PathBuf::from("/tmp/3"),
+shell/src/portal/global_shortcuts.rs:9:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:11:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:13:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:15:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:17:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:19:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:21:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:30:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:32:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:38:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:44:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:46:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:48:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:50:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:54:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:76:    #[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:393:    #[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:395:        not(target_os = "linux"),
+shell/src/portal/global_shortcuts.rs:501:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:509:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:568:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:957:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:986:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:1014:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:1021:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:1029:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/global_shortcuts.rs:1033:#[cfg(target_os = "linux")]
+shell/src/portal/global_shortcuts.rs:1225:#[cfg(test)]
+shell/src/compositor/backend/drm/outputs.rs:133:#[cfg(test)]
+shell/src/portal/email.rs:2:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:5:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:7:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:9:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:12:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:14:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:16:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:19:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:25:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:39:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:67:#[cfg(test)]
+shell/src/portal/email.rs:80:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:103:#[cfg(target_os = "linux")]
+shell/src/portal/email.rs:202:#[cfg(test)]
+shell/src/compositor/hosted.rs:230:    let _identity_broker = if std::os::unix::net::UnixStream::connect(&identity_socket).is_ok() {
+shell/src/compositor/hosted.rs:245:    #[cfg(feature = "hosted-test-control")]
+shell/src/portal/file_picker_spawner.rs:298:#[cfg(test)]
+shell/src/portal/file_picker_spawner.rs:329:            PathBuf::from("/tmp/a.txt"),
+shell/src/portal/file_picker_spawner.rs:334:        assert_eq!(out, Some(vec![PathBuf::from("/tmp/a.txt")]));
+shell/src/portal/picker_queue.rs:143:/// `$XDG_DOCUMENTS_DIR` first (the freedesktop variable), then the
+shell/src/portal/picker_queue.rs:148:    let configured = std::env::var_os("XDG_DOCUMENTS_DIR")
+shell/src/portal/picker_queue.rs:160:/// `XDG_DOCUMENTS_DIR="$HOME/"` as its "unset" state, so a documents
+shell/src/portal/picker_queue.rs:166:/// Parse `XDG_DOCUMENTS_DIR="$HOME/…"` out of `user-dirs.dirs`.
+shell/src/portal/picker_queue.rs:175:        let Some(rest) = line.strip_prefix("XDG_DOCUMENTS_DIR=") else {
+shell/src/portal/picker_queue.rs:187:#[cfg(test)]
+shell/src/portal/picker_queue.rs:271:            "XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\nXDG_DOCUMENTS_DIR=\"$HOME/Papers\"\n",
+shell/src/portal/picker_queue.rs:288:            "XDG_DOCUMENTS_DIR=\"/srv/papers\"\n",
+shell/src/portal/account.rs:5:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:7:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:9:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:13:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:16:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:18:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:20:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:23:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:29:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:54:#[cfg(target_os = "linux")]
+shell/src/portal/account.rs:153:#[cfg(test)]
+shell/src/portal/screencast_pipewire.rs:22:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:23:use std::os::unix::net::UnixStream;
+shell/src/portal/screencast_pipewire.rs:24:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:26:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:28:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:31:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:182:/// producer. It never advertises an inert node id or `/dev/null` as a remote.
+shell/src/portal/screencast_pipewire.rs:252:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/screencast_pipewire.rs:259:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:271:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:280:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:295:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:406:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:412:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:414:    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/portal/screencast_pipewire.rs:415:        .ok_or_else(|| ProvisioningError::DaemonUnreachable("XDG_RUNTIME_DIR is unset".into()))?;
+shell/src/portal/screencast_pipewire.rs:432:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/screencast_pipewire.rs:479:#[cfg(target_os = "linux")]
+shell/src/portal/screencast_pipewire.rs:746:#[cfg(test)]
+shell/src/compositor/client_input.rs:1480:#[cfg(test)]
+shell/src/compositor/client_input.rs:1600:            .enable_onboarding(std::path::PathBuf::from("/tmp/tilo-oobe-input-test"));
+shell/src/compositor/pacing.rs:230:#[cfg(test)]
+shell/src/portal/input_capture.rs:12:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:14:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:15:use std::os::fd::OwnedFd as StdOwnedFd;
+shell/src/portal/input_capture.rs:16:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:17:use std::os::unix::net::UnixStream;
+shell/src/portal/input_capture.rs:19:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:22:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:24:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:26:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:28:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:30:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:32:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:34:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:39:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:41:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:43:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:45:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:48:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:50:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:101:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:106:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:113:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:124:            not(target_os = "linux"),
+shell/src/portal/input_capture.rs:132:            not(target_os = "linux"),
+shell/src/portal/input_capture.rs:140:            not(target_os = "linux"),
+shell/src/portal/input_capture.rs:150:        not(target_os = "linux"),
+shell/src/portal/input_capture.rs:162:        not(target_os = "linux"),
+shell/src/portal/input_capture.rs:171:            not(target_os = "linux"),
+shell/src/portal/input_capture.rs:184:        not(target_os = "linux"),
+shell/src/portal/input_capture.rs:192:        not(target_os = "linux"),
+shell/src/portal/input_capture.rs:206:        not(target_os = "linux"),
+shell/src/portal/input_capture.rs:215:    #[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:233:            #[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:286:                #[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:320:                #[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:357:        #[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:378:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:391:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:490:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:883:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:986:                    #[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1035:                #[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1053:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1062:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1107:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1161:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1171:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1178:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1184:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1306:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1320:#[cfg(target_os = "linux")]
+shell/src/portal/input_capture.rs:1377:#[cfg(test)]
+shell/src/portal/clipboard.rs:4:use std::os::fd::OwnedFd as StdOwnedFd;
+shell/src/portal/clipboard.rs:5:use std::os::unix::net::UnixStream;
+shell/src/portal/clipboard.rs:90:#[cfg(target_os = "linux")]
+shell/src/portal/clipboard.rs:96:#[cfg(target_os = "linux")]
+shell/src/portal/clipboard.rs:106:#[cfg(target_os = "linux")]
+shell/src/portal/clipboard.rs:326:    #[cfg(target_os = "linux")]
+shell/src/portal/clipboard.rs:654:#[cfg(test)]
+shell/src/portal/notification.rs:12:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:14:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:16:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:20:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:23:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:27:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:29:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:31:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:90:    #[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:191:    #[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:204:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:232:    #[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:238:    #[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:265:    #[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:279:    #[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:289:    #[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:330:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:418:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:423:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:428:#[cfg(target_os = "linux")]
+shell/src/portal/notification.rs:473:#[cfg(test)]
+shell/src/portal/mod.rs:51:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:53:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:55:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:57:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:59:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:65:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:67:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:72:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:74:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:77:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:79:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:81:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:85:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:87:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:90:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:92:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:94:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:96:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:98:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:103:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:105:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:107:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:109:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:111:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:118:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:121:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:123:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:125:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:127:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:133:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:135:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:137:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:141:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:143:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:145:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:148:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:153:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:158:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:160:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:166:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:168:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:170:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:172:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:174:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:177:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:183:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+shell/src/portal/mod.rs:558:/// `/tmp` directory for portal authority, secrets, or user choices: without a
+shell/src/portal/mod.rs:561:    std::env::var_os("XDG_STATE_HOME")
+shell/src/portal/mod.rs:564:        .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from))
+shell/src/portal/mod.rs:765:    #[cfg(any(test, debug_assertions))]
+shell/src/portal/mod.rs:777:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:817:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:853:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:861:#[cfg(any(test, target_os = "linux"))]
+shell/src/portal/mod.rs:906:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:1021:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:1050:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:1061:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:1079:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:1255:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:1263:#[cfg(target_os = "linux")]
+shell/src/portal/mod.rs:1274:#[cfg(test)]
+shell/src/portal/mod.rs:1285:            path: "/tmp".into(),
+shell/src/portal/mod.rs:1290:            path: "/tmp".into(),
+shell/src/portal/capture_broker.rs:10:use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
+shell/src/portal/capture_broker.rs:594:    #[cfg(test)]
+shell/src/portal/capture_broker.rs:757:#[cfg(test)]
+shell/src/portal/capture_broker.rs:759:    use std::os::fd::{AsFd as _, AsRawFd as _};
+shell/src/portal/capture_broker.rs:1102:        let file = std::fs::File::open("/dev/null").unwrap();
+shell/src/portal/background.rs:12:use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+shell/src/portal/background.rs:19:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:21:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:23:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:29:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:31:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:43:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:80:    not(target_os = "linux"),
+shell/src/portal/background.rs:91:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:99:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:103:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:332:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:336:        not(target_os = "linux"),
+shell/src/portal/background.rs:344:        not(target_os = "linux"),
+shell/src/portal/background.rs:356:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:361:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:370:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:375:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:377:        #[cfg(target_os = "linux")] ctx: PortalContext,
+shell/src/portal/background.rs:471:    #[cfg(target_os = "linux")]
+shell/src/portal/background.rs:484:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:623:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:666:#[cfg(target_os = "linux")]
+shell/src/portal/background.rs:689:        // fail; shared /tmp would let another user pre-seed portal state.
+shell/src/portal/background.rs:690:        .unwrap_or_else(|| PathBuf::from("/dev/null"))
+shell/src/portal/background.rs:694:#[cfg(test)]
+shell/src/portal/background.rs:701:            #[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:10:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:14:use std::os::unix::fs::OpenOptionsExt;
+shell/src/portal/permission_store.rs:15:use std::os::unix::fs::PermissionsExt;
+shell/src/portal/permission_store.rs:20:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:22:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:24:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:28:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:33:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:35:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:38:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:121:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:127:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:134:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:222:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:497:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:499:    let base = super::private_state_root().unwrap_or_else(|| PathBuf::from("/dev/null"));
+shell/src/portal/permission_store.rs:508:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:517:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:523:#[cfg(target_os = "linux")]
+shell/src/portal/permission_store.rs:539:#[cfg(test)]
+shell/src/compositor/projection_capture.rs:9:use std::os::unix::net::UnixStream;
+shell/src/compositor/projection_capture.rs:286:            std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/compositor/projection_capture.rs:295:            std::env::var_os("XDG_RUNTIME_DIR")
+shell/src/compositor/projection_capture.rs:325:#[cfg(test)]
+shell/src/compositor/projection_capture.rs:328:    use std::os::unix::net::UnixListener;
+shell/src/portal/screencast.rs:27:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:30:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:33:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:35:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:37:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:39:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:43:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:47:#[cfg(test)]
+shell/src/portal/screencast.rs:49:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:51:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:56:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:59:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:91:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:99:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:107:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:116:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:125:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:134:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:143:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:153:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:162:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:171:        not(target_os = "linux"),
+shell/src/portal/screencast.rs:206:    #[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:279:            #[cfg(unix)]
+shell/src/portal/screencast.rs:281:                use std::os::unix::fs::PermissionsExt;
+shell/src/portal/screencast.rs:299:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:301:    let root = std::env::var_os("XDG_STATE_HOME")
+shell/src/portal/screencast.rs:319:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:371:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:413:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:859:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:864:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:870:#[cfg(target_os = "linux")]
+shell/src/portal/screencast.rs:924:#[cfg(test)]
+shell/src/portal/screencast.rs:930:#[cfg(test)]
+shell/src/portal/screencast.rs:946:#[cfg(test)]
+shell/src/compositor/backend/drm/scale.rs:112:#[cfg(test)]
+shell/src/compositor/backend/drm/mod.rs:765:#[cfg(test)]
+shell/src/portal/remote_desktop.rs:32:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:33:use std::os::fd::OwnedFd as StdOwnedFd;
+shell/src/portal/remote_desktop.rs:34:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:35:use std::os::unix::net::UnixStream;
+shell/src/portal/remote_desktop.rs:39:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:42:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:44:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:46:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:48:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:53:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:58:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:60:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:63:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:66:    not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:206:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:214:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:225:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:234:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:249:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:261:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:270:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:280:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:300:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:308:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:316:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:327:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:334:        let path = std::env::var_os("XDG_STATE_HOME")
+shell/src/portal/remote_desktop.rs:364:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:378:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:405:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:424:            #[cfg(unix)]
+shell/src/portal/remote_desktop.rs:426:                use std::os::unix::fs::PermissionsExt;
+shell/src/portal/remote_desktop.rs:437:    #[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:441:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:450:        not(target_os = "linux"),
+shell/src/portal/remote_desktop.rs:547:    #[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:552:    #[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:613:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:1169:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:1266:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:1299:#[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:1305:#[cfg(test)]
+shell/src/portal/remote_desktop.rs:1308:    #[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:1310:    #[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:1313:    #[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:1321:            #[cfg(target_os = "linux")]
+shell/src/portal/remote_desktop.rs:1452:    #[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:9:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:11:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:13:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:17:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:23:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:25:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:32:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:39:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:58:        not(target_os = "linux"),
+shell/src/portal/usb.rs:68:#[cfg(target_os = "linux")]
+shell/src/portal/usb.rs:235:#[cfg(test)]
+shell/src/compositor/surface_readback.rs:222:#[cfg(test)]
+shell/src/compositor/backend/drm/input_config.rs:494:#[cfg(test)]
+shell/src/compositor/backend/drm/input_config.rs:855:            std::env::temp_dir().join(format!("tilo-input-watch-{name}-{}", std::process::id()));
+shell/src/compositor/drag_feedback.rs:239:#[cfg(test)]
+shell/src/compositor/drag_feedback.rs:276:            name_from_uri_list(b"file://localhost/tmp/scan.jpg\r\n").as_deref(),
+shell/src/compositor/accessibility.rs:91:    adapter: accesskit_unix::Adapter,
+shell/src/compositor/accessibility.rs:105:        let mut adapter = accesskit_unix::Adapter::new(
+shell/src/compositor/accessibility.rs:145:#[cfg(test)]
+shell/src/compositor/backend/drm/devices.rs:11://! Render-only nodes (`/dev/dri/renderD*`) are excluded — they cannot do
+shell/src/compositor/backend/drm/devices.rs:14://! Tests below are pure-CPU; they don't touch /dev/dri.
+shell/src/compositor/backend/drm/devices.rs:104:/// Filter `/dev/dri/*` candidate paths down to KMS-capable `cardN` nodes.
+shell/src/compositor/backend/drm/devices.rs:122:/// (`/dev/dri/cardN`, where `N` is a digit). Render nodes
+shell/src/compositor/backend/drm/devices.rs:123:/// (`/dev/dri/renderD128`) and arbitrary other entries return false.
+shell/src/compositor/backend/drm/devices.rs:162:#[cfg(test)]
+shell/src/compositor/backend/drm/devices.rs:169:        assert!(is_kms_node(Path::new("/dev/dri/card0")));
+shell/src/compositor/backend/drm/devices.rs:174:        assert!(!is_kms_node(Path::new("/dev/dri/renderD128")));
+shell/src/compositor/backend/drm/devices.rs:179:        assert!(!is_kms_node(Path::new("/tmp/cardN")));
+shell/src/compositor/backend/drm/devices.rs:180:        assert!(!is_kms_node(Path::new("/dev/dri/card")));
+shell/src/compositor/backend/drm/devices.rs:181:        assert!(!is_kms_node(Path::new("/dev/dri/cardX")));
+shell/src/compositor/backend/drm/devices.rs:187:            "/dev/dri/card0".into(),
+shell/src/compositor/backend/drm/devices.rs:188:            "/dev/dri/renderD128".into(),
+shell/src/compositor/backend/drm/devices.rs:189:            "/dev/dri/card1".into(),
+shell/src/compositor/backend/drm/devices.rs:195:                PathBuf::from("/dev/dri/card0"),
+shell/src/compositor/backend/drm/devices.rs:196:                PathBuf::from("/dev/dri/card1")
+shell/src/compositor/backend/drm/devices.rs:213:                PathBuf::from("/dev/dri/card0"),
+shell/src/compositor/backend/drm/devices.rs:214:                PathBuf::from("/dev/dri/card1"),
+shell/src/compositor/backend/drm/devices.rs:221:                PathBuf::from("/dev/dri/card1"),
+shell/src/compositor/backend/drm/devices.rs:222:                PathBuf::from("/dev/dri/card0")
+shell/src/compositor/backend/drm/devices.rs:238:                PathBuf::from("/dev/dri/card0"),
+shell/src/compositor/backend/drm/devices.rs:239:                PathBuf::from("/dev/dri/card1"),
+shell/src/compositor/backend/drm/devices.rs:243:        assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card0")));
+shell/src/compositor/backend/drm/devices.rs:257:                PathBuf::from("/dev/dri/card0"),
+shell/src/compositor/backend/drm/devices.rs:258:                PathBuf::from("/dev/dri/card1"),
+shell/src/compositor/backend/drm/devices.rs:262:        assert_eq!(ordered.first(), Some(&PathBuf::from("/dev/dri/card1")));
+shell/src/compositor/backend/drm/devices.rs:268:            PathBuf::from("/dev/dri/card2"),
+shell/src/compositor/backend/drm/devices.rs:269:            PathBuf::from("/dev/dri/card0"),
+shell/src/compositor/backend/drm/devices.rs:367:#[cfg(test)]
+shell/src/compositor/lock_controller.rs:269:#[cfg(test)]
+shell/src/compositor/backend/drm/runtime.rs:11:use std::os::fd::OwnedFd;
+shell/src/compositor/backend/drm/runtime.rs:43:#[cfg(test)]
+shell/src/compositor/backend/drm/runtime.rs:148:    #[error("no KMS-capable DRM devices found (need /dev/dri/cardN)")]
+shell/src/compositor/backend/drm/runtime.rs:838:    /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
+shell/src/compositor/backend/drm/runtime.rs:845:            publisher_pid: std::process::id(),
+shell/src/compositor/backend/drm/runtime.rs:847:                settings_store::hardware::process_start_ticks(std::process::id())
+shell/src/compositor/backend/drm/runtime.rs:2304:#[cfg(test)]
+shell/src/compositor/backend/drm/runtime.rs:2461:    /// enumeration fails, no KMS-capable `/dev/dri/cardN` device is found,
+shell/src/compositor/backend/drm/runtime.rs:2485:            order_by_connected_connectors(filter_kms_nodes(raw_gpus), Path::new("/sys/class/drm"));
+shell/src/compositor/backend/drm/runtime.rs:2818:    #[cfg(test)]
+shell/src/compositor/backend/drm/runtime.rs:3447:#[cfg(test)]
+shell/src/compositor/backend/drm/runtime.rs:3482:            Some(libc::ENODEV)
+shell/src/compositor/backend/drm/runtime.rs:3493:        ) -> Result<std::os::fd::OwnedFd, Self::Error> {
+shell/src/compositor/backend/drm/runtime.rs:3497:        fn close(&mut self, _fd: std::os::fd::OwnedFd) -> Result<(), Self::Error> {
+shell/src/compositor/backend/drm/runtime.rs:3559:                PathBuf::from("/dev/dri/card0"),
+shell/src/compositor/backend/drm/runtime.rs:3560:                PathBuf::from("/dev/dri/card1"),
+shell/src/compositor/backend/drm/runtime.rs:4286:            Path::new("/dev/dri/card0"),
+shell/src/compositor/backend/drm/runtime.rs:4305:        state.block_card_after_close_failure(226, Path::new("/dev/dri/card0"), None);
+shell/src/compositor/backend/drm/runtime.rs:4310:                .contains(Path::new("/dev/dri/card0")),
+shell/src/compositor/selection.rs:22:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:24:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:26:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:27:use std::os::unix::io::{AsFd, FromRawFd, OwnedFd};
+shell/src/compositor/selection.rs:30:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:32:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:34:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:36:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:38:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:40:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:46:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:48:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:50:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:55:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:57:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:60:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:94:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:107:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:117:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:758:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:768:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:826:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:836:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:954:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:974:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:984:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:986:    use std::os::unix::io::AsRawFd;
+shell/src/compositor/selection.rs:990:        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFL);
+shell/src/compositor/selection.rs:994:        libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) >= 0
+shell/src/compositor/selection.rs:1000:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1002:    let mut fds = [0 as libc::c_int; 2];
+shell/src/compositor/selection.rs:1005:    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+shell/src/compositor/selection.rs:1018:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1098:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1314:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1353:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1360:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1367:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1374:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1385:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1420:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1481:#[cfg(target_os = "linux")]
+shell/src/compositor/selection.rs:1527:#[cfg(test)]
+shell/src/compositor/state.rs:214:    #[cfg(test)]
+shell/src/compositor/state.rs:378:#[cfg(test)]
+shell/src/compositor/state.rs:4146:#[cfg(test)]
+shell/src/compositor/state.rs:4377:#[cfg(test)]
+shell/src/compositor/state.rs:4462:#[cfg(test)]
+shell/src/compositor/state.rs:4481:    fn cfg() -> FlatpakShareConfig {
+shell/src/compositor/state.rs:4800:            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, &cfg()).expect("session"),
+shell/src/compositor/state.rs:4854:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+shell/src/compositor/state.rs:4870:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+shell/src/compositor/state.rs:4908:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+shell/src/compositor/state.rs:4935:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("old"),
+shell/src/compositor/state.rs:4939:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("new"),
+shell/src/compositor/state.rs:4960:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+shell/src/compositor/state.rs:4997:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+shell/src/compositor/state.rs:5040:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+shell/src/compositor/state.rs:5079:            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, &cfg()).expect("session"),
+shell/src/compositor/remote_seat.rs:287:    #[cfg(test)]
+shell/src/compositor/remote_seat.rs:319:#[cfg(test)]
+shell/src/compositor/dev_env.rs:52:#[cfg(all(feature = "dev-session", debug_assertions))]
+shell/src/compositor/dev_env.rs:56:#[cfg(test)]
+shell/src/compositor/dev_env.rs:78:        #[cfg(all(feature = "dev-session", debug_assertions))]
+shell/src/compositor/dev_env.rs:86:    #[cfg(not(debug_assertions))]
+shell/src/compositor/metrics.rs:529:#[cfg(test)]
+shell/src/compositor/audio_capture.rs:12:use std::os::unix::process::CommandExt as _;
+shell/src/compositor/audio_capture.rs:13:use std::process::{Child, Command, Stdio};
+shell/src/compositor/audio_capture.rs:55:    let mut command = Command::new("pw-record");
+shell/src/compositor/audio_capture.rs:76:        let mut child = Command::new("pw-record")
+shell/src/compositor/audio_capture.rs:167:            unsafe { libc::kill(group, libc::SIGKILL) };
+shell/src/compositor/audio_capture.rs:211:    let mut command = Command::new("wpctl");
+shell/src/compositor/audio_capture.rs:235:#[cfg(test)]
+shell/src/compositor/surface_outputs.rs:107:#[cfg(test)]
+shell/src/compositor/backend/drm/session.rs:183:#[cfg(test)]
+shell/src/compositor/mod.rs:9:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:11:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:13:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/mod.rs:14:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:17:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:19:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:21:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:25:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:29:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:31:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:33:#[cfg(feature = "hosted-test-control")]
+shell/src/compositor/mod.rs:34:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:40:#[cfg(target_os = "macos")]
+shell/src/compositor/mod.rs:43:#[cfg(feature = "hdr-decode")]
+shell/src/compositor/mod.rs:45:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:47:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:49:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:54:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:58:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:61:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:65:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:67:#[cfg(target_os = "linux")]
+shell/src/compositor/mod.rs:155:/// `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled` (falling back to `~/.config/...`). See
+shell/src/compositor/mod.rs:162:/// Production marker source — checks `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled`, falling back to `$HOME/.config/...` when `XDG_CONFIG_HOME` is unset.
+shell/src/compositor/mod.rs:169:            std::env::var_os("XDG_CONFIG_HOME"),
+shell/src/compositor/mod.rs:357:#[cfg(test)]

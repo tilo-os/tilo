@@ -1,0 +1,254 @@
+apps/api-tester/tilo-app.toml:17: x86_64 = "v3"
+apps/api-tester/tilo-app.toml:37: seccomp    = "tilo-default"
+apps/api-tester/tilo-app.toml:38: landlock   = "strict"
+apps/calculator/src/actions.rs:1088:             .rsplit(':')
+apps/calculator/src/actions.rs:1208:                     .and_then(|r| r.id.as_str().rsplit(':').next())
+apps/calculator/src/app.rs:1591:                     .rsplit(':')
+apps/calculator/src/app.rs:1609:                     .rsplit(':')
+apps/calculator/src/app.rs:1625:                     .rsplit(':')
+apps/calculator/src/app.rs:1814:         let parts: Vec<_> = rest.split(':').collect();
+apps/calculator/tilo-app.toml:16: x86_64 = "v3"
+apps/calculator/tilo-app.toml:37: seccomp    = "tilo-default"
+apps/calculator/tilo-app.toml:38: landlock   = "strict"
+apps/calendar/Cargo.toml:29: # gaps/folds, rather than depending on the host's current `/usr/share/zoneinfo`.
+apps/calendar/src/account.rs:9: //! `$XDG_CONFIG_HOME/tilo/accounts/` holding every account of every type, with
+apps/calendar/src/app.rs:984:                 let (mut account_result, account_outcome) = caldav::sync_all_with_checkpoints(
+apps/calendar/src/caldav.rs:323: pub fn sync_all(
+apps/calendar/src/caldav.rs:329:         live::sync_all_live(accounts, today)
+apps/calendar/src/caldav.rs:341: pub fn sync_all_with_checkpoints(
+apps/calendar/src/caldav.rs:348:         live::sync_all_live_with_checkpoints(accounts, today, checkpoints)
+apps/calendar/src/caldav.rs:648:     pub fn sync_all_live(
+apps/calendar/src/caldav.rs:652:         sync_all_live_with_checkpoints(accounts, today, &[])
+apps/calendar/src/caldav.rs:655:     pub fn sync_all_live_with_checkpoints(
+apps/calendar/src/caldav.rs:1322:     fn sync_all_skips_hidden_calendars() {
+apps/calendar/src/caldav.rs:1461:         let (res, outcome) = sync_all(&[], today());
+apps/calendar/src/doc.rs:1221:             let mut parts = rest.split(':');
+apps/calendar/src/store.rs:17: /// `XDG_DATA_HOME`, then `$HOME/.local/share`. Returns `None` only when no
+apps/calendar/src/store.rs:24:     let base = std::env::var_os("XDG_DATA_HOME")
+apps/calendar/src/store.rs:26:         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))?;
+apps/calendar/src/store.rs:64:     if let Some(home) = std::env::var_os("HOME") {
+apps/calendar/tilo-app.toml:21: x86_64 = "v3"
+apps/calendar/tilo-app.toml:41: seccomp    = "tilo-default"
+apps/calendar/tilo-app.toml:42: landlock   = "strict"
+apps/clocks/src/lib.rs:10: #[cfg(unix)]
+apps/clocks/src/lib.rs:11: use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+apps/clocks/src/lib.rs:153:     #[cfg(unix)]
+apps/clocks/src/lib.rs:154:     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+apps/clocks/src/lib.rs:159:         std::env::var_os("XDG_RUNTIME_DIR")
+apps/clocks/src/lib.rs:165:             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR missing"))?;
+apps/clocks/src/lib.rs:170:         #[cfg(unix)]
+apps/clocks/src/lib.rs:175:         #[cfg(unix)]
+apps/clocks/src/lib.rs:180:         file.sync_all()?;
+apps/clocks/src/lib.rs:192:         let path = std::env::var_os("XDG_RUNTIME_DIR")
+apps/clocks/src/lib.rs:275:     std::env::var_os("XDG_STATE_HOME")
+apps/clocks/src/lib.rs:278:             std::env::var_os("HOME")
+apps/clocks/src/lib.rs:353:         #[cfg(unix)]
+apps/clocks/src/lib.rs:358:         #[cfg(unix)]
+apps/clocks/src/lib.rs:363:         file.sync_all()?;
+apps/clocks/tilo-app.toml:10: x86_64 = "v3"
+apps/clocks/tilo-app.toml:18: seccomp = "tilo-default"
+apps/clocks/tilo-app.toml:19: landlock = "strict"
+apps/code-editor/Cargo.toml:57: [target.'cfg(unix)'.dependencies]
+apps/code-editor/Cargo.toml:58: libc.workspace = true
+apps/code-editor/NATIVE_PERFORMANCE.md:7: ./target/debug/examples/seed-code-editor-fixture /tmp/new-editor-fixture.rs
+apps/code-editor/NATIVE_PERFORMANCE.md:8: ./target/debug/code_editor --path /tmp/new-editor-fixture.rs
+apps/code-editor/src/actions.rs:2351:             assert!(!flat.resource_id.as_str().contains("/tmp/"));
+apps/code-editor/src/app/tests.rs:62:         path: Some("/tmp/wrong-kind.rs".into()),
+apps/code-editor/src/app.rs:4549:             path: Some("/tmp/wrong-kind.rs".into()),
+apps/code-editor/src/lsp.rs:28: #[cfg(unix)]
+apps/code-editor/src/lsp.rs:29: use std::os::unix::process::CommandExt as _;
+apps/code-editor/src/lsp.rs:556:         let mut command = Command::new(&prog);
+apps/code-editor/src/lsp.rs:569:         #[cfg(unix)]
+apps/code-editor/src/lsp.rs:898:         #[cfg(unix)]
+apps/code-editor/src/lsp.rs:904:             unsafe { libc::kill(group, libc::SIGKILL) };
+apps/code-editor/src/lsp.rs:1172:         let child = Command::new("true")
+apps/code-editor/src/native_fixture.rs:42:     file.sync_all()?;
+apps/code-editor/src/sample_project.rs:150: const BUILD_SH: &str = r#"#!/usr/bin/env bash
+apps/code-editor/src/sample_project.rs:163: const APP_PY: &str = r#"#!/usr/bin/env python3
+apps/code-editor/tilo-app.toml:7: # /dev; binding the host's /dev/ptmx + /dev/pts over it splits master
+apps/code-editor/tilo-app.toml:26: x86_64 = "v3"
+apps/code-editor/tilo-app.toml:47: seccomp    = "tilo-default"
+apps/code-editor/tilo-app.toml:48: landlock   = "strict"
+apps/contacts/Cargo.toml:37: zbus.workspace = true
+apps/contacts/src/app/tests.rs:2817:         std::env::set_var("XDG_DATA_HOME", home.path());
+apps/contacts/src/app/tests.rs:2867:         std::env::set_var("XDG_DATA_HOME", home.path());
+apps/contacts/src/app/tests.rs:2937:         std::env::set_var("XDG_DATA_HOME", home.path());
+apps/contacts/src/app/tests.rs:3398:             path: Some("/etc/passwd".into()),
+apps/contacts/src/app/tests.rs:3401:             path: Some("/tmp/contacts.vcf".into()),
+apps/contacts/src/app/tests.rs:3536:         std::env::set_var("XDG_DATA_HOME", home.path());
+apps/contacts/src/app.rs:13156:             std::env::set_var("XDG_DATA_HOME", home.path());
+apps/contacts/src/app.rs:13206:             std::env::set_var("XDG_DATA_HOME", home.path());
+apps/contacts/src/app.rs:13276:             std::env::set_var("XDG_DATA_HOME", home.path());
+apps/contacts/src/app.rs:13731:             std::env::set_var("XDG_DATA_HOME", home.path());
+apps/contacts/src/main.rs:280:         let result = std::process::Command::new(std::env::current_exe().unwrap())
+apps/contacts/src/main.rs:287:             .env("XDG_DATA_HOME", dir.path())
+apps/contacts/src/priority_contacts.rs:23:                 let Ok(connection) = zbus::blocking::Connection::session() else {
+apps/contacts/src/priority_contacts.rs:26:                 let Ok(proxy) = zbus::blocking::Proxy::new(
+apps/contacts/src/priority_contacts.rs:34:                 let published: Result<zbus::Message, _> =
+apps/contacts/src/storage.rs:17: //!   * `$XDG_DATA_HOME/tilo-contacts/addressbook.automerge`.
+apps/contacts/src/storage.rs:46:     if let Ok(x) = std::env::var("XDG_DATA_HOME")
+apps/contacts/src/storage.rs:51:     let home = std::env::var_os("HOME")?;
+apps/contacts/tilo-app.toml:26: seccomp    = "tilo-default"
+apps/contacts/tilo-app.toml:27: landlock   = "strict"
+apps/db-client/tilo-app.toml:17: x86_64 = "v3"
+apps/db-client/tilo-app.toml:38: seccomp    = "tilo-default"
+apps/db-client/tilo-app.toml:39: landlock   = "strict"
+apps/diffmerge/src/actions.rs:707:         let args = serde_json::json!({"left":"/tmp/a", "right":"/tmp/b"})
+apps/diffmerge/src/actions.rs:717:                 left: Some("/tmp/a".into()),
+apps/diffmerge/src/actions.rs:718:                 right: Some("/tmp/b".into())
+apps/diffmerge/tilo-app.toml:18: x86_64 = "v3"
+apps/diffmerge/tilo-app.toml:39: seccomp    = "tilo-default"
+apps/diffmerge/tilo-app.toml:40: landlock   = "strict"
+apps/ebook/src/app/interaction_tests.rs:2314:     let path = PathBuf::from("/tmp/book.epub");
+apps/ebook/src/app.rs:1552:                     PathBuf::from("/var/workspace/Books/shared.epub"),
+apps/ebook/src/app.rs:10902:         let home = std::env::var("HOME").ok();
+apps/ebook/src/app.rs:14547:         let path = PathBuf::from("/tmp/book.epub");
+apps/ebook/src/content.rs:35: /// `/var/workspace` share) and lets tests pin a fixture directory.
+apps/ebook/src/content.rs:41: const DEFAULT_WORKSPACE: &str = "/var/workspace";
+apps/ebook/src/content.rs:245:                     .and_then(|()| file.sync_all())
+apps/ebook/src/content.rs:404:         roots.extend(v.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
+apps/ebook/src/search_provider.rs:702:         let mut parts = location.split(':');
+apps/ebook/src/search_provider.rs:998:         let mut parts = state.strip_prefix("body:")?.split(':');
+apps/ebook/tilo-app.toml:8: # `~/Books`, `~/Documents`, `~/Downloads`, `/var/workspace`
+apps/ebook/tilo-app.toml:22: x86_64 = "v3"
+apps/ebook/tilo-app.toml:47: seccomp    = "tilo-default"
+apps/ebook/tilo-app.toml:48: landlock   = "strict"
+apps/hex-editor/src/actions.rs:472:             let args = serde_json::json!({"path": "/tmp/x.bin"})
+apps/hex-editor/src/lib.rs:117:         let args = vec!["--shots".to_string(), "/tmp/whatever-out.png".to_string()];
+apps/hex-editor/src/lib.rs:125:         let args = vec!["--shots=/tmp/x.png".to_string()];
+apps/hex-editor/tilo-app.toml:19: x86_64 = "v3"
+apps/hex-editor/tilo-app.toml:40: seccomp    = "tilo-default"
+apps/hex-editor/tilo-app.toml:41: landlock   = "strict"
+apps/notes/src/doc.rs:916:             let mut parts = rest.split(':');
+apps/notes/src/storage.rs:74: /// Resolve the default workspace root: `$HOME/notes` (`dirs::home_dir()`
+apps/notes/src/storage.rs:79:     let home = dirs::home_dir().or_else(|| std::env::var_os("HOME").map(PathBuf::from))?;
+apps/notes/tests/framework_history.rs:481:     let output = std::process::Command::new(env!("CARGO_BIN_EXE_notes"))
+apps/notes/tests/framework_history.rs:482:         .env("XDG_DATA_HOME", temp.path().join("application-state"))
+apps/notes/tests/peer_caret_visual.rs:8: //! Run with `NOTES_CRITIQUE_DIR=/tmp/notes-peer-caret cargo test
+apps/notes/tests/peer_caret_visual.rs:105:         std::env::var("NOTES_CRITIQUE_DIR").unwrap_or_else(|_| "/tmp/notes-peer-caret".to_string());
+apps/notes/tilo-app.toml:25: seccomp    = "tilo-default"
+apps/notes/tilo-app.toml:26: landlock   = "strict"
+apps/pdf-viewer/src/actions.rs:152:                 serde_json::json!({"path":"/tmp/a.pdf"})
+apps/pdf-viewer/src/actions.rs:160:                 path: Some("/tmp/a.pdf".into())
+apps/pdf-viewer/src/actions.rs:1386:         let mut parts = raw.split(':');
+apps/pdf-viewer/src/app.rs:5482:             Some("/tmp/pdf_viewer_release_shots/import_unavailable.png"),
+apps/pdf-viewer/src/app.rs:5609:     /// frame path and shot to `/tmp/pdf_repro`. Checks that zoom changes
+apps/pdf-viewer/src/app.rs:5628:         let w50 = set_zoom_and_frame(&mut app, &mut st, 0.5, Some("/tmp/pdf_repro/zoom_50.png"));
+apps/pdf-viewer/src/app.rs:5629:         let w100 = set_zoom_and_frame(&mut app, &mut st, 1.0, Some("/tmp/pdf_repro/zoom_100.png"));
+apps/pdf-viewer/src/app.rs:5630:         let w200 = set_zoom_and_frame(&mut app, &mut st, 2.0, Some("/tmp/pdf_repro/zoom_200.png"));
+apps/pdf-viewer/src/app.rs:5651:             Some("/tmp/pdf_repro/zoom_200_page_top.png"),
+apps/pdf-viewer/src/app.rs:5689:             Some("/tmp/pdf_repro/panned_200.png"),
+apps/pdf-viewer/src/app.rs:5725:             Some("/tmp/pdf_repro/annotated.png"),
+apps/pdf-viewer/src/app.rs:5738:     /// Shots to `/tmp/pdf_repro`.
+apps/pdf-viewer/src/app.rs:5750:             Some("/tmp/pdf_repro/sample_markup.png"),
+apps/pdf-viewer/src/app.rs:5778:             Some("/tmp/pdf_repro/search_results.png"),
+apps/pdf-viewer/src/app.rs:5796:             Some("/tmp/pdf_repro/outline.png"),
+apps/pdf-viewer/src/app.rs:5813:             .unwrap_or_else(|_| "/tmp/tilo_pdf_product_states".to_string());
+apps/pdf-viewer/src/source.rs:148:         .sync_all()
+apps/pdf-viewer/src/source.rs:157:         .sync_all()
+apps/pdf-viewer/src/source.rs:171:         let _ = directory.sync_all();
+apps/pdf-viewer/src/source.rs:2522:         "/usr/lib64/libpdfium.so".into(),
+apps/pdf-viewer/src/source.rs:2523:         "/usr/lib/libpdfium.so".into(),
+apps/pdf-viewer/src/source.rs:2524:         "/usr/lib/x86_64-linux-gnu/libpdfium.so".into(),
+apps/pdf-viewer/src/source.rs:2528:     if let Ok(home) = std::env::var("HOME") {
+apps/pdf-viewer/src/source.rs:2841:     #[cfg(unix)]
+apps/pdf-viewer/src/source.rs:2844:         use std::os::unix::fs::symlink;
+apps/pdf-viewer/tilo-app.toml:21: x86_64 = "v3"
+apps/pdf-viewer/tilo-app.toml:42: seccomp    = "tilo-default"
+apps/pdf-viewer/tilo-app.toml:43: landlock   = "strict"
+apps/scratchpad/README.md:14: bash apps/scratchpad/build-macos.sh
+apps/scratchpad/README.md:15: open target/macos/Scratchpad.app
+apps/scratchpad/README.md:23: cargo run --locked -p scratchpad -- --data-dir /tmp/my-scratchpad
+apps/scratchpad/README.md:26: The default directory is `dirs::data_local_dir()/scratchpad` (on macOS,
+apps/scratchpad/README.md:47: cargo run --locked -p scratchpad -- --data-dir /tmp/my-scratchpad --shots /tmp/scratchpad.png
+apps/scratchpad/README.md:55: cargo run -p scratchpad --example seed-native-fixture -- /tmp/new-scratchpad-fixture
+apps/scratchpad/README.md:56: cargo run -p scratchpad -- --data-dir /tmp/new-scratchpad-fixture
+apps/scratchpad/build-macos.sh:10: scratchpad_bundle="$scratchpad_repo/target/macos/Scratchpad.app"
+apps/scratchpad/build-macos.sh:28: codesign --force --sign - "$scratchpad_bundle"
+apps/scratchpad/qos-app.toml:11: x86_64 = "v3"
+apps/scratchpad/qos-app.toml:24: seccomp = "qos-default"
+apps/scratchpad/qos-app.toml:25: landlock = "strict"
+apps/scratchpad/src/main.rs:34:         None => dirs::data_local_dir()
+apps/scratchpad/tests/scratchpad.rs:16:     let result = std::process::Command::new(env!("CARGO_BIN_EXE_scratchpad"))
+apps/scratchpad/tilo-app.toml:11: x86_64 = "v3"
+apps/scratchpad/tilo-app.toml:24: seccomp = "tilo-default"
+apps/scratchpad/tilo-app.toml:25: landlock = "strict"
+apps/sheets/src/actions.rs:2329:         let mut parts = tail.split(':');
+apps/sheets/src/app.rs:1773:                         file.sync_all().map_err(|error| error.to_string())?;
+apps/sheets/src/app.rs:1777:                             .and_then(|dir| dir.sync_all())
+apps/sheets/src/app.rs:3008:             .and_then(|file| file.sync_all())
+apps/sheets/src/app.rs:3058:             .and_then(|directory| directory.sync_all())
+apps/sheets/src/app.rs:5599: /// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
+apps/sheets/src/app.rs:5602:     let base = std::env::var_os("XDG_DATA_HOME")
+apps/sheets/src/app.rs:5605:         .or_else(dirs::data_dir)?;
+apps/sheets/src/app.rs:7055:         let mut parts = target.strip_prefix("sheets.annotation:")?.split(':');
+apps/sheets/src/app.rs:7873:     /// Serializes the tests that mutate the process-global `XDG_DATA_HOME`.
+apps/sheets/src/app.rs:8228:             path: Some("/tmp/wrong-kind.csv".into()),
+apps/sheets/src/app.rs:8975:         unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+apps/sheets/src/app.rs:9036:         unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+apps/sheets/src/app.rs:9108:         unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+apps/sheets/src/app.rs:9150:         unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+apps/sheets/src/infer.rs:250:     let parts: Vec<&str> = clock.split(':').collect();
+apps/sheets/src/settings.rs:11: //! $XDG_CONFIG_HOME/tilo/settings.json   (falls back to ~/.config/tilo/settings.json)
+apps/sheets/src/xlsx.rs:205:                 .split(':')
+apps/sheets/tilo-app.toml:21: x86_64 = "v3"
+apps/sheets/tilo-app.toml:42: seccomp    = "tilo-default"
+apps/sheets/tilo-app.toml:43: landlock   = "strict"
+apps/slides/src/actions.rs:156:                 serde_json::json!({"path":"/tmp/a.odp"})
+apps/slides/src/actions.rs:164:                 path: Some("/tmp/a.odp".into())
+apps/slides/src/framework_history_tests.rs:455:         let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::empty_restore_uses_real_autosaver_and_fresh_process_opener","--nocapture"]).env("QOS_SLIDES_EMPTY_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("QOS_PACKAGE_ID","dev.qos.slides").output().unwrap();
+apps/slides/src/framework_history_tests.rs:611:         let result = std::process::Command::new(std::env::current_exe().unwrap())
+apps/slides/tilo-app.toml:18: x86_64 = "v3"
+apps/slides/tilo-app.toml:39: seccomp    = "tilo-default"
+apps/slides/tilo-app.toml:40: landlock   = "strict"
+apps/snippets/src/seed.rs:81:             body: "#!/usr/bin/env bash\n\
+apps/snippets/src/seed.rs:213:              COPY --from=builder /app/target/release/${binary} /usr/local/bin/${binary}\n\
+apps/snippets/src/seed.rs:214:              ENTRYPOINT [\"/usr/local/bin/${binary}\"]",
+apps/snippets/tilo-app.toml:17: x86_64 = "v3"
+apps/snippets/tilo-app.toml:38: seccomp    = "tilo-default"
+apps/snippets/tilo-app.toml:39: landlock   = "strict"
+apps/totp/src/storage.rs:13: //! Secret Service through `secret-tool`, separate from the ciphertext. An
+apps/totp/src/storage.rs:76: /// Resolve the data directory: `$XDG_DATA_HOME/tilo-authenticator`
+apps/totp/src/storage.rs:80:     let base = std::env::var_os("XDG_DATA_HOME")
+apps/totp/src/storage.rs:83:         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+apps/totp/src/storage.rs:234:         "secret-tool",
+apps/totp/src/storage.rs:300:         "secret-tool",
+apps/totp/src/storage.rs:326:         "secret-tool",
+apps/totp/src/storage.rs:567:     #[cfg(unix)]
+apps/totp/src/storage.rs:570:         use std::os::unix::fs::PermissionsExt;
+apps/totp/tilo-app.toml:19: x86_64 = "v3"
+apps/totp/tilo-app.toml:40: seccomp    = "tilo-default"
+apps/totp/tilo-app.toml:41: landlock   = "strict"
+apps/typst-editor/src/actions.rs:316:             let args = serde_json::json!({"path": format!("/tmp/{id}")})
+apps/typst-editor/src/actions.rs:328:             assert_eq!(path.as_deref(), Some(format!("/tmp/{id}").as_str()));
+apps/typst-editor/src/app.rs:586:         dirs::document_dir()
+apps/typst-editor/src/app.rs:587:             .or_else(dirs::data_dir)
+apps/typst-editor/src/framework_history_tests.rs:151:         let out = std::process::Command::new(std::env::current_exe().unwrap())
+apps/typst-editor/src/framework_history_tests.rs:159:             .env("XDG_DATA_HOME", &dir)
+apps/typst-editor/tilo-app.toml:17: x86_64 = "v3"
+apps/typst-editor/tilo-app.toml:38: seccomp    = "tilo-default"
+apps/typst-editor/tilo-app.toml:39: landlock   = "strict"
+apps/word-processor/src/actions.rs:3990:             "file:///etc/passwd",
+apps/word-processor/src/i18n.rs:12: //! unwired. Locale selection (first hit wins): `LC_ALL`, `LANGUAGE`, `LANG`,
+apps/word-processor/src/i18n.rs:84:     for var in ["LC_ALL", "LANGUAGE", "LANG"] {
+apps/word-processor/src/i18n.rs:95: /// colon-separated `LANGUAGE` list) into a BCP-47 [`LanguageIdentifier`].
+apps/word-processor/src/i18n.rs:97:     // `LANGUAGE` may be `de:en:...`; take the first entry. Strip the charset
+apps/word-processor/src/i18n.rs:99:     let first = raw.split(':').next().unwrap_or(raw).trim();
+apps/word-processor/src/i18n.rs:341:         // LANGUAGE list: first entry wins.
+apps/word-processor/src/lib.rs:388:     /// touches the real `$HOME` / `$XDG_STATE_HOME` during a test run.
+apps/word-processor/src/lib.rs:393:     /// 2. `$XDG_STATE_HOME/tilo/word-processor/recovery`;
+apps/word-processor/src/lib.rs:400:         let state_home = std::env::var_os("XDG_STATE_HOME")
+apps/word-processor/src/lib.rs:404:                 std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
+apps/word-processor/src/lib.rs:434:                 // Otherwise first save can change /var/... into /private/var/...
+apps/word-processor/src/lib.rs:466:     #[cfg(unix)]
+apps/word-processor/src/lib.rs:476:         std::os::unix::fs::symlink(dir.join("real"), dir.join("alias")).unwrap();
+apps/word-processor/src/lib.rs:1132:         let doc = std::path::Path::new("/tmp/whatever/doc.md");
+apps/word-processor/src/widget/tests.rs:3774:         std::env::set_var("XDG_CONFIG_HOME", &tmp);
+apps/word-processor/src/widget.rs:12862: /// under `$XDG_RUNTIME_DIR` and is named `winit-dnd-…`. Only such files are
+apps/word-processor/src/widget.rs:12873:     // to — inside a sandbox `$XDG_RUNTIME_DIR` is set but is not always
+apps/word-processor/src/widget.rs:12877:     ["XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"]
+apps/word-processor/tests/e2e_docx.rs:32:         WpFormat::from_path(Path::new("/tmp/report.docx")),
+apps/word-processor/tests/e2e_docx.rs:36:         WpFormat::from_path(Path::new("/tmp/REPORT.DOCX")),
+apps/word-processor/tilo-app.toml:20: x86_64 = "v3"
+apps/word-processor/tilo-app.toml:41: seccomp    = "tilo-default"
+apps/word-processor/tilo-app.toml:42: landlock   = "strict"

@@ -33,7 +33,12 @@ impl App {
         ) -> R,
     ) -> Result<R, String> {
         let exported = self.bindings.exported_nodes(&self.node_map);
-        if self.history.is_some() {
+        if self.history.is_some()
+            || self
+                .action_palette
+                .as_deref()
+                .is_some_and(|palette| palette.is_presented())
+        {
             let root = FrameworkPresentation {
                 roots: self.history_presentation_roots(),
                 layout_root: self
@@ -312,6 +317,14 @@ impl App {
             width,
             status.as_deref(),
         );
+        // The palette owns its measured overlay geometry. Admit its absolute
+        // leaf as a separate presentation root so app/legacy authority and
+        // inactive boundaries cannot leak into the host confirmation surface.
+        let palette_node = self
+            .action_palette
+            .as_deref_mut()
+            .filter(|palette| palette.is_presented())
+            .map(|palette| palette.build_layout(&mut self.taffy, &self.theme, &mut self.node_map));
         if let Some(history) = &mut self.history {
             self.history_layout = None;
             let root = history.build_composition(
@@ -321,13 +334,21 @@ impl App {
                 &mut self.node_map,
             );
             self.root_node = Some(root);
-            // SAFETY: App owns this settled composition and its retained live root.
+            let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(history.as_ref(), root)];
+            if let Some(node) = palette_node {
+                roots.push((
+                    self.action_palette
+                        .as_deref()
+                        .expect("palette was just built"),
+                    node,
+                ));
+            }
+            // SAFETY: App owns this settled forest and its retained live root.
             unsafe {
-                self.bindings.rebuild_with_retained_root(
-                    history.as_ref(),
+                self.bindings.rebuild_roots_with_retained(
+                    &roots,
                     Some(self.root_widget.as_ref()),
                     &self.taffy,
-                    root,
                     &self.node_map,
                 );
             }
@@ -339,10 +360,20 @@ impl App {
         if !self.history_chrome_enabled {
             self.history_layout = None;
             self.root_node = Some(app);
-            // SAFETY: these freshly built maps describe the exclusively owned app.
+            let mut roots: Vec<(&dyn Widget, taffy::NodeId)> =
+                vec![(self.root_widget.as_ref(), app)];
+            if let Some(node) = palette_node {
+                roots.push((
+                    self.action_palette
+                        .as_deref()
+                        .expect("palette was just built"),
+                    node,
+                ));
+            }
+            // SAFETY: every disjoint presentation root belongs to this App.
             unsafe {
                 self.bindings
-                    .rebuild(self.root_widget.as_ref(), &self.taffy, app, &self.node_map);
+                    .rebuild_roots(&roots, &self.taffy, &self.node_map);
             }
             return;
         }
@@ -375,6 +406,14 @@ impl App {
                 .into_iter()
                 .zip(std::iter::once(layout.toolbar).chain(layout.pane)),
         );
+        if let Some(node) = palette_node {
+            roots.push((
+                self.action_palette
+                    .as_deref()
+                    .expect("palette was just built"),
+                node,
+            ));
+        }
         // SAFETY: every root and node belongs to this same freshly built arena;
         // chrome is admitted separately and does not inherit app authority.
         unsafe {

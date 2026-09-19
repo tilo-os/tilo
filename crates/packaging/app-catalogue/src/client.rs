@@ -22,6 +22,7 @@
 use std::io::Read as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use atomic_file::lease::{FileLease, LeaseMode};
 use registry_types::{RegistryEntry, RegistryHandshake, SignedRegistrySnapshot};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -250,27 +251,33 @@ pub fn classify_snapshot(
         .collect())
 }
 
-fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
+fn checkpoint_path_at(reg: &RegistryConfig, config_root: &std::path::Path) -> std::path::PathBuf {
     let mut hasher = blake3::Hasher::new();
     hasher.update(reg.base_url.as_bytes());
     hasher.update(&[0]);
     hasher.update(reg.owner_pubkey_hex.as_bytes());
-    Some(
-        config_dir()?
-            .join("registry-checkpoints")
-            .join(format!("{}.json", hasher.finalize().to_hex())),
-    )
+    config_root
+        .join("registry-checkpoints")
+        .join(format!("{}.json", hasher.finalize().to_hex()))
 }
 
 fn persist_checkpoint(
     reg: &RegistryConfig,
     snapshot: &SignedRegistrySnapshot,
 ) -> Result<(), RegistryError> {
-    let Some(path) = checkpoint_path(reg) else {
+    let Some(config_root) = config_dir() else {
         return Ok(());
     };
+    persist_checkpoint_at(reg, snapshot, &config_root)
+}
+
+fn persist_checkpoint_at(
+    reg: &RegistryConfig,
+    snapshot: &SignedRegistrySnapshot,
+    config_root: &std::path::Path,
+) -> Result<(), RegistryError> {
+    let path = checkpoint_path_at(reg, config_root);
     let hash = registry_types::snapshot_hash(snapshot)?;
-    #[cfg(unix)]
     let _lock = checkpoint_lock(&path)?;
     match std::fs::read(&path) {
         Ok(bytes) => {
@@ -291,9 +298,7 @@ fn persist_checkpoint(
         .map_err(|error| RegistryError::Checkpoint(error.to_string()))
 }
 
-#[cfg(unix)]
-fn checkpoint_lock(path: &std::path::Path) -> Result<std::fs::File, RegistryError> {
-    use std::os::fd::AsRawFd as _;
+fn checkpoint_lock(path: &std::path::Path) -> Result<FileLease, RegistryError> {
     let lock_path = path.with_extension("lock");
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)
@@ -306,14 +311,8 @@ fn checkpoint_lock(path: &std::path::Path) -> Result<std::fs::File, RegistryErro
         .write(true)
         .open(lock_path)
         .map_err(|error| RegistryError::Checkpoint(error.to_string()))?;
-    // SAFETY: `file` owns a live descriptor for the duration of the returned
-    // guard. `flock` neither takes ownership nor dereferences user memory.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(RegistryError::Checkpoint(
-            std::io::Error::last_os_error().to_string(),
-        ));
-    }
-    Ok(file)
+    FileLease::acquire(file, LeaseMode::Exclusive)
+        .map_err(|error| RegistryError::Checkpoint(error.to_string()))
 }
 
 fn validate_checkpoint(
@@ -331,8 +330,79 @@ fn validate_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atomic_file::lease::{AcquireError, FileLease, LeaseMode};
     use ed25519_dalek::SigningKey;
     use registry_types::{RegistryVersion, sign_entry};
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, ExitStatus};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    const CHILD_TIMEOUT: Duration = Duration::from_secs(10);
+    const CHECKPOINT_LOCK_ROOT_ENV: &str = "TILO_TEST_CHECKPOINT_LOCK_ROOT";
+    const CHECKPOINT_LOCK_READY_ENV: &str = "TILO_TEST_CHECKPOINT_LOCK_READY";
+    const CHECKPOINT_LOCK_ACQUIRED_ENV: &str = "TILO_TEST_CHECKPOINT_LOCK_ACQUIRED";
+    const CHECKPOINT_LOCK_RELEASE_ENV: &str = "TILO_TEST_CHECKPOINT_LOCK_RELEASE";
+    const CHECKPOINT_WRITE_ROOT_ENV: &str = "TILO_TEST_CHECKPOINT_WRITE_ROOT";
+    const CHECKPOINT_WRITE_SNAPSHOT_ENV: &str = "TILO_TEST_CHECKPOINT_WRITE_SNAPSHOT";
+    const CHECKPOINT_WRITE_READY_ENV: &str = "TILO_TEST_CHECKPOINT_WRITE_READY";
+    const CHECKPOINT_WRITE_START_ENV: &str = "TILO_TEST_CHECKPOINT_WRITE_START";
+    const CHECKPOINT_WRITE_RESULT_ENV: &str = "TILO_TEST_CHECKPOINT_WRITE_RESULT";
+
+    struct ChildCleanup(Child);
+
+    impl Drop for ChildCleanup {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+
+    fn child_command(test_name: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.arg("--exact").arg(test_name).arg("--nocapture");
+        command
+    }
+
+    fn wait_for_path(child: &mut Child, path: &Path) {
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+        loop {
+            if path.exists() {
+                return;
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("child exited before creating {}: {status}", path.display());
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child timed out before creating {}",
+                path.display()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_success(child: &mut Child) -> ExitStatus {
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "child failed: {status}");
+                return status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let status = child.wait().unwrap();
+                panic!("child timed out and was terminated: {status}");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn env_path(name: &str) -> Option<PathBuf> {
+        std::env::var_os(name).map(PathBuf::from)
+    }
 
     pub(crate) fn signed_entry() -> RegistryEntry {
         // Deterministic key so signing is reproducible under `cargo
@@ -380,6 +450,205 @@ mod tests {
         };
         registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
         snapshot
+    }
+
+    fn snapshot_at_sequence(
+        owner: &SigningKey,
+        sequence: u64,
+        fork_label: &str,
+    ) -> SignedRegistrySnapshot {
+        let mut snapshot = snapshot(owner);
+        snapshot.sequence = sequence;
+        snapshot.moderation_head_hex = fork_label.into();
+        snapshot.owner_signature_hex.clear();
+        registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
+        snapshot
+    }
+
+    fn registry(owner: &SigningKey) -> RegistryConfig {
+        RegistryConfig {
+            name: "test".into(),
+            base_url: "https://registry.test".into(),
+            owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn checkpoint_lock_child() {
+        let Some(root) = env_path(CHECKPOINT_LOCK_ROOT_ENV) else {
+            let dir = tempfile::tempdir().unwrap();
+            let lease = checkpoint_lock(&dir.path().join("checkpoint.json")).unwrap();
+            let _: &FileLease = &lease;
+            return;
+        };
+        let ready = env_path(CHECKPOINT_LOCK_READY_ENV).unwrap();
+        let acquired = env_path(CHECKPOINT_LOCK_ACQUIRED_ENV).unwrap();
+        let release = env_path(CHECKPOINT_LOCK_RELEASE_ENV).unwrap();
+        let checkpoint = root.join("registry-checkpoints").join("child.json");
+        std::fs::write(&ready, b"ready").unwrap();
+        let lease = checkpoint_lock(&checkpoint).unwrap();
+        let _: &FileLease = &lease;
+        std::fs::write(&acquired, b"acquired").unwrap();
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+        while !release.exists() {
+            assert!(Instant::now() < deadline, "parent never released child");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn checkpoint_writer_child() {
+        let Some(root) = env_path(CHECKPOINT_WRITE_ROOT_ENV) else {
+            let dir = tempfile::tempdir().unwrap();
+            let owner = SigningKey::from_bytes(&[8; 32]);
+            let registry = registry(&owner);
+            persist_checkpoint_at(&registry, &snapshot(&owner), dir.path()).unwrap();
+            let checkpoint: SnapshotCheckpoint = serde_json::from_slice(
+                &std::fs::read(checkpoint_path_at(&registry, dir.path())).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(checkpoint.sequence, 1);
+            return;
+        };
+        let snapshot_path = env_path(CHECKPOINT_WRITE_SNAPSHOT_ENV).unwrap();
+        let ready = env_path(CHECKPOINT_WRITE_READY_ENV).unwrap();
+        let start = env_path(CHECKPOINT_WRITE_START_ENV).unwrap();
+        let result = env_path(CHECKPOINT_WRITE_RESULT_ENV).unwrap();
+        let snapshot: SignedRegistrySnapshot =
+            serde_json::from_slice(&std::fs::read(snapshot_path).unwrap()).unwrap();
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let registry = registry(&owner);
+        std::fs::write(&ready, b"ready").unwrap();
+        let deadline = Instant::now() + CHILD_TIMEOUT;
+        while !start.exists() {
+            assert!(Instant::now() < deadline, "parent never started child");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let outcome = match persist_checkpoint_at(&registry, &snapshot, &root) {
+            Ok(()) => "ok",
+            Err(RegistryError::Rollback) => "rollback",
+            Err(error) => panic!("unexpected checkpoint error: {error}"),
+        };
+        std::fs::write(result, outcome).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_lock_owns_the_persistent_sentinel_until_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let checkpoint = dir.path().join("registry-checkpoints").join("child.json");
+        let sentinel = checkpoint.with_extension("lock");
+        std::fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+        let external = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&sentinel)
+            .unwrap();
+        let external = FileLease::acquire(external, LeaseMode::Exclusive).unwrap();
+        let ready = dir.path().join("lock-ready");
+        let acquired = dir.path().join("lock-acquired");
+        let release = dir.path().join("lock-release");
+        let child = child_command("client::tests::checkpoint_lock_child")
+            .env(CHECKPOINT_LOCK_ROOT_ENV, dir.path())
+            .env(CHECKPOINT_LOCK_READY_ENV, &ready)
+            .env(CHECKPOINT_LOCK_ACQUIRED_ENV, &acquired)
+            .env(CHECKPOINT_LOCK_RELEASE_ENV, &release)
+            .spawn()
+            .unwrap();
+        let mut child = ChildCleanup(child);
+        wait_for_path(&mut child.0, &ready);
+        thread::sleep(Duration::from_millis(150));
+        assert!(!acquired.exists(), "child bypassed the persistent sentinel");
+        drop(external);
+        wait_for_path(&mut child.0, &acquired);
+
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&sentinel)
+            .unwrap();
+        assert!(matches!(
+            FileLease::try_acquire(contender, LeaseMode::Exclusive),
+            Err(AcquireError::Busy)
+        ));
+        std::fs::write(release, b"release").unwrap();
+        wait_for_success(&mut child.0);
+    }
+
+    #[test]
+    fn concurrent_checkpoint_writers_reject_older_and_same_sequence_forks() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let registry = registry(&owner);
+        let first = snapshot_at_sequence(&owner, 1, "first");
+        persist_checkpoint_at(&registry, &first, dir.path()).unwrap();
+
+        let forks = [
+            snapshot_at_sequence(&owner, 2, "fork-a"),
+            snapshot_at_sequence(&owner, 2, "fork-b"),
+        ];
+        let start = dir.path().join("writers-start");
+        let mut children = Vec::new();
+        let mut results = Vec::new();
+        for (index, snapshot) in forks.iter().enumerate() {
+            let snapshot_path = dir.path().join(format!("snapshot-{index}.json"));
+            let ready = dir.path().join(format!("writer-{index}-ready"));
+            let result = dir.path().join(format!("writer-{index}-result"));
+            std::fs::write(&snapshot_path, serde_json::to_vec(snapshot).unwrap()).unwrap();
+            let child = child_command("client::tests::checkpoint_writer_child")
+                .env(CHECKPOINT_WRITE_ROOT_ENV, dir.path())
+                .env(CHECKPOINT_WRITE_SNAPSHOT_ENV, snapshot_path)
+                .env(CHECKPOINT_WRITE_READY_ENV, &ready)
+                .env(CHECKPOINT_WRITE_START_ENV, &start)
+                .env(CHECKPOINT_WRITE_RESULT_ENV, &result)
+                .spawn()
+                .unwrap();
+            children.push((ChildCleanup(child), ready));
+            results.push(result);
+        }
+        for (child, ready) in &mut children {
+            wait_for_path(&mut child.0, ready);
+        }
+        std::fs::write(&start, b"start").unwrap();
+        for (child, _) in &mut children {
+            wait_for_success(&mut child.0);
+        }
+        let outcomes: Vec<String> = results
+            .iter()
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|value| value.as_str() == "ok")
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|value| value.as_str() == "rollback")
+                .count(),
+            1
+        );
+
+        assert!(matches!(
+            persist_checkpoint_at(&registry, &first, dir.path()),
+            Err(RegistryError::Rollback)
+        ));
+        let checkpoint: SnapshotCheckpoint = serde_json::from_slice(
+            &std::fs::read(checkpoint_path_at(&registry, dir.path())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(checkpoint.sequence, 2);
+        let accepted_hashes = forks
+            .iter()
+            .map(registry_types::snapshot_hash)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(accepted_hashes.contains(&checkpoint.snapshot_hash_hex));
     }
 
     #[test]

@@ -1,0 +1,38 @@
+# App-state consumer refresh before Task5
+
+Read-only source reconnaissance after Task8 acceptance and while Task4 Unix provisioning is being implemented. This is not an executable cross-host plan or a support claim. App-state source remains unchanged by this work.
+
+## Current production paths
+
+`DocStore::open_canonical_with` creates all directories, opens the directory using ordinary `File::open`, acquires the canonical gate, loads/creates the actor, constructs the store, installs its test configuration, checks source identity and finally calls `sync_directory_chain`. That method canonicalizes the ambient path and opens/fsyncs every physical ancestor leaf-to-root. It checks the original directory and gate before/after. The exact retry regression requires all descendants to exist before the first failed barrier and the second attempt to visit precisely the full physical ancestor vector.
+
+`write_full` checks canonical identity, writes via the current atomic-file facade using an ambient document path, then repeats the canonical chain commit. Canonical append checks identity and appends without create; legacy append can create. Existing refusal/schema and tail-repair rules must remain intact. `save` advances persisted heads only after write_full succeeds. Autosave `commit` calls write_full/append_bytes on the worker and only assigns durable_heads on success; errors stay sticky until a successful explicit checkpoint. An outer-thread atomic hook cannot exercise that worker.
+
+The gate field is a raw File and the legacy writer guard is Option<File>. Unix gate/writer acquisition embeds flock directly; non-Unix canonical exclusive gate returns Unsupported, while Windows legacy ownership is implemented through share_mode(0). `same_file` compares Unix dev/inode and returns false on all other hosts. These are concrete remaining framework-backend migrations, not portable behavior today. FileLease already exposes held native identity and owns its consumed handle without raw access/clone. StorageDirectory supplies full identity and no-follow child read/publication, but no public sentinel creation/acquisition or existing-only ancestor reconciliation API currently exists.
+
+The actor sidecar retains the existing hex format. Missing or malformed content mints a new actor and atomically replaces the file; other read errors propagate. Preserve that explicit compatibility policy. Canonical source checking currently occurs after actor creation; Task5 must satisfy the plan's pre-actor source check requirement as part of the revised admission order, not merely retain the late existing check.
+
+## Binding decisions for the next executable plan
+
+1. Keep canonical source acceptance distinct from held-object authority. General publication may validly continue into an old renamed held directory, but a canonical store must return SourceChanged when the admitted path or gate is missing/replaced. Never recreate those names on canonical save/reconciliation. Compare complete FileIdentity from the directory and owned FileLease against actual current objects; do not duplicate a lease-bearing handle for inspection.
+2. Add only the shared native operations needed by real consumers. The forthcoming provisioner must not export an unused reconciliation facade now. Task5 can extract its actual held-chain engine into existing-only reconciliation that accepts the expected held leaf, refuses replacement/missing edges and uses no mkdir. Native details stay inside atomic-file. Review any sentinel operation API against no-follow admission, lease acquisition, native open rights and portable identity before migration.
+3. Keep the first real chain commit after the existing configure hook. Either retain initial construction and delegate existing-only reconciliation there, or move fault configuration ahead of the first actual provisioning commit with equivalent assertions. Do not call the all-in-one provisioner successfully first and then manufacture the old test's visit vector/failure during a redundant sweep. Exact existing source-replacement and retry assertions remain required.
+4. StoreError::Io must retain the owned PublicationError via its native-kind wrapper; add the planned phase accessor without inferring phases from ErrorKind. Directory preparation failures retain their distinct ProvisionError state. Post-publication chain failure leaves visible bytes and must not advance persisted or autosave durable heads. Test direct save and the real autosave worker independently.
+5. Legacy and canonical gates must interoperate across processes under the single FileLease semantics; a held gate precedes actor effects. Preserve legacy contention policy deliberately, including distinguishing actual native acquisition failures where the API requires them. Remove direct libc/share_mode logic only when every owned use and manifest edge is accounted for.
+
+## Migration claims need a separate commit argument
+
+Existing `claim_room_marker` reads an owner and immediately returns equality. The `.qos-` then `.tilo-` ordering and `.recovered` namespace preserve cross-version exclusion. `publish_claim` writes/fsyncs an exclusive temporary, publishes with a hard link, removes the temporary and flushes the parent. Replace this mechanism with held-directory IfAbsent while retaining exact room payload/newline, aliases and malformed-marker policy.
+
+Do not turn a collision or a readable matching room ID into proof of durable ownership. A retained known-publication error can retry its owned commit. A fresh invocation after the error was dropped has no such handle proof: the executable plan must identify how an existing winner's required file and namespace barriers are established, with native rights and identity held through the operation. In particular, blindly syncing the File returned by open_read is not a cross-host contract; Windows flush access requirements must be considered. An uncertain publication cannot trigger marker removal, ownership reassignment, or a claim of no effects. This is an explicit design requirement to resolve before the claim migration, not permission to leave required cross-platform claims permanently unsupported.
+
+## Concrete checks to preserve/add
+
+- Existing `canonical_directory_sync_failure_is_retried_even_when_ancestors_exist` and `canonical_missing_or_replaced_directory_and_gate_never_recreated` unchanged assertions.
+- Canonical gate matrix and drop/reopen across real child processes, including legacy/canonical contention combinations; Windows native execution remains separate from compilation.
+- Real BeforeCommit publication failure at save returns PublishedDurabilityUnknown, retains visible new bytes and leaves old persisted heads. Worker-local injection proves autosave does not acknowledge those heads.
+- Source change during initial admission fails before actor/document publication; held gate is never reopened as a new owner after replacement.
+- Two room contenders and two processes cannot both win; own failed final commit, dropped-error retry, aliases, malformed/recovered markers and native publication collisions preserve exclusion and durability.
+- Existing actor bytes, Automerge schema, append/tail-repair policy and migration formats remain unchanged. No ignored failures, synthetic fault callbacks or missing native fixture pass claims.
+
+Task4 Unix source acceptance is still a prerequisite. Windows ancestor/bootstrap qualification is still open and cannot be bypassed by a Unix-only increment. This reconnaissance records the actual remaining mechanisms so later implementation does not confuse shared API availability with a completed production migration.

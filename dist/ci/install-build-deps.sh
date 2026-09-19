@@ -4,13 +4,15 @@ set -euo pipefail
 [[ $# == 1 ]] || { echo "usage: $0 debian|fedora|arch" >&2; exit 2; }
 distro=$1
 
+# Python is the installed-package verifier's test runtime, not a shipped
+# application dependency (Arch packages the interpreter as `python`).
 case "$distro" in
 debian)
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
         curl ca-certificates build-essential binutils clang libclang-dev cmake \
-        pkg-config capnproto file dpkg-dev \
+        pkg-config capnproto file dpkg-dev python3 \
         libxkbcommon-dev libwayland-dev libseat-dev libinput-dev libudev-dev \
         libdrm-dev libgbm-dev libgl-dev libegl-dev libpipewire-0.3-dev \
         libdbus-1-dev libfontconfig-dev libfreetype-dev \
@@ -20,7 +22,7 @@ debian)
 fedora)
     dnf install -y --setopt=install_weak_deps=False \
         curl git jq gcc gcc-c++ binutils make clang clang-devel cmake perl \
-        pkgconf-pkg-config capnproto file rpm-build rpm-sign rpmlint \
+        pkgconf-pkg-config capnproto file rpm-build rpm-sign rpmlint python3 \
         libxkbcommon-devel wayland-devel libseat-devel libinput-devel \
         systemd-devel libdrm-devel mesa-libgbm-devel mesa-libGL-devel \
         mesa-libEGL-devel pipewire-devel dbus-devel \
@@ -30,7 +32,7 @@ fedora)
     ;;
 arch)
     packages=(
-        curl git base-devel binutils rustup clang cmake pkgconf capnproto file namcap
+        curl git base-devel binutils rustup clang cmake pkgconf capnproto file namcap python
         libxkbcommon wayland seatd libinput systemd-libs libdrm mesa
         pipewire dbus fontconfig freetype2 harfbuzz fuse3
         gstreamer gst-plugins-base-libs
