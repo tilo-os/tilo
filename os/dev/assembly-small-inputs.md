@@ -26,9 +26,14 @@ python3 os/tests/trust_input_copy_equivalence.py --tools-image IMAGE_ID
 
 The test extracts the changed instructions from the production Containerfile and
 compares them against the previous copy layout on the same cached image. It
-checks bytes, file types, modes and numeric ownership, with nondefault existing
-directory modes, an existing policy file, unrelated files and temporary-directory
-removal. No registry access, OS compilation or cache publication is performed.
+checks bytes, file types, modes, numeric ownership, normalized modification times,
+xattr values and hardlink groups. It seeds nondefault existing directory modes,
+source and destination `user.*` attributes, an existing policy file with a
+hardlink alias, unrelated files and a synthetic `security.selinux` label when
+supported. It also checks temporary-directory removal. SELinux enforcement and
+label support limitations are reported explicitly; an equivalence pass without
+enforcement does not prove runtime SELinux policy behavior. No registry access,
+OS compilation or cache publication is performed.
 Only the test's two temporary image IDs and temporary context are removed.
 
 This is filesystem equivalence before public-trust installation. Existing trust
