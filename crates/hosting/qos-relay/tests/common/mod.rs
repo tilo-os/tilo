@@ -131,6 +131,7 @@ pub async fn spawn_relay_on(
             pin: true,
             replication: qos_relay::ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
+            shell_authority: None,
         });
     }
     let identity = RelayIdentity {

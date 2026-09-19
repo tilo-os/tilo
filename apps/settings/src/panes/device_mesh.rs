@@ -543,6 +543,7 @@ impl DeviceMeshPane {
                         pin: true,
                         replication: ReplicationIntent::FullWorkspace,
                         admitted_users: Vec::new(),
+                        shell_authority: None,
                     })
                     .collect();
                 for workspace in self.discovered_workspaces.clone() {
@@ -1623,6 +1624,7 @@ impl Widget for DeviceMeshPane {
                         ReplicationIntent::OnDemand
                     },
                     admitted_users: Vec::new(),
+                    shell_authority: None,
                 });
                 changed = true;
             } else if !selected && self.config.remove_workspace(workspace.id) {
@@ -1883,6 +1885,7 @@ mod tests {
             pin: true,
             replication: ReplicationIntent::OnDemand,
             admitted_users: Vec::new(),
+            shell_authority: None,
         });
         config.save(&path).unwrap();
 
@@ -2004,6 +2007,7 @@ mod tests {
             pin: false,
             replication: ReplicationIntent::OnDemand,
             admitted_users: Vec::new(),
+            shell_authority: None,
         });
         config.save(&path).unwrap();
 

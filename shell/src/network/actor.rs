@@ -2052,6 +2052,7 @@ mod tests {
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: Vec::new(),
+                shell_authority: None,
             }],
             ..RelayConfig::default()
         };
@@ -2098,6 +2099,7 @@ mod tests {
                     pin: true,
                     replication: ReplicationIntent::FullWorkspace,
                     admitted_users: Vec::new(),
+                    shell_authority: None,
                 }],
                 ..RelayConfig::default()
             },

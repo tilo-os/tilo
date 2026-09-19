@@ -1333,10 +1333,10 @@ impl StatePeer {
     }
 }
 #[derive(Serialize, Deserialize)]
-struct GovernedIdentity {
-    device_cert: DeviceCert,
+pub(crate) struct GovernedIdentity {
+    pub(crate) device_cert: DeviceCert,
     #[serde(default)]
-    revocations: Vec<qos_user_identity::RevocationEntry>,
+    pub(crate) revocations: Vec<qos_user_identity::RevocationEntry>,
 }
 /// The same native room CRDT keys projected by WorkspaceTree::sync_room_doc.
 pub fn seed_room(

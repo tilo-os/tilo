@@ -259,6 +259,13 @@ impl LocalHost {
                 pin: true,
                 replication: qos_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![],
+                shell_authority: Some(
+                    qos_peer_state::retained_proof::RetentionAuthority::new(
+                        owner.peer().room(),
+                        owner.peer().authority().clone(),
+                    )
+                    .map_err(anyhow::Error::msg)?,
+                ),
             }],
             ..Default::default()
         };

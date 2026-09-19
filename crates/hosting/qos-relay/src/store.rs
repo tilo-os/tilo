@@ -28,6 +28,8 @@ pub(crate) mod replay;
 pub(crate) mod retained;
 #[cfg(test)]
 pub(crate) mod test_barrier;
+#[cfg(test)]
+mod shell_proof_tests;
 
 use std::fs;
 use std::io::{self, Write};
@@ -155,6 +157,7 @@ pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: u64,
     pinned: bool,
+    shell_authority: Option<qos_peer_state::retained_proof::RetentionAuthority>,
 }
 
 /// One durable queue entry loaded for delivery but not yet acknowledged.
@@ -188,6 +191,7 @@ impl WorkspaceStore {
             root,
             workspace_id,
             pinned,
+            shell_authority: None,
         })
     }
 
@@ -199,6 +203,62 @@ impl WorkspaceStore {
     /// Workspace id.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
+    }
+
+    /// Install a locally supplied shell pin before handing this store to the
+    /// ordered persistence owner. Persisted bytes are a conflict fence, never an
+    /// independent source of trust; `open` remains unbound until this call.
+    pub fn bind_shell_authority(
+        &mut self,
+        authority: qos_peer_state::retained_proof::RetentionAuthority,
+    ) -> Result<(), StoreError> {
+        #[derive(Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Binding {
+            version: u32,
+            authority: qos_peer_state::retained_proof::RetentionAuthority,
+        }
+        let invalid = |message| StoreError::Io(io::Error::new(io::ErrorKind::InvalidData, message));
+        if crate::room_workspace_id(authority.room()).ok() != Some(self.workspace_id) {
+            return Err(invalid("shell authority room/workspace mismatch"));
+        }
+        if self
+            .shell_authority
+            .as_ref()
+            .is_some_and(|prior| prior != &authority)
+        {
+            return Err(invalid("conflicting local shell authority"));
+        }
+        let path = self.root.join("shell-authority-v1.json");
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let prior: Binding = serde_json::from_slice(&bytes)
+                    .map_err(|e| StoreError::Json(e.to_string()))?;
+                if prior.version != 1 || prior.authority != authority {
+                    return Err(invalid("conflicting persisted shell authority"));
+                }
+                // Re-establish the durability barrier even after an interrupted
+                // previous attempt left the exact file visible.
+                fs::File::open(&path)?.sync_all()?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let bytes = serde_json::to_vec(&Binding {
+                    version: 1,
+                    authority: authority.clone(),
+                })
+                .map_err(|e| StoreError::Json(e.to_string()))?;
+                atomic_file::write(&path, &bytes)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        fs::File::open(&self.root)?.sync_all()?;
+        self.shell_authority = Some(authority);
+        Ok(())
+    }
+
+    /// Exact locally supplied authority, absent for generic workspace stores.
+    pub fn shell_authority(&self) -> Option<&qos_peer_state::retained_proof::RetentionAuthority> {
+        self.shell_authority.as_ref()
     }
 
     /// Whether this workspace is pinned (holds a persistent CRDT

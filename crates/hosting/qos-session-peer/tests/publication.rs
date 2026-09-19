@@ -11,6 +11,29 @@ fn owner_key(owner: &SessionOwner) -> ed25519_dalek::SigningKey {
     )
     .unwrap()
 }
+
+#[tokio::test]
+async fn local_host_persists_exact_native_owner_authority_before_serving() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
+    let host = qos_session_peer::host::LocalHost::start(&owner)
+        .await
+        .unwrap();
+    let workspace = qos_relay::room_workspace_id(owner.peer().room()).unwrap();
+    let path = owner
+        .root()
+        .join("relay/workspaces")
+        .join(workspace.to_string())
+        .join("shell-authority-v1.json");
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(stored["version"], 1);
+    let authority: qos_peer_state::retained_proof::RetentionAuthority =
+        serde_json::from_value(stored["authority"].clone()).unwrap();
+    assert_eq!(authority.room(), owner.peer().room());
+    assert_eq!(authority.governor(), owner.peer().authority());
+    assert_ne!(authority.governor(), owner.host_certificate());
+    host.shutdown().await.unwrap();
+}
 fn replay(peer: &mut StatePeer, author: [u8; 32], messages: &[Vec<u8>], now: SystemTime) {
     for bytes in messages {
         peer.receive_from(

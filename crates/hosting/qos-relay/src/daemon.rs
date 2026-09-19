@@ -562,6 +562,7 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
                     pin: true,
                     replication: crate::mesh::ReplicationIntent::FullWorkspace,
                     admitted_users: room_users.clone(),
+                    shell_authority: None,
                 });
             } else if let Some(binding) = cfg.workspaces.iter_mut().find(|binding| binding.id == id)
             {
@@ -666,6 +667,9 @@ fn build_workspace_registry(cfg: &RelayConfig) -> Result<WorkspaceRegistry, Rela
             binding.pin,
             Membership::default(),
         )?;
+        if let Some(authority) = &binding.shell_authority {
+            rt.store.bind_shell_authority(authority.clone())?;
+        }
         rt.admit_authenticated = matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser);
         rt.admitted_users = binding
             .admitted_users
@@ -2708,6 +2712,7 @@ mod tests {
                     pin: true,
                     replication: crate::mesh::ReplicationIntent::FullWorkspace,
                     admitted_users: vec![hex::encode(user.public_key)],
+                    shell_authority: None,
                 }],
                 ..RelayConfig::default()
             },

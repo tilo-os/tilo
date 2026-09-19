@@ -190,6 +190,7 @@ async fn main() -> Result<()> {
             pin: true,
             replication: qos_relay::ReplicationIntent::FullWorkspace,
             admitted_users: vec![],
+            shell_authority: None,
         }],
         ..Default::default()
     };

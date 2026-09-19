@@ -40,6 +40,7 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
             pin: true,
             replication: qos_relay::ReplicationIntent::FullWorkspace,
             admitted_users: vec![],
+            shell_authority: None,
         }],
         ..Default::default()
     };
