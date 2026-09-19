@@ -189,14 +189,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.tilo.calendar", live_root)
             .max_positionals(1)
-            .open_state(calendar::store::open_state)
-            .configure_app(configure_app),
+            .prepare_legacy_with_args(prepare_launch),
     )?;
     Ok(())
 }
 
-fn configure_app(app: &mut ui::App) {
-    calendar::actions::register(app.action_registry_mut());
+fn prepare_launch(
+    args: &ui::launch::LaunchArgs,
+) -> Result<ui::launch::LegacyLaunchInputs, ui::launch::LaunchError> {
+    let (state, autosave) = calendar::store::open_state("dev.tilo.calendar");
+    let root = live_root(args)?;
+    let mut registry = tilo_actions::ActionRegistry::new();
+    calendar::actions::register(&mut registry);
+    Ok(ui::launch::LegacyLaunchInputs::new(state, root, autosave).with_registry(registry))
 }
 
 fn live_root(args: &ui::launch::LaunchArgs) -> Result<Box<dyn Widget>, ui::launch::LaunchError> {
