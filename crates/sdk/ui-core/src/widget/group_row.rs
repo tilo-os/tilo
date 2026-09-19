@@ -827,11 +827,12 @@ impl GroupRow {
         // shell uses this boolean as a stale-target guard before it writes
         // durable focus, so `false` must mean "the group/tab does not
         // exist", not merely "nothing needed repainting".
-        if g.active_tab_id() == tab_id {
-            return true;
-        }
-        if !g.set_active_tab(tab_id) {
+        let changed = g.active_tab_id() != tab_id;
+        if !g.activate_tab(tab_id) {
             return false;
+        }
+        if !changed {
+            return true;
         }
         // Force the parent's subtree cache and taffy tree to rebuild
         // this frame, same as a click on the pill would.
