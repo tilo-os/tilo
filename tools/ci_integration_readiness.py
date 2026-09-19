@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 from urllib.parse import quote
 
 
@@ -75,13 +76,18 @@ def run_errors(run, jobs, repo, head, requirement):
             or len(handles) != len(set(handles))):
         errors.append("missing or duplicate job attempt handles")
     for job in jobs:
+        intentional_skip = (job.get("status") == "skipped"
+                            and job.get("name") in requirement.get("allowed_skips", [])
+                            and run.get("workflow_id") == "check.yml"
+                            and run.get("event") == "pull_request")
         if type(job.get("attempt")) is not int or job["attempt"] < 1:
             errors.append("missing valid current job attempt")
-        if type(job.get("task_id")) is not int or job["task_id"] <= 0:
+        if (type(job.get("task_id")) is not int
+                or (job["task_id"] != 0 if intentional_skip else job["task_id"] <= 0)):
             errors.append("missing valid latest job task")
         if job.get("run_id") != run_id or job.get("repo_id") != repo_id:
             errors.append("foreign job record")
-        if job.get("status") != "success":
+        if job.get("status") != "success" and not intentional_skip:
             errors.append(f"job {job.get('name')!r} not successful")
     return errors
 
@@ -125,6 +131,23 @@ def policy_errors(policy):
                     or any(not isinstance(v, str) or not v for v in values)
                     or len(values) != len(set(values))):
                 errors.append(f"invalid {field} expectation")
+        skips = run.get("allowed_skips", [])
+        if (not isinstance(skips, list) or any(s not in ("report-check-result", "affected (runner)") for s in skips)
+                or len(skips) != len(set(skips))):
+            errors.append("unsupported intentional skip")
+        elif skips:
+            if workflow != "check.yml" or run.get("events") != ["pull_request"]:
+                errors.append("intentional skips require the trusted PR check workflow")
+            if not set(skips).issubset(set(run.get("jobs", []))):
+                errors.append("skipped jobs must still be expected")
+            if not {"builder", "select", "security", "checks"}.issubset(set(run.get("jobs", []))):
+                errors.append("PR applicability policy omits mandatory check jobs")
+            if "affected (runner)" in skips and not isinstance(policy.get("zero_rust_selection"), dict):
+                errors.append("affected skip requires independently recomputed selector proof")
+            if "affected (runner)" in skips and not any(
+                    "tools/ci_select.py" == p or "tools/ci_select.py".startswith(p.rstrip("/") + "/")
+                    for p in paths if isinstance(p, str)):
+                errors.append("selector must be inside the trusted protected closure")
     if len(workflows) != len(set(str(w) for w in workflows)):
         errors.append("duplicate workflow requirement")
     return errors
@@ -157,6 +180,29 @@ def provenance_errors(root, base, head, policy):
             errors.append(f"trusted protected path is absent: {path}")
         if before != after:
             errors.append(f"candidate changes trusted harness: {path}")
+    if any("affected (runner)" in r.get("allowed_skips", []) for r in policy.get("runs", [])):
+        # Never execute candidate code or accept its selector output. The operator
+        # supplies a clean, reviewed base checkout; -I excludes local Python imports.
+        if errors:
+            return errors + ["cannot establish selector proof without trusted provenance"]
+        if policy["trusted_revision"] != base or git(root, "rev-parse", "HEAD").decode().strip() != base:
+            return errors + ["selector proof requires checkout at reviewed current base"]
+        if git(root, "status", "--porcelain", "--untracked-files=all").strip():
+            return errors + ["selector proof requires a clean trusted checkout"]
+        selector = Path(root) / "tools/ci_select.py"
+        committed = git(root, "show", base + ":tools/ci_select.py")
+        if selector.read_bytes() != committed:
+            return errors + ["selector bytes differ from reviewed Git object"]
+        result = subprocess.run([sys.executable, "-I", str(selector), "--base", base,
+                                 "--head", head, "--shards", "2"], cwd=root,
+                                check=True, capture_output=True, text=True, timeout=120)
+        plan = json.loads(result.stdout)
+        proof = {"base": base, "head": head, "trusted_revision": base,
+                 "selector_sha256": hashlib.sha256(committed).hexdigest(), "plan": plan}
+        if (plan.get("rust_required") is not False or plan.get("selected_count") != 0
+                or plan.get("selected") != [] or plan.get("matrix") != {"include": []}
+                or not plan.get("changed_files") or proof != policy.get("zero_rust_selection")):
+            errors.append("trusted selector does not establish the exact zero-Rust proof")
     return errors
 
 

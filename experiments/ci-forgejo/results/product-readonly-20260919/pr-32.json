@@ -1,0 +1,306 @@
+{
+  "collected_at": "2026-09-19T00:28:07.032438+00:00",
+  "pr": {
+    "number": 32,
+    "title": "CI: release only changed components",
+    "state": "open",
+    "draft": false,
+    "merged": false,
+    "html_url": "https://code.podesta.ai/qos/qos/pulls/32",
+    "user": {
+      "login": "qwolff"
+    },
+    "head": {
+      "sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+      "ref": "codex/continuous-component-release-v3",
+      "repo": {
+        "full_name": "qos/qos"
+      }
+    },
+    "base": {
+      "sha": "4b8277286ca108cc9445dbc0ddaaea72e1afc3d1",
+      "ref": "main",
+      "repo": {
+        "full_name": "qos/qos"
+      }
+    }
+  },
+  "files": [
+    {
+      "filename": ".forgejo/workflows/build-image.yml",
+      "status": "changed",
+      "additions": 112,
+      "deletions": 1
+    },
+    {
+      "filename": ".forgejo/workflows/check.yml",
+      "status": "changed",
+      "additions": 11,
+      "deletions": 28
+    },
+    {
+      "filename": ".forgejo/workflows/lint.yml",
+      "status": "changed",
+      "additions": 2,
+      "deletions": 0
+    },
+    {
+      "filename": ".forgejo/workflows/package-desktop.yml",
+      "status": "changed",
+      "additions": 52,
+      "deletions": 9
+    },
+    {
+      "filename": ".forgejo/workflows/release-apps.yml",
+      "status": "changed",
+      "additions": 14,
+      "deletions": 1
+    },
+    {
+      "filename": "dist/ci/run-package-job.sh",
+      "status": "changed",
+      "additions": 25,
+      "deletions": 1
+    },
+    {
+      "filename": "dist/ci/tests/revise-debs.sh",
+      "status": "added",
+      "additions": 44,
+      "deletions": 0
+    },
+    {
+      "filename": "dist/debian/revise-debs.sh",
+      "status": "added",
+      "additions": 66,
+      "deletions": 0
+    },
+    {
+      "filename": "docs/release-pipeline.md",
+      "status": "changed",
+      "additions": 16,
+      "deletions": 6
+    },
+    {
+      "filename": "os/Containerfile",
+      "status": "changed",
+      "additions": 29,
+      "deletions": 4
+    },
+    {
+      "filename": "os/tests/release_pipeline_invariants.sh",
+      "status": "changed",
+      "additions": 22,
+      "deletions": 3
+    },
+    {
+      "filename": "tools/ci_select.py",
+      "status": "changed",
+      "additions": 6,
+      "deletions": 1
+    },
+    {
+      "filename": "tools/desktop_release.py",
+      "status": "added",
+      "additions": 86,
+      "deletions": 0
+    },
+    {
+      "filename": "tools/release_readiness.py",
+      "status": "added",
+      "additions": 109,
+      "deletions": 0
+    },
+    {
+      "filename": "tools/tests/test_ci_select.py",
+      "status": "changed",
+      "additions": 13,
+      "deletions": 0
+    },
+    {
+      "filename": "tools/tests/test_desktop_release.py",
+      "status": "added",
+      "additions": 73,
+      "deletions": 0
+    },
+    {
+      "filename": "tools/tests/test_release_readiness.py",
+      "status": "added",
+      "additions": 60,
+      "deletions": 0
+    }
+  ],
+  "reviews": [],
+  "runs": {
+    "workflow_runs": [
+      {
+        "id": 16421,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "release-apps.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "pull_request",
+        "status": "cancelled",
+        "started": "2026-09-05T10:34:17Z",
+        "stopped": "2026-09-06T11:25:13Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3484"
+      },
+      {
+        "id": 16420,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "package-desktop.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "pull_request",
+        "status": "cancelled",
+        "started": "2026-09-05T10:33:58Z",
+        "stopped": "2026-09-06T11:25:13Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3483"
+      },
+      {
+        "id": 16419,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "lint.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "pull_request",
+        "status": "success",
+        "started": "2026-09-05T10:33:42Z",
+        "stopped": "2026-09-05T10:38:49Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3482"
+      },
+      {
+        "id": 16418,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "fs-fuse.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "pull_request",
+        "status": "success",
+        "started": "2026-09-05T10:33:31Z",
+        "stopped": "2026-09-05T10:46:31Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3481"
+      },
+      {
+        "id": 16417,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "check.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "pull_request",
+        "status": "cancelled",
+        "started": "2026-09-05T10:33:18Z",
+        "stopped": "2026-09-06T11:25:13Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3480"
+      },
+      {
+        "id": 16416,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "build-image.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "pull_request",
+        "status": "cancelled",
+        "started": "1970-01-01T00:00:00Z",
+        "stopped": "2026-09-05T11:29:12Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3479"
+      },
+      {
+        "id": 16413,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "build-image.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "",
+        "status": "cancelled",
+        "started": "1970-01-01T00:00:00Z",
+        "stopped": "2026-09-05T10:32:38Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3476"
+      },
+      {
+        "id": 16412,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "package-desktop.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "",
+        "status": "cancelled",
+        "started": "2026-09-05T10:30:20Z",
+        "stopped": "2026-09-05T10:32:37Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3475"
+      },
+      {
+        "id": 16411,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "release-apps.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "",
+        "status": "cancelled",
+        "started": "2026-09-05T10:30:10Z",
+        "stopped": "2026-09-05T10:32:36Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3474"
+      },
+      {
+        "id": 16410,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "fs-fuse.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "",
+        "status": "cancelled",
+        "started": "2026-09-05T10:29:53Z",
+        "stopped": "2026-09-05T10:32:34Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3473"
+      },
+      {
+        "id": 16409,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "lint.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "",
+        "status": "cancelled",
+        "started": "2026-09-05T10:29:44Z",
+        "stopped": "2026-09-05T10:32:32Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3472"
+      },
+      {
+        "id": 16408,
+        "repository": {
+          "id": 23,
+          "full_name": "qos/qos"
+        },
+        "workflow_id": "check.yml",
+        "commit_sha": "aab5cedbe0e3f13740554ddb2844b2c303e9fb12",
+        "event": "",
+        "status": "cancelled",
+        "started": "2026-09-05T10:29:15Z",
+        "stopped": "2026-09-05T10:32:31Z",
+        "html_url": "https://code.podesta.ai/qos/qos/actions/runs/3471"
+      }
+    ],
+    "total_count": 12
+  }
+}
