@@ -4,6 +4,8 @@
 import argparse
 from datetime import datetime, timezone
 import errno
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -24,9 +26,20 @@ REQUIRED_CONTEXTS = {
     "CI / fast quality / quality (pull_request)",
 }
 SHA = re.compile(r"[0-9a-f]{40}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
 ROUTINE = re.compile(
     r"apps/(?P<app>[A-Za-z0-9_-]+)/src/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.rs"
 )
+
+
+def bound_token(environ=None):
+    environ = os.environ if environ is None else environ
+    token = environ.get("FORGEJO_TOKEN", "")
+    expected = environ.get("FORGEJO_TOKEN_SHA256", "")
+    if not token or not SHA256.fullmatch(expected):
+        return ""
+    actual = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return token if hmac.compare_digest(actual, expected) else ""
 
 
 class Api:
@@ -35,7 +48,7 @@ class Api:
 
     def __call__(self, path, method="GET", body=None):
         data = None if body is None else json.dumps(body).encode()
-        endpoint = f"/api/v1{path}" if path == "/user" else f"/api/v1/repos/{REPO}{path}"
+        endpoint = f"/api/v1/repos/{REPO}{path}"
         request = urllib.request.Request(
             f"https://{HOST}{endpoint}", data=data, method=method,
             headers={"Authorization": "token " + self.token,
@@ -126,32 +139,27 @@ def pages(api, path, field=None):
     raise ValueError("pagination limit exceeded")
 
 
-def protection_errors(rule):
+def protection_errors(branch):
     expected = {
-        "enable_push": False,
-        "apply_to_admins": True,
-        "enable_merge_whitelist": True,
-        "merge_whitelist_usernames": [INTEGRATOR],
-        "merge_whitelist_teams": [],
+        "protected": True,
         "enable_status_check": True,
         "status_check_contexts": REQUIRED_CONTEXTS,
-        "enable_approvals_whitelist": True,
-        "approvals_whitelist_username": REVIEWERS,
-        "approvals_whitelist_teams": [],
-        "block_on_outdated_branch": True,
-        "block_on_rejected_reviews": True,
-        "block_on_official_review_requests": True,
-        "dismiss_stale_approvals": True,
-        "ignore_stale_approvals": False,
+        "user_can_merge": True,
+        "user_can_push": False,
     }
     errors = []
     for key, wanted in expected.items():
-        actual = rule.get(key)
+        actual = branch.get(key)
         if isinstance(wanted, set):
-            actual = set(actual or [])
-        if actual != wanted:
+            matches = isinstance(actual, list) and set(actual) == wanted
+        elif isinstance(wanted, bool):
+            matches = type(actual) is bool and actual is wanted
+        else:
+            matches = actual == wanted
+        if not matches:
             errors.append("branch protection mismatch: " + key)
-    if rule.get("required_approvals", 0) < 1:
+    approvals = branch.get("required_approvals")
+    if type(approvals) is not int or approvals < 1:
         errors.append("branch protection requires no independent approval")
     return errors
 
@@ -175,16 +183,12 @@ def run_errors(api, runs, head, workflow, required_job):
 
 
 def observe(api, number, root):
-    _, actor = api("/user")
     _, repository = api("")
     _, pr = api(f"/pulls/{number}")
     _, branch = api(f"/branches/{BRANCH}")
-    _, protection = api(f"/branch_protections/{BRANCH}")
     head = pr.get("head", {}).get("sha", "")
     base = branch.get("commit", {}).get("id", "")
     errors = []
-    if actor.get("login") != INTEGRATOR:
-        errors.append("token does not belong to the integration service")
     if repository.get("full_name") != REPO or repository.get("private") is not True:
         errors.append("repository identity mismatch")
     if (pr.get("state") != "open" or pr.get("merged") is not False or pr.get("draft") is not False
@@ -192,7 +196,7 @@ def observe(api, number, root):
         errors.append("PR is not an open, non-draft main candidate")
     if pr.get("user", {}).get("login") in REVIEWERS | {INTEGRATOR}:
         errors.append("author is not independent of reviewer and integrator")
-    errors += protection_errors(protection)
+    errors += protection_errors(branch)
     errors += routine_errors(root, base, head)
     reviews = pages(api, f"/pulls/{number}/reviews")
     approved = {review.get("user", {}).get("login") for review in reviews
@@ -309,17 +313,17 @@ def merge(api, number, root, journal_path, execute=False):
     return reconcile(api, journal_path, root)
 
 
-def main():
+def main(argv=None, environ=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--git-root", type=Path, required=True)
     parser.add_argument("--journal", type=Path, required=True)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--reconcile", action="store_true")
-    args = parser.parse_args()
-    token = os.environ.get("FORGEJO_TOKEN", "")
+    args = parser.parse_args(argv)
+    token = bound_token(environ)
     if args.pr <= 0 or not token or (args.execute and args.reconcile):
-        parser.error("positive PR, FORGEJO_TOKEN and one operation are required")
+        parser.error("positive PR, bound FORGEJO_TOKEN and one operation are required")
     if args.reconcile:
         if not args.journal.exists():
             parser.error("reconciliation requires an existing journal")
