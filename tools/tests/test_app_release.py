@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import fnmatch
+import re
 import sys
 import subprocess
 import tempfile
@@ -229,6 +231,56 @@ class AppReleaseTests(unittest.TestCase):
             ),
             sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
         )
+
+    def test_main_push_selects_affected_apps_and_publishes_default_collection(self) -> None:
+        workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
+            encoding="utf-8"
+        )
+        selection = workflow.split(
+            "- name: Select only the affected apps or requested collection", 1
+        )[1].split(
+            "python3 -I tools/ci/python.py tools/apps/app_release.py", 1
+        )[0]
+        push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
+        self.assertIn("    branches: [main]", push)
+        self.assertNotIn("refs/heads/main", selection)
+        self.assertIn("github.event.before", selection)
+        self.assertIn(
+            "if [[ -z $base || $base == "
+            "0000000000000000000000000000000000000000 ]]",
+            selection,
+        )
+        self.assertIn("refs/heads/main) collection=default", workflow)
+
+        catalog = app_release.app_catalog(ROOT)
+        expected = sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS))
+        for path in (
+            "tools/canonical_verifier_bundle.py",
+            "tools/assemble_verified_apps.py",
+            ".forgejo/actions/restore-cargo-downloads/action.yml",
+            "dist/apps/new-release-helper.sh",
+            "tools/ci/sccache.sh",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(app_release.apps_from_changes([path], catalog), expected)
+
+    def test_every_global_release_input_triggers_main_packaging(self) -> None:
+        workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
+            encoding="utf-8"
+        )
+        push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
+        patterns = re.findall(r'^      - "([^"]+)"$', push, re.MULTILINE)
+        inputs = set(app_release.GLOBAL_INPUTS)
+        inputs.update(
+            prefix + "unknown-input"
+            for prefix in app_release.GLOBAL_PREFIXES + app_release.FULL_REBUILD_PREFIXES
+        )
+        for path in sorted(inputs):
+            with self.subTest(path=path):
+                self.assertTrue(
+                    any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns),
+                    f"{path} does not trigger Release / apps",
+                )
 
     def test_os_integrated_browser_change_does_not_use_generic_builder(self) -> None:
         catalog = {**CATALOG, "browser": {}}
