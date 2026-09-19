@@ -38,6 +38,34 @@ fn unchanged_permission_queries_share_policy_data_across_peer_clones() {
     assert!(crate::room::POLICY_READS.with(|count| count.get()) <= 1, "unchanged policy data is decoded at most once");
 }
 #[test]
+fn admitted_immutable_certificate_does_not_repeat_signature_checks_per_permission_query() {
+    let (peer, _, _, cert, now) = seeded();
+    crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
+    let expected = peer.permissions(cert.device_public_key, now).unwrap();
+    for _ in 0..100 {
+        let actual = peer.clone().permissions(cert.device_public_key, now).unwrap();
+        assert_eq!(actual.0, expected.0);
+        assert_eq!(serde_json::to_vec(&actual.1).unwrap(), serde_json::to_vec(&expected.1).unwrap());
+        assert_eq!(actual.2, expected.2);
+    }
+    assert_eq!(crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.get()), 0,
+        "immutable signatures were already verified when the certificate entered the roster");
+}
+#[test]
+fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via_presence() {
+    let (mut peer, _, _, cert, now) = seeded();
+    let old = peer.clone();
+    let mut exported = peer.certificates().into_iter().find(|c| c.device_public_key == cert.device_public_key).unwrap();
+    exported.signature[0] ^= 1;
+    assert!(peer.permissions(cert.device_public_key, now).is_ok());
+    assert!(old.permissions(cert.device_public_key, now).is_ok());
+    let before = peer.durable().unwrap();
+    assert!(peer.receive_from(TransportOrigin::UntrustedPresence(cert.device_public_key),
+        NeighbourMsg::IdentityHello { cert: Box::new(exported), revocations: vec![] }, now).is_err());
+    assert_eq!(peer.durable().unwrap(), before);
+    assert!(peer.certificates().contains(&cert));
+}
+#[test]
 fn cached_policy_rechecks_membership_expiry_and_governance_replacement() {
     use automerge::ReadDoc;
     use collab_types::caps::{CapOverride, Principal, Scope, Subject, Verb};

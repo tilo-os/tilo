@@ -1,6 +1,7 @@
 //! Certified room and document replica. Transport identity is always an input.
 use crate::{NeighbourMsg, document, room};
 use crate::cached_document::CachedDocument;
+use crate::verified_certificate::VerifiedCertificate;
 use automerge::{AutoCommit, ObjType, ReadDoc, ROOT, transaction::Transactable};
 use collab_types::caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability};
 use collab_types::{
@@ -71,6 +72,8 @@ struct Route {
 }
 #[cfg(test)]
 thread_local! { pub(crate) static CHECKPOINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+thread_local! { pub(crate) static CERTIFICATE_VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 #[derive(Clone)]
 struct AcceptedCheckpoint(std::sync::Arc<CheckpointBytes>);
@@ -132,7 +135,7 @@ struct Durable {
 pub struct StatePeer {
     room: String,
     authority: DeviceCert,
-    certificates: BTreeMap<[u8; 32], DeviceCert>,
+    certificates: BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: RevocationList,
     receipts: BTreeMap<String, Vec<u8>>,
     room_doc: Option<CachedDocument>,
@@ -152,7 +155,7 @@ impl StatePeer {
         let room = uuid::Uuid::parse_str(room).map_err(err)?.to_string();
         let mut certificates = BTreeMap::new();
         for certificate in roster.into_iter().chain([authority.clone()]) {
-            qos_user_identity::verify_device_cert_at(&certificate, now_ns(now)).map_err(err)?;
+            let certificate = VerifiedCertificate::new(certificate, now_ns(now))?;
             if revocations.is_revoked(&certificate.device_public_key) {
                 return Err("device revoked".into());
             }
@@ -191,7 +194,7 @@ impl StatePeer {
             return Err("device revoked".into());
         }
         if let Some(old) = self.certificates.get(&cert.device_public_key) {
-            if old != &cert {
+            if old.as_ref() != &cert {
                 return Err("certificate conflict".into());
             }
         }
@@ -256,13 +259,14 @@ impl StatePeer {
             if id != hex::encode(cert.device_public_key) {
                 return Err("governed identity key mismatch".into());
             }
-            if let Some(known) = certificates.get(&cert.device_public_key) {
-                if known != &cert {
+            let verified = if let Some(known) = certificates.get(&cert.device_public_key) {
+                if known.as_ref() != &cert {
                     return Err("certificate conflict".into());
                 }
+                known.clone()
             } else {
-                qos_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-            }
+                VerifiedCertificate::new(cert.clone(), now_ns(now))?
+            };
             // Existing roots remain supported; a new enrollment cannot expand
             // trust beyond the pinned authority's root.
             if !self.certificates.contains_key(&cert.device_public_key)
@@ -282,8 +286,8 @@ impl StatePeer {
                 }
                 changed |= revocations.insert(entry).map_err(err)?;
             }
-            changed |= certificates.get(&cert.device_public_key) != Some(&cert);
-            certificates.insert(cert.device_public_key, cert);
+            changed |= certificates.get(&cert.device_public_key).map(AsRef::as_ref) != Some(&cert);
+            certificates.insert(cert.device_public_key, verified);
         }
         self.certificates = certificates;
         self.revocations = revocations;
@@ -291,7 +295,7 @@ impl StatePeer {
     }
     /// Verified public identity metadata; never includes signing keys.
     pub fn certificates(&self) -> Vec<DeviceCert> {
-        self.certificates.values().cloned().collect()
+        self.certificates.values().map(|cert| cert.as_ref().clone()).collect()
     }
     pub fn revocations(&self) -> Vec<qos_user_identity::RevocationEntry> {
         let mut entries = self.revocations.iter().cloned().collect::<Vec<_>>();
@@ -472,7 +476,7 @@ impl StatePeer {
             .certificates
             .get(source)
             .ok_or("certified identity missing")?;
-        qos_user_identity::verify_device_cert_at(cert, now_ns(now)).map_err(err)?;
+        let cert = cert.current(now_ns(now))?;
         if self.revocations.is_revoked(source) {
             return Err("device revoked".into());
         }
@@ -539,7 +543,7 @@ impl StatePeer {
                 if cert.device_public_key != source {
                     return Err("transport certificate mismatch".into());
                 }
-                if self.certificates.get(&source) != Some(cert.as_ref()) {
+                if self.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref()) {
                     let admitted = self
                         .room_doc
                         .as_deref()
@@ -557,8 +561,8 @@ impl StatePeer {
                         return Err("identity is absent from admitted roster".into());
                     }
                 }
-                qos_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-                let mut metadata_changed = self.certificates.get(&source) != Some(cert.as_ref());
+                let verified = VerifiedCertificate::new((*cert).clone(), now_ns(now))?;
+                let mut metadata_changed = self.certificates.get(&source).map(AsRef::as_ref) != Some(cert.as_ref());
                 for entry in revocations {
                     if entry.user_public_key != cert.user_public_key {
                         return Err("revocation root mismatch".into());
@@ -575,7 +579,7 @@ impl StatePeer {
                 if self.revocations.is_revoked(&source) {
                     return Err("device revoked".into());
                 }
-                self.certificates.insert(source, *cert);
+                self.certificates.insert(source, verified);
                 Ok(ReceiveOutcome {
                     metadata_changed,
                     ..Default::default()
@@ -1169,7 +1173,7 @@ impl StatePeer {
             room_bytes: self.room_doc.as_ref().map(CachedDocument::saved),
             documents,
             receipts: self.receipts.clone(),
-            certificates: self.certificates.values().cloned().collect(),
+            certificates: self.certificates.values().map(|cert| cert.as_ref().clone()).collect(),
             revocations: {
                 let mut entries = self.revocations.iter().cloned().collect::<Vec<_>>();
                 entries.sort_by_key(|entry| entry.revoked_device_public_key);
