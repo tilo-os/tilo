@@ -303,7 +303,8 @@ pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
 }
 
 /// Move `src` into `dest_dir` without replacing a concurrent destination.
-/// The source is removed only after its complete type-preserving copy exists.
+/// Linux and Windows use an atomic no-replace rename on the same filesystem;
+/// the portable fallback removes the source only after its complete copy exists.
 ///
 /// # Errors
 ///
@@ -355,6 +356,13 @@ fn transfer_into(
         }
 
         before_claim(&destination);
+        if remove_source {
+            match rename_noreplace(src, &destination) {
+                Ok(()) => return Ok(destination),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => {}
+            }
+        }
         match copy_recursive_exclusive(src, &destination) {
             Ok(()) => {
                 if remove_source {
@@ -374,6 +382,62 @@ fn transfer_into(
             crate::i18n::arg("path", dest_dir.to_string_lossy().into_owned()),
         ],
     ))
+}
+
+/// Rename without the replacement semantics that `std::fs::rename` has on
+/// Unix. Unsupported hosts take the exclusive-copy path above.
+#[cfg(target_os = "linux")]
+fn rename_noreplace(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let src = std::ffi::CString::new(src.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let dest = std::ffi::CString::new(dest.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: both pointers refer to live, NUL-terminated path buffers for
+    // the duration of the call. `RENAME_NOREPLACE` is supported by Linux
+    // renameat2 and makes an occupied destination fail with EEXIST.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            src.as_ptr(),
+            libc::AT_FDCWD,
+            dest.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn rename_noreplace(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileW(existing: *const u16, new: *const u16) -> i32;
+    }
+
+    let src: Vec<u16> = src.as_os_str().encode_wide().chain(Some(0)).collect();
+    let dest: Vec<u16> = dest.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: both pointers refer to live, NUL-terminated UTF-16 path buffers.
+    // MoveFileW has no replace flag and reports an occupied destination.
+    let result = unsafe { MoveFileW(src.as_ptr(), dest.as_ptr()) };
+    if result != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn rename_noreplace(_src: &Path, _dest: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
 }
 
 fn destination_inspection_error(path: &Path, error: std::io::Error) -> String {
