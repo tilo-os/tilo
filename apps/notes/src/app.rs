@@ -326,6 +326,9 @@ pub struct NotesApp {
     content_node: Option<NodeId>,
     /// Present only for the legacy standalone/fixture adapter until its host cutover.
     legacy_fixture_storage: Option<LegacyFixtureStorage>,
+    /// Preserve a loaded draft when its first durable bind cannot read disk.
+    /// Do not save or navigate away until that read can be retried safely.
+    legacy_read_blocked: Option<PageId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
     /// A host-portal file choice in flight. File access never escapes the
@@ -498,7 +501,8 @@ impl NotesApp {
             .collect();
         if let Some(sel) = workspace.selected() {
             if let Some(meta) = workspace.get(sel) {
-                let body = storage::read_page_body(&root, sel).unwrap_or_default();
+                let body = storage::read_page_body(&root, sel)
+                    .map_err(|error| format!("Could not read note {}: {error}", meta.title))?;
                 main.load_page_with_link_resolver(sel, &meta.title, body, |t| {
                     by_title.get(t).copied()
                 });
@@ -510,7 +514,8 @@ impl NotesApp {
                 .map(|p| (p.id, p.title.clone()));
             if let Some((id, title)) = first {
                 workspace.set_selected(Some(id));
-                let body = storage::read_page_body(&root, id).unwrap_or_default();
+                let body = storage::read_page_body(&root, id)
+                    .map_err(|error| format!("Could not read note {title}: {error}"))?;
                 main.load_page_with_link_resolver(id, &title, body, |t| by_title.get(t).copied());
                 sidebar.sync_from_workspace(&workspace);
             }
@@ -592,6 +597,7 @@ impl NotesApp {
             main_node: None,
             content_node: None,
             legacy_fixture_storage,
+            legacy_read_blocked: None,
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
             markdown_transfer: None,
             external_link_opens: Vec::new(),
@@ -666,6 +672,9 @@ impl NotesApp {
         // either is in-flight the user sees "Saving…"; either failure
         // surfaces "Save failed".
         let save_status = self.shots_save_status.unwrap_or_else(|| {
+            if self.legacy_read_blocked.is_some() {
+                return SaveStatus::Failed;
+            }
             if let Some(legacy) = &self.legacy_fixture_storage {
                 combine_save_status(legacy.saver.status(), legacy.page_saver.status())
             } else {
@@ -1406,7 +1415,28 @@ impl NotesApp {
         let Some(legacy) = &self.legacy_fixture_storage else {
             return;
         };
-        let body = storage::read_page_body(&legacy.root, sel).unwrap_or_default();
+        let mut body = match storage::read_page_body(&legacy.root, sel) {
+            Ok(body) => body,
+            Err(error) => {
+                // Never turn an unreadable durable note into an editable empty
+                // one: the saver would replace the original bytes with it.
+                tracing::warn!(%error, page = %sel, "notes: page bind refused");
+                if self.legacy_read_blocked != Some(sel) {
+                    self.report_page_read_failure(error.to_string());
+                }
+                self.legacy_read_blocked = Some(sel);
+                self.bound_page = None;
+                return;
+            }
+        };
+        if self.legacy_read_blocked.take() == Some(sel)
+            && self.main.page_id() == Some(sel)
+            && self.main.has_unsaved_body()
+        {
+            // The user may already have typed during the initial seed grace.
+            // Recover that draft, rather than replacing it with the disk copy.
+            body = self.main.take_body_snapshot();
+        }
         // A page's first blocks are a durable mutation too. Seed them through
         // the same action host that owns every subsequent editor delta; the
         // panel only ever binds/adopts an already-action-owned list.
@@ -1473,7 +1503,13 @@ impl NotesApp {
         let Some(legacy) = &self.legacy_fixture_storage else {
             return;
         };
-        let body = storage::read_page_body(&legacy.root, page).unwrap_or_default();
+        let body = match storage::read_page_body(&legacy.root, page) {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::warn!(%error, %page, "notes: unreadable page was not seeded");
+                return;
+            }
+        };
         self.seed_page_body(doc, page, &body);
     }
 
@@ -1935,6 +1971,12 @@ impl NotesApp {
 
     /// Apply one [`OutEvent`] from the sidebar to the workspace + disk.
     fn apply_event(&mut self, ev: OutEvent) {
+        if self.legacy_read_blocked.is_some() {
+            self.report_page_read_failure(
+                "The current note could not be read; its unsaved draft is still open".into(),
+            );
+            return;
+        }
         if self.legacy_fixture_storage.is_none() {
             self.pending_events.push(ev);
             return;
@@ -1953,13 +1995,7 @@ impl NotesApp {
                 // page before swapping. Otherwise a quick click from
                 // page A to page B could lose A's most recent edit
                 // if the debounce window hadn't elapsed yet.
-                self.flush_main_panel_edit();
-                self.workspace.set_selected(Some(id));
-                if let Some(meta) = self.workspace.get(id) {
-                    let title = meta.title.clone();
-                    let body = storage::read_page_body(&root, id).unwrap_or_default();
-                    self.load_page_with_resolver(id, &title, body);
-                }
+                self.navigate_to(id);
             }
             OutEvent::Rename { id, new_title } => {
                 self.workspace.rename(id, &new_title);
@@ -1979,15 +2015,10 @@ impl NotesApp {
                 }
                 // If the selection was nuked, pick a reasonable fallback.
                 if self.workspace.selected().is_none() {
-                    let first = self
-                        .workspace
-                        .children_of(None)
-                        .first()
-                        .map(|p| (p.id, p.title.clone()));
-                    if let Some((id, title)) = first {
-                        self.workspace.set_selected(Some(id));
-                        let body = storage::read_page_body(&root, id).unwrap_or_default();
-                        self.main.load_page(id, &title, body);
+                    let first = self.workspace.children_of(None).first().map(|p| p.id);
+                    if let Some(id) = first {
+                        self.main.clear();
+                        self.navigate_to(id);
                     } else {
                         self.main.clear();
                     }
@@ -2020,20 +2051,43 @@ impl NotesApp {
             }
             OutEvent::Duplicate(id) => {
                 self.flush_main_panel_edit();
-                if let Some((new_root, mapping)) = self.workspace.duplicate_page(id) {
+                let mut duplicate = self.workspace.clone();
+                if let Some((new_root, mapping)) = duplicate.duplicate_page(id) {
+                    // Read the entire subtree before publishing any copied
+                    // metadata. One failed source must not produce blank copies.
+                    let bodies = mapping
+                        .iter()
+                        .map(|(old, new)| {
+                            storage::read_page_body(&root, *old).map(|body| (*new, body))
+                        })
+                        .collect::<Result<Vec<_>, _>>();
+                    let bodies = match bodies {
+                        Ok(bodies) => bodies,
+                        Err(error) => {
+                            self.report_page_read_failure(error.to_string());
+                            return;
+                        }
+                    };
                     // Copy each source page's body onto its fresh copy id so
                     // the duplicated subtree has independent content on disk.
-                    for (old, new) in &mapping {
-                        let body = storage::read_page_body(&root, *old).unwrap_or_default();
-                        if let Err(e) = storage::write_page_body(&root, *new, &body) {
+                    for (new, body) in &bodies {
+                        if let Err(e) = storage::write_page_body(&root, *new, body) {
                             tracing::error!(error = %e, page = %new, "notes: duplicate body write failed");
+                            self.transfer_toasts.push(
+                                format!("Could not duplicate note: {e}"),
+                                ui::widget::toast::ToastKind::Error,
+                            );
+                            self.self_dirty = true;
+                            return;
                         }
                     }
+                    self.workspace = duplicate;
                     self.workspace.set_selected(Some(new_root));
                     if let Some(meta) = self.workspace.get(new_root) {
                         let title = meta.title.clone();
-                        let body = storage::read_page_body(&root, new_root).unwrap_or_default();
-                        self.load_page_with_resolver(new_root, &title, body);
+                        if let Some((_, body)) = bodies.iter().find(|(id, _)| *id == new_root) {
+                            self.load_page_with_resolver(new_root, &title, body.clone());
+                        }
                     }
                 }
             }
@@ -2063,18 +2117,38 @@ impl NotesApp {
     /// Navigate to `id`: select + load the page. Used both by the
     /// Cmd-K palette and by click-on-link events.
     pub fn navigate_to(&mut self, id: PageId) {
+        if let Err(error) = self.try_navigate_to(id) {
+            self.report_page_read_failure(error);
+        }
+    }
+
+    fn report_page_read_failure(&mut self, error: String) {
+        tracing::warn!(%error, "notes: page read refused");
+        self.transfer_toasts.push(
+            format!("Could not read note: {error}"),
+            ui::widget::toast::ToastKind::Error,
+        );
+        self.self_dirty = true;
+    }
+
+    fn try_navigate_to(&mut self, id: PageId) -> Result<(), String> {
+        if self.legacy_read_blocked.is_some() {
+            return Err(
+                "The current note could not be read; its unsaved draft is still open".into(),
+            );
+        }
         if self.legacy_fixture_storage.is_none() {
             self.pending_events.push(OutEvent::Select(id));
-            return;
+            return Ok(());
         }
         let Some(legacy) = &self.legacy_fixture_storage else {
-            return;
+            return Ok(());
         };
         let root = legacy.root.clone();
         self.flush_main_panel_edit();
         if let Some(meta) = self.workspace.get(id) {
             let title = meta.title.clone();
-            let body = storage::read_page_body(&root, id).unwrap_or_default();
+            let body = storage::read_page_body(&root, id).map_err(|error| error.to_string())?;
             self.workspace.set_selected(Some(id));
             self.load_page_with_resolver(id, &title, body);
             // `load_page_with_resolver` creates a fresh, unbound editor. This
@@ -2086,6 +2160,7 @@ impl NotesApp {
             self.sidebar.sync_from_workspace(&self.workspace);
             self.persist();
         }
+        Ok(())
     }
 
     fn request_markdown_import(&mut self) -> Result<(), String> {
@@ -2361,7 +2436,7 @@ impl NotesApp {
                 {
                     return Err("block no longer exists".into());
                 }
-                self.navigate_to(page);
+                self.try_navigate_to(page)?;
                 if let Some(block_id) = block_id {
                     self.pending_block_reveal = Some((page, block_id));
                 }
@@ -2400,7 +2475,7 @@ impl NotesApp {
     /// If the editor has pending edits for the current page, snapshot
     /// the body and request a save before swapping pages.
     fn flush_main_panel_edit(&mut self) {
-        if self.legacy_fixture_storage.is_none() {
+        if self.legacy_fixture_storage.is_none() || self.legacy_read_blocked.is_some() {
             return;
         }
         if let (Some(id), true) = (self.main.page_id(), self.main.editor_is_dirty()) {
@@ -2432,7 +2507,7 @@ impl NotesApp {
     /// dispatch rich marks, then perform exactly one Markdown snapshot for the
     /// save worker without scanning a long note again on pointer-only events.
     fn save_current_editor_snapshot(&mut self) {
-        if self.legacy_fixture_storage.is_none() {
+        if self.legacy_fixture_storage.is_none() || self.legacy_read_blocked.is_some() {
             return;
         }
         let Some(id) = self.main.page_id() else {
@@ -3185,6 +3260,9 @@ impl Widget for NotesApp {
             self.pending_markdown_import = None;
         }
         self.ensure_editor_bound(state);
+        if self.legacy_read_blocked.is_some() {
+            return;
+        }
         self.drain_tag_open(state);
         self.drain_backlink_open(state);
         self.main.set_tags(self.selected_tag_chips());
@@ -4265,6 +4343,117 @@ impl NotesApp {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn unreadable_note_refuses_startup_without_replacing_original_bytes() {
+        for selected in [true, false] {
+            let tmp = TempDir::new().unwrap();
+            let mut workspace = Workspace::default();
+            let page = workspace.create_page(None);
+            workspace.rename(page, "Unrecoverable UTF-8");
+            workspace.set_selected(selected.then_some(page));
+            storage::save_workspace(tmp.path(), &workspace).unwrap();
+            let path = storage::page_file_path(tmp.path(), page);
+            let original = [0xff, 0xfe, 0x41];
+            std::fs::write(&path, original).unwrap();
+
+            let error = match NotesApp::spawn(tmp.path().into()) {
+                Ok(_) => panic!("an unreadable note must not become an empty editor"),
+                Err(error) => error,
+            };
+            assert!(error.contains("Could not read note"));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn unreadable_note_refuses_navigation_and_subtree_duplicate() {
+        let (mut app, mut state, tmp, welcome) = app_seeded_into_doc();
+        let child = app.workspace.create_page(Some(welcome));
+        storage::write_page_body(tmp.path(), child, "Child contents").unwrap();
+        app.perform_action(
+            &mut state.doc,
+            &actions::upsert_page_action(app.workspace.get(child).unwrap()),
+        );
+        app.seed_legacy_page_body(&mut state.doc, child);
+        let path = storage::page_file_path(tmp.path(), child);
+        let original = [0xff, 0xfe, 0x41];
+        std::fs::write(&path, original).unwrap();
+
+        let operation = actions::NotesOperation::OpenPage {
+            page: child,
+            block_id: None,
+        };
+        assert!(app.open_notes_operation(operation, &state.doc).is_err());
+        assert_eq!(app.workspace.selected(), Some(welcome));
+        assert_eq!(app.main.page_id(), Some(welcome));
+        app.apply_event(OutEvent::Select(child));
+        assert_eq!(app.workspace.selected(), Some(welcome));
+        let before = app.workspace.pages().to_vec();
+        app.apply_and_dispatch(&mut state.doc, OutEvent::Duplicate(welcome));
+        assert_eq!(app.workspace.pages(), before);
+        assert_eq!(NotesDoc::list_pages(&state.doc).len(), 2);
+        app.flush_saves();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(
+            app.transfer_toasts
+                .iter()
+                .any(|toast| toast.kind == ui::widget::toast::ToastKind::Error)
+        );
+    }
+
+    #[test]
+    fn unreadable_note_is_not_seeded_or_bound_as_empty_and_can_retry() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+        let page = app.workspace.selected().unwrap();
+        app.main.editor_mut().blocks_mut()[0]
+            .line
+            .set_text("Unsaved draft");
+        app.main.editor_mut().force_dirty_for_test();
+        let path = storage::page_file_path(tmp.path(), page);
+        let original = [0xff, 0xfe, 0x41];
+        std::fs::write(&path, original).unwrap();
+        app.bypass_seed_grace_for_test();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        assert!(NotesDoc::page_block_snapshots(&state.doc, page).is_empty());
+        assert_eq!(app.bound_page, None);
+        assert_eq!(app.main.page_id(), Some(page));
+        assert_eq!(app.main.editor().blocks()[0].text(), "Unsaved draft");
+        assert!(app.try_navigate_to(page).is_err());
+        app.flush_saves();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        storage::write_page_body(tmp.path(), page, "Recovered note").unwrap();
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(app.bound_page, Some(page));
+        assert_eq!(
+            NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
+            "Unsaved draft"
+        );
+    }
+
+    #[test]
+    fn unreadable_note_recovery_uses_repaired_file_when_draft_is_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+        let page = app.workspace.selected().unwrap();
+        assert!(!app.main.has_unsaved_body());
+        let path = storage::page_file_path(tmp.path(), page);
+        std::fs::write(&path, [0xff]).unwrap();
+        app.bypass_seed_grace_for_test();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        app.flush_saves();
+        assert_eq!(std::fs::read(&path).unwrap(), [0xff]);
+        storage::write_page_body(tmp.path(), page, "Recovered external contents").unwrap();
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            NotesDoc::page_block_snapshots(&state.doc, page)[0].1,
+            "Recovered external contents"
+        );
+    }
 
     #[test]
     fn workspace_image_loader_decodes_only_in_root() {
