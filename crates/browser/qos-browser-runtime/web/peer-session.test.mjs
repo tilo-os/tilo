@@ -456,3 +456,16 @@ test('already terminal admission or storage failure settles checkpoint recovery 
 test('concrete Rust transport rejection is typed at the private API boundary without retrying authorization',async()=>{
  for(const message of ['action transport disconnected','device cert has expired','device is absent from governed roster']){const time=clock(),f=fixture({recoveryClock:time,initialStatus:progressing('0',true)});privateTransport(f);const peer=await f.connect();f.runtime.peer_action_context=()=>{throw message;};await assert.rejects(peer.actionsV1.catalogue(),error=>message==='action transport disconnected'?error.code==='transport-disconnected'&&error.stage==='discovery'&&error.retryable===true:error===message);await peer.dispose();}
 });
+test('storage failure after renderer joins admission recovery rejects immediately and preserves saving failure',async()=>{
+ const time=clock(),f=fixture({recoveryClock:time}),peer=await f.connect();f.status(desktopAdmission(true));await drain();
+ const gap=deferred();f.queueMount(gap);let outcome='pending';
+ const mounting=peer.mountDesktop({}).then(()=>{outcome='presented';},error=>{outcome=error.message;});
+ f.status(desktopAdmission(false));await drain();gap.reject(Error(pendingDesktopAdmission));await drain();
+ assert.equal(outcome,'pending');assert.equal(f.mountOptionsSeen.length,1);assert.equal(peer.getSnapshot().health.surfaces[0].phase,'initializing');
+ f.setFailCommit(true);await assert.rejects(peer.retryPersistence(),/durable write failed/);await drain();
+ const storageFailure=peer.getSnapshot().health.failures.find(f=>f.scope.kind==='storage');
+ assert.equal(storageFailure.code,'storage-transaction-failed');assert.equal(outcome,storageFailure.message,'renderer waiter must reject as soon as saving fails');
+ await mounting;await time.tick(60000);assert.equal(f.syncs.length,0);assert.equal(f.mountOptionsSeen.length,1);
+ assert.deepEqual(peer.getSnapshot().health.failures.find(f=>f.id===storageFailure.id),storageFailure);
+ f.setFailCommit(false);await peer.retryPersistence();await peer.dispose();
+});

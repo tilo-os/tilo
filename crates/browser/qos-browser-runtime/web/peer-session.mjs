@@ -283,7 +283,7 @@ return async function connectPeer(options={}){
       const abort=()=>finish(Error('Desktop attempt cancelled'));
       const waiter={reject:finish,timeout:()=>finish(Error('Desktop admission timed out')),check:()=>{
         if(closed||closing||signal.aborted){abort();return;}
-        const failure=health.failures.find(f=>f.severity==='error'&&(['admission','permission'].includes(f.scope.kind)||['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','crypto-unavailable'].includes(f.code)));
+        const failure=health.failures.find(f=>f.severity==='error'&&(['admission','permission','storage'].includes(f.scope.kind)||['identity-revoked','certificate-rejected','certificate-expired','signature-rejected','crypto-unavailable'].includes(f.code)));
         if(health.admission.phase==='failed'||failure){finish(Error(failure?.message??'Desktop admission failed'));return;}
         if(admissionRevision<=revision)return;
         const admitted=health.admission.phase==='ready'&&health.admission.pendingPrerequisites===0&&health.admission.requiredRecords.every(record=>{
