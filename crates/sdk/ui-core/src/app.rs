@@ -13672,6 +13672,7 @@ mod semantic_tree_app_tests {
         Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
         OperationKind, PermissionRequirement, Resource,
     };
+    use winit::keyboard::Key;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     enum CounterAction {
