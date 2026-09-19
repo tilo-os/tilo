@@ -614,6 +614,16 @@ impl Presenter for DrmPresenter {
 }
 
 impl Backend for DrmBackend {
+    fn event_fd(&self) -> Option<std::os::fd::OwnedFd> {
+        match self.inner.duplicate_event_fd() {
+            Ok(fd) => Some(fd),
+            Err(error) => {
+                tracing::error!(%error, "DRM backend: could not expose its event-loop wake fd");
+                None
+            }
+        }
+    }
+
     /// The hardware cursor plane composites itself; where there is none, the scanout draws the
     /// fallback into the framebuffer (`scanout::draw_cursor`) — either way the pointer is on screen without the scene carrying it.
     fn has_cursor_plane(&self) -> bool {

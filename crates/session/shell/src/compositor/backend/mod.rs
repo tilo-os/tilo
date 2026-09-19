@@ -5,6 +5,7 @@
 //! development. [`DrmBackend`] drives a TTY directly.
 
 use crate::compositor::frame::FramePaint;
+use std::os::fd::OwnedFd;
 use vello::Scene;
 // Absolute path: this module has a `winit` child below that
 // would otherwise shadow the external `winit` crate.
@@ -209,6 +210,14 @@ pub trait Backend {
         self.submit_frame(&frame.scene, output);
     }
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
+
+    /// Duplicate an fd which becomes readable whenever this backend has
+    /// events waiting for [`Self::poll_events`]. The compositor registers it
+    /// in its outer calloop, avoiding periodic polling of a backend that owns
+    /// a nested event loop (notably DRM/libinput).
+    fn event_fd(&self) -> Option<OwnedFd> {
+        None
+    }
 
     fn outputs(&self) -> &[Output];
 

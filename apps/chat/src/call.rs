@@ -415,14 +415,15 @@ mod sound {
         /// assert the last cue requested even on the silent backend.
         last_cue: Option<Cue>,
         live: bool,
+        initialized: bool,
     }
 
     impl SoundEngine {
         pub fn new() -> Self {
-            let live = init_backend();
             SoundEngine {
                 last_cue: None,
-                live,
+                live: false,
+                initialized: false,
             }
         }
 
@@ -438,13 +439,22 @@ mod sound {
         /// Play the join cue (a rising two-note blip).
         pub fn join(&mut self) {
             self.last_cue = Some(Cue::Join);
+            self.ensure_initialized();
             play_cue(self.live, Cue::Join);
         }
 
         /// Play the leave cue (a falling two-note blip).
         pub fn leave(&mut self) {
             self.last_cue = Some(Cue::Leave);
+            self.ensure_initialized();
             play_cue(self.live, Cue::Leave);
+        }
+
+        fn ensure_initialized(&mut self) {
+            if !self.initialized {
+                self.initialized = true;
+                self.live = init_backend();
+            }
         }
     }
 
@@ -519,7 +529,9 @@ mod sound {
         fn cues_record_and_are_safe_without_audio() {
             let mut e = SoundEngine::new();
             assert!(e.last_cue().is_none());
+            assert!(!e.initialized, "constructor must not initialize GStreamer");
             e.join();
+            assert!(e.initialized, "first cue owns lazy backend initialization");
             assert_eq!(e.last_cue(), Some(Cue::Join));
             e.leave();
             assert_eq!(e.last_cue(), Some(Cue::Leave));
