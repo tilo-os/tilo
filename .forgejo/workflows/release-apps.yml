@@ -441,7 +441,9 @@ jobs:
     # verify either target archive without executing its application payloads.
     runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
     container:
-      image: ${{ needs.plan.outputs.builder_image }}
+      # This job handles publisher credentials and already-built artifacts. Its
+      # reviewed image deliberately contains no compiler or build toolchain.
+      image: code.sandbox.example/qos/tilo-release-tools@sha256:bb519a7b710e61f7dc9f383dde3b5045f2d3b01145302f6c01e4e0b5f433b67b
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}

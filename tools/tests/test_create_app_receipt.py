@@ -153,7 +153,11 @@ class ReceiptProductionPathTests(unittest.TestCase):
         self.assertIn('    branches: [main]', workflow)
         publish = workflow.split('\n  publish:\n', 1)[1]
         self.assertIn('fromJSON(needs.plan.outputs.matrix).include[0].runner', publish)
-        self.assertIn('image: ${{ needs.plan.outputs.builder_image }}', publish)
+        self.assertIn(
+            'image: code.sandbox.example/qos/tilo-release-tools@sha256:'
+            'bb519a7b710e61f7dc9f383dde3b5045f2d3b01145302f6c01e4e0b5f433b67b',
+            publish,
+        )
         self.assertIn('vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256', publish)
         self.assertLess(publish.index('tools/apps/final_app_receipt.py'), publish.index('bundle_upload='))
         self.assertIn('tools/upload_immutable_packages.sh "$bundle_upload"', publish)
