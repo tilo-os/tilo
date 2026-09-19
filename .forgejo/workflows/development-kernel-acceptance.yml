@@ -15,14 +15,15 @@ jobs:
       - name: Checkout independently reviewed acceptance fixes
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 9d89d2d886b95a86e14c258b9acb1b93ee4e2583
+          ref: 4b49ca0a027c6884fe897a27a8e87d72864d4ac1
           token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
       - name: Require native x86 and acceptance dependencies
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 9d89d2d886b95a86e14c258b9acb1b93ee4e2583
+          test "$(git rev-parse HEAD)" = 4b49ca0a027c6884fe897a27a8e87d72864d4ac1
+          export PATH="$PATH:/usr/sbin:/sbin"
           bash os/dev/assert-native-arch.sh x86_64
           if command -v apt-get >/dev/null; then
             sudo -n apt-get update
@@ -30,7 +31,9 @@ jobs:
           else
             sudo -n dnf install -y gcc glibc-devel binutils cpio gzip python3 rpm kmod zstd skopeo qemu-system-x86
           fi
-          command -v modinfo zstd skopeo rpm rpm2cpio gcc readelf cpio qemu-system-x86_64
+          for tool in modinfo zstd skopeo rpm rpm2cpio gcc readelf cpio qemu-system-x86_64; do
+            command -v "$tool" >/dev/null || { printf 'missing acceptance tool: %s\n' "$tool" >&2; exit 1; }
+          done
           python3 os/kernel/tests/test_boot_payload.py
       - name: Authenticate read-only cache recovery
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
@@ -75,7 +78,7 @@ jobs:
                       output.write(chunk)
           assert sha(Path(name)) == rpm_sha
           receipt = {'original_run': 9648, 'original_source': '7860e5f8502b614a70799b63dd49fc85e646463c',
-                     'acceptance_source': '9d89d2d886b95a86e14c258b9acb1b93ee4e2583',
+                     'acceptance_source': '4b49ca0a027c6884fe897a27a8e87d72864d4ac1',
                      'cache_manifest_sha256': manifest_sha, 'layer_sha256': layer_sha,
                      'rpm_sha256': rpm_sha, 'machine': platform.machine(), 'kernel_recompiled': False,
                      'scope': 'packaged RPM boot and module enforcement; excludes UEFI/Secure Boot and hardware'}
