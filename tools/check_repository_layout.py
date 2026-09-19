@@ -43,6 +43,8 @@ RETIRED_SOURCE_ROOTS = {
     "tools/clippy-": "tools/ci/clippy-",
     "tools/gstreamer-licenses/": "tools/windows/gstreamer-licenses/",
     "tools/install-windows-": "tools/windows/install-",
+    "tools/Run-ImagerEphemeralRunner.ps1": "tools/ci/runners/imager-ephemeral-windows.ps1",
+    "tools/run-imager-ephemeral-runner.sh": "tools/ci/runners/imager-ephemeral-linux.sh",
     "tools/test-windows-": "tools/windows/test-",
     "tools/resolve_ci_builder.py": "tools/ci/resolve_builder.py",
     "tools/rustc-thin-app-wrapper.sh": "tools/ci/rustc-thin-app-wrapper.sh",
