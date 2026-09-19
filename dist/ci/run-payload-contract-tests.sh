@@ -86,6 +86,36 @@ if TILO_EXPECT_ARCH="$other_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/d
     echo "payload verifier accepted the other architecture's native binaries" >&2
     exit 1
 fi
+# Keep dependency inspection fail-closed: an unavailable/failing inspector is
+# not evidence of a fully resolved payload. Exercise the production verifier
+# against real child processes, while retaining real ELF architecture checks.
+mkdir "$work/verifier-bin"
+cat > "$work/verifier-bin/ldd" <<'EOF'
+#!/usr/bin/env bash
+case "$TILO_TEST_LDD_MODE" in
+    error) echo 'fixture inspector failed' >&2; exit 7 ;;
+    unavailable) exec /nonexistent/tilo-test-dependency-inspector ;;
+    empty) exit 0 ;;
+    missing) echo 'libfixture.so => not found'; exit 0 ;;
+    missing-stderr) echo 'libfixture.so => not found' >&2; exit 0 ;;
+    *) exit 99 ;;
+esac
+EOF
+chmod +x "$work/verifier-bin/ldd"
+for mode in error unavailable empty missing missing-stderr; do
+    if PATH="$work/verifier-bin:$PATH" TILO_TEST_LDD_MODE="$mode" \
+        TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" \
+        >"$work/verifier-$mode.log" 2>&1; then
+        echo "payload verifier accepted $mode dependency inspection" >&2
+        exit 1
+    fi
+    case "$mode" in
+        error) grep -Fq 'fixture inspector failed' "$work/verifier-$mode.log" ;;
+        unavailable) grep -Fq 'dependency inspection failed' "$work/verifier-$mode.log" ;;
+        empty) grep -Fq 'empty dependency inspection' "$work/verifier-$mode.log" ;;
+        missing*) grep -Fq 'unresolved shared library' "$work/verifier-$mode.log" ;;
+    esac
+done
 "$repo_root/dist/verify-devel-payload.sh" "$fhs"
 
 sed -i 's#^TryExec=.*#TryExec=/wrong#' "$fhs/usr/share/wayland-sessions/tilo-dev.desktop"

@@ -56,14 +56,27 @@ grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.targe
 [[ ! -e $(path /usr/lib/systemd/user/tilo-portal.service) ]]
 
 for elf in /usr/bin/tilo-shell /usr/bin/tilo-launcher "$libexec_dir/tilo-unlock-helper"; do
-    elf_description=$(file "$(path "$elf")")
+    elf_description=$(LC_ALL=C file "$(path "$elf")")
     case ${TILO_EXPECT_ARCH:-} in
         amd64) grep -Eq 'ELF 64-bit.*x86-64' <<<"$elf_description" ;;
         arm64) grep -Eq 'ELF 64-bit.*ARM aarch64' <<<"$elf_description" ;;
         "") grep -Eq 'ELF 64-bit.*(x86-64|ARM aarch64)' <<<"$elf_description" ;;
         *) echo "unsupported TILO_EXPECT_ARCH: $TILO_EXPECT_ARCH" >&2; exit 2 ;;
     esac
-    if ldd "$(path "$elf")" | tee /dev/stderr | grep -q 'not found'; then
+    # Capture the inspector's status independently of the missing-library
+    # search. A failed ldd or output pipe must never look like a clean payload.
+    if ldd_output=$(LC_ALL=C ldd "$(path "$elf")" 2>&1); then
+        [[ -n $ldd_output ]] || {
+            echo "empty dependency inspection for $elf" >&2
+            exit 1
+        }
+    else
+        printf '%s\n' "$ldd_output" >&2
+        echo "dependency inspection failed for $elf" >&2
+        exit 1
+    fi
+    printf '%s\n' "$ldd_output" >&2
+    if grep -q 'not found' <<<"$ldd_output"; then
         echo "unresolved shared library in $elf" >&2
         exit 1
     fi
