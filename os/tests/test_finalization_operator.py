@@ -229,13 +229,12 @@ class OperatorTests(unittest.TestCase):
             o.wait_status(self.root, {}, 23, 2, 'request', 2, 1, ['a' * 32])
         sleep.assert_called_once_with(1)
 
-    def test_service_reused_loader_sequences_exact_request_and_preserves_failures(self):
+    def test_service_reused_efi_sequences_exact_request_and_preserves_failures(self):
         nonce = 'b' * 32
         old_nonce = 'a' * 32
         directory = self.root / 'run-23-attempt-2'
         (directory / 'received').mkdir(parents=True)
         (directory / 'responses').mkdir()
-        independent = self.inputs / 'loader.efi'
         old_directory = self.root / 'old-run'
         observed = {'requests': [nonce], 'job_status': 'running'}
         fetched = {'request_id': nonce, 'input_sha256': '1' * 64,
@@ -250,35 +249,41 @@ class OperatorTests(unittest.TestCase):
 
         with patch.object(o, 'wait_status', return_value=observed) as wait, \
                 patch.object(o, 'client_for', return_value=client), \
+                patch.object(checkpoint, 'materialize', return_value={
+                    'request_id': nonce, 'input_sha256': '1' * 64}) as materialize, \
                 patch.object(o, 'reuse_response', return_value=reused) as reuse:
-            result = o.service_reused_loader(
+            result = o.service_reused_efi(
                 self.root, {}, directory, 23, 2, old_directory, old_nonce,
-                independent, 300, 5, ['c' * 32])
+                'target-uki', 300, 5, ['c' * 32])
 
         wait.assert_called_once_with(
             self.root, {}, 23, 2, 'request', 300, 5, ['c' * 32])
         client.fetch.assert_called_once_with(nonce, directory / 'received' / nonce)
+        materialize.assert_called_once_with(
+            self.root, directory, 'target-uki', directory / 'received' / nonce, s)
         reuse.assert_called_once_with(
-            self.root, directory, nonce, old_directory, old_nonce, independent)
+            self.root, directory, nonce, old_directory, old_nonce, 'target-uki')
         client.deliver.assert_called_once_with(directory / 'responses' / nonce)
         self.assertEqual(result, {
             'request_id': nonce, 'input_sha256': '1' * 64,
-            'output_sha256': '2' * 64, 'signature_reused': True,
+            'output_sha256': '2' * 64, 'purpose': 'target-uki', 'signature_reused': True,
             'private_key_used': False, 'delivered': True,
         })
 
         client.reset_mock()
         with patch.object(o, 'wait_status', return_value=observed), \
                 patch.object(o, 'client_for', return_value=client), \
+                patch.object(checkpoint, 'materialize', return_value={
+                    'request_id': nonce, 'input_sha256': '1' * 64}), \
                 patch.object(o, 'reuse_response', side_effect=ValueError('signature rejected')):
             with self.assertRaisesRegex(ValueError, 'signature rejected'):
-                o.service_reused_loader(
+                o.service_reused_efi(
                     self.root, {}, directory, 23, 2, old_directory, old_nonce,
-                    independent, 300, 5)
+                    'target-uki', 300, 5)
         client.fetch.assert_called_once()
         client.deliver.assert_not_called()
 
-    def test_service_reused_loader_rejects_ambiguous_or_existing_state_before_fetch(self):
+    def test_service_reused_efi_rejects_ambiguous_or_existing_state_before_fetch(self):
         directory = self.root / 'run-23-attempt-2'
         (directory / 'received').mkdir(parents=True)
         (directory / 'responses').mkdir()
@@ -289,17 +294,17 @@ class OperatorTests(unittest.TestCase):
                 with self.subTest(requests=requests), \
                         patch.object(o, 'wait_status', return_value=observed), \
                         self.assertRaisesRegex(ValueError, 'exactly one'):
-                    o.service_reused_loader(
+                    o.service_reused_efi(
                         self.root, {}, directory, 23, 2, self.root / 'old',
-                        'c' * 32, self.inputs / 'loader.efi', 300, 5)
+                        'c' * 32, 'live-uki', 300, 5)
             existing = directory / 'received' / ('d' * 32)
             existing.mkdir()
             observed = {'requests': ['d' * 32], 'job_status': 'running'}
             with patch.object(o, 'wait_status', return_value=observed), \
                     self.assertRaisesRegex(ValueError, 'state already exists'):
-                o.service_reused_loader(
+                o.service_reused_efi(
                     self.root, {}, directory, 23, 2, self.root / 'old',
-                    'c' * 32, self.inputs / 'loader.efi', 300, 5)
+                    'c' * 32, 'live-uki', 300, 5)
         client.fetch.assert_not_called()
 
     def test_stage_failure_preserves_reservation_and_cannot_retry(self):
@@ -341,7 +346,7 @@ class OperatorTests(unittest.TestCase):
     def test_reuse_verifies_signature_before_publication_and_never_overwrites(self):
         self.init()
         old, new = context(), context('new')
-        original, signed = b'unsigned loader', b'signed loader'
+        original, signed = b'unsigned target UKI', b'signed target UKI'
         directories = []
         for name, ctx, nonce in (('old', old, 'a' * 32), ('new', new, 'b' * 32)):
             directory = self.args.operation / name
@@ -360,6 +365,19 @@ class OperatorTests(unittest.TestCase):
             request_value = metadata(ctx, nonce, original)
             self.put(received / 'request.json', s.canonical(request_value))
             self.put(received / 'input', original)
+            checkpoint_dir = directory / 'checkpoints' / 'target-uki'
+            checkpoint_dir.mkdir(parents=True, mode=0o700)
+            self.put(checkpoint_dir / 'receipt.json', s.canonical({
+                'purpose': 'target-uki', 'transport_context_sha256': s.context(ctx),
+                'input_sha256': s.digest(original), 'input_bytes': len(original),
+                'signing_authorized': False, 'private_keys_used': False,
+            }))
+            self.put(checkpoint_dir / 'materialization.json', s.canonical({
+                'schema': 1, 'purpose': 'target-uki', 'request_id': nonce,
+                'context_sha256': s.context(ctx), 'input_sha256': s.digest(original),
+                'input_bytes': len(original), 'signing_authorized': False,
+            }))
+            self.put(checkpoint_dir / 'input.efi', original)
             directories.append(directory)
             if name == 'old':
                 response_dir = directory / 'responses' / nonce
@@ -368,13 +386,21 @@ class OperatorTests(unittest.TestCase):
                 response.update(output_sha256=s.digest(signed), output_bytes=len(signed))
                 self.put(response_dir / 'response.json', s.canonical(response))
                 self.put(response_dir / 'output', signed)
-        independent = self.root / 'checkpoint-loader.efi'
-        self.put(independent, original)
-        args = (self.args.operation, directories[1], 'b' * 32, directories[0], 'a' * 32, independent)
+        args = (self.args.operation, directories[1], 'b' * 32, directories[0], 'a' * 32, 'target-uki')
         destination = directories[1] / 'responses' / ('b' * 32)
         trust = {'identities': {'efi-signing.crt': '5' * 64}}
         verified = dict(original_sha256=s.digest(original), signed_sha256=s.digest(signed),
                         certificate_sha256='5' * 64, architecture='aarch64')
+        current_receipt = directories[1] / 'checkpoints/target-uki/receipt.json'
+        receipt = o.document(current_receipt)
+        current_receipt.unlink()
+        self.put(current_receipt, s.canonical(dict(receipt, input_sha256='0' * 64)))
+        with patch.object(o.loader, 'verify') as verify, \
+                self.assertRaisesRegex(ValueError, 'checkpoint receipt differs'):
+            o.reuse_response(*args)
+        verify.assert_not_called()
+        current_receipt.unlink()
+        self.put(current_receipt, s.canonical(receipt))
         with patch.object(o.stage.trust, 'validate', return_value=trust), patch.object(o.loader, 'verify', side_effect=ValueError('signature rejected')) as verify:
             with self.assertRaisesRegex(ValueError, 'signature rejected'):
                 o.reuse_response(*args)
@@ -423,7 +449,7 @@ class LoaderReuseTests(unittest.TestCase):
 
     def test_same_size_changed_input_and_wrong_independent_hash_are_rejected(self):
         for incoming, digest in ((b'x' * len(self.original), None), (None, '0' * 64)):
-            with self.subTest(incoming=incoming), self.assertRaisesRegex(ValueError, 'loader bytes differ'):
+            with self.subTest(incoming=incoming), self.assertRaisesRegex(ValueError, 'EFI bytes differ'):
                 self.reuse(incoming, digest)
 
     def test_retained_request_and_response_must_be_bound_to_old_context(self):
@@ -440,8 +466,22 @@ class LoaderReuseTests(unittest.TestCase):
     def test_pcr_signing_is_never_reused(self):
         self.old_request['operation'] = self.request['operation'] = 'sign-sha256-rsa-pkcs1'
         self.response['operation'] = 'sign-sha256-rsa-pkcs1'
-        with self.assertRaisesRegex(ValueError, 'not selected loader'):
+        with self.assertRaisesRegex(ValueError, 'not selected EFI input'):
             self.reuse()
+
+    def test_all_efi_purposes_use_the_same_exact_admission(self):
+        for purpose in o.EFI_PURPOSES:
+            with self.subTest(purpose=purpose):
+                result = o.reuse_efi(
+                    purpose, self.old, self.new, self.old_request, self.request,
+                    self.response, self.original, self.original, self.signed,
+                    s.digest(self.original))
+                self.assertEqual(result['request_id'], 'b' * 32)
+        with self.assertRaisesRegex(ValueError, 'unsupported EFI reuse purpose'):
+            o.reuse_efi(
+                'pcr-policy', self.old, self.new, self.old_request, self.request,
+                self.response, self.original, self.original, self.signed,
+                s.digest(self.original))
 
 
 if __name__ == '__main__':

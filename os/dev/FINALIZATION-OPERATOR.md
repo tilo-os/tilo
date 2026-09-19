@@ -1,7 +1,7 @@
 # Reusable finalization operator
 
 `finalization-operator.py` replaces per-run bind/stage, pending-request polling,
-loader-response reuse, and handoff scripts. It manages public inputs and signed
+exact EFI-response reuse, and handoff scripts. It manages public inputs and signed
 outputs. Its checkpoint bridge validates the immutable image once, publishes a
 small metadata receipt, and joins that receipt to the same EFI input already
 fetched through the signing spool. Local signing tools keep their existing roles.
@@ -110,7 +110,8 @@ python3 "$operator" --operation "$operation" materialize-checkpoint \
   --request-directory "$run_directory/received/$request_id"
 ```
 
-Repeat this for `target-uki`. Materialization requires the fetched signing request,
+Repeat this for `loader` and `target-uki` as each request becomes available.
+Materialization requires the fetched signing request,
 context, size, and hash to match the independently validated receipt exactly. It
 writes the EFI input under `checkpoints/<purpose>` only after that comparison, and
 it never grants signing authorization. The read-only `diagnose-checkpoint` command
@@ -134,23 +135,26 @@ Select the source according to the signing purpose:
 Keep nonce/authorization reservations across interruptions. The detailed local
 policy and service procedure remains in [REMOTE-SIGNING.md](REMOTE-SIGNING.md).
 
-## Reuse a previously verified loader response
+## Reuse a previously verified EFI response
 
-For an unchanged boot loader, wait for its request and replace another private-key
+For an unchanged loader, live UKI, or target UKI, first export its authenticated
+checkpoint receipt. Then wait for its request and replace another private-key
 operation with one bounded command:
 
 ```sh
-python3 "$operator" --operation "$operation" service-reused-loader \
+python3 "$operator" --operation "$operation" service-reused-efi \
   --run-id "$run_id" --attempt "$attempt" \
   --old-run-directory "$old_run_directory" --old-request-id "$old_request_id" \
-  --independent-loader /trusted/authenticated-checkpoint/loader.efi \
+  --purpose target-uki \
   --timeout 2400 --interval 10 \
   --ignore-request "$already_serviced_request_id"
 ```
 
 The command requires exactly one unignored pending request. It fetches that request,
-runs the same byte, context, certificate, and PE-envelope checks as `reuse-loader`,
-then delivers the rebound response. Any failure preserves the completed local step
+materializes it against the current authenticated checkpoint receipt, runs the same
+byte, context, certificate, Authenticode signature, and PE-envelope checks as
+`reuse-efi`, then delivers the rebound response. Any failure preserves the
+completed local step
 and stops before the next one. Existing request or response state is never resumed
 automatically because a lost delivery response is ambiguous; inspect it and use the
 individual commands below to reconcile the exact state.
@@ -158,21 +162,26 @@ individual commands below to reconcile the exact state.
 The equivalent individual commands remain available for recovery and diagnosis:
 
 ```sh
-python3 "$operator" --operation "$operation" reuse-loader \
+python3 "$operator" --operation "$operation" materialize-checkpoint \
+  --run-id "$run_id" --attempt "$attempt" --purpose target-uki \
+  --request-directory "$run_directory/received/$request_id"
+python3 "$operator" --operation "$operation" reuse-efi \
   --run-id "$run_id" --attempt "$attempt" --request-id "$request_id" \
   --old-run-directory "$old_run_directory" --old-request-id "$old_request_id" \
-  --independent-loader /trusted/authenticated-checkpoint/loader.efi
+  --purpose target-uki
 python3 "$operator" --operation "$operation" deliver \
   --run-id "$run_id" --attempt "$attempt" --request-id "$request_id"
 ```
 
-Reuse requires byte-identical original/current/independently selected inputs,
+Reuse requires materialized checkpoint receipts for the old and current requests,
+byte-identical original/current/checkpoint-selected inputs,
 matching source revision, architecture, tools image, manifest and target, and exact
 old/new request/context bindings. The native verifier checks the retained EFI
 signature against the new operation's pinned public certificate and checks the PE
 envelope. Its measured hashes must match the output being published. Only the
-response nonce and runtime context change. There is no automatic reuse selection
-for UKIs or PCR policies. Delivery rechecks the actual worker identity around each transfer.
+response nonce and runtime context change. PCR policies remain excluded. Delivery
+rechecks the actual worker identity around each transfer. Reuse invokes verification
+tools only; it has no private-key input or signer call.
 
 ## Focused verification
 
