@@ -1,4 +1,5 @@
 import hashlib
+import copy
 import io
 import json
 from pathlib import Path
@@ -21,6 +22,13 @@ class Response(io.BytesIO):
 
 
 class TransportTests(unittest.TestCase):
+    def test_recovery_transport_rejects_even_allowed_dispatch_before_network(self):
+        transport = service.Transport('private-sentinel', read_only=True)
+        with patch.object(transport.opener, 'open') as opened:
+            with self.assertRaisesRegex(ValueError, 'read-only'):
+                transport.request(service.DISPATCH, {'ref': 'a'*40})
+            opened.assert_not_called()
+
     def test_routes_and_no_redirect_handler(self):
         for path in ('user', service.PREFIX, service.PREFIX + '/branches/main',
                      service.PREFIX + '/actions/jobs/2/logs'):
@@ -56,7 +64,7 @@ class TransportTests(unittest.TestCase):
                 transport.request('user')
 
 
-class ServiceTests(unittest.TestCase):
+class ServiceFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -80,12 +88,17 @@ class ServiceTests(unittest.TestCase):
         self.dispatches = []
         self.uncertain = False
         self.responses = {}
+        self.requests = []
         owner = self
 
         class FakeTransport:
-            def __init__(self, token):
+            def __init__(self, token, read_only=False):
                 owner.assertEqual(token, 'dedicated-token')
+                self.read_only = read_only
             def request(self, path, data=None, **kwargs):
+                owner.requests.append((path, data))
+                if self.read_only and data is not None:
+                    raise AssertionError('recovery attempted POST')
                 if path == 'user':
                     value = owner.user
                 elif path == service.PREFIX:
@@ -114,9 +127,11 @@ class ServiceTests(unittest.TestCase):
     def write_policy(self):
         self.policyfile.write_text(json.dumps(self.policy))
 
-    def invoke(self, apply=True):
-        return service.invoke(self.state, self.policyfile, self.finalfile, self.tokenfile, apply)
+    def invoke(self, apply=True, reconcile_run_id=None):
+        return service.invoke(self.state, self.policyfile, self.finalfile, self.tokenfile, apply, reconcile_run_id)
 
+
+class ServiceTests(ServiceFixture):
     def test_readonly_without_files_or_credentials_does_not_create_state(self):
         self.policyfile.unlink()
         self.tokenfile.unlink()
@@ -193,6 +208,165 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'already active'):
                 self.invoke()
         self.assertEqual(self.dispatches, [])
+
+
+class RecoveryTests(ServiceFixture):
+    def setUp(self):
+        super().setUp()
+        # Recovery must exercise the real product identity/input validator.
+        self.validate.stop()
+
+    def uncertain_intent(self):
+        self.uncertain = True
+        with self.assertRaisesRegex(ValueError, 'lost dispatch response'):
+            self.invoke()
+        data = self.dispatches[0]
+        self.responses[17] = {'id': 17, 'repository': {'id': 23, 'full_name': 'qos/qos'},
+            'workflow_id': 'release-apps.yml', 'trigger_event': 'workflow_dispatch',
+            'commit_sha': data['ref'], 'event_payload': json.dumps({'ref': data['ref'], 'inputs': data['inputs']}),
+            'trigger_user': {'id': 42, 'is_admin': False}, 'status': 'running'}
+        self.requests.clear()
+        return self.invoke(False)['state']
+
+    def test_recovery_binds_exact_run_without_observing_main_or_dispatching(self):
+        before = self.uncertain_intent()
+        self.source = '2'*40
+        result = self.invoke(reconcile_run_id=17)
+        self.assertEqual(result['next_action'], 'poll')
+        state = result['state']
+        self.assertEqual(state['active']['id'], before['active']['id'])
+        self.assertEqual(state['active']['run_id'], 17)
+        self.assertEqual(state['desired'], before['desired'])
+        self.assertEqual(state['sequence'], before['sequence'])
+        self.assertEqual(len(self.dispatches), 1)
+        self.assertTrue(all(data is None for _, data in self.requests))
+        self.assertNotIn((service.PREFIX + '/branches/main', None), self.requests)
+
+    def test_wrong_run_actor_and_immutable_intent_leave_state_unchanged(self):
+        before = self.uncertain_intent()
+        good = copy.deepcopy(self.responses[17])
+        variants = [dict(good, id=18), dict(good, id=True),
+            dict(good, trigger_user={'id': 43, 'is_admin': False}),
+            dict(good, trigger_user={'id': 42, 'is_admin': True}),
+            dict(good, trigger_user=None), dict(good, trigger_user={'id': 42}),
+            dict(good, workflow_id='other.yml'), dict(good, trigger_event='push'),
+            dict(good, commit_sha='2'*40), dict(good, repository={'id': 24, 'full_name': 'qos/qos'}),
+            dict(good, repository={'id': 23, 'full_name': 'other/repo'}),
+            dict(good, event_payload=None)]
+        for key, value in [('coordinator_intent', 'unrelated-intent'), ('publish', 'true')]:
+            payload = json.loads(good['event_payload'])
+            payload['inputs'][key] = value
+            variants.append(dict(good, event_payload=json.dumps(payload)))
+        payload = json.loads(good['event_payload'])
+        payload['ref'] = 'main'
+        variants.append(dict(good, event_payload=json.dumps(payload)))
+        for run in variants:
+            with self.subTest(run=run):
+                self.responses[17] = run
+                with self.assertRaises(ValueError):
+                    self.invoke(reconcile_run_id=17)
+                self.assertEqual(self.invoke(False)['state'], before)
+        self.assertEqual(len(self.dispatches), 1)
+        self.assertTrue(all(data is None for _, data in self.requests))
+
+    def test_verified_success_advances_baseline_only_after_artifact_acceptance(self):
+        before = self.uncertain_intent()
+        self.responses[17]['status'] = 'success'
+        proof = {'schema': 'tilo.coordinator-verification/v1', 'run_id': 17,
+            'desired': before['active']['desired'], 'backend': 'canonical-final-artifact-v1',
+            'receipts': {'x86_64': 'e'*64},
+            'final_policy_sha256': self.policy['final_receipt_policy_sha256']}
+        with patch.object(service.ManagedProduct, 'no_build_evidence', return_value=None), \
+                patch.object(service, 'FinalArtifactAcceptance', return_value=lambda *_: proof):
+            state = self.invoke(reconcile_run_id=17)['state']
+        self.assertIsNone(state['active'])
+        self.assertEqual(state['baseline'], before['active']['desired'])
+        self.assertEqual(state['baseline_evidence'], proof)
+        self.assertEqual(state['last_attempt']['run_id'], 17)
+        self.assertEqual(len(self.dispatches), 1)
+        with self.assertRaisesRegex(ValueError, 'no active intent'):
+            self.invoke(reconcile_run_id=17)
+
+    def test_unverified_success_retains_run_without_baseline(self):
+        self.uncertain_intent()
+        self.responses[17]['status'] = 'success'
+        with patch.object(service.ManagedProduct, 'no_build_evidence', return_value=None), \
+                patch.object(service, 'FinalArtifactAcceptance', return_value=None):
+            state = self.invoke(reconcile_run_id=17)['state']
+        self.assertEqual(state['active']['status'], 'awaiting-verification')
+        self.assertEqual(state['active']['run_id'], 17)
+        self.assertIsNone(state['baseline'])
+        self.assertEqual(len(self.dispatches), 1)
+
+    def test_no_active_intent_and_invalid_request_cannot_create_state_or_call_api(self):
+        for value in (0, -1, True, '17'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'invalid reconciliation run ID'):
+                self.invoke(reconcile_run_id=value)
+        with self.assertRaisesRegex(ValueError, 'requires --apply'):
+            self.invoke(False, reconcile_run_id=17)
+        with self.assertRaisesRegex(ValueError, 'no active intent'):
+            self.invoke(reconcile_run_id=17)
+        self.assertFalse(self.state.exists())
+        self.assertEqual(self.requests, [])
+
+    def test_recovery_obeys_lock_and_existing_run_binding(self):
+        self.uncertain_intent()
+        with service.invocation_lock(self.state):
+            with self.assertRaisesRegex(ValueError, 'already active'):
+                self.invoke(reconcile_run_id=17)
+        self.assertEqual(self.requests, [])
+        before = self.invoke(reconcile_run_id=17)['state']
+        self.requests.clear()
+        with self.assertRaisesRegex(ValueError, 'conflicts with active intent'):
+            self.invoke(reconcile_run_id=18)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.invoke(False)['state'], before)
+
+    def test_recovery_requalifies_source_and_rejects_policy_rotation(self):
+        before = self.uncertain_intent()
+        with patch.object(service.ManagedProduct, 'qualify_receipt', side_effect=ValueError('untrusted source')):
+            with self.assertRaisesRegex(ValueError, 'untrusted source'):
+                self.invoke(reconcile_run_id=17)
+        self.assertNotIn((service.PREFIX + '/actions/runs/17', None), self.requests)
+        def rotate(*args):
+            self.policy['enabled'] = False
+            self.write_policy()
+        with patch.object(service.ManagedProduct, 'qualify_receipt', rotate):
+            with self.assertRaisesRegex(ValueError, 'changed during invocation'):
+                self.invoke(reconcile_run_id=17)
+        self.assertEqual(self.invoke(False)['state'], before)
+        self.assertEqual(len(self.dispatches), 1)
+
+    def test_policy_rotation_while_verification_is_unavailable_cannot_bind_run(self):
+        before = self.uncertain_intent()
+        self.responses[17]['status'] = 'success'
+        def unavailable(*args):
+            self.policy['enabled'] = False
+            self.write_policy()
+            raise service.core.VerificationRequired('artifact not available')
+        with patch.object(service.ManagedProduct, 'no_build_evidence', unavailable):
+            with self.assertRaisesRegex(ValueError, 'changed during invocation'):
+                self.invoke(reconcile_run_id=17)
+        self.assertEqual(self.invoke(False)['state'], before)
+
+    def test_current_policy_identity_must_still_match_active_intent(self):
+        before = self.uncertain_intent()
+        self.policy['architectures'] = ['x86_64', 'aarch64']
+        self.write_policy()
+        with self.assertRaisesRegex(ValueError, 'active trusted policy changed'):
+            self.invoke(reconcile_run_id=17)
+        self.assertEqual(self.invoke(False)['state'], before)
+
+    def test_cli_routes_explicit_recovery_without_using_normal_tick(self):
+        self.uncertain_intent()
+        argv = ['app_packaging_service.py', '--state', str(self.state), '--policy', str(self.policyfile),
+            '--final-policy', str(self.finalfile), '--token-file', str(self.tokenfile),
+            '--apply', '--reconcile-run-id', '17']
+        with patch.object(sys, 'argv', argv), patch('sys.stdout', new_callable=io.StringIO) as output, \
+                patch.object(service.core, 'tick', side_effect=AssertionError('recovery entered normal tick')):
+            service.main()
+        self.assertEqual(json.loads(output.getvalue())['state']['active']['run_id'], 17)
+        self.assertTrue(all(data is None for _, data in self.requests))
 
 
 if __name__ == '__main__':
