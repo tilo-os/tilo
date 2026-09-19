@@ -157,7 +157,8 @@ def receive(packet, work=Path('/work'), bridge=BRIDGE):
     spool.write_new(bridge / 'efi-signing.crt', cert)
     config = {'schema': 1, 'context': packet['context'], 'spool': str(bridge / 'requests'),
               'public_certificate': str(bridge / 'efi-signing.crt'),
-              'certificate_sha256': spool.digest(cert), 'timeout_seconds': 1800}
+              'certificate_sha256': spool.digest(cert),
+              'timeout_seconds': request['signing_response_timeout_seconds']}
     spool.write_new(bridge / 'bridge.json', spool.canonical(config))
     receipt = {'schema': 1, 'request_sha256': packet['request_sha256'],
                'context_sha256': spool.context(packet['context']), 'packet_sha256': spool.digest(spool.canonical(packet)),
