@@ -1,8 +1,25 @@
 # Product packaging coverage and next Windows qualification
 
-Source audit: main `24c000fa4` (after requested checkpoint `709ca95a1`),
-2026-09-19. A defined workflow is not evidence that every target has a ready
-runner, successful native build or releasable artifact.
+Source audit: main `f13605c59`, 2026-09-19. A defined workflow is not evidence
+that every target has a ready runner, successful native build or releasable
+artifact.
+
+## Routine change lifecycle
+
+Routine work starts on a task branch and lands through one updated pull request.
+The exact head needs independent review and the protected check and lint
+contexts before merge.
+`check.yml` and `lint.yml` preserve a result for every `main` commit; dependency
+selection keeps the Rust lane focused while nightly CI remains the full-workspace
+backstop.
+
+The trusted merge dispatcher completes eligible routine app PRs automatically,
+one at a time. Its current allowlist is deliberately narrow: Rust source changes
+inside an existing `apps/<app>/src/` package. It fails closed when the branch is
+out of date, author/reviewer/integrator identities overlap, branch protection
+drifts, or exact-head check, lint or independent approval is missing. Other PRs
+still need an explicit merge. See [Release pipeline](release-pipeline.md) for the
+enabled heavy-build and publication triggers.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |
@@ -20,6 +37,22 @@ idle; this observation is not proof that provisioning is impossible. The existin
 `tools/ci/runners/imager-ephemeral-windows.ps1` derives labels from native
 processor architecture.
 Do not route Windows work onto Linux `runner` just because it is available.
+
+## Production-readiness sequence
+
+1. Operate the bounded automatic merge path and expand its path allowlist only
+   with the same exact-head, identity-separation, recovery and reconciliation
+   guarantees.
+2. Qualify dependency-selected app packaging on both native architectures,
+   including shared-runtime compatibility, immutable receipts and atomic channel
+   promotion; then enable continuous `main` scheduling explicitly.
+3. Keep OS publication manual through a release tag or a `main` dispatch with
+   `publish=true`, after image, reproducibility and VM gates pass.
+4. If native Windows app distribution becomes worthwhile, qualify a versioned,
+   signed archive or MSIX on disposable native hosts. The shared toolkit and local
+   installer already exist; distribution and clean-machine runtime evidence do not.
+5. Retain the disabled macOS imager and Homebrew definitions so later
+   qualification can resume without recreating the release design.
 
 ## Executable planning without installation
 
