@@ -33,6 +33,26 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertNotRegex(push, r'(?m)^    branches:')
         self.assertIn('tags: ["apps-v*", "app-*-v*"]', push)
 
+    def test_pr_plan_skips_builder_resolution_but_release_events_resolve(self):
+        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        plan = source.split('\n  plan:\n', 1)[1].split('\n  build:\n', 1)[0]
+        builder = plan.split('        id: builder\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertIn('run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py', builder)
+        condition = re.search(r'(?m)^        if: (.+)$', builder).group(1)
+        predicate = condition.replace('github.event_name', '"$1"')
+        # Execute the actual step predicate. Both publishing releases and the
+        # nonpublishing coordinator dispatch still require immutable resolution.
+        for event, allowed in [('pull_request', False), ('push', True),
+                               ('workflow_dispatch', True)]:
+            with self.subTest(event=event):
+                result = subprocess.run(['bash', '-c', '[[ ' + predicate + ' ]]', 'predicate', event])
+                self.assertEqual(0 if allowed else 1, result.returncode)
+        selection = plan.split('        id: plan\n', 1)[1].split('\n      - ', 1)[0]
+        self.assertNotIn('steps.builder.outputs', selection)
+        provenance = plan.split('      - name: Retain trusted coordinator plan provenance\n', 1)[1]
+        self.assertIn("if: github.event.inputs.coordinator_intent != ''", provenance)
+        self.assertIn('RESOLVED_BUILDER: ${{ steps.builder.outputs.image }}', provenance)
+
     def check(self, workflow):
         script = (ROOT / 'os/tests/release_pipeline_invariants.sh').read_text()
         start = script.index("grep -Fq 'dist/apps/app-collections.toml' \"$apps\"")
