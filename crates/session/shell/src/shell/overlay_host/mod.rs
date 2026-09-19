@@ -25166,6 +25166,53 @@ mod overlay_event_absorb_tests {
         );
     }
 
+    #[test]
+    fn app_search_arrows_and_enter_activate_the_visibly_selected_row() {
+        use crate::shell::search::ResourceKind;
+
+        let mut h = build_harness();
+        h.host
+            .search_registry
+            .register(Rc::new(AppSourceFilterFixtureProvider));
+        h.host.active_kind_filter = vec![ResourceKind::Application, ResourceKind::HostApplication];
+        h.host.set_palette_visible(true);
+        h.host.set_palette_focus(true);
+        h.host.force_palette_settled();
+        h.host.palette.set_query("Open");
+        let doc = AutoCommit::new();
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
+
+        let (_, _, initially_selected, rows) = h.host.palette_snapshot();
+        assert!(
+            rows.len() >= 2,
+            "fixture must expose both app sources: {rows:?}"
+        );
+        let initially_selected = initially_selected.expect("first row is visibly selected");
+        assert_eq!(initially_selected, rows[0].0);
+
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::ArrowDown)),));
+        let (_, _, selected_after_arrow, rows_after_arrow) = h.host.palette_snapshot();
+        let selected_after_arrow = selected_after_arrow.expect("arrow keeps a row selected");
+        assert_eq!(
+            rows_after_arrow, rows,
+            "navigation must not reorder search results"
+        );
+        assert_eq!(
+            selected_after_arrow, rows[1].0,
+            "ArrowDown must move the visible selection to the second app"
+        );
+
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter)),));
+        assert!(
+            !h.host.palette_visible(),
+            "Enter's activation path must complete the selected app action"
+        );
+        assert_ne!(
+            selected_after_arrow, initially_selected,
+            "activation must follow the arrow-selected row, not stale result zero"
+        );
+    }
+
     /// Same for the scope switch, which shares the band.
     #[test]
     fn clicking_a_scope_segment_switches_scope_without_dismissing() {
