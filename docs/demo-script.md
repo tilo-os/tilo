@@ -1,7 +1,7 @@
 # The demo — shot list
 
 This is the executable demo's shot list: what is filmed and in what order.
-Assertions in `scripts/yc-demo.py` are the source of truth for whether a beat
+Assertions in `scripts/demo/run.py` are the source of truth for whether a beat
 passes; this document explains the intended story and the operator's cuts.
 
 One continuous story. Agent work is only ever shown from someone else's
@@ -61,7 +61,7 @@ Nobody types it. The invite card mints the token onto the system
 clipboard and says so where the host is looking — "Copied — paste it on
 the other machine" — beside a **Copy** button; the connect prompt on the
 other machine has a **Paste** button that fills itself from the
-clipboard, and a **Join** that redeems it. `scripts/yc-demo.py` clicks
+clipboard, and a **Join** that redeems it. `scripts/demo/run.py` clicks
 all four and asserts the round trip: the token that leaves the card is
 read back off the clipboard, and the prompt is asserted to hold exactly
 it, so a copy that silently truncated fails the join rather than being
@@ -109,7 +109,7 @@ triggering is per *session*, and the agent is a session, so it publishes
 a pointer it has never moved — a pill reading `Claude` sits on Quinten's
 desktop in `target/v1/shots/05-word-processor.png`. Nothing in the demo
 script moves it (there is no `agent.pointer_move` anywhere in
-`scripts/yc-demo.py`), so this is a `shell` fix. The run reports it as a
+`scripts/demo/run.py`), so this is a `shell` fix. The run reports it as a
 gap rather than shooting around it. A pointer is an instrument for
 pointing at something you are looking at; the agent's presence should be
 a caret in the document at the moment it acts, and nothing else.
@@ -132,7 +132,7 @@ second and a half is the word processor's own startup.
 
 It read as 6.7s, and on a busy machine 16–21s, for as long as the payload was
 a 449 MB **debug** build — the packaging was moving and hashing eighteen times
-the bytes it needed to. Build it with `scripts/demo-apps-live.sh`, which packs
+the bytes it needed to. Build it with `scripts/demo/apps-live.sh`, which packs
 an optimised profile by default; `TILO_DEMO_PROFILE=debug` reproduces the old
 number if you want to see it.
 
@@ -230,7 +230,7 @@ cluster and passes the same check.
 The same fan-out defect hangs beat 9: the agent addresses the word
 processor, every app in the room answers, and it waits out its timeout.
 
-`scripts/yc-demo.py` now hashes Xaver's screen before and after and
+`scripts/demo/run.py` now hashes Xaver's screen before and after and
 raises a gap when the socket says yes and not a pixel moved — so this
 cannot pass silently again. **This beat is not claimed until a frame
 shows the text on the other machine**, which no frame yet does.
@@ -243,7 +243,7 @@ under a mime type, and hands the gesture to the window
 (`crates/sdk/ui-core/src/dnd/mod.rs`), and `apps/file-explorer/src/files_app.rs:997`
 calls it. The compositor promotes that to a server-side
 `wl_data_device` drag, and the receiving client gets the offer and the
-drop. `scripts/yc-demo.py` asserts both halves off the compositor's own
+drop. `scripts/demo/run.py` asserts both halves off the compositor's own
 log — the source handing the gesture out, and the compositor taking it —
 so a run where the toolkit quietly reported it started nothing fails
 here rather than producing a drag that carries nothing.
@@ -296,7 +296,7 @@ that the name on screen is Claude.
 document, and then waits out its timeout without applying anything —
 because every app in the room answers a handshake addressed to the word
 processor, so it is offered documents it did not ask for. Same broker
-fan-out as beat 7; `scripts/yc-demo.py` quotes the `room_wide=true`
+fan-out as beat 7; `scripts/demo/run.py` quotes the `room_wide=true`
 lines from the session log when the timeout fires, so nobody has to
 re-diagnose a hung process.
 
@@ -310,7 +310,7 @@ Two endings, both live, both attributed, both from before that:
   action.
 
 The edit arriving on a *second* session is asserted:
-`scripts/yc-demo.py` reads Xaver's own word processor back over his
+`scripts/demo/run.py` reads Xaver's own word processor back over his
 session's broker and checks the row text survived into the table, not
 merely that a table exists. It is asserted and **not** filmed from his
 screen — the same edit lands in the document already on camera, and an
@@ -350,7 +350,7 @@ cargo build -p launcher --bin tilo-launcher
 cargo build -p agent --bin tilo-agent                # beat 9
 cargo build -p app-catalogue --bins --examples      # beat 5's registry
 cargo build -p tilo-install --bin tilo-install
-scripts/demo-apps-live.sh                           # the payload it serves
+scripts/demo/apps-live.sh                           # the payload it serves
 
 scripts/headless-examples/app-launch-proof.py                 # apps launch and paint
 scripts/headless-examples/app-collab-proof.py                 # what crosses between sessions
