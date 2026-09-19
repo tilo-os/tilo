@@ -39,6 +39,7 @@ type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
 type ImportLauncher = fn() -> ImportApp;
+type FolderPickerLauncher = fn() -> ui::PortalChannel;
 
 const FULL_OS_UNAVAILABLE: &str = "Full Tilo installation is not available in this build yet.";
 
@@ -55,7 +56,7 @@ enum SetupCommand {
     SetFolderMode(usize, FolderMode),
     ClearFolderMode(usize),
     RemoveFolder(usize),
-    AddSuggested(usize),
+    AddSuggested(KnownFolderKind),
     AddFolder,
     OpenImports,
     ToggleHelp,
@@ -109,6 +110,7 @@ pub struct SetupApp {
     worker_tx: Sender<WorkerMessage>,
     worker_rx: Receiver<WorkerMessage>,
     worker_launcher: WorkerLauncher,
+    picker_launcher: FolderPickerLauncher,
     picker_rx: Option<ui::PortalChannel>,
     pending_scans: usize,
     known_folder_lookup_pending: bool,
@@ -199,6 +201,7 @@ impl SetupApp {
             worker_tx,
             worker_rx,
             worker_launcher,
+            picker_launcher: folders::pick_folder,
             picker_rx: None,
             pending_scans: 0,
             known_folder_lookup_pending: false,
@@ -319,6 +322,31 @@ impl SetupApp {
         self.picker_rx.is_none() && self.pending_scans == 0
     }
 
+    fn on_review_for(&self, experience: Experience) -> bool {
+        let controller = self.controller();
+        controller.page() == SetupPage::Review && controller.plan().experience == experience
+    }
+
+    fn desktop_install_available(&self) -> bool {
+        self.capabilities.platform.supports(Experience::Desktop)
+            && self.on_review_for(Experience::Desktop)
+            && self.folder_selection_settled()
+            && matches!(self.desktop_flow.state(), DesktopFlowState::Ready(_))
+    }
+
+    fn desktop_cancel_available(&self) -> bool {
+        self.on_review_for(Experience::Desktop)
+            && matches!(self.desktop_flow.state(), DesktopFlowState::Downloading(_))
+    }
+
+    fn desktop_retry_available(&self) -> bool {
+        matches!(
+            self.desktop_flow.state(),
+            DesktopFlowState::Unavailable { .. } | DesktopFlowState::Failed { .. }
+        ) && (self.controller().page() == SetupPage::Experience
+            || self.on_review_for(Experience::Desktop))
+    }
+
     fn setup_projection(&self) -> super::actions::SetupProjection {
         let controller = self.controller();
         let page = controller.page();
@@ -342,6 +370,16 @@ impl SetupApp {
             .filter(|folder| folder.mode != FolderMode::Later)
             .count();
         let chosen_experience = controller.chosen_experience();
+        let suggestions = self
+            .known_folders
+            .iter()
+            .map(|known| super::actions::SuggestionProjection {
+                identity: known_folder_identity(known.kind).into(),
+                name: known.kind.label().into(),
+                available: known.path.is_some(),
+                unavailable_reason: known.unavailable_reason.clone(),
+            })
+            .collect();
         let next = match page {
             SetupPage::Experience => chosen_experience
                 .is_some_and(|experience| self.capabilities.platform.supports(experience)),
@@ -357,6 +395,7 @@ impl SetupApp {
                 folder_count,
                 active_folder_count,
                 folders,
+                suggestions,
                 help_open: self.show_help,
                 imports_open: self.import_requested || self.import_app.is_some(),
             },
@@ -373,6 +412,38 @@ impl SetupApp {
                 folder_edits: on_folder_choices && folder_count > 0,
                 help: page == SetupPage::Folders,
                 open_imports: true,
+                choose_folder: page == SetupPage::Folders && self.picker_rx.is_none(),
+            },
+            desktop: super::actions::DesktopProjection {
+                phase: desktop_phase(self.desktop_flow.state()),
+                status: self.desktop_experience_status().0,
+                install: self.desktop_install_available(),
+                cancel_download: self.desktop_cancel_available(),
+                retry: self.desktop_retry_available(),
+            },
+            internal_download: {
+                let on_review =
+                    page == SetupPage::Review && controller.plan().experience == Experience::FullOs;
+                let flow = self.internal_download_flow.as_ref();
+                super::actions::InternalDownloadProjection {
+                    phase: flow
+                        .and_then(|flow| flow.presentation().phase)
+                        .map(internal_download_phase),
+                    status: flow.map_or_else(
+                        || {
+                            self.internal_download_error.clone().unwrap_or_else(|| {
+                                "Full Tilo download is unavailable on this computer.".into()
+                            })
+                        },
+                        |flow| flow.presentation().title.clone(),
+                    ),
+                    start: on_review && flow.is_some_and(InternalDownloadFlow::can_start),
+                    pause: on_review && flow.is_some_and(InternalDownloadFlow::can_pause),
+                    resume: on_review && flow.is_some_and(InternalDownloadFlow::can_resume),
+                    cancel: on_review && flow.is_some_and(InternalDownloadFlow::can_cancel),
+                    discard: on_review && flow.is_some_and(InternalDownloadFlow::can_discard),
+                    release: on_review && flow.is_some_and(InternalDownloadFlow::can_release),
+                }
             },
         }
     }
@@ -397,60 +468,100 @@ impl SetupApp {
                     self.controller().page(),
                     SetupPage::Folders | SetupPage::Review
                 ) {
-                    return Err("Folder choices are not open on the current setup page.".into());
+                    return Err(super::strings::t(
+                        "imager-setup-error-folder-choices-closed",
+                    ));
                 }
                 let mode = super::actions::parse_mode(&mode)?;
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    return Err("Folder syncing is not available in this build yet.".into());
+                    return Err(super::strings::t(
+                        "imager-setup-error-connected-unavailable",
+                    ));
                 }
                 SetupCommand::SetMode(mode)
             }
             super::actions::SetupOperation::SetFolderMode { folder, mode } => {
-                let index = self
-                    .controller()
-                    .folder_index(&folder)
-                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                let index = self.controller().folder_index(&folder).ok_or_else(|| {
+                    super::strings::t("imager-setup-error-folder-selection-stale")
+                })?;
                 if !matches!(
                     self.controller().page(),
                     SetupPage::Folders | SetupPage::Review
                 ) {
-                    return Err("Folder choices are not open on the current setup page.".into());
+                    return Err(super::strings::t(
+                        "imager-setup-error-folder-choices-closed",
+                    ));
                 }
                 let mode = super::actions::parse_mode(&mode)?;
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    return Err("Folder syncing is not available in this build yet.".into());
+                    return Err(super::strings::t(
+                        "imager-setup-error-connected-unavailable",
+                    ));
                 }
                 SetupCommand::SetFolderMode(index, mode)
             }
             super::actions::SetupOperation::ClearFolderMode { folder } => {
-                let index = self
-                    .controller()
-                    .folder_index(&folder)
-                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                let index = self.controller().folder_index(&folder).ok_or_else(|| {
+                    super::strings::t("imager-setup-error-folder-selection-stale")
+                })?;
                 if !matches!(
                     self.controller().page(),
                     SetupPage::Folders | SetupPage::Review
                 ) {
-                    return Err("Folder choices are not open on the current setup page.".into());
+                    return Err(super::strings::t(
+                        "imager-setup-error-folder-choices-closed",
+                    ));
                 }
                 SetupCommand::ClearFolderMode(index)
             }
             super::actions::SetupOperation::RemoveFolder { folder } => {
-                let index = self
-                    .controller()
-                    .folder_index(&folder)
-                    .ok_or_else(|| "folder selection is no longer available".to_string())?;
+                let index = self.controller().folder_index(&folder).ok_or_else(|| {
+                    super::strings::t("imager-setup-error-folder-selection-stale")
+                })?;
                 if !matches!(
                     self.controller().page(),
                     SetupPage::Folders | SetupPage::Review
                 ) {
-                    return Err("Folder choices are not open on the current setup page.".into());
+                    return Err(super::strings::t(
+                        "imager-setup-error-folder-choices-closed",
+                    ));
                 }
                 SetupCommand::RemoveFolder(index)
             }
+            super::actions::SetupOperation::SelectSuggestion { suggestion } => {
+                if self.controller().page() != SetupPage::Folders {
+                    return Err(super::strings::t(
+                        "imager-setup-error-folder-choices-closed",
+                    ));
+                }
+                let index = self
+                    .known_folders
+                    .iter()
+                    .position(|known| known_folder_identity(known.kind) == suggestion)
+                    .ok_or_else(|| {
+                        super::strings::t("imager-setup-error-suggestion-unavailable")
+                    })?;
+                if self.known_folders[index].path.is_none() {
+                    return Err(super::strings::t(
+                        "imager-setup-error-suggestion-unavailable",
+                    ));
+                }
+                SetupCommand::AddSuggested(self.known_folders[index].kind)
+            }
+            super::actions::SetupOperation::ChooseFolder => {
+                if self.controller().page() != SetupPage::Folders {
+                    return Err(super::strings::t(
+                        "imager-setup-error-folder-choices-closed",
+                    ));
+                }
+                if self.picker_rx.is_some() {
+                    return Err(super::strings::t("imager-setup-error-picker-open"));
+                }
+                SetupCommand::AddFolder
+            }
             super::actions::SetupOperation::ToggleHelp => {
                 if self.controller().page() != SetupPage::Folders {
-                    return Err("Folder help is available on the folder page.".into());
+                    return Err(super::strings::t("imager-setup-error-help-not-on-page"));
                 }
                 SetupCommand::ToggleHelp
             }
@@ -458,17 +569,95 @@ impl SetupApp {
                 if self.controller().page() == SetupPage::Folders
                     && !self.folder_selection_settled()
                 {
-                    return Err("Wait for the selected folders to finish scanning.".into());
+                    return Err(super::strings::t("imager-setup-error-wait-for-scans"));
                 }
                 SetupCommand::Next
             }
             super::actions::SetupOperation::Back => {
                 if self.controller().page() == SetupPage::Experience {
-                    return Err("Setup is already on its first page.".into());
+                    return Err(super::strings::t("imager-setup-error-at-start"));
                 }
                 SetupCommand::Back
             }
             super::actions::SetupOperation::OpenImports => SetupCommand::OpenImports,
+            super::actions::SetupOperation::InstallDesktop => {
+                if !self.capabilities.platform.supports(Experience::Desktop) {
+                    return Err(experience_unavailable_reason(
+                        self.capabilities.platform,
+                        Experience::Desktop,
+                    ));
+                }
+                if !self.desktop_install_available() {
+                    return Err(super::strings::t(
+                        "imager-setup-error-desktop-install-unavailable",
+                    ));
+                }
+                SetupCommand::InstallDesktop
+            }
+            super::actions::SetupOperation::CancelDesktopDownload => {
+                if !self.desktop_cancel_available() {
+                    return Err(super::strings::t(
+                        "imager-setup-error-desktop-download-not-active",
+                    ));
+                }
+                SetupCommand::CancelDesktopDownload
+            }
+            super::actions::SetupOperation::RetryDesktop => {
+                if !self.desktop_retry_available() {
+                    return Err(super::strings::t(
+                        "imager-setup-error-desktop-retry-unavailable",
+                    ));
+                }
+                SetupCommand::RetryDesktop
+            }
+            super::actions::SetupOperation::StartInternalDownload => {
+                if !self.setup_projection().internal_download.start {
+                    return Err(super::strings::t(
+                        "imager-setup-error-download-start-unavailable",
+                    ));
+                }
+                SetupCommand::StartInternalDownload
+            }
+            super::actions::SetupOperation::PauseInternalDownload => {
+                if !self.setup_projection().internal_download.pause {
+                    return Err(super::strings::t(
+                        "imager-setup-error-download-pause-unavailable",
+                    ));
+                }
+                SetupCommand::PauseInternalDownload
+            }
+            super::actions::SetupOperation::ResumeInternalDownload => {
+                if !self.setup_projection().internal_download.resume {
+                    return Err(super::strings::t(
+                        "imager-setup-error-download-resume-unavailable",
+                    ));
+                }
+                SetupCommand::ResumeInternalDownload
+            }
+            super::actions::SetupOperation::CancelInternalDownload => {
+                if !self.setup_projection().internal_download.cancel {
+                    return Err(super::strings::t(
+                        "imager-setup-error-download-cancel-unavailable",
+                    ));
+                }
+                SetupCommand::CancelInternalDownload
+            }
+            super::actions::SetupOperation::DiscardInternalDownload => {
+                if !self.setup_projection().internal_download.discard {
+                    return Err(super::strings::t(
+                        "imager-setup-error-download-discard-unavailable",
+                    ));
+                }
+                SetupCommand::DiscardInternalDownload
+            }
+            super::actions::SetupOperation::ReleaseInternalDownload => {
+                if !self.setup_projection().internal_download.release {
+                    return Err(super::strings::t(
+                        "imager-setup-error-download-release-unavailable",
+                    ));
+                }
+                SetupCommand::ReleaseInternalDownload
+            }
         };
         self.apply_command(command);
         if self.status_is_error {
@@ -479,7 +668,9 @@ impl SetupApp {
     }
 
     fn start_desktop_install(&mut self) {
-        if !self.folder_selection_settled() {
+        if !self.desktop_install_available() {
+            self.status = super::strings::t("imager-setup-error-desktop-install-unavailable");
+            self.status_is_error = true;
             return;
         }
         match super::desktop_continuation::persist_review(self.controller.borrow().folders())
@@ -543,22 +734,35 @@ impl SetupApp {
                     self.status = "Folder removed from this setup plan.".into();
                 }
             }
-            SetupCommand::AddSuggested(index) => {
+            SetupCommand::AddSuggested(kind) => {
+                if self.controller().page() != SetupPage::Folders {
+                    self.status = super::strings::t("imager-setup-error-folder-choices-closed");
+                    self.status_is_error = true;
+                    self.structure_dirty = true;
+                    return;
+                }
                 let path = self
                     .known_folders
-                    .get(index)
+                    .iter()
+                    .find(|known| known.kind == kind)
                     .and_then(|known| known.path.clone());
                 if let Some(path) = path {
                     self.start_scan(path);
                 } else {
-                    self.status = "That suggested folder is unavailable on this computer.".into();
+                    self.status = super::strings::t("imager-setup-error-suggestion-unavailable");
                     self.status_is_error = true;
                 }
             }
             SetupCommand::AddFolder => {
-                if self.picker_rx.is_none() {
-                    self.picker_rx = Some(folders::pick_folder());
+                if self.controller().page() != SetupPage::Folders {
+                    self.status = super::strings::t("imager-setup-error-folder-choices-closed");
+                    self.status_is_error = true;
+                } else if self.picker_rx.is_none() {
+                    self.picker_rx = Some((self.picker_launcher)());
                     self.status = "Choose a folder in the system dialog.".into();
+                } else {
+                    self.status = super::strings::t("imager-setup-error-picker-open");
+                    self.status_is_error = true;
                 }
             }
             SetupCommand::OpenImports => {
@@ -581,25 +785,39 @@ impl SetupApp {
             }
             SetupCommand::InstallDesktop => self.start_desktop_install(),
             SetupCommand::CancelDesktopDownload => {
-                if self.desktop_flow.cancel_download() {
+                if !self.desktop_cancel_available() {
+                    self.status =
+                        super::strings::t("imager-setup-error-desktop-download-not-active");
+                    self.status_is_error = true;
+                } else if self.desktop_flow.cancel_download() {
                     self.status = "Cancelling the package download…".into();
-                }
-            }
-            SetupCommand::RetryDesktop => match self.desktop_flow.retry() {
-                Ok(()) => self.status = "Rechecking this host before retry…".into(),
-                Err(error) => {
-                    self.status = error;
+                } else {
+                    self.status =
+                        super::strings::t("imager-setup-error-desktop-download-not-active");
                     self.status_is_error = true;
                 }
-            },
+            }
+            SetupCommand::RetryDesktop => {
+                if !self.desktop_retry_available() {
+                    self.status = super::strings::t("imager-setup-error-desktop-retry-unavailable");
+                    self.status_is_error = true;
+                } else {
+                    match self.desktop_flow.retry() {
+                        Ok(()) => self.status = "Rechecking this host before retry…".into(),
+                        Err(error) => {
+                            self.status = error;
+                            self.status_is_error = true;
+                        }
+                    }
+                }
+            }
 
             SetupCommand::StartInternalDownload => {
-                let on_full_os_review = {
-                    let controller = self.controller.borrow();
-                    controller.page() == SetupPage::Review
-                        && controller.plan().experience == Experience::FullOs
-                };
-                let result = if on_full_os_review {
+                let on_full_os_review = self.on_review_for(Experience::FullOs);
+                let available = self.setup_projection().internal_download.start;
+                let result = if !on_full_os_review {
+                    Err(super::strings::t("imager-setup-error-download-review-only"))
+                } else if available {
                     self.internal_download_flow
                         .as_mut()
                         .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
@@ -610,53 +828,85 @@ impl SetupApp {
                             flow.start_selected(key)
                         })
                 } else {
-                    Err("Full Tilo downloads can start only from the Full Tilo review.".into())
+                    Err(super::strings::t(
+                        "imager-setup-error-download-start-unavailable",
+                    ))
                 };
                 self.apply_internal_command_result(result, "Downloading Tilo…");
             }
 
             SetupCommand::PauseInternalDownload => {
-                let result = self
-                    .internal_download_flow
-                    .as_mut()
-                    .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
-                    .and_then(InternalDownloadFlow::pause);
+                let available = self.setup_projection().internal_download.pause;
+                let result = if available {
+                    self.internal_download_flow
+                        .as_mut()
+                        .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
+                        .and_then(InternalDownloadFlow::pause)
+                } else {
+                    Err(super::strings::t(
+                        "imager-setup-error-download-pause-unavailable",
+                    ))
+                };
                 self.apply_internal_command_result(result, "Pausing download…");
             }
 
             SetupCommand::ResumeInternalDownload => {
-                let result = self
-                    .internal_download_flow
-                    .as_mut()
-                    .ok_or_else(|| "No saved download is available.".to_string())
-                    .and_then(InternalDownloadFlow::resume);
+                let available = self.setup_projection().internal_download.resume;
+                let result = if available {
+                    self.internal_download_flow
+                        .as_mut()
+                        .ok_or_else(|| "No saved download is available.".to_string())
+                        .and_then(InternalDownloadFlow::resume)
+                } else {
+                    Err(super::strings::t(
+                        "imager-setup-error-download-resume-unavailable",
+                    ))
+                };
                 self.apply_internal_command_result(result, "Downloading Tilo…");
             }
 
             SetupCommand::CancelInternalDownload => {
-                let result = self
-                    .internal_download_flow
-                    .as_mut()
-                    .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
-                    .and_then(InternalDownloadFlow::cancel);
+                let available = self.setup_projection().internal_download.cancel;
+                let result = if available {
+                    self.internal_download_flow
+                        .as_mut()
+                        .ok_or_else(|| "Full Tilo download is unavailable.".to_string())
+                        .and_then(InternalDownloadFlow::cancel)
+                } else {
+                    Err(super::strings::t(
+                        "imager-setup-error-download-cancel-unavailable",
+                    ))
+                };
                 self.apply_internal_command_result(result, "Cancelling download…");
             }
 
             SetupCommand::DiscardInternalDownload => {
-                let result = self
-                    .internal_download_flow
-                    .as_mut()
-                    .ok_or_else(|| "No unfinished download data is available.".to_string())
-                    .and_then(InternalDownloadFlow::discard);
+                let available = self.setup_projection().internal_download.discard;
+                let result = if available {
+                    self.internal_download_flow
+                        .as_mut()
+                        .ok_or_else(|| "No unfinished download data is available.".to_string())
+                        .and_then(InternalDownloadFlow::discard)
+                } else {
+                    Err(super::strings::t(
+                        "imager-setup-error-download-discard-unavailable",
+                    ))
+                };
                 self.apply_internal_command_result(result, "Discarding unfinished download data…");
             }
 
             SetupCommand::ReleaseInternalDownload => {
-                let result = self
-                    .internal_download_flow
-                    .as_mut()
-                    .ok_or_else(|| "No verified download is held.".to_string())
-                    .and_then(InternalDownloadFlow::release);
+                let available = self.setup_projection().internal_download.release;
+                let result = if available {
+                    self.internal_download_flow
+                        .as_mut()
+                        .ok_or_else(|| "No verified download is held.".to_string())
+                        .and_then(InternalDownloadFlow::release)
+                } else {
+                    Err(super::strings::t(
+                        "imager-setup-error-download-release-unavailable",
+                    ))
+                };
                 self.apply_internal_command_result(result, "Keeping download for later…");
             }
             SetupCommand::InternalInstallUnavailable => {
@@ -1081,7 +1331,7 @@ impl SetupApp {
         ))
     }
 
-    fn known_folder_card(&self, index: usize, known: &KnownFolder) -> Card {
+    fn known_folder_card(&self, _index: usize, known: &KnownFolder) -> Card {
         let (detail, enabled) = known.path.as_ref().map_or_else(
             || {
                 (
@@ -1098,7 +1348,7 @@ impl SetupApp {
             .button(
                 &format!("setup.suggestion.{}", known.kind.label().to_lowercase()),
                 if enabled { "Add" } else { "Unavailable" },
-                SetupCommand::AddSuggested(index),
+                SetupCommand::AddSuggested(known.kind),
             )
             .with_enabled(enabled);
         Card::titled(
@@ -1788,6 +2038,49 @@ fn experience_label(experience: Experience) -> &'static str {
     }
 }
 
+const fn known_folder_identity(kind: KnownFolderKind) -> &'static str {
+    match kind {
+        KnownFolderKind::Documents => "documents",
+        KnownFolderKind::Desktop => "desktop",
+        KnownFolderKind::Pictures => "pictures",
+        KnownFolderKind::Downloads => "downloads",
+    }
+}
+
+const fn desktop_phase(state: &DesktopFlowState) -> &'static str {
+    match state {
+        DesktopFlowState::Checking => "checking",
+        DesktopFlowState::Unavailable { .. } => "unavailable",
+        DesktopFlowState::Ready(_) => "ready",
+        DesktopFlowState::Downloading(_) => "downloading",
+        DesktopFlowState::Authorizing(_) => "authorizing",
+        DesktopFlowState::Preparing(_) => "preparing",
+        DesktopFlowState::Installing(_) => "installing",
+        DesktopFlowState::Verifying(_) => "verifying",
+        DesktopFlowState::Installed { .. } => "installed",
+        DesktopFlowState::Failed { .. } => "failed",
+    }
+}
+
+const fn internal_download_phase(phase: ui::install_artifacts::Phase) -> &'static str {
+    use ui::install_artifacts::Phase;
+    match phase {
+        Phase::SavingPreference => "saving_preference",
+        Phase::Authenticating => "authenticating",
+        Phase::Acquiring => "acquiring",
+        Phase::Preparing => "preparing",
+        Phase::Downloading => "downloading",
+        Phase::Ready => "ready",
+        Phase::Consuming => "consuming",
+        Phase::Consumed => "consumed",
+        Phase::Paused => "paused",
+        Phase::Cancelled => "cancelled",
+        Phase::Failed => "failed",
+        Phase::Released => "released",
+        Phase::Discarded => "discarded",
+    }
+}
+
 fn experience_unavailable_reason(capabilities: Capabilities, experience: Experience) -> String {
     match experience {
         Experience::Desktop if capabilities.host == HostOs::Windows => {
@@ -2137,7 +2430,6 @@ impl Widget for SetupApp {
             || self.picker_rx.is_some()
             || self.desktop_flow.has_pending_operation()
             || {
-
                 {
                     self.internal_download_flow
                         .as_ref()
@@ -2207,6 +2499,11 @@ mod tests {
 
     fn accepted_without_completion_worker(_: &str, _: WorkerTask) -> Result<(), String> {
         Ok(())
+    }
+
+    fn disconnected_folder_picker() -> ui::PortalChannel {
+        let (_tx, rx) = mpsc::channel();
+        rx
     }
 
     fn retained_widget_disabled(root: &dyn Widget, id: &str) -> bool {
@@ -2529,249 +2826,357 @@ mod tests {
 
     #[cfg(unix)]
     mod unix_tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-    use tilo_install_artifacts::test_support::{Server, manifest_bytes, manifest_value, response};
-    use ui::install_artifacts::Phase as InternalPhase;
+        use super::*;
+        use std::time::{Duration, Instant};
+        use tilo_install_artifacts::test_support::{
+            Server, manifest_bytes, manifest_value, response,
+        };
+        use ui::install_artifacts::Phase as InternalPhase;
 
-    // Catches startup loading being gated but omitted from the real idle scheduler.
-    #[test]
-    fn preference_loading_keeps_setup_idle_sync_active_until_settled() {
-        let bytes = manifest_bytes(&manifest_value());
-        let server = Server::new(vec![]);
-        let directory = tempfile::tempdir().unwrap();
-        let cache = directory.path().join("cache");
-        let preference = directory.path().join("missing/selection.json");
-        let worker = server.client(&cache, &preference);
-        let mut app = supported_fixture();
-        assert!(!Widget::needs_idle_sync(&app), "other startup work must be settled");
-        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
-            app.capabilities.platform, worker, vec![vec![server.selection(&bytes)]], "x86_64",
-        ));
-        assert!(!app.internal_download_flow.as_ref().unwrap().can_start());
-        assert!(Widget::needs_idle_sync(&app), "unsettled preference must request the next idle sync");
-        let mut state = AutoCommit::new();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        // Drive only when the production scheduling contract requests a sync.
-        while Widget::needs_idle_sync(&app) {
-            Widget::sync(&mut app, &mut state, &automerge::ROOT);
-            assert!(Instant::now() < deadline, "preference loading never settled");
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert!(app.internal_download_flow.as_ref().unwrap().can_start());
-        assert!(!app.internal_download_flow.as_ref().unwrap().can_resume());
-        assert!(!Widget::needs_idle_sync(&app));
-        assert!(!preference.parent().unwrap().exists());
-        assert!(!cache.exists());
-        assert!(server.requests().is_empty());
-    }
-
-    // Catches a Full qOS button dispatching the Desktop installer instead of the internal worker.
-    #[test]
-    fn full_os_download_command_routes_to_the_real_internal_worker_only() {
-        let bytes = manifest_bytes(&manifest_value());
-        let server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
-        let root = tempfile::tempdir().unwrap();
-        let preference = tempfile::tempdir().unwrap();
-        let worker = server.client(root.path(), &preference.path().join("selection.json"));
-        let mut app = supported_fixture();
-        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
-            app.capabilities.platform,
-            worker,
-            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
-            "x86_64",
-        ));
-        app.internal_download_flow.as_mut().unwrap().wait_preference();
-        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
-        app.apply_command(SetupCommand::Next);
-        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
-        app.apply_command(SetupCommand::Next);
-
-        app.apply_command(SetupCommand::StartInternalDownload);
-        assert!(matches!(
-            app.desktop_flow.state(),
-            DesktopFlowState::Ready(_)
-        ));
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if app
-                .internal_download_flow
-                .as_ref()
-                .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Ready))
-            {
-                break;
+        // Catches startup loading being gated but omitted from the real idle scheduler.
+        #[test]
+        fn preference_loading_keeps_setup_idle_sync_active_until_settled() {
+            let bytes = manifest_bytes(&manifest_value());
+            let server = Server::new(vec![]);
+            let directory = tempfile::tempdir().unwrap();
+            let cache = directory.path().join("cache");
+            let preference = directory.path().join("missing/selection.json");
+            let worker = server.client(&cache, &preference);
+            let mut app = supported_fixture();
+            assert!(
+                !Widget::needs_idle_sync(&app),
+                "other startup work must be settled"
+            );
+            app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+                app.capabilities.platform,
+                worker,
+                vec![vec![server.selection(&bytes)]],
+                "x86_64",
+            ));
+            assert!(!app.internal_download_flow.as_ref().unwrap().can_start());
+            assert!(
+                Widget::needs_idle_sync(&app),
+                "unsettled preference must request the next idle sync"
+            );
+            let mut state = AutoCommit::new();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            // Drive only when the production scheduling contract requests a sync.
+            while Widget::needs_idle_sync(&app) {
+                Widget::sync(&mut app, &mut state, &automerge::ROOT);
+                assert!(
+                    Instant::now() < deadline,
+                    "preference loading never settled"
+                );
+                std::thread::sleep(Duration::from_millis(2));
             }
-            assert!(Instant::now() < deadline, "internal download timed out");
-            std::thread::sleep(Duration::from_millis(2));
+            assert!(app.internal_download_flow.as_ref().unwrap().can_start());
+            assert!(!app.internal_download_flow.as_ref().unwrap().can_resume());
+            assert!(!Widget::needs_idle_sync(&app));
+            assert!(!preference.parent().unwrap().exists());
+            assert!(!cache.exists());
+            assert!(server.requests().is_empty());
         }
-        assert_eq!(app.status, "Download ready");
-        assert!(!app.needs_idle_sync());
-        let mut ready = FrameHarness::new(
-            ui::State::new(),
-            Box::new(app.internal_download_card()),
-            (640, 320),
-        );
-        ready
-            .expect(
-                &SemanticExpectation::named("setup.internal.release")
-                    .name_contains("Keep for later")
-                    .enabled(true),
-            )
-            .unwrap();
 
-        app.apply_command(SetupCommand::ReleaseInternalDownload);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if app
-                .internal_download_flow
-                .as_ref()
-                .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Released))
-            {
-                break;
-            }
-            assert!(Instant::now() < deadline, "internal release timed out");
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert_eq!(app.status, "Kept for later");
-        assert_eq!(server.consumptions(), 0, "No staging consumer may run");
-    }
-
-    // Catches a forged or stale command starting a Full qOS download away from its review.
-    #[test]
-    fn full_os_download_command_is_refused_outside_full_os_review() {
-        let bytes = manifest_bytes(&manifest_value());
-        let server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
-        let root = tempfile::tempdir().unwrap();
-        let preference = tempfile::tempdir().unwrap();
-        let worker = server.client(root.path(), &preference.path().join("selection.json"));
-        let mut app = supported_fixture();
-        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
-            app.capabilities.platform,
-            worker,
-            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
-            "x86_64",
-        ));
-        app.internal_download_flow.as_mut().unwrap().wait_preference();
-
-        app.apply_command(SetupCommand::StartInternalDownload);
-
-        assert!(app.status_is_error);
-        assert_eq!(
-            app.status,
-            "Full Tilo downloads can start only from the Full Tilo review."
-        );
-        assert!(
+        // Catches a Full qOS button dispatching the Desktop installer instead of the internal worker.
+        #[test]
+        fn full_os_download_command_routes_to_the_real_internal_worker_only() {
+            let bytes = manifest_bytes(&manifest_value());
+            let server = Server::new(vec![
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+            ]);
+            let root = tempfile::tempdir().unwrap();
+            let preference = tempfile::tempdir().unwrap();
+            let worker = server.client(root.path(), &preference.path().join("selection.json"));
+            let mut app = supported_fixture();
+            app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+                app.capabilities.platform,
+                worker,
+                vec![
+                    vec![server.selection(&bytes)],
+                    vec![server.selection(&bytes)],
+                ],
+                "x86_64",
+            ));
             app.internal_download_flow
-                .as_ref()
-                .is_some_and(|flow| flow.presentation().phase.is_none())
-        );
-        assert!(server.requests().is_empty());
-        assert_eq!(server.consumptions(), 0, "No staging consumer may run");
-    }
+                .as_mut()
+                .unwrap()
+                .wait_preference();
+            app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+            app.apply_command(SetupCommand::Next);
+            app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+            app.apply_command(SetupCommand::Next);
 
-    // Catches two routed Start commands replacing the active internal download before recompose.
-    #[test]
-    fn duplicate_full_os_start_command_is_rejected_without_an_extra_request() {
-        let bytes = manifest_bytes(&manifest_value());
-        let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
-        let (continue_tx, continue_rx) = mpsc::sync_channel(0);
-        let mut request = 0;
-        let server = Server::on_request(
-            vec![
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-                response(200, "", &vec![b'R'; 8192]),
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-                response(200, "", &vec![b'R'; 8192]),
-            ],
-            move || {
-                request += 1;
-                if request == 2 {
-                    blocked_tx.send(()).unwrap();
-                    continue_rx.recv().unwrap();
-                }
-            },
-        );
-        let root = tempfile::tempdir().unwrap();
-        let preference = tempfile::tempdir().unwrap();
-        let worker = server.client(root.path(), &preference.path().join("selection.json"));
-        let mut app = supported_fixture();
-        app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
-            app.capabilities.platform,
-            worker,
-            vec![
-                vec![server.selection(&bytes)],
-                vec![server.selection(&bytes)],
-                vec![server.selection(&bytes)],
-            ],
-            "x86_64",
-        ));
-        app.internal_download_flow.as_mut().unwrap().wait_preference();
-        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
-        app.apply_command(SetupCommand::Next);
-        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
-        app.apply_command(SetupCommand::Next);
-
-        app.apply_command(SetupCommand::StartInternalDownload);
-        blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        let requests = server.requests().len();
-        app.apply_command(SetupCommand::StartInternalDownload);
-        let duplicate_status = app.status.clone();
-        let duplicate_is_error = app.status_is_error;
-        let requests_after = server.requests().len();
-        continue_tx.send(()).unwrap();
-
-        assert!(duplicate_is_error);
-        assert_eq!(
-            duplicate_status,
-            "A Full Tilo download cannot start in its current state."
-        );
-        assert_eq!(requests_after, requests);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            app.poll_background();
-            if app
-                .internal_download_flow
-                .as_ref()
-                .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Ready))
-            {
-                break;
+            let root_resource = setup_resource(&app, &AutoCommit::new());
+            let download = child_resource(&root_resource, "imager.setup.internal-download");
+            assert_eq!(download.label, "Full Tilo download");
+            assert_eq!(download.actions.len(), 6);
+            for (id, available) in [
+                ("start", true),
+                ("pause", false),
+                ("resume", false),
+                ("cancel", false),
+                ("discard", false),
+                ("release", false),
+            ] {
+                let action = download
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .unwrap();
+                assert_eq!(
+                    action.contract.availability.is_available(),
+                    available,
+                    "{id}"
+                );
             }
-            assert!(Instant::now() < deadline, "internal download timed out");
-            std::thread::sleep(Duration::from_millis(2));
+            let start = download
+                .actions
+                .iter()
+                .find(|action| action.id == "start")
+                .unwrap();
+            let start = match &start.input {
+                tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => panic!("start takes no argument"),
+            };
+            invoke_encoded_setup(&mut app, &start).unwrap();
+            assert!(matches!(
+                app.desktop_flow.state(),
+                DesktopFlowState::Ready(_)
+            ));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                app.poll_background();
+                if app
+                    .internal_download_flow
+                    .as_ref()
+                    .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Ready))
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "internal download timed out");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(app.status, "Download ready");
+            assert!(!app.needs_idle_sync());
+            let ready_resource = setup_resource(&app, &AutoCommit::new());
+            let ready_download = child_resource(&ready_resource, "imager.setup.internal-download");
+            let release = ready_download
+                .actions
+                .iter()
+                .find(|action| action.id == "release")
+                .unwrap();
+            assert!(release.contract.availability.is_available());
+            for id in ["start", "pause", "resume", "cancel", "discard"] {
+                assert!(
+                    !ready_download
+                        .actions
+                        .iter()
+                        .find(|action| action.id == id)
+                        .unwrap()
+                        .contract
+                        .availability
+                        .is_available(),
+                    "{id} must be unavailable while verified data is held"
+                );
+            }
+            let mut ready = FrameHarness::new(
+                ui::State::new(),
+                Box::new(app.internal_download_card()),
+                (640, 320),
+            );
+            ready
+                .expect(
+                    &SemanticExpectation::named("setup.internal.release")
+                        .name_contains("Keep for later")
+                        .enabled(true),
+                )
+                .unwrap();
+
+            let release = match &release.input {
+                tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => panic!("release takes no argument"),
+            };
+            invoke_encoded_setup(&mut app, &release).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                app.poll_background();
+                if app
+                    .internal_download_flow
+                    .as_ref()
+                    .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Released))
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "internal release timed out");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(app.status, "Kept for later");
+            let released_resource = setup_resource(&app, &AutoCommit::new());
+            let released = child_resource(&released_resource, "imager.setup.internal-download");
+            assert!(
+                released
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "resume")
+                    .unwrap()
+                    .contract
+                    .availability
+                    .is_available()
+            );
+            assert!(
+                released
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "discard")
+                    .unwrap()
+                    .contract
+                    .availability
+                    .is_available()
+            );
+            assert_eq!(server.consumptions(), 0, "No staging consumer may run");
         }
-        assert_eq!(server.requests().len(), 3);
-        assert_eq!(server.consumptions(), 0, "No staging consumer may run");
-    }
 
-    #[test]
-    fn var_home_user_folder_is_accepted() {
-        let mut app = supported_fixture();
-        app.apply_worker_message(WorkerMessage::ScanFinished {
-            destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
-            result: Ok(FolderScan {
-                source: PathBuf::from("/var/home/qos/Documents"),
-                file_count: 4,
-                bytes: 80,
-                empty_directories: Vec::new(),
-                skipped: Vec::new(),
-            }),
-        });
+        // Catches a forged or stale command starting a Full qOS download away from its review.
+        #[test]
+        fn full_os_download_command_is_refused_outside_full_os_review() {
+            let bytes = manifest_bytes(&manifest_value());
+            let server = Server::new(vec![
+                response(200, "", &bytes),
+                response(200, "", &vec![b'E'; 4096]),
+                response(200, "", &vec![b'R'; 8192]),
+            ]);
+            let root = tempfile::tempdir().unwrap();
+            let preference = tempfile::tempdir().unwrap();
+            let worker = server.client(root.path(), &preference.path().join("selection.json"));
+            let mut app = supported_fixture();
+            app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+                app.capabilities.platform,
+                worker,
+                vec![
+                    vec![server.selection(&bytes)],
+                    vec![server.selection(&bytes)],
+                ],
+                "x86_64",
+            ));
+            app.internal_download_flow
+                .as_mut()
+                .unwrap()
+                .wait_preference();
 
-        assert_eq!(app.controller().folders().len(), 1);
-        assert!(app.status.contains("ready to copy"));
-    }
+            app.apply_command(SetupCommand::StartInternalDownload);
+
+            assert!(app.status_is_error);
+            assert_eq!(
+                app.status,
+                "Full Tilo downloads can start only from the Full Tilo review."
+            );
+            assert!(
+                app.internal_download_flow
+                    .as_ref()
+                    .is_some_and(|flow| flow.presentation().phase.is_none())
+            );
+            assert!(server.requests().is_empty());
+            assert_eq!(server.consumptions(), 0, "No staging consumer may run");
+        }
+
+        // Catches two routed Start commands replacing the active internal download before recompose.
+        #[test]
+        fn duplicate_full_os_start_command_is_rejected_without_an_extra_request() {
+            let bytes = manifest_bytes(&manifest_value());
+            let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
+            let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+            let mut request = 0;
+            let server = Server::on_request(
+                vec![
+                    response(200, "", &bytes),
+                    response(200, "", &vec![b'E'; 4096]),
+                    response(200, "", &vec![b'R'; 8192]),
+                    response(200, "", &bytes),
+                    response(200, "", &vec![b'E'; 4096]),
+                    response(200, "", &vec![b'R'; 8192]),
+                ],
+                move || {
+                    request += 1;
+                    if request == 2 {
+                        blocked_tx.send(()).unwrap();
+                        continue_rx.recv().unwrap();
+                    }
+                },
+            );
+            let root = tempfile::tempdir().unwrap();
+            let preference = tempfile::tempdir().unwrap();
+            let worker = server.client(root.path(), &preference.path().join("selection.json"));
+            let mut app = supported_fixture();
+            app.internal_download_flow = Some(InternalDownloadFlow::fixture_at(
+                app.capabilities.platform,
+                worker,
+                vec![
+                    vec![server.selection(&bytes)],
+                    vec![server.selection(&bytes)],
+                    vec![server.selection(&bytes)],
+                ],
+                "x86_64",
+            ));
+            app.internal_download_flow
+                .as_mut()
+                .unwrap()
+                .wait_preference();
+            app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+            app.apply_command(SetupCommand::Next);
+            app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+            app.apply_command(SetupCommand::Next);
+
+            app.apply_command(SetupCommand::StartInternalDownload);
+            blocked_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let requests = server.requests().len();
+            app.apply_command(SetupCommand::StartInternalDownload);
+            let duplicate_status = app.status.clone();
+            let duplicate_is_error = app.status_is_error;
+            let requests_after = server.requests().len();
+            continue_tx.send(()).unwrap();
+
+            assert!(duplicate_is_error);
+            assert_eq!(
+                duplicate_status,
+                "A Full Tilo download cannot start in its current state."
+            );
+            assert_eq!(requests_after, requests);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                app.poll_background();
+                if app
+                    .internal_download_flow
+                    .as_ref()
+                    .is_some_and(|flow| flow.presentation().phase == Some(InternalPhase::Ready))
+                {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "internal download timed out");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(server.requests().len(), 3);
+            assert_eq!(server.consumptions(), 0, "No staging consumer may run");
+        }
+
+        #[test]
+        fn var_home_user_folder_is_accepted() {
+            let mut app = supported_fixture();
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
+                result: Ok(FolderScan {
+                    source: PathBuf::from("/var/home/qos/Documents"),
+                    file_count: 4,
+                    bytes: 80,
+                    empty_directories: Vec::new(),
+                    skipped: Vec::new(),
+                }),
+            });
+
+            assert_eq!(app.controller().folders().len(), 1);
+            assert!(app.status.contains("ready to copy"));
+        }
     }
 
     // Catches treating the setup plan's suggested qOS path as a mounted target
@@ -3280,6 +3685,7 @@ mod tests {
             result: Ok(scan("Documents", 4096)),
         });
         app.apply_command(SetupCommand::SetMode(FolderMode::Copy));
+        app.apply_command(SetupCommand::Next);
         let selection = fixture_desktop_selection(false);
         app.desktop_flow = DesktopFlow::with_runtime_and_state(
             super::super::desktop_flow::DesktopRuntime {
@@ -3599,7 +4005,13 @@ mod tests {
             resource.presentation.as_ref().unwrap().badge.as_deref(),
             Some("Experience")
         );
-        assert_eq!(resource.actions.len(), 6);
+        assert_eq!(resource.actions.len(), 7);
+        let choose_folder = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "choose-folder")
+            .unwrap();
+        assert!(!choose_folder.contract.availability.is_available());
         let detail = resource
             .presentation
             .as_ref()
@@ -3769,6 +4181,82 @@ mod tests {
     }
 
     #[test]
+    fn setup_resource_localizes_every_public_presentation_without_changing_ids() {
+        let mut app = supported_fixture();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: None,
+            result: Ok(scan("Documents", 4096)),
+        });
+        ui::I18nManager::install(
+            "en-US",
+            "fr",
+            &[
+                ("en-US", "test-fallback = fallback"),
+                (
+                    "fr",
+                    r#"
+imager-setup-action-next = FR continuer
+imager-setup-badge-selection = FR selection
+imager-setup-badge-review = FR review
+imager-setup-badge-availability = FR availability
+imager-setup-badge-folder = FR folder { $number }
+imager-setup-badge-desktop = FR desktop
+imager-setup-badge-download = FR download
+imager-setup-badge-page-experience = FR experience
+imager-setup-detail-folder-common = FR folder common { $mode }
+imager-setup-detail-folder-override = FR folder override { $mode }
+imager-setup-detail-desktop = FR desktop { $phase } { $status }
+imager-setup-detail-internal-download = FR download { $phase } { $status }
+imager-setup-detail-selection = FR selection { $experience } { $folder_count }
+imager-setup-detail-review = FR review { $ready } { $page }
+imager-setup-detail-availability = FR availability { $desktop } { $full_os }
+imager-setup-detail-root = FR root { $page } { $folder_count }
+"#,
+                ),
+            ],
+        )
+        .unwrap();
+        super::super::strings::ensure();
+
+        let root = Widget::resources(&app, &AutoCommit::new()).pop().unwrap();
+        assert_eq!(root.id.as_str(), super::super::actions::SETUP_RESOURCE_ID);
+        assert_eq!(root.kind, "imager.setup");
+
+        let selection = child_resource(&root, "imager.setup.selection");
+        let review = child_resource(&root, "imager.setup.review");
+        let availability = child_resource(&root, "imager.setup.availability");
+        let desktop = child_resource(&root, "imager.setup.desktop");
+        let download = child_resource(&root, "imager.setup.internal-download");
+        let folder = &selection.children[0];
+        assert_eq!(folder.kind, "imager.setup.folder");
+
+        for resource in [
+            &root,
+            selection,
+            review,
+            availability,
+            desktop,
+            download,
+            folder,
+        ] {
+            let presentation = resource
+                .presentation
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} has no public presentation", resource.id.as_str()));
+            for localized in [
+                presentation.detail.as_deref().unwrap(),
+                presentation.badge.as_deref().unwrap(),
+            ] {
+                assert!(
+                    localized.starts_with("FR "),
+                    "{} presentation bypassed Fluent: {localized}",
+                    resource.id.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn retained_folder_action_uses_identity_after_earlier_folder_is_removed() {
         let mut app = supported_fixture();
         invoke_setup(
@@ -3816,5 +4304,156 @@ mod tests {
         assert_eq!(app.controller().folders()[0].mode, FolderMode::Later);
         assert_eq!(app.controller().folders()[1].scan.bytes, 3);
         assert_eq!(app.controller().folders()[1].mode, FolderMode::Copy);
+    }
+
+    // Catches retaining a suggestion's list index after discovery reorders or
+    // invalidates the native folder behind that stable suggestion identity.
+    #[test]
+    fn semantic_suggestion_selects_by_identity_then_refuses_unavailable_replay() {
+        let mut app = SetupApp::with_worker_launcher(
+            supported_fixture().capabilities,
+            accepted_without_completion_worker,
+        );
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        app.known_folders = vec![
+            KnownFolder {
+                kind: KnownFolderKind::Documents,
+                path: Some(PathBuf::from(TEST_SOURCE_ROOT).join("Documents")),
+                unavailable_reason: None,
+            },
+            KnownFolder {
+                kind: KnownFolderKind::Pictures,
+                path: Some(PathBuf::from(TEST_SOURCE_ROOT).join("Pictures")),
+                unavailable_reason: None,
+            },
+        ];
+
+        let root = setup_resource(&app, &AutoCommit::new());
+        let suggestion = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "imager.setup.suggestion.documents")
+            .expect("Documents suggestion must have a stable child resource");
+        assert_eq!(suggestion.label, "Documents folder");
+        let add = suggestion
+            .actions
+            .iter()
+            .find(|action| action.id == "select")
+            .expect("suggestion exposes its selection action");
+        assert!(add.contract.availability.is_available());
+        let encoded = match &add.input {
+            tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => {
+                panic!("a child suggestion fixes identity and takes no argument")
+            }
+        };
+
+        app.known_folders.swap(0, 1);
+        invoke_encoded_setup(&mut app, &encoded).unwrap();
+        assert_eq!(app.pending_scans, 1);
+        assert!(app.status.contains("Documents"), "{}", app.status);
+
+        app.known_folders
+            .iter_mut()
+            .find(|known| known.kind == KnownFolderKind::Documents)
+            .unwrap()
+            .path = None;
+        let pending = app.pending_scans;
+        let error = invoke_encoded_setup(&mut app, &encoded).unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
+        assert_eq!(app.pending_scans, pending);
+    }
+
+    // Catches the semantic picker action opening a second native chooser while
+    // the first chooser is still pending.
+    #[test]
+    fn semantic_picker_refuses_a_duplicate_pending_request() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        let action = setup_action(&app, "choose-folder", &AutoCommit::new());
+        assert_eq!(action.label, "Choose another folder");
+        let encoded = match &action.input {
+            tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => {
+                panic!("the native picker action takes no argument")
+            }
+        };
+        app.picker_launcher = disconnected_folder_picker;
+
+        let opened = invoke_encoded_setup(&mut app, &encoded).unwrap();
+        assert_eq!(opened["availability"]["choose_folder"], false);
+        assert!(app.picker_rx.is_some());
+
+        let error = invoke_encoded_setup(&mut app, &encoded).unwrap_err();
+        assert!(error.contains("already open"), "{error}");
+        assert!(app.picker_rx.is_some());
+    }
+
+    // Catches install authority leaking outside Desktop Review or bypassing
+    // the exact Ready and folder-settled gates used by the retained button.
+    #[test]
+    fn semantic_desktop_install_uses_reviewed_ready_gate_and_refuses_unsupported_host() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+        app.apply_command(SetupCommand::Next);
+        app.desktop_flow = DesktopFlow::with_runtime_and_state(
+            super::super::desktop_flow::DesktopRuntime {
+                launch_probe: disconnected_desktop_probe,
+                launch_download: disconnected_desktop_download,
+                launch_install: disconnected_desktop_install,
+            },
+            DesktopFlowState::Ready(fixture_desktop_selection(false)),
+        );
+        let root = setup_resource(&app, &AutoCommit::new());
+        let desktop = child_resource(&root, "imager.setup.desktop");
+        assert_eq!(desktop.label, "Tilo Desktop installation");
+        assert!(
+            desktop
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("ready")
+        );
+        let install = desktop
+            .actions
+            .iter()
+            .find(|action| action.id == "install")
+            .unwrap();
+        assert_eq!(install.label, "Install Tilo Desktop");
+        assert!(install.contract.availability.is_available());
+        let encoded = match &install.input {
+            tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("install takes no argument"),
+        };
+
+        invoke_encoded_setup(&mut app, &encoded).unwrap();
+        assert!(matches!(
+            app.desktop_flow.state(),
+            DesktopFlowState::Checking
+        ));
+
+        let mut unsupported = SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Other,
+                desktop_session: false,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+        let error = invoke_encoded_setup(&mut unsupported, &encoded).unwrap_err();
+        assert!(error.contains("unavailable"), "{error}");
+        assert!(matches!(
+            unsupported.desktop_flow.state(),
+            DesktopFlowState::Unavailable { .. }
+                | DesktopFlowState::Checking
+                | DesktopFlowState::Failed { .. }
+        ));
     }
 }

@@ -13,6 +13,7 @@ pub mod internal_bundle;
 mod internal_download_flow;
 pub mod known_folders;
 pub mod model;
+mod strings;
 pub mod view;
 
 pub use view::app_root;
