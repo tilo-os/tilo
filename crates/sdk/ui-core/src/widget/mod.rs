@@ -434,6 +434,20 @@ pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
 }
 
 pub trait Widget {
+    /// Transitional durable writer owned by this root rather than the host.
+    /// `None` means no such writer exists. Implementations must wait for all
+    /// pending writes and report failure; a queued flush is not success.
+    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        None
+    }
+
+    /// Local control intent queued behind asynchronous startup preparation.
+    /// This is a scheduling hint only; the host still checks live authority.
+    fn has_pending_control_invocation(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|child| child.has_pending_control_invocation())
+    }
     /// Owning lifecycle path: capture and close nested components before removing
     /// their live trees, transferring all recovery reports to the caller.
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
@@ -2223,6 +2237,9 @@ pub(crate) mod control_result_probe {
         pub(crate) results:
             Rc<RefCell<Vec<Result<ResourceOperationStart, tilo_actions::DoorError>>>>,
         pub(crate) calls: Rc<Cell<usize>>,
+        pub(crate) polls: Rc<Cell<usize>>,
+        pub(crate) commits: Rc<Cell<usize>>,
+        pub(crate) flushes: Rc<Cell<usize>>,
         pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
     }
     impl Observed {
@@ -2239,6 +2256,9 @@ pub(crate) mod control_result_probe {
         observed: Observed,
         accepted: bool,
         pub(crate) confirmation: bool,
+        pub(crate) terminal_after: Option<(usize, bool)>,
+        pub(crate) owned_flush: Option<Result<(), String>>,
+        pub(crate) dirty_typing: bool,
     }
     impl Probe {
         pub(crate) fn new(accepted: bool) -> (Self, Observed) {
@@ -2248,12 +2268,60 @@ pub(crate) mod control_result_probe {
                     observed: observed.clone(),
                     accepted,
                     confirmation: false,
+                    terminal_after: None,
+                    owned_flush: None,
+                    dirty_typing: false,
                 },
                 observed,
             )
         }
     }
     impl Widget for Probe {
+        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+            self.observed
+                .flushes
+                .set(self.observed.flushes.get().saturating_add(1));
+            self.owned_flush.clone()
+        }
+        fn needs_commit(&self) -> bool {
+            self.dirty_typing
+        }
+        fn on_commit(&mut self) {
+            self.observed
+                .commits
+                .set(self.observed.commits.get().saturating_add(1));
+            self.dirty_typing = false;
+        }
+        fn poll_resource_operation(
+            &mut self,
+            invocation: tilo_actions::InvocationId,
+            _: bool,
+            _: &AutoCommit,
+            _: &ObjId,
+        ) -> Option<tilo_actions::InvocationUpdate> {
+            let (after, succeeds) = self.terminal_after?;
+            let polls = self.observed.polls.get().saturating_add(1);
+            self.observed.polls.set(polls);
+            if polls < after {
+                return None;
+            }
+            Some(if succeeds {
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                }
+            } else {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "fixture_failed".into(),
+                        message: "Delayed finalizer failed".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                }
+            })
+        }
         fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
         fn build_layout(
             &mut self,

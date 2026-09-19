@@ -228,11 +228,22 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     if dest == path {
         return Ok(dest);
     }
-    if dest.exists() {
-        return Err(crate::i18n::t_args(
-            "files-name-exists",
-            &[crate::i18n::arg("name", new_name)],
-        ));
+    if let Ok(destination) = std::fs::symlink_metadata(&dest) {
+        // Case-insensitive filesystems resolve a new spelling to the source.
+        // Do not mistake that for a collision, or follow links into the source.
+        // symlink_metadata also protects dangling destinations, unlike exists().
+        let same_source = !destination.file_type().is_symlink()
+            && std::fs::symlink_metadata(path).is_ok_and(|source| !source.file_type().is_symlink())
+            && std::fs::canonicalize(path)
+                .ok()
+                .zip(std::fs::canonicalize(&dest).ok())
+                .is_some_and(|(source, destination)| source == destination);
+        if !same_source {
+            return Err(crate::i18n::t_args(
+                "files-name-exists",
+                &[crate::i18n::arg("name", new_name)],
+            ));
+        }
     }
     std::fs::rename(path, &dest).map_err(|e| e.to_string())?;
     Ok(dest)
