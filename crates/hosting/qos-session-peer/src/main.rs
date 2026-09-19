@@ -1,8 +1,21 @@
 use anyhow::{Context, Result, bail};
 use qos_session_peer::SessionOwner;
 use std::path::PathBuf;
+/// Diagnostics stay off unless `RUST_LOG` is set: the fixture's stdout carries
+/// status JSON, so tracing goes to stderr and never changes the protocol.
+fn install_tracing() {
+    if std::env::var_os("RUST_LOG").is_none() {
+        return;
+    }
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .try_init();
+}
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
+    install_tracing();
     let mut args = std::env::args_os().skip(1);
     let command = args
         .next()
