@@ -297,7 +297,7 @@ impl WorkspaceStore {
         channel: &[u8; 32],
         seq: Option<u64>,
         bytes: &[u8],
-    ) -> Result<(), StoreError> {
+    ) -> Result<u64, StoreError> {
         let (author, actual_channel, checkpoint) = identity(bytes, self.workspace_id)
             .ok_or_else(|| invalid("invalid retained envelope"))?;
         if actual_channel != *channel || checkpoint != seq.is_none() {
@@ -318,11 +318,13 @@ impl WorkspaceStore {
             None => commit_generation(&lineage, &[], None)?,
         };
         let entries = records(&active)?;
+        let mut written = 0;
         if seq.is_some() {
             // Delta identity includes the entire envelope; never collapse two
             // different publications just because their bodies happen to match.
             if !entries.iter().any(|entry| entry.bytes == bytes) {
                 durable_write(&next_record_path(&active, &entries)?, bytes)?;
+                written = bytes.len() as u64;
             }
         } else {
             let key = checkpoint_key(bytes, self.workspace_id);
@@ -332,7 +334,8 @@ impl WorkspaceStore {
             }) {
                 // This also recognizes older snapshot retries after their
                 // original files were collected: CURRENT proves their ancestry.
-                return collect_obsolete(&lineage, &active);
+                collect_obsolete(&lineage, &active)?;
+                return Ok(0);
             }
             let has_opaque_checkpoint = entries.iter().any(|entry| {
                 checkpoint_key(&entry.bytes, self.workspace_id).is_some()
@@ -344,14 +347,16 @@ impl WorkspaceStore {
                     .filter(|entry| !covers(bytes, &entry.bytes, self.workspace_id))
                     .collect();
                 let active = commit_generation(&lineage, &uncovered, Some(bytes))?;
+                written = bytes.len() as u64;
                 collect_obsolete(&lineage, &active)?;
             } else {
                 // No proof, or an opaque checkpoint whose relative replay
                 // order must be preserved: append once without any collection.
                 durable_write(&next_record_path(&active, &entries)?, bytes)?;
+                written = bytes.len() as u64;
             }
         }
-        Ok(())
+        Ok(written)
     }
 
     pub(super) fn load_shared(&self) -> Result<Vec<Vec<u8>>, StoreError> {

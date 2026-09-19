@@ -19,7 +19,9 @@ pub struct Metrics {
     auth_rejected: AtomicU64,
     /// Total deltas seen (across all workspaces).
     deltas_received: AtomicU64,
-    /// Total delta bytes queued to disk for offline peers.
+    /// Logical framed-envelope bytes newly written to retained/pending storage.
+    /// Counts shared retention once and excludes metadata, snapshots, audit,
+    /// duplicate retained retries, and physical filesystem allocation.
     bytes_queued: AtomicU64,
     /// Total deltas fanned out to live peers.
     deltas_fanned_out: AtomicU64,

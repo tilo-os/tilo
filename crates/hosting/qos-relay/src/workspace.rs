@@ -1,14 +1,7 @@
-//! Per-workspace runtime state: the pinned CRDT (if any), the set
-//! of live subscribers, and the fan-out routing rule.
-//!
-//! `WorkspaceRuntime` is owned by the daemon and shared with the
-//! connection tasks via `Arc<Mutex<_>>`. Each connection task, on
-//! subscribe, registers a bounded `mpsc::Sender<Envelope>` here;
-//! on receive-a-delta, the daemon iterates every subscriber ≠
-//! author and calls `try_send`. A saturated subscriber is disconnected
-//! and its durable traffic is queued for replay on reconnect. Peers that
-//! are NOT connected but are members of the workspace get their delta
-//! enqueued to disk.
+//! Per-workspace routing and authorization metadata. Live state storage and
+//! the pinned document transfer lazily to the bounded ordered persistence
+//! owner. Synchronous persistence methods remain compatibility helpers for
+//! runtimes that have not entered shared live service.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -67,14 +60,10 @@ pub struct Subscriber {
 pub struct WorkspaceRuntime {
     /// On-disk state.
     pub store: WorkspaceStore,
-    /// Pinned CRDT — only `Some` when the config marks this
-    /// workspace `pin = true`. Reloaded from disk on start and
-    /// materialized forward as raw Automerge deltas arrive (see
-    /// [`WorkspaceRuntime::materialize`]), so the host holds
-    /// authoritative current state that [`WorkspaceRuntime::changes_since`]
-    /// serves as the anti-entropy source of truth — independent of the
-    /// per-peer pending queues.
+    /// Initial pinned document. Transferred to `persistence` on first live
+    /// state operation; live anti-entropy accesses that owner, never this field.
     pub doc: Option<AutoCommit>,
+    pub(crate) persistence: Option<crate::persistence::Persistence>,
     /// Which of the user's devices are workspace members. Used to
     /// gate subscribes AND to decide who gets store-and-forward
     /// on delta receive.
@@ -92,6 +81,8 @@ pub struct WorkspaceRuntime {
     pub admitted_users: HashSet<[u8; 32]>,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
+    pub(crate) outbound_federation: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
+    pub(crate) state_sessions: HashMap<[u8; 32], crate::peer::StateSession>,
     pub(crate) action_targets: HashMap<[u8; 32], crate::peer::ActionTarget>,
     /// Device pubkeys of peer relays this workspace has federated
     /// with at least once since the daemon started. Ops arriving
@@ -139,6 +130,7 @@ impl WorkspaceRuntime {
         Ok(Self {
             store,
             doc,
+            persistence: None,
             membership,
             authorization: Arc::new(AsyncMutex::new(())),
             membership_ceiling: None,
@@ -148,6 +140,8 @@ impl WorkspaceRuntime {
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
             action_targets: HashMap::new(),
+            state_sessions: HashMap::new(),
+            outbound_federation: HashMap::new(),
         })
     }
 
@@ -168,6 +162,11 @@ impl WorkspaceRuntime {
             .is_some_and(|current| current.tx.same_channel(&sub.tx))
         {
             self.action_targets.remove(&sub.device_public_key);
+            if let Some(session) = self.state_sessions.remove(&sub.device_public_key) {
+                session
+                    .live
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
         }
         self.subscribers.insert(sub.device_public_key, sub);
     }
@@ -193,6 +192,11 @@ impl WorkspaceRuntime {
     pub fn remove_subscriber(&mut self, device: &[u8; 32]) {
         self.subscribers.remove(device);
         self.action_targets.remove(device);
+        if let Some(session) = self.state_sessions.remove(device) {
+            session
+                .live
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     /// Remove only the session that registered this queue. An old connection

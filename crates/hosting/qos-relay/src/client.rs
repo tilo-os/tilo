@@ -633,8 +633,14 @@ impl RelayClient {
             let mut schedule = V2Schedule::default();
             loop {
                 let event = if v2 {
-                    next_v2_event(&mut outbound_rx, &mut action_rx, &mut reader, &mut schedule)
-                        .await
+                    next_v2_event(
+                        &mut outbound_rx,
+                        &mut action_rx,
+                        &mut reader,
+                        &mut schedule,
+                        &inbound_tx,
+                    )
+                    .await
                 } else {
                     // Retain v1 scheduling and state-only behavior verbatim.
                     tokio::select! {
@@ -644,6 +650,8 @@ impl RelayClient {
                     }
                 };
                 match event {
+                    ClientEvent::InboundStateFlushed(Ok(())) => {}
+                    ClientEvent::InboundStateFlushed(Err(())) => break,
                     ClientEvent::State(Some(env)) => {
                         let Ok(bytes) = crate::transport_v2::encode_state(&env, v2) else {
                             break;
@@ -672,7 +680,7 @@ impl RelayClient {
                     ClientEvent::Action(None) => break,
                     ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(env)))) => {
                         if v2 {
-                            if inbound_tx.try_send(env).is_err() {
+                            if queue_inbound_state(&inbound_tx, &mut schedule, env).is_err() {
                                 break;
                             }
                         } else if inbound_tx.send(env).await.is_err() {
@@ -825,15 +833,38 @@ impl RelayClient {
 #[derive(Default)]
 struct V2Schedule {
     next_lane: usize,
+    events_since_yield: usize,
     pending_action: Option<EnvelopeV2>,
+    pending_inbound_state: Option<Envelope>,
     state_prefix: usize,
     actions_closed: bool,
+}
+
+fn queue_inbound_state(
+    sender: &mpsc::Sender<Envelope>,
+    schedule: &mut V2Schedule,
+    frame: Envelope,
+) -> Result<(), ()> {
+    // One decoded frame may wait beyond the application queue. The reader
+    // does not poll the wire again until this exact frame has been delivered.
+    if schedule.pending_inbound_state.is_some() {
+        return Err(());
+    }
+    match sender.try_send(frame) {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::TrySendError::Full(frame)) => {
+            schedule.pending_inbound_state = Some(frame);
+            Ok(())
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => Err(()),
+    }
 }
 
 enum ClientEvent {
     State(Option<Envelope>),
     Action(Option<EnvelopeV2>),
     Inbound(Result<Option<EnvelopeV2>, crate::transport::FrameError>),
+    InboundStateFlushed(Result<(), ()>),
 }
 
 // Poll buffered data before the receiver's cooperative-budget check. A Tokio
@@ -856,11 +887,32 @@ async fn next_v2_event<R: tokio::io::AsyncRead + Unpin>(
     actions: &mut mpsc::Receiver<EnvelopeV2>,
     reader: &mut SessionReader<R>,
     schedule: &mut V2Schedule,
+    state_sink: &mpsc::Sender<Envelope>,
 ) -> ClientEvent {
     use std::future::{Future, poll_fn};
     use std::task::Poll;
+    // Lane rotation uses try_recv to defeat per-lane cooperative-budget bias.
+    // Bound the pump's own always-ready burst too, so the actual consumers of
+    // its bounded inbound queues get a chance to run on the same executor.
+    if schedule.events_since_yield == 32 {
+        schedule.events_since_yield = 0;
+        let mut yielded = false;
+        poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+    }
+    schedule.events_since_yield = schedule.events_since_yield.saturating_add(1);
     let inbound = reader.read_next();
     tokio::pin!(inbound);
+    let capacity = state_sink.reserve();
+    tokio::pin!(capacity);
     poll_fn(|cx| {
         for offset in 0..3 {
             let lane = (schedule.next_lane + offset) % 3;
@@ -898,7 +950,22 @@ async fn next_v2_event<R: tokio::io::AsyncRead + Unpin>(
                     }
                 }
                 _ => {
-                    if let Poll::Ready(frame) = inbound.as_mut().poll(cx) {
+                    if schedule.pending_inbound_state.is_some() {
+                        if let Poll::Ready(capacity) = capacity.as_mut().poll(cx) {
+                            let result = match capacity {
+                                Ok(permit) => match schedule.pending_inbound_state.take() {
+                                    Some(frame) => {
+                                        permit.send(frame);
+                                        Ok(())
+                                    }
+                                    None => Err(()),
+                                },
+                                Err(_) => Err(()),
+                            };
+                            schedule.next_lane = 0;
+                            return Poll::Ready(ClientEvent::InboundStateFlushed(result));
+                        }
+                    } else if let Poll::Ready(frame) = inbound.as_mut().poll(cx) {
                         schedule.next_lane = 0;
                         return Poll::Ready(ClientEvent::Inbound(frame));
                     }
@@ -937,7 +1004,168 @@ mod scheduling_tests {
     }
 
     #[tokio::test]
+    async fn full_state_consumer_retains_one_frame_without_disconnect() {
+        let (sender, _receiver) = mpsc::channel(256);
+        for _ in 0..256 {
+            sender.try_send(Envelope::Pong).unwrap();
+        }
+        let mut schedule = V2Schedule::default();
+        assert!(
+            queue_inbound_state(&sender, &mut schedule, Envelope::Ping).is_ok(),
+            "healthy state saturation disconnected instead of preserving one pending frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_state_backpressure_is_bounded_cancellation_safe_and_resumes_in_order() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        let (state_tx, mut states) = mpsc::channel(256);
+        let (action_tx, mut actions) = mpsc::channel(32);
+        let (incoming, mut sink) = mpsc::channel(256);
+        let frame = |id| Envelope::Ready {
+            workspace_id: id,
+            pending_deltas: 0,
+        };
+        for id in 0..256 {
+            incoming.try_send(frame(id)).unwrap();
+        }
+        let mut schedule = V2Schedule::default();
+        queue_inbound_state(&incoming, &mut schedule, frame(256)).unwrap();
+        // No second overflow slot is permitted, even through a direct caller.
+        assert!(queue_inbound_state(&incoming, &mut schedule, frame(999)).is_err());
+        let bytes = crate::transport_v2::encode(&EnvelopeV2::State(frame(257))).unwrap();
+        let mut reader = SessionReader::new(std::io::Cursor::new(bytes), true);
+        for _ in 0..8 {
+            // Poll and cancel a real capacity wait. Neither the pending frame
+            // nor the next frame on the ordered wire can be consumed/lost.
+            let event = next_v2_event(
+                &mut states,
+                &mut actions,
+                &mut reader,
+                &mut schedule,
+                &incoming,
+            );
+            tokio::pin!(event);
+            poll_fn(|cx| {
+                assert!(event.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+        }
+        action_tx.try_send(action()).unwrap();
+        assert!(matches!(
+            next_v2_event(
+                &mut states,
+                &mut actions,
+                &mut reader,
+                &mut schedule,
+                &incoming
+            )
+            .await,
+            ClientEvent::Action(Some(_))
+        ));
+        state_tx.try_send(Envelope::Ping).unwrap();
+        assert!(matches!(
+            next_v2_event(
+                &mut states,
+                &mut actions,
+                &mut reader,
+                &mut schedule,
+                &incoming
+            )
+            .await,
+            ClientEvent::State(Some(Envelope::Ping))
+        ));
+        assert_eq!(sink.len(), 256);
+        assert_eq!(schedule.pending_inbound_state, Some(frame(256)));
+        assert_eq!(sink.recv().await, Some(frame(0)));
+        assert!(matches!(
+            next_v2_event(
+                &mut states,
+                &mut actions,
+                &mut reader,
+                &mut schedule,
+                &incoming
+            )
+            .await,
+            ClientEvent::InboundStateFlushed(Ok(()))
+        ));
+        assert!(schedule.pending_inbound_state.is_none());
+        for id in 1..=256 {
+            assert_eq!(sink.recv().await, Some(frame(id)));
+        }
+        match next_v2_event(
+            &mut states,
+            &mut actions,
+            &mut reader,
+            &mut schedule,
+            &incoming,
+        )
+        .await
+        {
+            ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(got)))) => assert_eq!(got, frame(257)),
+            _ => panic!("reader lost or reordered the frame following backpressure"),
+        }
+        for _ in 0..256 {
+            incoming.try_send(Envelope::Pong).unwrap();
+        }
+        queue_inbound_state(&incoming, &mut schedule, frame(258)).unwrap();
+        drop(sink);
+        assert!(matches!(
+            next_v2_event(
+                &mut states,
+                &mut actions,
+                &mut reader,
+                &mut schedule,
+                &incoming
+            )
+            .await,
+            ClientEvent::InboundStateFlushed(Err(()))
+        ));
+    }
+
+    #[tokio::test]
+    async fn always_ready_wire_yields_to_the_actual_bounded_state_consumer() {
+        let (_state_tx, mut states) = mpsc::channel(256);
+        let (_action_tx, mut actions) = mpsc::channel(32);
+        let (incoming, mut consumed) = mpsc::channel(256);
+        let consumer = tokio::spawn(async move {
+            let mut count = 0;
+            while consumed.recv().await.is_some() {
+                count += 1;
+            }
+            count
+        });
+        let bytes = crate::transport_v2::encode(&EnvelopeV2::State(Envelope::Pong))
+            .unwrap()
+            .repeat(1024);
+        let mut reader = SessionReader::new(std::io::Cursor::new(bytes), true);
+        let mut schedule = V2Schedule::default();
+        for _ in 0..1024 {
+            let ClientEvent::Inbound(Ok(Some(EnvelopeV2::State(frame)))) = next_v2_event(
+                &mut states,
+                &mut actions,
+                &mut reader,
+                &mut schedule,
+                &incoming,
+            )
+            .await
+            else {
+                panic!("unexpected event")
+            };
+            assert!(
+                incoming.try_send(frame).is_ok(),
+                "always-ready reader starved the consumer and overflowed a healthy bounded channel"
+            );
+        }
+        drop(incoming);
+        assert_eq!(consumer.await.unwrap(), 1024);
+    }
+
+    #[tokio::test]
     async fn sustained_ready_state_and_private_traffic_cannot_starve_the_reader() {
+        let (incoming, _sink) = mpsc::channel(256);
         let (state_tx, mut states) = mpsc::channel(256);
         let (action_tx, mut actions) = mpsc::channel(32);
         for _ in 0..256 {
@@ -955,7 +1183,15 @@ mod scheduling_tests {
         for window in 0..128 {
             let mut counts = [0; 3];
             for _ in 0..8 {
-                match next_v2_event(&mut states, &mut actions, &mut reader, &mut schedule).await {
+                match next_v2_event(
+                    &mut states,
+                    &mut actions,
+                    &mut reader,
+                    &mut schedule,
+                    &incoming,
+                )
+                .await
+                {
                     ClientEvent::State(Some(Envelope::Ping)) => {
                         counts[0] += 1;
                         state_tx.try_send(Envelope::Ping).unwrap();
@@ -980,6 +1216,7 @@ mod scheduling_tests {
 
     #[tokio::test]
     async fn action_enable_waits_for_queued_subscribe_but_not_an_unbounded_flood() {
+        let (incoming, _sink) = mpsc::channel(256);
         let (state_tx, mut states) = mpsc::channel(256);
         let (action_tx, mut actions) = mpsc::channel(32);
         let room = Uuid::from_u128(1);
@@ -1000,7 +1237,15 @@ mod scheduling_tests {
         let mut enabled = false;
         let mut received = 0;
         for _ in 0..1024 {
-            match next_v2_event(&mut states, &mut actions, &mut reader, &mut schedule).await {
+            match next_v2_event(
+                &mut states,
+                &mut actions,
+                &mut reader,
+                &mut schedule,
+                &incoming,
+            )
+            .await
+            {
                 ClientEvent::State(Some(env)) => {
                     if matches!(env, Envelope::Subscribe { .. }) {
                         subscribed = true;

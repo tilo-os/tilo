@@ -21,8 +21,8 @@ use crate::transport::Envelope;
 use crate::transport_v2::{ActionCapability, EnvelopeV2, SessionReader};
 use crate::workspace::{SharedWorkspace, Subscriber};
 
-/// Maximum live fan-out backlog per connected peer. Durable deltas move to
-/// disk once this fills; ephemeral presence may be dropped with the session.
+/// Maximum live fan-out backlog per connected peer. Deltas are durable before
+/// queueing; saturation disconnects the recipient for replay on reconnect.
 const PEER_OUTBOUND_CAPACITY: usize = 32;
 
 /// Reason a peer task ends.
@@ -64,8 +64,8 @@ pub struct WorkspaceAutobind {
     pub state_root: std::path::PathBuf,
 }
 
-/// Sequence-number source for enqueued deltas — a monotonic clock
-/// so filenames sort in delivery order across restarts.
+/// Wall-clock timestamp for protocol and diagnostics. Ordered state owners
+/// allocate durable monotonic receipt sequences separately.
 pub fn now_ns() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -104,8 +104,10 @@ struct SessionCtx<'a> {
     workspaces: &'a WorkspaceRegistry,
     autobind: Option<&'a WorkspaceAutobind>,
     outbound: &'a mpsc::Sender<Envelope>,
+    state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
+    connection_live: Option<&'a Arc<std::sync::atomic::AtomicBool>>,
     own_user_public_key: &'a [u8; 32],
-    metrics: &'a crate::metrics::Metrics,
+    metrics: &'a Arc<crate::metrics::Metrics>,
     trust_policy: &'a Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     disconnect: &'a mpsc::Sender<()>,
     v2: bool,
@@ -143,7 +145,7 @@ pub(crate) async fn run_peer_version<R, W>(
     peer: AuthenticatedPeer,
     connection: iroh::endpoint::Connection,
     read: R,
-    mut write: W,
+    write: W,
     ctx: PeerContext,
     v2: bool,
 ) -> Result<(), PeerError>
@@ -151,6 +153,23 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    run_peer_stream(peer, read, write, ctx, v2, connection.closed()).await
+}
+
+// Shared stream driver also exercised with a deterministic in-memory wire.
+async fn run_peer_stream<R, W>(
+    peer: AuthenticatedPeer,
+    read: R,
+    mut write: W,
+    ctx: PeerContext,
+    v2: bool,
+    closed: impl std::future::Future,
+) -> Result<(), PeerError>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::pin!(closed);
     let PeerContext {
         workspaces,
         autobind,
@@ -163,6 +182,7 @@ where
     // Outbound channel — every workspace runtime this peer is
     // subscribed to writes into it; we drain to the wire.
     let (tx, mut rx) = mpsc::channel::<Envelope>(PEER_OUTBOUND_CAPACITY);
+    let (state_tx, mut state_rx) = mpsc::channel::<StateDelivery>(PEER_OUTBOUND_CAPACITY);
     let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(1);
     let mut reader = SessionReader::new(read, v2);
     let (private_tx, mut private_rx) = mpsc::channel(PEER_OUTBOUND_CAPACITY);
@@ -172,10 +192,13 @@ where
     access_audit.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     access_audit.tick().await;
 
+    let connection_live = ConnectionLease(Arc::new(std::sync::atomic::AtomicBool::new(true)));
     let session = SessionCtx {
         workspaces: &workspaces,
         autobind: autobind.as_ref(),
         outbound: &tx,
+        state_outbound: Some(&state_tx),
+        connection_live: Some(&connection_live.0),
         own_user_public_key: &own_user_public_key,
         metrics: &metrics,
         trust_policy: &trust_policy,
@@ -192,58 +215,219 @@ where
     // is unconditional. Leaving a subscription behind is not cosmetic —
     // fan-out then writes deltas to a peer that is gone instead of
     // queueing them for store-and-forward, and they are lost.
-    let outcome: Result<(), PeerError> = async {
+    let (reply_tx, mut reply_rx) = mpsc::channel::<ReplayWrite>(8);
+    let pending_replays = std::sync::atomic::AtomicUsize::new(0);
+    let reading = async {
+        let mut backlog: std::collections::VecDeque<(
+            EnvelopeV2,
+            Arc<tokio::sync::OwnedSemaphorePermit>,
+        )> = std::collections::VecDeque::new();
         loop {
-            tokio::select! {
-                biased;
-                _ = connection.closed() => break,
-                _ = access_audit.tick() => {
-                    audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?;
+            let (frame, _inbound_budget) = if let Some((frame, budget)) = backlog.pop_front() {
+                (frame, Some(budget))
+            } else {
+                tokio::select! {
+                    _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
+                    frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) }
                 }
-                _ = disconnect_rx.recv() => {
-                    return Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into()));
-                }
-                outbound = rx.recv() => {
-                    match outbound {
-                        Some(env) => {
-                            let bytes = crate::transport_v2::encode_state(&env, v2)?;
-                            write.write_all(&bytes).await?;
-                        }
-                        None => break,
+            };
+            match frame {
+                EnvelopeV2::State(env) => {
+                    let replaying = matches!(env, Envelope::Subscribe { .. });
+                    let blocked_room = match &env {
+                        Envelope::Subscribe { workspace_id }
+                        | Envelope::Unsubscribe { workspace_id } => Some(*workspace_id),
+                        _ => None,
+                    };
+                    if replaying {
+                        pending_replays.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
-                }
-                private = private_rx.recv(), if v2 => {
-                    if let Some(private) = private {
-                        match private {
-                            PrivateOutbound::Reply(reply) => write.write_all(&crate::transport_v2::encode(&reply)?).await?,
-                            PrivateOutbound::Delivery(delivery) => {
-                                write_private_delivery(&delivery, &peer, &session, &mut write).await?;
-                            }
-                        }
-                    }
-                }
-                frame = reader.read_next() => {
-                    match frame {
-                        Ok(Some(env)) => {
-                            match env {
-                                EnvelopeV2::State(env) => handle_inbound_frame(env, &peer, &session, &mut subscribed, &mut write).await?,
-                                frame => {
-                                    if let Some(reply) = handle_private(frame, &peer, &session).await? {
-                                        write.write_all(&crate::transport_v2::encode(&reply)?).await?;
+                    let mut frames = Vec::new();
+                    let mut cleanup = Vec::new();
+                    let reply = {
+                        let operation = handle_envelope(
+                            &peer,
+                            env,
+                            &session,
+                            &mut subscribed,
+                            &mut frames,
+                            &mut cleanup,
+                        );
+                        tokio::pin!(operation);
+                        loop {
+                            tokio::select! {
+                                biased;
+                                result = &mut operation => break result?,
+                                frame = reader.read_next(), if backlog.len() < 32 => {
+                                    let Some(frame) = frame? else { return Ok(()); };
+                                    let can_route = match &frame {
+                                        EnvelopeV2::Directed(action) => {
+                                            let id = crate::room_workspace_id(&action.room.to_string()).ok();
+                                            id != blocked_room && !backlog.iter().any(|(queued, _)| control_room(queued).is_some_and(|queued| Some(queued) == id))
+                                        }
+                                        _ => false,
+                                    };
+                                    if can_route {
+                                        if let Some(reply) = handle_private(frame, &peer, &session).await? {
+                                            private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
+                                        }
+                                    } else {
+                                        let budget = crate::persistence::delivery_budget(inbound_bytes(&frame))?;
+                                        backlog.push_back((frame, budget));
                                     }
                                 }
                             }
                         }
-                        Ok(None) => break,
-                        Err(e) => return Err(PeerError::Frame(e)),
+                    };
+                    if replaying || reply.is_some() || !frames.is_empty() {
+                        let sending = reply_tx.send(ReplayWrite {
+                            frames: frames.into(),
+                            cleanup,
+                            reply,
+                            replaying,
+                        });
+                        tokio::pin!(sending);
+                        loop {
+                            tokio::select! {
+                                biased;
+                                result = &mut sending => {
+                                    result.map_err(|_| PeerError::Protocol("reply backpressure".into()))?;
+                                    break;
+                                }
+                                frame = reader.read_next(), if backlog.len() < 32 => {
+                                    let Some(frame) = frame? else { return Ok(()); };
+                                    let can_route = match &frame {
+                                        EnvelopeV2::Directed(action) => {
+                                            let id = crate::room_workspace_id(&action.room.to_string()).ok();
+                                            !backlog.iter().any(|(queued, _)| control_room(queued).is_some_and(|queued| Some(queued) == id))
+                                        }
+                                        _ => false,
+                                    };
+                                    if can_route {
+                                        if let Some(reply) = handle_private(frame, &peer, &session).await? {
+                                            private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
+                                        }
+                                    } else {
+                                        let budget = crate::persistence::delivery_budget(inbound_bytes(&frame))?;
+                                        backlog.push_back((frame, budget));
+                                    }
+                                    // Give the sole writer a turn even when the
+                                    // peer supplies an always-ready control flood.
+                                    tokio::task::yield_now().await;
+                                }
+                            }
+                        }
+                    }
+                }
+                frame => {
+                    if let Some(reply) = handle_private(frame, &peer, &session).await? {
+                        private_tx
+                            .try_send(PrivateOutbound::Reply(reply))
+                            .map_err(|_| {
+                                PeerError::Protocol("private reply backpressure".into())
+                            })?;
                     }
                 }
             }
         }
-        Ok(())
-    }
-    .await;
+    };
+    let writing = async {
+        let mut active: Option<ReplayWrite> = None;
+        let mut private_burst = 0usize;
+        let mut deferred_state = None;
+        let mut deferred_frame = None;
+        let mut raw_turn = false;
+        loop {
+            if active.is_none() {
+                active = reply_rx.try_recv().ok();
+            }
+            // At most eight private frames before one available state/replay
+            // frame. A single writer completes every frame before switching.
+            if private_burst < 8
+                && let Ok(private) = private_rx.try_recv()
+            {
+                write_private(private, &peer, &session, &mut write).await?;
+                private_burst = private_burst.saturating_add(1);
+                continue;
+            }
+            if let Some(batch) = &mut active {
+                if let Some(frame) = batch.frames.pop_front() {
+                    authorize_state_frame(&frame, &peer, &session).await?;
+                    write
+                        .write_all(&crate::transport_v2::encode_state(&frame, v2)?)
+                        .await?;
+                } else {
+                    let Some(batch) = active.take() else {
+                        continue;
+                    };
+                    finish_replay_write(
+                        batch,
+                        &peer,
+                        &session,
+                        &pending_replays,
+                        &mut private_rx,
+                        &mut write,
+                    )
+                    .await?;
+                }
+                private_burst = 0;
+                continue;
+            }
+            let live = pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0;
+            if live {
+                if deferred_frame.is_none() {
+                    deferred_frame = rx.try_recv().ok();
+                }
+                if deferred_state.is_none() {
+                    deferred_state = state_rx.try_recv().ok();
+                }
+                if (raw_turn || deferred_state.is_none())
+                    && let Some(frame) = deferred_frame.take()
+                {
+                    authorize_state_frame(&frame, &peer, &session).await?;
+                    write
+                        .write_all(&crate::transport_v2::encode_state(&frame, v2)?)
+                        .await?;
+                    private_burst = 0;
+                    raw_turn = false;
+                    continue;
+                }
+                if let Some(state) = deferred_state.take() {
+                    write_state_delivery(state, &peer, &session, &mut write).await?;
+                    private_burst = 0;
+                    raw_turn = true;
+                    continue;
+                }
+            }
+            // None of the queues was ready. Await readiness without starting
+            // a write in a cancellable select branch.
+            tokio::select! {
+                biased;
+                batch = reply_rx.recv() => { active = batch; }
+                private = private_rx.recv(), if v2 => {
+                    if let Some(private) = private { write_private(private, &peer, &session, &mut write).await?; private_burst = 1; }
+                }
+                state = state_rx.recv(), if live => {
+                    deferred_state = state;
+                }
+                frame = rx.recv(), if live => {
+                    deferred_frame = frame;
+                }
+            }
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), PeerError>(())
+    };
+    let outcome = tokio::select! {
+        _ = &mut closed => Ok(()),
+        _ = disconnect_rx.recv() => Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into())),
+        result = reading => result,
+        result = writing => result,
+    };
 
+    connection_live
+        .0
+        .store(false, std::sync::atomic::Ordering::SeqCst);
     let wsmap = workspaces.lock().await;
     for id in &subscribed {
         if let Some(ws) = wsmap.get(id) {
@@ -254,6 +438,171 @@ where
     }
     drop(wsmap);
     outcome
+}
+
+struct ConnectionLease(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for ConnectionLease {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+fn control_room(frame: &EnvelopeV2) -> Option<u64> {
+    match frame {
+        EnvelopeV2::State(
+            Envelope::Subscribe { workspace_id } | Envelope::Unsubscribe { workspace_id },
+        ) => Some(*workspace_id),
+        _ => None,
+    }
+}
+fn inbound_bytes(frame: &EnvelopeV2) -> usize {
+    match frame {
+        EnvelopeV2::State(Envelope::Delta { delta, .. }) => delta.len().saturating_add(256),
+        EnvelopeV2::State(Envelope::Presence { payload, .. }) => payload.len().saturating_add(256),
+        EnvelopeV2::State(Envelope::SyncResponse { delta_since, .. }) => {
+            delta_since.len().saturating_add(256)
+        }
+        EnvelopeV2::State(Envelope::SyncRequest { have_heads, .. }) => {
+            have_heads.len().saturating_mul(32).saturating_add(256)
+        }
+        EnvelopeV2::State(Envelope::PeerRelayHello { hosted_workspaces }) => hosted_workspaces
+            .len()
+            .saturating_mul(8)
+            .saturating_add(256),
+        EnvelopeV2::State(Envelope::NotAuthorised { reason, .. }) => {
+            reason.len().saturating_add(256)
+        }
+        // Bounds all non-state/private controls without serializing payloads.
+        _ => 64 * 1024,
+    }
+}
+
+struct ReplayWrite {
+    frames: std::collections::VecDeque<Envelope>,
+    cleanup: Vec<std::path::PathBuf>,
+    reply: Option<Envelope>,
+    replaying: bool,
+}
+async fn write_private<W: tokio::io::AsyncWrite + Unpin>(
+    private: PrivateOutbound,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    match private {
+        PrivateOutbound::Reply(reply) => {
+            write
+                .write_all(&crate::transport_v2::encode(&reply)?)
+                .await?;
+        }
+        PrivateOutbound::Delivery(delivery) => {
+            write_private_delivery(&delivery, peer, session, write).await?;
+        }
+    }
+    Ok(())
+}
+async fn authorize_state_frame(
+    frame: &Envelope,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<(), PeerError> {
+    let (id, subscribed) = match frame {
+        Envelope::Delta { workspace_id, .. }
+        | Envelope::Ready { workspace_id, .. }
+        | Envelope::Presence { workspace_id, .. } => (*workspace_id, true),
+        Envelope::SyncResponse { workspace_id, .. } => (*workspace_id, false),
+        _ => return Ok(()),
+    };
+    let ws = session
+        .workspaces
+        .lock()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| PeerError::Protocol("workspace disappeared".into()))?;
+    let wr = crate::workspace_io::fresh_membership(&ws).await?;
+    if !session_peer_authorized(peer, session)
+        || !state_member(&wr, peer)
+        || ((subscribed || wr.subscribers.contains_key(&peer.device_public_key))
+            && !current_session(&wr, peer, session.outbound))
+    {
+        return Err(PeerError::Protocol(
+            "state recipient authorization changed".into(),
+        ));
+    }
+    Ok(())
+}
+async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
+    batch: ReplayWrite,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    pending: &std::sync::atomic::AtomicUsize,
+    private_rx: &mut mpsc::Receiver<PrivateOutbound>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    if let Some(reply) = &batch.reply {
+        authorize_state_frame(reply, peer, session).await?;
+    }
+    if !batch.cleanup.is_empty() {
+        let Some(Envelope::Ready { workspace_id, .. }) = &batch.reply else {
+            return Err(PeerError::Protocol("replay cleanup without Ready".into()));
+        };
+        let ws = session
+            .workspaces
+            .lock()
+            .await
+            .get(workspace_id)
+            .cloned()
+            .ok_or_else(|| PeerError::Protocol("replay workspace disappeared".into()))?;
+        let owner = crate::persistence::handle(&ws).await;
+        let live = {
+            let runtime = ws.lock().await;
+            if !current_session(&runtime, peer, session.outbound) {
+                return Err(PeerError::Protocol("replay subscriber replaced".into()));
+            }
+            runtime
+                .state_sessions
+                .get(&peer.device_public_key)
+                .map(|session| session.live.clone())
+                .ok_or_else(|| PeerError::Protocol("replay session missing".into()))?
+        };
+        let receipt = owner.read(1, move |state| {
+            #[cfg(test)]
+            crate::store::test_barrier::pause(state.store.root(), "replay-cleanup");
+            let _ = state;
+            if !live.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(());
+            }
+            for path in batch.cleanup {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(())
+        })?;
+        let completed = crate::persistence::receipt(receipt);
+        tokio::pin!(completed);
+        loop {
+            tokio::select! {
+                biased;
+                result = &mut completed => { result?; break; }
+                private = private_rx.recv(), if session.v2 => {
+                    if let Some(private) = private { write_private(private, peer, session, write).await?; }
+                }
+            }
+        }
+    }
+    if let Some(reply) = batch.reply {
+        authorize_state_frame(&reply, peer, session).await?;
+        write
+            .write_all(&crate::transport_v2::encode_state(&reply, session.v2)?)
+            .await?;
+    }
+    if batch.replaying {
+        pending.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(())
 }
 
 /// Periodic membership + revocation re-check for every workspace this
@@ -320,6 +669,7 @@ async fn audit_subscriber_access(
 /// followed by the direct reply, if any. Pending on-disk backlog
 /// files are cleaned up only after being written, so a write failure
 /// leaves them intact for the next reconnect.
+#[cfg(test)]
 async fn handle_inbound_frame<W>(
     env: Envelope,
     peer: &AuthenticatedPeer,
@@ -458,22 +808,95 @@ async fn handle_subscribe(
             }));
         }
     }
-    let (retained_count, retained) = load_retained_replay(&wr, workspace_id, replay)?;
-    let pending_count =
-        load_pending_replay(&wr, peer, workspace_id, &retained, replay, replay_cleanup)?;
-    wr.add_subscriber(Subscriber {
-        device_public_key: peer.device_public_key,
-        role: peer.role,
-        tx: session.outbound.clone(),
-        disconnect: session.disconnect.clone(),
-    });
+    let expected = wr
+        .subscribers
+        .get(&peer.device_public_key)
+        .map(|sub| sub.tx.clone());
     drop(wr);
+    let owner = crate::persistence::handle(&ws).await;
+    let replay_peer = peer.clone();
+    let source = StateSource::new(peer, session);
+    let state_tx = session.state_outbound.cloned();
+    let completion_workspace = ws.clone();
+    let rx = owner.submit(
+        1,
+        move |state| {
+            let mut replay = Vec::new();
+            let mut cleanup = Vec::new();
+            let (retained_count, retained) =
+                load_retained_replay(&state.store, workspace_id, &mut replay)
+                    .map_err(|e| crate::persistence::error(e.to_string()))?;
+            let pending_count = load_pending_replay(
+                &state.store,
+                &replay_peer,
+                workspace_id,
+                &retained,
+                &mut replay,
+                &mut cleanup,
+            )
+            .map_err(|e| crate::persistence::error(e.to_string()))?;
+            Ok((
+                replay,
+                cleanup,
+                pending_count.saturating_add(retained_count),
+            ))
+        },
+        move |result| async move {
+            let result = result?;
+            let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
+            let unchanged = match (
+                expected.as_ref(),
+                wr.subscribers.get(&source.peer.device_public_key),
+            ) {
+                (Some(expected), Some(current)) => expected.same_channel(&current.tx),
+                (None, None) => true,
+                _ => false,
+            };
+            if !source.alive()
+                || !source.cert(&source.peer)
+                || !state_member(&wr, &source.peer)
+                || !unchanged
+            {
+                return Err(crate::persistence::error(
+                    "replay subscriber authorization changed",
+                ));
+            }
+            wr.add_subscriber(Subscriber {
+                device_public_key: source.peer.device_public_key,
+                role: source.peer.role,
+                tx: source.tx,
+                disconnect: source.disconnect,
+            });
+            if let Some(tx) = state_tx {
+                let live = wr
+                    .state_sessions
+                    .get(&source.peer.device_public_key)
+                    .map_or_else(
+                        || Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                        |session| session.live.clone(),
+                    );
+                wr.state_sessions.insert(
+                    source.peer.device_public_key,
+                    StateSession {
+                        live,
+                        peer: source.peer,
+                        tx,
+                    },
+                );
+            }
+            drop(wr);
+            Ok(result)
+        },
+    )?;
+    let (frames, cleanup, count) = crate::persistence::receipt(rx).await?;
+    replay.extend(frames);
+    replay_cleanup.extend(cleanup);
     if !subscribed.contains(&workspace_id) {
         subscribed.push(workspace_id);
     }
     Ok(Some(Envelope::Ready {
         workspace_id,
-        pending_deltas: pending_count.saturating_add(retained_count),
+        pending_deltas: count,
     }))
 }
 
@@ -481,11 +904,11 @@ async fn handle_subscribe(
 /// pending queue these exist before a newly invited device has ever
 /// connected, which is what makes an offline owner + new guest work.
 fn load_retained_replay(
-    wr: &crate::workspace::WorkspaceRuntime,
+    store: &crate::store::WorkspaceStore,
     workspace_id: u64,
     replay: &mut Vec<Envelope>,
 ) -> Result<(u32, std::collections::HashSet<Vec<u8>>), PeerError> {
-    let retained = wr.store.load_retained()?;
+    let retained = store.load_retained()?;
     let mut retained_bytes = std::collections::HashSet::new();
     let mut retained_count = 0u32;
     for raw in retained {
@@ -526,14 +949,14 @@ fn load_retained_replay(
 /// files until the connection task has written the complete replay.
 /// A write failure therefore leaves the queue intact for reconnect.
 fn load_pending_replay(
-    wr: &crate::workspace::WorkspaceRuntime,
+    store: &crate::store::WorkspaceStore,
     peer: &AuthenticatedPeer,
     workspace_id: u64,
     retained: &std::collections::HashSet<Vec<u8>>,
     replay: &mut Vec<Envelope>,
     replay_cleanup: &mut Vec<std::path::PathBuf>,
 ) -> Result<u32, PeerError> {
-    let pending = wr.store.load_pending(&peer.device_public_key)?;
+    let pending = store.load_pending(&peer.device_public_key)?;
     let mut pending_count = 0u32;
     for entry in pending {
         // A retained document message may also have been queued while this
@@ -597,6 +1020,406 @@ async fn handle_unsubscribe(
 /// Handle an inbound `Delta`: validate the author, fan out to every
 /// other subscriber via the same path a federated peer relay uses,
 /// and account it in the metrics.
+#[derive(Clone)]
+pub(crate) struct StateSession {
+    pub(crate) peer: AuthenticatedPeer,
+    pub(crate) tx: mpsc::Sender<StateDelivery>,
+    pub(crate) live: Arc<std::sync::atomic::AtomicBool>,
+}
+#[derive(Clone)]
+pub(crate) struct StateSource {
+    peer: AuthenticatedPeer,
+    tx: mpsc::Sender<Envelope>,
+    disconnect: mpsc::Sender<()>,
+    revocations: Arc<std::sync::RwLock<qos_user_identity::RevocationList>>,
+    policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
+    own_user: [u8; 32],
+    federation: Option<Arc<std::sync::atomic::AtomicBool>>,
+    session_live: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+impl StateSource {
+    pub(crate) fn federated(
+        peer: AuthenticatedPeer,
+        tx: mpsc::Sender<Envelope>,
+        disconnect: mpsc::Sender<()>,
+        revocations: Arc<std::sync::RwLock<qos_user_identity::RevocationList>>,
+        own_user: [u8; 32],
+        lease: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            peer,
+            tx,
+            disconnect,
+            revocations,
+            policy: Arc::new(std::sync::RwLock::new(
+                crate::policy::TrustPolicy::AllowMatchingUser,
+            )),
+            own_user,
+            federation: Some(lease),
+            session_live: None,
+        }
+    }
+    fn alive(&self) -> bool {
+        !self.tx.is_closed()
+            && self
+                .session_live
+                .as_ref()
+                .is_none_or(|live| live.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    pub(crate) fn failed(&self) {
+        let _ = self.disconnect.try_send(());
+    }
+    fn new(peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> Self {
+        Self {
+            peer: peer.clone(),
+            tx: session.outbound.clone(),
+            disconnect: session.disconnect.clone(),
+            revocations: session.revocations.clone(),
+            policy: session.trust_policy.clone(),
+            own_user: *session.own_user_public_key,
+            federation: None,
+            session_live: session.connection_live.cloned(),
+        }
+    }
+    fn cert(&self, peer: &AuthenticatedPeer) -> bool {
+        peer.cert
+            .expires_at_ns
+            .is_none_or(|expiry| expiry > now_ns())
+            && self
+                .revocations
+                .read()
+                .is_ok_and(|list| !list.is_revoked(&peer.device_public_key))
+            && self
+                .policy
+                .read()
+                .is_ok_and(|policy| policy.admits(&peer.cert, &self.own_user))
+    }
+    pub(crate) fn authorized(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
+        self.alive()
+            && self.cert(&self.peer)
+            && state_member(runtime, &self.peer)
+            && match &self.federation {
+                Some(lease) => {
+                    lease.load(std::sync::atomic::Ordering::SeqCst)
+                        && runtime
+                            .outbound_federation
+                            .get(&self.peer.device_public_key)
+                            .is_some_and(|current| Arc::ptr_eq(current, lease))
+                }
+                None => current_session(runtime, &self.peer, &self.tx),
+            }
+    }
+}
+fn state_member(runtime: &crate::workspace::WorkspaceRuntime, peer: &AuthenticatedPeer) -> bool {
+    current_member(runtime, peer)
+        || (peer.role == crate::auth::PeerRole::PeerRelay
+            && runtime.known_peer_relays.contains(&peer.device_public_key))
+}
+
+pub(crate) struct StateDelivery {
+    envelope: Arc<Envelope>,
+    cleanup: Option<std::path::PathBuf>,
+    source: Option<StateSource>,
+    _budget: Arc<tokio::sync::OwnedSemaphorePermit>,
+    live: Arc<std::sync::atomic::AtomicBool>,
+}
+struct StateCommit {
+    envelope: Arc<Envelope>,
+    pending: HashMap<[u8; 32], std::path::PathBuf>,
+    persisted_bytes: u64,
+    publish: bool,
+}
+
+async fn enqueue_state(
+    workspace: &SharedWorkspace,
+    envelope: Envelope,
+    source: Option<StateSource>,
+    role: crate::auth::PeerRole,
+    metrics: Arc<crate::metrics::Metrics>,
+) -> Result<(), PeerError> {
+    enqueue_state_inner(workspace, envelope, source, role, metrics, false).await
+}
+pub(crate) async fn enqueue_federated(
+    workspace: &SharedWorkspace,
+    envelope: Envelope,
+    source: StateSource,
+    metrics: Arc<crate::metrics::Metrics>,
+    sync: bool,
+) -> Result<(), PeerError> {
+    enqueue_state_inner(
+        workspace,
+        envelope,
+        Some(source),
+        crate::auth::PeerRole::PeerRelay,
+        metrics,
+        sync,
+    )
+    .await
+}
+async fn enqueue_state_inner(
+    workspace: &SharedWorkspace,
+    envelope: Envelope,
+    source: Option<StateSource>,
+    role: crate::auth::PeerRole,
+    metrics: Arc<crate::metrics::Metrics>,
+    sync: bool,
+) -> Result<(), PeerError> {
+    let Envelope::Delta {
+        author_device_public_key: author,
+        delta,
+        ..
+    } = &envelope
+    else {
+        return Err(PeerError::Protocol("expected delta".into()));
+    };
+    let author = *author;
+    let charge = delta.len().saturating_add(256).saturating_mul(3);
+    let runtime = crate::workspace_io::fresh_membership(workspace).await?;
+    if source
+        .as_ref()
+        .is_some_and(|source| !source.authorized(&runtime))
+    {
+        return Err(PeerError::Protocol(
+            "state source authorization changed".into(),
+        ));
+    }
+    let mut recipients = runtime
+        .membership
+        .devices
+        .iter()
+        .copied()
+        .filter(|key| key != &author)
+        .collect::<std::collections::HashSet<_>>();
+    if role == crate::auth::PeerRole::Device {
+        recipients.extend(
+            runtime
+                .known_peer_relays
+                .iter()
+                .copied()
+                .filter(|key| key != &author),
+        );
+    }
+    // Include admitted cross-user live members; explicit device membership is
+    // not the only signed-room authority supported by subscriptions.
+    let sessions = runtime
+        .subscribers
+        .iter()
+        .filter(|(key, sub)| {
+            **key != author
+                && !(role == crate::auth::PeerRole::PeerRelay
+                    && sub.role == crate::auth::PeerRole::PeerRelay)
+        })
+        .map(|(key, sub)| (*key, sub.tx.clone()))
+        .collect::<Vec<_>>();
+    recipients.extend(sessions.iter().map(|(key, _)| *key));
+    if role == crate::auth::PeerRole::PeerRelay {
+        recipients.retain(|key| !runtime.known_peer_relays.contains(key));
+    }
+    let logical_offline_bytes = (delta.len() as u64).saturating_mul(
+        recipients
+            .iter()
+            .filter(|key| !runtime.subscribers.contains_key(*key))
+            .count() as u64,
+    );
+    drop(runtime);
+    let owner = crate::persistence::handle(workspace).await;
+    let workspace = workspace.clone();
+    let failure = source.clone();
+    let persist_metrics = metrics.clone();
+    owner.submit(
+        charge,
+        move |state| {
+            if sync {
+                let Envelope::Delta { delta, .. } = &envelope else {
+                    return Err(crate::persistence::error("expected admitted delta"));
+                };
+                if !state.would_materialize(delta) {
+                    return Ok(StateCommit {
+                        envelope: Arc::new(envelope),
+                        pending: HashMap::new(),
+                        persisted_bytes: 0,
+                        publish: false,
+                    });
+                }
+            }
+            let seq = state.next_sequence()?;
+            let raw = crate::transport::encode(&envelope)
+                .map_err(|e| crate::persistence::error(e.to_string()))?;
+            let Envelope::Delta { delta, .. } = &envelope else {
+                return Err(crate::persistence::error("expected admitted delta"));
+            };
+            let retained = crate::coedit::CoeditPayload::decode(delta);
+            let mut pending = HashMap::new();
+            let mut persisted_bytes = 0u64;
+            match retained {
+                Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => {
+                    let written = state.store.retain_counted(&channel, None, &raw)?;
+                    persist_metrics.add_bytes_queued(written);
+                    persisted_bytes = persisted_bytes.saturating_add(written);
+                }
+                Some(crate::coedit::CoeditPayload::RetainedDelta { channel, .. }) => {
+                    let written = state.store.retain_counted(&channel, Some(seq), &raw)?;
+                    persist_metrics.add_bytes_queued(written);
+                    persisted_bytes = persisted_bytes.saturating_add(written);
+                }
+                None => {
+                    for recipient in recipients {
+                        let path = state.store.enqueue_pending(&recipient, seq, &raw)?;
+                        pending.insert(recipient, path);
+                        persist_metrics.add_bytes_queued(raw.len() as u64);
+                        persisted_bytes = persisted_bytes.saturating_add(raw.len() as u64);
+                    }
+                }
+            }
+            let _ = state.store.append_log(&crate::store::LogEntry {
+                workspace_id: state.store.workspace_id(),
+                received_at_ns: seq,
+                author_device_hex: hex::encode(author),
+                authored_at_ns: seq,
+                delta_len: delta.len() as u64,
+            });
+            state.materialize(delta);
+            Ok(StateCommit {
+                envelope: Arc::new(envelope),
+                pending,
+                persisted_bytes,
+                publish: true,
+            })
+        },
+        move |result| async move {
+            let result = async {
+                let mut commit = result?;
+                if !commit.publish {
+                    return Ok(commit);
+                }
+                metrics.inc_deltas_received();
+                let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+                if crate::persistence::diagnostics() {
+                    tracing::info!(
+                        phase = "state_commit",
+                        persisted_envelope_bytes = commit.persisted_bytes,
+                        logical_offline_bytes
+                    );
+                }
+                if source
+                    .as_ref()
+                    .is_some_and(|source| !source.authorized(&runtime))
+                {
+                    return Ok(commit);
+                }
+                let live_bytes = match &*commit.envelope {
+                    Envelope::Delta { delta, .. } => delta.len().saturating_add(256),
+                    _ => 1,
+                };
+                let budget = crate::persistence::delivery_budget(live_bytes);
+                let mut delivered = 0u64;
+                for (recipient, original) in sessions {
+                    let Some(sub) = runtime.subscribers.get(&recipient) else {
+                        continue;
+                    };
+                    if !sub.tx.same_channel(&original) {
+                        continue;
+                    }
+                    let Some(target) = runtime.state_sessions.get(&recipient) else {
+                        continue;
+                    };
+                    if !state_member(&runtime, &target.peer)
+                        || source.as_ref().is_some_and(|s| !s.cert(&target.peer))
+                    {
+                        continue;
+                    }
+                    let Ok(budget) = &budget else {
+                        let _ = sub.disconnect.try_send(());
+                        continue;
+                    };
+                    let delivery = StateDelivery {
+                        envelope: commit.envelope.clone(),
+                        cleanup: commit.pending.remove(&recipient),
+                        source: source.clone(),
+                        _budget: budget.clone(),
+                        live: target.live.clone(),
+                    };
+                    if target.tx.try_send(delivery).is_err() {
+                        let _ = sub.disconnect.try_send(());
+                        runtime.remove_subscriber_session(&recipient, &original);
+                    } else {
+                        delivered = delivered.saturating_add(1);
+                    }
+                }
+                drop(runtime);
+                metrics.add_deltas_fanned_out(delivered);
+                Ok(commit)
+            }
+            .await;
+            if result.is_err()
+                && let Some(source) = failure
+            {
+                let _ = source.disconnect.try_send(());
+            }
+            result
+        },
+    )?;
+    Ok(())
+}
+
+async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
+    delivery: StateDelivery,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    let Envelope::Delta { workspace_id, .. } = &*delivery.envelope else {
+        return Ok(());
+    };
+    let workspace = session
+        .workspaces
+        .lock()
+        .await
+        .get(workspace_id)
+        .cloned()
+        .ok_or_else(|| PeerError::Protocol("state workspace disappeared".into()))?;
+    let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    if !session_peer_authorized(peer, session)
+        || !state_member(&runtime, peer)
+        || !current_session(&runtime, peer, session.outbound)
+        || delivery
+            .source
+            .as_ref()
+            .is_some_and(|source| !source.authorized(&runtime))
+    {
+        return Ok(());
+    }
+    drop(runtime);
+    write
+        .write_all(&crate::transport_v2::encode_state(
+            &delivery.envelope,
+            session.v2,
+        )?)
+        .await?;
+    if let Some(path) = delivery.cleanup {
+        // Enqueue is never receipt. Exact cleanup is admitted only after the
+        // complete frame write, and is ordered against commits/replay.
+        let owner = crate::persistence::handle(&workspace).await;
+        let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+        if session_peer_authorized(peer, session)
+            && state_member(&runtime, peer)
+            && current_session(&runtime, peer, session.outbound)
+        {
+            owner.read(1, move |_| {
+                if !delivery.live.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Ok(());
+                }
+                match std::fs::remove_file(path) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(e.into()),
+                }
+            })?;
+        }
+    }
+    Ok(())
+}
+
 async fn handle_delta(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -606,7 +1429,6 @@ async fn handle_delta(
     let Envelope::Delta {
         workspace_id,
         author_device_public_key,
-        delta,
         ..
     } = &env
     else {
@@ -626,13 +1448,6 @@ async fn handle_delta(
             reason: "workspace not bound on this relay".into(),
         }));
     };
-    let mut wr = ws.lock().await;
-    // Author check — the peer that sent the delta is the author; we
-    // don't allow one peer to forge a delta as if it came from
-    // another device. A plain device can only publish deltas signed
-    // as itself; a peer relay legitimately forwards deltas authored
-    // by any device it hosts, so the author field is not required to
-    // match its own cert.
     if peer.role == crate::auth::PeerRole::Device
         && author_device_public_key != &peer.device_public_key
     {
@@ -640,34 +1455,9 @@ async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
-    let seq = now_ns();
-    let raw_bytes = delta.clone();
-    let offline_devices = wr
-        .membership
-        .devices
-        .iter()
-        .filter(|device| {
-            *device != author_device_public_key && !wr.subscribers.contains_key(*device)
-        })
-        .count();
-    let offline_relays = if peer.role == crate::auth::PeerRole::Device {
-        wr.known_peer_relays
-            .iter()
-            .filter(|device| {
-                *device != author_device_public_key && !wr.subscribers.contains_key(*device)
-            })
-            .count()
-    } else {
-        0
-    };
-    let delivered = wr.fanout_delta(author_device_public_key, peer.role, &env, &raw_bytes, seq)?;
-    drop(wr);
-    session.metrics.inc_deltas_received();
-    session.metrics.add_deltas_fanned_out(delivered as u64);
-    session.metrics.add_bytes_queued(
-        (raw_bytes.len() as u64)
-            .saturating_mul(offline_devices.saturating_add(offline_relays) as u64),
-    );
+    let source = StateSource::new(peer, session);
+    enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
+
     Ok(None)
 }
 
@@ -756,26 +1546,54 @@ async fn handle_sync_request(
             reason: "workspace not bound on this relay".into(),
         }));
     };
-    let mut wr = ws.lock().await;
-    let is_federated = peer.role == crate::auth::PeerRole::PeerRelay
-        && peer.user_public_key == *session.own_user_public_key
-        && wr.known_peer_relays.contains(&peer.device_public_key);
-    if !wr.membership.contains(&peer.device_public_key)
-        && !wr.admitted_users.contains(&peer.user_public_key)
-        && !is_federated
-        && !wr.admit_authenticated
-    {
+    let wr = crate::workspace_io::fresh_membership(&ws).await?;
+    if !session_peer_authorized(peer, session) || !state_member(&wr, peer) {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
             reason: "device not in workspace membership".into(),
         }));
     }
-    let delta_since = wr.changes_since(&have_heads);
+    let expected = wr
+        .subscribers
+        .get(&peer.device_public_key)
+        .map(|sub| sub.tx.clone());
     drop(wr);
-    Ok(Some(Envelope::SyncResponse {
-        workspace_id,
-        delta_since,
-    }))
+    let owner = crate::persistence::handle(&ws).await;
+    let source = StateSource::new(peer, session);
+    owner.submit(
+        have_heads.len().saturating_mul(32),
+        move |state| Ok(state.changes(&have_heads)),
+        move |result| async move {
+            let changes = result?;
+            let wr = crate::workspace_io::fresh_membership(&ws).await?;
+            let same = match (
+                expected.as_ref(),
+                wr.subscribers.get(&source.peer.device_public_key),
+            ) {
+                (None, None) => true,
+                (Some(expected), Some(current)) => expected.same_channel(&current.tx),
+                _ => false,
+            };
+            if source.alive()
+                && source.cert(&source.peer)
+                && state_member(&wr, &source.peer)
+                && same
+            {
+                if source
+                    .tx
+                    .try_send(Envelope::SyncResponse {
+                        workspace_id,
+                        delta_since: changes.clone(),
+                    })
+                    .is_err()
+                {
+                    let _ = source.disconnect.try_send(());
+                }
+            }
+            Ok(changes)
+        },
+    )?;
+    Ok(None)
 }
 
 pub(crate) async fn get_or_autobind_workspace(
@@ -1031,12 +1849,19 @@ async fn handle_private(
     }
 }
 
+fn private_phase(action: &DirectedAction, phase: &'static str) {
+    if crate::persistence::diagnostics() {
+        tracing::info!(request_id = %action.request_id, phase, timestamp_ns = now_ns());
+    }
+}
+
 async fn route_private(
     action: &DirectedAction,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<Option<UnavailableReason>, PeerError> {
     use UnavailableReason as U;
+    private_phase(action, "route_enter");
     if action.source != peer.device_public_key || !current_cert(peer, session) {
         return Ok(Some(U::NotAuthorised));
     }
@@ -1051,6 +1876,7 @@ async fn route_private(
         return Ok(Some(U::NotAuthorised));
     };
     let wr = crate::workspace_io::fresh_membership(&ws).await?;
+    private_phase(action, "route_lock_acquired");
     if !current_cert(peer, session)
         || !current_member(&wr, peer)
         || !current_session(&wr, peer, session.outbound)
@@ -1099,6 +1925,7 @@ async fn route_private(
     {
         return Ok(Some(U::UnsupportedPeer));
     }
+    private_phase(action, "route_authorized");
     let delivery = PrivateDelivery {
         action: action.clone(),
         source: peer.clone(),
@@ -1116,6 +1943,9 @@ async fn route_private(
             mpsc::error::TrySendError::Closed(_) => U::Offline,
         });
     drop(wr);
+    if result.is_none() {
+        private_phase(action, "route_enqueued");
+    }
     Ok(result)
 }
 
@@ -1125,6 +1955,7 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
     session: &SessionCtx<'_>,
     write: &mut W,
 ) -> Result<(), PeerError> {
+    private_phase(&delivery.action, "delivery_authorization_enter");
     match authorize_delivery(delivery, recipient, session).await {
         Ok(()) => {
             let frame = if delivery.certified {
@@ -1146,7 +1977,9 @@ async fn write_private_delivery<W: tokio::io::AsyncWrite + Unpin>(
                     return Ok(());
                 }
             };
-            write.write_all(&bytes).await?
+            private_phase(&delivery.action, "write_authorized");
+            write.write_all(&bytes).await?;
+            private_phase(&delivery.action, "write_complete");
         }
         Err(reason) => {
             if delivery
@@ -1223,7 +2056,7 @@ mod private_transport_tests {
         sign_device_cert,
     };
 
-    fn certified_device(
+    pub(super) fn certified_device(
         root: &ed25519_dalek::SigningKey,
         user: [u8; 32],
         label: &str,
@@ -1256,6 +2089,317 @@ mod private_transport_tests {
         let proof = crate::auth::build_hello_ack2(&key, &[1; 32]);
         crate::auth::verify_hello_ack2(&proof, &peer.device_public_key, &[1; 32]).unwrap();
         (peer, key)
+    }
+
+    #[tokio::test]
+    async fn shared_retained_metrics_count_only_newly_written_payload_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            7,
+            false,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        let workspace = Arc::new(AsyncMutex::new(runtime));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let envelope = Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [1; 32],
+            authored_at_ns: 1,
+            signature: [0; 64],
+            delta: crate::coedit::CoeditPayload::Checkpoint {
+                channel: [2; 32],
+                body: vec![3; 64],
+            }
+            .encode()
+            .unwrap(),
+        };
+        let expected = crate::transport::encode(&envelope).unwrap().len() as u64;
+        for _ in 0..2 {
+            enqueue_state(
+                &workspace,
+                envelope.clone(),
+                None,
+                crate::auth::PeerRole::Device,
+                metrics.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        let owner = crate::persistence::handle(&workspace).await;
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            metrics.snapshot().bytes_queued,
+            expected,
+            "checkpoint retry was counted as another payload write"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn paused_state_persistence_releases_routing_lock() {
+        paused_state_private_roundtrip(true, false, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn paused_state_persistence_allows_same_connection_private_roundtrip() {
+        paused_state_private_roundtrip(false, false, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn paused_replay_cleanup_with_full_reply_queue_keeps_private_reader_and_writer_live() {
+        paused_state_private_roundtrip(false, true, false).await;
+    }
+
+    #[tokio::test]
+    async fn full_control_backlog_backpressures_and_recovers_after_held_writer() {
+        paused_state_private_roundtrip(false, true, true).await;
+    }
+
+    async fn paused_state_private_roundtrip(
+        check_lock: bool,
+        held_cleanup: bool,
+        full_backlog: bool,
+    ) {
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let (b, _) = certified_device(&root, user.public_key, "b");
+        let room = uuid::Uuid::from_u128(7);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        for device in [a.device_public_key, b.device_public_key, [99; 32]] {
+            runtime.admit_device(device).unwrap();
+        }
+        let store = runtime.store.clone();
+        let workspace = Arc::new(AsyncMutex::new(runtime));
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
+        let trust = Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        ));
+        let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
+        let mut wires = Vec::new();
+        let mut tasks = Vec::new();
+        for peer in [&a, &b] {
+            let (client, server) = tokio::io::duplex(65536);
+            let (read, write) = tokio::io::split(server);
+            let ctx = PeerContext {
+                workspaces: registry.clone(),
+                autobind: None,
+                revocations: revocations.clone(),
+                trust_policy: trust.clone(),
+                own_user_public_key: user.public_key,
+                metrics: Arc::new(crate::metrics::Metrics::default()),
+            };
+            tasks.push(tokio::spawn(run_peer_stream(
+                peer.clone(),
+                read,
+                write,
+                ctx,
+                true,
+                std::future::pending::<()>(),
+            )));
+            let (read, mut write) = tokio::io::split(client);
+            let mut reader = SessionReader::new(read, true);
+            write
+                .write_all(
+                    &crate::transport_v2::encode_state(
+                        &Envelope::Subscribe { workspace_id: id },
+                        true,
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(Envelope::Ready { .. }))
+            ));
+            write
+                .write_all(
+                    &crate::transport_v2::encode(&EnvelopeV2::EnableActions { room }).unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::ActionsReady { .. })
+            ));
+            wires.push((reader, write));
+        }
+        let (mut ar, mut aw) = wires.remove(0);
+        let (mut br, mut bw) = wires.remove(0);
+        let envelope = Envelope::Delta {
+            workspace_id: id,
+            author_device_public_key: a.device_public_key,
+            authored_at_ns: 1,
+            signature: [0; 64],
+            delta: crate::coedit::CoeditPayload::Checkpoint {
+                channel: [3; 32],
+                body: vec![4; 4096],
+            }
+            .encode()
+            .unwrap(),
+        };
+        let (release, reached) = crate::store::test_barrier::install(
+            store.root(),
+            if held_cleanup {
+                "replay-cleanup"
+            } else {
+                "state-persist"
+            },
+        );
+        if held_cleanup {
+            let pending = Envelope::Delta {
+                workspace_id: id,
+                author_device_public_key: b.device_public_key,
+                authored_at_ns: 3,
+                delta: vec![255; 64],
+                signature: [0; 64],
+            };
+            store
+                .enqueue_pending(
+                    &a.device_public_key,
+                    3,
+                    &crate::transport::encode(&pending).unwrap(),
+                )
+                .unwrap();
+            aw.write_all(
+                &crate::transport_v2::encode_state(&Envelope::Subscribe { workspace_id: id }, true)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                ar.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(pending))
+            );
+        } else {
+            aw.write_all(&crate::transport_v2::encode_state(&envelope, true).unwrap())
+                .await
+                .unwrap();
+        }
+        reached.await.unwrap();
+        if held_cleanup {
+            for _ in 0..if full_backlog { 64 } else { 12 } {
+                aw.write_all(&crate::transport_v2::encode_state(&Envelope::Ping, true).unwrap())
+                    .await
+                    .unwrap();
+            }
+        }
+        if full_backlog {
+            // The writer is confirmed inside the held cleanup. No state reply
+            // can drain yet; enough real input fills reply and control queues.
+            let held =
+                tokio::time::timeout(std::time::Duration::from_millis(100), ar.read_next()).await;
+            drop(release);
+            let owner = crate::persistence::handle(&workspace).await;
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+            if held.is_ok() {
+                let ended = tasks.remove(0).await.unwrap();
+                panic!(
+                    "full control backlog disconnected a healthy held writer: {held:?}; server result: {ended:?}"
+                );
+            }
+            assert!(matches!(
+                ar.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(Envelope::Ready { .. }))
+            ));
+            for _ in 0..64 {
+                assert_eq!(
+                    ar.read_next().await.unwrap(),
+                    Some(EnvelopeV2::State(Envelope::Pong))
+                );
+            }
+            for task in tasks {
+                task.abort();
+            }
+            return;
+        }
+        assert!(
+            store.load_retained().unwrap().is_empty(),
+            "state published before commit"
+        );
+        let request = DirectedAction {
+            room,
+            request_id: uuid::Uuid::from_u128(8),
+            source: a.device_public_key,
+            target: b.device_public_key,
+            message: ActionMessage::CatalogueRefresh,
+        };
+        let progress = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            if check_lock {
+                drop(workspace.lock().await);
+            }
+            let encoded_request =
+                crate::transport_v2::encode(&EnvelopeV2::Directed(request.clone())).unwrap();
+            if !check_lock {
+                // A partial header remains in the stateful reader while its
+                // independent writer completes an unrelated private frame.
+                aw.write_all(&encoded_request[..2]).await.unwrap();
+                let probe = DirectedAction {
+                    request_id: uuid::Uuid::from_u128(9),
+                    source: b.device_public_key,
+                    target: a.device_public_key,
+                    ..request.clone()
+                };
+                bw.write_all(
+                    &crate::transport_v2::encode(&EnvelopeV2::Directed(probe.clone())).unwrap(),
+                )
+                .await
+                .unwrap();
+                let Some(EnvelopeV2::Delivered { action, .. }) = ar.read_next().await.unwrap()
+                else {
+                    panic!("expected private frame during partial inbound header")
+                };
+                assert_eq!(action, probe);
+                aw.write_all(&encoded_request[2..]).await.unwrap();
+            } else {
+                aw.write_all(&encoded_request).await.unwrap();
+            }
+            let Some(EnvelopeV2::Delivered { action, .. }) = br.read_next().await.unwrap() else {
+                panic!("expected private request before any uncommitted state")
+            };
+            assert_eq!(action, request);
+            let response = DirectedAction {
+                source: b.device_public_key,
+                target: a.device_public_key,
+                ..request.clone()
+            };
+            bw.write_all(
+                &crate::transport_v2::encode(&EnvelopeV2::Directed(response.clone())).unwrap(),
+            )
+            .await
+            .unwrap();
+            let Some(EnvelopeV2::Delivered { action, .. }) = ar.read_next().await.unwrap() else {
+                panic!("expected private response")
+            };
+            assert_eq!(action, response);
+        })
+        .await;
+        // Always release the real blocking disk operation before asserting RED.
+        drop(release);
+        let owner = crate::persistence::handle(&workspace).await;
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        for task in tasks {
+            task.abort();
+        }
+        assert!(
+            progress.is_ok(),
+            "held state persistence blocked private request/response (routing-lock check: {check_lock})"
+        );
     }
 
     #[tokio::test]
@@ -1341,7 +2485,7 @@ mod private_transport_tests {
             crate::policy::TrustPolicy::AllowMatchingUser,
         ));
         let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-        let metrics = crate::metrics::Metrics::default();
+        let metrics = Arc::new(crate::metrics::Metrics::default());
         let (outbound, _rx) = mpsc::channel(8);
         let (disconnect, _) = mpsc::channel(1);
         let (private, _) = mpsc::channel(8);
@@ -1349,6 +2493,8 @@ mod private_transport_tests {
             workspaces: &registry,
             autobind: None,
             outbound: &outbound,
+            state_outbound: None,
+            connection_live: None,
             own_user_public_key: &user.public_key,
             metrics: &metrics,
             trust_policy: &trust,
@@ -1386,9 +2532,10 @@ mod private_transport_tests {
         let mut migration_cleanup = Vec::new();
         {
             let runtime = shared.lock().await;
-            let (_, retained) = load_retained_replay(&runtime, 7, &mut migration_replay).unwrap();
+            let (_, retained) =
+                load_retained_replay(&runtime.store, 7, &mut migration_replay).unwrap();
             load_pending_replay(
-                &runtime,
+                &runtime.store,
                 &peer,
                 7,
                 &retained,
@@ -1516,11 +2663,13 @@ mod private_transport_tests {
             crate::policy::TrustPolicy::AllowMatchingUser,
         ));
         let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-        let metrics = crate::metrics::Metrics::default();
+        let metrics = Arc::new(crate::metrics::Metrics::default());
         let session = SessionCtx {
             workspaces: &registry,
             autobind: None,
             outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
             own_user_public_key: &user.public_key,
             metrics: &metrics,
             trust_policy: &trust,
@@ -1631,11 +2780,13 @@ mod private_transport_tests {
             crate::policy::TrustPolicy::AllowMatchingUser,
         ));
         let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-        let metrics = crate::metrics::Metrics::default();
+        let metrics = Arc::new(crate::metrics::Metrics::default());
         let session = SessionCtx {
             workspaces: &registry,
             autobind: None,
             outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
             own_user_public_key: &user.public_key,
             metrics: &metrics,
             trust_policy: &trust,
@@ -1770,11 +2921,13 @@ mod private_transport_tests {
             crate::policy::TrustPolicy::AllowMatchingUser,
         ));
         let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-        let metrics = crate::metrics::Metrics::default();
+        let metrics = Arc::new(crate::metrics::Metrics::default());
         let session = SessionCtx {
             workspaces: &registry,
             autobind: None,
             outbound: &atx,
+            state_outbound: None,
+            connection_live: None,
             own_user_public_key: &user.public_key,
             metrics: &metrics,
             trust_policy: &trust,
@@ -2065,3 +3218,6 @@ mod private_transport_tests {
         assert!(wr.store.load_snapshot().unwrap().is_none());
     }
 }
+
+#[cfg(test)]
+mod state_tests;

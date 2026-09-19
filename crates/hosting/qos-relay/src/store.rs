@@ -316,15 +316,23 @@ impl WorkspaceStore {
         seq: u64,
         bytes: &[u8],
     ) -> Result<PathBuf, StoreError> {
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "pending-persist");
         let pending_dir = self.pending_dir_for(device_pubkey);
         fs::create_dir_all(&pending_dir)?;
-        let filename = format!("{seq:016x}.delta");
+        let filename = format!("{seq:016x}-{}.delta", blake3::hash(bytes).to_hex());
         let path = pending_dir.join(filename);
         // A crash mid-write must not leave a truncated delta for the peer to
         // receive. The temp file is process-scoped, so two writers filling the
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
         atomic_file::write(&path, bytes)?;
+        // A live fanout may now rely on this exact fallback. Require directory
+        // durability instead of treating the atomic helper's best effort as a
+        // successful publication barrier.
+        for directory in pending_dir.ancestors().take(3) {
+            fs::File::open(directory)?.sync_all()?;
+        }
         Ok(path)
     }
 
@@ -401,7 +409,9 @@ impl WorkspaceStore {
     /// # Errors
     /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
-        self.retain_shared(channel, None, bytes)
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "state-persist");
+        self.retain_shared(channel, None, bytes).map(|_| ())
     }
 
     /// Durably append a tail to the envelope's authenticated author/channel.
@@ -414,7 +424,20 @@ impl WorkspaceStore {
         seq: u64,
         bytes: &[u8],
     ) -> Result<(), StoreError> {
-        self.retain_shared(channel, Some(seq), bytes)
+        self.retain_shared(channel, Some(seq), bytes).map(|_| ())
+    }
+
+    /// Logical newly-written envelope bytes; excludes metadata, hardlinks,
+    /// snapshot/audit writes and duplicate publications.
+    pub(crate) fn retain_counted(
+        &self,
+        channel: &[u8; 32],
+        seq: Option<u64>,
+        bytes: &[u8],
+    ) -> Result<u64, StoreError> {
+        #[cfg(test)]
+        test_barrier::pause(&self.root, "state-persist");
+        self.retain_shared(channel, seq, bytes)
     }
 
     /// Load retained replay coverage: proven raw baselines before uncovered
@@ -503,6 +526,20 @@ pub fn load_or_create_iroh_secret(state_root: &Path) -> Result<[u8; 32], StoreEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_same_sequence_has_exact_immutable_identity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let a = store.enqueue_pending(&[1; 32], 7, b"first").unwrap();
+        let b = store.enqueue_pending(&[1; 32], 7, b"second").unwrap();
+        assert_ne!(
+            a, b,
+            "new pending payload overwrote an outstanding cleanup identity"
+        );
+        std::fs::remove_file(a).unwrap();
+        assert_eq!(std::fs::read(b).unwrap(), b"second");
+    }
 
     #[test]
     fn open_creates_layout() {

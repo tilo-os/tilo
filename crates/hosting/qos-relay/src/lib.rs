@@ -97,6 +97,8 @@ pub mod peer_actions;
 pub mod workspace;
 #[cfg(not(target_arch = "wasm32"))]
 mod workspace_io;
+#[cfg(not(target_arch = "wasm32"))]
+mod persistence;
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use auth::PeerRole;
