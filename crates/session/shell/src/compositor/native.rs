@@ -12,7 +12,7 @@ pub use crate::shell::test_control::{
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -66,7 +66,7 @@ fn with_action_gate<R>(
     let gate = CapabilityVisibility::new(workspace, actor);
     Ok(f(&chrome, &gate))
 }
-use smithay::reexports::calloop::{self, EventLoop};
+use smithay::reexports::calloop::{self, EventLoop, Interest, Mode, PostAction, generic::Generic};
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
@@ -164,6 +164,10 @@ use crate::shell::overlay_host::PeerSyncRequest;
 struct NativeRedrawReasons {
     force: bool,
     backend_event: bool,
+    /// Input which changes compositor-owned pixels, most notably the cursor.
+    /// This is distinct from `session`: a focused client may consume pointer
+    /// motion while the shell must still repaint its own cursor.
+    visible_input: bool,
     session: bool,
     accessibility: bool,
     revision: bool,
@@ -180,6 +184,7 @@ impl NativeRedrawReasons {
     fn content_changed(self, session_locked: bool) -> bool {
         self.force
             || self.backend_event
+            || self.visible_input
             || self.session
             || self.accessibility
             || self.revision
@@ -196,12 +201,14 @@ impl NativeRedrawReasons {
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
+const WAYLAND_CLIENT_SERVICE: Duration = Duration::from_millis(4);
 
 /// Select how long calloop may sleep. Presentation cadence is a deadline only
 /// while visual work is pending; a static desktop instead sleeps until the
 /// earliest real service/widget deadline and wakes early on registered fds.
 fn native_loop_park(
     now: Instant,
+    backend_has_event_wake: bool,
     cadence_needed: bool,
     frame_deadline: Instant,
     deadlines: impl IntoIterator<Item = Option<Instant>>,
@@ -212,19 +219,22 @@ fn native_loop_park(
         .chain(cadence_needed.then_some(frame_deadline))
         .min();
 
-    // The DRM backend owns a nested calloop containing libinput, libseat and
-    // udev. It is drained by `Backend::poll_events` at the start of each outer
-    // iteration, so an otherwise-static session must still wake at this
-    // bounded interval. Returning `None` here would park the outer calloop
-    // indefinitely: the nested loop's keyboard/mouse fds cannot wake it, and
-    // even the dev test-control socket is accepted only by the next iteration.
-    Some(
-        semantic_deadline
-            .map_or(IDLE_BACKEND_POLL, |deadline| {
-                deadline.saturating_duration_since(now)
-            })
-            .min(IDLE_BACKEND_POLL),
-    )
+    semantic_deadline
+        .map(|deadline| deadline.saturating_duration_since(now))
+        .or((!backend_has_event_wake).then_some(IDLE_BACKEND_POLL))
+}
+
+/// A full asynchronous presenter is itself the cadence gate. Its retirement
+/// signal wakes calloop when capacity returns, so retaining an already-due
+/// frame deadline while it is full would turn that deadline into a permanent
+/// zero-timeout poll loop.
+fn cadence_wait_needed(
+    pipe_ready: bool,
+    content_changed: bool,
+    cadence_due: bool,
+    animating: bool,
+) -> bool {
+    pipe_ready && ((content_changed && !cadence_due) || animating)
 }
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
@@ -1020,6 +1030,7 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = "TILO_TEST_CONTROL";
+const TEST_CONTROL_WAKE_ENV: &str = "TILO_TEST_CONTROL_WAKE_FD";
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -4648,8 +4659,12 @@ pub fn run() {
         }
     };
 
-    // The `Display` owns the wayland-server protocol state, held locally so
-    // `dispatch_clients`/`flush_clients` run per tick — mirrors smithay 0.7's examples.
+    // The `Display` owns the wayland-server protocol state. Its poll fd is an
+    // epoll instance containing the individual client sockets; nesting that
+    // epoll fd inside calloop's epoll can consume the outer readiness without
+    // draining the inner client event and then park the whole compositor.
+    // Keep ownership here and drive its nonblocking aggregate dispatch from
+    // the bounded native loop instead.
     let mut display: Display<State> = match Display::new() {
         Ok(d) => d,
         Err(e) => {
@@ -4664,6 +4679,44 @@ pub fn run() {
     // `--backend drm|winit` selects the native backend implementation.
     let backend_kind = parse_backend_from_args();
     let mut backend: Box<dyn Backend> = build_backend(backend_kind);
+    // DRM owns a nested calloop for libinput/libseat/udev. Register its poll
+    // fd in the compositor loop so hardware input wakes us immediately rather
+    // than waiting for a periodic backend poll (which made the cursor visibly
+    // lag by roughly the old 50 ms interval).
+    let _backend_event_wake = if let Some(fd) = backend.event_fd() {
+        match event_loop
+            .handle()
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+                Ok(PostAction::Continue)
+            }) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::error!(%error, "could not register backend event wake fd");
+                false
+            }
+        }
+    } else {
+        false
+    };
+    let (capture_ping, capture_ping_source) = match calloop::ping::make_ping() {
+        Ok(pair) => pair,
+        Err(error) => {
+            tracing::error!(%error, "could not create foreign capture completion wake source");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = event_loop
+        .handle()
+        .insert_source(capture_ping_source, |(), (), _| {})
+    {
+        tracing::error!(%error, "could not register foreign capture completion wake source");
+        std::process::exit(1);
+    }
+    crate::compositor::foreign::install_completion_ping(capture_ping);
+
+    // Accept readiness is also part of the outer loop. Accepted streams get
+    // their own source below; this source prevents the first request from
+    // waiting for an unrelated compositor deadline.
 
     // Per-frame scene production, shared with offscreen tooling via
     // `FrameBuilder` — chrome in the host window is byte-identical to `cargo run --bin shots`.
@@ -5082,6 +5135,69 @@ pub fn run() {
         None => (None, None),
     };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
+    // Test drivers pass an inherited eventfd and increment it after writing a
+    // command. That gives this manually-pumped protocol a proper outer-loop
+    // wake without registering a persistent Unix stream as permanently
+    // readable. The release build ignores test-control environment overrides.
+    let _test_control_wake = if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
+        std::env::var(TEST_CONTROL_WAKE_ENV)
+            .ok()
+            .and_then(|raw| raw.parse::<std::os::fd::RawFd>().ok())
+            .filter(|raw| *raw >= 0)
+            .and_then(|raw| {
+                // Duplicate rather than adopting the inherited number: the
+                // pre-existing Rust/Python process machinery may also own an
+                // object at that numeric fd. The duplicate gives calloop
+                // unambiguous lifetime ownership while preserving the same
+                // eventfd counter shared with the driver.
+                let duplicate = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 3) };
+                if duplicate < 0 {
+                    eprintln!(
+                        "tilo compositor: test_control duplicate wake fd {raw}: {}",
+                        std::io::Error::last_os_error()
+                    );
+                    return None;
+                }
+                // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+                match event_loop.handle().insert_source(
+                    Generic::new(fd, Interest::READ, Mode::Level),
+                    |_, fd, _| {
+                        let mut value = 0u64;
+                        // SAFETY: eventfd's read ABI is exactly one native
+                        // u64. Drain through EAGAIN to clear level readiness.
+                        let result = unsafe {
+                            libc::read(
+                                fd.as_raw_fd(),
+                                (&raw mut value).cast::<libc::c_void>(),
+                                std::mem::size_of::<u64>(),
+                            )
+                        };
+                        if result < 0
+                            && std::io::Error::last_os_error().kind()
+                                != std::io::ErrorKind::WouldBlock
+                        {
+                            eprintln!(
+                                "tilo compositor: test_control wake read: {}",
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                        Ok(PostAction::Continue)
+                    },
+                ) {
+                    Ok(token) => {
+                        eprintln!("tilo compositor: test_control wake fd {raw} registered");
+                        Some(token)
+                    }
+                    Err(error) => {
+                        eprintln!("tilo compositor: test_control wake source: {error}");
+                        None
+                    }
+                }
+            })
+    } else {
+        None
+    };
     // Per-process input context shared by the physical-seat and optional
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
@@ -5364,9 +5480,27 @@ pub fn run() {
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
+    // Test-control commands are intentionally serviced after this tick's
+    // paint gate. Preserve their redraw edge for the following iteration;
+    // dropping it here records input latency forever without ever producing
+    // the reflecting frame.
+    let mut injected_redraw_pending = false;
     while !close_requested {
         let iter_t0 = Instant::now();
+        let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
+        // The previous `event_loop.dispatch` only establishes readiness for
+        // nested DRM/libinput and test-control fds. Drain the backend now,
+        // before any frame decision, so its level-triggered poll fd is cleared
+        // in this same iteration instead of immediately waking calloop again.
+        backend.poll_events(&mut |event| pending_events.push(event));
+        // Capture workers wake this loop through their eventfd. Apply released
+        // Smithay transactions before deciding whether there is app content
+        // to paint; doing this after painting strands the newly committed
+        // frame until an unrelated event, and a continuously committing client
+        // can deadlock behind its first transaction barrier.
+        let foreign_capture_changed =
+            state.pump_foreign_capture_barriers(&display_handle_for_outputs);
         // Logout is requested from an off-thread power-menu action. Exit the
         // compositor through this normal cleanup path; its package wrapper
         // then stops Tilo's graphical targets and clears the shared user-manager
@@ -5410,10 +5544,10 @@ pub fn run() {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
         }
-        backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
+        let mut visible_input_changed = false;
         for request in native_accessibility.drain() {
             match request {
                 AccessibilityRequest::InitialTree => accessibility_changed = true,
@@ -5524,6 +5658,12 @@ pub fn run() {
                         .translate(&wev, Instant::now())
                         .map(|(action, pressed)| switch_action_event(action, pressed));
                     let wev = translated_switch.as_ref().unwrap_or(&wev);
+                    // Pointer motion changes the compositor-owned cursor even
+                    // when the focused Wayland client consumes the event.  It
+                    // therefore needs a frame independently of whether chrome
+                    // state changed.  Buttons/keys do not alter shell pixels
+                    // unless their downstream handler reports a change.
+                    visible_input_changed |= matches!(wev, WindowEvent::CursorMoved { .. });
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
@@ -6579,8 +6719,8 @@ pub fn run() {
         } else {
             false
         };
-        let mut apps_changed =
-            frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        let mut apps_changed = foreign_capture_changed
+            | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         if take_deferred_peer_sync_activation(
             &mut deferred_peer_sync,
             frame_builder.host().onboarding_active(),
@@ -6652,7 +6792,8 @@ pub fn run() {
         let content_changed = NativeRedrawReasons {
             force: force_first_paint,
             backend_event: had_backend_events,
-            session: session_changed,
+            visible_input: visible_input_changed,
+            session: session_changed || injected_redraw,
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
@@ -6690,7 +6831,20 @@ pub fn run() {
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame.
-        let cadence_needed = (content_changed && !cadence_due) || animating;
+        // A stale frame deadline must not become an immediate calloop timeout
+        // while the presenter is full.  That used to turn every animation
+        // frame under GPU back-pressure into a busy loop: the deadline stayed
+        // in the past until a frame could be submitted, `dispatch(0)` returned
+        // immediately, and the compositor burned tens of thousands of ticks
+        // per second instead of servicing the seat at display cadence.
+        //
+        // There is no benefit in polling for capacity here.  The presenter
+        // retirement signal wakes calloop as soon as capacity returns.  Until
+        // then, omit the stale cadence deadline; registered input/client fds
+        // still wake immediately and the bounded backend poll remains the
+        // fallback for DRM's nested event loop.
+        let cadence_needed =
+            cadence_wait_needed(pipe_ready, content_changed, cadence_due, animating);
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -7183,8 +7337,13 @@ pub fn run() {
             locker.lock();
         }
 
-        // Accept new test-control connections, drain pending bytes from each open
-        // one (parses commands, writes JSON responses); closed ones are collected below. Non-blocking so the frame-pacing loop never stalls.
+        // Accept new test-control connections and drain them in this same
+        // iteration. Previously new connections were appended here but only
+        // pumped after the following calloop sleep. With no inherited wake fd
+        // that made a freshly connected test driver wait until an unrelated
+        // desktop event; with the wake fd it created a fragile two-phase
+        // handshake. Keeping accept+drain together makes the control protocol
+        // deterministic and leaves production builds unaffected.
         if let Some(listener) = &test_control_listener {
             loop {
                 match listener.accept() {
@@ -7200,45 +7359,75 @@ pub fn run() {
                     }
                 }
             }
-            for conn in &mut test_control_conns {
-                let injected = pump_test_control_conn(
-                    conn,
-                    &mut frame_builder,
-                    &mut test_control_ctx,
-                    &session,
-                    &mut lock,
-                    &mut state,
-                );
-                if injected {
-                    // Socket-driven input starts the same latency clock hardware input does.
-                    // Serviced after this tick's paint gate, so the reflecting frame is the next one — exactly the latency a caller experiences.
-                    metrics.note_input(Instant::now());
-                }
-            }
-            test_control_conns.retain(|c| !c.closed);
         }
+        for conn in &mut test_control_conns {
+            let injected = pump_test_control_conn(
+                conn,
+                &mut frame_builder,
+                &mut test_control_ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            if injected {
+                metrics.note_input(Instant::now());
+                injected_redraw_pending = true;
+            }
+        }
+        test_control_conns.retain(|conn| !conn.closed);
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
-        // Off-thread foreign-buffer reads release Smithay commit barriers;
-        // transaction application must return to the compositor-owning thread.
-        state.pump_foreign_capture_barriers(&display_handle_for_outputs);
-
-        // Drain wayland client traffic and push updates back out: `dispatch_clients`
-        // advances each client's request queue through the `*Handler` impls, `flush_clients` pumps server events back. Mirrors smithay 0.7's minimal example.
-        if let Err(err) = display.dispatch_clients(&mut state) {
-            eprintln!("tilo compositor: dispatch_clients error: {err}");
-            break;
-        }
         // Selection bookkeeping after dispatch, not in the protocol handler:
         // smithay raises `new_selection` before installing the new source, so an inline pull would read the previous owner.
         if let Some(portal) = portal_backend.as_ref() {
             portal.pump_remote_input(&mut state, session.is_locked());
         }
         state.pump_selection();
+        let dispatch_started = Instant::now();
+        match display.dispatch_clients(&mut state) {
+            Ok(dispatched) => {
+                let elapsed = dispatch_started.elapsed();
+                if dispatched > 0 || elapsed > Duration::from_millis(10) {
+                    tracing::debug!(
+                        target: "tilo::wayland_dispatch",
+                        dispatched,
+                        elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+                        "Wayland client requests dispatched"
+                    );
+                }
+            }
+            Err(err) => {
+                eprintln!("tilo compositor: dispatch_clients error: {err}");
+                break;
+            }
+        }
+        // A client commit can enqueue a GPU readback while this dispatch is
+        // running, and the worker may complete before we return. Re-apply
+        // released transactions here as well as at tick start; otherwise a
+        // continuously chatty client can keep its first buffer stranded until
+        // the next outer-loop iteration even though capture already finished.
+        if state.pump_foreign_capture_barriers(&display_handle_for_outputs) {
+            injected_redraw_pending = true;
+        }
         if let Err(err) = display.flush_clients() {
             eprintln!("tilo compositor: flush_clients error: {err}");
             break;
+        }
+        // A newly dispatched xdg_toplevel request can arrive after this
+        // tick's paint decision. Its tab may already have a placement from
+        // the retained chrome tree, but waiting for a *future painted frame*
+        // to send the opening configure deadlocks ordinary clients: the
+        // client cannot commit pixels until configured, and no pixels means
+        // no new content edge to paint. Flush the configure handshake after
+        // dispatch as well; it is idempotent for unchanged sizes.
+        let configured_after_dispatch = foreign::flush_configures(&mut state);
+        if configured_after_dispatch > 0 {
+            if let Err(err) = display.flush_clients() {
+                eprintln!("tilo compositor: opening configure flush error: {err}");
+                break;
+            }
+            injected_redraw_pending = true;
         }
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
@@ -7264,6 +7453,7 @@ pub fn run() {
             .flatten();
         let park = native_loop_park(
             park_now,
+            false,
             cadence_needed,
             frame_clock.next_deadline(),
             [
@@ -7271,6 +7461,7 @@ pub fn run() {
                 None,
                 lock_clock_deadline,
                 run_deadline,
+                Some(park_now + WAYLAND_CLIENT_SERVICE),
             ],
         );
         let t_sleep_start = Instant::now();
@@ -7405,14 +7596,26 @@ mod tests {
     }
 
     #[test]
+    fn client_routed_pointer_motion_still_redraws_the_compositor_cursor() {
+        assert!(
+            NativeRedrawReasons {
+                visible_input: true,
+                ..NativeRedrawReasons::default()
+            }
+            .content_changed(false),
+            "the cursor belongs to the compositor, so a client consuming its motion must not suppress the reflecting frame"
+        );
+    }
+
+    #[test]
     fn idle_park_ignores_display_cadence() {
         let now = Instant::now();
         let frame = now + Duration::from_millis(8);
         let keepalive = now + Duration::from_secs(1);
         assert_eq!(
-            native_loop_park(now, false, frame, [Some(keepalive)]),
-            Some(IDLE_BACKEND_POLL),
-            "a static desktop polls its nested DRM sources at a bounded idle rate"
+            native_loop_park(now, true, false, frame, [Some(keepalive)]),
+            Some(Duration::from_secs(1)),
+            "a registered backend wake fd lets a static desktop sleep until semantic work"
         );
     }
 
@@ -7420,9 +7623,9 @@ mod tests {
     fn idle_park_without_any_semantic_deadline_still_services_nested_backend() {
         let now = Instant::now();
         assert_eq!(
-            native_loop_park(now, false, now + Duration::from_millis(8), []),
-            Some(IDLE_BACKEND_POLL),
-            "a static DRM session must keep draining nested libinput and control sockets"
+            native_loop_park(now, true, false, now + Duration::from_millis(8), []),
+            None,
+            "a static DRM session can block indefinitely because libinput wakes the outer loop"
         );
     }
 
@@ -7465,8 +7668,49 @@ mod tests {
         let frame = now + Duration::from_millis(8);
         let keepalive = now + Duration::from_secs(1);
         assert_eq!(
-            native_loop_park(now, true, frame, [Some(keepalive)]),
+            native_loop_park(now, true, true, frame, [Some(keepalive)]),
             Some(Duration::from_millis(8))
+        );
+    }
+
+    #[test]
+    fn presenter_backpressure_does_not_spin_on_a_stale_frame_deadline() {
+        let now = Instant::now();
+        let stale_frame = now - Duration::from_millis(1);
+
+        // This is the state from the 144 Hz failure: animation remains dirty,
+        // but the bounded presenter has no capacity.  The render thread's
+        // retire fd will wake us when that changes; keeping the already-stale
+        // frame deadline active would make calloop dispatch with zero timeout
+        // indefinitely.
+        let content_changed = true;
+        let cadence_due = true;
+        let animating = true;
+        let pipe_ready = false;
+        let cadence_needed =
+            cadence_wait_needed(pipe_ready, content_changed, cadence_due, animating);
+
+        assert_eq!(
+            native_loop_park(now, true, cadence_needed, stale_frame, []),
+            None,
+            "a full presenter must sleep for its retirement wake instead of spinning on the stale frame deadline"
+        );
+    }
+
+    #[test]
+    fn available_presenter_keeps_animation_on_display_cadence() {
+        let now = Instant::now();
+        let frame = now + Duration::from_nanos(6_944_444);
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                cadence_wait_needed(true, true, false, true),
+                frame,
+                [],
+            ),
+            Some(Duration::from_nanos(6_944_444)),
+            "the backpressure guard must not weaken normal 144 Hz animation pacing"
         );
     }
 
@@ -7477,11 +7721,17 @@ mod tests {
         let widget = now + Duration::from_millis(300);
         let keepalive = now + Duration::from_secs(1);
         assert_eq!(
-            native_loop_park(now, false, frame, [Some(keepalive), Some(widget)]),
-            Some(IDLE_BACKEND_POLL)
+            native_loop_park(now, true, false, frame, [Some(keepalive), Some(widget)],),
+            Some(Duration::from_millis(300))
         );
         assert_eq!(
-            native_loop_park(now, false, frame, [Some(now - Duration::from_millis(1))]),
+            native_loop_park(
+                now,
+                true,
+                false,
+                frame,
+                [Some(now - Duration::from_millis(1))],
+            ),
             Some(Duration::ZERO)
         );
     }

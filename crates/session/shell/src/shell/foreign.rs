@@ -34,13 +34,13 @@
 //! (single-plane RGBA under `Modifier::Linear`); anything else is **rejected with a visible on-tile message**, never silently blank.
 
 #[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 use std::collections::HashMap;
 #[cfg(any(test, target_os = "linux"))]
 use std::collections::VecDeque;
-#[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -73,7 +73,9 @@ use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, I
 use winit::event::{Modifiers, WindowEvent};
 
 #[cfg(target_os = "linux")]
-use crate::compositor::surface_readback::{ReadbackError, buffer_to_rgba};
+use crate::compositor::surface_readback::{
+    OwnedShmFrame, ReadbackError, buffer_to_rgba, owned_shm_to_rgba,
+};
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
 
 /// Wayland `wl_surface` protocol id, widened — same key space the rest of the compositor uses for foreign surfaces.
@@ -483,11 +485,22 @@ struct CaptureJob<T> {
 #[cfg(target_os = "linux")]
 type DmabufJob = CaptureJob<Dmabuf>;
 
+#[cfg(target_os = "linux")]
+struct ShmJob {
+    surface: SurfaceId,
+    payload: OwnedShmFrame,
+}
+
 #[derive(Debug)]
 #[cfg(any(test, target_os = "linux"))]
 struct ReadyCapture {
     rgba: Vec<u8>,
-    result: Result<(u32, u32, DmabufRoute), String>,
+    result: Result<(u32, u32, CaptureRoute), String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CaptureRoute {
+    Dmabuf(DmabufRoute),
 }
 
 /// One pending job per surface. A client may commit much faster than a GPU
@@ -534,6 +547,14 @@ struct AsyncDmabufCapture {
     /// frame only after replacing it in the store.
     recycled: Arc<Mutex<HashMap<SurfaceId, Vec<u8>>>>,
     wake: SyncSender<()>,
+    completion_ping: Arc<Mutex<Option<smithay::reexports::calloop::ping::Ping>>>,
+}
+
+#[cfg(target_os = "linux")]
+struct AsyncShmCapture {
+    pending: Arc<Mutex<LatestJobs<ShmJob>>>,
+    wake: SyncSender<()>,
+    completion_ping: Arc<Mutex<Option<smithay::reexports::calloop::ping::Ping>>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -565,6 +586,8 @@ impl AsyncDmabufCapture {
         let worker_completed = Arc::clone(&completed);
         let recycled = Arc::new(Mutex::new(HashMap::new()));
         let worker_recycled = Arc::clone(&recycled);
+        let completion_ping = Arc::new(Mutex::new(None::<smithay::reexports::calloop::ping::Ping>));
+        let worker_completion_ping = Arc::clone(&completion_ping);
         // Capacity one is only a wake edge, never a job queue. The authoritative
         // queue is the latest-only map above, so `try_send` cannot block the
         // compositor even while the worker is stuck on a GPU fence.
@@ -589,7 +612,10 @@ impl AsyncDmabufCapture {
                         {
                             *rgba = previous;
                         }
-                        let result = decode_dmabuf(&job.payload, rgba);
+                        let result =
+                            decode_dmabuf(&job.payload, rgba).map(|(width, height, route)| {
+                                (width, height, CaptureRoute::Dmabuf(route))
+                            });
                         let accepted =
                             store().stage_dmabuf_capture(job.surface, job.token, result, rgba);
                         if !accepted {
@@ -600,6 +626,13 @@ impl AsyncDmabufCapture {
                         }
                         signal_capture_barrier(&job.barrier);
                         mark_capture_complete(job.client, &worker_completed);
+                        if let Some(ping) = worker_completion_ping
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_ref()
+                        {
+                            ping.ping();
+                        }
                     }
                 }
             })
@@ -609,6 +642,7 @@ impl AsyncDmabufCapture {
             completed,
             recycled,
             wake,
+            completion_ping,
         })
     }
 
@@ -668,7 +702,95 @@ impl AsyncDmabufCapture {
 }
 
 #[cfg(target_os = "linux")]
+impl AsyncShmCapture {
+    fn spawn() -> Result<Self, String> {
+        let pending: Arc<Mutex<LatestJobs<ShmJob>>> = Arc::new(Mutex::new(LatestJobs::default()));
+        let worker_pending = Arc::clone(&pending);
+        let completion_ping = Arc::new(Mutex::new(None::<smithay::reexports::calloop::ping::Ping>));
+        let worker_completion_ping = Arc::clone(&completion_ping);
+        let (wake, wakes) = sync_channel::<()>(1);
+        std::thread::Builder::new()
+            .name("tilo-shm-capture".into())
+            .spawn(move || {
+                let mut rgba = Vec::new();
+                while wakes.recv().is_ok() {
+                    loop {
+                        let job = worker_pending
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .pop();
+                        let Some(job) = job else { break };
+                        match owned_shm_to_rgba(&job.payload, &mut rgba) {
+                            Ok((width, height)) => {
+                                store().publish_rgba(job.surface, &rgba, width, height);
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    target: "shell::compositor::foreign_capture",
+                                    surface_id = job.surface,
+                                    %error,
+                                    "foreign shm readback failed"
+                                );
+                                store().note_failure(job.surface, error.to_string());
+                            }
+                        }
+                        if let Some(ping) = worker_completion_ping
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .as_ref()
+                        {
+                            ping.ping();
+                        }
+                    }
+                }
+            })
+            .map_err(|error| format!("could not start SHM capture worker: {error}"))?;
+        Ok(Self {
+            pending,
+            wake,
+            completion_ping,
+        })
+    }
+
+    fn enqueue(&self, job: ShmJob) {
+        let replaced = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(job.surface, job);
+        drop(replaced);
+        let _ = self.wake.try_send(());
+    }
+}
+
+#[cfg(target_os = "linux")]
 static ASYNC_DMABUF_CAPTURE: OnceLock<Result<AsyncDmabufCapture, String>> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+static ASYNC_SHM_CAPTURE: OnceLock<Result<AsyncShmCapture, String>> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+pub fn install_completion_ping(ping: smithay::reexports::calloop::ping::Ping) {
+    for slot in [
+        ASYNC_DMABUF_CAPTURE
+            .get_or_init(AsyncDmabufCapture::spawn)
+            .as_ref()
+            .ok()
+            .map(|worker| &worker.completion_ping),
+        ASYNC_SHM_CAPTURE
+            .get_or_init(AsyncShmCapture::spawn)
+            .as_ref()
+            .ok()
+            .map(|worker| &worker.completion_ping),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ping.clone());
+    }
+}
 
 /// Clients whose capture barriers changed to released since the last
 /// compositor tick. Keeping the client handle here (instead of looking it up
@@ -752,8 +874,14 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
         buffer: &WlBuffer,
-        dmabuf_token: Option<u64>,
+        capture_token: Option<u64>,
     ) -> CaptureOutcome {
+        if let Some(token) = capture_token {
+            self.with_entry(id, |entry| entry.mapped = true);
+            return self
+                .activate_dmabuf_capture_token(id, token)
+                .unwrap_or(CaptureOutcome::Queued);
+        }
         let shm_result = self.with_entry(id, |e| {
             // A non-null buffer commit maps the xdg surface even when its
             // pixels cannot yet be captured or do not fit its latest
@@ -785,9 +913,7 @@ impl ForeignFrameStore {
             }
             Err(ReadbackError::DmaBufUnsupported) => {
                 if smithay::wayland::dmabuf::get_dmabuf(buffer).is_ok() {
-                    dmabuf_token
-                        .and_then(|token| self.activate_dmabuf_capture_token(id, token))
-                        .unwrap_or(CaptureOutcome::Queued)
+                    CaptureOutcome::Queued
                 } else {
                     let msg = "buffer is neither wl_shm nor dmabuf".to_string();
                     self.note_failure(id, msg.clone());
@@ -847,12 +973,30 @@ impl ForeignFrameStore {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> bool {
+        let worker = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn);
+        match worker {
+            Ok(worker) => {
+                worker.enqueue(ShmJob {
+                    surface: id,
+                    payload: frame,
+                });
+                true
+            }
+            Err(reason) => {
+                self.note_failure(id, reason.clone());
+                false
+            }
+        }
+    }
+
     #[cfg(any(test, target_os = "linux"))]
     fn stage_dmabuf_capture(
         &self,
         id: SurfaceId,
         token: u64,
-        result: Result<(u32, u32, DmabufRoute), String>,
+        result: Result<(u32, u32, CaptureRoute), String>,
         rgba: &mut Vec<u8>,
     ) -> bool {
         let mut guard = self
@@ -894,7 +1038,9 @@ impl ForeignFrameStore {
             return None;
         }
         entry.capture_tokens.pop_front();
-        let ready = entry.ready_captures.remove(&token)?;
+        let Some(ready) = entry.ready_captures.remove(&token) else {
+            return None;
+        };
         let (outcome, imported, recycled) = match ready.result {
             Ok((width, height, route)) => {
                 let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
@@ -902,15 +1048,14 @@ impl ForeignFrameStore {
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
                 entry.last_error = None;
-                (
-                    CaptureOutcome::Dmabuf {
+                let outcome = match route {
+                    CaptureRoute::Dmabuf(route) => CaptureOutcome::Dmabuf {
                         width,
                         height,
                         route,
                     },
-                    true,
-                    previous,
-                )
+                };
+                (outcome, true, previous)
             }
             Err(reason) => {
                 entry.rgba.clear();
@@ -2098,11 +2243,21 @@ mod tests {
         });
 
         let mut stale = vec![1, 2, 3, 4];
-        frames.stage_dmabuf_capture(id, 1, Ok((1, 1, DmabufRoute::Gpu)), &mut stale);
+        frames.stage_dmabuf_capture(
+            id,
+            1,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut stale,
+        );
         assert!(frames.snapshot(id).is_none());
 
         let mut latest = vec![5, 6, 7, 8];
-        frames.stage_dmabuf_capture(id, 2, Ok((1, 1, DmabufRoute::Gpu)), &mut latest);
+        frames.stage_dmabuf_capture(
+            id,
+            2,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut latest,
+        );
         assert!(
             frames.snapshot(id).is_none(),
             "pending pixels must not become current before commit application"
@@ -2130,7 +2285,12 @@ mod tests {
             entry.capture_tokens.extend([3, 4]);
         });
         let mut newest = vec![9, 8, 7, 6];
-        frames.stage_dmabuf_capture(id, 4, Ok((1, 1, DmabufRoute::Gpu)), &mut newest);
+        frames.stage_dmabuf_capture(
+            id,
+            4,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut newest,
+        );
 
         assert!(
             frames.activate_dmabuf_capture(id).is_none(),
@@ -2152,7 +2312,12 @@ mod tests {
         let id = sid(103);
         frames.with_entry(id, |entry| entry.capture_tokens.push_back(42));
         let mut pixels = vec![7, 7, 7, 7];
-        assert!(frames.stage_dmabuf_capture(id, 42, Ok((1, 1, DmabufRoute::Gpu)), &mut pixels,));
+        assert!(frames.stage_dmabuf_capture(
+            id,
+            42,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut pixels,
+        ));
 
         assert!(
             frames.activate_dmabuf_capture_token(id, 41).is_none(),
@@ -2174,7 +2339,12 @@ mod tests {
         frames.forget(id);
 
         let mut pixels = vec![1, 2, 3, 4];
-        frames.stage_dmabuf_capture(id, 7, Ok((1, 1, DmabufRoute::Gpu)), &mut pixels);
+        frames.stage_dmabuf_capture(
+            id,
+            7,
+            Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
+            &mut pixels,
+        );
         assert!(frames.snapshot(id).is_none());
         assert_eq!(frames.frame_seq(id), 0);
     }
