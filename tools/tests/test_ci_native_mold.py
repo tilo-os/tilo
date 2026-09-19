@@ -102,11 +102,28 @@ class NativeMoldLinkerTests(unittest.TestCase):
 class NativeMoldBuilderPolicyTests(unittest.TestCase):
     def test_builder_records_mold_and_rebuilds_when_wrapper_changes(self) -> None:
         recipe = (ROOT / "os" / "Containerfile.builder").read_text(encoding="utf-8")
+        assets = (ROOT / "os" / "external-assets" / "github-assets.tsv").read_text(
+            encoding="utf-8"
+        )
         workflow = (
             ROOT / ".forgejo" / "workflows" / "build-builder-image.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("dnf install -y --setopt=install_weak_deps=False mold", recipe)
-        self.assertIn("mold-nevra.txt", recipe)
+        self.assertNotIn("dnf install -y --setopt=install_weak_deps=False mold", recipe)
+        self.assertIn("mold-source.txt", recipe)
+        for architecture, checksum in (
+            (
+                "x86_64",
+                "4c999e19ffa31afa5aa429c679b665d5e2ca5a6b6832ad4b79668e8dcf3d8ec1",
+            ),
+            (
+                "aarch64",
+                "c799b9ccae8728793da2186718fbe53b76400a9da396184fac0c64aa3298ec37",
+            ),
+        ):
+            archive = f"mold-2.40.4-{architecture}-linux.tar.gz"
+            self.assertIn(f"{checksum}\t{archive}\t", assets)
+            self.assertIn(checksum, recipe)
+        self.assertIn("sha256sum -c -", recipe)
         self.assertIn(
             "COPY tools/ci/native-mold-linker.sh /usr/local/bin/tilo-ci-mold",
             recipe,
