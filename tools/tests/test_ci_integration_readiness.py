@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("readiness", Path(__file__).parents[1] / "ci_integration_readiness.py")
+SPEC = importlib.util.spec_from_file_location("readiness", Path(__file__).parents[1] / "ci/integration_readiness.py")
 AUDIT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(AUDIT)
 HEAD, BASE = "a" * 40, "b" * 40

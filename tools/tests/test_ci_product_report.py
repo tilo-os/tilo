@@ -4,8 +4,8 @@ import sys
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).parents[1]))
-import ci_product_report as report
+sys.path.insert(0, str(Path(__file__).parents[1] / 'ci'))
+import product_report as report
 
 
 class ProductReportTests(unittest.TestCase):

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 
-import ci_integration_readiness as audit
+import integration_readiness as audit
 
 HOST, REPO = 'code.podesta.ai', 'qos/qos'
 

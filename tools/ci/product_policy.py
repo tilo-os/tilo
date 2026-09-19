@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Derive exact routine PR check/lint policy from reviewed base inputs; GET-only.
 
-Requires the separately audited ci_integration_readiness and ci_product_report
+Requires the separately audited integration_readiness and product_report
 modules. No candidate checkout, permissions, statuses, merge or branch writes.
 """
 import argparse
@@ -13,17 +13,17 @@ import subprocess
 import sys
 import tempfile
 
-import ci_integration_readiness as audit
-import ci_product_report as reports
+import integration_readiness as audit
+import product_report as reports
 
-# Reviewed feedback contract at product main 0cb62f077. Routine PRs check
+# Reviewed feedback contract at product main c83e9b15c. Routine PRs check
 # the affected closure on x86 and test owners/contracts; manual/release/nightly
 # retain full dual-native qualification. Contract changes require fresh review.
 CONTRACT = {
-    '.forgejo/workflows/check.yml': 'a812f15b6df9554d00b4801f29c2b72b36331f1f430fed81fbcaae874b1c4492',
-    '.forgejo/workflows/lint.yml': '8a21a27d5bc1c37e1f64eaf670a9a967dcc30de536a6589917b2a0e5961effa2',
-    '.forgejo/workflows/nightly.yml': '2df73d613378fcd11e7069f5c78c859694fc988075dd3704353657d61a8da583',
-    'tools/ci_select.py': 'e488b597f2cdb4386d7abf43da6884f961a357f66e9e2c5fea81a1f25563f8a6',
+    '.forgejo/workflows/check.yml': 'd4b4cc2a9e8dacbf8612cc5dbd362648c2804998e66c0f3dd5374c78ee0b3be2',
+    '.forgejo/workflows/lint.yml': '240042108e37d5d26a97cf805a5eb327fd04d430deec4949b9ab6c92070ad072',
+    '.forgejo/workflows/nightly.yml': '7a3171ae272dc5e3af421796d9b8822b40e285e945b03f6834da087a5102b81e',
+    'tools/ci/affected_packages.py': '8687a8a2181f782c69c9891777c687525c9b20e9c05019673ebcb587cccd987e',
 }
 
 
@@ -87,7 +87,7 @@ def selector_plan(root, base, head, metadata):
     with tempfile.TemporaryDirectory(prefix='qos-trusted-metadata-') as directory:
         path = Path(directory) / 'metadata.json'
         path.write_text(json.dumps(metadata))
-        result = subprocess.run([sys.executable, '-I', str(root / 'tools/ci_select.py'),
+        result = subprocess.run([sys.executable, '-I', str(root / 'tools/ci/affected_packages.py'),
                                  '--base', base, '--head', head, '--shards', '2', '--metadata', str(path)],
                                 cwd=root, check=True, capture_output=True, text=True, timeout=120)
     return json.loads(result.stdout)
@@ -182,7 +182,7 @@ def derive(root, base, head, reviewers, roots, runs):
                        {'workflow': 'lint.yml', 'run_id': ids['lint.yml'], 'events': ['pull_request'], 'jobs': ['quality']}]}
     if plan['rust_required'] is False:
         policy['zero_rust_selection'] = {'base': base, 'head': head, 'trusted_revision': base,
-                                        'selector_sha256': CONTRACT['tools/ci_select.py'], 'plan': plan}
+                                        'selector_sha256': CONTRACT['tools/ci/affected_packages.py'], 'plan': plan}
     errors = audit.policy_errors(policy) + audit.provenance_errors(root, base, head, policy)
     require(not errors, '; '.join(errors))
     return policy, plan

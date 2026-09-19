@@ -7,8 +7,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).parents[2]
-sys.path.insert(0, str(ROOT / 'tools'))
-SPEC = importlib.util.spec_from_file_location('product_policy', ROOT / 'tools/ci_product_policy.py')
+sys.path.insert(0, str(ROOT / 'tools/ci'))
+SPEC = importlib.util.spec_from_file_location('product_policy', ROOT / 'tools/ci/product_policy.py')
 p = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(p)
 
@@ -125,7 +125,7 @@ class PolicyTests(unittest.TestCase):
             self.assertTrue(p.audit.review_errors([changed], head, 'author', ['claude']))
 
     def test_harness_and_unapproved_app_edits_rejected(self):
-        for path in ('tools/ci_select.py', '.forgejo/workflows/check.yml', 'apps/pkg/src/lib.rs', 'Cargo.toml'):
+        for path in ('tools/ci/affected_packages.py', '.forgejo/workflows/check.yml', 'apps/pkg/src/lib.rs', 'Cargo.toml'):
             with self.subTest(path=path):
                 head = self.candidate(path)
                 with self.assertRaisesRegex(ValueError, 'harness, policy or unknown'):

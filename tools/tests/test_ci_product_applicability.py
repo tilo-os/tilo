@@ -66,9 +66,9 @@ class ApplicabilityTests(unittest.TestCase):
                 return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
             git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@invalid')
             git('config', 'core.autocrlf', 'false')
-            (root / 'tools').mkdir()
+            (root / 'tools/ci').mkdir(parents=True)
             plan = dict(rust_required=False, selected_count=0, selected=[], matrix={'include': []}, changed_files=['docs/designs/a.md'])
-            selector = root / 'tools/ci_select.py'
+            selector = root / 'tools/ci/affected_packages.py'
             selector.write_text('import json\nprint(json.dumps(' + repr(plan) + '))\n')
             git('add', 'tools'); git('commit', '-qm', 'trusted selector')
             base = git('rev-parse', 'HEAD')
@@ -100,7 +100,8 @@ class ApplicabilityTests(unittest.TestCase):
                 git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@invalid')
                 git('config', 'core.autocrlf', 'false')
                 (root / 'tools/tests').mkdir(parents=True)
-                (root / 'tools/ci_select.py').write_bytes(source.read_bytes())
+                (root / 'tools/ci').mkdir()
+                (root / 'tools/ci/affected_packages.py').write_bytes(source.read_bytes())
                 helper = root / 'tools/ci_timing_report.py'
                 helper.write_text('# source\n')
                 (root / 'tools/tests/test_ci_timing_report.py').write_text('# test\n')
@@ -123,7 +124,7 @@ class ApplicabilityTests(unittest.TestCase):
                 head = git('rev-parse', 'HEAD')
                 git('checkout', '-q', '--detach', base)
                 policy = dict(self.policy, trusted_revision=base,
-                              protected_paths=['tools/ci_select.py'], zero_rust_selection={
+                              protected_paths=['tools/ci/affected_packages.py'], zero_rust_selection={
                                   'base': base, 'head': head, 'trusted_revision': base,
                                   'selector_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
                                   'plan': base_plan})

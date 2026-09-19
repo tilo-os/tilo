@@ -145,7 +145,7 @@ def policy_errors(policy):
             if "affected (runner)" in skips and not isinstance(policy.get("zero_rust_selection"), dict):
                 errors.append("affected skip requires independently recomputed selector proof")
             if "affected (runner)" in skips and not any(
-                    "tools/ci_select.py" == p or "tools/ci_select.py".startswith(p.rstrip("/") + "/")
+                    "tools/ci/affected_packages.py" == p or "tools/ci/affected_packages.py".startswith(p.rstrip("/") + "/")
                     for p in paths if isinstance(p, str)):
                 errors.append("selector must be inside the trusted protected closure")
     if len(workflows) != len(set(str(w) for w in workflows)):
@@ -204,8 +204,8 @@ def provenance_errors(root, base, head, policy):
             return errors + ["selector proof requires checkout at reviewed current base"]
         if git(root, "status", "--porcelain", "--untracked-files=all").strip():
             return errors + ["selector proof requires a clean trusted checkout"]
-        selector = Path(root) / "tools/ci_select.py"
-        committed = git(root, "show", base + ":tools/ci_select.py")
+        selector = Path(root) / "tools/ci/affected_packages.py"
+        committed = git(root, "show", base + ":tools/ci/affected_packages.py")
         if selector.read_bytes() != committed:
             return errors + ["selector bytes differ from reviewed Git object"]
         result = subprocess.run([sys.executable, "-I", str(selector), "--base", base,
