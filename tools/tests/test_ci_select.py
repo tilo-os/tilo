@@ -537,7 +537,7 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(values["shard_count"], "1")
         self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
 
-    def test_changed_files_compares_shallow_base_and_head_trees(self) -> None:
+    def test_changed_files_fails_when_merge_base_is_unavailable(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
@@ -553,7 +553,32 @@ class SelectorTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-qm", "head"], cwd=self.root, check=True)
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
 
-        self.assertEqual(ci_select.changed_files(self.root, base, head), ["base.rs", "head.rs"])
+        with self.assertRaisesRegex(RuntimeError, "merge base"):
+            ci_select.changed_files(self.root, base, head)
+
+    def test_changed_files_excludes_changes_only_on_advanced_base(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "base"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        (self.root / "shared.txt").write_text("common\n")
+        subprocess.run(["git", "add", "shared.txt"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "common"], cwd=self.root, check=True)
+
+        subprocess.run(["git", "switch", "-qc", "pull-request"], cwd=self.root, check=True)
+        (self.root / "head-only.py").write_text("print('head')\n")
+        subprocess.run(["git", "add", "head-only.py"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "pull request"], cwd=self.root, check=True)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        subprocess.run(["git", "switch", "-q", "base"], cwd=self.root, check=True)
+        (self.root / "base-only.rs").write_text("fn landed_on_main() {}\n")
+        subprocess.run(["git", "add", "base-only.rs"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "advance base"], cwd=self.root, check=True)
+        advanced_base = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
+        ).strip()
+
+        self.assertEqual(ci_select.changed_files(self.root, advanced_base, head), ["head-only.py"])
 
     def test_move_between_packages_selects_both_owners_and_dependants(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
