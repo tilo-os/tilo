@@ -8,6 +8,25 @@ source_revision=${2:?usage: test-image.sh IMAGE SOURCE_REVISION}
 [[ $(docker image inspect --format '{{.Config.User}}' "$image") == 65532:65532 ]]
 [[ $(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image") == "$source_revision" ]]
 
+# The deployed binary must expose the reviewed offline-root protocol. Exercise
+# Clap from the image itself so a stale or partial server build cannot publish.
+for command in \
+  authorize-channel \
+  collect-first-party \
+  publish-staged-first-party \
+  sign-delegated-snapshot
+do
+  help=$(docker run --rm --read-only --cap-drop ALL \
+    --security-opt no-new-privileges "$image" "$command" --help)
+  [[ $help == *"Usage:"* ]]
+done
+if docker run --rm --read-only --cap-drop ALL \
+  --security-opt no-new-privileges "$image" promote-first-party --help >/dev/null 2>&1
+then
+  printf 'removed unsafe promote-first-party command is still present\n' >&2
+  exit 1
+fi
+
 container="tilo-registry-smoke-${source_revision:0:12}-$$"
 volume="${container}-state"
 cleanup() {

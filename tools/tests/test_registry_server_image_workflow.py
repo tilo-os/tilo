@@ -67,6 +67,20 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
         self.assertNotIn("type=bind", smoke)
         self.assertIn('docker volume rm -f "$volume"', smoke)
 
+    def test_smoke_requires_the_delegated_offline_root_cli(self) -> None:
+        smoke = (
+            ROOT / "crates/packaging/registry-server/container/test-image.sh"
+        ).read_text()
+        for command in (
+            "authorize-channel",
+            "collect-first-party",
+            "publish-staged-first-party",
+            "sign-delegated-snapshot",
+        ):
+            self.assertIn(command, smoke)
+        self.assertIn("removed unsafe promote-first-party command is still present", smoke)
+        self.assertIn('"$image" promote-first-party --help', smoke)
+
 
 if __name__ == "__main__":
     unittest.main()
