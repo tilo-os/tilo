@@ -155,6 +155,7 @@ build_one() {
         # Generated libspa C wrappers require the compiler's own preprocessor;
         # sccache direct mode can omit PipeWire inline declarations on Fedora.
         export SCCACHE_DIRECT=false
+        export QCARGO_BYPASS=1
         # Keep sccache on rustc, but make cc-rs invoke the real compiler. C
         # helper output depends on live Fedora headers (notably PipeWire SPA),
         # and sccache can otherwise return an object generated for older ones.
@@ -186,6 +187,7 @@ build_shell_pair() {
         export SCCACHE_SERVER_PORT='$sccache_port'
         export SCCACHE_DIR=\"\$HOME/.cache/$sccache_cache_name\"
         export SCCACHE_DIRECT=false
+        export QCARGO_BYPASS=1
         export CC=/usr/bin/gcc CXX=/usr/bin/g++
         mkdir -p '$target_rel'
         if [ ! -e '$target_rel/CACHEDIR.TAG' ]; then
