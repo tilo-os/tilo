@@ -1,8 +1,8 @@
 {
   "baseline": null,
   "baseline_evidence": null,
-  "coordinator_file_sha256": "7246aef659de9679c37ae69d05c1859f2778c930e6a1f04c2fbe788aafaeed0b",
-  "coordinator_policy_sha256": "770316f152a7fa88116f4fb6d02e70b954b669e5288fc4c540c786ce4708d0a7",
+  "coordinator_file_sha256": "b72899d429ff307d79b6039490f58f0829aa3c8af0a16625c0b5c841a0718c14",
+  "coordinator_policy_sha256": "25f1bedff8a3d23f8fd5a98843a0adb738271aa26819326fdf4c9427d815c720",
   "dispatched": false,
   "final_receipt_policy_sha256": "5d0aed6416d1561ea45c9401f6a4c006f8745eb6ba920c0bc9bdf462253a6856",
   "installed": false,
@@ -63,6 +63,6 @@
     "windows",
     "word-processor"
   ],
-  "source_sha": "b34678dbfd154b0ad8979ae9e8527942768ec5ca",
+  "source_sha": "b4cba2210b4c03be13ec518822756849feadb685",
   "trusted_file_count": 29
 }
