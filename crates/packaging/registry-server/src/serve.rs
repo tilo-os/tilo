@@ -291,7 +291,17 @@ fn snapshot_is_current(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    registry_types::verify_snapshot(snapshot, &state.identity().owner_pubkey_hex, now).is_ok()
+    if registry_types::verify_snapshot(snapshot, &state.identity().owner_pubkey_hex, now).is_err() {
+        return false;
+    }
+    match &snapshot.channel_authorization {
+        Some(authorization) => state
+            .inner
+            .storage
+            .load_channel_authorization()
+            .is_ok_and(|active| active.as_ref() == Some(authorization)),
+        None => true,
+    }
 }
 
 async fn handle_post_entries(
