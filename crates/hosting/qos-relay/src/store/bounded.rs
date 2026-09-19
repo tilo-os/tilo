@@ -172,6 +172,44 @@ pub(super) fn read_meta(file: &mut File) -> Result<Option<Meta>, StoreError> {
     Ok(Some(meta))
 }
 
+/// One-entry acknowledgement cursor for destructive scans. Failed metadata,
+/// child-open or unlink operations retain the exact entry for the next quantum.
+/// An iterator error has no entry identity, so retry reopens this directory and
+/// scans its remaining contents in bounded quanta instead of skipping the error.
+pub(super) struct DirectoryCursor {
+    path: PathBuf,
+    entries: Option<fs::ReadDir>,
+    pending: Option<fs::DirEntry>,
+}
+impl DirectoryCursor {
+    pub fn open(path: &std::path::Path) -> Result<Self, StoreError> {
+        Ok(Self {
+            path: path.into(),
+            entries: Some(fs::read_dir(path)?),
+            pending: None,
+        })
+    }
+    pub fn peek(&mut self) -> Result<Option<&fs::DirEntry>, StoreError> {
+        if self.pending.is_none() {
+            if self.entries.is_none() {
+                self.entries = Some(fs::read_dir(&self.path)?);
+            }
+            match self.entries.as_mut().unwrap().next() {
+                Some(Ok(entry)) => self.pending = Some(entry),
+                Some(Err(error)) => {
+                    self.entries = None;
+                    return Err(error.into());
+                }
+                None => return Ok(None),
+            }
+        }
+        Ok(self.pending.as_ref())
+    }
+    pub fn advance(&mut self) {
+        self.pending = None;
+    }
+}
+
 struct Merge {
     inputs: Vec<(File, Option<Meta>)>,
     output: File,

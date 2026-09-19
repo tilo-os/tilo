@@ -1,7 +1,9 @@
 //! Bounded storage cursors. These confer no transport/session cleanup authority:
 //! the ordered owner in persistence must supply that authority in Task 2c2.
 //! No Drop implementation recursively deletes files or touches pending sources.
-use super::bounded::{self, Meta, Sorter, WorkStats, increment, invalid, read_meta, write_meta};
+use super::bounded::{
+    self, DirectoryCursor, Meta, Sorter, WorkStats, increment, invalid, read_meta, write_meta,
+};
 pub(crate) use super::bounded::{Step, WorkLimit};
 use super::{StoreError, WorkspaceStore, retained};
 use crate::transport::{self, Envelope};
@@ -705,8 +707,8 @@ fn same_inode(a: &Path, b: &Path) -> Result<bool, StoreError> {
 /// Snapshot/staging-only reclamation. Never execute abandoned cleanup manifests.
 pub(crate) struct WorkDiscard {
     root: PathBuf,
-    outer: fs::ReadDir,
-    child: Option<(PathBuf, fs::ReadDir)>,
+    outer: DirectoryCursor,
+    child: Option<(PathBuf, DirectoryCursor)>,
     done: bool,
 }
 impl WorkDiscard {
@@ -718,7 +720,7 @@ impl WorkDiscard {
             return Err(invalid("invalid work disposal root"));
         }
         Ok(Self {
-            outer: fs::read_dir(&root)?,
+            outer: DirectoryCursor::open(&root)?,
             root,
             child: None,
             done: false,
@@ -731,29 +733,29 @@ impl WorkDiscard {
         }
         for _ in 0..limit.record_entries() {
             if let Some((path, entries)) = &mut self.child {
-                if let Some(entry) = entries.next() {
-                    let entry = entry?;
+                if let Some(entry) = entries.peek()? {
                     if entry.file_type()?.is_file()
                         && owned_work_file(path.file_name().unwrap_or_default(), &entry.file_name())
                     {
                         fs::remove_file(entry.path())?;
                     }
+                    entries.advance();
                 } else {
                     remove_empty(path)?;
                     self.child = None;
                 }
-            } else if let Some(entry) = self.outer.next() {
-                let entry = entry?;
+            } else if let Some(entry) = self.outer.peek()? {
                 let name = entry.file_name();
                 if entry.file_type()?.is_dir()
                     && ["sort", "pins", "index"].iter().any(|s| name == *s)
                 {
-                    self.child = Some((entry.path(), fs::read_dir(entry.path())?));
+                    self.child = Some((entry.path(), DirectoryCursor::open(&entry.path())?));
                 } else if entry.file_type()?.is_file()
                     && (name == "replay.manifest" || name == "cleanup.manifest")
                 {
                     fs::remove_file(entry.path())?;
                 }
+                self.outer.advance();
             } else {
                 remove_empty(&self.root)?;
                 self.done = true;
@@ -800,13 +802,17 @@ fn owned_work_file(dir: &std::ffi::OsStr, name: &std::ffi::OsStr) -> bool {
 /// Startup-only cursor. Finish before admitting any new work: it treats all
 /// recognized old snapshots as abandoned, never as live cleanup authority.
 pub(crate) struct WorkReclaimer {
-    entries: Option<fs::ReadDir>,
+    entries: Option<DirectoryCursor>,
     current: Option<WorkDiscard>,
 }
 impl WorkspaceStore {
     pub(crate) fn start_work_reclamation(&self) -> Result<WorkReclaimer, StoreError> {
         Ok(WorkReclaimer {
-            entries: open_dir(&self.root.join("store-work-v1"))?,
+            entries: match DirectoryCursor::open(&self.root.join("store-work-v1")) {
+                Ok(cursor) => Some(cursor),
+                Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error),
+            },
             current: None,
         })
     }
@@ -824,14 +830,15 @@ impl WorkReclaimer {
             return Ok(Step::Done(()));
         };
         for _ in 0..limit.record_entries() {
-            let Some(entry) = entries.next() else {
+            let Some(entry) = entries.peek()? else {
                 return Ok(Step::Done(()));
             };
-            let entry = entry?;
             if entry.file_type()?.is_dir() && owned_work_name(&entry.file_name()) {
                 self.current = Some(WorkDiscard::new(entry.path())?);
+                entries.advance();
                 return Ok(Step::More);
             }
+            entries.advance();
         }
         Ok(Step::More)
     }

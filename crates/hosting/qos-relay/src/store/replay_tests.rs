@@ -532,3 +532,176 @@ fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries()
     assert_eq!(previous, 0);
     assert!(obsolete.join("unknown/keep").exists());
 }
+
+#[cfg(unix)]
+struct RestoreDirectoryPermissions {
+    path: PathBuf,
+    permissions: fs::Permissions,
+}
+#[cfg(unix)]
+impl Drop for RestoreDirectoryPermissions {
+    fn drop(&mut self) {
+        fs::set_permissions(&self.path, self.permissions.clone()).unwrap();
+    }
+}
+#[cfg(unix)]
+fn deny_directory_mutation(path: &Path) -> Option<RestoreDirectoryPermissions> {
+    use std::os::unix::fs::PermissionsExt;
+    let restore = RestoreDirectoryPermissions {
+        path: path.into(),
+        permissions: fs::metadata(path).unwrap().permissions(),
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(0o500)).unwrap();
+    // Privileged test processes may bypass mode bits. Never claim that such a
+    // run exercised PermissionDenied; the normal non-root runner uses real I/O.
+    let probe = path.join("permission-probe");
+    match File::create(&probe) {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Some(restore),
+        Ok(file) => {
+            drop(file);
+            fs::remove_file(probe).unwrap();
+            eprintln!("skipping mode-bit failure fixture: process bypasses directory permissions");
+            None
+        }
+        Err(error) => panic!("unexpected permission probe error: {error}"),
+    }
+}
+#[cfg(unix)]
+fn reach_unlink_failure(mut step: impl FnMut() -> Result<Step<()>, StoreError>) {
+    for _ in 0..100 {
+        match step() {
+            Err(StoreError::Io(error)) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Ok(Step::More) => {}
+            outcome => panic!("expected real transient unlink failure, got {outcome:?}"),
+        }
+    }
+    panic!("reclamation did not reach the blocked file");
+}
+#[cfg(unix)]
+fn finish_reclamation(mut step: impl FnMut() -> Result<Step<()>, StoreError>) {
+    for _ in 0..100 {
+        if matches!(step().unwrap(), Step::Done(())) {
+            return;
+        }
+    }
+    panic!("reclamation did not finish after permissions were restored");
+}
+#[test]
+#[cfg(unix)]
+fn direct_discard_retries_exact_entry_after_transient_unlink_failure() {
+    for child in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp
+            .path()
+            .join("store-work-v1/replay-11111111111111111111111111111111");
+        let directory = if child {
+            root.join("pins")
+        } else {
+            root.clone()
+        };
+        fs::create_dir_all(&directory).unwrap();
+        let owned = directory.join(if child {
+            "0000000000000000.frame"
+        } else {
+            "replay.manifest"
+        });
+        fs::write(&owned, b"owned snapshot bytes").unwrap();
+        let mut discard = WorkDiscard::new(root.clone()).unwrap();
+        let Some(restore) = deny_directory_mutation(&directory) else {
+            continue;
+        };
+        let limit = WorkLimit {
+            entries: 1,
+            ..WorkLimit::default()
+        };
+        reach_unlink_failure(|| discard.step(limit));
+        assert!(owned.exists());
+        drop(restore);
+        finish_reclamation(|| discard.step(limit));
+        assert!(
+            !owned.exists(),
+            "Done skipped the previously failed recognized file"
+        );
+        assert!(!root.exists());
+    }
+}
+#[test]
+#[cfg(unix)]
+fn startup_reclaimer_retries_exact_entry_after_transient_unlink_failure() {
+    for child in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        let pending = store
+            .enqueue_pending(&[2; 32], 1, &frame(1, 16, 1))
+            .unwrap();
+        let root = store
+            .root
+            .join("store-work-v1/replay-11111111111111111111111111111111");
+        let directory = if child {
+            root.join("pins")
+        } else {
+            root.clone()
+        };
+        fs::create_dir_all(&directory).unwrap();
+        let owned = directory.join(if child {
+            "0000000000000000.frame"
+        } else {
+            "replay.manifest"
+        });
+        fs::write(&owned, b"owned snapshot bytes").unwrap();
+        let mut reclaimer = store.start_work_reclamation().unwrap();
+        let Some(restore) = deny_directory_mutation(&directory) else {
+            continue;
+        };
+        let limit = WorkLimit {
+            entries: 1,
+            ..WorkLimit::default()
+        };
+        reach_unlink_failure(|| reclaimer.step(limit));
+        assert!(owned.exists());
+        drop(restore);
+        finish_reclamation(|| reclaimer.step(limit));
+        assert!(
+            !owned.exists(),
+            "startup Done skipped the previously failed recognized file"
+        );
+        assert!(!root.exists());
+        assert!(pending.exists());
+    }
+}
+#[test]
+#[cfg(unix)]
+fn generation_gc_retries_exact_entry_after_transient_unlink_failure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    store.retain_delta(&[9; 32], 1, &frame(1, 16, 1)).unwrap();
+    let lineage = store.root.join("retained/v2").join(format!(
+        "{}-{}",
+        hex::encode([1; 32]),
+        hex::encode([9; 32])
+    ));
+    let active = retained::current(&lineage).unwrap().unwrap();
+    let obsolete = lineage.join("11111111111111111111111111111111");
+    fs::create_dir(&obsolete).unwrap();
+    let owned = obsolete.join("0000000000000000.delta");
+    fs::write(&owned, b"old generation").unwrap();
+    fs::write(obsolete.join("unknown"), b"preserve").unwrap();
+    let mut gc = retained::GenerationGc::new(lineage).unwrap();
+    let Some(restore) = deny_directory_mutation(&obsolete) else {
+        return;
+    };
+    let limit = WorkLimit {
+        entries: 1,
+        ..WorkLimit::default()
+    };
+    reach_unlink_failure(|| gc.step(limit));
+    assert!(owned.exists());
+    drop(restore);
+    finish_reclamation(|| gc.step(limit));
+    assert!(
+        !owned.exists(),
+        "generation Done skipped the previously failed record"
+    );
+    assert!(obsolete.join("unknown").exists());
+    assert!(active.join("0000000000000001.delta").exists());
+}

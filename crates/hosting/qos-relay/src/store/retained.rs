@@ -289,13 +289,13 @@ fn commit_generation(
 /// Bounded incremental GC; no recursion and no authority over unknown content.
 pub(crate) struct GenerationGc {
     lineage: PathBuf,
-    entries: fs::ReadDir,
-    child: Option<(PathBuf, fs::ReadDir)>,
+    entries: super::bounded::DirectoryCursor,
+    child: Option<(PathBuf, super::bounded::DirectoryCursor)>,
 }
 impl GenerationGc {
     pub(crate) fn new(lineage: PathBuf) -> Result<Self, StoreError> {
         Ok(Self {
-            entries: fs::read_dir(&lineage)?,
+            entries: super::bounded::DirectoryCursor::open(&lineage)?,
             lineage,
             child: None,
         })
@@ -316,12 +316,12 @@ impl GenerationGc {
                     self.child = None;
                     continue;
                 }
-                if let Some(entry) = entries.next() {
-                    let entry = entry?;
+                if let Some(entry) = entries.peek()? {
                     let name = entry.file_name();
                     if known_record(&name) && entry.file_type()?.is_file() {
                         fs::remove_file(entry.path())?;
                     }
+                    entries.advance();
                 } else {
                     match fs::remove_dir(&*path) {
                         Ok(()) => {}
@@ -330,14 +330,17 @@ impl GenerationGc {
                     }
                     self.child = None;
                 }
-            } else if let Some(entry) = self.entries.next() {
-                let entry = entry?;
+            } else if let Some(entry) = self.entries.peek()? {
                 if entry.path() != active
                     && entry.file_type()?.is_dir()
                     && generation_name(&entry.file_name().to_string_lossy())
                 {
-                    self.child = Some((entry.path(), fs::read_dir(entry.path())?));
+                    self.child = Some((
+                        entry.path(),
+                        super::bounded::DirectoryCursor::open(&entry.path())?,
+                    ));
                 }
+                self.entries.advance();
             } else {
                 sync_dir(&self.lineage)?;
                 return Ok(Step::Done(()));
