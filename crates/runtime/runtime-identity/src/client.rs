@@ -255,7 +255,7 @@ pub(super) fn read_frame<T: serde::de::DeserializeOwned>(
 /// snapshots. Postcard keeps byte vectors compact; the preceding JSON wire
 /// represented every byte as a decimal number and hit its 1 MiB cap much
 /// earlier than the underlying document did.
-const MAX_IDENTITY_FRAME_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_IDENTITY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 #[cfg(test)]
 mod tests {

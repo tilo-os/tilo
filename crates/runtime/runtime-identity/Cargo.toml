@@ -25,6 +25,10 @@ path = "src/lib.rs"
 runtime-portal = { path = "../runtime-portal" }
 serde.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
+tokio = { workspace = true, features = ["io-util", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "test-util", "time"] }
 
 [target.'cfg(unix)'.dependencies]
 bounded-command = { path = "../../system/bounded-command" }
