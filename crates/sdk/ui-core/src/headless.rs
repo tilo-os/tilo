@@ -445,6 +445,7 @@ pub struct FrameHarness {
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
     pending_control_invocations: HashSet<tilo_actions::InvocationId>,
+    control_failures: Vec<String>,
     bound_invocations:
         HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
     /// Per-pass frame profiler, installed by the perf harness via
@@ -688,6 +689,7 @@ impl FrameHarness {
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
             pending_control_invocations: HashSet::new(),
+            control_failures: Vec::new(),
             bound_invocations: HashMap::new(),
             profiler: None,
         };
@@ -1251,7 +1253,9 @@ impl FrameHarness {
         timeout: std::time::Duration,
         mut condition: impl FnMut(&Self) -> bool,
     ) -> bool {
-        self.pump_component_wakes();
+        self.relayout();
+        self.idle_control_tick();
+        self.relayout();
         if condition(self) {
             return true;
         }
@@ -1259,7 +1263,8 @@ impl FrameHarness {
             return false;
         };
         while std::time::Instant::now() < deadline {
-            self.poll_control_invocations();
+            self.relayout();
+            self.idle_control_tick();
             self.relayout();
             if condition(self) {
                 return true;
@@ -2102,7 +2107,7 @@ impl FrameHarness {
     ///    the document directly instead of dispatching actions.
     /// 3. **Undo/redo the tree asked for** runs last, so an action performed in
     ///    the same tick is already on the stack and is what gets reverted.
-    fn host_tick(&mut self) {
+    fn idle_control_tick(&mut self) {
         self.dispatch_control_invocations();
         self.poll_control_invocations();
         let author = self.author.clone();
@@ -2116,6 +2121,11 @@ impl FrameHarness {
                 &author,
             );
         }
+    }
+
+    fn host_tick(&mut self) {
+        self.idle_control_tick();
+        let author = self.author.clone();
         if self.root.needs_commit() {
             // Authored *and* carrying the widget's commit context. An
             // anonymous entry is invisible to author-scoped undo, so a
@@ -2237,6 +2247,7 @@ impl FrameHarness {
             Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
             Err(error) => {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
+                self.control_failures.push(error.to_string());
             }
         }
     }
@@ -2273,6 +2284,7 @@ impl FrameHarness {
                 Ok(target) => target,
                 Err(error) => {
                     tracing::warn!(code = error.code(), %error, "headless: control target refused");
+                    self.control_failures.push(error.to_string());
                     self.root
                         .on_control_invocation_result(&intent.address, &Err(error.into_door()));
                     continue;
@@ -2359,6 +2371,7 @@ impl FrameHarness {
                 Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
                 Err(error) => {
                     tracing::warn!(code = error.code(), %error, "headless: control action refused");
+                    self.control_failures.push(error.to_string());
                 }
             }
         }
@@ -2378,6 +2391,11 @@ impl FrameHarness {
                 invocation,
                 false,
             );
+            match &update {
+                Ok(Some(update)) => self.record_control_failure(update),
+                Err(error) => self.control_failures.push(format!("{error:?}")),
+                Ok(None) => {}
+            }
             if update.is_err()
                 || update
                     .as_ref()
@@ -2402,8 +2420,25 @@ impl FrameHarness {
                 &self.state.root,
             ) && update.is_terminal()
             {
+                self.record_control_failure(&update);
                 self.pending_control_invocations.remove(&invocation);
             }
+        }
+    }
+
+    fn record_control_failure(&mut self, update: &tilo_actions::InvocationUpdate) {
+        match update {
+            tilo_actions::InvocationUpdate::Failed { error, .. } => {
+                self.control_failures.push(error.message.clone())
+            }
+            tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
+                self.control_failures.push(
+                    message
+                        .clone()
+                        .unwrap_or_else(|| "Control operation cancelled".into()),
+                )
+            }
+            _ => {}
         }
     }
 
@@ -3363,6 +3398,19 @@ fn drive_spec_actions(
     mut persist: impl FnMut(&mut Driver),
 ) -> Option<String> {
     tilo_startup_metrics::mark("headless-actions-start");
+    // Native idle frames admit queued local controls even without input. Use
+    // the same host tick here, including fresh permissions and undo recording.
+    if !driver.wait_until(std::time::Duration::from_secs(10), |driver| {
+        !driver.root.has_pending_control_invocation()
+            && driver.pending_control_invocations.is_empty()
+            && driver.bound_invocations.is_empty()
+    }) {
+        return Some("startup control invocation did not become ready".into());
+    }
+    if let Some(error) = driver.control_failures.first() {
+        return Some(format!("startup control invocation failed: {error}"));
+    }
+    persist(driver);
     for (index, action) in spec.actions.iter().enumerate() {
         if let Err(error) = driver.perform(action) {
             tilo_startup_metrics::mark("headless-action-failed");
@@ -3535,12 +3583,14 @@ pub(crate) fn build_initialized_driver(
     let autosave = &inputs.autosave;
     // An explicitly disabled writer is not successful durability, and never
     // causes this runner to reopen a different default store behind the app.
-    if !autosave.is_enabled() {
+    if inputs.persistence == crate::launch::LegacyPersistencePolicy::Host && !autosave.is_enabled()
+    {
         return Err(format!(
             "persistence unavailable: {}",
             autosave.last_error().unwrap_or_default()
         ));
     }
+    inputs.validate_persistence_ownership()?;
     if let LegacyRecordPolicy::AutomaticHeadless {
         records,
         expected_index,
@@ -3584,6 +3634,7 @@ fn build_legacy_driver(
         autosave,
         records,
         registry,
+        persistence: _,
     } = inputs;
     let mut driver = Driver::new_with_theme(state, root, viewport, theme);
     *driver.action_registry_mut() = registry;
@@ -3601,6 +3652,7 @@ fn build_legacy_driver(
 }
 
 pub(crate) fn run_initialized(spec: &Spec, inputs: crate::launch::LegacyLaunchInputs) -> i32 {
+    let persistence = inputs.persistence;
     let (mut driver, mut autosave) =
         match build_initialized_driver(inputs, spec.viewport.unwrap_or(DEFAULT_VIEWPORT)) {
             Ok(prepared) => prepared,
@@ -3635,9 +3687,19 @@ pub(crate) fn run_initialized(spec: &Spec, inputs: crate::launch::LegacyLaunchIn
     tilo_startup_metrics::mark("headless-output-done");
     tilo_startup_metrics::mark("headless-durability-start");
     // The same two calls `App::exiting` makes, for the same reason.
-    autosave.request(driver.persistence_document());
-    autosave.flush();
-    if let Some(e) = autosave.last_error() {
+    let durability = if persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
+        driver
+            .root
+            .try_flush_owned_persistence()
+            .unwrap_or_else(|| Err("widget-owned persistence requires a checked flush hook".into()))
+    } else {
+        autosave.request(driver.persistence_document());
+        autosave.flush();
+        autosave
+            .last_error()
+            .map_or(Ok(()), |error| Err(error.to_owned()))
+    };
+    if let Err(e) = durability {
         tilo_startup_metrics::mark("headless-durability-failed");
         eprintln!("headless: state write failed: {e}");
         return 3;
@@ -4698,6 +4760,57 @@ mod tests {
             [Err(tilo_actions::DoorError::Unknown(_))]
         ));
         assert!(observed.pending.borrow().is_empty());
+    }
+
+    #[test]
+    fn startup_control_waits_for_terminal_without_committing_typing() {
+        use crate::widget::control_result_probe::Probe;
+        for succeeds in [true, false] {
+            let (mut probe, observed) = Probe::new(true);
+            probe.terminal_after = Some((3, succeeds));
+            probe.dirty_typing = true;
+            probe.owned_flush = Some(Ok(()));
+            observed.enqueue("run");
+            let inputs = crate::launch::LegacyLaunchInputs::new(
+                State::new(),
+                Box::new(probe),
+                crate::persist::Autosave::disabled("fixture owns storage"),
+            )
+            .with_widget_owned_persistence();
+            assert_eq!(
+                run_initialized(&Spec::default(), inputs),
+                if succeeds { 0 } else { 1 }
+            );
+            assert_eq!(observed.calls.get(), 1);
+            assert_eq!(observed.polls.get(), 3);
+            assert_eq!(
+                observed.commits.get(),
+                0,
+                "idle admission must not commit unrelated pending typing"
+            );
+            assert_eq!(observed.flushes.get(), 1);
+        }
+    }
+
+    #[test]
+    fn widget_owned_persistence_requires_checked_success() {
+        use crate::widget::control_result_probe::Probe;
+        for outcome in [None, Some(Err("disk full".into())), Some(Ok(()))] {
+            let succeeds = outcome == Some(Ok(()));
+            let (mut probe, observed) = Probe::new(false);
+            probe.owned_flush = outcome;
+            let inputs = crate::launch::LegacyLaunchInputs::new(
+                State::new(),
+                Box::new(probe),
+                crate::persist::Autosave::disabled("fixture owns storage"),
+            )
+            .with_widget_owned_persistence();
+            assert_eq!(
+                run_initialized(&Spec::default(), inputs),
+                if succeeds { 0 } else { 3 }
+            );
+            assert_eq!(observed.flushes.get(), 1);
+        }
     }
 
     struct LateRecordProbe {
