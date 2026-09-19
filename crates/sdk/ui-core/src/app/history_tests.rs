@@ -63,7 +63,7 @@ fn native_managed_app_automatically_composes_same_history_surface() {
     );
 }
 
-fn named(app: &App, label: &str) -> accesskit::NodeId {
+fn named(app: &mut App, label: &str) -> accesskit::NodeId {
     app.build_a11y_tree_update(1.0)
         .nodes
         .iter()
@@ -143,7 +143,7 @@ fn native_dirty_editor_real_history_click_preserves_pending_heads_and_semantic_f
     assert_eq!(app.state.doc.base_heads(), heads);
     assert_eq!(app.state.doc.pending_ops(), ops);
     // Opening the panel then closing the actual entry preserves the editor.
-    let close = named(&app, "History");
+    let close = named(&mut app, "History");
     app.dispatch_a11y_action(close, &crate::a11y::Action::Activate);
     layout(&mut app);
     assert_eq!(app.state.doc.base_heads(), heads);
@@ -161,7 +161,8 @@ fn native_pointer_version_selection_restore_dialog_and_back_live_use_shared_surf
     let mut app = app();
     layout(&mut app);
     let before = app.state.doc.base_heads();
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     let node = app
         .build_a11y_tree_update(1.0)
@@ -182,7 +183,8 @@ fn native_pointer_version_selection_restore_dialog_and_back_live_use_shared_surf
                 .label()
                 .is_some_and(|label| label.starts_with("Notebook:")))
     );
-    app.dispatch_a11y_action(named(&app, "Restore…"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "Restore…");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     assert!(
         app.build_a11y_tree_update(1.0)
@@ -192,7 +194,8 @@ fn native_pointer_version_selection_restore_dialog_and_back_live_use_shared_surf
     );
     native_key(&mut app, "Escape");
     assert_eq!(app.state.doc.base_heads(), before);
-    app.dispatch_a11y_action(named(&app, "Back to live"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "Back to live");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     assert!(app.history.as_ref().unwrap().live_visible());
 }
@@ -214,7 +217,7 @@ fn native_component_bundle_installs_history_in_existing_component_wake_scope() {
     };
     layout(&mut app);
     assert!(app.validate_history_registration().is_ok());
-    let history = named(&app, "History");
+    let history = named(&mut app, "History");
     app.dispatch_a11y_action(history, &crate::a11y::Action::Activate);
     layout(&mut app);
     assert!(
@@ -232,7 +235,8 @@ fn native_component_bundle_installs_history_in_existing_component_wake_scope() {
 fn replacing_installed_autosave_invalidates_history_and_old_modal_action() {
     let mut app = app();
     layout(&mut app);
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     let row = app
         .build_a11y_tree_update(1.0)
@@ -243,9 +247,10 @@ fn replacing_installed_autosave_invalidates_history_and_old_modal_action() {
         .unwrap();
     app.dispatch_a11y_action(row, &crate::a11y::Action::Activate);
     layout(&mut app);
-    app.dispatch_a11y_action(named(&app, "Restore…"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "Restore…");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
-    let old = named(&app, "Restore version");
+    let old = named(&mut app, "Restore version");
     let heads = app.state.doc.base_heads();
     app = app.with_autosave(crate::persist::Autosave::disabled("replacement"));
     layout(&mut app);
@@ -688,16 +693,12 @@ fn native_owned_review_restore_enqueues_one_target_delta_and_preserves_other_own
         .read_checked(&fixture.bindings[1].checkout.id, |doc| doc.base_heads())
         .unwrap();
     let outer = fixture.app.state.doc.base_heads();
-    fixture.app.dispatch_a11y_action(
-        named(&fixture.app, "History"),
-        &crate::a11y::Action::Activate,
-    );
+    let target = named(&mut fixture.app, "History");
+    fixture.app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut fixture.app);
     select_native_version(&mut fixture.app, old);
-    fixture.app.dispatch_a11y_action(
-        named(&fixture.app, "Restore…"),
-        &crate::a11y::Action::Activate,
-    );
+    let target = named(&mut fixture.app, "Restore…");
+    fixture.app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut fixture.app);
     native_key(&mut fixture.app, "Enter");
     assert_eq!(fixture.value(0, "body").as_deref(), Some("old version"));
@@ -749,10 +750,8 @@ fn native_owned_review_restore_enqueues_one_target_delta_and_preserves_other_own
     );
     assert_eq!(fixture.app.document_routes.sent.len(), 1);
     // Restoring the same selected version again is a canonical no-op.
-    fixture.app.dispatch_a11y_action(
-        named(&fixture.app, "Restore…"),
-        &crate::a11y::Action::Activate,
-    );
+    let target = named(&mut fixture.app, "Restore…");
+    fixture.app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut fixture.app);
     native_key(&mut fixture.app, "Enter");
     assert_eq!(
@@ -888,7 +887,7 @@ fn native_tiled_history_preserves_first_pending_and_routes_sibling_at_to_second_
             .iter()
             .any(|(_, node)| node.label() == Some("first-editor"))
     );
-    let second_target = named(&app, "second-editor");
+    let second_target = named(&mut app, "second-editor");
     app.dispatch_a11y_action(
         second_target,
         &crate::a11y::Action::SetValue("native second".into()),
@@ -960,7 +959,7 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
     let mut app = App::new_with_controlled_inputs(State::new(), tile);
     layout(&mut app);
     app.rebuild_structure();
-    let exported = named(&app, "replaceable editor");
+    let exported = named(&mut app, "replaceable editor");
     let old_node = app
         .node_map
         .keys()
@@ -1014,10 +1013,10 @@ fn exported_legacy_at_id_cannot_edit_same_record_id_replacement_after_arena_rebu
         before,
         "an exported target from another owner must be rejected"
     );
-    let fresh = named(&app, "replaceable editor");
+    let fresh = named(&mut app, "replaceable editor");
     app.rebuild_structure();
     assert_eq!(
-        named(&app, "replaceable editor"),
+        named(&mut app, "replaceable editor"),
         fresh,
         "unchanged owner retains exported identity"
     );
@@ -1069,7 +1068,8 @@ fn native_hidden_resource_at_action_cannot_bypass_history_presentation() {
         app.local_invocations.is_empty(),
         "hidden retry cannot be rejected merely because first invocation is in flight"
     );
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     app.dispatch_a11y_action(export, &crate::a11y::Action::Activate);
     assert_eq!(
@@ -1148,7 +1148,8 @@ fn native_tile_effect_isolation(semantic: bool) {
     let open = node_for_test_id(&app, "history-open");
     let bounds = app.inspect_node(open, |widget| widget.get_rect()).unwrap();
     if semantic {
-        app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+        let target = named(&mut app, "History");
+        app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     } else {
         app.dispatch_semantic_click(bounds.center().x, bounds.center().y);
     }
@@ -1304,7 +1305,8 @@ fn native_tile_history_unmounts_live_native_view_and_remounts_on_return() {
     );
     app.root_widget.mount_native_views(&host);
     assert_eq!(mounts.get(), 1);
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     app.root_widget.mount_native_views(&host);
     assert_eq!(unmounts.get(), 1);
@@ -1314,7 +1316,8 @@ fn native_tile_history_unmounts_live_native_view_and_remounts_on_return() {
             .iter()
             .any(|(_, node)| node.label() == Some("Live native surface"))
     );
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     app.root_widget.mount_native_views(&host);
     assert_eq!(mounts.get(), 2);
@@ -1656,7 +1659,8 @@ fn native_legacy_reported_bracket_and_directed_undo_stay_with_addressed_sibling(
         ),
     );
     layout(&mut app);
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     store
         .with_action_state(&a.id, |doc, _, _| {
@@ -1732,7 +1736,8 @@ fn native_history_tab_shift_tab_release_and_ime_keep_pending_live_editor_isolate
     .unwrap();
     app.state.doc.put(ROOT, "unrelated", "pending").unwrap();
     let before = (app.state.doc.base_heads(), app.state.doc.pending_ops());
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut app);
     native_key(&mut app, "Tab");
     let tabbed = app.focused_node;
@@ -1777,10 +1782,8 @@ fn native_routed_live_update_keeps_selected_historical_canvas_pinned() {
         })
         .unwrap();
     fixture.install_history();
-    fixture.app.dispatch_a11y_action(
-        named(&fixture.app, "History"),
-        &crate::a11y::Action::Activate,
-    );
+    let target = named(&mut fixture.app, "History");
+    fixture.app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     layout(&mut fixture.app);
     select_native_version(&mut fixture.app, selected);
     let preview_before = fixture
@@ -1842,7 +1845,7 @@ fn round1_top_level_native_history_preserves_legacy_custody_and_stale_at_refusal
     app.state.doc.put(ROOT, "unfinished outer", "pending").unwrap();
     let outer = (app.state.doc.base_heads(), app.state.doc.pending_ops());
     let before = fixture.store.read_history(&fixture.checkout.id, |_, history| history.revision()).unwrap();
-    let target = named(&app, "owned editor");
+    let target = named(&mut app, "owned editor");
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("owned edit".into()));
     assert_eq!(legacy_body(&fixture.store, &fixture.checkout), "owned edit", "top-level chrome must retain the actual legacy owner");
     assert_eq!((app.state.doc.base_heads(), app.state.doc.pending_ops()), outer);
@@ -1862,7 +1865,7 @@ fn round1_top_level_native_history_preserves_legacy_custody_and_stale_at_refusal
     let owner = unsafe { (*tile_pointer).history_owner().unwrap() };
     app.install_history(HistoryRegistration::new(definition, vec![HistorySourceRegistration::owned("document", definition.app_id, owner).unwrap()]).unwrap()).unwrap();
     layout(&mut app);
-    let fresh = named(&app, "owned editor");
+    let fresh = named(&mut app, "owned editor");
     assert_ne!(fresh, target);
     app.dispatch_a11y_action(target, &crate::a11y::Action::SetValue("stale allowed".into()));
     assert_eq!(legacy_body(&fixture.replacement, &fixture.checkout), "live");
@@ -1900,7 +1903,8 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
     assert!(native.attached.get() && native.visible.get() && native.enabled.get() && native.focused.get());
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     let root = app.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     assert!(app.history.as_ref().unwrap().live_visible(), "wide activity retains the rendered live backdrop");
@@ -1908,7 +1912,8 @@ fn round1_top_level_wide_activity_detaches_focused_native_view_until_live_return
     assert!(!native.attached.get(), "wide activity must detach independent native input even without a selected preview");
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
     assert!(!native.attached.get() && !native.visible.get(), "drawing the live backdrop must not reactivate native controls");
-    app.dispatch_a11y_action(named(&app, "History"), &crate::a11y::Action::Activate);
+    let target = named(&mut app, "History");
+    app.dispatch_a11y_action(target, &crate::a11y::Action::Activate);
     let root = app.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, Some(&host)).unwrap();
     draw_frame_content(&mut app, &mut Scene::new(), 900, 650, 1.0, None);
