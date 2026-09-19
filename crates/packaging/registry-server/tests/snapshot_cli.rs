@@ -3,6 +3,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
+    clippy::too_many_lines,
     reason = "integration-test setup and assertions"
 )]
 
