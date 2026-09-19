@@ -1,4 +1,7 @@
 import json
+import io
+import hashlib
+import zipfile
 from pathlib import Path
 import subprocess
 import sys
@@ -32,12 +35,36 @@ class API(product.ProductForgejo):
         super().__init__(POLICY)
         self.runs, self.calls = {}, []
         self.uncertain = False
+        self.documents = {}
+        self.zero = False
+
+    def artifact_bytes(self, artifact_id):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, 'w') as archive:
+            archive.writestr('coordinator-plan.json', self.document_bytes(artifact_id))
+        return output.getvalue()
+
+    def document_bytes(self, run_id):
+        return json.dumps(self.documents[run_id], sort_keys=True).encode()
+
+    def raw_api(self, path, maximum):
+        run_id = int(path.split('/')[-2])
+        intent = json.loads(self.runs[run_id]['event_payload'])['inputs']['coordinator_intent']
+        return f'TILO_COORDINATOR_PLAN {intent} {hashlib.sha256(self.document_bytes(run_id)).hexdigest()}\n'.encode()
 
     def qualify_receipt(self, receipt):
         product.validate_desired(receipt)
 
     def call(self, path, data=None):
         if data is None:
+            if path.endswith('/jobs'):
+                run_id = int(path.split('/')[-2])
+                return [{'id': run_id, 'repo_id': 23, 'run_id': run_id, 'name': 'plan', 'status': 'success',
+                         'attempt': 1, 'task_id': run_id, 'handle': 'handle-' + str(run_id)}]
+            if '/artifacts?' in path:
+                run_id = int(path.split('/')[-2])
+                return [{'id': run_id, 'run_id': run_id, 'name': 'coordinator-plan-1', 'expired': False,
+                         'size_in_bytes': len(self.artifact_bytes(run_id))}]
             return self.runs[int(path.rsplit('/', 1)[1])]
         self.calls.append(data)
         rid = len(self.calls)
@@ -45,6 +72,11 @@ class API(product.ProductForgejo):
                          'workflow_id': 'release-apps.yml', 'trigger_event': 'workflow_dispatch',
                          'commit_sha': data['ref'], 'event_payload': json.dumps({'ref': data['ref'], 'inputs': data['inputs']}),
                          'status': 'running'}
+        self.documents[rid] = {'schema': 'tilo.coordinator-plan/v1', 'run_id': rid, 'plan_attempt': 1,
+                               'source_sha': data['ref'], 'builder_image': data['inputs']['builder_image'],
+                               'inputs': data['inputs'], 'plan': {'count': 0 if self.zero else 1,
+                                'apps': [] if self.zero else ['terminal'], 'packages': [] if self.zero else ['terminal'],
+                                'catalog': [] if self.zero else [{'name': 'terminal'}], 'features': []}}
         if self.uncertain:
             raise TimeoutError()
         return {'id': rid}
@@ -61,6 +93,130 @@ class ProductTests(unittest.TestCase):
     def start(self):
         self.store.observe(1, desired())
         core.tick(self.store, self.api)
+
+    def test_zero_bootstrap_is_handled_without_manufacturing_baseline(self):
+        self.api.zero = True
+        self.start()
+        self.api.runs[1]['status'] = 'success'
+        core.tick(self.store, self.api)
+        state = self.store.read()
+        self.assertIsNone(state['active'])
+        self.assertIsNone(state['baseline'])
+        self.assertIsNone(state.get('baseline_evidence'))
+        self.assertEqual(state['handled'], desired())
+        self.assertEqual(state['last_attempt']['outcome'], 'verified-no-build')
+        self.assertEqual(core.next_action(state), 'idle')
+        reopened = core.Store(self.store.path)
+        try:
+            self.assertEqual(core.next_action(reopened.read()), 'idle')
+        finally:
+            reopened.db.close()
+        core.tick(self.store, self.api)
+        self.assertEqual(len(self.api.calls), 1)
+        self.store.observe(2, desired('b'))
+        core.tick(self.store, self.api)
+        self.assertEqual(self.api.calls[-1]['inputs']['baseline_sha'], '')
+
+    def test_zero_plan_preserves_verified_baseline_and_next_pending_uses_it(self):
+        self.start()
+        self.api.runs[1]['status'] = 'success'
+        self.api.verifier = proof
+        core.tick(self.store, self.api)
+        baseline = self.store.read()['baseline']
+        evidence = self.store.read()['baseline_evidence']
+        self.api.zero = True
+        self.store.observe(2, desired('b'))
+        core.tick(self.store, self.api)
+        self.store.observe(3, desired('c'))
+        self.api.runs[2]['status'] = 'success'
+        self.api.verifier = lambda *_: self.fail('zero plan must not require native package verification')
+        core.tick(self.store, self.api)
+        state = self.store.read()
+        self.assertEqual(state['baseline'], baseline)
+        self.assertEqual(state['baseline_evidence'], evidence)
+        self.assertEqual(state['handled'], desired('b'))
+        self.assertEqual(core.next_action(state), 'dispatch')
+        core.tick(self.store, self.api)
+        self.assertEqual(self.api.calls[-1]['inputs']['baseline_sha'], baseline['source_sha'])
+        self.assertEqual(self.api.calls[-1]['inputs']['baseline_run_id'], '1')
+
+    def test_artifact_forged_zero_count_cannot_override_trusted_plan_log(self):
+        self.start()
+        trusted_log = self.api.raw_api('repos/qos/qos/actions/jobs/1/logs', 9999)
+        self.api.documents[1]['plan'] = {'count': 0, 'apps': [], 'packages': [], 'catalog': [], 'features': []}
+        self.api.raw_api = lambda *_: trusted_log
+        self.api.runs[1]['status'] = 'success'
+        with self.assertRaisesRegex(ValueError, 'trusted current job log'):
+            core.tick(self.store, self.api)
+        self.assertIsNotNone(self.store.read()['active'])
+        self.assertIsNone(self.store.read()['baseline'])
+
+    def test_no_build_rejects_mismatched_provenance_even_with_matching_log_digest(self):
+        import copy
+        self.api.zero = True
+        self.start()
+        self.api.runs[1]['status'] = 'success'
+        original = copy.deepcopy(self.api.documents[1])
+        changes = [('source_sha', 'f' * 40), ('builder_image', 'different-builder'),
+                   ('run_id', 123), ('plan_attempt', 2)]
+        for key, value in changes:
+            self.api.documents[1] = dict(original, **{key: value})
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'provenance'):
+                core.tick(self.store, self.api)
+        for key in ('coordinator_intent', 'baseline_sha', 'collection', 'architectures'):
+            self.api.documents[1] = copy.deepcopy(original)
+            self.api.documents[1]['inputs'][key] = 'forged'
+            with self.subTest(input=key), self.assertRaisesRegex(ValueError, 'provenance'):
+                core.tick(self.store, self.api)
+        self.assertIsNotNone(self.store.read()['active'])
+
+    def test_no_build_cannot_use_stale_plan_attempt(self):
+        self.api.zero = True
+        self.start()
+        self.api.runs[1]['status'] = 'success'
+        original_call = self.api.call
+        def rerun(path, data=None):
+            result = original_call(path, data)
+            if path.endswith('/jobs'):
+                result[0].update(attempt=2, task_id=20, handle='new')
+            return result
+        self.api.call = rerun
+        with self.assertRaisesRegex(ValueError, 'artifact missing'):
+            core.tick(self.store, self.api)
+
+    def test_success_with_skipped_build_is_not_a_no_build_proof(self):
+        self.api.zero = True
+        self.start()
+        self.api.runs[1]['status'] = 'success'
+        original = self.api.call
+        self.api.call = lambda path, data=None: ([{'id': 1, 'name': 'build', 'status': 'skipped'}]
+                                                if path.endswith('/jobs') else original(path, data))
+        with self.assertRaisesRegex(ValueError, 'trusted plan job'):
+            core.tick(self.store, self.api)
+        self.assertIsNotNone(self.store.read()['active'])
+        self.assertIsNone(self.store.read().get('handled'))
+
+    def test_no_build_rechecks_trusted_source_and_current_jobs(self):
+        self.api.zero = True
+        self.start()
+        self.api.runs[1]['status'] = 'success'
+        self.api.qualify_receipt = lambda *_: (_ for _ in ()).throw(ValueError('untrusted planner'))
+        with self.assertRaisesRegex(ValueError, 'untrusted planner'):
+            core.tick(self.store, self.api)
+        self.api.qualify_receipt = product.validate_desired
+        original = self.api.call
+        reads = []
+        def changing(path, data=None):
+            result = original(path, data)
+            if path.endswith('/jobs'):
+                reads.append(path)
+                if len(reads) > 1:
+                    result[0]['handle'] = 'replacement'
+            return result
+        self.api.call = changing
+        with self.assertRaisesRegex(ValueError, 'changed during plan verification'):
+            core.tick(self.store, self.api)
+        self.assertIsNone(self.store.read()['baseline'])
 
     def test_green_run_does_not_advance_without_canonical_verification(self):
         self.start()
