@@ -6696,6 +6696,25 @@ fn close_requirement_survives_cancelled_save_as_and_failed_canonical_save() {
             .unwrap()
             .contains("unsaved")
     );
+    // The render cache also follows uncommitted edits and their rollback,
+    // without creating an undo boundary just to observe either state.
+    state.commit_action(None, None);
+    let saved_projection = wp.blocks.clone();
+    wp.model_mut().insert_str(&mut state.doc, "temporary ");
+    let pending = state.doc.pending_ops();
+    assert!(pending > 0);
+    wp.sync(&mut state.doc, &state.root);
+    assert_eq!(state.doc.pending_ops(), pending);
+    assert!(
+        wp.blocks
+            .iter()
+            .any(|block| block.text.contains("temporary"))
+    );
+    assert!(state.doc.rollback() > 0);
+    wp.sync(&mut state.doc, &state.root);
+    assert_eq!(state.doc.pending_ops(), 0);
+    assert_eq!(wp.blocks, saved_projection);
+    assert!(wp.unsaved_documents(&state.doc).is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
