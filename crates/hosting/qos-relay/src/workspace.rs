@@ -228,9 +228,17 @@ impl WorkspaceRuntime {
         raw_delta_bytes: &[u8],
         seq: u64,
     ) -> Result<usize, crate::store::StoreError> {
-        // 1. Live fan-out — prune closed subscribers as we go.
+        // 1. Live fan-out. A FULL queue is backpressure, never a disconnect
+        //    (Stage 1): the durable delta spills to the slow subscriber's
+        //    store-and-forward queue below and the subscriber stays connected.
+        //    Only a CLOSED channel (the receiving task is gone) prunes the
+        //    subscriber. Dropping slow subscribers here caused the native host
+        //    to be disconnected mid-checkpoint, reconnect, receive the room's
+        //    retained baselines as a replay, republish, and storm.
+        use tokio::sync::mpsc::error::TrySendError;
         let mut delivered = 0usize;
         let mut dead: Vec<[u8; 32]> = Vec::new();
+        let mut backpressured: Vec<[u8; 32]> = Vec::new();
         for (peer, sub) in &self.subscribers {
             if peer == author {
                 continue;
@@ -240,26 +248,30 @@ impl WorkspaceRuntime {
             if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
                 continue;
             }
-            if sub.tx.try_send(envelope.clone()).is_err() {
-                let _ = sub.disconnect.try_send(());
-                dead.push(*peer);
-            } else {
-                delivered = delivered.saturating_add(1);
+            match sub.tx.try_send(envelope.clone()) {
+                Ok(()) => delivered = delivered.saturating_add(1),
+                Err(TrySendError::Full(_)) => backpressured.push(*peer),
+                Err(TrySendError::Closed(_)) => dead.push(*peer),
             }
         }
         for d in dead {
             self.remove_subscriber(&d);
         }
-        // 2. Store-and-forward for offline members. A member is any
-        //    pubkey in `membership` that is not the author and not
-        //    currently subscribed.
-        for member in &self.membership.devices {
-            if member == author {
-                continue;
-            }
-            if self.subscribers.contains_key(member) {
-                continue;
-            }
+        // 2. Store-and-forward for offline members AND for live subscribers
+        //    the queue could not accept this instant. A member is any pubkey in
+        //    `membership` that is not the author and not currently draining
+        //    live; a backpressured subscriber is treated as briefly offline for
+        //    this one delta and reconciles it on its next reconnect or
+        //    anti-entropy, so no durable delta is lost to a slow consumer.
+        let queue_for: Vec<[u8; 32]> = self
+            .membership
+            .devices
+            .iter()
+            .filter(|member| **member != *author && !self.subscribers.contains_key(*member))
+            .chain(backpressured.iter())
+            .copied()
+            .collect();
+        for member in &queue_for {
             let raw = crate::transport::encode(envelope).map_err(|e| {
                 crate::store::StoreError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -443,11 +455,13 @@ impl WorkspaceRuntime {
             if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
                 continue;
             }
-            if sub.tx.try_send(envelope.clone()).is_err() {
-                let _ = sub.disconnect.try_send(());
-                dead.push(*peer);
-            } else {
-                delivered = delivered.saturating_add(1);
+            match sub.tx.try_send(envelope.clone()) {
+                Ok(()) => delivered = delivered.saturating_add(1),
+                // Presence is ephemeral: a full queue simply drops this frame
+                // (backpressure), it never disconnects the subscriber. A closed
+                // channel means the task is gone, so prune it.
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => dead.push(*peer),
             }
         }
         for d in dead {
@@ -533,7 +547,12 @@ mod tests {
     }
 
     #[test]
-    fn fanout_disconnects_saturated_subscriber_and_queues_durable_delta() {
+    fn fanout_backpressures_saturated_subscriber_without_dropping_it() {
+        // A full live queue is backpressure, never a disconnect (Stage 1): a
+        // slow subscriber (a browser on a busy main thread, or the native host
+        // publishing a large checkpoint) must stay subscribed while the missed
+        // durable delta spills to its store-and-forward queue. Dropping it here
+        // caused the reconnect -> retained-replay -> republish storm.
         let tmp = tempfile::tempdir().unwrap();
         let author = [1u8; 32];
         let slow_peer = [2u8; 32];
@@ -542,6 +561,7 @@ mod tests {
         let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
         let (tx, _rx) = mpsc::channel(1);
         let (disconnect, mut disconnect_rx) = mpsc::channel(1);
+        // Saturate the one-slot live queue so the next fan-out cannot be sent.
         tx.try_send(env_delta(6, [9u8; 32])).unwrap();
         rt.add_subscriber(Subscriber {
             device_public_key: slow_peer,
@@ -550,22 +570,53 @@ mod tests {
             disconnect,
         });
 
-        let delivered = rt
-            .fanout_delta(
-                &author,
-                PeerRole::Device,
-                &env_delta(6, author),
-                b"durable",
-                2,
-            )
-            .unwrap();
+        // Fan out several durable deltas past the queue bound.
+        for seq in 2..5 {
+            rt.fanout_delta(&author, PeerRole::Device, &env_delta(6, author), b"durable", seq)
+                .unwrap();
+        }
 
-        assert_eq!(delivered, 0);
-        assert!(!rt.subscribers.contains_key(&slow_peer));
-        disconnect_rx
-            .try_recv()
-            .expect("slow peer task must be told to disconnect");
-        assert_eq!(rt.store.count_pending(&slow_peer).unwrap(), 1);
+        // Never dropped, never told to disconnect, and every missed durable
+        // delta is preserved in the subscriber's pending queue.
+        assert!(
+            rt.subscribers.contains_key(&slow_peer),
+            "a slow subscriber must not be dropped within its queue bound"
+        );
+        assert!(
+            disconnect_rx.try_recv().is_err(),
+            "a full queue must apply backpressure, never signal a disconnect"
+        );
+        assert_eq!(
+            rt.store.count_pending(&slow_peer).unwrap(),
+            3,
+            "each durable delta the slow subscriber missed live is store-and-forwarded"
+        );
+    }
+
+    #[test]
+    fn fanout_still_prunes_a_subscriber_whose_wire_is_closed() {
+        // Backpressure covers a full queue; a genuinely dead receiver (its task
+        // and rx dropped) is still pruned so fan-out does not keep cloning into
+        // a channel no one will ever read.
+        let tmp = tempfile::tempdir().unwrap();
+        let author = [1u8; 32];
+        let dead_peer = [2u8; 32];
+        let mut membership = Membership::default();
+        membership.set(vec![author, dead_peer]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 6, false, membership).unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        let (disconnect, _disconnect_rx) = mpsc::channel(1);
+        drop(rx); // the receiving task is gone
+        rt.add_subscriber(Subscriber {
+            device_public_key: dead_peer,
+            role: PeerRole::Device,
+            tx,
+            disconnect,
+        });
+        rt.fanout_delta(&author, PeerRole::Device, &env_delta(6, author), b"durable", 2)
+            .unwrap();
+        assert!(!rt.subscribers.contains_key(&dead_peer));
+        assert_eq!(rt.store.count_pending(&dead_peer).unwrap(), 1);
     }
 
     #[test]

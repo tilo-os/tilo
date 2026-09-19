@@ -200,6 +200,7 @@ where
                     audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?;
                 }
                 _ = disconnect_rx.recv() => {
+                    metrics.inc_subscriber_dropped_backpressure();
                     return Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into()));
                 }
                 outbound = rx.recv() => {
@@ -243,6 +244,14 @@ where
     }
     .await;
 
+    if let Err(error) = &outcome {
+        metrics.inc_subscriber_dropped();
+        tracing::warn!(
+            device = %hex::encode(&peer.device_public_key[..4]),
+            %error,
+            "peer session ended with error"
+        );
+    }
     let wsmap = workspaces.lock().await;
     for id in &subscribed {
         if let Some(ws) = wsmap.get(id) {
@@ -438,6 +447,20 @@ async fn handle_subscribe(
     let (retained_count, retained) = load_retained_replay(&wr, workspace_id, replay)?;
     let pending_count =
         load_pending_replay(&wr, peer, workspace_id, &retained, replay, replay_cleanup)?;
+    session.metrics.inc_subscribes();
+    session
+        .metrics
+        .add_replayed_retained(u64::from(retained_count));
+    session
+        .metrics
+        .add_replayed_pending(u64::from(pending_count));
+    tracing::debug!(
+        workspace_id,
+        device = %hex::encode(&peer.device_public_key[..4]),
+        retained = retained_count,
+        pending = pending_count,
+        "subscribe replays retained baselines and pending queue"
+    );
     wr.add_subscriber(Subscriber {
         device_public_key: peer.device_public_key,
         role: peer.role,

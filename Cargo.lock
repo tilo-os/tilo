@@ -11686,6 +11686,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "ui",
  "uuid",
  "web-time",
