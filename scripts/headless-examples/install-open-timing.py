@@ -135,7 +135,7 @@ class Session:
         # measurement decision rather than tidiness. `/tmp` here is a
         # 16 GB tmpfs, so an install root under it unpacks 446 MB into
         # RAM and reports a verify-and-unpack time no disk can match.
-        # `scripts/yc-demo.py` puts its session dirs under `--out`, on
+        # `scripts/demo/run.py` puts its session dirs under `--out`, on
         # the filesystem the repo lives on, so this does too.
         self.dir = root
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -577,7 +577,7 @@ def main() -> int:
     p.add_argument("--shell", type=pathlib.Path, default=None,
                    help="compositor binary (default: target/demo/shell, "
                         "falling back to target/debug/shell — the same "
-                        "resolution scripts/yc-demo.py does)")
+                        "resolution scripts/demo/run.py does)")
     p.add_argument("--payload", type=pathlib.Path, default=None,
                    help="the word-processor binary to pack and serve "
                         "(default: the one yc-demo.py serves)")
