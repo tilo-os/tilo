@@ -168,8 +168,11 @@ jobs:
   # selection so they do not delay the affected-package matrix.
   security:
     needs: builder
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 30
+    env:
+      # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
+      CARGO_BUILD_JOBS: '2'
     container:
       image: ${{ needs.builder.outputs.image }}
       credentials:
@@ -347,7 +350,7 @@ jobs:
           test "$SECURITY_RESULT" = success
           case "$RUST_REQUIRED:$SELECTED_COUNT:$AFFECTED_RESULT" in
             false:0:skipped)
-              echo 'Rust checks not applicable: audited documentation only.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'Rust checks not applicable: audited non-compiling inputs.' >> "$GITHUB_STEP_SUMMARY"
               ;;
             true:*:success)
               [[ "$SELECTED_COUNT" =~ ^[1-9][0-9]*$ ]]
