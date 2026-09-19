@@ -71,10 +71,11 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"local document");
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
         assert_eq!(crate::model::read_sync_state(&path), None);
-        assert!(
-            crate::history_control::restore_version(&path, collab_types::FileVersionId::new())
-                .is_err()
-        );
+        let history = crate::framework_history::MountedFileHistory::open(&path);
+        assert!(matches!(
+            history,
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported
+        ));
         assert!(crate::received_shares::admit_link("unavailable-service".into()).is_err());
         assert!(
             crate::sharing::create_one_use_view_link(&path, collab_types::FileRecordId::new())
