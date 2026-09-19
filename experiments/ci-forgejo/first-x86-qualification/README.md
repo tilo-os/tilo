@@ -74,23 +74,37 @@ policy/service/coordinator/transport tests also pass.
 
 ## One controlled qualification, after review
 
-1. Keep the CronJob suspended. Confirm its read-only source projection matches the
-   twelve recorded hashes and its image, account82 credentials, ZFS state PVC and
-   invocation lock match the qualified deployment. Read state with the existing
-   service status path: no active intent, verified baseline or unresolved dispatch
-   may be silently discarded or reset to obtain a fresh run.
+1. Start from the verified live state: the controller CronJob and policy ConfigMap
+   are **absent**; only the qualified state PVC and credential Secrets are retained.
+   Prepare installation from the reviewed staged manifests under infra
+   `apps/forgejo/packaging-controller/`, preserving the existing PVC and Secrets.
+   The staged immutable source ConfigMap binds reviewed commit
+   `f622cb6ef0478f1e0802c957d83a8be96771eed0`. Compare all twelve projected file
+   hashes to `controller-source-hashes.json` for candidate main `b34678dbf`;
+   different commit labels are acceptable only when every required source byte
+   matches. A mismatch requires a newly reviewed source bundle before installation.
 2. Re-read current main and compare every `trusted_files` entry to it. The service
    intentionally observes current main at invocation time. App-only movement is
    allowed; changed trusted workflow/tool/config bytes require renewed review and
    policy generation. Record the actual observed source and selected app set.
-3. Install reviewed `coordinator.json` and exact `final-policy.json` in the existing
-   protected policy ConfigMap. Set `TILO_APP_FINAL_RECEIPT_POLICY` to those exact
-   final-policy bytes and `TILO_APP_FINAL_RECEIPT_POLICY_SHA256` to their hash;
-   read both back and verify exact binding. Confirm the dedicated verifier package
-   read secret and existing app/runtime signing secrets are present. Set
+3. Install the reviewed staged immutable source ConfigMap, create a protected
+   **immutable** `qos-packaging-controller-policy` ConfigMap containing reviewed
+   `coordinator.json` and exact `final-policy.json`, and install the staged CronJob
+   manifest with `spec.suspend: true`. Use its existing manifest template and source
+   reference patch; do not substitute another coordinator. Read back the installed
+   source and policy bytes, image and mount references. Verify the CronJob remains
+   suspended and has created **no automatic Jobs** before proceeding. Confirm
+   account82 credentials, the retained ZFS PVC and shared invocation lock are used.
+   Set `TILO_APP_FINAL_RECEIPT_POLICY` to the exact final-policy bytes and
+   `TILO_APP_FINAL_RECEIPT_POLICY_SHA256` to their hash; read both back and verify
+   exact binding. Confirm the dedicated verifier package-read secret and existing
+   app/runtime signing secrets are present. Set
    `TILO_APP_COORDINATOR_QUALIFICATION=true` only for this controlled qualification.
-4. Create **one** manual Job from the existing suspended controller template, with
-   the same source/policy/state/token mounts and ordinary scheduler admission.
+4. Before an applied invocation, inspect retained state through the service's
+   documented read-only status path; never discard or reset an active intent,
+   verified baseline or unresolved dispatch. Create **one** manual Job from the
+   **newly installed, verified suspended** CronJob, using its existing template,
+   identical source/policy/state/token mounts and ordinary scheduler admission.
    Its existing command is `python3 -I tools/ci/python.py tools/app_packaging_service.py`
    with `--state /state/coordinator.sqlite --policy /etc/packaging/coordinator.json`
    `--final-policy /etc/packaging/final-policy.json --token-file /var/run/packaging-token/token --apply`.
