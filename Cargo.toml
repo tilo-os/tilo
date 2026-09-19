@@ -15,6 +15,7 @@ exclude = [
     "vendor/winit",
     "vendor/wgpu-hal",
     "vendor/openh264-sys2",
+    "vendor/libspa-sys",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
