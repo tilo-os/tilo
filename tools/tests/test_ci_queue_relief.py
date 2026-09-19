@@ -93,6 +93,11 @@ class QueueReliefTests(unittest.TestCase):
                     self.assertRegex(events, rf"(?m)^  {event}:")
                 self.assertTrue(section(workflow(name), "jobs"))
 
+    def test_builder_recipe_does_not_run_e2e_against_the_old_image(self):
+        legacy_events = section(workflow("legacy-app-e2e"), "on")
+        self.assertNotIn('os/Containerfile.builder', legacy_events)
+        self.assertIn('os/Containerfile.builder', section(workflow("build-builder-image"), "on"))
+
     def test_os_candidate_can_run_after_skipped_signing_preflight(self):
         build = section(workflow("build-image"), "build-and-push", 2)
         self.assertIn("always()", build)
