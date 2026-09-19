@@ -51,12 +51,18 @@ class QueueReliefTests(unittest.TestCase):
                 self.assertEqual(section(job, "container", 4), expected)
                 self.assertIn("runs-on: runner-quality", job)
 
-    def test_every_main_commit_keeps_checks_without_serializing_revisions(self):
+    def test_fast_checks_never_cancel_another_commit_or_event(self):
         for name in ("check", "lint"):
             with self.subTest(workflow=name):
-                concurrency = section(workflow(name), "concurrency")
-                self.assertIn("github.ref == 'refs/heads/main' && github.sha", concurrency)
-                self.assertIn("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}", concurrency)
+                text = workflow(name)
+                events = section(text, "on")
+                self.assertRegex(events, r"(?m)^  push:")
+                self.assertRegex(events, r"(?m)^  pull_request:")
+                concurrency = section(text, "concurrency")
+                self.assertIn("github.event_name", concurrency)
+                self.assertIn("github.sha", concurrency)
+                self.assertIn("cancel-in-progress: false", concurrency)
+                self.assertNotRegex(section(text, "jobs"), r"(?m)^\s+concurrency:")
 
     def test_component_release_tags_and_manual_runs_remain(self):
         for name, tags in (("build-image", '["v*"]'),
