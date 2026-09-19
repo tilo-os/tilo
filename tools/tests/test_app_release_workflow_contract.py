@@ -30,7 +30,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                 result = subprocess.run(['bash', '-c', '[[ ' + predicate + ' ]]', 'predicate', event, count])
                 self.assertEqual(0 if allowed else 1, result.returncode)
         push = source.split('\n  push:\n', 1)[1].split('\n  workflow_dispatch:', 1)[0]
-        self.assertNotRegex(push, r'(?m)^    branches:')
+        self.assertRegex(push, r'(?m)^    branches: \[main\]$')
         self.assertIn('tags: ["apps-v*", "app-*-v*"]', push)
 
     def test_pr_plan_skips_builder_resolution_but_release_events_resolve(self):
