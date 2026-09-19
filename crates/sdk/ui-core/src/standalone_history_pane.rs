@@ -86,6 +86,45 @@ impl StandaloneHistoryPane {
         self.timeline.set_entries(entries.to_vec());
     }
 
+    /// Project a controller selection without feeding it back as a user intent.
+    /// Returns false for unknown, duplicate or noncontiguous IDs: the timeline
+    /// has a range selection, so these must not silently select extra changes.
+    /// The host may still show an exact noncontiguous comparison in its detail.
+    pub fn set_selected_entries(&mut self, entries: &[HistoryEntryId]) -> bool {
+        let mut positions = Vec::with_capacity(entries.len());
+        for id in entries {
+            let Some(position) = self
+                .timeline
+                .entries()
+                .iter()
+                .position(|entry| entry.id == *id)
+            else {
+                self.set_selection_without_intent(None);
+                return false;
+            };
+            positions.push(position);
+        }
+        positions.sort_unstable();
+        if positions
+            .windows(2)
+            .any(|pair| !matches!(pair, [left, right] if *right == left.saturating_add(1)))
+        {
+            self.set_selection_without_intent(None);
+            return false;
+        }
+        let range = positions.first().copied().zip(positions.last().copied());
+        self.set_selection_without_intent(range);
+        true
+    }
+
+    fn set_selection_without_intent(&mut self, selection: Option<(usize, usize)>) {
+        self.timeline.set_selection(selection);
+        self.observed_selection = self.selected_ids();
+        self.intents
+            .borrow_mut()
+            .retain(|intent| matches!(intent, QueuedIntent::Close));
+    }
+
     /// A host-produced, grounded comparison or selection detail. No document
     /// handle is retained by this presentation tree.
     pub fn set_comparison_summary(&mut self, summary: Option<&str>) {
@@ -327,6 +366,33 @@ mod tests {
         );
         pane.set_entries(&[entry(2)]);
         assert_eq!(pane.take_intent(), Some(HistoryPaneIntent::ClearSelection));
+    }
+
+    #[test]
+    fn controller_selection_is_exact_and_never_echoes_as_input() {
+        let mut pane = StandaloneHistoryPane::new();
+        pane.set_entries(&[entry(1), entry(2), entry(3)]);
+        assert!(pane.set_selected_entries(&[entry(2).id]));
+        assert_eq!(pane.selected_ids(), Some(vec![entry(2).id]));
+        assert_eq!(pane.take_intent(), None);
+        assert!(pane.set_selected_entries(&[entry(1).id, entry(2).id, entry(3).id]));
+        assert_eq!(
+            pane.selected_ids(),
+            Some(vec![entry(1).id, entry(2).id, entry(3).id])
+        );
+        assert_eq!(pane.take_intent(), None);
+        assert!(pane.set_selected_entries(&[]));
+        assert_eq!(pane.selected_ids(), None);
+        assert_eq!(pane.take_intent(), None);
+        for invalid in [
+            vec![entry(1).id, entry(3).id],
+            vec![entry(9).id],
+            vec![entry(2).id, entry(2).id],
+        ] {
+            assert!(!pane.set_selected_entries(&invalid));
+            assert_eq!(pane.selected_ids(), None);
+            assert_eq!(pane.take_intent(), None);
+        }
     }
 
     #[test]
