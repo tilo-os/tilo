@@ -24,6 +24,8 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         install = self.containerfile.split("RUN microdnf install", 1)[1].split("&&", 1)[0]
         for compiler in ("cargo", "rustc", "gcc", "clang", "make", "cmake"):
             self.assertNotRegex(install, rf"\b{compiler}\b")
+        for package in ("gawk", "grep"):
+            self.assertRegex(install, rf"\b{package}\b")
         self.assertIn('for compiler in cargo rustc cc gcc clang', self.containerfile)
 
     def test_both_native_platforms_are_built_and_tested(self) -> None:
