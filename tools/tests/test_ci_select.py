@@ -276,6 +276,35 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected"], [])
         self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_mold_builder_policy_does_not_compile_unrelated_rust(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        for path in (
+            ".forgejo/workflows/build-builder-image.yml",
+            "os/tests/test_builder_candidate_workflow.py",
+            "tools/ci/native-mold-linker.sh",
+            "tools/ci/verify-native-mold.sh",
+            "tools/tests/test_ci_native_mold.py",
+        ):
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("checked by mandatory policy\n")
+        recipe = self.root / "os/Containerfile.builder"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text("FROM scratch\n")
+        changes = [
+            ".forgejo/workflows/build-builder-image.yml",
+            "os/Containerfile.builder",
+            "os/tests/test_builder_candidate_workflow.py",
+            "tools/ci/native-mold-linker.sh",
+            "tools/ci/verify-native-mold.sh",
+            "tools/tests/test_ci_native_mold.py",
+        ]
+        plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        self.assertFalse(plan["rust_required"])
+        self.assertEqual(plan["selected"], [])
+        self.assertEqual(plan["matrix"], {"include": []})
+
     def test_ci_control_plane_mapping_stays_exact_and_conservative(self) -> None:
         self.install_control_inputs()
         source = ".forgejo/workflows/check.yml"
