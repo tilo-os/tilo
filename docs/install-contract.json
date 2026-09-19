@@ -48,7 +48,8 @@
   ],
   "principles": [
     "Tilo Imager authenticates the selected installer before writing and verifies the medium after writing.",
-    "Tilo Imager carries only secret-free setup choices; it does not migrate files or resize an internal disk.",
+    "The media-writing route carries only secret-free setup choices and does not migrate files or resize an internal disk.",
+    "The development guided-import route copies explicitly selected local folders where native durability is supported, preserves originals, and does not authorize synchronization or sharing.",
     "The live installer never resizes an existing filesystem.",
     "A complete-system installation keeps recovery-key setup and destructive disk confirmation on the target computer."
   ]
