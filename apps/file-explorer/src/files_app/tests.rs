@@ -996,6 +996,66 @@ mod command_path_tests {
     }
 
     #[test]
+    fn exported_rename_changes_case_without_overwriting_another_entry() {
+        use ui::tilo_actions::{ActionAddress, door};
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("report.txt");
+        std::fs::write(&original, b"source content").unwrap();
+        let occupied = directory.path().join("occupied.txt");
+        std::fs::write(&occupied, b"keep occupied content").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
+        files.navigate(directory.path().into());
+        let doc = automerge::AutoCommit::new();
+        let mut invoke_rename = |source: &Path, name: &str| {
+            let resources = Widget::resources(&files, &doc);
+            let address =
+                ActionAddress::new(crate::search_provider::entry_resource_id(source), "rename");
+            let arguments = serde_json::Map::from_iter([(
+                "value".into(),
+                serde_json::Value::String(name.into()),
+            )]);
+            let encoded = door::encode_json(&resources, &address, &arguments).unwrap();
+            Widget::invoke_resource_operation(
+                &mut files,
+                OperationKind::Effect,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+        };
+        assert!(invoke_rename(&original, "REPORT.txt").unwrap());
+        let renamed = directory.path().join("REPORT.txt");
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"source content");
+        assert!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .any(|entry| entry.unwrap().file_name() == "REPORT.txt")
+        );
+        assert!(invoke_rename(&renamed, "occupied.txt").is_err());
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"source content");
+        assert_eq!(std::fs::read(&occupied).unwrap(), b"keep occupied content");
+        // Sharing file identity does not make another directory entry the
+        // spelling being renamed. The action must preserve both hard links.
+        let hardlink = directory.path().join("hardlink.txt");
+        std::fs::hard_link(&renamed, &hardlink).unwrap();
+        assert!(invoke_rename(&renamed, "hardlink.txt").is_err());
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"source content");
+        assert_eq!(std::fs::read(&hardlink).unwrap(), b"source content");
+        #[cfg(unix)]
+        {
+            let dangling = directory.path().join("dangling.txt");
+            std::os::unix::fs::symlink("missing-target", &dangling).unwrap();
+            assert!(invoke_rename(&renamed, "dangling.txt").is_err());
+            assert_eq!(
+                std::fs::read_link(&dangling).unwrap(),
+                PathBuf::from("missing-target")
+            );
+            assert_eq!(std::fs::read(&renamed).unwrap(), b"source content");
+        }
+    }
+
+    #[test]
     fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
         use ui::tilo_actions::{ActionAddress, door};
 
