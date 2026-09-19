@@ -1,0 +1,385 @@
+#![cfg(unix)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::similar_names,
+    clippy::too_many_lines,
+    reason = "integration-test setup and assertions"
+)]
+
+use std::os::unix::fs::PermissionsExt as _;
+use std::process::{Command, Output};
+
+use ed25519_dalek::SigningKey;
+use pkg::pack::{SigningIdentity, pack};
+use pkg::{Manifest, MemoryBlobStore};
+use registry_server::{
+    PendingSubmission, PromotionJournal, PublisherAllowlist, PublisherRow, ServerIdentity,
+    StagedArtifact, StagedPromotion, Storage,
+};
+use registry_types::{
+    EntryAction, RegistryEntry, RegistryTarget, RegistryVersion, SignedRegistrySnapshot,
+    sign_change_request,
+};
+
+fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        .arg("--data-dir")
+        .arg(data_dir)
+        .args(arguments)
+        .output()
+        .unwrap()
+}
+
+fn secret(path: &std::path::Path, key: &SigningKey) {
+    std::fs::write(path, hex::encode(key.to_bytes())).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[tokio::test]
+async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = Storage::open(temp.path()).unwrap();
+    let owner = SigningKey::from_bytes(&[51; 32]);
+    let channel = SigningKey::from_bytes(&[52; 32]);
+    let publisher_key = SigningKey::from_bytes(&[53; 32]);
+    let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+    let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+    let channel_hex = hex::encode(channel.verifying_key().to_bytes());
+    let publisher_hex = hex::encode(publisher.public_key_bytes());
+    let identity = ServerIdentity {
+        owner_pubkey_hex: owner_hex.clone(),
+        name: "test".into(),
+        description: "test".into(),
+        base_url: "https://registry.test".into(),
+    };
+    storage.save_identity(&identity).unwrap();
+    storage
+        .save_allowlist(&PublisherAllowlist {
+            publishers: vec![PublisherRow {
+                pubkey_hex: publisher_hex.clone(),
+                can_add_new: false,
+                note: "first party".into(),
+            }],
+        })
+        .unwrap();
+    let owner_path = temp.path().join("owner.seed");
+    let channel_path = temp.path().join("channel.seed");
+    secret(&owner_path, &owner);
+    secret(&channel_path, &channel);
+    let authorization_lock = storage.lock_snapshot().unwrap();
+    let authorization_dir = temp.path().to_path_buf();
+    let authorization_owner_path = owner_path.clone();
+    let authorization_channel_hex = channel_hex.clone();
+    let authorization_publisher_hex = publisher_hex.clone();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let authorizer = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        run(
+            &authorization_dir,
+            &[
+                "authorize-channel",
+                "--owner-key-file",
+                authorization_owner_path.to_str().unwrap(),
+                "--channel-pubkey",
+                &authorization_channel_hex,
+                "--publisher-pubkey",
+                &authorization_publisher_hex,
+                "--generation",
+                "1",
+            ],
+        )
+    });
+    started_rx.recv().unwrap();
+    storage
+        .save_allowlist(&PublisherAllowlist {
+            publishers: vec![PublisherRow {
+                pubkey_hex: publisher_hex.clone(),
+                can_add_new: true,
+                note: "first party".into(),
+            }],
+        })
+        .unwrap();
+    drop(authorization_lock);
+    let authorized = authorizer.join().unwrap();
+    assert!(
+        authorized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&authorized.stderr)
+    );
+    let authorized_again = run(
+        temp.path(),
+        &[
+            "authorize-channel",
+            "--owner-key-file",
+            owner_path.to_str().unwrap(),
+            "--channel-pubkey",
+            &channel_hex,
+            "--publisher-pubkey",
+            &publisher_hex,
+            "--generation",
+            "1",
+        ],
+    );
+    assert!(authorized_again.status.success());
+    assert_eq!(authorized_again.stdout, authorized.stdout);
+
+    let blocking_journal = PromotionJournal {
+        publisher_pubkey_hex: publisher_hex.clone(),
+        reviewer: "auto".into(),
+        reason: "test active transaction".into(),
+        submissions: Vec::new(),
+        candidate_snapshot: SignedRegistrySnapshot {
+            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            sequence: 1,
+            issued_at_unix: 1,
+            expires_at_unix: 2,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: Vec::new(),
+            entries: Vec::new(),
+            owner_signature_hex: "unfinished fixture".into(),
+            channel_authorization: None,
+        },
+    };
+    storage
+        .save_promotion_transaction(&blocking_journal)
+        .unwrap();
+    let replacement = SigningKey::from_bytes(&[54; 32]);
+    let replacement_hex = hex::encode(replacement.verifying_key().to_bytes());
+    let blocked_rotation = run(
+        temp.path(),
+        &[
+            "authorize-channel",
+            "--owner-key-file",
+            owner_path.to_str().unwrap(),
+            "--channel-pubkey",
+            &replacement_hex,
+            "--publisher-pubkey",
+            &publisher_hex,
+            "--generation",
+            "2",
+        ],
+    );
+    assert!(!blocked_rotation.status.success());
+    assert!(
+        String::from_utf8_lossy(&blocked_rotation.stderr)
+            .contains("complete or recover the active first-party promotion")
+    );
+    let idempotent_during_recovery = run(
+        temp.path(),
+        &[
+            "authorize-channel",
+            "--owner-key-file",
+            owner_path.to_str().unwrap(),
+            "--channel-pubkey",
+            &channel_hex,
+            "--publisher-pubkey",
+            &publisher_hex,
+            "--generation",
+            "1",
+        ],
+    );
+    assert!(idempotent_during_recovery.status.success());
+    storage.delete_promotion_transaction().unwrap();
+
+    let (bytes, package_id) = signed_qpkg(&publisher);
+    let digest = blake3::hash(&bytes).to_hex().to_string();
+    let entry = RegistryEntry {
+        package_id: "dev.tilo.editor".into(),
+        name: "Editor".into(),
+        description: "Editor".into(),
+        categories: vec!["Productivity".into()],
+        icon_url: None,
+        source_url: None,
+        homepage: None,
+        publisher_pubkey_hex: publisher_hex.clone(),
+        versions: vec![RegistryVersion {
+            version: "1.0.0".into(),
+            qpkg_url: "https://packages.test/editor.qpkg".into(),
+            qpkg_root_hash_hex: hex::encode(package_id.as_bytes()),
+            qpkg_size_bytes: bytes.len() as u64,
+            released_at_unix: 1,
+            qpkg_blake3_hex: Some(digest.clone()),
+            target: Some(RegistryTarget {
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+            }),
+        }],
+        updated_at_unix: 1,
+        signature_hex: String::new(),
+    };
+    let pending = PendingSubmission {
+        submission_id: entry.package_id.clone(),
+        submitted_at_unix: 1,
+        change: sign_change_request(EntryAction::Add, entry, &publisher_key),
+    };
+    let recovery_pending = pending.clone();
+    storage.save_pending(&pending).unwrap();
+    storage.save_staged_artifact(&digest, &bytes).unwrap();
+    storage
+        .save_staged_promotion(&StagedPromotion {
+            publisher_pubkey_hex: publisher_hex.clone(),
+            collected_at_unix: 1,
+            submissions: vec![pending],
+            artifacts: vec![StagedArtifact {
+                submission_id: "dev.tilo.editor".into(),
+                version: "1.0.0".into(),
+                blake3_hex: digest,
+            }],
+        })
+        .unwrap();
+
+    std::fs::remove_file(&owner_path).unwrap();
+    let published = run(
+        temp.path(),
+        &[
+            "publish-staged-first-party",
+            "--channel-key-file",
+            channel_path.to_str().unwrap(),
+            "--valid-for-seconds",
+            "3600",
+        ],
+    );
+    assert!(
+        published.status.success(),
+        "{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    let snapshot = storage.load_snapshot().unwrap().unwrap();
+    registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
+    assert_eq!(snapshot.entries.len(), 1);
+    assert!(snapshot.channel_authorization.is_some());
+    assert!(storage.load_staged_promotion().unwrap().is_none());
+    let live_authorization = snapshot.channel_authorization.clone().unwrap();
+
+    // Simulate a crash after the signed snapshot and moderation state became
+    // durable and the staged manifest was consumed, but before the promotion
+    // journal deletion. Recovery must not require the untrusted stage again.
+    storage
+        .save_promotion_transaction(&PromotionJournal {
+            publisher_pubkey_hex: publisher_hex.clone(),
+            reviewer: "auto".into(),
+            reason: "first party".into(),
+            submissions: vec![recovery_pending],
+            candidate_snapshot: snapshot.clone(),
+        })
+        .unwrap();
+    let mut expired_authorization = live_authorization.clone();
+    expired_authorization.not_before_unix = 1;
+    expired_authorization.expires_at_unix = 2;
+    expired_authorization.owner_signature_hex.clear();
+    registry_types::sign_channel_authorization(&mut expired_authorization, &owner).unwrap();
+    storage
+        .save_channel_authorization(&expired_authorization)
+        .unwrap();
+    std::fs::remove_file(&channel_path).unwrap();
+    let recovered = run(
+        temp.path(),
+        &[
+            "publish-staged-first-party",
+            "--channel-key-file",
+            channel_path.to_str().unwrap(),
+            "--valid-for-seconds",
+            "3600",
+        ],
+    );
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert!(storage.load_promotion_transaction().unwrap().is_none());
+    storage
+        .save_channel_authorization(&live_authorization)
+        .unwrap();
+    secret(&channel_path, &channel);
+
+    let refreshed = run(
+        temp.path(),
+        &[
+            "sign-delegated-snapshot",
+            "--channel-key-file",
+            channel_path.to_str().unwrap(),
+            "--valid-for-seconds",
+            "3600",
+        ],
+    );
+    assert!(
+        refreshed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&refreshed.stderr)
+    );
+    let snapshot = storage.load_snapshot().unwrap().unwrap();
+    assert_eq!(snapshot.sequence, 2);
+    registry_types::verify_snapshot(&snapshot, &owner_hex, snapshot.issued_at_unix).unwrap();
+
+    // A higher-generation root authorization revokes the old channel at the
+    // serving boundary immediately, even while its certificate is unexpired.
+    secret(&owner_path, &owner);
+    let rotated = run(
+        temp.path(),
+        &[
+            "authorize-channel",
+            "--owner-key-file",
+            owner_path.to_str().unwrap(),
+            "--channel-pubkey",
+            &replacement_hex,
+            "--publisher-pubkey",
+            &hex::encode(publisher.public_key_bytes()),
+            "--generation",
+            "2",
+        ],
+    );
+    assert!(rotated.status.success());
+    let bound = registry_server::bind_and_run(
+        "127.0.0.1:0".parse().unwrap(),
+        registry_server::AppState::new(storage, identity),
+    )
+    .await
+    .unwrap();
+    let response = reqwest::get(format!("http://{bound}/entries"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+}
+
+fn signed_qpkg(identity: &SigningIdentity) -> (Vec<u8>, pkg::PackageId) {
+    let dir = tempfile::tempdir().unwrap();
+    let payload = dir.path().join("payload");
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    std::fs::write(payload.join("bin/editor"), b"#!/bin/true\n").unwrap();
+    let manifest = Manifest::from_toml_str(&format!(
+        r#"
+[package]
+id = "dev.tilo.editor"
+version = "1.0.0"
+kind = "app"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/editor"
+type = "gui"
+"#,
+        hex::encode(identity.public_key_bytes())
+    ))
+    .unwrap();
+    let mut store = MemoryBlobStore::new();
+    let id = pack(&payload, &manifest, identity, &mut store).unwrap();
+    (app_registry::qpkg::write_bytes(id, &store).unwrap(), id)
+}

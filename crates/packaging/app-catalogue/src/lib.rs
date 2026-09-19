@@ -355,6 +355,7 @@ mod tests {
             }],
             entries: vec![e.clone()],
             owner_signature_hex: String::new(),
+            channel_authorization: None,
         };
         registry_types::sign_snapshot(&mut snapshot, &owner).unwrap();
         client::classify_snapshot(

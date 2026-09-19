@@ -38,6 +38,9 @@ There are three layers:
 
 ```
  Registry owner offline key
+            | signs a short-lived, publisher-scoped channel authorization
+            v
+ Delegated channel key (networkless) <--- independently verifies staged qpkg bytes
             | signs exact policy + entries + expiry + moderation head
             v
  SignedRegistrySnapshot <--- publisher signs each RegistryEntry
@@ -81,6 +84,11 @@ publisher change sig = ed25519_sign(publisher_key,
 owner index sig      = ed25519_sign(owner_key,
                                     blake3(b"tilo-registry-index-v1\0"
                                            || postcard(index_manifest)))
+
+delegated index sig  = ed25519_sign(channel_key,
+                                    blake3(b"tilo-registry-index-v3\0"
+                                           || postcard(index_manifest
+                                                       + root authorization)))
 ```
 
 Postcard was chosen over JSON because JSON's key order and
@@ -228,28 +236,49 @@ tilo-registry-server sign-snapshot \
   --valid-for-seconds 86400
 ```
 
-The production first-party CronJob uses the bounded equivalent below. It
-selects only the explicitly pinned publisher, verifies every selected request
-and package before mutation, records a crash-recoverable batch, approves at
-most 50 requests, and advances the snapshot exactly once. With no matching
-work it exits successfully without changing the sequence.
+Production does not put the root key in a recurring job. During bootstrap (or
+manual rotation), the offline root authorizes one short-lived channel key and
+binds it to the exact publisher policy, maximum snapshot lifetime, and entry
+count. Installing a higher-generation authorization immediately revokes the
+old online key at the registry; certificates expire after at most 31 days.
 
 ```text
-tilo-registry-server promote-first-party \
+tilo-registry-server authorize-channel \
+  --owner-key-file /secure/registry-owner.seed \
+  --channel-pubkey "$CHANNEL_PUBKEY" \
   --publisher-pubkey "$FIRST_PARTY_PUBLISHER" \
-  --owner-key-file /run/secrets/registry-owner/seed \
+  --generation 1
+```
+
+Each recurring promotion has two security boundaries. A networked collector
+has no signing key and writes exact qpkg bytes under their BLAKE3 names. A
+separate networkless signer receives only the delegated key; it re-verifies the
+publisher request, live allowlist, staged-byte digest, qpkg root/signature,
+manifest identity, target policy, delegation scope, predecessor, sequence and
+expiry before approving or signing anything:
+
+```text
+tilo-registry-server collect-first-party \
+  --publisher-pubkey "$FIRST_PARTY_PUBLISHER" --max-items 50
+
+tilo-registry-server publish-staged-first-party \
+  --channel-key-file /run/secrets/registry-channel/seed \
   --reviewer registry-promoter \
   --reason automated-first-party-promotion \
-  --max-items 50 \
+  --valid-for-seconds 86400
+
+# A separate networkless schedule refreshes expiry only when no batch is staged.
+tilo-registry-server sign-delegated-snapshot \
+  --channel-key-file /run/secrets/registry-channel/seed \
   --valid-for-seconds 86400
 ```
 
-The seed file is exactly 32 secret bytes encoded as 64 hex characters. The
-command binds the sorted entry set, publisher authorization policies, monotonic
-sequence, predecessor hash, validity window, and current moderation-log head.
-It atomically writes `published-snapshot.json`. The long-running `serve` process
-only has the public identity and refuses to serve a missing, expired, tampered,
-or otherwise invalid snapshot; it never receives the owner private key.
+Both seed files are exactly 32 secret bytes encoded as 64 hex characters. The
+root seed exists only in the bootstrap/manual authorization environment. The
+serving process receives neither private key. The collector cannot forge a
+stage because the signer treats its JSON as untrusted and independently checks
+the content-addressed bytes. The signer has no network path from which to fetch
+or substitute content.
 
 Every successful signing also retains the exact signed JSON under
 `snapshots/<sequence>-<hash>.json` before advancing `published-snapshot.json`.

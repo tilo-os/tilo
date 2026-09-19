@@ -9,6 +9,10 @@ use thiserror::Error;
 use crate::{INDEX_DOMAIN, RegistryEntry, verify_entry_signature};
 
 pub const SNAPSHOT_PROTOCOL: u16 = 2;
+pub const DELEGATED_SNAPSHOT_PROTOCOL: u16 = 3;
+pub const CHANNEL_AUTHORIZATION_PROTOCOL: u16 = 1;
+const CHANNEL_AUTHORIZATION_DOMAIN: &[u8] = b"tilo-registry-channel-authorization-v1\0";
+const DELEGATED_INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v3\0";
 pub const MAX_SNAPSHOT_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_SNAPSHOT_ENTRIES: usize = 10_000;
 pub const MAX_SNAPSHOT_PUBLISHERS: usize = 4_096;
@@ -20,6 +24,23 @@ pub const MAX_SNAPSHOT_ENCODED_BYTES: usize = 8 * 1024 * 1024;
 pub struct PublisherAuthorization {
     pub pubkey_hex: String,
     pub can_add_new: bool,
+}
+
+/// Root-signed authority for one short-lived online channel key.
+///
+/// The exact publisher policy and safety bounds are part of the certificate,
+/// so possession of the delegated key cannot add publishers or widen policy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelAuthorization {
+    pub protocol: u16,
+    pub generation: u64,
+    pub channel_pubkey_hex: String,
+    pub not_before_unix: u64,
+    pub expires_at_unix: u64,
+    pub max_snapshot_validity_seconds: u64,
+    pub max_snapshot_entries: usize,
+    pub publishers: Vec<PublisherAuthorization>,
+    pub owner_signature_hex: String,
 }
 
 /// One immutable view of a registry. The signature binds every entry, the
@@ -35,6 +56,8 @@ pub struct SignedRegistrySnapshot {
     pub publishers: Vec<PublisherAuthorization>,
     pub entries: Vec<RegistryEntry>,
     pub owner_signature_hex: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_authorization: Option<ChannelAuthorization>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +70,44 @@ struct SnapshotSigningPayload<'a> {
     moderation_head_hex: &'a str,
     publishers: &'a [PublisherAuthorization],
     entries: &'a [RegistryEntry],
+}
+
+#[derive(Serialize)]
+struct DelegatedSnapshotSigningPayload<'a> {
+    protocol: u16,
+    sequence: u64,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    previous_snapshot_hash_hex: &'a str,
+    moderation_head_hex: &'a str,
+    publishers: &'a [PublisherAuthorization],
+    entries: &'a [RegistryEntry],
+    channel_authorization: &'a ChannelAuthorization,
+}
+
+#[derive(Serialize)]
+struct ChannelAuthorizationPayload<'a> {
+    protocol: u16,
+    generation: u64,
+    channel_pubkey_hex: &'a str,
+    not_before_unix: u64,
+    expires_at_unix: u64,
+    max_snapshot_validity_seconds: u64,
+    max_snapshot_entries: usize,
+    publishers: &'a [PublisherAuthorization],
+}
+
+#[derive(Serialize)]
+struct LegacySignedSnapshot<'a> {
+    protocol: u16,
+    sequence: u64,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    previous_snapshot_hash_hex: &'a str,
+    moderation_head_hex: &'a str,
+    publishers: &'a [PublisherAuthorization],
+    entries: &'a [RegistryEntry],
+    owner_signature_hex: &'a str,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -65,6 +126,10 @@ pub enum SnapshotError {
     OwnerKey,
     #[error("registry owner signature is invalid")]
     OwnerSignature,
+    #[error("registry channel authorization is invalid")]
+    ChannelAuthorization,
+    #[error("registry channel signature or delegated scope is invalid")]
+    ChannelSignature,
     #[error("an entry has an invalid publisher signature")]
     PublisherSignature,
     #[error("an entry's publisher is not authorized by the registry owner")]
@@ -93,9 +158,30 @@ fn payload(snapshot: &SignedRegistrySnapshot) -> SnapshotSigningPayload<'_> {
 pub fn snapshot_signing_message(
     snapshot: &SignedRegistrySnapshot,
 ) -> Result<[u8; 32], SnapshotError> {
-    let body = postcard::to_stdvec(&payload(snapshot)).map_err(|_| SnapshotError::Encoding)?;
+    let (domain, body) = if let Some(authorization) = &snapshot.channel_authorization {
+        let payload = DelegatedSnapshotSigningPayload {
+            protocol: snapshot.protocol,
+            sequence: snapshot.sequence,
+            issued_at_unix: snapshot.issued_at_unix,
+            expires_at_unix: snapshot.expires_at_unix,
+            previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
+            moderation_head_hex: &snapshot.moderation_head_hex,
+            publishers: &snapshot.publishers,
+            entries: &snapshot.entries,
+            channel_authorization: authorization,
+        };
+        (
+            DELEGATED_INDEX_DOMAIN,
+            postcard::to_stdvec(&payload).map_err(|_| SnapshotError::Encoding)?,
+        )
+    } else {
+        (
+            INDEX_DOMAIN,
+            postcard::to_stdvec(&payload(snapshot)).map_err(|_| SnapshotError::Encoding)?,
+        )
+    };
     let mut hasher = blake3::Hasher::new();
-    hasher.update(INDEX_DOMAIN);
+    hasher.update(domain);
     hasher.update(&body);
     Ok(*hasher.finalize().as_bytes())
 }
@@ -106,7 +192,22 @@ pub fn snapshot_signing_message(
 /// # Errors
 /// Returns an encoding error if the signed snapshot cannot be serialized.
 pub fn snapshot_hash(snapshot: &SignedRegistrySnapshot) -> Result<String, SnapshotError> {
-    let bytes = postcard::to_stdvec(snapshot).map_err(|_| SnapshotError::Encoding)?;
+    let bytes = if snapshot.channel_authorization.is_some() {
+        postcard::to_stdvec(snapshot).map_err(|_| SnapshotError::Encoding)?
+    } else {
+        postcard::to_stdvec(&LegacySignedSnapshot {
+            protocol: snapshot.protocol,
+            sequence: snapshot.sequence,
+            issued_at_unix: snapshot.issued_at_unix,
+            expires_at_unix: snapshot.expires_at_unix,
+            previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
+            moderation_head_hex: &snapshot.moderation_head_hex,
+            publishers: &snapshot.publishers,
+            entries: &snapshot.entries,
+            owner_signature_hex: &snapshot.owner_signature_hex,
+        })
+        .map_err(|_| SnapshotError::Encoding)?
+    };
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
@@ -119,9 +220,68 @@ pub fn sign_snapshot(
     snapshot: &mut SignedRegistrySnapshot,
     key: &SigningKey,
 ) -> Result<(), SnapshotError> {
+    snapshot.protocol = SNAPSHOT_PROTOCOL;
+    snapshot.channel_authorization = None;
     snapshot.owner_signature_hex.clear();
     snapshot.owner_signature_hex =
         hex::encode(key.sign(&snapshot_signing_message(snapshot)?).to_bytes());
+    Ok(())
+}
+
+fn authorization_signing_message(
+    authorization: &ChannelAuthorization,
+) -> Result<[u8; 32], SnapshotError> {
+    let body = postcard::to_stdvec(&ChannelAuthorizationPayload {
+        protocol: authorization.protocol,
+        generation: authorization.generation,
+        channel_pubkey_hex: &authorization.channel_pubkey_hex,
+        not_before_unix: authorization.not_before_unix,
+        expires_at_unix: authorization.expires_at_unix,
+        max_snapshot_validity_seconds: authorization.max_snapshot_validity_seconds,
+        max_snapshot_entries: authorization.max_snapshot_entries,
+        publishers: &authorization.publishers,
+    })
+    .map_err(|_| SnapshotError::Encoding)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(CHANNEL_AUTHORIZATION_DOMAIN);
+    hasher.update(&body);
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Root-sign a narrowly scoped channel authorization.
+///
+/// # Errors
+/// Returns an encoding error if the canonical authorization cannot be serialized.
+pub fn sign_channel_authorization(
+    authorization: &mut ChannelAuthorization,
+    owner_key: &SigningKey,
+) -> Result<(), SnapshotError> {
+    authorization.owner_signature_hex.clear();
+    authorization.owner_signature_hex = hex::encode(
+        owner_key
+            .sign(&authorization_signing_message(authorization)?)
+            .to_bytes(),
+    );
+    Ok(())
+}
+
+/// Sign a protocol-v3 snapshot with a root-authorized channel key.
+///
+/// # Errors
+/// Returns an encoding error if the canonical snapshot cannot be serialized.
+pub fn sign_snapshot_delegated(
+    snapshot: &mut SignedRegistrySnapshot,
+    channel_key: &SigningKey,
+    authorization: ChannelAuthorization,
+) -> Result<(), SnapshotError> {
+    snapshot.protocol = DELEGATED_SNAPSHOT_PROTOCOL;
+    snapshot.channel_authorization = Some(authorization);
+    snapshot.owner_signature_hex.clear();
+    snapshot.owner_signature_hex = hex::encode(
+        channel_key
+            .sign(&snapshot_signing_message(snapshot)?)
+            .to_bytes(),
+    );
     Ok(())
 }
 
@@ -141,7 +301,10 @@ pub fn verify_snapshot(
     pinned_owner_pubkey_hex: &str,
     now_unix: u64,
 ) -> Result<(), SnapshotError> {
-    if snapshot.protocol != SNAPSHOT_PROTOCOL {
+    if snapshot.protocol != SNAPSHOT_PROTOCOL && snapshot.protocol != DELEGATED_SNAPSHOT_PROTOCOL {
+        return Err(SnapshotError::Protocol);
+    }
+    if (snapshot.protocol == SNAPSHOT_PROTOCOL) != snapshot.channel_authorization.is_none() {
         return Err(SnapshotError::Protocol);
     }
     if snapshot.sequence == 0
@@ -185,9 +348,23 @@ pub fn verify_snapshot(
         &hex::decode(&snapshot.owner_signature_hex).map_err(|_| SnapshotError::OwnerSignature)?,
     )
     .map_err(|_| SnapshotError::OwnerSignature)?;
-    owner
-        .verify(&snapshot_signing_message(snapshot)?, &signature)
-        .map_err(|_| SnapshotError::OwnerSignature)?;
+
+    if let Some(authorization) = &snapshot.channel_authorization {
+        verify_channel_authorization_scope(authorization, &owner, snapshot)?;
+        let channel_bytes: [u8; 32] = hex::decode(&authorization.channel_pubkey_hex)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(SnapshotError::ChannelAuthorization)?;
+        let channel = VerifyingKey::from_bytes(&channel_bytes)
+            .map_err(|_| SnapshotError::ChannelAuthorization)?;
+        channel
+            .verify(&snapshot_signing_message(snapshot)?, &signature)
+            .map_err(|_| SnapshotError::ChannelSignature)?;
+    } else {
+        owner
+            .verify(&snapshot_signing_message(snapshot)?, &signature)
+            .map_err(|_| SnapshotError::OwnerSignature)?;
+    }
 
     let mut publishers = HashSet::with_capacity(snapshot.publishers.len());
     for publisher in &snapshot.publishers {
@@ -213,6 +390,84 @@ pub fn verify_snapshot(
         }
     }
     Ok(())
+}
+
+fn verify_channel_authorization_scope(
+    authorization: &ChannelAuthorization,
+    owner: &VerifyingKey,
+    snapshot: &SignedRegistrySnapshot,
+) -> Result<(), SnapshotError> {
+    if authorization.protocol != CHANNEL_AUTHORIZATION_PROTOCOL
+        || authorization.generation == 0
+        || !valid_hex(&authorization.channel_pubkey_hex, 32)
+        || authorization.not_before_unix >= authorization.expires_at_unix
+        || authorization.max_snapshot_validity_seconds == 0
+        || authorization.max_snapshot_validity_seconds > MAX_SNAPSHOT_VALIDITY_SECONDS
+        || authorization.max_snapshot_entries == 0
+        || authorization.max_snapshot_entries > MAX_SNAPSHOT_ENTRIES
+        || snapshot.issued_at_unix < authorization.not_before_unix
+        || snapshot.expires_at_unix > authorization.expires_at_unix
+        || snapshot
+            .expires_at_unix
+            .saturating_sub(snapshot.issued_at_unix)
+            > authorization.max_snapshot_validity_seconds
+        || snapshot.entries.len() > authorization.max_snapshot_entries
+        || snapshot.publishers != authorization.publishers
+    {
+        return Err(SnapshotError::ChannelAuthorization);
+    }
+    let mut previous = None;
+    for publisher in &authorization.publishers {
+        if !valid_hex(&publisher.pubkey_hex, 32)
+            || previous
+                .as_ref()
+                .is_some_and(|prior: &String| prior >= &publisher.pubkey_hex)
+        {
+            return Err(SnapshotError::ChannelAuthorization);
+        }
+        previous = Some(publisher.pubkey_hex.clone());
+    }
+    let signature = Signature::from_slice(
+        &hex::decode(&authorization.owner_signature_hex)
+            .map_err(|_| SnapshotError::ChannelAuthorization)?,
+    )
+    .map_err(|_| SnapshotError::ChannelAuthorization)?;
+    owner
+        .verify(&authorization_signing_message(authorization)?, &signature)
+        .map_err(|_| SnapshotError::ChannelAuthorization)
+}
+
+/// Verify a root-signed channel certificate before an online key is used.
+///
+/// # Errors
+/// Returns a key, signature, shape, scope, or freshness error when the
+/// authorization is not currently valid for this registry owner.
+pub fn verify_channel_authorization(
+    authorization: &ChannelAuthorization,
+    pinned_owner_pubkey_hex: &str,
+    now_unix: u64,
+) -> Result<(), SnapshotError> {
+    let owner_bytes: [u8; 32] = hex::decode(pinned_owner_pubkey_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(SnapshotError::OwnerKey)?;
+    let owner = VerifyingKey::from_bytes(&owner_bytes).map_err(|_| SnapshotError::OwnerKey)?;
+    if now_unix < authorization.not_before_unix || now_unix > authorization.expires_at_unix {
+        return Err(SnapshotError::ChannelAuthorization);
+    }
+    let probe = SignedRegistrySnapshot {
+        protocol: DELEGATED_SNAPSHOT_PROTOCOL,
+        sequence: 1,
+        issued_at_unix: now_unix,
+        expires_at_unix: now_unix.saturating_add(1),
+        previous_snapshot_hash_hex: String::new(),
+        moderation_head_hex: String::new(),
+        publishers: authorization.publishers.clone(),
+        entries: Vec::new(),
+        owner_signature_hex: String::new(),
+        channel_authorization: Some(authorization.clone()),
+    };
+    verify_channel_authorization_scope(authorization, &owner, &probe)
 }
 
 fn entry_within_bounds(entry: &RegistryEntry) -> bool {
@@ -307,6 +562,7 @@ mod tests {
             }],
             entries: vec![entry],
             owner_signature_hex: String::new(),
+            channel_authorization: None,
         };
         sign_snapshot(&mut snapshot, &owner).unwrap();
         (snapshot, owner)
@@ -365,6 +621,46 @@ mod tests {
                 15
             ),
             Err(SnapshotError::Oversize)
+        );
+    }
+
+    #[test]
+    fn delegated_snapshot_is_root_scoped_and_time_bounded() {
+        let (mut snapshot, owner) = fixture();
+        let channel = SigningKey::from_bytes(&[9; 32]);
+        let mut authorization = ChannelAuthorization {
+            protocol: CHANNEL_AUTHORIZATION_PROTOCOL,
+            generation: 1,
+            channel_pubkey_hex: hex::encode(channel.verifying_key().to_bytes()),
+            not_before_unix: 5,
+            expires_at_unix: 30,
+            max_snapshot_validity_seconds: 15,
+            max_snapshot_entries: 10,
+            publishers: snapshot.publishers.clone(),
+            owner_signature_hex: String::new(),
+        };
+        sign_channel_authorization(&mut authorization, &owner).unwrap();
+        sign_snapshot_delegated(&mut snapshot, &channel, authorization.clone()).unwrap();
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        verify_snapshot(&snapshot, &owner_hex, 15).unwrap();
+
+        let mut widened = snapshot.clone();
+        widened.publishers.push(PublisherAuthorization {
+            pubkey_hex: "ab".repeat(32),
+            can_add_new: true,
+        });
+        sign_snapshot_delegated(&mut widened, &channel, authorization.clone()).unwrap();
+        assert_eq!(
+            verify_snapshot(&widened, &owner_hex, 15),
+            Err(SnapshotError::ChannelAuthorization)
+        );
+
+        let mut forged = authorization;
+        forged.max_snapshot_entries = 100;
+        sign_snapshot_delegated(&mut snapshot, &channel, forged).unwrap();
+        assert_eq!(
+            verify_snapshot(&snapshot, &owner_hex, 15),
+            Err(SnapshotError::ChannelAuthorization)
         );
     }
 }

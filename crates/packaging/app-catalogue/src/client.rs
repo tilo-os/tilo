@@ -383,6 +383,7 @@ mod tests {
             }],
             entries: vec![entry],
             owner_signature_hex: String::new(),
+            channel_authorization: None,
         };
         registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
         snapshot

@@ -14,14 +14,14 @@ fn run(data_dir: &std::path::Path, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
         .arg("--data-dir")
         .arg(data_dir)
-        .arg("promote-first-party")
+        .arg("collect-first-party")
         .args(arguments)
         .output()
         .unwrap()
 }
 
 #[test]
-fn promote_first_party_noop_and_bounds_are_enforced() {
+fn collect_first_party_noop_and_bounds_are_enforced_without_a_signing_key() {
     let temp = tempfile::tempdir().unwrap();
     let storage = Storage::open(temp.path()).unwrap();
     let owner = SigningKey::from_bytes(&[41; 32]);
@@ -45,26 +45,9 @@ fn promote_first_party_noop_and_bounds_are_enforced() {
             }],
         })
         .unwrap();
-    let key_path = temp.path().join("owner.seed");
-    std::fs::write(&key_path, hex::encode(owner.to_bytes())).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
-    }
-
     let success = run(
         temp.path(),
-        &[
-            "--publisher-pubkey",
-            &publisher_hex,
-            "--owner-key-file",
-            key_path.to_str().unwrap(),
-            "--max-items",
-            "50",
-            "--valid-for-seconds",
-            "3600",
-        ],
+        &["--publisher-pubkey", &publisher_hex, "--max-items", "50"],
     );
     assert!(
         success.status.success(),
@@ -73,21 +56,14 @@ fn promote_first_party_noop_and_bounds_are_enforced() {
     );
     let result: serde_json::Value = serde_json::from_slice(&success.stdout).unwrap();
     assert_eq!(result["status"], "noop");
-    assert_eq!(result["promoted"], 0);
+    assert_eq!(result["collected"], 0);
     assert!(storage.load_snapshot().unwrap().is_none());
     assert!(storage.load_promotion_transaction().unwrap().is_none());
 
     for invalid in ["0", "101"] {
         let rejected = run(
             temp.path(),
-            &[
-                "--publisher-pubkey",
-                &publisher_hex,
-                "--owner-key-file",
-                key_path.to_str().unwrap(),
-                "--max-items",
-                invalid,
-            ],
+            &["--publisher-pubkey", &publisher_hex, "--max-items", invalid],
         );
         assert!(!rejected.status.success(), "max-items={invalid} must fail");
         assert!(

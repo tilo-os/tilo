@@ -264,6 +264,13 @@ impl ModerationService {
         reviewed_submissions: &[PendingSubmission],
     ) -> Result<(), ModerationError> {
         let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.activate_deferred_locked(reviewed_submissions)
+    }
+
+    fn activate_deferred_locked(
+        &self,
+        reviewed_submissions: &[PendingSubmission],
+    ) -> Result<(), ModerationError> {
         for reviewed in reviewed_submissions {
             let Some(deferred) = self
                 .storage
@@ -284,6 +291,28 @@ impl ModerationService {
                 .storage
                 .delete_deferred_pending(&reviewed.submission_id)?;
         }
+        Ok(())
+    }
+
+    /// Restore deferred successors and consume the completed promotion's
+    /// journal and staged manifest while the registry mutation lock is held.
+    /// New submissions cannot observe a journal that cleanup will remove.
+    /// Replaying this after a crash is safe because every transition and
+    /// deletion is idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deferred state cannot be restored or durable
+    /// promotion state cannot be removed.
+    pub fn complete_promotion_in_transaction(
+        &self,
+        _transaction: &SnapshotLock<'_>,
+        reviewed_submissions: &[PendingSubmission],
+    ) -> Result<(), ModerationError> {
+        let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.activate_deferred_locked(reviewed_submissions)?;
+        let _deleted = self.storage.delete_staged_promotion()?;
+        let _deleted = self.storage.delete_promotion_transaction()?;
         Ok(())
     }
 
@@ -926,7 +955,7 @@ pub enum ModerationError {
 mod tests {
     use super::*;
     use crate::allowlist::PublisherRow;
-    use crate::storage::PromotionJournal;
+    use crate::storage::{PromotionJournal, StagedPromotion};
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
     use registry_types::{RegistryVersion, sign_change_request, sign_entry};
@@ -1192,6 +1221,7 @@ mod tests {
             publishers: Vec::new(),
             entries: vec![selected.change.entry.clone()],
             owner_signature_hex: "test fixture".into(),
+            channel_authorization: None,
         };
         service
             .storage
@@ -1233,9 +1263,8 @@ mod tests {
             )
             .unwrap();
         service
-            .activate_deferred_in_transaction(&transaction, std::slice::from_ref(&selected))
+            .complete_promotion_in_transaction(&transaction, std::slice::from_ref(&selected))
             .unwrap();
-        service.storage.delete_promotion_transaction().unwrap();
         drop(transaction);
 
         assert_eq!(reviews.len(), 1);
@@ -1260,6 +1289,89 @@ mod tests {
                 .load_promotion_transaction()
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn promotion_cleanup_keeps_a_concurrent_successor_reachable() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut OsRng);
+        let selected = service
+            .submit(change(&key, EntryAction::Add, 10), 100)
+            .unwrap();
+        let candidate = registry_types::SignedRegistrySnapshot {
+            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            sequence: 1,
+            issued_at_unix: 101,
+            expires_at_unix: 201,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: Vec::new(),
+            entries: vec![selected.change.entry.clone()],
+            owner_signature_hex: "test fixture".into(),
+            channel_authorization: None,
+        };
+        service
+            .storage
+            .save_promotion_transaction(&PromotionJournal {
+                publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
+                reviewer: "auto".into(),
+                reason: "first party".into(),
+                submissions: vec![selected.clone()],
+                candidate_snapshot: candidate,
+            })
+            .unwrap();
+        service
+            .storage
+            .save_staged_promotion(&StagedPromotion {
+                publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
+                collected_at_unix: 100,
+                submissions: vec![selected.clone()],
+                artifacts: Vec::new(),
+            })
+            .unwrap();
+
+        let transaction = service.storage.lock_snapshot().unwrap();
+        service
+            .approve_batch_in_transaction(
+                &transaction,
+                std::slice::from_ref(&selected),
+                "auto",
+                "first party",
+                102,
+                &allow(&key),
+            )
+            .unwrap();
+        let mut successor_entry = selected.change.entry.clone();
+        successor_entry.versions.extend(entry(&key, 11).versions);
+        successor_entry.updated_at_unix = 11;
+        successor_entry.signature_hex.clear();
+        let successor_change = sign_change_request(EntryAction::Update, successor_entry, &key);
+        let submitter_service = service.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let submitter = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            submitter_service.submit(successor_change, 103).unwrap()
+        });
+        ready_rx.recv().unwrap();
+
+        service
+            .complete_promotion_in_transaction(&transaction, std::slice::from_ref(&selected))
+            .unwrap();
+        assert!(
+            service
+                .storage
+                .load_promotion_transaction()
+                .unwrap()
+                .is_none()
+        );
+        assert!(service.storage.load_staged_promotion().unwrap().is_none());
+        drop(transaction);
+
+        let successor = submitter.join().unwrap();
+        assert_eq!(
+            service.pending(&successor.submission_id).unwrap(),
+            Some(successor)
         );
     }
 

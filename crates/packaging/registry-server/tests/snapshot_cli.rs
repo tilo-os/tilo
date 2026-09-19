@@ -3,16 +3,46 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
+    clippy::panic,
+    clippy::similar_names,
     clippy::too_many_lines,
     reason = "integration-test setup and assertions"
 )]
 
 use std::os::unix::fs::PermissionsExt as _;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use ed25519_dalek::SigningKey;
 use registry_server::{PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
 use registry_types::{RegistryEntry, RegistryVersion, sign_entry};
+
+fn wait_for_registry_lock_waiter(pid: u32) {
+    let pid = pid.to_string();
+    for _ in 0..200 {
+        let locks = std::fs::read_to_string("/proc/locks").unwrap();
+        if locks.lines().any(|line| {
+            line.contains("-> FLOCK") && line.split_whitespace().any(|field| field == pid)
+        }) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("registry CLI process never waited on the held registry lock");
+}
+
+fn write_secret(path: &std::path::Path, key: &SigningKey) {
+    std::fs::write(path, hex::encode(key.to_bytes())).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+fn identity(owner: &SigningKey) -> ServerIdentity {
+    ServerIdentity {
+        owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+        name: "test".into(),
+        description: "test".into(),
+        base_url: "https://registry.test".into(),
+    }
+}
 
 #[test]
 fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() {
@@ -157,4 +187,85 @@ fn offline_command_publishes_a_verifiable_snapshot_without_server_private_key() 
         .unwrap();
     assert!(!refused.status.success());
     assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 3);
+}
+
+#[test]
+fn signing_and_rollback_read_owner_identity_only_after_acquiring_the_registry_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = Storage::open(temp.path()).unwrap();
+    let owner_a = SigningKey::from_bytes(&[41; 32]);
+    let owner_b = SigningKey::from_bytes(&[42; 32]);
+    let key_path = temp.path().join("owner-a.seed");
+    write_secret(&key_path, &owner_a);
+    storage.save_identity(&identity(&owner_a)).unwrap();
+
+    let transaction = storage.lock_snapshot().unwrap();
+    let signer = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        .arg("--data-dir")
+        .arg(temp.path())
+        .arg("sign-snapshot")
+        .arg("--owner-key-file")
+        .arg(&key_path)
+        .arg("--valid-for-seconds")
+        .arg("3600")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_registry_lock_waiter(signer.id());
+    storage.save_identity(&identity(&owner_b)).unwrap();
+    drop(transaction);
+    let signed = signer.wait_with_output().unwrap();
+    assert!(!signed.status.success());
+    assert!(
+        String::from_utf8_lossy(&signed.stderr)
+            .contains("owner private key does not match its authorized identity")
+    );
+    assert!(storage.load_snapshot().unwrap().is_none());
+
+    storage.save_identity(&identity(&owner_a)).unwrap();
+    for _ in 0..2 {
+        let signed = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+            .arg("--data-dir")
+            .arg(temp.path())
+            .arg("sign-snapshot")
+            .arg("--owner-key-file")
+            .arg(&key_path)
+            .arg("--valid-for-seconds")
+            .arg("3600")
+            .output()
+            .unwrap();
+        assert!(
+            signed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+    }
+    assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 2);
+
+    let transaction = storage.lock_snapshot().unwrap();
+    let rollback = Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        .arg("--data-dir")
+        .arg(temp.path())
+        .arg("rollback-snapshot")
+        .arg("--to-sequence")
+        .arg("1")
+        .arg("--owner-key-file")
+        .arg(&key_path)
+        .arg("--valid-for-seconds")
+        .arg("3600")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_for_registry_lock_waiter(rollback.id());
+    storage.save_identity(&identity(&owner_b)).unwrap();
+    drop(transaction);
+    let rolled_back = rollback.wait_with_output().unwrap();
+    assert!(!rolled_back.status.success());
+    assert!(
+        String::from_utf8_lossy(&rolled_back.stderr)
+            .contains("owner private key does not match its authorized identity")
+    );
+    assert_eq!(storage.load_snapshot().unwrap().unwrap().sequence, 2);
 }

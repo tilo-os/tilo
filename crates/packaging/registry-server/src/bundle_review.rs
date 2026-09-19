@@ -99,6 +99,22 @@ pub fn inspect_entry(
     entry: &RegistryEntry,
     policy: InspectionPolicy,
 ) -> Result<Vec<InspectedVersion>, BundleReviewError> {
+    Ok(fetch_entry_bytes(entry, policy)?
+        .into_iter()
+        .map(|(inspection, _bytes)| inspection)
+        .collect())
+}
+
+/// Fetch every version and retain the exact verified bytes for a later
+/// networkless signing step.
+///
+/// # Errors
+/// Returns the same URL, fetch, size, identity, and package verification
+/// failures as [`inspect_entry`].
+pub fn fetch_entry_bytes(
+    entry: &RegistryEntry,
+    policy: InspectionPolicy,
+) -> Result<Vec<(InspectedVersion, Vec<u8>)>, BundleReviewError> {
     if entry.versions.is_empty() {
         return Err(BundleReviewError::NoVersions);
     }
@@ -113,7 +129,7 @@ fn fetch_and_inspect(
     entry: &RegistryEntry,
     version: &RegistryVersion,
     policy: InspectionPolicy,
-) -> Result<InspectedVersion, BundleReviewError> {
+) -> Result<(InspectedVersion, Vec<u8>), BundleReviewError> {
     if version.qpkg_size_bytes > policy.max_package_bytes {
         return Err(BundleReviewError::TooLarge {
             version: version.version.clone(),
@@ -197,7 +213,8 @@ fn fetch_and_inspect(
             reason: error.to_string(),
         })?;
     check_size(version, bytes.len() as u64, policy.max_package_bytes)?;
-    inspect_bytes(entry, version, &bytes)
+    let inspection = inspect_bytes(entry, version, &bytes)?;
+    Ok((inspection, bytes))
 }
 
 fn fetch_error(version: &RegistryVersion, error: &reqwest::Error) -> BundleReviewError {

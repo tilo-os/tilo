@@ -184,6 +184,7 @@ fn signed_snapshot_json(entry: RegistryEntry, owner: &SigningKey) -> String {
         }],
         entries: vec![entry],
         owner_signature_hex: String::new(),
+        channel_authorization: None,
     };
     sign_snapshot(&mut snapshot, owner).unwrap();
     serde_json::to_string(&snapshot).unwrap()
