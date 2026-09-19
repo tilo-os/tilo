@@ -178,7 +178,7 @@ def materialize(operation, directory, purpose, request_directory, local_spool, *
     local_spool.private_directory(operation)
     local_spool.private_directory(directory)
     local_spool.private_directory(request_directory)
-    if directory.parent != operation or purpose not in ('live-uki', 'target-uki'):
+    if directory.parent != operation or purpose not in ('loader', 'live-uki', 'target-uki'):
         raise ValueError('checkpoint materialization scope differs')
     if not legacy:
         _validate_generic_layout(operation, directory, local_spool)
