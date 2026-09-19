@@ -104,6 +104,10 @@ jobs:
       }}
     strategy:
       fail-fast: false
+      # Forgejo's package-blob insert is not race-safe when native jobs upload
+      # an identical layer concurrently. Builder rebuilds are rare; serialize
+      # only their registry writers while routine qualification reuses images.
+      max-parallel: 1
       matrix:
         include:
           - arch: x86_64
