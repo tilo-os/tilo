@@ -542,6 +542,7 @@ pub struct TerminalWidget {
     /// the CRDT or resource tree: a find term and its matching output can be
     /// sensitive, while the shared terminal transcript already has its own
     /// carefully bounded collaboration contract.
+    conventions: ui::PlatformConventions,
     find_open: bool,
     find_input: TextInput,
     find_matches: Vec<FindMatch>,
@@ -586,6 +587,7 @@ pub struct TerminalWidget {
     /// The menu's `Arc<dyn Fn>` callbacks can't reach the PTY, so we dispatch on
     /// the chosen row's label ourselves (mirrors `TextInput`).
     context_menu: ContextMenu,
+    find_menu_index: Option<usize>,
     /// Cursor position cached on every `CursorMoved` so the press arm
     /// can hit-test without receiving a fresh position. Logical coords
     /// (post scale-factor divide), matching `text_input`'s convention.
@@ -771,6 +773,7 @@ impl TerminalWidget {
             scroll_offset: 0,
             wheel_remainder_px: 0.0,
             scrollbar: Scrollbar::vertical(),
+            conventions: ui::PlatformConventions::default(),
             find_open: false,
             find_input: TextInput::local().with_id("terminal_find"),
             find_matches: Vec::new(),
@@ -789,6 +792,7 @@ impl TerminalWidget {
             drag_anchor_span: None,
             select_to_copy: false,
             context_menu: ContextMenu::new(),
+            find_menu_index: None,
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             last_padding_x: 4.0,
@@ -2667,7 +2671,7 @@ impl Widget for TerminalWidget {
                 },
             ..
         } = event
-            && modifiers.state().control_key()
+            && self.find_shortcut_matches(modifiers.state())
             && matches!(logical_key, Key::Character(key) if key.eq_ignore_ascii_case("f"))
         {
             self.open_find();
@@ -2742,6 +2746,12 @@ impl Widget for TerminalWidget {
         true
     }
 
+    fn set_platform_conventions(&mut self, conventions: ui::PlatformConventions) {
+        self.conventions = conventions;
+        self.find_input.set_platform_conventions(conventions);
+        self.context_menu.set_platform_conventions(conventions);
+    }
+
     fn set_focus(&mut self, focused: bool) {
         self.focused = focused;
     }
@@ -2803,6 +2813,7 @@ impl Widget for TerminalWidget {
                 focused: self.focused,
                 multiline: true,
                 read_only: true,
+                context_menu: true,
                 ..Default::default()
             });
         transcript
@@ -2883,6 +2894,10 @@ impl Widget for TerminalWidget {
         _path: &ObjId,
     ) -> bool {
         match action {
+            ui::a11y::Action::ShowContextMenu => {
+                self.open_context_menu_at(self.rect.center());
+                true
+            }
             ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
                 self.focused = true;
                 true
@@ -2898,9 +2913,12 @@ impl Widget for TerminalWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AutoCommit,
+        path: &ObjId,
     ) -> bool {
+        if target == self.terminal_transcript_target() {
+            return self.perform_action(action, state, path);
+        }
         let find_prefix = format!("terminal.find:{}:", self.pane_id);
         if let Some(control) = target.strip_prefix(&find_prefix) {
             match (control, action) {
@@ -3391,6 +3409,18 @@ impl TerminalWidget {
         }
     }
 
+    /// Find uses a desktop command chord, leaving terminal Ctrl+F and
+    /// Meta-Ctrl+F available to the foreground program on every platform.
+    fn find_shortcut_matches(&self, modifiers: winit::keyboard::ModifiersState) -> bool {
+        if !self.conventions.command_modifier_down(modifiers) || modifiers.alt_key() {
+            return false;
+        }
+        match self.conventions.platform() {
+            ui::Platform::MacOs => !modifiers.control_key() && !modifiers.shift_key(),
+            _ => modifiers.shift_key() && !modifiers.super_key(),
+        }
+    }
+
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::KeyboardInput` arm.
     fn handle_key_press_event(
         &mut self,
@@ -3408,6 +3438,16 @@ impl TerminalWidget {
             return;
         }
         let mods = modifiers.state();
+        if !mods.control_key()
+            && !mods.alt_key()
+            && !mods.super_key()
+            && (matches!(logical_key, Key::Named(NamedKey::ContextMenu))
+                || (mods.shift_key() && matches!(logical_key, Key::Named(NamedKey::F10))))
+        {
+            self.open_context_menu_at(self.rect.center());
+            *handled = true;
+            return;
+        }
         // Ctrl+Shift+C → clipboard copy; Ctrl+Shift+V → paste.
         // Both must be matched BEFORE the regular Ctrl+C → SIGINT
         // path or the user would lose the ability to interrupt.
@@ -4737,6 +4777,11 @@ impl TerminalWidget {
             menu.push(MenuItem::action("Select all output", || {}));
         }
         menu.push(MenuItem::action("Clear screen", || {}));
+        self.find_menu_index = Some(menu.items().len());
+        menu.push(MenuItem::action(
+            ui::i18n::I18nManager::lookup("terminal-find-scrollback", None),
+            || {},
+        ));
         // This preference is useful secondary chrome, but never at the cost
         // of an unreachable context menu. A 160px-high embedded/narrow pane
         // can fit the copy/paste/selection/process essentials, not another
@@ -4773,6 +4818,10 @@ impl TerminalWidget {
     }
 
     fn activate_context_menu_item(&mut self, index: usize) {
+        if self.find_menu_index == Some(index) {
+            self.open_find();
+            return;
+        }
         let label = self
             .context_menu
             .items()

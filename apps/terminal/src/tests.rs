@@ -300,9 +300,7 @@ fn send_key_mods(
     shift: bool,
     alt: bool,
 ) {
-    use ui::widget::Widget;
-    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-    use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
+    use winit::keyboard::ModifiersState;
 
     let mut state = ModifiersState::empty();
     if ctrl {
@@ -314,8 +312,20 @@ fn send_key_mods(
     if alt {
         state |= ModifiersState::ALT;
     }
-    let modifiers: Modifiers = state.into();
+    send_key_with_modifiers(widget, doc, key, state);
+}
 
+fn send_key_with_modifiers(
+    widget: &mut TerminalWidget,
+    doc: &mut AutoCommit,
+    key: winit::keyboard::Key,
+    state: winit::keyboard::ModifiersState,
+) {
+    use ui::widget::Widget;
+    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+    use winit::keyboard::{KeyLocation, PhysicalKey};
+
+    let modifiers: Modifiers = state.into();
     let mut handled = false;
     let mut focus = None;
     let taffy = taffy::TaffyTree::<()>::new();
@@ -1045,6 +1055,204 @@ fn scrollback_reveals_older_lines_and_snaps_back() {
     assert!(
         after.iter().any(|l| l.contains("LINE060")),
         "bottom shows freshest: {after:?}"
+    );
+}
+
+#[test]
+fn find_shortcut_preserves_foreground_control_f_on_every_platform() {
+    use ui::{Platform, PlatformConventions};
+    use winit::keyboard::{Key, ModifiersState};
+
+    for platform in [Platform::Windows, Platform::MacOs, Platform::Linux] {
+        for (modifiers, expected) in [
+            (ModifiersState::CONTROL, vec![0x06]),
+            (
+                ModifiersState::CONTROL | ModifiersState::ALT,
+                vec![0x1b, 0x06],
+            ),
+        ] {
+            let (mut widget, writes) = build_test_widget();
+            widget.set_platform_conventions(PlatformConventions::new(platform));
+            let mut doc = AutoCommit::new();
+            send_key_with_modifiers(&mut widget, &mut doc, Key::Character("f".into()), modifiers);
+            assert_eq!(
+                drain_writes(&writes),
+                expected,
+                "{platform:?}: shell editing bytes"
+            );
+            assert!(
+                !widget.find_test_state().0,
+                "{platform:?}: shell chord must not open Find"
+            );
+        }
+    }
+}
+
+#[test]
+fn find_shortcut_opens_local_search_and_escape_restores_terminal_input() {
+    use ui::{Platform, PlatformConventions};
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    for (platform, modifiers) in [
+        (
+            Platform::Windows,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        ),
+        (
+            Platform::Linux,
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        ),
+        (Platform::MacOs, ModifiersState::SUPER),
+    ] {
+        let (mut widget, writes) = build_test_widget();
+        widget.set_platform_conventions(PlatformConventions::new(platform));
+        let mut doc = AutoCommit::new();
+        send_key_with_modifiers(&mut widget, &mut doc, Key::Character("F".into()), modifiers);
+        assert!(
+            widget.find_test_state().0,
+            "{platform:?}: native terminal Find chord"
+        );
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "Find must not type into the process"
+        );
+        send_key(
+            &mut widget,
+            &mut doc,
+            Key::Character("query".into()),
+            false,
+            false,
+        );
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "private Find query must not reach the process"
+        );
+        send_key(
+            &mut widget,
+            &mut doc,
+            Key::Named(NamedKey::Escape),
+            false,
+            false,
+        );
+        assert!(!widget.find_test_state().0);
+        send_key(
+            &mut widget,
+            &mut doc,
+            Key::Character("f".into()),
+            true,
+            false,
+        );
+        assert_eq!(drain_writes(&writes), vec![0x06]);
+    }
+}
+
+#[test]
+fn find_is_discoverable_from_the_semantic_transcript_without_typing_into_the_process() {
+    use ui::a11y::{Action, Role};
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.init_crdt(&mut doc, &ROOT);
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    let heads_before = doc.get_heads();
+    let transcript = widget.accessibility().expect("terminal transcript");
+    assert!(transcript.state.context_menu);
+    assert!(
+        widget.perform_semantic_action(
+            transcript
+                .action_target
+                .as_deref()
+                .expect("transcript target"),
+            &Action::ShowContextMenu,
+            &mut doc,
+            &ROOT,
+        )
+    );
+    let semantics = widget.accessibility().expect("terminal with menu");
+    let menu = semantics
+        .children
+        .iter()
+        .find(|child| child.role == Role::Menu)
+        .expect("discoverable menu");
+    let find_label = ui::i18n::I18nManager::lookup("terminal-find-scrollback", None);
+    assert_ne!(
+        find_label, "terminal-find-scrollback",
+        "toolkit supplies the visible label"
+    );
+    let find = menu
+        .children
+        .iter()
+        .find(|item| item.name.as_deref() == Some(find_label.as_str()))
+        .expect("Find entry");
+    assert!(widget.perform_semantic_action(
+        find.action_target.as_deref().expect("Find target"),
+        &Action::Activate,
+        &mut doc,
+        &ROOT,
+    ));
+    assert!(widget.find_test_state().0);
+    let semantics = widget.accessibility().expect("terminal with Find");
+    let query = semantics
+        .children
+        .iter()
+        .flat_map(|child| &child.children)
+        .find(|child| child.role == Role::TextInput)
+        .expect("discoverable query");
+    assert!(widget.perform_semantic_action(
+        query.action_target.as_deref().expect("query target"),
+        &Action::SetValue("private search".into()),
+        &mut doc,
+        &ROOT,
+    ));
+    assert!(
+        drain_writes(&writes).is_empty(),
+        "Find never writes shell commands"
+    );
+    assert_eq!(
+        heads_before,
+        doc.get_heads(),
+        "Find remains private local view state"
+    );
+    assert!(
+        !widget.perform_semantic_action(
+            transcript.action_target.as_deref().unwrap(),
+            &Action::SetValue("unreviewed command".into()),
+            &mut doc,
+            &ROOT,
+        ),
+        "transcript actions still cannot execute arbitrary text"
+    );
+    assert!(drain_writes(&writes).is_empty());
+}
+
+#[test]
+fn terminal_context_menu_keyboard_gestures_do_not_reach_the_process() {
+    use ui::a11y::Role;
+    use winit::keyboard::{Key, NamedKey};
+
+    for (key, shift) in [(NamedKey::ContextMenu, false), (NamedKey::F10, true)] {
+        let (mut widget, writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+        send_key(&mut widget, &mut doc, Key::Named(key), false, shift);
+        assert!(
+            widget
+                .accessibility()
+                .unwrap()
+                .children
+                .iter()
+                .any(|node| node.role == Role::Menu)
+        );
+        assert!(drain_writes(&writes).is_empty());
+    }
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    send_key(&mut widget, &mut doc, Key::Named(NamedKey::F10), true, true);
+    assert_eq!(
+        drain_writes(&writes),
+        b"\x1b[21;6~",
+        "extra modifiers stay foreground input"
     );
 }
 

@@ -12,3 +12,4 @@ close-discard = Änderungen verwerfen
 close-retry = Erneut versuchen
 close-keep-editing = Weiter bearbeiten
 close-broker-disconnected = Die Verbindung zum Speicherdienst wurde getrennt. Das Dokument ist weiterhin geöffnet.
+terminal-find-scrollback = Im Terminalverlauf suchen
