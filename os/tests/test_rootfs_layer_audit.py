@@ -1,4 +1,5 @@
 """Small archive streams prove hidden-layer scanning without image builds."""
+import base64
 import gzip
 from contextlib import redirect_stderr, redirect_stdout
 import hashlib
@@ -18,6 +19,15 @@ spec = importlib.util.spec_from_file_location('audit', Path(__file__).resolve().
 audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
 SECRET = b'private-sentinel-that-must-never-be-logged'
+# A complete PKCS#8 Ed25519 test key, with a public, deterministic test seed.
+PRIVATE_DER = bytes.fromhex('302e020100300506032b657004220420') + bytes(range(32))
+
+
+def pem(label=b'PRIVATE KEY', payload=PRIVATE_DER, headers=b'', newline=b'\n'):
+    encoded = base64.b64encode(payload)
+    lines = [encoded[i:i + 64] for i in range(0, len(encoded), 64)]
+    return (b'-----BEGIN ' + label + b'-----' + newline + headers
+            + newline.join(lines) + newline + b'-----END ' + label + b'-----')
 
 
 def tar(entries, format=tarfile.PAX_FORMAT):
@@ -147,12 +157,81 @@ class LayerAuditTests(unittest.TestCase):
 
     def test_boundary_match_and_private_envelope_public_key_allowed(self):
         for value, findings in ((b'-----BEGIN PUBLIC KEY-----\npublic\n-----END PUBLIC KEY-----', []),
-                                (b'-----BEGIN ENCRYPTED PRIVATE KEY-----\nopaque', ['private-pem-envelope']),
+                                (pem(b'ENCRYPTED PRIVATE KEY'), ['private-pem-envelope']),
                                 (b'x' * 499 + SECRET, ['provided-private-material'])):
             stream, image = docker([tar([('file', value)])])
             with patch.object(audit, 'CHUNK', 512):
                 result = audit.audit_stream(io.BytesIO(stream), image, [SECRET])
             self.assertEqual(result['layers'][0]['findings'], findings)
+
+    def test_private_key_parser_literals_and_malformed_envelopes_are_not_keys(self):
+        values = (b'-----BEGIN PRIVATE KEY-----',
+                  b'-----BEGIN ENCRYPTED PRIVATE KEY-----\nopaque',
+                  b'-----BEGIN PRIVATE KEY-----\0-----END PRIVATE KEY-----',
+                  b'-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----',
+                  b'-----BEGIN PRIVATE KEY-----\nsynthetic-not-a-key\n-----END PRIVATE KEY-----',
+                  pem().replace(b'-----END PRIVATE KEY-----', b'-----END RSA PRIVATE KEY-----'),
+                  pem().replace(base64.b64encode(PRIVATE_DER), b'not=base64'),
+                  b'-----BEGIN PRIVATE KEY-----"\n"-----END PRIVATE KEY-----')
+        for value in values:
+            with self.subTest(value=value):
+                stream, image = docker([tar([('crypto-parser', value)])])
+                result = audit.audit_stream(io.BytesIO(stream), image)
+                self.assertEqual(result['status'], 'passed-scoped-scan')
+
+    def test_complete_private_pem_variants_are_rejected(self):
+        for label in (b'PRIVATE KEY', b'RSA PRIVATE KEY', b'EC PRIVATE KEY', b'DSA PRIVATE KEY',
+                      b'ENCRYPTED PRIVATE KEY', b'OPENSSH PRIVATE KEY', b'ENCRYPTED COSIGN PRIVATE KEY'):
+            for newline in (b'\n', b'\r\n'):
+                with self.subTest(label=label, newline=newline):
+                    stream, image = docker([tar([('unfamiliar-name', pem(label, newline=newline))])])
+                    result = audit.audit_stream(io.BytesIO(stream), image)
+                    self.assertEqual(result['layers'][0]['findings'], ['private-pem-envelope'])
+                    self.assertNotIn(base64.b64encode(PRIVATE_DER).decode(), json.dumps(result))
+        encrypted = pem(b'RSA PRIVATE KEY', headers=(
+            b'Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF\n\n'))
+        stream, image = docker([tar([('encrypted', encrypted)])])
+        self.assertEqual(audit.audit_stream(io.BytesIO(stream), image)['status'], 'rejected-private-material')
+
+    def test_complete_pem_survives_every_single_byte_read_boundary(self):
+        values = (pem(), pem(b'RSA PRIVATE KEY', headers=(
+            b'Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,0123456789ABCDEF\n\n')),
+            pem().replace(b'\n', b'\\r\\n'))
+        for value in values:
+            for cut in range(1, len(value)):
+                with self.subTest(length=len(value), cut=cut):
+                    reader = audit.Reader(io.BytesIO(value), len(value), hashing=True)
+                    reader.read(cut)
+                    reader.read(len(value) - cut)
+                    self.assertEqual(reader.findings, {'private-pem-envelope'})
+
+    def test_large_envelopes_and_later_keys_survive_chunk_and_candidate_boundaries(self):
+        # Larger than both the old overlap and the test read chunk.
+        value = b'x' * 499 + pem(payload=PRIVATE_DER * 64)
+        for prefix in (b'', b'-----BEGIN PRIVATE KEY-----\0invalid\0'):
+            stream, image = docker([tar([('key', prefix + value)])])
+            with patch.object(audit, 'CHUNK', 512):
+                result = audit.audit_stream(io.BytesIO(stream), image)
+            self.assertEqual(result['status'], 'rejected-private-material')
+        for value in (pem(payload=PRIVATE_DER * 64), b'-----BEGIN PRIVATE KEY-----\n' + b'A' * 4096):
+            reader = audit.Reader(io.BytesIO(value), len(value), hashing=True)
+            with patch.object(audit, 'MAX_PEM', 1024):
+                with self.assertRaisesRegex(audit.AuditError, 'private PEM envelope exceeds size limit'):
+                    reader.read(len(value))
+
+    def test_complete_pem_in_json_values_rejected_without_joining_parser_literals(self):
+        for values, findings in ((['KEY=' + pem().decode()], ['private-pem-envelope']),
+                                 (['-----BEGIN PRIVATE KEY-----', base64.b64encode(PRIVATE_DER).decode(),
+                                   '-----END PRIVATE KEY-----'], [])):
+            stream, image = docker([tar([('public', b'ok')])], config_change={'config': {'Env': values}})
+            result = audit.audit_stream(io.BytesIO(stream), image)
+            self.assertEqual(result['metadata_findings'], findings)
+
+    def test_exact_private_match_is_independent_of_pem_structure(self):
+        value = b'-----BEGIN PRIVATE KEY-----\0not-an-envelope'
+        stream, image = docker([tar([('literal', value)])])
+        result = audit.audit_stream(io.BytesIO(stream), image, [value])
+        self.assertEqual(result['layers'][0]['findings'], ['provided-private-material'])
 
     def test_secrets_in_configuration_are_not_missed(self):
         stream, image = docker([tar([('public', b'ok')])], config_change={'config': {'Env': ['VALUE=' + SECRET.decode()]}})
