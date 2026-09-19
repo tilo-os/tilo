@@ -363,7 +363,7 @@ fn bounded_text(value: &str, limit: usize) -> String {
 /// `dirs::data_dir()/tilo-browser/history.json`. `None` when the platform
 /// exposes no data directory.
 pub fn history_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|d| d.join("tilo-browser").join("history.json"))
+    crate::storage::data_dir().map(|d| d.join("history.json"))
 }
 
 /// Current Unix-epoch time in seconds (0 if the clock is before the

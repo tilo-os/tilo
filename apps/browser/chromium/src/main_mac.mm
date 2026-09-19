@@ -1,0 +1,48 @@
+#import <Cocoa/Cocoa.h>
+#include "include/cef_application_mac.h"
+#include "include/wrapper/cef_helpers.h"
+#include "include/wrapper/cef_library_loader.h"
+#include "host.h"
+@interface QosApplication : NSApplication<CefAppProtocol> { BOOL handling_; }
+@end
+@implementation QosApplication
+- (BOOL)isHandlingSendEvent { return handling_; }
+- (void)setHandlingSendEvent:(BOOL)value { handling_=value; }
+- (void)sendEvent:(NSEvent*)event { CefScopedSendingEvent scope; [super sendEvent:event]; }
+- (void)terminate:(id)sender { CloseHost(); }
+@end
+bool ShowHostFileDialog(cef_file_dialog_mode_t mode,const CefString& title,const std::vector<CefString>& extensions,CefRefPtr<CefFileDialogCallback> callback) {
+  if(mode==FILE_DIALOG_SAVE) return false;
+  NSOpenPanel* panel=[NSOpenPanel openPanel];
+  panel.canChooseFiles=mode!=FILE_DIALOG_OPEN_FOLDER;
+  panel.canChooseDirectories=mode==FILE_DIALOG_OPEN_FOLDER;
+  panel.allowsMultipleSelection=mode==FILE_DIALOG_OPEN_MULTIPLE;
+  if(!title.empty()) panel.title=[NSString stringWithUTF8String:title.ToString().c_str()];
+  NSMutableArray<NSString*>* types=[NSMutableArray array];
+  for(const auto& extension:extensions) {
+    NSString* group=[NSString stringWithUTF8String:extension.ToString().c_str()];
+    for(NSString* entry in [group componentsSeparatedByString:@";"]) {
+      NSString* value=[entry stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+      if([value hasPrefix:@"."]) value=[value substringFromIndex:1];
+      if(value.length && ![value isEqualToString:@"*"] && ![types containsObject:value]) [types addObject:value];
+    }
+  }
+  if(types.count) panel.allowedFileTypes=types;
+  NSRunningApplication* previous=[[NSWorkspace sharedWorkspace] frontmostApplication];
+  [panel beginWithCompletionHandler:^(NSModalResponse result) {
+    if(result==NSModalResponseOK) { std::vector<CefString> paths;for(NSURL* url in panel.URLs) paths.emplace_back(url.path.UTF8String);callback->Continue(paths); }
+    else callback->Cancel();
+    [previous activateWithOptions:NSApplicationActivateIgnoringOtherApps];
+  }];
+  [NSApp activateIgnoringOtherApps:YES];[panel makeKeyAndOrderFront:nil];
+  return true;
+}
+int main(int argc,char** argv) {
+  CefScopedLibraryLoader loader;
+  if(!loader.LoadInMain()) return 1;
+  @autoreleasepool {
+    [QosApplication sharedApplication];
+    [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    return RunHost(argc,argv);
+  }
+}

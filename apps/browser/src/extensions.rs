@@ -1,21 +1,5 @@
-//! Browser-extension groundwork: acquire and inventory extension
-//! packages from the Firefox (AMO) / Chrome web stores.
-//!
-//! The runtime that actually *executes* extensions is `WebKit`'s upstream
-//! `WebExtension` support (Safari's engine-level implementation, being
-//! exposed through the GTK/WPE `GLib` API — manifest handling shipped in
-//! 2.52, the controller classes follow in later releases). Until the
-//! controller lands, this module covers everything up to activation:
-//!
-//!  * download an `.xpi` / `.crx` from a store URL,
-//!  * strip the CRX header when present (both are zip archives),
-//!  * unpack into the local extension directory,
-//!  * read `manifest.json` into an [`ExtensionInfo`] inventory record
-//!    (name, version, permissions — what the manager UI and the
-//!    permission prompt need).
-//!
-//! Installed extensions stay inert; activation is the single missing
-//! piece and plugs in against the upstream API when it ships.
+//! Unpacked extension inventory and explicit manifest-scoped startup grants.
+//! CEF's Chrome runtime loads approved MV3 packages on the next browser launch.
 
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -76,9 +60,8 @@ impl From<std::io::Error> for ExtensionError {
 
 /// Root directory for unpacked extensions.
 pub fn extensions_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("tilo-browser")
+    crate::storage::data_dir()
+        .unwrap_or_else(|| std::env::temp_dir().join("qos-browser"))
         .join("extensions")
 }
 
@@ -545,4 +528,154 @@ mod tests {
             Err(ExtensionError::Archive(_))
         ));
     }
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+    #[test]
+    fn approval_is_explicit_and_invalidated_by_manifest_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("addon");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("manifest.json"),r#"{"name":"fixture","version":"1","manifest_version":3,"permissions":["storage"],"host_permissions":["https://example.org/*"]}"#).unwrap();
+        let extension = list_in(root.path()).pop().unwrap();
+        assert!(!is_approved(&extension));
+        assert!(
+            permission_summary(&extension)
+                .unwrap()
+                .contains("https://example.org/*")
+        );
+        set_approved(&extension, true).unwrap();
+        assert!(is_approved(&extension));
+        std::fs::write(
+            path.join("manifest.json"),
+            r#"{"name":"fixture","version":"2","manifest_version":3,"permissions":["tabs"]}"#,
+        )
+        .unwrap();
+        assert!(!is_approved(&extension));
+    }
+}
+
+fn approval_path(extension: &ExtensionInfo) -> Option<PathBuf> {
+    let path = extension.path.canonicalize().ok()?;
+    let key = blake3::hash(path.to_str()?.as_bytes()).to_hex();
+    Some(path.parent()?.join(format!(".tilo-approval-{key}.json")))
+}
+fn manifest_digest(extension: &ExtensionInfo) -> Result<String, ExtensionError> {
+    let text = read_manifest(&extension.path.join("manifest.json"))?;
+    Ok(blake3::hash(text.as_bytes()).to_hex().to_string())
+}
+pub fn is_approved(extension: &ExtensionInfo) -> bool {
+    extension.manifest_version == 3
+        && approval_path(extension)
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .zip(manifest_digest(extension).ok())
+            .is_some_and(|(approved, current)| approved == current)
+}
+/// Update startup approval for this installed extension.
+///
+/// # Errors
+/// Returns an error for an invalid extension path, unsupported manifest version or filesystem failure.
+pub fn set_approved(extension: &ExtensionInfo, approved: bool) -> Result<(), ExtensionError> {
+    let path = approval_path(extension)
+        .ok_or_else(|| ExtensionError::Manifest("Extension path is invalid".into()))?;
+    if approved {
+        if extension.manifest_version != 3 {
+            return Err(ExtensionError::Manifest(
+                "Only Manifest V3 startup loading is supported".into(),
+            ));
+        }
+        std::fs::write(path, manifest_digest(extension)?)?;
+    } else if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+pub fn approved_paths() -> Vec<PathBuf> {
+    list_installed()
+        .iter()
+        .filter(|extension| is_approved(extension))
+        .filter_map(|extension| extension.path.canonicalize().ok())
+        .collect()
+}
+/// Summarize permissions declared by an installed extension.
+///
+/// # Errors
+/// Returns an error if the manifest cannot be read or parsed.
+pub fn permission_summary(extension: &ExtensionInfo) -> Result<String, ExtensionError> {
+    let value: serde_json::Value =
+        serde_json::from_str(&read_manifest(&extension.path.join("manifest.json"))?)
+            .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
+    let mut permissions = Vec::new();
+    for key in [
+        "permissions",
+        "host_permissions",
+        "optional_permissions",
+        "optional_host_permissions",
+    ] {
+        if let Some(items) = value.get(key).and_then(serde_json::Value::as_array) {
+            for item in items {
+                if let Some(item) = item.as_str() {
+                    permissions.push(format!("{key}: {item}"));
+                }
+            }
+        }
+    }
+    if let Some(scripts) = value
+        .get("content_scripts")
+        .and_then(serde_json::Value::as_array)
+    {
+        for script in scripts {
+            if let Some(matches) = script.get("matches").and_then(serde_json::Value::as_array) {
+                for pattern in matches {
+                    if let Some(pattern) = pattern.as_str() {
+                        permissions.push(format!("content scripts: {pattern}"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(if permissions.is_empty() {
+        "No declared permissions".into()
+    } else {
+        permissions.join("; ")
+    })
+}
+/// Chromium derives an unpacked extension identity from its key, or its absolute path.
+pub fn action_url(extension: &ExtensionInfo) -> Option<String> {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let manifest: serde_json::Value =
+        serde_json::from_str(&read_manifest(&extension.path.join("manifest.json")).ok()?).ok()?;
+    let popup = manifest.get("action")?.get("default_popup")?.as_str()?;
+    if popup.starts_with('/')
+        || popup.split('/').any(|part| part == "..")
+        || popup.contains(['\\', ':', '#', '?'])
+    {
+        return None;
+    }
+    let bytes = if let Some(key) = manifest.get("key").and_then(serde_json::Value::as_str) {
+        base64::engine::general_purpose::STANDARD.decode(key).ok()?
+    } else {
+        extension
+            .path
+            .canonicalize()
+            .ok()?
+            .to_str()?
+            .as_bytes()
+            .to_vec()
+    };
+    let hash = Sha256::digest(bytes);
+    let id: String = hash
+        .iter()
+        .take(16)
+        .flat_map(|byte| {
+            [
+                char::from(b'a' + (byte >> 4)),
+                char::from(b'a' + (byte & 15)),
+            ]
+        })
+        .collect();
+    Some(format!("chrome-extension://{id}/{popup}"))
 }
