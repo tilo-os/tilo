@@ -48,16 +48,16 @@ cleanup_keyring() {
     printf 'refusing unsafe release keyring cleanup: %s\n' "$keyring" >&2
     cleanup_status=1
   else
-    if ! GNUPGHOME="$keyring" gpgconf --homedir "$keyring" --kill gpg-agent; then
+    GNUPGHOME="$keyring" gpgconf --homedir "$keyring" --kill all || {
+      cleanup_status=$?
       printf 'could not stop release verification agent: %s\n' "$keyring" >&2
-      cleanup_status=1
-    fi
-    # Agent shutdown can unlink sockets after directory enumeration. rm -f
-    # tolerates those disappeared entries while reporting real removal errors.
-    if ! rm -rf -- "$keyring"; then
+    }
+    # Agent shutdown can unlink sockets after directory enumeration. Ignore
+    # only those disappeared entries, while preserving other deletion errors.
+    find "$keyring" -ignore_readdir_race -depth -delete || {
+      cleanup_status=$?
       printf 'could not remove release verification keyring: %s\n' "$keyring" >&2
-      cleanup_status=1
-    fi
+    }
   fi
   if (( verification_status != 0 )); then
     exit "$verification_status"

@@ -1,7 +1,7 @@
 # Maintainer: Tilo contributors <tilo@code.podesta.ai>
 pkgbase=tilo-session
 pkgname=(tilo-session tilo-session-devel)
-pkgver=0.1.11
+pkgver=0.1.12
 pkgrel=1
 pkgdesc='Tilo collaborative compositor as a Wayland session'
 url='https://code.podesta.ai/tilo/tilo'
