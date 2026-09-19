@@ -940,26 +940,33 @@ impl FrameHarness {
     #[must_use]
     pub fn with_records(
         mut self,
-        mut records: crate::record::RecordSet,
+        records: crate::record::RecordSet,
         room_index: automerge::AutoCommit,
     ) -> Self {
+        self.attach_records(records, room_index);
+        self
+    }
+
+    fn attach_records(
+        &mut self,
+        mut records: crate::record::RecordSet,
+        room_index: automerge::AutoCommit,
+    ) {
         records.discover_room(&room_index);
         self.records = Some(records);
         self.room_index = Some(room_index);
         self.relayout();
-        self
     }
 
     /// Configure the same per-record store as the live host, including apps
     /// whose asynchronous first open supplies no record during construction.
-    fn with_prepared_record_persistence(
-        mut self,
+    fn attach_prepared_record_persistence(
+        &mut self,
         records: crate::record::RecordSet,
         room_index: automerge::AutoCommit,
-    ) -> Self {
+    ) {
         self.record_persistence = Some((records, room_index));
         self.tick_records();
-        self
     }
 
     fn tick_records(&mut self) {
@@ -3700,7 +3707,7 @@ pub fn run(spec: &Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
 pub(crate) fn build_initialized_driver(
     inputs: crate::launch::LegacyLaunchInputs,
     viewport: (u32, u32),
-) -> Result<(Driver, crate::persist::Autosave), String> {
+) -> Result<(Box<Driver>, crate::persist::Autosave), String> {
     use crate::launch::LegacyRecordPolicy;
     let autosave = &inputs.autosave;
     // An explicitly disabled writer is not successful durability, and never
@@ -3741,7 +3748,7 @@ pub(crate) fn build_audit_driver(
     inputs: crate::launch::LegacyLaunchInputs,
     viewport: (u32, u32),
     theme: Theme,
-) -> (Driver, crate::persist::Autosave) {
+) -> (Box<Driver>, crate::persist::Autosave) {
     let (mut driver, autosave) = build_legacy_driver(inputs, viewport, theme, false);
     driver.enable_document_history_chrome();
     (driver, autosave)
@@ -3752,7 +3759,7 @@ fn build_legacy_driver(
     viewport: (u32, u32),
     theme: Theme,
     activate_automatic_records: bool,
-) -> (Driver, crate::persist::Autosave) {
+) -> (Box<Driver>, crate::persist::Autosave) {
     use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
     let LegacyLaunchInputs {
         mut state,
@@ -3778,18 +3785,22 @@ fn build_legacy_driver(
         let bootstrap = state.doc.fork();
         state.adopt_doc(bootstrap);
     }
-    let mut driver = Driver::new_with_theme(state, root, viewport, theme);
+    // Keep the retained host in one allocation while launch adapters prepare it.
+    // Returning/moving Driver by value through each adapter leaves several large
+    // debug temporaries live during record checkout, exhausting a normal main
+    // thread's stack before the first document can open.
+    let mut driver = Box::new(Driver::new_with_theme(state, root, viewport, theme));
     *driver.action_registry_mut() = registry;
-    driver = match records {
-        LegacyRecordPolicy::None => driver,
-        LegacyRecordPolicy::Explicit { records, index } => driver.with_records(records, index),
+    match records {
+        LegacyRecordPolicy::None => {}
+        LegacyRecordPolicy::Explicit { records, index } => driver.attach_records(records, index),
         LegacyRecordPolicy::AutomaticHeadless { records, index, .. }
             if activate_automatic_records =>
         {
-            driver.with_prepared_record_persistence(records, index)
+            driver.attach_prepared_record_persistence(records, index);
         }
-        LegacyRecordPolicy::AutomaticHeadless { .. } => driver,
-    };
+        LegacyRecordPolicy::AutomaticHeadless { .. } => {}
+    }
     (driver, autosave)
 }
 
