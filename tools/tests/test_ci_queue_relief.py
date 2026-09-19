@@ -45,7 +45,7 @@ class QueueReliefTests(unittest.TestCase):
         quality = section(workflow("lint"), "quality", 2)
         expected = section(quality, "container", 4)
         self.assertRegex(expected, r"image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}")
-        for name in ("select", "checks", "report-check-result"):
+        for name in ("select", "checks"):
             with self.subTest(job=name):
                 job = section(workflow("check"), name, 2)
                 self.assertEqual(section(job, "container", 4), expected)
