@@ -218,17 +218,17 @@ the executables. Native renderers load and validate that catalog once per proces
 then share its font data. Cargo-run binaries use the checked-in catalog instead.
 
 Passwords is available as an explicit Windows preview with
-`./tools/install-windows-apps.ps1 -Apps passwords`. It is not yet included in the
+`./tools/windows/install-apps.ps1 -Apps passwords`. It is not yet included in the
 default verified-app set: native backup/import/export and failure reporting are
 verified, but successful Windows clipboard copying still needs verification.
 The automated session currently receives an access-denied error from Windows.
 Mail is available as an explicit preview with
-`./tools/install-windows-apps.ps1 -Apps mail`. Native empty-state setup, protected
+`./tools/windows/install-apps.ps1 -Apps mail`. Native empty-state setup, protected
 password fields, responsive provider discovery, and cancellation of stalled
 credential verification are verified. Configured-account reading and sending
 still need native end-to-end verification, so Mail remains outside the default set.
 Typst is also available as an explicit preview with
-`./tools/install-windows-apps.ps1 -Apps typst-editor`; native source editing,
+`./tools/windows/install-apps.ps1 -Apps typst-editor`; native source editing,
 Save/Open, and PDF export have been verified, including reduced-motion settings
 and emoji export through the shared font catalog. It remains outside the
 default set while startup measurements and Start integration checks finish. The
@@ -249,11 +249,11 @@ probe in each destination and checks its physical path. Redirected package
 cache writes fail this check; merely resolving the directory is insufficient.
 
 ```powershell
-./tools/install-windows-apps.ps1
+./tools/windows/install-apps.ps1
 # Or select applications (optimized release builds are the default):
-./tools/install-windows-apps.ps1 -Apps calculator,notes
+./tools/windows/install-apps.ps1 -Apps calculator,notes
 # Use dev explicitly when debugging, rather than for everyday installed apps:
-./tools/install-windows-apps.ps1 -Apps calculator -Profile dev
+./tools/windows/install-apps.ps1 -Apps calculator -Profile dev
 ```
 
 This builds before copying executables to `%LOCALAPPDATA%\Tilo\Applications`.
@@ -263,7 +263,7 @@ applies to the Windows notification helper build.
 Unoptimized builds spend substantially longer validating and loading fonts at
 startup. The installer includes Microsoft's pinned DXC 1.8.2505.1 compiler and
 its MIT/LLVM notices beside the apps. Without DXC, wgpu's FXC fallback spends
-seconds compiling UI shaders on every launch. `install-windows-dxc.ps1` can
+seconds compiling UI shaders on every launch. `install-dxc.ps1` can
 update this shared runtime independently of app builds; it verifies the
 release archive against Microsoft's published SHA-256 digest. The separate
 DXIL validator and command-line compiler are not installed.
@@ -290,7 +290,7 @@ The installer also checks both Windows' application catalog and `Get-StartApps`
 against the installed executable paths and intended app names. A shortcut on disk alone is insufficient:
 First rule out redirected AppData writes as described above. If the real files
 exist, investigate Explorer's catalog, then run
-`./tools/check-windows-start-apps.ps1 -Apps hex-editor` (substitute
+`./tools/windows/check-start-apps.ps1 -Apps hex-editor` (substitute
 the affected package names). The installer does not restart the desktop shell.
 
 Private identity files and local account-vault keys use the shared `private-fs`
@@ -372,8 +372,8 @@ its published SHA-256 digest, and installs `pdfium.dll` beside the executables i
 separately or reuse an already downloaded archive:
 
 ```powershell
-./tools/install-windows-pdfium.ps1
-./tools/install-windows-pdfium.ps1 -ArchivePath C:/Downloads/pdfium-win-arm64.tgz
+./tools/windows/install-pdfium.ps1
+./tools/windows/install-pdfium.ps1 -ArchivePath C:/Downloads/pdfium-win-arm64.tgz
 $env:TILO_PDFIUM_LIB = "$env:LOCALAPPDATA/Tilo/Applications/pdfium.dll"
 $env:TILO_REQUIRE_PDFIUM = '1'
 cargo test --locked -p pdf-viewer --all-targets -- --test-threads=1
@@ -406,7 +406,7 @@ that the project survives a new process. Its offscreen scenarios support
 
 ```powershell
 cargo test --locked -p image-editor --all-targets
-./tools/install-windows-apps.ps1 -Apps image-editor
+./tools/windows/install-apps.ps1 -Apps image-editor
 ```
 
 Photos uses the native file picker and keeps imported image bytes in the shared
@@ -423,7 +423,7 @@ analysis unavailable instead of bypassing that service with direct network acces
 ```powershell
 cargo test --locked -p photos --all-targets
 cargo test --locked -p qdoc --lib blobstore::
-./tools/install-windows-apps.ps1 -Apps photos
+./tools/windows/install-apps.ps1 -Apps photos
 ```
 
 Hex Editor is installed as **Hex Editor** (`hex-editor.exe`). Open a file through
@@ -435,7 +435,7 @@ checks both the resulting file and the collaboration document.
 
 ```powershell
 cargo test --locked -p hex-editor --all-targets
-./tools/install-windows-apps.ps1 -Apps hex-editor
+./tools/windows/install-apps.ps1 -Apps hex-editor
 ```
 
 Code Editor is installed as **Code Editor** (`code-editor.exe`). Pass a file or
@@ -448,7 +448,7 @@ diagnostics and definition locations match the opened buffers.
 
 ```powershell
 cargo test --locked -p code-editor --all-targets
-./tools/install-windows-apps.ps1 -Apps code-editor
+./tools/windows/install-apps.ps1 -Apps code-editor
 ```
 
 API Tester is installed as **API Tester** (`api-tester.exe`). Requests run on a
@@ -459,7 +459,7 @@ suite exercises the resource Send operation against a real loopback HTTP server.
 
 ```powershell
 cargo test --locked -p api-tester --all-targets
-./tools/install-windows-apps.ps1 -Apps api-tester
+./tools/windows/install-apps.ps1 -Apps api-tester
 ```
 
 Snippets uses the shared multiline code editor for snippet bodies. Editing,
@@ -470,7 +470,7 @@ actions through the same semantic interface used by Windows accessibility.
 
 ```powershell
 cargo test --locked -p snippets --all-targets
-./tools/install-windows-apps.ps1 -Apps snippets
+./tools/windows/install-apps.ps1 -Apps snippets
 ```
 
 Database Client supports SQLite files, including Unicode Windows paths, and the
@@ -482,7 +482,7 @@ an existing trusted tunnel.
 
 ```powershell
 cargo test --locked -p db-client --lib
-./tools/install-windows-apps.ps1 -Apps db-client
+./tools/windows/install-apps.ps1 -Apps db-client
 ```
 
 The live database tests require the server flags and connection settings described
@@ -516,7 +516,7 @@ undo a remote change. Cooperative cancellation is not yet implemented.
 
 ```powershell
 cargo test --locked -p git-client --all-targets
-./tools/install-windows-apps.ps1 -Apps git-client
+./tools/windows/install-apps.ps1 -Apps git-client
 ```
 
 Authenticator (`totp`) supports native account entry and QR-image import, including
@@ -541,7 +541,7 @@ RFC-key calculation.
 
 ```powershell
 cargo test --locked -p totp --all-targets
-./tools/install-windows-apps.ps1 -Apps totp
+./tools/windows/install-apps.ps1 -Apps totp
 ```
 
 Feeds runs natively on Windows with asynchronous feed fetching, persisted
@@ -556,7 +556,7 @@ background fetches and file-picker results are polled with reduced motion enable
 
 ```powershell
 cargo test --locked -p feeds --all-targets
-./tools/install-windows-apps.ps1 -Apps feeds
+./tools/windows/install-apps.ps1 -Apps feeds
 ```
 
 Unchanged shared fonts are preserved during installation, so a running Tilo app
@@ -646,8 +646,8 @@ The installer bundles a shared, manifest-verified runtime for Music and Video
 Player. Check installed apps from an ordinary, unpackaged PowerShell session:
 
 ```powershell
-./tools/test-windows-installed-media.ps1
-./tools/test-windows-gstreamer.ps1 -RuntimeDirectory "$env:LOCALAPPDATA/Tilo/Applications" -MediaPath ./apps/video-player/tests/fixtures/h264-aac.mp4
+./tools/windows/test-installed-media.ps1
+./tools/windows/test-gstreamer.ps1 -RuntimeDirectory "$env:LOCALAPPDATA/Tilo/Applications" -MediaPath ./apps/video-player/tests/fixtures/h264-aac.mp4
 ```
 
 The first check rejects package-private installation paths, uses isolated
