@@ -7,7 +7,6 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 
-use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 
 #[allow(
@@ -16,21 +15,7 @@ use crate::theme::Theme;
 )]
 pub(super) fn draw(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     let radius = f64::from(theme.tokens.radii.md);
-    for (spread, alpha) in [(2.0_f64, 0.20_f32), (5.0, 0.12), (9.0, 0.06), (14.0, 0.02)] {
-        let shadow_rect = Rect::new(
-            rect.x0 - spread,
-            rect.y0 - spread + 6.0,
-            rect.x1 + spread,
-            rect.y1 + spread + 6.0,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            vello::peniko::Color::BLACK.with_alpha_factor(alpha),
-            None,
-            &RoundedRect::from_rect(shadow_rect, radius + spread),
-        );
-    }
+    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e3);
 
     let shape = RoundedRect::from_rect(rect, radius);
     scene.fill(
