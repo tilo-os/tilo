@@ -611,15 +611,6 @@ pub fn resolve_synthetic_target<'a>(
     visit_synthetic_widget(root, target.0, &mut 0)
 }
 
-pub(crate) fn build_tree_update_bound<S: BuildHasher>(
-    root: &dyn Widget,
-    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
-    focused: Option<TaffyNodeId>,
-    scale: f64,
-) -> TreeUpdate {
-    build_tree_update_with_resources_bound(root, node_map, focused, scale, &[])
-}
-
 pub fn build_tree_update<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
