@@ -6,7 +6,8 @@ use std::time::Instant;
 use objc2::rc::Retained;
 use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSRunningApplication,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSRunningApplication,
 };
 use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
 
@@ -17,6 +18,9 @@ use super::{DEVICE_ID, WindowId, menu};
 use crate::event::{DeviceEvent, Event, StartCause, WindowEvent};
 use crate::event_loop::{ActiveEventLoop as RootActiveEventLoop, ControlFlow};
 use crate::window::WindowId as RootWindowId;
+#[path = "../quit_request.rs"]
+mod quit_request;
+use quit_request::{PendingQuit, QuitDecision, QuitRequest};
 
 #[derive(Debug)]
 pub(super) struct AppState {
@@ -40,6 +44,7 @@ pub(super) struct AppState {
     start_time: Cell<Option<Instant>>,
     wait_timeout: Cell<Option<Instant>>,
     pending_redraw: RefCell<Vec<WindowId>>,
+    quit_request: RefCell<QuitRequest<WindowId>>,
     // NOTE: This is strongly referenced by our `NSWindowDelegate` and our `NSView` subclass, and
     // as such should be careful to not add fields that, in turn, strongly reference those.
 }
@@ -61,6 +66,11 @@ declare_class!(
     unsafe impl NSObjectProtocol for ApplicationDelegate {}
 
     unsafe impl NSApplicationDelegate for ApplicationDelegate {
+        #[method(applicationShouldTerminate:)]
+        fn app_should_terminate(&self, _: &NSApplication) -> NSApplicationTerminateReply {
+            self.request_application_quit()
+        }
+
         #[method(applicationDidFinishLaunching:)]
         fn app_did_finish_launching(&self, notification: &NSNotification) {
             self.did_finish_launching(notification)
@@ -98,6 +108,7 @@ impl ApplicationDelegate {
             start_time: Cell::new(None),
             wait_timeout: Cell::new(None),
             pending_redraw: RefCell::new(vec![]),
+            quit_request: RefCell::new(QuitRequest::new()),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -174,6 +185,71 @@ impl ApplicationDelegate {
         self.internal_exit();
     }
 
+    fn live_quit_window(&self, id: WindowId) -> bool {
+        let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
+        app.windows().into_iter().any(|window| {
+            Retained::as_ptr(&window) as usize == id.0
+                && unsafe { window.delegate() }.is_some_and(|delegate| {
+                    delegate.is_kind_of::<super::window_delegate::WindowDelegate>()
+                })
+        })
+    }
+
+    pub(super) fn set_quit_request_window(
+        &self,
+        target: Option<WindowId>,
+    ) -> Result<(), crate::error::ExternalError> {
+        if target.is_some_and(|id| !self.live_quit_window(id)) {
+            return Err(crate::error::ExternalError::Ignored);
+        }
+        self.ivars().quit_request.borrow_mut().set_target(target);
+        Ok(())
+    }
+
+    pub(super) fn quit_window_destroyed(&self, id: WindowId) {
+        self.ivars().quit_request.borrow_mut().destroyed(id);
+    }
+
+    fn request_application_quit(&self) -> NSApplicationTerminateReply {
+        let decision = self
+            .ivars()
+            .quit_request
+            .borrow_mut()
+            .request(self.is_running());
+        match decision {
+            QuitDecision::Terminate => NSApplicationTerminateReply::NSTerminateNow,
+            QuitDecision::Cancel => NSApplicationTerminateReply::NSTerminateCancel,
+            QuitDecision::Forward(request) => {
+                // Always defer beyond applicationShouldTerminate:, even when
+                // no application event handler is currently on the stack.
+                self.queue_quit_request(request);
+                NSApplicationTerminateReply::NSTerminateCancel
+            }
+        }
+    }
+
+    fn queue_quit_request(&self, request: PendingQuit<WindowId>) {
+        let this = self.retain();
+        self.ivars().run_loop.queue_closure(move || {
+            if this.ivars().event_handler.in_use() {
+                this.queue_quit_request(request);
+                return;
+            }
+            let target = this.ivars().quit_request.borrow_mut().take(request);
+            if let Some(target) = target {
+                if this.is_running()
+                    && this.ivars().event_handler.ready()
+                    && this.live_quit_window(target)
+                {
+                    this.handle_window_event(target, WindowEvent::CloseRequested);
+                } else {
+                    tracing::warn!("refused native Quit for unavailable event loop or window");
+                }
+            }
+        });
+        self.ivars().run_loop.wakeup();
+    }
+
     pub fn get(mtm: MainThreadMarker) -> Retained<Self> {
         let app = NSApplication::sharedApplication(mtm);
         let delegate =
@@ -224,6 +300,7 @@ impl ApplicationDelegate {
     /// NOTE: that if the `NSApplication` has been launched then that state is preserved,
     /// and we won't need to re-launch the app if subsequent EventLoops are run.
     pub fn internal_exit(&self) {
+        self.ivars().quit_request.borrow_mut().set_target(None);
         self.handle_event(Event::LoopExiting);
 
         self.set_is_running(false);

@@ -162,6 +162,13 @@ impl ActiveEventLoop {
         NSApplication::sharedApplication(self.mtm).hide(None)
     }
 
+    pub(crate) fn set_quit_request_window(
+        &self,
+        target: Option<super::WindowId>,
+    ) -> Result<(), crate::error::ExternalError> {
+        self.delegate.set_quit_request_window(target)
+    }
+
     pub(crate) fn hide_other_applications(&self) {
         NSApplication::sharedApplication(self.mtm).hideOtherApplications(None)
     }
