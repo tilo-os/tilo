@@ -1152,9 +1152,9 @@ pub(crate) fn prepare_peer_remote(peer:u32)->Result<(),String>{
  MOUNTS.with_borrow(|mounts|{
   for mount in mounts.values().filter(|mount|mount.peer==Some(peer)){
    for record in mount.owned_records(){
-       let bytes=crate::admitted_records::prepare_remote(&record.store,&record.checkout.id)?;
+       let document=crate::admitted_records::prepare_remote_owned(&record.store,&record.checkout.id)?;
        let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
-       crate::peer::local_document(peer,&record.app,id,bytes)?;
+       crate::peer::local_owned_document(peer,&record.app,id,document)?;
    }
   }
   Ok(())

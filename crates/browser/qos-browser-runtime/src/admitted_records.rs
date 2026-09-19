@@ -217,6 +217,7 @@ mod tests {
 
 /// Capture through the canonical owner; a renderer must never commit a clone
 /// of an unfinished typing transaction under the same Automerge actor.
+#[cfg(test)]
 pub(crate) fn capture(records:&ui::record::RecordStore,id:&RecordId)->Result<Vec<u8>,String>{
  Ok(capture_owned(records,id)?.save())
 }
@@ -251,9 +252,9 @@ mod capture_tests {
   assert_eq!(sent.get_heads(),actual.get_heads(),"captured bytes must carry the owner's stamped transaction, not a separately committed clone");
   sent.merge(&mut actual).unwrap();
   let checkout=RecordCheckout::package_primary(definition.record_kind.clone());
-  let prepared=prepare_remote(&records,&record).unwrap();
+  let mut remote=prepare_remote_owned(&records,&record).unwrap();
   assert!(records.can_merge_admitted(&checkout).unwrap(),"external checkpoint must close the actual owned typing boundary before merge");
-  let mut remote=automerge::AutoCommit::load(&prepared).unwrap();remote.set_actor(automerge::ActorId::from(vec![88;32]));
+  remote.set_actor(automerge::ActorId::from(vec![88;32]));
   use automerge::transaction::Transactable;
   remote.put(automerge::ROOT,"remote-checkpoint-probe",true).unwrap();remote.commit();
   assert_eq!(records.merge_admitted(&checkout,&qos_peer_state::DocumentMutation::Snapshot(remote.save())).unwrap(),Some(true));
@@ -269,14 +270,21 @@ mod capture_tests {
   assert_eq!(sent_typing.pending_ops(),0,"publication receives only the canonical committed transaction");
   assert_eq!(chat::doc::ChatDoc::draft_text(&sent_typing,"c_general"),"ST");
   let _=capture(&records,&record).unwrap();assert_eq!(records.read(&record,|doc|chat::doc::ChatDoc::draft_text(doc,"c_general")).unwrap(),"ST");
+  frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("U".into())));
+  assert!(records.read(&record,|doc|doc.pending_ops()>0).unwrap());
+  let prepared=prepare_remote_owned(&records,&record).unwrap();
+  assert_eq!(prepared.pending_ops(),0);
+  assert_eq!(prepared.base_heads(),records.read(&record,|doc|doc.base_heads()).unwrap());
+  assert_eq!(chat::doc::ChatDoc::draft_text(&prepared,"c_general"),"STU");
+  assert!(records.can_merge_admitted(&checkout).unwrap());
  }
 }
 
-pub(crate) fn prepare_remote(records:&ui::record::RecordStore,id:&RecordId)->Result<Vec<u8>,String>{
+pub(crate) fn prepare_remote_owned(records:&ui::record::RecordStore,id:&RecordId)->Result<automerge::AutoCommit,String>{
  // An incoming canonical merge is an explicit external history boundary.
  // The existing checked mutable loan stamps and closes the logical local burst.
  records.with(id,|_|{}).ok_or("record owner unavailable at remote boundary")?;
- capture(records,id)
+ capture_owned(records,id)
 }
 
 /// Tracks document publication separately from presentation.

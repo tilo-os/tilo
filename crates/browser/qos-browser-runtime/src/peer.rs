@@ -457,15 +457,6 @@ fn stage_journal(peer: &Peer, state: &StatePeer, outbox: &[NeighbourMsg]) -> Res
         None,
     )
 }
-pub(crate) fn local_document(
-    id: u32,
-    app: &str,
-    record: &str,
-    bytes: Vec<u8>,
-) -> Result<(), String> {
-    let current = automerge::AutoCommit::load(&bytes).map_err(|e| e.to_string())?;
-    local_owned_document(id, app, record, current)
-}
 /// The canonical record owner has already committed this document. Avoid a
 /// full save/load round trip merely to recover its existing CRDT graph.
 pub(crate) fn local_owned_document(id: u32, app: &str, record: &str, mut current: automerge::AutoCommit) -> Result<(), String> {
