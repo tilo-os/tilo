@@ -6,9 +6,9 @@ authorization. Broader experiments and the production roadmap remain incomplete.
 
 ## Deployed relief versus experiments
 
-The coordinating task inspected product checkpoint `fc2d86d54` and infrastructure
-checkpoint `7195b86` on 2026-09-18 at 23:45 UTC. The deployed broker image is
-`8d313aa76ff57f9589defbad60e6817278547d2a6a84b204799d342349b0b0a4`.
+The latest shipped product checkpoint is `ce0eff803` and infrastructure checkpoint
+is `46e7edc` (2026-09-19). The deployed broker image is
+`05cdedb0b219a27b04ba5461bed0f6617ef63d9801f649745ea611ca7660131d`.
 These are observations, not permanent health guarantees or proof that every
 main revision is green. The [emergency runbook](../ci-emergency-relief.md)
 on main records deployment details, recovery and per-run validation; that file
@@ -45,12 +45,20 @@ private protection experiments do not create a deployed integration service.
   Manual OS run 9331 actually started at 23:40:50 UTC on the prioritized ARM worker.
   The earlier pending-pod replacement exhausted a zero-retry Job; ordinary broker
   reconciliation created the fresh prioritized worker. Active work was preserved.
+- Run 9331 then exposed a real storage defect: a 100 GiB ephemeral data filesystem
+  retained a 5 GiB root reserve, leaving only 79.135 GiB available after tooling,
+  below the unchanged 80 GiB admission guard. Fresh scratch filesystems now use
+  `mkfs.ext4 -m0`; existing disks and OS root filesystems are untouched. Both
+  broker replicas are healthy and 331 installed-runtime tests passed. Retry 9404's
+  fresh worker command has the fix; its actual free-space receipt is still needed.
 - Cloud runtime inspection found QEMU in unlimited, incorrectly interpreted
   systemd-style cgroup paths. Kata guest-agent timeouts terminated affected workers;
   the underlying stall cause is not yet proven. A reviewed isolated-node canary
   pairs corrected accounting with conservative admission overhead and a real
-  image-extraction workload. Its node is reserved, but existing jobs must finish
-  naturally before configuration changes. No fleet runtime correction is claimed.
+  image-extraction workload. Its reserved node is now empty. Preflight correctly
+  stopped when the readiness label was reconciled back; revised isolation must
+  prove ordinary jobs cannot tolerate the reservation taint and protect the node
+  from autoscaler removal. No fleet runtime correction is claimed.
 - AWS EBS seed support and a bounded clean-source/snapshot/clone pilot are prepared
   and disabled. Live CSI/storage prerequisites were inspected. Actual clone and
   image-reuse acceptance wait for safe runtime accounting and capacity.
@@ -59,11 +67,22 @@ private protection experiments do not create a deployed integration service.
   transport/assembly compatibility, not current toolkit ABI or native execution.
 - The private packaging coordinator persists dispatch intent, preserves its active
   build, replaces pending requests, and advances the comparison baseline only on
-  success. Ten tests cover crash/restart/concurrent callers. Its live A→latest-C
-  experiment is underway; production dispatch/publication remains disabled.
-- Native ARM64 mold compatibility passed a small pinned-Rust dev/thin-LTO fixture
-  with ELF hardening intact. Representative memory/performance measurements and
-  exact CI-image qualification remain prerequisites for changing defaults.
+  success. Ten tests cover crash/restart/concurrent callers. Actual runs 22827 and
+  22842 proved A→latest-C, with B never dispatched and C compared against successful
+  A. Production dispatch/publication remains disabled.
+- The [atomic channel pilot](../../experiments/ci-forgejo/ATOMIC-APP-CHANNEL.md)
+  qualified actual concurrent ordinary Git pushes: one sibling wins, the other is
+  rejected without retry. A partial x86 update preserved ARM identity, and a new
+  process rejected higher-generation older source. Its tiny artifact receipts are
+  fixtures; real package verification and consumer migration remain necessary.
+- Native x86-64 and ARM64 mold compatibility passed small pinned-Rust dev/thin-LTO
+  fixtures with ELF hardening intact. Candidate image run 22862 stopped at signing
+  role authorization before either native build; nothing was published. Defaults
+  remain unchanged pending image qualification and representative measurements.
+- The immutable app builder wiring initially tripped a stale literal-image guard.
+  Fix `6625e7ad3`, shipped in `ce0eff803`, checks the actual resolver/output/job
+  dependency instead. Both full shell guard suites and four regression tests pass,
+  including CRLF and large job bodies; that does not establish live CI success.
 
 The latest observed main checkpoint's lint (22821) passed after 23 seconds of
 queueing and 178 seconds of execution; its check run (22820) started after one
