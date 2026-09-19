@@ -2084,7 +2084,7 @@ impl TextInput {
             transform,
             tr,
             theme,
-            &renderer_style,
+            &Self::gutter_number_style(&style, theme),
             caret_byte,
             gutter_width,
         );

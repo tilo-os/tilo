@@ -3,6 +3,10 @@ use super::FrameOutcome;
 use std::time::{Duration, Instant};
 
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+/// Collaboration currently has no event-loop wake bridge. Poll connected
+/// transports often enough to keep remote edits responsive without keeping
+/// every otherwise-idle app on the display cadence.
+const COLLAB_IDLE_POLL: Duration = Duration::from_millis(100);
 #[derive(Default)]
 pub(crate) struct RenderRetryState {
     deadline: Option<Instant>,
@@ -114,17 +118,20 @@ pub(crate) fn next_wake(
     retry: Option<Instant>,
     animation: Option<Instant>,
 ) -> Option<Instant> {
-    let fast = demand.model
-        || presentation_demand(
-            blocked_until.is_some(),
-            demand.primary_startup || demand.tooltip || demand.typing || demand.widget_due,
-        )
-        || (any_render_available && demand.animation)
+    let fast = presentation_demand(
+        blocked_until.is_some(),
+        demand.primary_startup || demand.tooltip || demand.typing || demand.widget_due,
+    ) || (any_render_available && demand.animation)
         || demand.auxiliary_startup
         || demand.retry_due;
     let scheduled = widget_deadline(widget, blocked_until)
         .into_iter()
         .chain(retry)
+        .chain(
+            demand
+                .model
+                .then(|| now.checked_add(COLLAB_IDLE_POLL).unwrap_or(now)),
+        )
         .min();
     let animation = animation.filter(|_| any_render_available);
     if fast {
@@ -268,7 +275,7 @@ mod tests {
         };
         assert_eq!(
             next_wake(now, Some(retry), false, model, Some(now), Some(retry), None),
-            Some(now + FRAME_INTERVAL)
+            Some(now + Duration::from_millis(100))
         );
         let animation = WakeDemand {
             animation: true,
@@ -360,5 +367,46 @@ mod tests {
             Some(now + Duration::from_secs(2))
         );
         assert_eq!(widget_deadline(Some(now), None), Some(now));
+    }
+
+    #[test]
+    fn production_wake_preserves_animation_deadline_when_other_work_is_overdue() {
+        let now = Instant::now();
+        let animation = now + Duration::from_millis(4);
+        assert_eq!(
+            next_wake(
+                now,
+                None,
+                true,
+                WakeDemand {
+                    animation: true,
+                    ..Default::default()
+                },
+                Some(now - Duration::from_millis(1)),
+                None,
+                Some(animation),
+            ),
+            Some(animation)
+        );
+    }
+
+    #[test]
+    fn production_wake_services_animation_deadline_elapsed_during_callback() {
+        let now = Instant::now();
+        assert_eq!(
+            next_wake(
+                now,
+                None,
+                true,
+                WakeDemand {
+                    animation: true,
+                    ..Default::default()
+                },
+                None,
+                None,
+                Some(now - Duration::from_millis(1)),
+            ),
+            Some(now)
+        );
     }
 }

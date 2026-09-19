@@ -5164,10 +5164,6 @@ fn build_legacy_driver(
     (driver, autosave)
 }
 
-pub(crate) fn run_initialized(spec: &Spec, inputs: crate::launch::LegacyLaunchInputs) -> i32 {
-    run_initialized_with_history(spec, inputs, Theme::dark(), None)
-}
-
 pub(crate) fn run_initialized_with_history(
     spec: &Spec,
     inputs: crate::launch::LegacyLaunchInputs,
@@ -6853,7 +6849,7 @@ mod tests {
             )
             .with_widget_owned_persistence();
             assert_eq!(
-                run_initialized(&Spec::default(), inputs),
+                run_initialized_with_history(&Spec::default(), inputs, Theme::dark(), None),
                 if succeeds { 0 } else { 1 }
             );
             assert_eq!(observed.calls.get(), 1);
@@ -6881,7 +6877,7 @@ mod tests {
             )
             .with_widget_owned_persistence();
             assert_eq!(
-                run_initialized(&Spec::default(), inputs),
+                run_initialized_with_history(&Spec::default(), inputs, Theme::dark(), None),
                 if succeeds { 0 } else { 3 }
             );
             assert_eq!(observed.flushes.get(), 1);
@@ -8929,7 +8925,10 @@ pub(crate) mod legacy_control_feedback_tests {
             )
             .with_widget_owned_persistence();
             register(&mut inputs.registry);
-            assert_eq!(run_initialized(&Spec::default(), inputs), i32::from(fail));
+            assert_eq!(
+                run_initialized_with_history(&Spec::default(), inputs, Theme::dark(), None),
+                i32::from(fail)
+            );
             assert_eq!(
                 *seen.results.borrow(),
                 vec![("begin".into(), true), ("finalize".into(), !fail)]

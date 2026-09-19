@@ -25,22 +25,6 @@ impl AnimationSchedule {
     }
 }
 
-/// Choose the fast-pump wake without allowing overdue model/retry work to
-/// conceal the independently paced animation deadline.
-pub(super) fn next_wake(
-    now: Instant,
-    fallback: Instant,
-    scheduled: Option<Instant>,
-    animation: Option<Instant>,
-) -> Instant {
-    let wake = scheduled
-        .filter(|deadline| *deadline > now)
-        .map_or(fallback, |deadline| deadline.min(fallback));
-    // Unlike due model/retry work, this deadline may have elapsed *after*
-    // poll without being served. Preserve it as an immediate wake.
-    animation.map_or(wake, |deadline| wake.min(deadline.max(now)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,34 +84,6 @@ mod tests {
         assert_eq!(
             schedule.poll(late, true),
             (false, Some(late + FRAME_INTERVAL))
-        );
-    }
-    #[test]
-    fn animation_schedule_overdue_model_deadline_does_not_hide_animation_wake() {
-        let now = Instant::now();
-        let animation = now + Duration::from_millis(4);
-        assert_eq!(
-            next_wake(
-                now,
-                now + FRAME_INTERVAL,
-                Some(now - Duration::from_millis(1)),
-                Some(animation)
-            ),
-            animation
-        );
-    }
-
-    #[test]
-    fn animation_schedule_deadline_elapsed_during_callback_wakes_immediately() {
-        let now = Instant::now();
-        assert_eq!(
-            next_wake(
-                now,
-                now + FRAME_INTERVAL,
-                None,
-                Some(now - Duration::from_millis(1))
-            ),
-            now
         );
     }
 }
