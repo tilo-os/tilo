@@ -51,7 +51,10 @@ fn main() {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the example keeps its linear fixture setup visible as one auditable flow"
+)]
 fn run() -> Result<(), String> {
     let config_dir = PathBuf::from(arg("--config-dir").ok_or("--config-dir is required")?);
     let package_id = arg("--package-id").unwrap_or_else(|| "dev.tilo.sheets".to_string());
