@@ -335,6 +335,100 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected"], [])
         self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_builder_only_asset_rows_do_not_compile_unrelated_rust(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "base"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        manifest = self.root / "os/external-assets/github-assets.tsv"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            "a" * 64 + "\tpdfium.tgz\thttps://example.invalid/pdfium.tgz\n"
+        )
+        subprocess.run(["git", "add", str(manifest.relative_to(self.root))], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "base manifest"], cwd=self.root, check=True)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        manifest.write_text(
+            manifest.read_text()
+            + "# Builder-only linker archives.\n"
+            + "b" * 64
+            + "\tmold-2.40.4-x86_64-linux.tar.gz"
+            + "\thttps://github.com/rui314/mold/releases/download/v2.40.4/"
+            + "mold-2.40.4-x86_64-linux.tar.gz\n"
+            + "c" * 64
+            + "\tmold-2.40.4-aarch64-linux.tar.gz"
+            + "\thttps://github.com/rui314/mold/releases/download/v2.40.4/"
+            + "mold-2.40.4-aarch64-linux.tar.gz\n"
+        )
+        subprocess.run(["git", "commit", "-qam", "add mold assets"], cwd=self.root, check=True)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        self.assertTrue(ci_select.builder_only_asset_manifest_change(self.root, base, head))
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        recipe = self.root / "os/Containerfile.builder"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text("FROM scratch\n")
+        changes = [
+            ".forgejo/workflows/build-builder-image.yml",
+            "os/Containerfile.builder",
+            "os/external-assets/github-assets.tsv",
+            "os/tests/test_builder_candidate_workflow.py",
+            "tools/ci/verify-native-mold.sh",
+            "tools/tests/test_ci_native_mold.py",
+        ]
+        plan = ci_select.make_plan(
+            self.metadata, self.root, changes, 2, builder_only_external_assets=True
+        )
+        self.assertFalse(plan["rust_required"])
+        self.assertFalse(plan["full"])
+        self.assertEqual(plan["matrix"], {"include": []})
+
+    def test_shared_or_mixed_asset_changes_force_full_workspace(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "base"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        manifest = self.root / "os/external-assets/github-assets.tsv"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            "a" * 64 + "\tpdfium-old.tgz\thttps://example.invalid/pdfium-old.tgz\n"
+        )
+        subprocess.run(["git", "add", str(manifest.relative_to(self.root))], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "base manifest"], cwd=self.root, check=True)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        manifest.write_text(
+            manifest.read_text()
+            + "b" * 64
+            + "\tmold-2.40.4-x86_64-linux.tar.gz"
+            + "\thttps://github.com/rui314/mold/releases/download/v2.40.4/"
+            + "mold-2.40.4-x86_64-linux.tar.gz\n"
+            + "c" * 64 + "\tpdfium-new.tgz\thttps://example.invalid/pdfium-new.tgz\n"
+        )
+        subprocess.run(["git", "commit", "-qam", "mixed assets"], cwd=self.root, check=True)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        self.assertFalse(ci_select.builder_only_asset_manifest_change(self.root, base, head))
+        plan = ci_select.make_plan(
+            self.metadata, self.root, ["os/external-assets/github-assets.tsv"], 2
+        )
+        self.assertTrue(plan["rust_required"])
+        self.assertTrue(plan["full"])
+        self.assertEqual(plan["selected_count"], plan["workspace_count"])
+
+        manifest.write_text(
+            "a" * 64 + "\tpdfium-old.tgz\thttps://example.invalid/pdfium-old.tgz\n"
+            + "d" * 64
+            + "\tmold-2.40.4-aarch64-linux.tar.gz"
+            + "\thttps://example.invalid/mold-2.40.4-aarch64-linux.tar.gz\n"
+        )
+        subprocess.run(["git", "commit", "-qam", "untrusted mold source"], cwd=self.root, check=True)
+        untrusted_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
+        ).strip()
+        self.assertFalse(
+            ci_select.builder_only_asset_manifest_change(self.root, base, untrusted_head)
+        )
+
     def test_ci_control_plane_mapping_stays_exact_and_conservative(self) -> None:
         self.install_control_inputs()
         source = ".forgejo/workflows/check.yml"
