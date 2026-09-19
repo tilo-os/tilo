@@ -21,7 +21,7 @@ fn invalid(message: &str) -> StoreError {
 
 /// Validate the complete frame, workspace and retained payload before using it
 /// as coverage. Authentication happens at ingress, not in this disk decoder.
-fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
+pub(super) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
     let prefix: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
     if usize::try_from(u32::from_le_bytes(prefix)).ok()? != bytes.len().checked_sub(4)? {
         return None;
@@ -211,12 +211,12 @@ fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
     Ok(out)
 }
 
-fn sync_dir(path: &Path) -> Result<(), StoreError> {
+pub(super) fn sync_dir(path: &Path) -> Result<(), StoreError> {
     fs::File::open(path)?.sync_all()?;
     Ok(())
 }
 
-fn create_dir(path: &Path) -> Result<(), StoreError> {
+pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
     match fs::create_dir(path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {}
@@ -230,7 +230,7 @@ fn create_dir(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     atomic_file::write(path, bytes)?;
     // atomic_file's parent fsync is best-effort. Destructive retirement needs
     // an explicit, successful directory barrier before it can proceed.
@@ -318,7 +318,20 @@ impl GenerationGc {
                 }
                 if let Some(entry) = entries.peek()? {
                     let name = entry.file_name();
-                    if known_record(&name) && entry.file_type()?.is_file() {
+                    if (known_record(&name)
+                        || (self
+                            .lineage
+                            .file_name()
+                            .is_some_and(|v| v == super::shell_selection::DIRECTORY)
+                            && (name == "basis.manifest"
+                                || name == "live.manifest"
+                                || name == "gc.manifest"
+                                || name
+                                    .to_str()
+                                    .and_then(|s| s.strip_prefix("gc-"))
+                                    .is_some_and(|s| known_record(std::ffi::OsStr::new(s))))))
+                        && entry.file_type()?.is_file()
+                    {
                         fs::remove_file(entry.path())?;
                     }
                     entries.advance();
@@ -386,20 +399,36 @@ pub(crate) struct RetainBuild {
     staged: Option<PathBuf>,
     survivors: u64,
     written: u64,
+    shell_store: Option<WorkspaceStore>,
+    selected_read: Option<super::shell_selection::SelectedRead>,
+    selection: Option<super::shell_selection::Selection>,
+    publication: Option<super::shell_selection::Publication>,
 }
 impl RetainBuild {
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
     }
     pub(crate) fn stats(&self) -> &super::bounded::WorkStats {
-        &self.sorter.stats
+        self.selection
+            .as_ref()
+            .map_or(&self.sorter.stats, |s| s.stats())
     }
     pub(crate) fn step(
         &mut self,
         limit: super::bounded::WorkLimit,
-    ) -> Result<super::bounded::Step<u64>, StoreError> {
+    ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
         use super::bounded::{Meta, Step, increment, read_meta};
         let limit = limit.checked()?;
+        if let Some(reader) = &mut self.selected_read {
+            if let Step::Done(()) = reader.step()? {
+                if reader.obsolete(&self.bytes)? {
+                    self.publication = Some(super::shell_selection::Publication::Suppress);
+                    self.phase = RetainPhase::Done;
+                }
+                self.selected_read = None;
+            }
+            return Ok(Step::More);
+        }
         self.sorter.stats.last_step_work = 0;
         #[cfg(test)]
         if matches!(self.phase, RetainPhase::Sort) {
@@ -544,7 +573,33 @@ impl RetainBuild {
                     self.phase = RetainPhase::Done;
                 }
             }
-            RetainPhase::Done => return Ok(Step::Done(self.written)),
+            RetainPhase::Done => {
+                if self.publication.is_none() {
+                    if let Some(store) = &self.shell_store {
+                        if self.selection.is_none() {
+                            let incoming = super::shell_selection::incoming_identity(
+                                &self.bytes,
+                                self.workspace,
+                            );
+                            self.selection = Some(super::shell_selection::Selection::new(
+                                store,
+                                self.scratch.clone(),
+                                incoming,
+                            )?);
+                        }
+                        match self.selection.as_mut().unwrap().step(limit)? {
+                            Step::More => return Ok(Step::More),
+                            Step::Done(publication) => self.publication = Some(publication),
+                        }
+                    } else {
+                        self.publication = Some(super::shell_selection::Publication::Original);
+                    }
+                }
+                return Ok(Step::Done(super::shell_selection::RetainOutcome {
+                    written: self.written,
+                    publication: self.publication.clone().unwrap(),
+                }));
+            }
         }
         Ok(Step::More)
     }
@@ -599,6 +654,10 @@ impl WorkspaceStore {
             staged: None,
             survivors: 0,
             written: 0,
+            shell_store: self.shell_authority().map(|_| self.clone()),
+            selected_read: super::shell_selection::SelectedRead::new(self)?,
+            selection: None,
+            publication: None,
         })
     }
     pub(super) fn retain_shared(
@@ -614,7 +673,7 @@ impl WorkspaceStore {
             if let super::bounded::Step::Done(written) =
                 build.step(super::bounded::WorkLimit::default())?
             {
-                break written;
+                break written.written;
             }
         };
         let mut discard = super::replay::WorkDiscard::new(build.scratch.clone())?;
@@ -627,13 +686,21 @@ impl WorkspaceStore {
     }
 
     pub(super) fn load_shared(&self) -> Result<Vec<Vec<u8>>, StoreError> {
+        let mut out = Vec::new();
+        // Compatibility/admin reads do not grant proof or GC authority, but
+        // must retain visibility of a previously committed local selection.
+        if let Some(selected) = current(&self.root.join(super::shell_selection::DIRECTORY))? {
+            let mut manifest = fs::File::open(selected.join("basis.manifest"))?;
+            while let Some(meta) = super::bounded::read_meta(&mut manifest)? {
+                out.push(fs::read(self.root.join(meta.source))?);
+            }
+        }
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         if !v2.exists() {
-            return Ok(Vec::new());
+            return Ok(out);
         }
         let mut lineages = fs::read_dir(v2)?.collect::<Result<Vec<_>, _>>()?;
         lineages.sort_by_key(fs::DirEntry::file_name);
-        let mut out = Vec::new();
         for lineage in lineages {
             if !lineage.file_type()?.is_dir() {
                 continue;

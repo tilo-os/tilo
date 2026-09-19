@@ -3,13 +3,13 @@ use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
 use qos_peer_state::{NeighbourMsg, StatePeer, retained_proof::*};
 
-fn fixture() -> PathBuf {
+pub(super) fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shell-proof")
 }
-fn metadata() -> serde_json::Value {
+pub(super) fn metadata() -> serde_json::Value {
     serde_json::from_slice(&fs::read(fixture().join("failure.json")).unwrap()).unwrap()
 }
-fn binding() -> RetentionAuthority {
+pub(super) fn binding() -> RetentionAuthority {
     let meta = metadata();
     RetentionAuthority::new(
         meta["room"].as_str().unwrap(),
@@ -17,7 +17,7 @@ fn binding() -> RetentionAuthority {
     )
     .unwrap()
 }
-fn parts(payload: CoeditPayload) -> ([u8; 32], Vec<u8>, RoomInput) {
+pub(super) fn parts(payload: CoeditPayload) -> ([u8; 32], Vec<u8>, RoomInput) {
     match payload {
         CoeditPayload::Checkpoint { channel, body } => (channel, body, RoomInput::Checkpoint),
         CoeditPayload::RetainedDelta { channel, body } => (channel, body, RoomInput::Delta),

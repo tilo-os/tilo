@@ -1111,11 +1111,25 @@ fn state_member(runtime: &crate::workspace::WorkspaceRuntime, peer: &Authenticat
             && runtime.known_peer_relays.contains(&peer.device_public_key))
 }
 
+#[derive(Clone)]
+enum LiveEnvelope {
+    Original(Arc<Envelope>),
+    Selected(Arc<crate::store::replay::ReplayBatch>),
+}
+impl std::ops::Deref for LiveEnvelope {
+    type Target = Envelope;
+    fn deref(&self) -> &Envelope {
+        match self {
+            Self::Original(envelope) => envelope,
+            Self::Selected(batch) => batch.front().expect("one activation frame"),
+        }
+    }
+}
 pub(crate) struct StateDelivery {
-    envelope: Arc<Envelope>,
+    envelope: LiveEnvelope,
     cleanup: Option<std::path::PathBuf>,
     source: Option<StateSource>,
-    _budget: Arc<tokio::sync::OwnedSemaphorePermit>,
+    _budget: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
     live: Arc<std::sync::atomic::AtomicBool>,
 }
 struct StateCommit {
@@ -1125,6 +1139,7 @@ struct StateCommit {
     sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)>,
     logical_offline_bytes: u64,
     publish: bool,
+    activation: Option<std::path::PathBuf>,
 }
 
 async fn enqueue_state(
@@ -1264,6 +1279,7 @@ async fn enqueue_state_inner(
                         sessions,
                         logical_offline_bytes,
                         publish,
+                        activation: None,
                     }));
                 }
                 let seq = state.next_sequence()?;
@@ -1293,6 +1309,7 @@ async fn enqueue_state_inner(
                     sessions,
                     logical_offline_bytes,
                     publish,
+                    activation: None,
                 });
                 return Ok(Step::More);
             }
@@ -1300,7 +1317,13 @@ async fn enqueue_state_inner(
             if let Some(build) = retained_build.as_mut() {
                 match build.step(Default::default())? {
                     Step::More => return Ok(Step::More),
-                    Step::Done(written) => {
+                    Step::Done(outcome) => {
+                        let written = outcome.written;
+                        match outcome.publication {
+                            crate::store::shell_selection::Publication::Suppress => current.publish = false,
+                            crate::store::shell_selection::Publication::Activate(path) => current.activation = Some(path),
+                            crate::store::shell_selection::Publication::Original => (),
+                        }
                         if crate::persistence::diagnostics() {
                             tracing::info!(
                                 phase = "retention_complete",
@@ -1354,62 +1377,78 @@ async fn enqueue_state_inner(
                 }
                 metrics.inc_deltas_received();
                 if crate::persistence::correlated_diagnostics() && let Envelope::Delta { workspace_id, authored_at_ns, .. } = &*commit.envelope { tracing::info!(phase="server_delta_committed", workspace_id, authored_at_ns, sessions=commit.sessions.len()); }
-                let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
                 if crate::persistence::diagnostics() {
-                    tracing::info!(
-                        phase = "state_commit",
-                        persisted_envelope_bytes = commit.persisted_bytes,
-                        logical_offline_bytes = commit.logical_offline_bytes
-                    );
+                    tracing::info!(phase="state_commit", persisted_envelope_bytes=commit.persisted_bytes, logical_offline_bytes=commit.logical_offline_bytes);
                 }
-                if source
-                    .as_ref()
-                    .is_some_and(|source| !source.authorized(&runtime))
-                {
-                    return Ok(commit);
-                }
-                let live_bytes = match &*commit.envelope {
-                    Envelope::Delta { delta, .. } => delta.len().saturating_add(256),
-                    _ => 1,
-                };
-                let budget = crate::persistence::delivery_budget(live_bytes);
+                let mut cursor = if let Some(path) = commit.activation.take() {
+                    Some(crate::persistence::blocking(move || crate::store::replay::PublicationCursor::open(&path)).await??)
+                } else { None };
+                let activating = cursor.is_some();
+                let mut original = cursor.is_none();
                 let mut delivered = 0u64;
-                for (recipient, original) in std::mem::take(&mut commit.sessions) {
-                    let Some(sub) = runtime.subscribers.get(&recipient) else {
-                        continue;
-                    };
-                    if !sub.tx.same_channel(&original) {
-                        continue;
+                let publication_result: Result<(), crate::store::StoreError> = async {
+                loop {
+                    let (envelope, budget) = if let Some(mut selected) = cursor.take() {
+                        let (next, result) = crate::persistence::blocking(move || {
+                            let result = selected.step(crate::persistence::output_budget());
+                            (selected, result)
+                        }).await?;
+                        cursor = Some(next);
+                        match result? {
+                            Step::More => continue,
+                            Step::Done(None) => break,
+                            Step::Done(Some(batch)) => (LiveEnvelope::Selected(Arc::new(batch)), Ok(None)),
+                        }
+                    } else if original {
+                        original = false;
+                        let bytes = match &*commit.envelope { Envelope::Delta {delta, ..} => delta.len().saturating_add(256), _ => 1 };
+                        (LiveEnvelope::Original(commit.envelope.clone()), crate::persistence::delivery_budget(bytes).map(Some))
+                    } else { break };
+                    // Every hydration/worker wait precedes a fresh current-source,
+                    // recipient membership and exact subscriber-channel fence.
+                    let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+                    if source.as_ref().is_some_and(|source| !source.authorized(&runtime)) {
+                        if activating { return Err(crate::persistence::error("activation source authorization changed")); }
+                        break;
                     }
-                    let Some(target) = runtime.state_sessions.get(&recipient) else {
-                        continue;
-                    };
-                    if !state_member(&runtime, &target.peer)
-                        || source.as_ref().is_some_and(|s| !s.cert(&target.peer))
-                    {
-                        continue;
-                    }
-                    let Ok(budget) = &budget else {
-                        let _ = sub.disconnect.try_send(());
-                        continue;
-                    };
-                    let delivery = StateDelivery {
-                        envelope: commit.envelope.clone(),
-                        cleanup: commit.pending.remove(&recipient),
-                        source: source.clone(),
-                        _budget: budget.clone(),
-                        live: target.live.clone(),
-                    };
-                    if crate::persistence::correlated_diagnostics() && let Envelope::Delta { workspace_id, authored_at_ns, .. } = &*commit.envelope { tracing::info!(phase="server_delta_publication", workspace_id, authored_at_ns, recipient=%hex::encode(&recipient[..4])); }
-                    if target.tx.try_send(delivery).is_err() {
-                        let _ = sub.disconnect.try_send(());
-                        runtime.remove_subscriber_session(&recipient, &original);
-                    } else {
-                        delivered = delivered.saturating_add(1);
+                    for (recipient, original) in &commit.sessions {
+                        let Some(sub) = runtime.subscribers.get(recipient) else { continue };
+                        if !sub.tx.same_channel(original) { continue; }
+                        let Some(target) = runtime.state_sessions.get(recipient) else { continue };
+                        if !state_member(&runtime, &target.peer) || source.as_ref().is_some_and(|s| !s.cert(&target.peer)) { continue; }
+                        let Ok(budget) = &budget else { let _ = sub.disconnect.try_send(()); continue; };
+                        if crate::persistence::correlated_diagnostics() && let Envelope::Delta { workspace_id, authored_at_ns, .. } = &*envelope {
+                            tracing::info!(phase="server_delta_publication", workspace_id, authored_at_ns, recipient=%hex::encode(&recipient[..4]));
+                        }
+                        let delivery = StateDelivery {
+                            envelope: envelope.clone(), cleanup: commit.pending.remove(recipient), source: source.clone(),
+                            _budget: budget.clone(), live: target.live.clone(),
+                        };
+                        if target.tx.try_send(delivery).is_err() {
+                            let _ = sub.disconnect.try_send(());
+                            runtime.remove_subscriber_session(recipient, original);
+                        } else { delivered = delivered.saturating_add(1); }
                     }
                 }
-                drop(runtime);
+                Ok(())
+                }.await;
                 metrics.add_deltas_fanned_out(delivered);
+                if let Err(error) = publication_result {
+                    if activating {
+                        // A partial activation cannot leave a ready subscriber
+                        // waiting forever for its missing exact half. Fence only
+                        // the original session; reconnect uses durable full basis.
+                        let mut runtime = workspace.lock().await;
+                        for (recipient, original) in &commit.sessions {
+                            if let Some(sub) = runtime.subscribers.get(recipient)
+                                && sub.tx.same_channel(original) {
+                                let _ = sub.disconnect.try_send(());
+                                runtime.remove_subscriber_session(recipient, original);
+                            }
+                        }
+                    }
+                    return Err(error);
+                }
                 Ok(commit)
             }
             .await;
@@ -2177,6 +2216,136 @@ mod private_transport_tests {
         let proof = crate::auth::build_hello_ack2(&key, &[1; 32]);
         crate::auth::verify_hello_ack2(&proof, &peer.device_public_key, &[1; 32]).unwrap();
         (peer, key)
+    }
+
+    #[tokio::test]
+    async fn selected_shell_activation_publishes_complete_ordered_pair_and_suppresses_delayed_checkpoint()
+     {
+        use crate::store::shell_selection_tests::{
+            admit_frames, producer_fixture, producer_frame, producer_metadata,
+        };
+        let meta = producer_metadata();
+        let authority = qos_peer_state::retained_proof::RetentionAuthority::new(
+            meta["room"].as_str().unwrap(),
+            serde_json::from_value(meta["authority"].clone()).unwrap(),
+        )
+        .unwrap();
+        let id = crate::room_workspace_id(authority.room()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        runtime.store.bind_shell_authority(authority).unwrap();
+        let (root, user) = UserIdentity::generate("activation recipient", 1);
+        let (receiver, _) = certified_device(&root, user.public_key, "recipient");
+        runtime.admit_device(receiver.device_public_key).unwrap();
+        let (tx, _rx) = mpsc::channel(32);
+        let (disconnect, _) = mpsc::channel(1);
+        let (state_tx, mut state_rx) = mpsc::channel(32);
+        runtime.add_subscriber(Subscriber {
+            device_public_key: receiver.device_public_key,
+            role: receiver.role,
+            tx,
+            disconnect,
+        });
+        runtime.state_sessions.insert(
+            receiver.device_public_key,
+            StateSession {
+                peer: receiver,
+                tx: state_tx,
+                live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            },
+        );
+        let (slow, _) = certified_device(&root, user.public_key, "saturated recipient");
+        runtime.admit_device(slow.device_public_key).unwrap();
+        let (slow_tx, _slow_rx) = mpsc::channel(1);
+        let (slow_disconnect, mut slow_disconnected) = mpsc::channel(1);
+        let (slow_state, mut slow_frames) = mpsc::channel(1);
+        runtime.add_subscriber(Subscriber {
+            device_public_key: slow.device_public_key,
+            role: slow.role,
+            tx: slow_tx,
+            disconnect: slow_disconnect,
+        });
+        runtime.state_sessions.insert(
+            slow.device_public_key,
+            StateSession {
+                peer: slow,
+                tx: slow_state,
+                live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            },
+        );
+        let workspace = Arc::new(AsyncMutex::new(runtime));
+        let metrics = Arc::new(crate::metrics::Metrics::default());
+        let mut delivered_all = Vec::new();
+        for (group, start, end, expected) in [
+            ("baseline", 0, 4, 4),
+            ("tail", 0, 2, 2),
+            ("tail", 2, 3, 1),
+            ("checkpoint2", 0, 4, 4),
+        ] {
+            for row in &meta[group].as_array().unwrap()[start..end] {
+                let raw = producer_frame(&meta, row, 10);
+                enqueue_state(
+                    &workspace,
+                    crate::transport::decode(&raw[4..]).unwrap(),
+                    None,
+                    crate::auth::PeerRole::Device,
+                    metrics.clone(),
+                )
+                .await
+                .unwrap();
+            }
+            let owner = crate::persistence::handle(&workspace).await;
+            crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+                .await
+                .unwrap();
+            let mut frames = Vec::new();
+            while let Ok(delivery) = state_rx.try_recv() {
+                frames.push((*delivery.envelope).clone());
+            }
+            assert_eq!(
+                frames.len(),
+                expected,
+                "activation preserves exact selective live output for {group}[{start}..{end}]"
+            );
+            delivered_all.extend(frames);
+            admit_frames(
+                &meta,
+                &producer_fixture().join("baseline-peer.postcard"),
+                delivered_all.clone(),
+            );
+        }
+        assert!(
+            slow_disconnected.try_recv().is_ok(),
+            "bounded activation queue saturation fences partial recipient"
+        );
+        assert!(slow_frames.try_recv().is_ok());
+        assert!(slow_frames.try_recv().is_err());
+        for row in meta["baseline"].as_array().unwrap() {
+            let raw = producer_frame(&meta, row, u64::MAX - 1);
+            enqueue_state(
+                &workspace,
+                crate::transport::decode(&raw[4..]).unwrap(),
+                None,
+                crate::auth::PeerRole::Device,
+                metrics.clone(),
+            )
+            .await
+            .unwrap();
+        }
+        let owner = crate::persistence::handle(&workspace).await;
+        crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            state_rx.try_recv().is_err(),
+            "delayed CP1 must not invalidate a ready CP2 receiver"
+        );
     }
 
     #[tokio::test]

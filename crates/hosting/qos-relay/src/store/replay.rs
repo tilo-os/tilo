@@ -186,6 +186,9 @@ pub(crate) struct ReplayBuild {
     child: Option<(OsString, PathBuf, fs::ReadDir)>,
     sorter: Option<Sorter>,
     next_pin: u64,
+    selection: Option<super::shell_selection::Selection>,
+    selected: Option<File>,
+    shell_selected: bool,
 }
 impl ReplayBuild {
     #[cfg(test)]
@@ -346,7 +349,20 @@ impl WorkspaceStore {
         fs::create_dir(root.join("pins"))?;
         fs::create_dir(root.join("index"))?;
         let sorter = Sorter::new(root.join("sort"))?;
+        let selection = self
+            .shell_authority()
+            .map(|_| super::shell_selection::Selection::new(self, root.clone(), None))
+            .transpose()?;
         Ok(ReplayBuild {
+            selection,
+            selected: if self.shell_authority().is_none() {
+                retained::current(&self.root.join(super::shell_selection::DIRECTORY))?
+                    .map(|p| File::open(p.join("basis.manifest")))
+                    .transpose()?
+            } else {
+                None
+            },
+            shell_selected: self.shell_authority().is_some(),
             root,
             workspace: self.root.clone(),
             device,
@@ -367,6 +383,15 @@ impl WorkspaceStore {
         let limit = limit.checked()?;
         if build.workspace != self.root {
             return Err(invalid("replay store mismatch"));
+        }
+        if let Some(selection) = &mut build.selection {
+            if let Step::Done(_) = selection.step(limit)? {
+                build.selection = None;
+                let path = retained::current(&self.root.join(super::shell_selection::DIRECTORY))?
+                    .ok_or_else(|| invalid("missing selected shell basis"))?;
+                build.selected = Some(File::open(path.join("basis.manifest"))?);
+            }
+            return Ok(Step::More);
         }
         if build.phase > 4 {
             return Err(invalid("capture already consumed"));
@@ -404,6 +429,37 @@ impl WorkspaceStore {
                     stats: WorkStats::default(),
                     digest,
                 }));
+            }
+            if build.phase == 2 && build.selected.is_some() {
+                if let Some(meta) = read_meta(
+                    build
+                        .selected
+                        .as_mut()
+                        .ok_or_else(|| invalid("missing selected manifest"))?,
+                )? {
+                    let pin = build.next_pin;
+                    increment(&mut build.next_pin)?;
+                    let source = self.root.join(&meta.source);
+                    let target = build.root.join("pins").join(format!("{pin:016x}.frame"));
+                    fs::hard_link(&source, &target)?;
+                    sorter.push(Meta {
+                        key: vec!["1".into(), "0".into(), format!("{pin:016x}").into()],
+                        source: meta.source,
+                        pin,
+                        len: fs::metadata(target)?.len(),
+                        pending: false,
+                    })?;
+                    if sorter.spilling() {
+                        return Ok(Step::More);
+                    }
+                } else {
+                    if build.shell_selected {
+                        build.phase = 3;
+                    }
+                    build.outer = None;
+                    build.selected = None;
+                }
+                continue;
             }
             if build.outer.is_none() {
                 let dir = match build.phase {
@@ -673,7 +729,7 @@ impl WorkspaceStore {
         Ok(Step::More)
     }
 }
-fn equal_files(a: &Path, b: &Path) -> Result<bool, StoreError> {
+pub(super) fn equal_files(a: &Path, b: &Path) -> Result<bool, StoreError> {
     let mut a = File::open(a)?;
     let mut b = File::open(b)?;
     if a.metadata()?.len() != b.metadata()?.len() {
@@ -762,7 +818,11 @@ impl WorkDiscard {
                 if let Some(entry) = outer.peek()? {
                     let name = entry.file_name();
                     if let Some(kind) = existing_kind(entry)? {
-                        if kind.is_dir() && ["sort", "pins", "index"].iter().any(|s| name == *s) {
+                        if kind.is_dir()
+                            && ["sort", "shell-sort", "extras-sort", "pins", "index"]
+                                .iter()
+                                .any(|s| name == *s)
+                        {
                             match DirectoryCursor::open(&entry.path()) {
                                 Ok(cursor) => self.child = Some((entry.path(), cursor)),
                                 Err(StoreError::Io(error))
@@ -770,7 +830,15 @@ impl WorkDiscard {
                                 Err(error) => return Err(error),
                             }
                         } else if kind.is_file()
-                            && (name == "replay.manifest" || name == "cleanup.manifest")
+                            && [
+                                "replay.manifest",
+                                "cleanup.manifest",
+                                "room.manifest",
+                                "extras.manifest",
+                                "retire.manifest",
+                            ]
+                            .iter()
+                            .any(|v| name == *v)
                         {
                             remove_file_if_present(&entry.path())?;
                         }
@@ -836,7 +904,7 @@ fn owned_work_file(dir: &std::ffi::OsStr, name: &std::ffi::OsStr) -> bool {
         name.strip_suffix(".frame").is_some_and(|s| is_hex(s, 16))
     } else if dir == "index" {
         name.strip_suffix(".idx").is_some_and(|s| is_hex(s, 64))
-    } else if dir == "sort" {
+    } else if dir == "sort" || dir == "shell-sort" || dir == "extras-sort" {
         name.strip_suffix(".run")
             .and_then(|s| s.split_once('-'))
             .is_some_and(|(a, b)| is_hex(a, 16) && is_hex(b, 16))
@@ -894,3 +962,65 @@ impl WorkReclaimer {
 #[cfg(test)]
 #[path = "replay_tests.rs"]
 mod tests;
+
+/// One selected activation frame, sharing the normal process output budget.
+/// The owner holds its ordered completion across this cursor; queued deliveries
+/// own the batch/permit, so subsequent GC cannot invalidate their bytes.
+pub(crate) struct PublicationCursor {
+    workspace: PathBuf,
+    input: File,
+}
+impl PublicationCursor {
+    pub(crate) fn open(generation: &Path) -> Result<Self, StoreError> {
+        Ok(Self {
+            workspace: generation
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| invalid("invalid publication generation"))?
+                .into(),
+            input: File::open(generation.join("live.manifest"))?,
+        })
+    }
+    pub(crate) fn step(
+        &mut self,
+        budget: &ReplayBudget,
+    ) -> Result<Step<Option<ReplayBatch>>, StoreError> {
+        let offset = self.input.stream_position()?;
+        let Some(meta) = read_meta(&mut self.input)? else {
+            return Ok(Step::Done(None));
+        };
+        if meta.key.first().is_some_and(|v| v == "extra") {
+            return Ok(Step::More);
+        }
+        // As with replay preparation, inspect one bounded legal frame to measure
+        // both transport encoders. No hydrated output escapes without a permit.
+        let bytes = frame_bytes(&self.workspace.join(meta.source))?
+            .ok_or_else(|| invalid("invalid activation frame"))?;
+        let envelope =
+            transport::decode(&bytes[4..]).map_err(|_| invalid("invalid activation envelope"))?;
+        let v1 = postcard::to_allocvec(&envelope).map_err(|_| invalid("activation encoding"))?;
+        let mut charge = frame_charge(&envelope, bytes.len(), &v1, v1.capacity())?;
+        drop(v1);
+        let v2 = crate::transport_v2::state_payload(&envelope)
+            .map_err(|_| invalid("activation v2 encoding"))?;
+        charge = charge.max(frame_charge(&envelope, bytes.len(), &v2, v2.capacity())?);
+        drop(v2);
+        let allocation = match budget.acquire(charge as usize) {
+            Ok(p) => p,
+            Err(error) => {
+                self.input.seek(SeekFrom::Start(offset))?;
+                return Err(error);
+            }
+        };
+        let encoded_bytes = bytes.len();
+        drop(bytes);
+        Ok(Step::Done(Some(ReplayBatch {
+            number: 0,
+            frames: VecDeque::from([envelope]),
+            eof: false,
+            encoded_bytes,
+            charged_bytes: charge as usize,
+            _allocation: allocation,
+        })))
+    }
+}

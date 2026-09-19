@@ -528,6 +528,78 @@ impl VerifiedRoom {
     }
 }
 impl VerifiedSnapshot {
+    /// Incoming-only non-publication proof against an already durable selected
+    /// pair. This is NOT verification of a historical receipt or a GC grant.
+    pub fn covers_incoming_snapshot(
+        &self,
+        source: [u8; 32],
+        channel: [u8; 32],
+        body: &[u8],
+    ) -> bool {
+        if source != self.authority.governor.device_public_key {
+            return false;
+        }
+        let Ok((app, record, envelope, DocumentMutation::Snapshot(bytes))) =
+            signed_document(source, channel, body, &self.authority.room)
+        else {
+            return false;
+        };
+        let coverage = self.coverage();
+        if app != coverage.app
+            || record != coverage.record
+            || envelope.seq > coverage.sequence
+            || envelope.seq
+                > coverage
+                    .watermarks
+                    .get(&hex::encode(source))
+                    .copied()
+                    .unwrap_or(0)
+        {
+            return false;
+        }
+        let Ok(prior) = document(&bytes) else {
+            return false;
+        };
+        if envelope.seq == coverage.sequence
+            && (coverage.payload_hash != *blake3::hash(&envelope.payload).as_bytes()
+                || coverage.heads
+                    != prior
+                        .get_heads()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>())
+        {
+            return false;
+        }
+        prior
+            .get_heads()
+            .iter()
+            .all(|head| self.doc.get_change_by_hash(head).is_some())
+    }
+    /// Replay readiness only: this individual signed increment can follow this
+    /// snapshot without missing dependencies or an uncovered replay-floor loss.
+    /// No live authorization, retirement, or ordering between tails is granted.
+    pub fn tail_ready_after_snapshot(
+        &self,
+        source: [u8; 32],
+        channel: [u8; 32],
+        body: &[u8],
+    ) -> bool {
+        if self.classify_tail(source, channel, body).floor != FloorSafety::Safe {
+            return false;
+        }
+        let Ok((_, _, _, DocumentMutation::Incremental(bytes))) =
+            signed_document(source, channel, body, &self.authority.room)
+        else {
+            return false;
+        };
+        if !strict_chunks(&bytes) {
+            return false;
+        }
+        let mut combined = self.doc.save();
+        combined.extend_from_slice(&bytes);
+        Automerge::load(&combined).is_ok_and(|doc| doc.get_missing_deps(&[]).is_empty())
+    }
     pub fn coverage(&self) -> &Coverage {
         &self.receipt.coverage
     }

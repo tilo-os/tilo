@@ -12,6 +12,7 @@ use std::{
 };
 use tokio::sync::{Semaphore, mpsc, oneshot};
 mod replay;
+pub(crate) use replay::output_budget;
 pub(crate) use replay::{Authority as ReplayAuthority, ReplayAdvance, ReplayTicket, WrittenBatch};
 
 const QUEUE_MESSAGES: usize = 32;
@@ -397,7 +398,7 @@ pub(crate) fn delivery_budget(
         .map_err(|_| error("live state byte backpressure"))
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     operation: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, StoreError> {
     static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();

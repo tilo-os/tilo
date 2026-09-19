@@ -706,3 +706,37 @@ fn historical_room_proof_preserves_effect_receipts_and_exact_governor_roster() {
         );
     }
 }
+
+#[test]
+fn incoming_snapshot_obsolescence_needs_exact_signed_route_integrity_and_selected_floor() {
+    let (key, authority, mut peer, now) = fixture();
+    let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let second = peer.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let room = room_proof(&authority, &second[0], RoomInput::Checkpoint, None);
+    let selected = snapshot(&room, &second[1]);
+    let (channel, body) = encoded(&first[1]);
+    let source = authority.governor().device_public_key;
+    assert!(selected.covers_incoming_snapshot(source, channel, &body));
+    let NeighbourMsg::AppDocument { envelope, .. } = &first[1] else {
+        panic!()
+    };
+    let mutation = DocumentMutation::decode(&envelope.payload).unwrap();
+    let newer = signed(
+        &key,
+        mutation.clone(),
+        selected.coverage().sequence + 1,
+        now,
+    );
+    assert!(!selected.covers_incoming_snapshot(source, channel, &encoded(&newer).1));
+    assert!(!selected.covers_incoming_snapshot([99; 32], channel, &body));
+    assert!(!selected.covers_incoming_snapshot(source, [99; 32], &body));
+    let mut bad = body.clone();
+    *bad.last_mut().unwrap() ^= 1;
+    assert!(!selected.covers_incoming_snapshot(source, channel, &bad));
+    let DocumentMutation::Snapshot(mut bytes) = mutation else {
+        panic!()
+    };
+    bytes.push(1);
+    let malformed = signed(&key, DocumentMutation::Snapshot(bytes), envelope.seq, now);
+    assert!(!selected.covers_incoming_snapshot(source, channel, &encoded(&malformed).1));
+}

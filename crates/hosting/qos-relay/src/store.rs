@@ -27,9 +27,12 @@ pub(crate) mod bounded;
 pub(crate) mod replay;
 pub(crate) mod retained;
 #[cfg(test)]
-pub(crate) mod test_barrier;
+pub(crate) mod shell_proof_tests;
+pub(crate) mod shell_selection;
 #[cfg(test)]
-mod shell_proof_tests;
+pub(crate) mod shell_selection_tests;
+#[cfg(test)]
+pub(crate) mod test_barrier;
 
 use std::fs;
 use std::io::{self, Write};

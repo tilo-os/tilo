@@ -130,7 +130,7 @@ impl Replays {
         self.entries.is_empty()
     }
 }
-fn output_budget() -> &'static ReplayBudget {
+pub(crate) fn output_budget() -> &'static ReplayBudget {
     static OUTPUT: OnceLock<ReplayBudget> = OnceLock::new();
     OUTPUT.get_or_init(|| ReplayBudget::new(DEFAULT_OUTPUT_BYTES))
 }
