@@ -82,6 +82,42 @@ class CoordinatorTests(unittest.TestCase):
         self.assertIsNone(self.api.dispatched[1]['baseline'])
         self.assertEqual(self.store.db.execute('SELECT count(*) FROM attempts').fetchone()[0], 2)
 
+    def test_artifact_verification_does_not_block_new_observations(self):
+        self.store.observe(1, A)
+        c.tick(self.store, self.api)
+        self.api.runs[1]['status'] = 'success'
+        other = c.Store(self.path, writable=True)
+        other.db.execute('PRAGMA busy_timeout=25')
+        try:
+            def verify(intent, run):
+                other.observe(2, B)
+                c.validate_run(intent, run)
+                return {'verified': True}
+            c.accept_run(self.store, self.store.read()['active']['id'], self.api.run(1), verify)
+        finally:
+            other.db.close()
+        self.assertEqual(self.store.read()['desired'], B)
+        self.assertEqual(self.store.read()['baseline'], A)
+        self.assertEqual(self.store.read()['baseline_evidence'], {'verified': True})
+
+    def test_changed_active_intent_rejects_verification_result(self):
+        self.store.observe(1, A)
+        c.tick(self.store, self.api)
+        self.api.runs[1]['status'] = 'success'
+        other = c.Store(self.path, writable=True)
+        other.db.execute('PRAGMA busy_timeout=25')
+        try:
+            def verify(intent, run):
+                with other.transaction() as state:
+                    state['active']['run_id'] = 99
+                return {'verified': True}
+            with self.assertRaisesRegex(ValueError, 'changed during verification'):
+                c.accept_run(self.store, self.store.read()['active']['id'], self.api.run(1), verify)
+        finally:
+            other.db.close()
+        self.assertIsNone(self.store.read()['baseline'])
+        self.assertEqual(self.store.read()['active']['run_id'], 99)
+
     def test_uncertain_dispatch_survives_restart_and_reconciles_without_retry(self):
         self.store.observe(1, A)
         self.api.uncertain = True
