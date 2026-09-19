@@ -183,7 +183,7 @@ impl VideoEditorApp {
         for (i, (_, w, h)) in FRAME_PRESETS.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
             l.project_frames
-                .push(((*w, *h), Rect::new(sx0, *y, sx0 + seg_w - 3.0, *y + 24.0)));
+                .push(((*w, *h), Rect::new(sx0, *y, sx0 + seg_w, *y + 24.0)));
         }
         *y += 32.0;
         l.project_rate_y = *y;
@@ -192,7 +192,7 @@ impl VideoEditorApp {
         for (i, rate) in RATE_PRESETS.iter().enumerate() {
             let sx0 = x0 + i as f64 * rate_w;
             l.project_rates
-                .push((*rate, Rect::new(sx0, *y, sx0 + rate_w - 3.0, *y + 24.0)));
+                .push((*rate, Rect::new(sx0, *y, sx0 + rate_w, *y + 24.0)));
         }
         *y += 32.0;
         // Offered only when there is a source to copy a shape from, and only
@@ -246,8 +246,13 @@ impl VideoEditorApp {
             row.x0 + KEY_BOX * scale,
             cy + 9.0 * scale,
         );
-        let up = Rect::new(key.x1 + 4.0 * scale, cy - h, key.x1 + 26.0 * scale, cy + h);
-        let down = Rect::new(up.x1 + scale, cy - h, up.x1 + 23.0 * scale, cy + h);
+        let up = Rect::new(key.x1 + S1 * scale, cy - h, key.x1 + 26.0 * scale, cy + h);
+        let down = Rect::new(
+            up.x1 + S1 * scale,
+            cy - h,
+            up.x1 + (S1 + 22.0) * scale,
+            cy + h,
+        );
         let remove = Rect::new(row.x1 - 22.0 * scale, cy - h, row.x1, cy + h);
         let slider = Rect::new(
             row.x1 - 96.0 * scale,
@@ -349,7 +354,11 @@ impl VideoEditorApp {
         let half = (x1 - x0) / 2.0 - 6.0;
         l.fade_in = Some(Rect::new(x0, y + 19.0, x0 + half, y + 28.0));
         l.fade_out = Some(Rect::new(x1 - half, y + 19.0, x1, y + 28.0));
-        y += row + 2.0;
+        // The transition caption sits at `transition_y - 20`, five pixels
+        // higher relative to its row than a slider label does to its track,
+        // so it needs that much more advance to keep the clearance every
+        // other caption has over the knobs above it. At `+ 2` it touched them.
+        y += row + 4.0;
 
         // Transition segmented control.
         let seg_w = (x1 - x0) / Transition::ALL.len() as f64;
@@ -357,7 +366,7 @@ impl VideoEditorApp {
         for (i, t) in Transition::ALL.iter().enumerate() {
             let sx0 = x0 + i as f64 * seg_w;
             l.transitions
-                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w - 3.0, y + 37.0)));
+                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w, y + 37.0)));
         }
         y += 48.0;
         // Transition length, only when there is a transition to size.
@@ -402,7 +411,7 @@ impl VideoEditorApp {
             for (i, ch) in crate::curve::Channel::ALL.iter().enumerate() {
                 let cx = x0 + i as f64 * cw;
                 l.curve_channels
-                    .push((*ch, Rect::new(cx, y, cx + cw - 3.0, y + 24.0)));
+                    .push((*ch, Rect::new(cx, y, cx + cw, y + 24.0)));
             }
             y += 32.0;
             // Square, so the diagonal that means "unchanged" really is a
@@ -460,18 +469,22 @@ impl VideoEditorApp {
             l.anchor_label_y = y;
             y += 20.0;
             let cell = (x1 - x0) / 3.0;
+            // Three segmented rows an `S1` apart: each row is one shared
+            // control whose segments abut (the face draws the separators),
+            // and the rows are neighbours that must not touch.
             for ay in ANCHOR_STOPS {
                 for (col, ax) in ANCHOR_STOPS.iter().enumerate() {
                     let cx = x0 + col as f64 * cell;
                     l.anchor
-                        .push(((*ax, ay), Rect::new(cx, y, cx + cell - 3.0, y + 22.0)));
+                        .push(((*ax, ay), Rect::new(cx, y, cx + cell, y + 22.0)));
                 }
-                y += 25.0;
+                y += 22.0 + S1;
             }
             y += 6.0;
             // Picture-in-picture, as the four corners it is actually used for.
             y += 16.0;
-            let bw = (x1 - x0 - 18.0) / 4.0;
+            // Four sibling buttons, `S2` apart.
+            let bw = (x1 - x0 - 3.0 * S2) / 4.0;
             for (i, (label, corner)) in [
                 ("↖", (-1.0, -1.0)),
                 ("↗", (1.0, -1.0)),
@@ -481,7 +494,7 @@ impl VideoEditorApp {
             .into_iter()
             .enumerate()
             {
-                let bx = x0 + i as f64 * (bw + 6.0);
+                let bx = x0 + i as f64 * (bw + S2);
                 l.pip
                     .push((label, corner, Rect::new(bx, y, bx + bw, y + 26.0)));
             }
@@ -497,7 +510,7 @@ impl VideoEditorApp {
             for (i, rate) in SPEED_PRESETS.iter().enumerate() {
                 let px0 = x0 + i as f64 * pw;
                 l.speed_presets
-                    .push((*rate, Rect::new(px0, y, px0 + pw - 3.0, y + 24.0)));
+                    .push((*rate, Rect::new(px0, y, px0 + pw, y + 24.0)));
             }
             y += 32.0;
             l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
@@ -546,15 +559,16 @@ impl VideoEditorApp {
                     y += 20.0;
                     let sw = 26.0;
                     for (i, (_, col)) in crate::model::KEY_PRESETS.iter().enumerate() {
-                        let sx = x0 + i as f64 * (sw + 5.0);
+                        let sx = x0 + i as f64 * (sw + S1);
                         if sx + sw > x1 {
                             break;
                         }
                         l.key_colors.push((*col, Rect::new(sx, y, sx + sw, y + sw)));
                     }
                     // Sampling the plate is how a key is really set; the
-                    // presets are only a starting point.
-                    let pick_x = x0 + 3.0 * (sw + 5.0);
+                    // presets are only a starting point. It starts a sibling
+                    // step past the swatches.
+                    let pick_x = x0 + 3.0 * (sw + S1) + S2;
                     if pick_x + 96.0 <= x1 {
                         l.key_pick = Some(Rect::new(pick_x, y, x1, y + sw));
                     }
@@ -583,7 +597,7 @@ impl VideoEditorApp {
                 for (i, s) in crate::model::MaskShape::ALL.iter().enumerate() {
                     let sx = x0 + i as f64 * mw;
                     l.mask_shapes
-                        .push((*s, Rect::new(sx, y, sx + mw - 3.0, y + 24.0)));
+                        .push((*s, Rect::new(sx, y, sx + mw, y + 24.0)));
                 }
                 y += 32.0;
                 if clip.mask.is_active() {
@@ -623,7 +637,7 @@ impl VideoEditorApp {
             for (i, a) in TextAlign::ALL.iter().enumerate() {
                 let ax = x0 + i as f64 * aw;
                 l.title_align
-                    .push((*a, Rect::new(ax, y, ax + aw - 3.0, y + 24.0)));
+                    .push((*a, Rect::new(ax, y, ax + aw, y + 24.0)));
             }
             // The caption above the chooser needs its own line: at the
             // ordinary 16px gap it landed on the alignment row's buttons.

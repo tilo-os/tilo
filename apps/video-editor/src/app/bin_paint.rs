@@ -7,13 +7,15 @@ impl VideoEditorApp {
         stroke_line(
             ctx.scene,
             ctx.transform,
-            c.border_standard,
-            r.bin.x1,
+            pane_hairline(ctx.theme),
+            r.bin.x1 - 0.5,
             r.bin.y0,
-            r.bin.x1,
+            r.bin.x1 - 0.5,
             r.bin.y1,
             1.0,
         );
+        let add = self.add_title_rect(r);
+        let heading_y = text_baseline(add, 11.0, ctx.text);
         text_w(
             ctx.scene,
             ctx.text,
@@ -21,36 +23,18 @@ impl VideoEditorApp {
             "MEDIA BIN",
             11.0,
             c.text_dim,
-            r.bin.x0 + 14.0 * ctx.scale,
-            r.bin.y0 + 14.0 * ctx.scale,
+            r.bin.x0 + PAD * ctx.scale,
+            heading_y,
             TextWeight::Semibold,
         );
         let add = self.add_title_rect(r);
-        let add_hover = add.contains(self.last_mouse);
-        fill_rrect(
-            ctx.scene,
-            ctx.transform,
-            if add_hover {
-                c.lift(0.72)
-            } else {
-                c.neutral[3]
-            },
-            add,
-            5.0,
-        );
-        stroke_rrect(ctx.scene, ctx.transform, c.border_standard, add, 5.0, 1.0);
-        let at = text_centre(add, "+ Title", 10.5, TextWeight::Medium, ctx.text);
-        text_w(
-            ctx.scene,
-            ctx.text,
-            ctx.transform,
-            "+ Title",
-            10.5,
-            c.text_primary,
-            at.x,
-            at.y,
-            TextWeight::Medium,
-        );
+        let face = ui::widget::ButtonFace::new(add, "+ Title")
+            .style(ui::widget::ButtonStyle::Neutral)
+            .radius(5.0)
+            .text_size(10.5)
+            .weight(TextWeight::Medium)
+            .hovered(add.contains(self.last_mouse));
+        ui::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
         let count = format!("{} clips", self.project.media.len());
         let (count_width, _) = ctx.text.measure(&count, 11.0, None);
         let count_x = r.bin.x1 - 14.0 * ctx.scale - f64::from(count_width);
@@ -63,7 +47,7 @@ impl VideoEditorApp {
                 11.0,
                 c.text_dim,
                 count_x,
-                r.bin.y0 + 14.0,
+                heading_y,
             );
         }
     }
@@ -76,18 +60,18 @@ impl VideoEditorApp {
         rect: Rect,
     ) -> Rect {
         let colors = &ctx.theme.tokens.colors;
-        if self.selected_media == Some(media_id) {
-            fill_rrect(
-                ctx.scene,
-                ctx.transform,
-                with_alpha(colors.accent[5], 0.22),
-                rect,
-                8.0,
-            );
-            stroke_rrect(ctx.scene, ctx.transform, colors.accent[5], rect, 8.0, 1.5);
-        } else if self.hover_media == Some(media_id) {
-            fill_rrect(ctx.scene, ctx.transform, colors.lift(0.35), rect, 8.0);
-        }
+        selection_row(
+            ctx.scene,
+            ctx.transform,
+            ctx.theme,
+            rect,
+            f64::from(ctx.theme.tokens.radii.md),
+            ui::chrome::SelectionState::new(
+                self.selected_media == Some(media_id),
+                self.hover_media == Some(media_id),
+                false,
+            ),
+        );
 
         let row_inset = 8.0 * ctx.scale;
         let thumb_height = (rect.height() - 2.0 * row_inset).clamp(0.0, 64.0);
@@ -186,6 +170,10 @@ impl VideoEditorApp {
     ) {
         let colors = &ctx.theme.tokens.colors;
         let text_x = thumb.x1 + 12.0 * ctx.scale;
+        let name_h = line_height(ctx.text, 13.0);
+        let sub_h = line_height(ctx.text, 11.0);
+        let block_top = rect.y0 + (rect.height() - (name_h + S1 + sub_h)) / 2.0;
+        let sub_top = block_top + name_h + S1;
         let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(media_id);
         if !renaming {
             let available = (rect.x1 - 8.0 - text_x) as f32;
@@ -198,7 +186,7 @@ impl VideoEditorApp {
                 13.0,
                 colors.text_primary,
                 text_x,
-                rect.y0 + 10.0 * ctx.scale,
+                block_top,
                 TextWeight::Medium,
             );
         }
@@ -233,13 +221,13 @@ impl VideoEditorApp {
                 11.0,
                 colors.text_dim,
                 text_x,
-                rect.y0 + 34.0 * ctx.scale,
+                sub_top,
             );
         }
         if let Some((x0, label)) = chip {
             let width = f64::from(ctx.text.measure(label, 10.5, None).0) + 14.0 * ctx.scale;
-            let top = rect.y0 + 31.0 * ctx.scale;
-            let chip = Rect::new(x0, top, x0 + width, top + 17.0 * ctx.scale);
+            let top = sub_top - 1.5;
+            let chip = Rect::new(x0, top, x0 + width, sub_top + sub_h + 1.5);
             fill_rrect(
                 ctx.scene,
                 ctx.transform,

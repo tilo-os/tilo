@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ChangeHash};
-use vello::kurbo::Point;
+use vello::kurbo::{Point, Rect};
 
 use ui::icons::Icon;
 use ui::{ActionHost, ImageStore};
@@ -215,6 +215,11 @@ pub struct MailState {
     /// sidebar is closed (and the list becomes the leftmost pane, with the
     /// toggle over its header).
     pub sidebar_open: bool,
+    /// The shell's collapse / hamburger chip as laid out this frame (app
+    /// coordinates), so pane headers align to the real chip at every text
+    /// scale. `None` while the shell shows no such chip (Back affordance, or
+    /// before the first layout); panes then fall back to the 1x mirror.
+    pub shell_chip: Option<Rect>,
     /// The list pane owns the search field; it publishes focus here so the app
     /// knows whether a keyboard shortcut should fire.
     pub search_focused: bool,
@@ -282,6 +287,7 @@ impl MailState {
             narrow: false,
             detail_pushed: false,
             sidebar_open: true,
+            shell_chip: None,
             search_focused: false,
             focus_search_request: false,
             seeded: false,

@@ -64,6 +64,7 @@ pub mod actions;
 pub mod analysis;
 pub mod app;
 pub mod doc;
+pub mod framework_history;
 /// Bounded, cancellation-aware real-file discovery and metadata ingestion.
 pub mod import;
 pub mod library_analysis;
@@ -74,6 +75,7 @@ pub mod pixels;
 /// surface and resource/action routing. This module deliberately has no tile
 /// client, so opening a Photos location never leaks it to a network provider.
 pub mod places;
+mod presentation;
 pub mod reference;
 pub mod search;
 pub mod strings;
@@ -551,6 +553,9 @@ pub fn seed_scenario(
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod framework_history_tests;
 
 #[cfg(test)]
 mod camera_import_tests {

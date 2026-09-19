@@ -486,15 +486,18 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 /// makes a deterministic no-motion shot. This mirrors the live app's
 /// accessibility setting without altering live state.
 fn pick_shot_theme(args: &LaunchArgs) -> Theme {
+    let shared = ui::launch::shot_theme(args);
     let sel = args
         .value("--theme")
         .map(str::to_owned)
         .or_else(|| std::env::var("TILO_MUSIC_THEME").ok())
         .unwrap_or_default();
     let theme = match sel.to_lowercase().as_str() {
-        "light" => Theme::light(),
-        "high-contrast" | "high_contrast" => Theme::high_contrast(),
-        _ => Theme::dark(),
+        "" => None,
+        "light" => Some(Theme::light()),
+        "high-contrast" | "high_contrast" => Some(Theme::high_contrast()),
+        "dark" => Some(Theme::dark()),
+        _ => Some(Theme::dark()),
     };
     let reduce_motion = [
         "TILO_MUSIC_REDUCE_MOTION",
@@ -503,16 +506,18 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
     ]
     .iter()
     .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty() && value != "0"));
-    let text_scale = args.text_scale.unwrap_or_else(|| {
-        std::env::var("TILO_SHOTS_TEXT_SCALE")
-            .ok()
-            .and_then(|value| value.parse::<f32>().ok())
-            .filter(|scale| scale.is_finite())
-            .map_or(1.0, |scale| scale.clamp(0.5, 2.0))
-    });
-    theme
-        .with_reduce_motion(reduce_motion)
-        .with_text_scale(text_scale)
+    theme.map_or_else(
+        || {
+            shared
+                .clone()
+                .with_reduce_motion(shared.reduce_motion || reduce_motion)
+        },
+        |theme| {
+            theme
+                .with_reduce_motion(shared.reduce_motion || reduce_motion)
+                .with_text_scale(shared.text_scale)
+        },
+    )
 }
 
 /// Headless benchmark: render the current view (`TILO_MUSIC_VIEW`) `n` times
@@ -608,32 +613,22 @@ fn render_widget_frame(
         )
         .expect("shot root");
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut *text_renderer;
-        // `compute_layout_with_measure` only errors for a node absent from
-        // this tree, which cannot happen for the `root` this function just
-        // built moments ago.
-        #[allow(
-            clippy::expect_used,
-            reason = "compute_layout_with_measure only errors for a node absent from this tree; root was just built in this exact taffy above"
-        )]
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("shot layout");
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget, &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
+            root,
+            taffy::Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            &node_map,
+            &bindings,
+            text_renderer,
+        )
+        .expect("shot layout");
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 

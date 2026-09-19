@@ -26,7 +26,7 @@ use vello::peniko::Color;
 use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 
@@ -135,14 +135,19 @@ impl CountdownRing {
             .with_caps(Cap::Round)
             .with_join(Join::Round);
 
-        // Faint full-circle track. Use the standard border token rather than a
-        // white overlay so the track stays visible on light surfaces (a white
-        // 10% overlay vanishes against a light background, orphaning the arc).
+        // Faint full-circle track, derived against the raised card the ring
+        // sits on (HIG §9.5) at the panel-border strength so a 3 px arc reads
+        // as a track rather than a hairline. A declared `border_standard` was
+        // three shades from `raised` on the dark preset and left the arc
+        // orphaned; a white overlay would vanish on a light card.
         let track = Circle::new(self.center, self.radius);
         scene.stroke(
             &Stroke::new(self.thickness),
             transform,
-            theme.tokens.colors.border_standard,
+            ui::surface::edge_on_with(
+                theme.tokens.colors.surfaces.raised,
+                ui::chrome::PANEL_BORDER_ALPHA,
+            ),
             None,
             &track,
         );
@@ -166,10 +171,16 @@ impl CountdownRing {
             scene.stroke(&stroke, transform, self.arc_color(theme), None, &path);
         }
 
-        // Centre seconds count.
+        // Centre seconds count. The radius already carries the text scale
+        // (the row measures it as `RING_R × text_scale`), and the renderer
+        // applies that scale again while shaping, so the label's design size
+        // goes through `renderer_input_style` once — otherwise the digits
+        // render at 4× under 200% text and spill past the ring.
         if self.show_seconds {
             let label = self.seconds.to_string();
-            let size = (self.radius * 0.95) as f32;
+            let size = text_renderer
+                .renderer_input_style(&TextStyle::new((self.radius * 0.95) as f32))
+                .size;
             let color = if self.seconds <= URGENT_SECONDS {
                 theme.tokens.colors.semantic.danger
             } else {
