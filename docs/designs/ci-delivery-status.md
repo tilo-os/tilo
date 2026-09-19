@@ -31,6 +31,12 @@ private protection experiments do not create a deployed integration service.
   containers in 0.34–0.54 seconds after task receipt, with no pull event. A full
   main lint completed in 127.911 seconds. These measurements apply to the seeded
   on-prem workers; unseeded AWS workers still transfer/extract the images.
+- Product `1b82f2e0f` exempts eight exact audited CI helper/test pairs from native
+  compilation while keeping mandatory quality tests. All 183 current Python
+  tests passed. Actual run 22884 completed selection and skipped the native
+  sentinel without allocating a runner. Unknown/mixed/deleted/workflow changes
+  and explicit full requests retain native coverage. Its security job still
+  waited on general capacity; this does not establish a green aggregate.
 - The default native builder is now resolved once to an immutable manifest
   digest. Actual authenticated run 22806 verified that the API's digest equals
   the raw registry index SHA and contains x86-64/ARM64 descriptors. App packaging
@@ -55,16 +61,24 @@ private protection experiments do not create a deployed integration service.
   systemd-style cgroup paths. Kata guest-agent timeouts terminated affected workers;
   the underlying stall cause is not yet proven. A reviewed isolated-node canary
   pairs corrected accounting with conservative admission overhead and a real
-  image-extraction workload. Its reserved node is now empty. Preflight correctly
-  stopped when the readiness label was reconciled back; revised isolation must
-  prove ordinary jobs cannot tolerate the reservation taint and protect the node
-  from autoscaler removal. No fleet runtime correction is claimed.
+  image-extraction workload. The revised taint/cordon-isolated canary completed:
+  116 seconds for cold pull/extraction, successful Rust/Cargo commands and a
+  180-second observation hold. Actual QEMU inherited the intended 31 GiB Pod cap,
+  with a measured 12.62 GiB peak and no observed workload OOM/guest loss. Temporary
+  configuration/resources were removed and original node settings restored;
+  root's reservation taint remains briefly for the next bounded qualification.
+  Startup and post-success teardown errors remain diagnostic leads. The 20 GiB
+  overhead was a test budget, not a production setting or fleet qualification.
 - AWS EBS seed support and a bounded clean-source/snapshot/clone pilot are prepared
   and disabled. Live CSI/storage prerequisites were inspected. Actual clone and
   image-reuse acceptance wait for safe runtime accounting and capacity.
 - A historical 51-package artifact passed package/runtime signature and payload
   checks, and the current assembler produced identical outputs twice. This proves
   transport/assembly compatibility, not current toolkit ABI or native execution.
+  Subsequent real-receipt auditing found missing signed ISA metadata in contacts,
+  notes and store; the installer treats a missing host ISA as unavailable. The
+  collection therefore does not qualify as installable. Current source packaging
+  policy is being corrected rather than altering historical signed artifacts.
 - The private packaging coordinator persists dispatch intent, preserves its active
   build, replaces pending requests, and advances the comparison baseline only on
   success. Ten tests cover crash/restart/concurrent callers. Actual runs 22827 and
