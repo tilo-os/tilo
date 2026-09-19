@@ -192,3 +192,20 @@ test('global shortcut accepts Option and Meta on macOS and other platforms only 
  assert.equal(hostCore.overlayKeyboardRoute('Document',{key:'ArrowDown'},false,true),'native');
  assert.equal(hostCore.overlayKeyboardRoute('Document',{key:'k',metaKey:true},false,true),'forward');
 });
+
+test('a status without semantics retains the last tree for keyboard routing while a tree replaces it',()=>{
+  assert.equal(typeof hostCore.retainStatus,'function','the host retains status fields across partial statuses');
+  assert.equal(typeof hostCore.retainedWidget,'function');
+  const tree={keyboard_focus_owner:'system-search',root:{path:'system-search',widget:'SystemSearch',children:[]}};
+  let state=hostCore.retainStatus(undefined,{phase:'presented',frames:1,semantics:tree});
+  state=hostCore.retainStatus(state,{phase:'presented',frames:2});
+  assert.strictEqual(state.semantics,tree,'an omitted tree keeps the retained one');
+  assert.equal(state.frames,2,'other fields still update');
+  assert.equal(hostCore.retainedWidget(state),'SystemSearch');
+  assert.equal(hostCore.overlayKeyboardRoute(hostCore.retainedWidget(state),{key:'ArrowDown'},false,true),'forward','keyboard routing uses the retained tree');
+  const replaced={root:{path:'desktop',widget:'Document',children:[]}};
+  state=hostCore.retainStatus(state,{phase:'presented',frames:3,semantics:replaced});
+  assert.strictEqual(state.semantics,replaced);
+  assert.equal(hostCore.overlayKeyboardRoute(hostCore.retainedWidget(state),{key:'ArrowDown'},false,true),'native');
+  assert.equal(hostCore.retainedWidget(undefined),undefined,'before the first status nothing is retained');
+});

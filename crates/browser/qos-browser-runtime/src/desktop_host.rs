@@ -3764,4 +3764,54 @@ mod tests {
         assert!(frame.take_caller_operation().is_none());
         assert!(frame.take_global_search_intent().is_none());
     }
+
+    /// Manual CPU microbenchmark for the semantics status gate on the real
+    /// desktop fixture while typing into the Writer: tree serialization (paid
+    /// on every frame for the change hash), the structure signature, the gate
+    /// decision, and what the Stage 4 path paid on top when it parsed the bytes
+    /// back into a Value and serialized them again inside the status.
+    #[test]
+    #[ignore = "manual CPU microbenchmark, not a browser frame-rate gate"]
+    fn semantics_serialization_cost_per_typed_key() {
+        use crate::semantics_status::{SemanticsDecision, SemanticsGate, structure_signature};
+        fn count(node: &ui::headless::InspectionNode) -> usize { 1 + node.children.iter().map(count).sum::<usize>() + node.semantics.as_ref().map_or(0, count_access) }
+        fn count_access(node: &ui::a11y::AccessNode) -> usize { 1 + node.children.iter().map(count_access).sum::<usize>() }
+        let (root, _handle, _) = fixture();
+        let mut frame = ui::headless::FrameHarness::new_with_controlled_inputs(ui::State::new(), Box::new(root), (1000, 700), ui::Theme::dark(), ui::TextRenderer::new(), ui::permissions::UserId("author".into()));
+        frame.click_at(200.0, 180.0);
+        frame.relayout();
+        assert!(frame.inspection().keyboard_focus_owner.is_some(), "the Writer editor must own keyboard focus");
+        let mut gate = SemanticsGate::new(std::time::Duration::from_millis(100));
+        let (mut serialize, mut structure, mut decide, mut stage4_extra) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut nodes, mut bytes, mut delivered, mut deferred, mut unchanged) = (0usize, 0usize, 0usize, 0usize, 0usize);
+        let ms = |start: std::time::Instant| start.elapsed().as_secs_f64() * 1000.0;
+        for i in 0..200 {
+            frame.type_text(if i % 7 == 6 { " " } else { "a" });
+            frame.relayout();
+            let output = frame.frame_output();
+            let snapshot = &output.semantics;
+            nodes = count(&snapshot.root);
+            let start = std::time::Instant::now();
+            let text = serde_json::to_vec(snapshot).unwrap();
+            serialize.push(ms(start));
+            bytes = text.len();
+            let start = std::time::Instant::now();
+            let _ = structure_signature(snapshot);
+            structure.push(ms(start));
+            let start = std::time::Instant::now();
+            let decision = gate.decide(snapshot, output.ime.as_ref(), ui::clock::Instant::now());
+            decide.push(ms(start));
+            match decision { SemanticsDecision::Deliver { .. } => delivered += 1, SemanticsDecision::Deferred(_) => deferred += 1, SemanticsDecision::Unchanged => unchanged += 1 }
+            let start = std::time::Instant::now();
+            let value: serde_json::Value = serde_json::from_slice(&text).unwrap();
+            let _ = value.to_string();
+            stage4_extra.push(ms(start));
+        }
+        let percentiles = |samples: &mut Vec<f64>| { samples.sort_by(f64::total_cmp); (samples[samples.len() / 2], samples[samples.len() * 99 / 100]) };
+        let (serialize_p50, serialize_p99) = percentiles(&mut serialize);
+        let (structure_p50, structure_p99) = percentiles(&mut structure);
+        let (decide_p50, decide_p99) = percentiles(&mut decide);
+        let (extra_p50, extra_p99) = percentiles(&mut stage4_extra);
+        eprintln!("semantics per typed key (200 keys, desktop fixture, {nodes} nodes, {bytes} bytes JSON, native {}): serialize p50={serialize_p50:.3} p99={serialize_p99:.3} ms; structure signature p50={structure_p50:.3} p99={structure_p99:.3} ms; gate decide p50={decide_p50:.3} p99={decide_p99:.3} ms; stage-4 parse+reserialize extra p50={extra_p50:.3} p99={extra_p99:.3} ms; decisions: delivered={delivered} deferred={deferred} unchanged={unchanged}", if cfg!(debug_assertions) { "debug" } else { "release" });
+    }
 }

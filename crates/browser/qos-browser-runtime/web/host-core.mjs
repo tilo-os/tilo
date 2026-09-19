@@ -117,3 +117,6 @@ export function routeGlobalSearchShortcut(event,composing,open) {
 export function overlayKeyboardRoute(widget,...args) {
   return widget==='ActionPalette'||widget==='SystemSearch'?keyboardRoute(...args):semanticKeyboardRoute(...args);
 }
+/** Statuses omit the semantics tree when it is unchanged or throttled; the retained tree stays authoritative until a status carries a new one. */
+export function retainStatus(previous,next){return {...previous,...next};}
+export function retainedWidget(state){return state?.semantics?.root?.widget;}
