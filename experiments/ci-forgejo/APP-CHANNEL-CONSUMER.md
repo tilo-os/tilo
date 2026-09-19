@@ -300,3 +300,47 @@ and publication helper commands run under the platform's isolated
 `python3 -I tools/ci_python.py tools/SCRIPT.py` launcher, with stdlib imports ahead of
 reviewed helper paths and no inherited PYTHONPATH. This commit depends on that
 launcher being integrated; it does not supply a second launcher implementation.
+
+## Trusted final-artifact acceptance callback
+
+`tools/accept_app_artifacts.py` provides `FinalArtifactAcceptance` for explicit
+injection as `ProductForgejo.verifier`. It is not enabled by the coordinator CLI.
+The platform must run this installed code, the API client and the independently
+pinned verifier policy outside candidate checkouts under its isolated interpreter.
+Neither artifact metadata nor candidate paths can select code, policy or commands.
+The central coordinator policy must bind `final_receipt_policy_sha256` to the
+independently supplied verifier policy. This binding is rechecked after replay;
+rotating it changes the desired coordinator policy identity and prevents baseline
+reuse across the change. The existing scheduler still owns execution slots; this
+adds no service.
+
+Acceptance checks the full immutable dispatch inputs and trusted helper policy,
+then identifies the current successful `qualify-collection` job by run/repository,
+job ID, attempt, task ID and handle. The trusted assembly helper emits
+`TILO_COORDINATOR_FINAL INTENT ATTEMPT ARCH RECEIPT_SHA ARCHIVE_SHA BYTES` only after
+canonical final verification. The callback requires exactly one matching marker
+for every requested architecture from that current job's authenticated log API.
+An artifact's own provenance document cannot authenticate its receipt or source.
+
+Each exact run-bound artifact ID is fetched with the existing read-only transport.
+Its receipt and archive bytes must match the job marker. The callback extracts and
+replays the complete canonical verification using the platform's immutable verifier
+bundle. It compares source, collection, runtime and all package identities against
+the emitted receipt; a different approved native verifier architecture is allowed
+for replay, since verification does not execute app payloads. After replay it reads
+the trusted policy, run, complete jobs list and artifact list again. Any changed
+attempt/task/handle, dispatch, artifact identity or policy prevents acceptance.
+The returned existing `tilo.coordinator-verification/v1` proof retains per-architecture
+receipt hashes plus the qualifying job/task/handle and numeric artifact IDs.
+
+Runtime qualification remains outstanding: no real final-collection job has been
+executed for this callback, no callback is installed, and no baseline was advanced.
+The job API's attempt and `GITHUB_RUN_ATTEMPT` correspondence, current-job log routing,
+log timestamp format and task-token historical artifact access require a bounded
+live qualification before activation. A mismatch fails closed. Canonical binaries
+must run in the platform's qualified native environment compatible with the pinned
+builder; unit tests mock cryptographic execution and do not establish that runtime
+compatibility. Transport uses existing per-request timeouts and byte limits, not a
+new global scheduler deadline or admission mechanism. The caller must keep replay
+outside the coordinator's short state transaction and retain its existing final
+intent/run recheck before committing the proof.

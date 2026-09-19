@@ -171,11 +171,13 @@ def main():
         parser.add_argument('--' + name, type=Path, required=True)
     for name in ('source-sha', 'builder-image', 'collection', 'architecture', 'trust-policy-sha256', 'coordinator-policy-sha256', 'intent', 'run-id', 'source-epoch'):
         parser.add_argument('--' + name, required=True)
+    parser.add_argument('--qualifier-attempt', type=int, required=True)
     parser.add_argument('--selected-apps', required=True, help='Exact space-separated needs.plan.outputs.apps')
     parser.add_argument('--baseline-proof', type=Path)
     parser.add_argument('--baseline-proof-sha256', default='')
     parser.add_argument('--baseline-source', default='')
     args = parser.parse_args()
+    channel.require(args.qualifier_attempt > 0, 'positive qualifier attempt required')
     channel.digest(args.source_sha, 40)
     channel.require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-builder@sha256:[0-9a-f]{64}', args.builder_image), 'immutable builder required')
     policy, _ = final.preflight(args.pkg_binary, args.runtime_binary, args.trust_policy, args.trust_policy_sha256)
@@ -204,6 +206,7 @@ def main():
         'baseline_proof_sha256': args.baseline_proof_sha256, 'reused_packages': reused,
         'final_receipt_sha256': channel.sha(args.output / 'final-publication-receipt.json')}
     (args.output / 'assembly-provenance.json').write_text(json.dumps(provenance, indent=2, sort_keys=True) + '\n')
+    print(f"TILO_COORDINATOR_FINAL {args.intent} {args.qualifier_attempt} {args.architecture} {provenance['final_receipt_sha256']} {receipt['collection']['sha256']} {receipt['collection']['bytes']}")
     print(json.dumps({'architecture': args.architecture, 'packages': len(receipt['packages']), 'reused': len(reused), 'published': False}))
 
 

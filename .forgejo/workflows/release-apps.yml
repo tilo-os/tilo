@@ -403,7 +403,7 @@ jobs:
               --trust-policy "$policy" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
               --source-sha "$GITHUB_SHA" --builder-image "$BUILDER_IMAGE" \
               --collection "$COLLECTION" --architecture "$arch" --intent "$COORDINATOR_INTENT" \
-              --run-id "$GITHUB_RUN_ID" --source-epoch "$(git log -1 --format=%ct)" \
+              --run-id "$GITHUB_RUN_ID" --qualifier-attempt "$GITHUB_RUN_ATTEMPT" --source-epoch "$(git log -1 --format=%ct)" \
               --coordinator-policy-sha256 "$COORDINATOR_POLICY_SHA256" \
               --baseline-proof "$baseline" --baseline-proof-sha256 "$BASELINE_RECEIPT_SHA256" \
               --baseline-source "$BASELINE_SHA"
