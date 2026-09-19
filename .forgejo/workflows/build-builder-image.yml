@@ -19,6 +19,7 @@ on:
       - "rust-toolchain.toml"
       - "crates/system/atomic-file/**"
       - "tools/ci/check-build-env.sh"
+      - "tools/ci/install-pdfium.sh"
       - "tools/ci/measure.sh"
       - "tools/ci/sccache-canary.sh"
       - "tools/ci/sccache.sh"
