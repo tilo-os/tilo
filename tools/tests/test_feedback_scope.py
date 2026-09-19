@@ -14,7 +14,9 @@ class FeedbackScopeTests(unittest.TestCase):
         self.assertIn("if: matrix.test_packages != ''", workflow)
         self.assertIn("if: contains(matrix.test_packages, '-p app-catalogue')", workflow)
         self.assertIn('needs: [select, security, affected]', workflow)
-        self.assertIn('test "$SECURITY_RESULT" = success', workflow)
+        self.assertIn('*:true:success)', workflow)
+        self.assertIn('pull_request:false:skipped)', workflow)
+        self.assertIn("if: needs.select.outputs.security_required == 'true'", workflow)
         # Manual acceptance and the release-receipt branch both force full
         # native qualification; ordinary before-SHA handling does not.
         selection = workflow.split('selection_args=()', 1)[1].split('elif [ -z "$base" ]', 1)[0]
