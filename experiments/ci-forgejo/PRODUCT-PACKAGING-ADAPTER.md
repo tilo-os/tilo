@@ -20,6 +20,10 @@ requires an explicit run ID and the same exact checks. No automatic retry,
 cancellation, arbitrary workflow, tag mutation or publication command exists.
 
 The CLI defaults to read-only, including no creation of a missing SQLite file.
+The platform-owned coordinator policy includes `final_receipt_policy_sha256`.
+Rotating the final verifier policy therefore changes the desired policy identity
+and forces full packaging. A same-policy baseline proof with a different final
+policy hash is rejected before dispatch; it cannot silently authorize reuse.
 `--apply-qualification` additionally requires a trusted local policy with
 `enabled: true` and `qualification_only: true`. No enabled policy is shipped.
 Workflow input handling independently requires repository variable
@@ -46,7 +50,8 @@ artifacts, then return:
     "architectures": ["x86_64", "aarch64"],
     "policy_sha256": "<64 hex>"
   },
-  "receipts": {"x86_64": "<canonical receipt SHA256>", "aarch64": "<canonical receipt SHA256>"}
+  "receipts": {"x86_64": "<canonical receipt SHA256>", "aarch64": "<canonical receipt SHA256>"},
+  "final_policy_sha256": "<platform-owned final verifier policy SHA256>"
 }
 ```
 
