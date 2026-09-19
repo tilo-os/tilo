@@ -6737,10 +6737,11 @@ mod tests {
             target_key.public().as_bytes(),
         ))
         .unwrap();
-        net.registered_home_peer_ids
+        authenticated_personal_peer(&net, &root, &target_key);
+        net.registered_home_device_ids
             .lock()
             .unwrap()
-            .insert(target_key.public());
+            .insert(*target_key.public().as_bytes());
         let request_id = net
             .send_personal_fabric_action(
                 &target,
