@@ -153,9 +153,12 @@ pub(crate) fn refresh_bound_controls(
     })
 }
 
-pub(crate) fn drain_control_invocations(
-    root: &mut dyn Widget,
-) -> Result<Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>, BoundDispatchError> {
+pub(crate) struct DrainedControlInvocations {
+    pub(crate) pending: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
+    pub(crate) error: Option<BoundDispatchError>,
+}
+
+pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControlInvocations {
     let mut invocations = Vec::new();
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
@@ -191,12 +194,37 @@ pub(crate) fn drain_control_invocations(
         }
         None
     };
+    let error = root
+        .visit_components(&mut ComponentRequest {
+            target: None,
+            found: false,
+            visit: &mut visit,
+        })
+        .err();
+    DrainedControlInvocations {
+        pending: invocations,
+        error,
+    }
+}
+
+/// Deliver feedback only to the component that emitted the local intent.
+/// Domain resource addresses can be shared by multiple live instances.
+pub(crate) fn notify_control_invocation_result(
+    root: &mut dyn Widget,
+    target: &BoundActionTarget,
+    result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+) -> Result<(), BoundDispatchError> {
+    let mut visit = |_: &CallbackBinding,
+                     widget: &mut dyn crate::widget::AppWidget,
+                     _: &tilo_actions::ActionRegistry| {
+        widget.on_control_invocation_result(&target.address.address, result);
+        None
+    };
     root.visit_components(&mut ComponentRequest {
-        target: None,
+        target: Some(&target.binding),
         found: false,
         visit: &mut visit,
-    })?;
-    Ok(invocations)
+    })
 }
 
 pub(crate) fn poll_resource_operation(
@@ -743,6 +771,27 @@ pub(crate) fn discover_cached_bound_resources(
     let mut snapshots = Vec::new();
     visit(widget, doc, cache, local_generation, &mut snapshots)?;
     Ok(snapshots)
+}
+
+/// Action-scoped authority shared by native and headless legacy hosts.
+pub(crate) fn permits_local_action(
+    permissions: &PermissionContext,
+    app_id: &str,
+    action: &tilo_actions::ActionSpec,
+) -> bool {
+    use crate::permissions::Verb;
+    use tilo_actions::PermissionRequirement as Requirement;
+    let verb = match action.contract.permission {
+        Requirement::None => return true,
+        Requirement::Read => Verb::Read,
+        Requirement::Comment => Verb::Comment,
+        Requirement::Write => Verb::Write,
+        Requirement::Invite => Verb::Invite,
+        Requirement::Admin => Verb::Admin,
+    };
+    permissions.check(&crate::permissions::PermissionScope::action(
+        app_id, &action.id, verb,
+    ))
 }
 
 pub(crate) fn filter_resource(
@@ -2077,8 +2126,30 @@ impl BoundNodeMap {
         layout_root: NodeId,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
     ) {
+        // SAFETY: the single root satisfies the same ownership and topology
+        // contract as a one-element forest.
+        unsafe { self.rebuild_roots(&[(root, layout_root)], taffy, nodes) };
+    }
+
+    /// Admit separately owned presentation roots into one shared layout arena.
+    /// Each subtree starts with its own binding: host controls must never
+    /// inherit the document authority of a neighboring application subtree.
+    ///
+    /// # Safety
+    /// All roots and raw pointers must belong to the same live build under one
+    /// exclusive owner. The supplied layout subtrees must be disjoint. No
+    /// replacement, rebuild or destruction may occur during admission.
+    pub unsafe fn rebuild_roots(
+        &mut self,
+        roots: &[(&dyn Widget, NodeId)],
+        taffy: &TaffyTree<()>,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+    ) {
         self.clear();
-        let mut pending = vec![(layout_root, root.callback_binding())];
+        let mut pending = roots
+            .iter()
+            .map(|(root, layout_root)| (*layout_root, root.callback_binding()))
+            .collect::<Vec<_>>();
         while let Some((node, inherited)) = pending.pop() {
             let binding = if let Some(&pointer) = nodes.get(&node) {
                 // SAFETY: rebuild's owner guarantees all admitted pointers are live.
