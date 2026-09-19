@@ -221,13 +221,9 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         .map(|result| result.and_then(file_explorer::received_shares::admit_link));
     let mut widget = FileExplorerWidget::new();
     if received_share.is_none()
-        && let Some(path) = args
-            .positionals()
-            .first()
-            .map(std::path::PathBuf::from)
-            .filter(|path| path.is_absolute() && path.is_dir())
+        && let Some(path) = args.positionals().first()
     {
-        widget.navigate(path);
+        navigate_launch_directory(&mut widget, std::path::Path::new(path))?;
     }
     if let Some(result) = received_share {
         match result {
@@ -247,6 +243,19 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         }
     }
     Ok(Box::new(widget))
+}
+
+/// Resolve against the launcher's working directory before changing the Files
+/// location. Missing or inaccessible directories go through the normal visible
+/// navigation error instead of silently opening Home.
+fn navigate_launch_directory(
+    widget: &mut FileExplorerWidget,
+    path: &std::path::Path,
+) -> Result<(), LaunchError> {
+    let path =
+        std::path::absolute(path).map_err(|error| LaunchError::Operation(error.to_string()))?;
+    widget.navigate(path);
+    Ok(())
 }
 
 /// Open persisted state while preserving the file manager's per-replica actor
@@ -1006,7 +1015,25 @@ fn render_shot_to_png(
 
 #[cfg(test)]
 mod actor_tests {
-    use super::{distinct_actor, parse_text_scale_arg};
+    use super::{distinct_actor, navigate_launch_directory, parse_text_scale_arg};
+
+    #[test]
+    fn launch_directory_uses_relative_paths_and_surfaces_missing_directories() {
+        let cwd = std::env::current_dir().unwrap();
+        let fixture = tempfile::tempdir_in(&cwd).unwrap();
+        let relative = fixture.path().strip_prefix(&cwd).unwrap();
+        let mut widget = file_explorer::FileExplorerWidget::with_persistence(
+            None,
+            Some(fixture.path().to_path_buf()),
+        );
+        navigate_launch_directory(&mut widget, relative).unwrap();
+        assert_eq!(widget.current_path(), fixture.path());
+        assert!(widget.error().is_none());
+        let missing = fixture.path().join("missing-folder");
+        navigate_launch_directory(&mut widget, &missing).unwrap();
+        assert_eq!(widget.current_path(), missing);
+        assert!(widget.error().is_some());
+    }
 
     #[test]
     fn screenshot_text_scale_matches_the_bounded_launch_contract() {
