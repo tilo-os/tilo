@@ -240,6 +240,9 @@ mod capture_tests {
   let mut frame=ui::headless::FrameHarness::from_component(component,(900,640),ComponentRunnerInputs{theme:ui::Theme::dark(),text_renderer:ui::TextRenderer::new()}).unwrap();
   frame.click_at(450.0,580.0);frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("S".into())));
   assert_eq!(records.read(&record,|doc|chat::doc::ChatDoc::draft_text(doc,"c_general")).unwrap(),"S");
+  let mut published=PublishedRecords::default();
+  assert!(published.publish(1,definition.app_id,&records,&record,|_|Ok(())).unwrap());
+  assert!(!published.publish(1,definition.app_id,&records,&record,|_|panic!("unchanged typing frame")).unwrap());
   let captured=capture(&records,&record).unwrap();let mut sent=automerge::AutoCommit::load(&captured).unwrap();
   let _=records.try_flush();let actual=records.read(&record,|doc|doc.clone().save()).unwrap();let mut actual=automerge::AutoCommit::load(&actual).unwrap();
   assert_eq!(sent.get_heads(),actual.get_heads(),"captured bytes must carry the owner's stamped transaction, not a separately committed clone");
@@ -251,7 +254,16 @@ mod capture_tests {
   use automerge::transaction::Transactable;
   remote.put(automerge::ROOT,"remote-checkpoint-probe",true).unwrap();remote.commit();
   assert_eq!(records.merge_admitted(&checkout,&qos_peer_state::DocumentMutation::Snapshot(remote.save())).unwrap(),Some(true));
-  frame.relayout();frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("T".into())));
+  frame.relayout();
+  assert!(published.publish(1,definition.app_id,&records,&record,|_|Ok(())).unwrap(),"remote merge changes the observed heads");
+  let before=records.read(&record,|doc|doc.base_heads()).unwrap();
+  frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("T".into())));
+  assert_eq!(records.read(&record,|doc|doc.base_heads()).unwrap(),before);
+  assert!(records.read(&record,|doc|doc.pending_ops()>0).unwrap());
+  let mut sent_typing=None;
+  assert!(published.publish(1,definition.app_id,&records,&record,|bytes|{sent_typing=Some(bytes);Ok(())}).unwrap(),"unfinished typing must publish despite unchanged heads");
+  let sent_typing=automerge::AutoCommit::load(&sent_typing.unwrap()).unwrap();
+  assert_eq!(chat::doc::ChatDoc::draft_text(&sent_typing,"c_general"),"ST");
   let _=capture(&records,&record).unwrap();assert_eq!(records.read(&record,|doc|chat::doc::ChatDoc::draft_text(doc,"c_general")).unwrap(),"ST");
  }
 }
@@ -261,4 +273,103 @@ pub(crate) fn prepare_remote(records:&ui::record::RecordStore,id:&RecordId)->Res
  // The existing checked mutable loan stamps and closes the logical local burst.
  records.with(id,|_|{}).ok_or("record owner unavailable at remote boundary")?;
  capture(records,id)
+}
+
+/// Tracks document publication separately from presentation.
+#[derive(Default)]
+pub(crate) struct PublishedRecords {
+    heads: std::collections::HashMap<(u32, String, RecordId), Vec<automerge::ChangeHash>>,
+}
+impl PublishedRecords {
+    pub(crate) fn publish(
+        &mut self, peer: u32, app: &str, records: &ui::record::RecordStore,
+        id: &RecordId, send: impl FnOnce(Vec<u8>) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        use automerge::transaction::Transactable;
+        let key = (peer, app.to_owned(), id.clone());
+        let unchanged = records.read(id, |doc| {
+            // Uncommitted typing can have the same heads as the last frame.
+            // It must still pass through capture's canonical commit boundary.
+            doc.pending_ops() == 0 && self.heads.get(&key).is_some_and(|heads| *heads == doc.base_heads())
+        }).ok_or("record unavailable")?;
+        if unchanged { return Ok(false); }
+        let bytes = capture(records, id)?;
+        let heads = records.read(id, |doc| doc.base_heads()).ok_or("record unavailable")?;
+        send(bytes)?;
+        // A failed journal/publication must not suppress the next retry.
+        self.heads.insert(key, heads);
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use automerge::{ReadDoc, transaction::Transactable};
+    fn record() -> (ui::record::RecordStore, RecordId) {
+        let store = ui::record::RecordStore::in_memory();
+        let id = RecordId::for_tab(987);
+        store.create_record(&RecordCheckout::new(id.clone(), ui::record::RecordKind::new("test"))).unwrap();
+        store.with(&id, |doc| { doc.put(automerge::ROOT, "text", "initial").unwrap(); doc.commit(); }).unwrap();
+        (store, id)
+    }
+    #[test]
+    fn unchanged_frames_skip_publication_but_edits_and_new_peers_publish() {
+        let (store, id) = record();
+        let mut published = PublishedRecords::default();
+        let mut payloads = Vec::new();
+        assert!(published.publish(1, "test", &store, &id, |bytes| {payloads.push(bytes); Ok(())}).unwrap());
+        for _ in 0..120 {
+            assert!(!published.publish(1, "test", &store, &id, |_| panic!("unchanged frame serialized and published its document")).unwrap());
+        }
+        store.with(&id, |doc| {doc.put(automerge::ROOT, "text", "edited").unwrap(); doc.commit();}).unwrap();
+        assert!(published.publish(1, "test", &store, &id, |bytes| {payloads.push(bytes); Ok(())}).unwrap());
+        let doc = automerge::AutoCommit::load(&payloads[1]).unwrap();
+        assert_eq!(doc.get(automerge::ROOT, "text").unwrap().unwrap().0.to_str(), Some("edited"));
+        assert!(published.publish(2, "test", &store, &id, |_| Ok(())).unwrap());
+        assert!(published.publish(2, "different-app", &store, &id, |_| Ok(())).unwrap());
+    }
+    #[test]
+    fn failed_publication_retries_the_same_heads() {
+        let (store, id) = record();
+        let mut published = PublishedRecords::default();
+        assert!(published.publish(1, "test", &store, &id, |_| Err("storage failed".into())).is_err());
+        assert!(published.publish(1, "test", &store, &id, |_| Ok(())).unwrap());
+        store.with(&id, |doc| {doc.put(automerge::ROOT, "text", "retry edit").unwrap(); doc.commit();}).unwrap();
+        assert!(published.publish(1, "test", &store, &id, |_| Err("storage failed".into())).is_err());
+        assert!(published.publish(1, "test", &store, &id, |_| Ok(())).unwrap());
+        assert!(!published.publish(1, "test", &store, &id, |_| panic!("already published")).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod publication_benchmark {
+    use super::*;
+    use automerge::transaction::Transactable;
+    #[test]
+    #[ignore = "manual CPU microbenchmark, not a browser frame-rate gate"]
+    fn unchanged_document_publication_cost() {
+        let cache=PortableStorage::new("publication-benchmark","browser").unwrap();
+        let store=RecordOwners::portable(cache).open("test","room").unwrap();
+        let id=RecordId::for_tab(988);
+        store.create_record(&RecordCheckout::new(id.clone(),ui::record::RecordKind::new("test"))).unwrap();
+        store.with(&id,|doc|{for i in 0..100 {doc.put(automerge::ROOT,"body",format!("{i}:{}","x".repeat(65536))).unwrap();doc.commit();}}).unwrap();
+        let prior=capture(&store,&id).unwrap();
+        let mut published=PublishedRecords::default();
+        published.publish(1,"test",&store,&id,|_|Ok(())).unwrap();
+        let mut baseline=Vec::new();let mut candidate=Vec::new();
+        for _ in 0..200 {
+            let start=std::time::Instant::now();
+            let bytes=capture(&store,&id).unwrap();
+            let before=automerge::AutoCommit::load(&prior).unwrap();
+            let after=automerge::AutoCommit::load(&bytes).unwrap();
+            assert_eq!(before.base_heads(),after.base_heads());
+            baseline.push(start.elapsed().as_secs_f64()*1000.0);
+            let start=std::time::Instant::now();
+            assert!(!published.publish(1,"test",&store,&id,|_|panic!("unchanged document published")).unwrap());
+            candidate.push(start.elapsed().as_secs_f64()*1000.0);
+        }
+        baseline.sort_by(f64::total_cmp);candidate.sort_by(f64::total_cmp);
+        eprintln!("publication CPU ms (200 samples; native debug; 100 edits of 64KiB): baseline p50={:.3} p99={:.3}; candidate p50={:.3} p99={:.3}",baseline[99],baseline[197],candidate[99],candidate[197]);
+    }
 }

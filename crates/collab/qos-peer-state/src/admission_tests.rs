@@ -1346,11 +1346,14 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     for message in messages.into_iter().skip(1){browser.receive(a.verifying_key().to_bytes(),message,now).unwrap();}
     let receipt=browser.durable_coverage("test.app","tab:1").unwrap().unwrap();assert_eq!(receipt.generation,7);
     assert!(browser.durable_covers_current("test.app","tab:1").unwrap());
+    assert_eq!(browser.durable_coverage_with_current("test.app","tab:1").unwrap(),Some((receipt.clone(),true)));
     let bytes=browser.durable().unwrap();let mut browser=StatePeer::restore(&bytes,room,ac,vec![bc],RevocationList::new(),now).unwrap();
     assert_eq!(browser.durable_coverage("test.app","tab:1").unwrap().unwrap(),receipt);
     let mut doc=AutoCommit::load(&browser.document("test.app","tab:1").unwrap()).unwrap();let heads=doc.get_heads();doc.put(ROOT,"value",2).unwrap();doc.commit();
     browser.publish_incremental("test.app","tab:1",doc.save_after(&heads),&b,now).unwrap();
     assert!(!browser.durable_covers_current("test.app","tab:1").unwrap(),"an older receipt never covers a newer local edit");
+    assert_eq!(browser.durable_coverage_with_current("test.app","tab:1").unwrap(),Some((receipt,false)));
+    assert!(browser.durable_coverage_with_current("test.app","missing").unwrap().is_none());
 }
 
 #[test]

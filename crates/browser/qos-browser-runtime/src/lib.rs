@@ -61,3 +61,6 @@ mod action_palette;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod viewport;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod frame_metrics;

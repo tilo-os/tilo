@@ -409,6 +409,20 @@ use crate::history_mode::frame::FrameworkInputFrame;
 /// Live [`crate::App`] additionally owns the window and event loop, but follows
 /// the same pass ordering documented by [`Self::relayout`].
 /// Borrowed renderer input plus semantic output from the same real widget frame.
+/// Cheap wake demand; deliberately excludes accessibility and inspection trees.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameSchedule {
+    pub needs_redraw: bool,
+    pub needs_animation_frame: bool,
+    pub next_wake_deadline: Option<crate::clock::Instant>,
+}
+
+/// Borrowed paint input without constructing an accessibility snapshot.
+pub struct FrameRenderInput<'a> {
+    pub scene: &'a Scene,
+    pub background: vello::peniko::Color,
+}
+
 pub struct FrameOutput<'a> {
     pub scene: &'a Scene,
     pub background: vello::peniko::Color,
@@ -1075,9 +1089,42 @@ impl FrameHarness {
         self.platform
     }
 
+    /// Read wake demand without materializing document text or semantic nodes.
+    pub fn frame_schedule(&self) -> FrameSchedule {
+        self.drain_component_wakes();
+        let roots = self.presentation_roots();
+        FrameSchedule {
+            needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame()),
+            next_wake_deadline: roots.iter().filter_map(|root| root.next_wake_deadline()).min(),
+            needs_redraw: roots.iter().any(|root| root.needs_redraw()) || !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() || self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()),
+        }
+    }
+
+    /// Diagnostic paths of dirty subtrees, without inspecting document content.
+    /// Queried outside a measured frame; not part of normal scheduling.
+    pub fn redraw_sources(&self) -> Vec<String> {
+        fn visit(widget: &dyn Widget, parent: &str, out: &mut Vec<String>) {
+            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else { return; };
+            if !widget.needs_redraw() { return; }
+            let path = format!("{parent}/{}", widget.name());
+            out.push(path.clone());
+            for child in widget.children() { visit(child, &path, out); }
+        }
+        self.drain_component_wakes();
+        let mut result = Vec::new();
+        for root in self.presentation_roots() { visit(root, "", &mut result); }
+        result
+    }
+
+    /// Borrow the completed scene. Use `frame_output` when semantics are needed.
+    pub fn frame_render_input(&self) -> FrameRenderInput<'_> {
+        self.drain_component_wakes();
+        FrameRenderInput { scene: &self.scene, background: self.theme.bg_app }
+    }
+
     /// Inspect a completed frame without creating a GPU, worker, or window.
     pub fn frame_output(&self) -> FrameOutput<'_> {
-        self.drain_component_wakes();
+        let schedule = self.frame_schedule();
         FrameOutput {
             scene: &self.scene, background: self.theme.bg_app,
             logical_size: self.viewport,
@@ -1085,16 +1132,16 @@ impl FrameHarness {
                           (f64::from(self.viewport.1) * self.input_scale).ceil() as u32),
             semantics: self.inspection(),
             ime: self.system_search_ime().or_else(|| self.caller_palette.palette.as_ref().and_then(|p| crate::ime::ImeWindowState::from_widget(p.presentation_widgets().0))).or_else(|| self.focused.and_then(|id| self.inspect_node(id, crate::ime::ImeWindowState::from_widget).ok().flatten())),
-            needs_animation_frame: self.presentation_roots().iter().any(|root| root.needs_animation_frame()),
-            next_wake_deadline: self.presentation_roots().iter().filter_map(|root| root.next_wake_deadline()).min(),
-            needs_redraw: self.presentation_roots().iter().any(|root| root.needs_redraw()) || !self.bound_invocations.is_empty() || !self.pending_control_invocations.is_empty() || self.component_wake.as_ref().is_some_and(|wake| wake.dirty.get()),
+            needs_animation_frame: schedule.needs_animation_frame,
+            next_wake_deadline: schedule.next_wake_deadline,
+            needs_redraw: schedule.needs_redraw,
         }
     }
 
     /// Pump component wakes and animate using the production update/layout/draw passes.
     /// Returns whether a new scene was produced. The host schedules this on its frame clock.
     pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
-        let frame = self.frame_output();
+        let frame = self.frame_schedule();
         if !frame.needs_redraw && !frame.needs_animation_frame
             && !frame.next_wake_deadline.is_some_and(|deadline| deadline <= crate::clock::Instant::now()) { return Ok(false); }
         self.host_tick();

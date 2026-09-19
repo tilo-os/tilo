@@ -1082,6 +1082,9 @@ impl StatePeer {
     }
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
     pub fn durable_coverage(&self,app:&str,record:&str)->Result<Option<crate::durability::DurableReceipt>,String>{
+        Ok(self.durable_receipt_checkpoint(app,record)?.map(|(receipt,_)|receipt))
+    }
+    fn durable_receipt_checkpoint(&self,app:&str,record:&str)->Result<Option<(crate::durability::DurableReceipt,AutoCommit)>,String>{
         let Some(room)=self.room_doc.as_ref()else{return Ok(None)};
         let receipts=crate::durability::entries(room)?;
         let Some(receipt)=receipts.get(&crate::coverage::route_key(app,record))else{return Ok(None)};
@@ -1095,13 +1098,18 @@ impl StatePeer {
         let heads=accepted.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
         let payload=DocumentMutation::Snapshot(snapshot.clone()).encode().map_err(err)?;
         if heads!=coverage.heads||*blake3::hash(&payload).as_bytes()!=coverage.payload_hash||coverage.watermarks.iter().any(|(author,seq)|document.covered.get(author).copied().unwrap_or(0)<*seq){return Ok(None)}
-        Ok(Some(receipt.clone()))
+        Ok(Some((receipt.clone(),accepted)))
+    }
+    /// Validate the receipt and current-head coverage against one decoded checkpoint.
+    /// All authority, route, payload and watermark checks remain fresh per query.
+    pub fn durable_coverage_with_current(&self,app:&str,record:&str)->Result<Option<(crate::durability::DurableReceipt,bool)>,String>{
+        let Some((receipt,mut accepted))=self.durable_receipt_checkpoint(app,record)? else{return Ok(None)};
+        let document=self.documents.get(&Route{app:app.into(),record:record.into()}).ok_or("missing record")?;
+        let current=document.doc.base_heads().iter().all(|head|accepted.get_change_by_hash(head).is_some());
+        Ok(Some((receipt,current)))
     }
     pub fn durable_covers_current(&self,app:&str,record:&str)->Result<bool,String>{
-        if self.durable_coverage(app,record)?.is_none(){return Ok(false)}
-        let document=self.documents.get(&Route{app:app.into(),record:record.into()}).ok_or("missing record")?;
-        let mut accepted=AutoCommit::load(document.covered_snapshot.as_ref().ok_or("missing accepted checkpoint")?).map_err(err)?;
-        Ok(document.doc.base_heads().iter().all(|head|accepted.get_change_by_hash(head).is_some()))
+        Ok(self.durable_coverage_with_current(app,record)?.is_some_and(|(_,current)|current))
     }
     pub fn durable(&self) -> Result<Vec<u8>, String> {
         let documents = self

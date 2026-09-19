@@ -61,6 +61,8 @@ struct Gpu {
     failure: Arc<Mutex<Option<String>>>,
 }
 struct Mount {
+    metrics: RefCell<crate::frame_metrics::FrameMetrics>,
+    published_records: std::cell::RefCell<crate::admitted_records::PublishedRecords>,
     peer_suspended: bool,
     peer:Option<u32>,
     desktop:Option<crate::desktop_host::DesktopHandle>,
@@ -267,7 +269,16 @@ impl ApplicationHandler<u64> for Runner {
                         }
                         _ => {}
                     }
+                    let start = m.metric_start();
                     m.frame.send_host_event(&event);
+                    m.metric_end("input", start);
+                    if start.is_some() {
+                        let demand = m.frame.frame_schedule();
+                        let mut metrics = m.metrics.borrow_mut();
+                        if demand.needs_redraw { metrics.count("input_demand.redraw"); }
+                        if demand.needs_animation_frame { metrics.count("input_demand.animation"); }
+                        if demand.next_wake_deadline.is_some_and(|wake| wake <= ui::clock::Instant::now()) { metrics.count("input_demand.deadline"); }
+                    }
                     m.pending = true;
                     m.window.request_redraw();
                 }
@@ -282,7 +293,9 @@ impl ApplicationHandler<u64> for Runner {
                 if m.peer_suspended || m.hidden || m.error.is_some() || m.gpu.is_none() || m.viewport.suspended() {
                     continue;
                 }
-                let output = m.frame.frame_output();
+                let start = m.metric_start();
+                let output = m.frame.frame_schedule();
+                m.metric_end("schedule", start);
                 if m.pending || m.viewport.needs_present() || output.needs_redraw || output.needs_animation_frame {
                     m.window.request_redraw();
                 }
@@ -417,6 +430,8 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         ui::platform::Platform::Linux
     }));
     let mount = Mount {
+        metrics: Default::default(),
+        published_records: Default::default(),
         peer_suspended: false,
         peer:config.peer,
         desktop:None,
@@ -457,7 +472,7 @@ fn begin_desktop(event_loop:&ActiveEventLoop,id:u64,canvas:web_sys::HtmlCanvasEl
     frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac{ui::platform::Platform::MacOs}else{ui::platform::Platform::Linux}));
     desktop.sync_global_search(&mut frame);
     let images=std::mem::take(&mut *desktop.images.borrow_mut());
-    let mount=Mount{peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
+    let mount=Mount{metrics:Default::default(),published_records:Default::default(),peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
     MOUNTS.with_borrow_mut(|mounts|mounts.insert(id,mount));emit(&status,serde_json::json!({"phase":"gpu-pending","id":id}));initialize_gpu(id,1,window);Ok(())
 }
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
@@ -529,6 +544,9 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
     });
 }
 impl Mount {
+    fn metric_start(&self) -> Option<web_time::Instant> { self.metrics.borrow().begin() }
+    fn metric_end(&self, stage: &'static str, start: Option<web_time::Instant>) { self.metrics.borrow_mut().end(stage, start); }
+
     fn owned_records(&self)->Vec<crate::desktop_host::OwnedRecord>{
         if let Some(desktop)=&self.desktop {desktop.records.borrow().values().cloned().collect()}else{self.record.iter().cloned().collect()}
     }
@@ -548,6 +566,14 @@ impl Mount {
         changed
     }
     fn draw(&mut self) -> Result<(), String> {
+        let start = self.metric_start();
+        let before = self.frames;
+        let result = self.draw_measured();
+        self.metric_end(if self.frames > before { "draw_total" } else { "draw_skipped" }, start);
+        result
+    }
+    fn draw_measured(&mut self) -> Result<(), String> {
+        let prepare_start = self.metric_start();
         if self.peer_suspended || self.hidden || self.error.is_some() {
             return Ok(());
         }
@@ -559,7 +585,7 @@ impl Mount {
         self.collect_desktop();
         // Inspect wake flags without rebuilding the old viewport first. Layout
         // and input scale may advance only after acquisition succeeds below.
-        let frame = self.frame.frame_output();
+        let frame = self.frame.frame_schedule();
         self.pending |= self.viewport.needs_present()
             || frame.needs_redraw
             || frame.needs_animation_frame
@@ -567,6 +593,8 @@ impl Mount {
         if !self.pending {
             return Ok(());
         }
+        self.metric_end("draw_prepare", prepare_start);
+        let acquire_start = self.metric_start();
         let gpu = self.gpu.as_mut().expect("GPU checked above");
         if let Some(reason) = gpu.cx.devices[gpu.surface.dev_id].loss_monitor().reason() {
             return Err(format!(
@@ -603,11 +631,24 @@ impl Mount {
         };
         // Poll only after applying the new viewport. This avoids an old-size
         // layout merely to discover work, followed by a second resize layout.
+        self.metrics.borrow_mut().end("draw_acquire_resize", acquire_start);
+        let poll_start = self.metrics.borrow().begin();
+        if poll_start.is_some() {
+            let demand = self.frame.frame_schedule();
+            let mut metrics = self.metrics.borrow_mut();
+            if demand.needs_redraw { metrics.count("draw_demand.redraw"); }
+            if demand.needs_animation_frame { metrics.count("draw_demand.animation"); }
+            if demand.next_wake_deadline.is_some_and(|wake| wake <= ui::clock::Instant::now()) { metrics.count("draw_demand.deadline"); }
+        }
         self.frame.poll_frame().map_err(|e| e.to_string())?;
         if let Some(desktop)=&self.desktop {
             if let Err(error)=desktop.process_global_search(&mut self.frame) {desktop.errors.borrow_mut().push(error);}
         }
-        let frame = self.frame.frame_output();
+        self.metrics.borrow_mut().end("draw_poll", poll_start);
+        let snapshot_start = self.metrics.borrow().begin();
+        let frame = self.frame.frame_render_input();
+        self.metrics.borrow_mut().end("draw_snapshot", snapshot_start);
+        let render_start = self.metrics.borrow().begin();
         let mut physical = vello::Scene::new();
         physical.append(frame.scene, Some(ui::scale::composite_transform(viewport.dpr)));
         let handle = &gpu.cx.devices[gpu.surface.dev_id];
@@ -634,18 +675,21 @@ impl Mount {
         );
         handle.queue.submit([encoder.finish()]);
         output.present();
+        self.metrics.borrow_mut().end("draw_gpu_submit", render_start);
         self.viewport.did_present();
         self.pending = false;
         self.frames += 1;
+        let publish_start = self.metric_start();
         self.publish(0);
+        self.metric_end("draw_publish", publish_start);
         Ok(())
     }
     fn publish(&self, id: u64) {
         if let Some(peer)=self.peer.filter(|_| !self.peer_suspended) {
             for record in self.owned_records(){
-                let captured=crate::admitted_records::capture(&record.store,&record.checkout.id);
                 let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
-                if let Err(error)=captured.and_then(|bytes|crate::peer::local_document(peer,&record.app,id,bytes)){crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
+                let published=self.published_records.borrow_mut().publish(peer,&record.app,&record.store,&record.checkout.id,|bytes|crate::peer::local_document(peer,&record.app,id,bytes));
+                if let Err(error)=published{crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return;}
             }
         }
         let f = self.frame.frame_output();
@@ -723,12 +767,15 @@ pub(crate) fn write_json(w: &PendingWrite) -> serde_json::Value {
 pub fn pending_writes(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        let start = m.metric_start();
         for record in m.owned_records(){let _ = record.store.try_flush();}
         let writes = m.storage.pending_writes();
         for w in &writes {
             m.writes.insert(w.revision, w.clone());
         }
-        serde_json::to_string(&writes.iter().map(write_json).collect::<Vec<_>>()).map_err(error)
+        let result = serde_json::to_string(&writes.iter().map(write_json).collect::<Vec<_>>()).map_err(error);
+        m.metric_end("persistence", start);
+        result
     })
 }
 #[wasm_bindgen]
@@ -1200,5 +1247,21 @@ pub fn desktop_global_search(id:u64,generation:&str,query:&str)->Result<(),JsVal
         let desktop=mount.desktop.as_ref().ok_or_else(||error("Desktop search unavailable"))?;
         desktop.open_global_search(&mut mount.frame,generation,query).map_err(error)?;
         mount.pending=true;mount.window.request_redraw();Ok(())
+    })
+}
+
+/// Opt-in bounded diagnostic capture; disabled by default and never persisted.
+#[wasm_bindgen]
+pub fn configure_frame_metrics(enabled: bool) {
+    MOUNTS.with_borrow(|mounts| for mount in mounts.values() { mount.metrics.borrow_mut().configure(enabled); });
+}
+#[wasm_bindgen]
+pub fn take_frame_metrics() -> Result<String, JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let samples: Vec<_> = mounts.iter().map(|(id, mount)| {
+            let mut metrics = mount.metrics.borrow_mut();
+            serde_json::json!({"mount": id, "samples": metrics.take(), "dropped": metrics.take_dropped(), "redrawSources": mount.frame.redraw_sources()})
+        }).collect();
+        serde_json::to_string(&samples).map_err(error)
     })
 }

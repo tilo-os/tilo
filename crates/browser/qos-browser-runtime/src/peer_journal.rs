@@ -61,9 +61,111 @@ impl Journal {
         Ok(bytes)
     }
 }
+/// Cache decoding only, never admission or time-dependent permission decisions.
+/// Exact bytes are the key: revisions can restart when storage is rehydrated.
+#[derive(Default)]
+pub(crate) struct HealthProjection {
+    journal: DecodedBytes<Journal>,
+    records: std::collections::BTreeMap<(String, String), DecodedBytes<Vec<String>>>,
+}
+const HEALTH_CACHE_BYTES: usize = 8 * 1024 * 1024;
+struct DecodedBytes<T> {
+    cached: Option<(Vec<u8>, Option<std::rc::Rc<T>>)>,
+}
+impl<T> Default for DecodedBytes<T> {
+    fn default() -> Self { Self { cached: None } }
+}
+impl<T> DecodedBytes<T> {
+    fn get(&mut self, bytes: &[u8], decode: impl FnOnce(&[u8]) -> Option<T>) -> Option<std::rc::Rc<T>> {
+        if let Some((previous, value)) = &self.cached
+            && previous == bytes { return value.clone(); }
+        if bytes.len() > HEALTH_CACHE_BYTES {
+            self.cached = None;
+            return decode(bytes).map(std::rc::Rc::new);
+        }
+        self.cached = Some((bytes.to_vec(), decode(bytes).map(std::rc::Rc::new)));
+        self.cached.as_ref().and_then(|(_, value)| value.clone())
+    }
+}
+impl HealthProjection {
+    pub fn journal(&mut self, bytes: &[u8]) -> Option<std::rc::Rc<Journal>> {
+        self.journal.get(bytes, |bytes| Journal::decode(bytes).ok())
+    }
+    pub fn durable_heads(&mut self, journal: &Journal, app: &str, record: &str, bytes: &[u8]) -> Option<Vec<String>> {
+        let key = (app.to_owned(), record.to_owned());
+        // At most 64 routes and 8 MiB of encoded record snapshots per peer.
+        // Oversized snapshots are decoded without retention by DecodedBytes.
+        let retained_except_current = |records: &std::collections::BTreeMap<(String, String), DecodedBytes<Vec<String>>>| {
+            records.iter().filter(|(route, _)| **route != key)
+                .map(|(_, entry)| entry.cached.as_ref().map_or(0, |(bytes, _)| bytes.len())).sum::<usize>()
+        };
+        while !self.records.is_empty()
+            && ((self.records.len() >= 64 && !self.records.contains_key(&key))
+                || retained_except_current(&self.records) + bytes.len().min(HEALTH_CACHE_BYTES) > HEALTH_CACHE_BYTES) {
+            self.records.pop_first();
+        }
+        let heads = self.records.entry(key).or_default().get(bytes, |bytes| {
+            let document = automerge::AutoCommit::load(bytes).ok()?;
+            Some(document.base_heads().iter().map(ToString::to_string).collect())
+        })?;
+        // Recheck the CURRENT committed journal every time; decoded bytes alone
+        // cannot establish an atomic durable record/journal basis.
+        journal.records.iter().any(|row| row.app_id == app && row.record_id == record && row.heads == *heads)
+            .then(|| (*heads).clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unchanged_exact_bytes_decode_once_and_changed_invalid_bytes_invalidate() {
+        let mut cache = DecodedBytes::default();
+        let mut calls = 0;
+        for _ in 0..100 {
+            assert_eq!(*cache.get(b"valid", |_| { calls += 1; Some(42) }).unwrap(), 42);
+        }
+        assert_eq!(calls, 1, "unchanged committed bytes must not be reparsed per status report");
+        assert!(cache.get(b"bad", |_| { calls += 1; None }).is_none());
+        assert!(cache.get(b"bad", |_| panic!("invalid result should also be cached")).is_none());
+        assert_eq!(*cache.get(b"valid", |_| { calls += 1; Some(43) }).unwrap(), 43);
+        assert_eq!(calls, 3);
+    }
+    #[test]
+    fn oversized_health_bytes_are_decoded_without_retention() {
+        let mut cache = DecodedBytes::default();
+        cache.get(b"small", |_| Some(1));
+        let large = vec![0; HEALTH_CACHE_BYTES + 1];
+        let mut calls = 0;
+        for _ in 0..2 { assert_eq!(*cache.get(&large, |_| { calls += 1; Some(2) }).unwrap(), 2); }
+        assert_eq!(calls, 2);
+        assert!(cache.cached.is_none());
+    }
+    #[test]
+    fn decoded_heads_never_reuse_a_different_committed_journal_basis() {
+        use automerge::{AutoCommit, ROOT};
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "text", "A").unwrap();
+        let bytes_a = doc.save();
+        let heads_a = doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
+        let mut journal = Journal { state: vec![], outbox: vec![], records: vec![DocumentRow {
+            app_id: "app".into(), record_id: "record".into(), heads: heads_a.clone(),
+        }], receipts: Default::default() };
+        let mut projection = HealthProjection::default();
+        assert_eq!(projection.durable_heads(&journal, "app", "record", &bytes_a), Some(heads_a.clone()));
+        doc.put(ROOT, "text", "B").unwrap();
+        let bytes_b = doc.save();
+        let heads_b = doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
+        journal.records[0].heads = heads_b.clone();
+        assert!(projection.durable_heads(&journal, "app", "record", &bytes_a).is_none());
+        assert_eq!(projection.durable_heads(&journal, "app", "record", &bytes_b), Some(heads_b));
+        assert!(projection.durable_heads(&journal, "other-app", "record", &bytes_b).is_none());
+        assert!(projection.durable_heads(&journal, "app", "other-record", &bytes_b).is_none());
+        let encoded = journal.encode().unwrap();
+        let first = projection.journal(&encoded).unwrap();
+        assert!(std::rc::Rc::ptr_eq(&first, &projection.journal(&encoded).unwrap()));
+        assert!(projection.journal(b"corrupt").is_none());
+    }
     #[test]
     fn older_atomic_commit_never_marks_newer_canonical_record_durable() {
         use automerge::{AutoCommit, ROOT, transaction::Transactable};

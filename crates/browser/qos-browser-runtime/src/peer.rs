@@ -42,6 +42,7 @@ struct Bootstrap {
 use crate::peer_journal::Journal;
 struct Peer {
     actions: RefCell<crate::action_client::PendingActions>,
+    health_projection: RefCell<crate::peer_journal::HealthProjection>,
     action_v2: std::cell::Cell<bool>,
     admission_failure: RefCell<Option<String>>,
     was_ready: std::cell::Cell<bool>,
@@ -229,7 +230,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         if let Some(prior)=prior{prior.close().await;}
         peer
     }else{Rc::new(Peer {
-        actions: RefCell::default(),action_v2: std::cell::Cell::new(action_v2),
+        health_projection: RefCell::default(),actions: RefCell::default(),action_v2: std::cell::Cell::new(action_v2),
         admission_failure: RefCell::new(None),was_ready: std::cell::Cell::new(false),published: RefCell::new(BTreeSet::new()),
         id,cache,outbox:RefCell::new(outbox),endpoint:RefCell::new(Some(endpoint.clone())),session:RefCell::new(Some(session.clone())),state:RefCell::new(state),_key:key,
         callback:callback.ok_or_else(||error("missing status callback"))?,closed:std::cell::Cell::new(false),transport_generation:std::cell::Cell::new(1),transport_connected:std::cell::Cell::new(true),rejected_checkpoints:RefCell::new(BTreeSet::new()),last_relay_contact:std::cell::Cell::new(None),last_peer_contact:std::cell::Cell::new(None),batches:RefCell::new(BTreeMap::new()),next_batch:std::cell::Cell::new(0),storage_epoch:RefCell::new(None),committed_at:std::cell::Cell::new(None),
@@ -599,7 +600,7 @@ fn required_read_failure(peer:&Peer,state:&StatePeer)->Option<String>{
 }
 fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->serde_json::Value{
     let journal_status=peer.cache.status(&StorageKey::Admission{workspace:state.room().into()});
-    let journal=journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|Journal::decode(&bytes.bytes).ok());
+    let journal=journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|peer.health_projection.borrow_mut().journal(&bytes.bytes));
     let durable_failure=crate::admission_health::durable_admission_failure(
         state,
         peer._key.verifying_key().to_bytes(),
@@ -622,12 +623,13 @@ fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>)->s
     let records=state.rows().iter().map(|row|{
         let key=storage_key(state.room(),&row.app_id,&row.record_id);
         let status=peer.cache.status(&key);
-        let durable_heads=status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|journal.as_ref()?.durable_heads(&row.app_id,&row.record_id,&bytes.bytes));
+        let durable_heads=status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|peer.health_projection.borrow_mut().durable_heads(journal.as_ref()?,&row.app_id,&row.record_id,&bytes.bytes));
         let durable_basis=durable_heads.as_ref().map(|heads|serde_json::json!({"heads":heads}));
         let is_durable=durable_basis.is_some()&&durable_heads.as_ref()==Some(&row.heads);
         let failed=status.as_ref().is_some_and(|status|status.error.is_some())||journal_status.as_ref().is_some_and(|status|status.error.is_some());
-        let receipt=state.durable_coverage(&row.app_id,&row.record_id).ok().flatten().filter(|receipt|journal.as_ref().is_some_and(|journal|journal.receipts.get(&qos_peer_state::coverage::route_key(&row.app_id,&row.record_id))==Some(&receipt.receipt_id)));
-        let covered=is_durable&&receipt.is_some()&&state.durable_covers_current(&row.app_id,&row.record_id).unwrap_or(false);
+        let coverage=state.durable_coverage_with_current(&row.app_id,&row.record_id).ok().flatten().filter(|(receipt,_)|journal.as_ref().is_some_and(|journal|journal.receipts.get(&qos_peer_state::coverage::route_key(&row.app_id,&row.record_id))==Some(&receipt.receipt_id)));
+        let covered=is_durable&&coverage.as_ref().is_some_and(|(_,current)|*current);
+        let receipt=coverage.map(|(receipt,_)|receipt);
         let outgoing=peer.outbox.borrow().iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count();
         let durable_outgoing=journal.as_ref().map(|journal|journal.outbox.iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count()).unwrap_or(0);
         serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":if state.check_document_read(peer._key.verifying_key().to_bytes(),&row.app_id,&row.record_id,SystemTime::now()).is_ok(){"admitted"}else{"unavailable"},"current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"journalRevision":journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"pendingWrites":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).map(|write|write.value.bytes.len()).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})
