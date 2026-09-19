@@ -35,7 +35,7 @@ diff inventory; it deliberately has no repository-write step.
 The maximum of two affected shards per architecture is intentional. A third, permanently dedicated "heavy
 apps" shard was measured as the wrong trade-off for this workspace: it repeats
 large shared dependency graphs and adds runner CPU even when a change does not
-touch those apps. `tools/ci_select.py` already weights costly packages while
+touch those apps. `tools/ci/affected_packages.py` already weights costly packages while
 preserving dependency-correct selection, so heavy packages receive their own
 capacity when they are affected without creating an always-on third compile.
 
@@ -74,7 +74,7 @@ is not implemented or claimed here.
 ## Cache layers
 
 - sccache stores compiler outputs in repository-scoped S3 namespaces configured
-  by the builder and `tools/ci-sccache.sh`. Inspect the effective namespace rather
+  by the builder and `tools/ci/sccache.sh`. Inspect the effective namespace rather
   than assuming all lanes use one historical prefix. This is the main cross-runner Rust cache. The builder
   workflow proves a cold write and a warm read in separate containers against
   an isolated canary prefix whenever the image changes.
@@ -123,12 +123,12 @@ hits and 200 misses among 3,015 executed requests (Rust 90.60%, C/C++ 99.86%).
 Older fully warm runs reached 100% and completed compilation in roughly two
 minutes; cold run 944 was effectively uncached at 0.07%.
 
-These are operational baselines, not permanent targets. Keep `ci-measure.sh`
+These are operational baselines, not permanent targets. Keep `tools/ci/measure.sh`
 around the test/check commands and compare wall time *and* total CPU before
 adding shards or caches; a faster wall clock that doubles runner CPU is a
 regression for this installation.
 
-For current workflow startup, `tools/ci_timing_report.py` on main at `d86e8f437`
+For current workflow startup, `tools/ci/timing_report.py` on main at `d86e8f437`
 also reports task receipt to container creation (`runner_to_create_seconds`).
 This interval remains measurable when no Docker pull event is logged; the
 pull-to-create interval then remains unavailable instead of becoming zero.

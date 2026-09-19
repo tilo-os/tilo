@@ -64,7 +64,30 @@ def file_hash(path, limit=512 * 1024 * 1024):
 
 
 def verify_artifact(image, key):
-    return module('complete_initramfs_trust', 'initramfs-trust.py').verify(image, key)
+    proof = module('complete_initramfs_trust', 'initramfs-trust.py').verify(image, key)
+    audit = module('complete_initramfs_inventory', 'installed_material_audit.py')
+
+    class DriverInventory(audit.Scanner):
+        def entry(self, name, mode, size, stream):
+            # Reuse the bounded CPIO/squashfs reader without applying unrelated
+            # installed-state policy to the initramfs under construction.
+            if re.search(r'(?:^|/)(?:ext4|xfs)\.ko(?:\.(?:xz|gz|zst))?$', name):
+                raise ValueError('omitted filesystem driver present in rebound initramfs')
+            self.entries += 1
+            self.bytes += size
+            if self.entries > audit.MAX_ENTRIES or self.bytes > audit.MAX_TOTAL:
+                raise ValueError('initramfs driver inventory exceeds bounds')
+            remaining = size
+            while remaining:
+                if audit.time.monotonic() > self.deadline:
+                    raise ValueError('initramfs driver inventory exceeded deadline')
+                remaining -= len(audit.archive.exact(stream, min(remaining, audit.archive.CHUNK)))
+
+    inventory = DriverInventory().initramfs(bounded(image, 512 * 1024 * 1024))
+    if inventory['sha256'] != proof['initramfs_sha256']:
+        raise ValueError('initramfs changed between trust and driver verification')
+    proof['omitted_kernel_drivers_verified'] = ['ext4', 'xfs']
+    return proof
 
 
 def complete(root, *, disposable, marker_sha256, public_bundle, manifest_sha256,

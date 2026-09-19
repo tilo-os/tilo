@@ -17,7 +17,7 @@ fi
 
 base=$1
 shift
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=$(cd "$(dirname "$0")/../.." && pwd)
 
 if ! git -C "$root" cat-file -e "$base^{commit}" 2>/dev/null; then
     echo "Clippy comparison base is not available: $base" >&2

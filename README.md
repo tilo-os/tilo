@@ -53,7 +53,7 @@ Single Cargo workspace, no submodules.
 
 Install Rust through rustup and the native dependencies listed in
 [`DEVELOPMENT.md`](DEVELOPMENT.md). Rustup selects the toolchain from
-`rust-toolchain.toml`. Check dependencies with `tools/check-build-env.sh`.
+`rust-toolchain.toml`. Check dependencies with `tools/ci/check-build-env.sh`.
 
 ```bash
 cargo build -p shell        # compositor, tilo-control, shots

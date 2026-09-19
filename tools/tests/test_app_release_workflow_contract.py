@@ -63,7 +63,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         for before, after in (
             ('      builder_image: ${{ steps.builder.outputs.image }}', '      other: unused'),
             ('        id: builder', '        id: different'),
-            ('        run: python3 tools/resolve_ci_builder.py', '        run: echo skipped'),
+            ('        run: python3 tools/ci/resolve_builder.py', '        run: echo skipped'),
             ('    needs: plan', '    needs: other'),
             ('      image: ${{ needs.plan.outputs.builder_image }}',
              '      image: code.podesta.ai/qos/tilo-builder:latest'),

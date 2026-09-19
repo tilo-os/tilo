@@ -6,7 +6,7 @@
 # fail-open behavior.
 set -euo pipefail
 
-mode="${1:?usage: ci-sccache.sh <prepare|prepare-shell|report>}"
+mode="${1:?usage: tools/ci/sccache.sh <prepare|prepare-shell|report>}"
 
 case "$mode" in
   prepare|prepare-shell)

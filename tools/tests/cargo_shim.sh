@@ -9,7 +9,7 @@ home=$work/home
 bin=$work/bin
 project=$work/project
 mkdir -p "$home/.cargo/bin" "$bin" "$project"
-cp "$repo/tools/cargo-shim" "$bin/cargo"
+cp "$repo/tools/ci/cargo-shim" "$bin/cargo"
 
 cat >"$home/.cargo/bin/cargo" <<'CARGO'
 #!/usr/bin/env bash

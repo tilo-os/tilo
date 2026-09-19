@@ -96,7 +96,7 @@ class AppReleaseTests(unittest.TestCase):
 
     def test_actual_packaging_closure_inputs_never_silently_select_zero(self) -> None:
         inputs = {
-            "tools/rustc-thin-app-wrapper.sh": "binary",
+            "tools/ci/rustc-thin-app-wrapper.sh": "binary",
             "os/scripts/bake-runtime-bundle.sh": "packaging",
             "os/scripts/verify-elf-hardening.sh": "verification",
             "os/Containerfile.builder": "binary",
@@ -105,7 +105,8 @@ class AppReleaseTests(unittest.TestCase):
             "tools/create_app_receipt.py": "verification",
             "tools/final_app_receipt.py": "verification",
             "tools/app_channel_manifest.py": "verification",
-            "tools/resolve_ci_builder.py": "binary",
+            "tools/ci/__init__.py": "verification",
+            "tools/ci/resolve_builder.py": "binary",
         }
         for path, kind in inputs.items():
             with self.subTest(path=path):
@@ -116,7 +117,7 @@ class AppReleaseTests(unittest.TestCase):
                 self.assertEqual(1, sum(len(values) for values in classified.values()))
         # Non-input prose and an unrelated CI helper must not become fleet rebuilds.
         self.assertEqual([], app_release.apps_from_changes(
-            ['docs/architecture.md', 'tools/ci_queue_coalesce.py'], CATALOG))
+            ['docs/architecture.md', 'tools/ci/queue_coalesce.py'], CATALOG))
 
     def test_plan_exposes_receipt_only_invalidation_without_binary_claim(self) -> None:
         args = SimpleNamespace(root=ROOT, config=ROOT / 'dist/apps/app-collections.toml',

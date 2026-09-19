@@ -46,7 +46,7 @@ jobs:
           test -r "$VK_DRIVER_FILES"
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
-          bash tools/ci-sccache.sh prepare
+          bash tools/ci/sccache.sh prepare
 
       - name: Render canonical visual baselines
         env:
@@ -114,4 +114,4 @@ jobs:
 
       - name: Report compiler-cache effectiveness
         if: always()
-        run: bash tools/ci-sccache.sh report
+        run: bash tools/ci/sccache.sh report

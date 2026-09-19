@@ -8,19 +8,19 @@ cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 
 release=$work/release
-mkdir -p "$release"/{qpkg,tilo-runtime/2026.07,bin}
+mkdir -p "$release"/{qpkg,runtime/tilo-runtime/2026.07,bin}
 printf 'fixture package\n' > "$release/qpkg/settings-0.1.0-x86_64.qpkg"
-printf '\177ELFfixture\n' > "$release/tilo-runtime/2026.07/libfixture.so"
-cat > "$release/tilo-runtime/2026.07/bundle.toml" <<'EOF'
+printf '\177ELFfixture\n' > "$release/runtime/tilo-runtime/2026.07/libfixture.so"
+cat > "$release/runtime/tilo-runtime/2026.07/bundle.toml" <<'EOF'
 version = "2026.07"
 publisher_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 EOF
 cat > "$release/index.json" <<'EOF'
 {"apps":[{"runtime":"tilo-runtime/2026.07"}]}
 EOF
-(cd "$release" && find qpkg tilo-runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
+(cd "$release" && find qpkg runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
     && sha256sum index.json >> SHA256SUMS \
-    && tar -czf tilo-apps-x86_64.tar.gz qpkg tilo-runtime index.json SHA256SUMS)
+    && tar -czf tilo-apps-x86_64.tar.gz qpkg runtime index.json SHA256SUMS)
 
 cat > "$release/bin/tilo-runtime-bundle" <<'EOF'
 #!/usr/bin/env bash
@@ -68,7 +68,7 @@ grep -Fqx '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
 # The collection checksum is part of the RPM's provenance boundary; do not
 # materialise a system registry from a substituted archive.
 printf 'tampered\n' >> "$release/qpkg/settings-0.1.0-x86_64.qpkg"
-(cd "$release" && tar -czf tilo-apps-x86_64.tar.gz qpkg tilo-runtime index.json SHA256SUMS)
+(cd "$release" && tar -czf tilo-apps-x86_64.tar.gz qpkg runtime index.json SHA256SUMS)
 if "$repo_root/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/rejected" \
     >/dev/null 2>&1; then
     echo "app-store staging accepted a checksum-mismatched collection" >&2

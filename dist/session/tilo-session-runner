@@ -242,6 +242,7 @@ mkdir -p -- "$flight_dir"
 chmod 0700 "$flight_dir"
 if [ -f "$flight_dir/latest.log" ]; then
     tail -c 4194304 -- "$flight_dir/latest.log" >"$flight_dir/previous.log.tmp" || true
+    chmod 0600 "$flight_dir/previous.log.tmp"
     mv -f -- "$flight_dir/previous.log.tmp" "$flight_dir/previous.log"
 fi
 flight_log=$flight_dir/latest.log

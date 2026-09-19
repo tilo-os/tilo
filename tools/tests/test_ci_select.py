@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 
-MODULE_PATH = Path(__file__).parents[1] / "ci_select.py"
+MODULE_PATH = Path(__file__).parents[1] / "ci/affected_packages.py"
 SPEC = importlib.util.spec_from_file_location("ci_select", MODULE_PATH)
 assert SPEC and SPEC.loader
 ci_select = importlib.util.module_from_spec(SPEC)
@@ -136,7 +136,7 @@ class SelectorTests(unittest.TestCase):
                 ".forgejo/workflows/check.yml",
                 "os/tests/imager_ephemeral_runner.sh",
                 "scripts/check-install-contract.py",
-                "tools/run-imager-ephemeral-runner.sh",
+                "tools/ci/runners/imager-ephemeral-linux.sh",
             ],
             2,
         )
@@ -165,11 +165,11 @@ class SelectorTests(unittest.TestCase):
         self.install_quality_helpers()
         for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
                       "tools/run-repository-policy.sh", "os/tests/security-boundaries.sh",
-                      "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci_select.py"):
+                      "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
             with self.subTest(extra=extra):
-                plan = ci_select.make_plan(self.metadata, self.root, ["tools/ci_select.py", extra], 2)
+                plan = ci_select.make_plan(self.metadata, self.root, ["tools/ci/affected_packages.py", extra], 2)
                 self.assertTrue(plan["rust_required"])
-        full = ci_select.make_plan(self.metadata, self.root, ["tools/ci_select.py"], 2, force_full=True)
+        full = ci_select.make_plan(self.metadata, self.root, ["tools/ci/affected_packages.py"], 2, force_full=True)
         self.assertTrue(full["full"])
         self.assertEqual(full["selected_count"], full["workspace_count"])
         self.assertTrue(ci_select.make_plan(self.metadata, self.root, [], 2)["rust_required"])

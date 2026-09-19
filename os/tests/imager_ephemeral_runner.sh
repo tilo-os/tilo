@@ -63,7 +63,7 @@ install_metadata() {
 install_metadata
 TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" \
 TILO_RUNNER_MAX_WAIT_SECONDS=30 TILO_TEST_ARGUMENTS="$tmp/arguments" \
-  "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+  "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
   > "$tmp/stdout"
 grep -Fxq 'one-job' "$tmp/arguments"
 grep -Fxq -- '--label' "$tmp/arguments"
@@ -75,7 +75,7 @@ grep -Fq 'destroy this VM now' "$tmp/stdout"
 install_metadata
 if TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" TILO_RUNNER_MAX_WAIT_SECONDS=30 \
     TILO_TEST_BREAK_METADATA_CLEANUP=1 TILO_TEST_ARGUMENTS="$tmp/cleanup-failure" \
-    "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+    "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher hid a credential-cleanup failure\n' >&2
   exit 1
@@ -86,7 +86,7 @@ rm -rf "$trusted/metadata/token"
 install_metadata
 TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" TILO_RUNNER_MAX_WAIT_SECONDS=30 \
 TILO_TEST_CHILD_PID_FILE="$tmp/child-pid" TILO_TEST_ARGUMENTS="$tmp/process-tree" \
-  "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+  "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
   >/dev/null
 child_pid="$(cat "$tmp/child-pid")"
 child_state="$(ps -o stat= -p "$child_pid" 2>/dev/null || true)"
@@ -100,7 +100,7 @@ install_metadata
 wrong=imager-linux-aarch64
 [ "$label" = imager-linux-x86_64 ] || wrong=imager-linux-x86_64
 if TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" TILO_TEST_ARGUMENTS="$tmp/rejected" \
-    "$repo/tools/run-imager-ephemeral-runner.sh" "$wrong" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+    "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$wrong" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher accepted a mismatched native label\n' >&2
   exit 1
@@ -110,7 +110,7 @@ fi
 install_metadata
 if TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" \
     TILO_FORGEJO_URL=https://attacker.invalid TILO_TEST_ARGUMENTS="$tmp/rejected" \
-    "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+    "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher accepted a substituted Forgejo origin\n' >&2
   exit 1
@@ -119,7 +119,7 @@ fi
 
 install_metadata
 if TILO_FORGEJO_RUNNER="$tmp/forgejo-runner" TILO_TEST_ARGUMENTS="$tmp/rejected" \
-    "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+    "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher accepted a checkout-controlled runner binary\n' >&2
   exit 1
@@ -130,7 +130,7 @@ install_metadata
 printf '%s' bad > "$tmp/token"
 install -m 0600 "$tmp/token" "$trusted/metadata/token"
 if TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" TILO_TEST_ARGUMENTS="$tmp/rejected" \
-    "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+    "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher accepted an invalid one-job token\n' >&2
   exit 1
@@ -141,7 +141,7 @@ install_metadata
 printf '\n%s' '0123456789abcdef0123456789abcdef01234567' > "$tmp/token"
 install -m 0600 "$tmp/token" "$trusted/metadata/token"
 if TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" TILO_TEST_ARGUMENTS="$tmp/rejected" \
-    "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+    "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher accepted multiline metadata\n' >&2
   exit 1
@@ -151,7 +151,7 @@ fi
 install_metadata
 if TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" TILO_RUNNER_MAX_WAIT_SECONDS=1 \
     TILO_TEST_SLEEP=30 TILO_TEST_ARGUMENTS="$tmp/timed-out" \
-    "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+    "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher reported a timed-out registration as successful\n' >&2
   exit 1
@@ -161,7 +161,7 @@ fi
 install_metadata
 if TILO_FORGEJO_RUNNER="$trusted/bin/forgejo-runner" TILO_TEST_VERSION=12.4.9 \
     TILO_TEST_ARGUMENTS="$tmp/old-version" \
-    "$repo/tools/run-imager-ephemeral-runner.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
+    "$repo/tools/ci/runners/imager-ephemeral-linux.sh" "$label" "$trusted/metadata/uuid" "$trusted/metadata/token" \
     >/dev/null 2>&1; then
   printf 'ephemeral runner launcher accepted a runner without safe one-job support\n' >&2
   exit 1

@@ -2,7 +2,7 @@
 # Record sccache counters and require a remote hit in the warm canary job.
 set -euo pipefail
 
-mode="${1:?usage: ci-sccache-canary.sh <cold|warm>}"
+mode="${1:?usage: tools/ci/sccache-canary.sh <cold|warm>}"
 case "$mode" in cold|warm) ;; *) echo "unknown mode: $mode" >&2; exit 2;; esac
 
 expected_prefix="${TILO_SCCACHE_KEY_PREFIX:?canary requires TILO_SCCACHE_KEY_PREFIX}"

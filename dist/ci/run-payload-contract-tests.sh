@@ -14,7 +14,7 @@ true_bin=$(type -P true)
 package_job="$repo_root/dist/ci/run-package-job.sh"
 grep -Fq -- '--env SOURCE_DATE_EPOCH="$source_epoch"' "$package_job"
 grep -Fq -- '--env GITHUB_SHA="$source_revision"' "$package_job"
-test "$(grep -Fc 'source tools/ci-sccache.sh prepare-shell' "$package_job")" -eq 3
+test "$(grep -Fc 'source tools/ci/sccache.sh prepare-shell' "$package_job")" -eq 3
 if grep -Fq 'export RUSTC_WRAPPER=/usr/local/bin/sccache' "$package_job"; then
     echo "package lanes bypass the shared fail-open compiler-cache probe" >&2
     exit 1

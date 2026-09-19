@@ -17,7 +17,8 @@ runner, successful native build or releasable artifact.
 At this audit, neither the admin runner listing nor the repository runner listing
 advertised a Windows/imager Windows label. Ephemeral runners can be absent while
 idle; this observation is not proof that provisioning is impossible. The existing
-`Run-ImagerEphemeralRunner.ps1` derives labels from native processor architecture.
+`tools/ci/runners/imager-ephemeral-windows.ps1` derives labels from native
+processor architecture.
 Do not route Windows work onto Linux `runner` just because it is available.
 
 ## Executable planning without installation

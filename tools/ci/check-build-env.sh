@@ -50,7 +50,7 @@ else
   missing=$((missing + 1))
 fi
 
-# ci-measure.sh deliberately uses GNU time's stable machine-readable format;
+# tools/ci/measure.sh deliberately uses GNU time's stable machine-readable format;
 # the shell keyword cannot report peak RSS and is not a compatible fallback.
 if [ ! -x /usr/bin/time ]; then
   echo "missing required build tool: /usr/bin/time" >&2

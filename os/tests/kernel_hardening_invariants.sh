@@ -587,7 +587,7 @@ grep -Fq 'dracut --force --reproducible --compress zstd' "$image_recipe" \
   && ok 'signed initramfs uses low-latency Zstandard decompression'
 grep -Fq 'dracut --force --reproducible --compress zstd' "$image_recipe" \
   || bad 'initramfs compression can regress to a slow distribution default'
-grep -Fq -- '--omit "network network-legacy network-manager nfs iscsi nbde clevis crypt-ssh"' \
+grep -Fq -- '--omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"' \
   "$image_recipe" \
   || bad 'local-root initramfs still carries unused network/NBDE attack surface'
 grep -Fq -- '--omit-drivers "ext4 xfs"' "$image_recipe" \

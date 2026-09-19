@@ -1,14 +1,33 @@
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = importlib.util.spec_from_file_location('resolver', ROOT / 'tools/resolve_ci_builder.py')
+SPEC = importlib.util.spec_from_file_location('resolver', ROOT / 'tools/ci/resolve_builder.py')
 resolver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(resolver)
 
 
 class BuilderResolutionTests(unittest.TestCase):
+    def test_direct_execution_does_not_shadow_python_standard_library(self):
+        env = dict(os.environ)
+        env.pop('REGISTRY_TOKEN', None)
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'tools/ci/resolve_builder.py')],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, '::error::CI builder resolution failed (ValueError)\n')
+        self.assertNotIn('Traceback', result.stderr)
+
     def test_actual_forgejo_manifest_record_contract(self):
         # Fields retained from authenticated package-file API read on 2026-09-19.
         row = {'id': 229897, 'Size': 493, 'name': 'manifest.json',
@@ -39,7 +58,7 @@ class BuilderResolutionTests(unittest.TestCase):
     def test_workflow_routes_both_consumers_through_resolved_output(self):
         workflow = (ROOT / '.forgejo/workflows/check.yml').read_text()
         self.assertIn('REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}', workflow)
-        self.assertIn('run: python3 tools/resolve_ci_builder.py', workflow)
+        self.assertIn('run: python3 tools/ci/resolve_builder.py', workflow)
         self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 2)
         self.assertNotIn('image=code.podesta.ai/qos/tilo-builder:latest', workflow)
 

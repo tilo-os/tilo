@@ -36,7 +36,7 @@ trap cleanup EXIT
 
 echo "==> ${label}: $*"
 start=$(date +%s)
-progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci_process_progress.py"
+progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/process_progress.py"
 # Forgejo's runner terminates a step after 15 minutes without output. Cargo can
 # legitimately be silent that long while linking a large workspace target, so
 # emit one compact progress line per minute until the command exits.

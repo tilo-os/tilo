@@ -2,7 +2,9 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-SPEC = importlib.util.spec_from_file_location("timing", Path(__file__).parents[1] / "ci_timing_report.py")
+SPEC = importlib.util.spec_from_file_location(
+    "timing", Path(__file__).parents[1] / "ci/timing_report.py"
+)
 timing = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(timing)
 

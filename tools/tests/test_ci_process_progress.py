@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('progress', Path(__file__).parents[1] / 'ci_process_progress.py')
+spec = importlib.util.spec_from_file_location(
+    'progress', Path(__file__).parents[1] / 'ci/process_progress.py'
+)
 progress = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(progress)
 

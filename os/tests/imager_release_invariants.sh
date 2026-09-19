@@ -158,7 +158,7 @@ fi
 
 mac_broker="$repo/apps/imager/packaging/acquire-release-credentials.sh"
 token_broker="$repo/apps/imager/packaging/acquire-release-token.sh"
-runner_launcher="$repo/tools/run-imager-ephemeral-runner.sh"
+runner_launcher="$repo/tools/ci/runners/imager-ephemeral-linux.sh"
 homebrew_publish="$repo/apps/imager/packaging/publish-homebrew-tap.sh"
 site_publish="$repo/apps/imager/packaging/publish-site-release.sh"
 if ! grep -Fq 'declare -A' "$mac_broker" \

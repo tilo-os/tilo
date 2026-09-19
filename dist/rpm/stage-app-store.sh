@@ -45,7 +45,12 @@ cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 
 tar -xzf "$collection" -C "$work"
-[[ -f $work/index.json && -f $work/SHA256SUMS && -d $work/qpkg && -d $work/tilo-runtime ]] || {
+# App collection v1 deliberately keeps the signed bundle below `runtime/`.
+# This is the same tree transported by release-apps.yml and consumed by the
+# image build; accepting a second RPM-only archive layout let the package
+# fixture drift away from every collection produced by package-apps.sh.
+collection_runtime=$work/runtime/tilo-runtime
+[[ -f $work/index.json && -f $work/SHA256SUMS && -d $work/qpkg && -d $collection_runtime ]] || {
     echo "app collection has an unexpected layout" >&2
     exit 1
 }
@@ -64,14 +69,14 @@ if not runtime.startswith(prefix) or not runtime[len(prefix):]:
 print(runtime[len(prefix):])
 PY
 )
-[[ -f $work/tilo-runtime/$runtime_version/bundle.toml ]] || {
+[[ -f $collection_runtime/$runtime_version/bundle.toml ]] || {
     echo "collection runtime tilo-runtime/$runtime_version is missing bundle.toml" >&2
     exit 1
 }
-"$bin_dir/tilo-runtime-bundle" verify "$work/tilo-runtime/$runtime_version" >/dev/null
+"$bin_dir/tilo-runtime-bundle" verify "$collection_runtime/$runtime_version" >/dev/null
 
 mkdir -p "$stage/usr/share/tilo-apps" "$stage/usr/lib" "$stage/etc/tilo"
-cp -a "$work/tilo-runtime" "$stage/usr/lib/tilo-runtime"
+cp -a "$collection_runtime" "$stage/usr/lib/tilo-runtime"
 store="$stage/usr/lib/tilo-apps"
 registry="$stage/usr/share/tilo-apps/registry.toml"
 mkdir -p "$store"

@@ -116,6 +116,10 @@ grep -Fqx 'SESSION_RUNNER=/usr/libexec/tilo-session-runner' "$production"
 
 export XDG_RUNTIME_DIR=$work/runtime
 mkdir -m 0700 "$XDG_RUNTIME_DIR"
+export XDG_STATE_HOME=$work/state
+mkdir -p "$XDG_STATE_HOME/tilo/session-logs"
+printf 'prior private diagnostic\n' >"$XDG_STATE_HOME/tilo/session-logs/latest.log"
+chmod 0644 "$XDG_STATE_HOME/tilo/session-logs/latest.log"
 
 set +e
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_STATUS=7 \
@@ -123,6 +127,13 @@ TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_STATUS=7 \
 status=$?
 set -e
 [[ $status == 7 ]]
+# A rotated log contains the preceding session's compositor and application
+# diagnostics. It must remain private just like the current flight record,
+# regardless of the caller's umask or a pre-existing file mode.
+flight_dir=${XDG_STATE_HOME:-$HOME/.local/state}/tilo/session-logs
+test "$(stat -c %a "$flight_dir/latest.log")" = 600
+test "$(stat -c %a "$flight_dir/previous.log")" = 600
+grep -Fqx 'prior private diagnostic' "$flight_dir/previous.log"
 cat >"$work/expected" <<EOF
 systemctl --user is-active --quiet tilo-graphical-session.target
 systemctl --user is-active --quiet graphical-session.target

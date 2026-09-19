@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 $Tokens = $null
 $Errors = $null
 $Ast = [Management.Automation.Language.Parser]::ParseFile(
-    (Join-Path $PSScriptRoot '../Run-ImagerEphemeralRunner.ps1'), [ref]$Tokens, [ref]$Errors)
+    (Join-Path $PSScriptRoot '../ci/runners/imager-ephemeral-windows.ps1'), [ref]$Tokens, [ref]$Errors)
 if ($Errors.Count -ne 0) { throw 'Runner script contains syntax errors' }
 $Function = $Ast.Find({ param($Node)
     $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and
