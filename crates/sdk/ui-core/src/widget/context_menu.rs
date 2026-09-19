@@ -35,6 +35,9 @@ pub enum MenuItem {
         /// `Some` reserves the leading selection gutter and publishes a
         /// semantic checked state. `None` is an ordinary command row.
         checked: Option<bool>,
+        /// Destructive rows are styled as danger actions and are never the
+        /// implicit keyboard target when a menu opens.
+        destructive: bool,
     },
     Separator,
 }
@@ -62,6 +65,7 @@ impl MenuItem {
             action: Arc::new(action),
             icon: None,
             checked: None,
+            destructive: false,
         }
     }
 
@@ -76,6 +80,7 @@ impl MenuItem {
             action: Arc::new(action),
             icon: Some(icon),
             checked: None,
+            destructive: false,
         }
     }
 
@@ -87,15 +92,27 @@ impl MenuItem {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        Self::action(label, action)
+        MenuItem::Action {
+            label: label.into(),
+            action: Arc::new(action),
+            icon: None,
+            checked: None,
+            destructive: true,
+        }
     }
 
     pub fn destructive_selection(label: impl Into<String>) -> Self {
-        Self::selection(label)
+        Self::destructive_action(label, || {})
     }
 
     #[must_use]
-    pub fn with_icon(self, _icon: crate::icons::Icon) -> Self {
+    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+        if let MenuItem::Action {
+            icon: item_icon, ..
+        } = &mut self
+        {
+            *item_icon = Some(icon);
+        }
         self
     }
 
@@ -110,6 +127,7 @@ impl MenuItem {
             action: Arc::new(action),
             icon: None,
             checked: Some(checked),
+            destructive: false,
         }
     }
 
@@ -131,6 +149,16 @@ impl MenuItem {
             MenuItem::Action { checked, .. } => *checked,
             MenuItem::Separator => None,
         }
+    }
+
+    fn is_destructive(&self) -> bool {
+        matches!(
+            self,
+            MenuItem::Action {
+                destructive: true,
+                ..
+            }
+        )
     }
 }
 
@@ -207,6 +235,16 @@ impl ContextMenu {
         self.open = true;
         self.position = Some(position);
         self.scroll_y = 0.0;
+        self.hovered = self
+            .items
+            .iter()
+            .find(|item| matches!(item, MenuItem::Action { .. }))
+            .filter(|item| item.is_destructive())
+            .and_then(|_| {
+                self.items.iter().position(|item| {
+                    matches!(item, MenuItem::Action { .. }) && !item.is_destructive()
+                })
+            });
         self.layout_at_position();
     }
 
@@ -505,6 +543,7 @@ impl ContextMenu {
                     label,
                     icon,
                     checked,
+                    destructive,
                     ..
                 } => {
                     if self.hovered == Some(idx) {
@@ -554,7 +593,11 @@ impl ContextMenu {
                         scene,
                         &rendered_label,
                         text_size,
-                        theme.tokens.colors.text_primary,
+                        if *destructive {
+                            theme.tokens.colors.semantic.danger
+                        } else {
+                            theme.tokens.colors.text_primary
+                        },
                         transform.pre_translate(Vec2::new(label_x, label_y)),
                         None,
                     );
@@ -873,6 +916,10 @@ impl Widget for ContextMenu {
         "ContextMenu"
     }
 
+    fn traps_focus(&self) -> bool {
+        self.open
+    }
+
     /// Participates in the App's modal-capture contract — suppressing focus
     /// shortcuts while up.
     fn modal_capture(&self) -> Option<Rect> {
@@ -906,6 +953,7 @@ impl Widget for ContextMenu {
                 Some(
                     AccessNode::new(Role::MenuItem)
                         .with_name(label.clone())
+                        .with_action_target(format!("context-menu:item:{index}"))
                         .with_position(action_position, action_count)
                         .with_state(AccessState {
                             focusable: true,
@@ -926,6 +974,29 @@ impl Widget for ContextMenu {
                 })
                 .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !self.open || !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        let Some(index) = target
+            .strip_prefix("context-menu:item:")
+            .and_then(|index| index.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
+            return false;
+        }
+        self.click_item(index);
+        true
     }
 }
 
@@ -971,9 +1042,17 @@ mod a11y_tests {
         assert_eq!(node.children.len(), 2);
         assert_eq!(node.children[0].role, crate::a11y::Role::MenuItem);
         assert_eq!(node.children[0].name.as_deref(), Some("Keep Offline"));
+        assert_eq!(
+            node.children[0].action_target.as_deref(),
+            Some("context-menu:item:0")
+        );
         assert_eq!(node.children[0].pos_in_set, Some(1));
         assert_eq!(node.children[0].set_size, Some(2));
         assert_eq!(node.children[1].name.as_deref(), Some("Sharing & Access…"));
+        assert_eq!(
+            node.children[1].action_target.as_deref(),
+            Some("context-menu:item:2")
+        );
         assert!(node.children.iter().all(|child| child.state.focusable));
     }
 
@@ -1169,6 +1248,47 @@ mod tests {
     }
 
     #[test]
+    fn destructive_first_row_is_not_the_implicit_keyboard_target() {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::destructive_selection("Delete"));
+        menu.push(MenuItem::selection("Archive"));
+        menu.open_at([10.0, 20.0]);
+
+        assert_eq!(menu.hovered(), Some(1));
+    }
+
+    #[test]
+    fn item_builders_preserve_icon_and_destructive_intent() {
+        let item = MenuItem::destructive_selection("Delete").with_icon(Icon::Trash);
+        let MenuItem::Action {
+            icon, destructive, ..
+        } = item
+        else {
+            panic!("selection builder must produce an action");
+        };
+
+        assert_eq!(icon, Some(Icon::Trash));
+        assert!(destructive);
+    }
+
+    #[test]
+    fn semantic_activation_uses_the_same_selection_channel() {
+        let (mut menu, fired) = open_menu();
+        let mut doc = AutoCommit::new();
+
+        assert!(Widget::perform_semantic_action(
+            &mut menu,
+            "context-menu:item:2",
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(fired.load(Ordering::SeqCst), 100);
+        assert_eq!(menu.take_selection(), Some(2));
+        assert!(!menu.is_open());
+    }
+
+    #[test]
     fn hover_tracks_cursor_row() {
         let (mut m, _f) = open_menu();
         let r = m.get_rect();
@@ -1265,11 +1385,13 @@ mod tests {
     #[test]
     fn modal_capture_when_open() {
         let (m, _f) = open_menu();
+        assert!(Widget::traps_focus(&m), "open menu traps keyboard focus");
         assert!(
             Widget::modal_capture(&m).is_some(),
             "open menu reports capture"
         );
         let closed = ContextMenu::new();
+        assert!(!Widget::traps_focus(&closed));
         assert!(Widget::modal_capture(&closed).is_none());
     }
 }

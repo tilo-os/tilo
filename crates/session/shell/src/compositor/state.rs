@@ -3560,6 +3560,8 @@ impl XdgShellHandler for State {
         let floating = app_id
             .as_deref()
             .is_some_and(|app_id| self.promote_floating_toplevel(surface_id, app_id));
+        let attributed_room_log = attributed_room;
+        let app_id_log = app_id.clone();
         if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
@@ -3580,6 +3582,16 @@ impl XdgShellHandler for State {
                 tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
             }
         }
+
+        tracing::info!(
+            target: "shell::compositor::foreign",
+            surface_id,
+            app_id = ?app_id_log,
+            room = ?attributed_room_log,
+            floating,
+            presentation,
+            "accepted Wayland toplevel"
+        );
 
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
         crate::compositor::foreign::store().note_adopted(surface_id);

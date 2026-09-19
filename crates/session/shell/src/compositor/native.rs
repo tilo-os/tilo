@@ -195,6 +195,37 @@ impl NativeRedrawReasons {
 }
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
+const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
+
+/// Select how long calloop may sleep. Presentation cadence is a deadline only
+/// while visual work is pending; a static desktop instead sleeps until the
+/// earliest real service/widget deadline and wakes early on registered fds.
+fn native_loop_park(
+    now: Instant,
+    cadence_needed: bool,
+    frame_deadline: Instant,
+    deadlines: impl IntoIterator<Item = Option<Instant>>,
+) -> Option<Duration> {
+    let semantic_deadline = deadlines
+        .into_iter()
+        .flatten()
+        .chain(cadence_needed.then_some(frame_deadline))
+        .min();
+
+    // The DRM backend owns a nested calloop containing libinput, libseat and
+    // udev. It is drained by `Backend::poll_events` at the start of each outer
+    // iteration, so an otherwise-static session must still wake at this
+    // bounded interval. Returning `None` here would park the outer calloop
+    // indefinitely: the nested loop's keyboard/mouse fds cannot wake it, and
+    // even the dev test-control socket is accepted only by the next iteration.
+    Some(
+        semantic_deadline
+            .map_or(IDLE_BACKEND_POLL, |deadline| {
+                deadline.saturating_duration_since(now)
+            })
+            .min(IDLE_BACKEND_POLL),
+    )
+}
 
 fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
     if !session_locked {
@@ -985,6 +1016,35 @@ impl Drop for UnlinkOnDrop {
 fn unlink_wayland_endpoint(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path.with_extension("lock"));
+}
+
+/// Remove private Wayland endpoints left by a compositor that died without
+/// unwinding. These names are compositor-owned and include their creator PID;
+/// a live PID is never touched, so a second same-user session cannot steal a
+/// running compositor's privileged or OSK socket.
+fn remove_stale_private_wayland_endpoints(runtime_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(runtime_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let endpoint_name = name.strip_suffix(".lock").unwrap_or(name);
+        let pid = endpoint_name
+            .strip_prefix("tilo-privileged-")
+            .or_else(|| endpoint_name.strip_prefix("tilo-osk-"))
+            .and_then(|suffix| suffix.split('-').next())
+            .and_then(|pid| pid.parse::<u32>().ok());
+        let Some(pid) = pid else {
+            continue;
+        };
+        let pid_is_live = PathBuf::from(format!("/proc/{pid}")).exists();
+        if !pid_is_live {
+            unlink_wayland_endpoint(&runtime_dir.join(endpoint_name));
+        }
+    }
 }
 
 /// Bind the test-control unix socket, returning the listener plus an
@@ -1778,6 +1838,14 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
     let requests = crate::shell::host_apps::drain_queued_launches();
     let mut changed = false;
     for request in requests {
+        tracing::info!(
+            target: "shell::compositor::host_launch",
+            desktop_id = %request.desktop_id,
+            display_name = %request.display_name,
+            placement = ?request.placement,
+            x11 = ?crate::shell::host_apps::x11_availability(),
+            "dispatching user-requested host application launch"
+        );
         let token = state.issue_host_launch_activation(
             request.desktop_id.clone(),
             request.display_name.clone(),
@@ -1789,6 +1857,12 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             request.portal_workspace_id,
             Some(&token),
         ) {
+            tracing::error!(
+                target: "shell::compositor::host_launch",
+                desktop_id = %request.desktop_id,
+                %error,
+                "host application launch was refused before spawn"
+            );
             // Nothing can consume this external token after a preflight
             // refusal. Remove it immediately, alongside the staged placement.
             state.cancel_host_launch_activation(&token);
@@ -4812,6 +4886,11 @@ pub fn run() {
         }
     };
 
+    // A crash or forced display-manager termination cannot run endpoint
+    // guards. Recover those PID-qualified private names before binding this
+    // session; clean exits already remove them explicitly below.
+    remove_stale_private_wayland_endpoints(&crate::shell::launcher::runtime_dir());
+
     // Read the session's own broker for pointer presence and relay it to the
     // room's other hosts; subscribing by room is what makes a cursor crossing
     // apps read as one peer moving, since presence is room-scoped. Only stood
@@ -5213,11 +5292,12 @@ pub fn run() {
     // Redraw gating: painting every tick regardless of change would pin a CPU
     // core at 100%. Repaint only when: a backend event arrived
     // (input/resize/focus/redraw); the widget tree is animating; the chrome
-    // revision bumped; a session transition fired; or the keepalive interval
-    // elapsed (safety net, refresh within a second). Layout still runs every tick for hit-testing; only paint+submit are gated.
-    let keepalive = Duration::from_secs(1);
-    let mut last_paint = Instant::now();
-    let mut last_lock_clock_refresh = last_paint;
+    // revision bumped or a session transition fired. Layout still runs every
+    // tick for hit-testing; only paint+submit are gated. The former one-second
+    // full-scene keepalive consumed a material fraction of a software-rendered
+    // VM core despite no changing pixels; every real producer already carries
+    // an explicit redraw/revision/deadline edge.
+    let mut last_lock_clock_refresh = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     // `output_presentation_frame_changed` observes live foreign-frame
@@ -5537,7 +5617,7 @@ pub fn run() {
                             );
                         if !to_client {
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
-                            frame_builder.dispatch_event(
+                            session_changed |= frame_builder.dispatch_event(
                                 wev,
                                 &test_control_ctx.modifiers,
                                 &mut test_control_ctx.doc,
@@ -5671,7 +5751,7 @@ pub fn run() {
                         &test_control_ctx.modifiers,
                     );
                 if !to_client {
-                    frame_builder.dispatch_event(
+                    let _ = frame_builder.dispatch_event(
                         &event,
                         &test_control_ctx.modifiers,
                         &mut test_control_ctx.doc,
@@ -6520,6 +6600,9 @@ pub fn run() {
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
+        let widget_deadline_due = frame_builder
+            .next_wake_deadline()
+            .is_some_and(|deadline| deadline <= iter_t0);
         let output_presentation_count = state.output_presentation_surfaces.len();
         let presentation_frame_changed = update_output_presentation_repaint_pending(
             &mut output_presentation_repaint_pending,
@@ -6527,7 +6610,7 @@ pub fn run() {
             output_presentation_count,
             state.output_presentation_frame_changed(),
         );
-        let keepalive_due = last_paint.elapsed() >= keepalive;
+        let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
         metrics.mark_pump(
@@ -6545,7 +6628,7 @@ pub fn run() {
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
-            apps: apps_changed,
+            apps: apps_changed || widget_deadline_due,
             peers: peers_moved,
             presentation: presentation_frame_changed,
             capture: capture_executor.has_live_mirrors()
@@ -6576,6 +6659,10 @@ pub fn run() {
             p.note_backpressure();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
+        // If content became dirty off-cadence, keep cadence in the next park;
+        // otherwise the event edge has already been consumed and a long idle
+        // deadline could strand that frame.
+        let cadence_needed = (content_changed && !cadence_due) || animating;
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -7037,7 +7124,6 @@ pub fn run() {
                 sleep_lock_frame_serial = None;
                 sleep_lock_frame_failed = false;
             }
-            last_paint = Instant::now();
             // Re-read after `relayout`: its `resync_strips_from_tree` pass can bump
             // the revision, so capture the post-paint value or the next idle tick sees a phantom change.
             last_revision = frame_builder.chrome_revision();
@@ -7139,11 +7225,26 @@ pub fn run() {
             );
         }
 
-        // Pump pending calloop sources (including the listening socket) and sleep
-        // up to one frame — dispatch is what fans new connections into
-        // `insert_client`. Parks until the next presentation deadline (see
-        // `FrameClock::park`): a mid-interval wakeup must never push the next frame past its deadline.
-        let park = frame_clock.park(Instant::now());
+        // Pump pending calloop sources (including the listening socket) and
+        // sleep until real work is due. Cadence participates only while a
+        // visual change is waiting; registered fds wake this early for input,
+        // clients, accessibility, and presenter retirement.
+        let park_now = Instant::now();
+        let lock_clock_deadline = session
+            .is_locked()
+            .then(|| last_lock_clock_refresh.checked_add(LOCK_CLOCK_REFRESH))
+            .flatten();
+        let park = native_loop_park(
+            park_now,
+            cadence_needed,
+            frame_clock.next_deadline(),
+            [
+                frame_builder.next_wake_deadline(),
+                None,
+                lock_clock_deadline,
+                run_deadline,
+            ],
+        );
         let t_sleep_start = Instant::now();
         if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
@@ -7261,6 +7362,101 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+
+    #[test]
+    fn consumed_shell_input_is_a_redraw_edge() {
+        let mut session_changed = false;
+        session_changed |= true;
+        assert!(
+            NativeRedrawReasons {
+                session: session_changed,
+                ..NativeRedrawReasons::default()
+            }
+            .content_changed(false)
+        );
+    }
+
+    #[test]
+    fn idle_park_ignores_display_cadence() {
+        let now = Instant::now();
+        let frame = now + Duration::from_millis(8);
+        let keepalive = now + Duration::from_secs(1);
+        assert_eq!(
+            native_loop_park(now, false, frame, [Some(keepalive)]),
+            Some(IDLE_BACKEND_POLL),
+            "a static desktop polls its nested DRM sources at a bounded idle rate"
+        );
+    }
+
+    #[test]
+    fn idle_park_without_any_semantic_deadline_still_services_nested_backend() {
+        let now = Instant::now();
+        assert_eq!(
+            native_loop_park(now, false, now + Duration::from_millis(8), []),
+            Some(IDLE_BACKEND_POLL),
+            "a static DRM session must keep draining nested libinput and control sockets"
+        );
+    }
+
+    #[test]
+    fn stale_private_wayland_endpoints_are_recovered_without_touching_live_pids() {
+        let runtime = tempfile::tempdir().expect("temporary runtime");
+        let dead_pid = u32::MAX;
+        let live_pid = std::process::id();
+        for name in [
+            format!("tilo-privileged-{dead_pid}"),
+            format!("tilo-osk-{dead_pid}-old"),
+            format!("tilo-privileged-{live_pid}"),
+            format!("tilo-osk-{live_pid}-live"),
+        ] {
+            std::fs::write(runtime.path().join(&name), b"").expect("socket fixture");
+            std::fs::write(runtime.path().join(format!("{name}.lock")), b"").expect("lock fixture");
+        }
+
+        remove_stale_private_wayland_endpoints(runtime.path());
+
+        for name in [
+            format!("tilo-privileged-{dead_pid}"),
+            format!("tilo-osk-{dead_pid}-old"),
+        ] {
+            assert!(!runtime.path().join(&name).exists());
+            assert!(!runtime.path().join(format!("{name}.lock")).exists());
+        }
+        for name in [
+            format!("tilo-privileged-{live_pid}"),
+            format!("tilo-osk-{live_pid}-live"),
+        ] {
+            assert!(runtime.path().join(&name).exists());
+            assert!(runtime.path().join(format!("{name}.lock")).exists());
+        }
+    }
+
+    #[test]
+    fn visual_work_parks_on_frame_cadence() {
+        let now = Instant::now();
+        let frame = now + Duration::from_millis(8);
+        let keepalive = now + Duration::from_secs(1);
+        assert_eq!(
+            native_loop_park(now, true, frame, [Some(keepalive)]),
+            Some(Duration::from_millis(8))
+        );
+    }
+
+    #[test]
+    fn earliest_non_frame_deadline_wins_and_overdue_is_immediate() {
+        let now = Instant::now();
+        let frame = now + Duration::from_millis(8);
+        let widget = now + Duration::from_millis(300);
+        let keepalive = now + Duration::from_secs(1);
+        assert_eq!(
+            native_loop_park(now, false, frame, [Some(keepalive), Some(widget)]),
+            Some(IDLE_BACKEND_POLL)
+        );
+        assert_eq!(
+            native_loop_park(now, false, frame, [Some(now - Duration::from_millis(1))]),
+            Some(Duration::ZERO)
+        );
+    }
 
     #[test]
     fn locked_redraw_ignores_hidden_desktop_work_but_keeps_lock_edges() {
