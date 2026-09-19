@@ -1,31 +1,43 @@
 name: Release / apps
 
-# Capacity relief: PRs select affected apps without release-mode packaging.
-# Tagged and manual releases retain the complete immutable qpkg pipeline.
-# Restore continuous main packaging after latest-only scheduling is qualified.
+# PRs select affected apps without release-mode packaging. Main publishes only
+# affected qpkgs and reuses unchanged members of the prior immutable collection.
 on:
   pull_request:
     branches: [main]
     # Always run the cheap plan; app_release.py owns dependency applicability.
   push:
-    # Paused during capacity relief; preserve for continuous packaging rollout.
-    # branches: [main]
+    branches: [main]
     tags: ["apps-v*", "app-*-v*"]
     paths:
       - "apps/**"
       - "crates/**"
       - "crates/sdk/ui-core/**"
       - ".cargo/**"
+      - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "dist/apps/app-collections.toml"
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
+      - "os/scripts/bake-runtime-bundle.sh"
+      - "os/scripts/verify-elf-hardening.sh"
+      - "os/Containerfile.builder"
+      - "os/external-assets/github-assets.tsv"
+      - "os/dev/cache-github-assets.sh"
       - "tools/apps/**"
       - "tools/canonical_verifier_bundle.py"
       - "tools/assemble_verified_apps.py"
-      - "tools/ci/**"
+      - "tools/app_packaging_qualification.py"
+      - "tools/app_packaging_plan.py"
+      - "tools/ci/__init__.py"
+      - "tools/ci/affected_packages.py"
+      - "tools/ci/check-build-env.sh"
+      - "tools/ci/python.py"
+      - "tools/ci/resolve_builder.py"
+      - "tools/ci/rustc-thin-app-wrapper.sh"
+      - "tools/ci/sccache.sh"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/release-apps.yml"
@@ -163,10 +175,9 @@ jobs:
                 args+=(--apps "$REQUESTED_APPS")
               elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
                 args+=(--collection "${REQUESTED_COLLECTION:-default}")
-              elif [[ $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ]]; then
-                # A published collection is one runtime ABI boundary.
-                args+=(--collection default)
               else
+                # Main still publishes the default collection below. Select
+                # affected qpkgs here so unchanged immutable members can be reused.
                 base='${{ github.event.pull_request.base.sha }}'
                 [[ -n $base && $base != null ]] || base='${{ github.event.before }}'
                 if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
