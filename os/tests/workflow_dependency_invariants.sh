@@ -69,11 +69,11 @@ else
   fail=1
 fi
 
-if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.ref }}" "$rpm_snapshot_workflow" \
-   && grep -Fq "cancel-in-progress: \${{ github.event_name != 'workflow_dispatch' }}" "$rpm_snapshot_workflow" \
-   && grep -Fq 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' \
+if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.sha }}" "$rpm_snapshot_workflow" \
+   && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
      "$rpm_snapshot_workflow" \
-   && grep -Fq 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' \
      "$rpm_snapshot_workflow" \
    && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
