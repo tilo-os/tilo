@@ -86,6 +86,42 @@ class FuseDeviceTests(unittest.TestCase):
 
 
 
+class BootcHelpTests(unittest.TestCase):
+    def result(self, returncode, stdout=b'', stderr=b''):
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def test_retries_exact_transient_crun_namespace_race(self):
+        results = [
+            self.result(1, stderr=disk_creator.TRANSIENT_CRUN_NAMESPACE_ERROR + b'\n'),
+            self.result(0, stdout=b'--via-loopback\n'),
+        ]
+        with patch.object(disk_creator.subprocess, 'run', side_effect=results) as run, \
+                patch.object(disk_creator.time, 'sleep') as sleep:
+            output = disk_creator.bootc_help(['/usr/bin/podman'], delay_seconds=0)
+        self.assertEqual(output, '--via-loopback\n')
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once_with(0)
+
+    def test_does_not_retry_any_other_failure(self):
+        result = self.result(125, stderr=b'other podman failure')
+        with patch.object(disk_creator.subprocess, 'run', return_value=result) as run, \
+                patch.object(disk_creator.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(ValueError, r'podman failed \(exit 125\)'):
+                disk_creator.bootc_help(['/usr/bin/podman'], delay_seconds=0)
+        run.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_stops_after_bounded_exact_retries(self):
+        result = self.result(1, stderr=disk_creator.TRANSIENT_CRUN_NAMESPACE_ERROR)
+        with patch.object(disk_creator.subprocess, 'run', return_value=result) as run, \
+                patch.object(disk_creator.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(ValueError, r'podman failed \(exit 1\)'):
+                disk_creator.bootc_help(['/usr/bin/podman'], attempts=3, delay_seconds=0)
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+
+
 class CreationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -162,7 +198,8 @@ class CreationTests(unittest.TestCase):
             if fail:
                 raise ValueError('installer failed')
             return ''
-        with patch.object(disk_creator, 'command', command):
+        with patch.object(disk_creator, 'command', command), \
+                patch.object(disk_creator, 'bootc_help', side_effect=command):
             return disk_creator.create(self.args)
 
     def test_fixed_verified_id_and_signature_policy(self):
