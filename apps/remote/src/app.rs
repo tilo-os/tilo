@@ -37,7 +37,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::tooltip::draw_hover_tooltip;
-use ui::widget::{Button, ButtonFace, FlapState, SplitLayout, TextInput, TooltipHost};
+use ui::widget::{
+    Button, ButtonFace, Collaborative, FlapState, SplitLayout, TextInput, TooltipHost,
+};
 
 use crate::doc::RemoteDoc;
 use crate::model::{
@@ -2169,7 +2171,7 @@ struct StatusActionsSpec<'a> {
 // Widget impl
 // ===========================================================================
 
-impl Widget for RemoteApp {
+impl Collaborative for RemoteApp {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         std::mem::take(&mut self.collab_outbox)
     }
@@ -2216,6 +2218,12 @@ impl Widget for RemoteApp {
             }
         }
         self.dirty = true;
+    }
+}
+
+impl Widget for RemoteApp {
+    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+        Some(self)
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
