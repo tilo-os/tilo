@@ -4886,6 +4886,14 @@ impl ShellOverlayHost {
         if changed {
             tree.flush_to_disk();
         }
+        drop(tree);
+        drop(st);
+
+        // The Expand interaction takes effect at this harvest boundary,
+        // before the next layout. Mirror retained-row ownership into chrome
+        // now so the top bar and wheel observe the same atomic transition.
+        let fullscreen = self.fullscreen_group_is_owned();
+        chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
     }
 
     /// Mirrors the widget-side `TabBar::active_id` back into the persisted
