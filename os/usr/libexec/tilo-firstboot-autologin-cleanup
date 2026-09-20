@@ -1,0 +1,54 @@
+#!/bin/bash
+# Remove the installer-only greetd initial_session after its one permitted use.
+#
+# greetd parses initial_session before it reports its service started.  The
+# companion unit is ordered After=greetd.service, so replacing this file cannot
+# stop the first installed account from reaching OOBE, while every later greetd
+# start must authenticate at the normal graphical greeter.
+set -euo pipefail
+
+PENDING=/etc/tilo/firstboot-autologin-pending
+CONFIG=/etc/greetd/config.toml
+BASE_CONFIG=/usr/share/tilo/greetd-config.toml
+
+[ -e "$PENDING" ] || [ -L "$PENDING" ] || exit 0
+
+valid_pending_marker() {
+  [ -f "$PENDING" ] && [ ! -L "$PENDING" ] \
+    && [ "$(stat -c '%u:%a:%h' -- "$PENDING" 2>/dev/null)" = '0:600:1' ] \
+    && [ "$(stat -c '%s' -- "$PENDING" 2>/dev/null)" -le 64 ] \
+    && [ "$(cat "$PENDING")" = 'version=1' ]
+}
+
+if ! valid_pending_marker; then
+  echo "tilo-firstboot-autologin-cleanup: refusing unsafe marker $PENDING" >&2
+  exit 1
+fi
+
+if [ ! -f "$CONFIG" ] || [ -L "$CONFIG" ]; then
+  echo "tilo-firstboot-autologin-cleanup: refusing unsafe greetd config $CONFIG" >&2
+  exit 1
+fi
+if [ ! -f "$BASE_CONFIG" ] || [ -L "$BASE_CONFIG" ]; then
+  echo "tilo-firstboot-autologin-cleanup: missing immutable greeter baseline $BASE_CONFIG" >&2
+  exit 1
+fi
+
+tmp="$(mktemp "$(dirname "$CONFIG")/.config.toml.XXXXXX")"
+cleanup() { rm -f -- "$tmp"; }
+trap cleanup EXIT
+
+install -m 0644 "$BASE_CONFIG" "$tmp"
+# The target config was labelled before first boot, so use it as the SELinux
+# reference instead of inheriting a temporary-file context from /etc/greetd.
+chcon --reference="$CONFIG" "$tmp"
+mv -f -- "$tmp" "$CONFIG"
+trap - EXIT
+sync -f "$CONFIG" 2>/dev/null || sync
+
+# Remove the instruction only after the replacement is durable.  If either
+# operation fails, the unit retries and the marker remains for the next boot.
+rm -f -- "$PENDING"
+sync -f "$(dirname "$PENDING")" 2>/dev/null || sync
+
+echo "tilo-firstboot-autologin-cleanup: restored normal greetd authentication"
