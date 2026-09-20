@@ -3,6 +3,7 @@
 
 Offline: --input evidence.json (object containing runs, each with jobs and optional log).
 Live: --repo owner/repo --run 123 --run 124 [--hostname code.sandbox.example].
+Run numbers match the Forgejo web URL and fgj, not global API database IDs.
 Recent stream: --repo owner/repo --recent 20 [--workflow check.yml] [--head SHA].
 JSON goes to --output or stdout; a compact human summary goes to stderr.
 Pull-to-create is an observed interval, including registry/auth/setup overhead,
@@ -252,7 +253,8 @@ def report(evidence):
     for run in evidence["runs"]:
         created, started, stopped = (run.get(key) for key in ("created", "started", "stopped"))
         attempt, attempt_created = attempt_identity(run)
-        item = {"id": run["id"], "workflow_id": run.get("workflow_id"),
+        item = {"id": run["id"], "index_in_repo": run.get("index_in_repo"),
+                "workflow_id": run.get("workflow_id"),
                 "commit_sha": run.get("commit_sha"), "event": run.get("event"),
                 "ref": run.get("prettyref", run.get("ref")), "status": run.get("status"),
                 "collection_errors": run.get("collection_errors", []),
@@ -482,12 +484,23 @@ def hydrate_recent_run(args, run, token):
 
 def collect(args):
     runs = []
-    for run_id in args.run:
+    for number in args.run:
+        if number < 1:
+            raise ValueError("run number must be positive")
         prefix = f"repos/{args.repo}/actions"
+        resolved = command_json(args, ["actions", "run", "view", str(number),
+                                       "--repo", args.repo, "--json"]).get("run", {})
+        run_id = resolved.get("id")
+        if (type(run_id) is not int or run_id < 1
+                or resolved.get("index_in_repo") != number
+                or not resolved.get("commit_sha")):
+            raise ValueError("resolved run does not match requested repository run number")
         run = api(args, f"{prefix}/runs/{run_id}")
-        if run["id"] != run_id:
-            raise ValueError("returned run ID does not match request")
-        # Explicit run endpoint: no global run listing or polling.
+        if (run.get("id") != run_id or run.get("index_in_repo") != number
+                or run.get("repository", {}).get("full_name") != args.repo
+                or run.get("commit_sha") != resolved["commit_sha"]):
+            raise ValueError("returned run identity does not match resolved repository run")
+        # Resolve the UI number once, then use its verified database ID for jobs.
         jobs = api(args, f"{prefix}/runs/{run_id}/jobs")
         if isinstance(jobs, dict):
             jobs = jobs["jobs"]
@@ -526,7 +539,9 @@ def human_summary(result):
     for run in result["runs"]:
         identity = " / ".join(value for value in (run.get("workflow_id"), run.get("commit_sha")) if value)
         attempt = f" attempt {run['attempt']}" if run.get("attempt", 1) > 1 else ""
-        lines.append(f"Run {run['id']}{attempt} ({identity or 'unknown'}): queue {fmt(run['queue_seconds'])}; wall {fmt(run['wall_seconds'])}")
+        number = run.get("index_in_repo")
+        label = f"Run {number} (API ID {run['id']})" if number else f"Run {run['id']}"
+        lines.append(f"{label}{attempt} ({identity or 'unknown'}): queue {fmt(run['queue_seconds'])}; wall {fmt(run['wall_seconds'])}")
         if run["collection_errors"]:
             gaps = ", ".join(f"{gap['stage']}:{gap['kind']}" for gap in run["collection_errors"])
             lines.append(f"  Evidence gap: {gaps}")
@@ -579,7 +594,8 @@ def main():
     parser.add_argument("--input", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--repo")
-    parser.add_argument("--run", type=int, action="append", default=[])
+    parser.add_argument("--run", type=int, action="append", default=[],
+                        help="repository run number from Forgejo URL or fgj (not API database ID)")
     parser.add_argument("--recent", type=int, help="inspect this many newest runs (maximum 100)")
     parser.add_argument("--workflow", help="with --recent, select one workflow filename")
     parser.add_argument("--head", help="with --recent, select one exact commit SHA")
