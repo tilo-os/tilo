@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
-import re
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from push_event import push_target, pushes_current_branch
 
 
 DISCOVERY_TIMEOUT_SECONDS = 90
@@ -28,10 +31,6 @@ TERMINAL_STATUSES = {
     "blocked",
 }
 GREEN_STATUSES = {"success", "skipped", "neutral"}
-PUSH_COMMAND = re.compile(
-    r"(?:^|[;&|]\s*|[\"'`]\s*)git(?:\s+-\S+)*\s+push(?:\s|$)",
-    re.MULTILINE,
-)
 
 
 def run(
@@ -48,34 +47,23 @@ def run(
 
 
 def pushed_successfully(event: dict[str, Any]) -> bool:
-    tool_name = event.get("tool_name")
-    tool_input = event.get("tool_input")
-    if not isinstance(tool_input, dict):
-        return False
-    if tool_name == "Bash":
-        command = tool_input.get("command", "")
-    elif tool_name == "exec":
-        command = tool_input.get("code", "")
-        if "tools.exec_command" not in command:
-            return False
-    else:
-        return False
-    if not isinstance(command, str) or not PUSH_COMMAND.search(command):
-        return False
+    return push_target(event) is not None
 
-    response = event.get("tool_response")
-    if isinstance(response, dict):
-        exit_code = response.get("exit_code", response.get("exitCode"))
-        if exit_code is not None:
-            return exit_code == 0
-        return (
-            response.get("isError") is not True
-            and response.get("is_error") is not True
-        )
-    # Native Codex serializes completed tool output as a string and does not
-    # include the process exit code. The remote-ref check in main() is the
-    # authoritative success test for that event shape.
-    return isinstance(response, str)
+
+def claim_watch(cwd: Path, session_id: str, sha: str) -> Path | None:
+    common = run(["git", "rev-parse", "--git-common-dir"], cwd=cwd).stdout.strip()
+    directory = (cwd / common).resolve() / "codex-ci-watch"
+    directory.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha256(f"{session_id}:{sha}".encode()).hexdigest()
+    receipt = directory / f"{key}.json"
+    try:
+        fd = os.open(receipt, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return None
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        json.dump({"session_id": session_id, "sha": sha, "cwd": str(cwd),
+                   "state": "watching", "pid": os.getpid(), "started": dt.datetime.now(dt.timezone.utc).isoformat()}, output)
+    return receipt
 
 
 def branch_is_on_remote(cwd: Path, sha: str, branch: str) -> bool:
@@ -268,7 +256,8 @@ def main() -> int:
         return 0
 
     session_id = event.get("session_id")
-    cwd_value = event.get("cwd")
+    target = push_target(event)
+    cwd_value = str(target[0]) if target else None
     if (
         not isinstance(session_id, str)
         or not session_id
@@ -277,14 +266,20 @@ def main() -> int:
         return 0
     cwd = Path(cwd_value)
 
+    receipt = None
     try:
         sha = run(["git", "rev-parse", "HEAD"], cwd=cwd).stdout.strip()
         branch = run(
             ["git", "branch", "--show-current"], cwd=cwd, check=False
         ).stdout.strip()
+        if target is None or not pushes_current_branch(target[1], branch):
+            return 0
         if not branch_is_on_remote(cwd, sha, branch):
             return 0
         host, repo = forgejo_target(cwd)
+        receipt = claim_watch(cwd, session_id, sha)
+        if receipt is None:
+            return 0
         started = dt.datetime.now(dt.timezone.utc)
         outcome, runs = watch(
             cwd=cwd,
@@ -303,6 +298,10 @@ def main() -> int:
         message = f"[CI watcher] Could not watch Forgejo CI after the push: {error}."
 
     deliver(session_id, message, cwd)
+    if receipt is not None:
+        data = json.loads(receipt.read_text(encoding="utf-8"))
+        data.update(state="reported", message=message)
+        receipt.write_text(json.dumps(data), encoding="utf-8")
     return 0
 
 
