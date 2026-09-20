@@ -231,6 +231,53 @@ class OperatorTests(unittest.TestCase):
             with self.subTest(label=label), self.assertRaises(ValueError):
                 o.admit_job(c, raw, candidate, [job], 2)
 
+    def test_event_admission_normalizes_only_omitted_empty_restore_identity(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        raw = s.canonical(self.q)
+        event = json.loads(run['event_payload'])
+        restore_fields = ('restore_run_id', 'restore_run_attempt', 'restore_receipt_sha256')
+        for omitted in (restore_fields, restore_fields[:1], restore_fields[1:]):
+            changed = copy.deepcopy(event)
+            for field in omitted:
+                changed['inputs'].pop(field)
+            candidate = copy.deepcopy(run)
+            candidate['event_payload'] = json.dumps(changed)
+            with self.subTest(omitted=omitted):
+                self.assertEqual(o.admit_job(c, raw, candidate, [job], 2), job)
+
+        hostile = {
+            'nonempty-run-only': {'restore_run_id': '41'},
+            'nonempty-attempt-only': {'restore_run_attempt': '3'},
+            'nonempty-receipt-only': {'restore_receipt_sha256': 'a' * 64},
+        }
+        for label, supplied in hostile.items():
+            changed = copy.deepcopy(event)
+            for field in restore_fields:
+                changed['inputs'].pop(field)
+            changed['inputs'].update(supplied)
+            candidate = copy.deepcopy(run)
+            candidate['event_payload'] = json.dumps(changed)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                    ValueError, 'dispatch restore inputs differ'):
+                o.admit_job(c, raw, candidate, [job], 2)
+
+    def test_event_admission_rejects_omitted_or_untyped_restore_stage(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        raw = s.canonical(self.q)
+        event = json.loads(run['event_payload'])
+        for value in (None, 5):
+            changed = copy.deepcopy(event)
+            if value is None:
+                changed['inputs'].pop('restore_stage')
+            else:
+                changed['inputs']['restore_stage'] = value
+            candidate = copy.deepcopy(run)
+            candidate['event_payload'] = json.dumps(changed)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                o.admit_job(c, raw, candidate, [job], 2)
+
     def test_event_admission_rejects_nondefault_restore_stage_on_fresh_run(self):
         c, _ = self.init()
         run, job = self.event(c)
