@@ -68,6 +68,8 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
             smoke,
         )
         self.assertIn("--data-dir /var/lib/tilo-registry", smoke)
+        self.assertIn('--network "container:$container"', smoke)
+        self.assertNotIn("--publish 127.0.0.1", smoke)
         self.assertNotIn("type=bind", smoke)
         self.assertIn('docker volume rm -f "$volume"', smoke)
 
