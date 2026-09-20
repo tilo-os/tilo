@@ -5663,6 +5663,12 @@ pub fn run() {
         let iter_t0 = Instant::now();
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
+        if let Some((serial, retired_at)) = present_pipe
+            .as_ref()
+            .and_then(present::PresentPipe::latest_retirement)
+        {
+            metrics.note_retirement(serial, retired_at);
+        }
         // The previous `event_loop.dispatch` only establishes readiness for
         // nested DRM/libinput and test-control fds. Drain the backend now,
         // before any frame decision, so its level-triggered poll fd is cleared
@@ -7448,8 +7454,10 @@ pub fn run() {
             }
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
+            let mut submitted_serial = None;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
-                render_thread_lost = !pipe.submit_frame(frame_paint, OutputId(0));
+                submitted_serial = pipe.submit_frame(frame_paint, OutputId(0));
+                render_thread_lost = submitted_serial.is_none();
                 // This serial belongs to the scene submitted above.  Do not
                 // use a before/after presentation count here: an older
                 // desktop frame can be in flight when sleep locks, and its
@@ -7491,6 +7499,7 @@ pub fn run() {
                 submit_done.saturating_duration_since(t_submit_start),
                 async_present,
                 submit_done,
+                submitted_serial,
             );
             // Advance the deadline series off the moment the frame was handed to the
             // display — the clock paces *production*; the render thread's vsync paces consumption behind it.
