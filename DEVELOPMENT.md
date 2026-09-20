@@ -66,6 +66,8 @@ This uses your configured `fgj` authentication and reports queue time separately
 from run duration and the observed container pull-to-create interval. It does not
 sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
 credentials are not written to the report; use `--input` for saved local fixtures.
+Forgejo reruns retain the original run creation time, so the report labels the
+attempt and leaves its queue time unknown unless that attempt's creation is present.
 Pass two runs in baseline/current order with `--compare` to print queue, wall and
 same-named job deltas directly. Job names appear beside Forgejo's numeric IDs, so
 the report can be read without a second API lookup.
