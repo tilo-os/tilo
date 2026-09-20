@@ -112,7 +112,11 @@ fn px_f32(v: f64) -> f32 {
 
 /// Pointer band that reveals the floating title/restore/close controls.
 /// Hit-testing is unaffected; only paint is gated.
-const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
+// The row starts below the 48px top bar and 12px strip header. Its floating
+// controls are 6px inset and 22px tall, ending at y=120 on the standard
+// desktop layout. Keep the complete painted controls shell-owned; using 80px
+// left their lower half visible but click-through to the maximized client.
+const MAXIMIZED_CHROME_REVEAL_Y: f64 = 120.0;
 
 /// A width only becomes pixels through [`WindowWidth::resolve`], against
 /// the strip's usable width, so the same stored value means the same
@@ -771,6 +775,11 @@ impl WindowGroup {
         &self.bar
     }
 
+    #[cfg(any(test, debug_assertions))]
+    pub fn restore_rect_for_tests(&self) -> Rect {
+        self.restore_rect
+    }
+
     #[cfg(test)]
     pub fn close_glyph_icon_for_tests() -> icons::Icon {
         icons::Icon::X
@@ -897,6 +906,7 @@ impl WindowGroup {
                     self.pending_close_commit.push(active_id);
                 }
                 self.maximized = false;
+                self.style_dirty = true;
                 self.pending_maximize_change = Some(false);
                 true
             }
@@ -908,6 +918,7 @@ impl WindowGroup {
                 // Handled here (not via bar.pending_max) so the click
                 // never races with a tab selection under the pill's geometry.
                 self.maximized = false;
+                self.style_dirty = true;
                 self.pending_maximize_change = Some(false);
                 true
             }
@@ -3416,6 +3427,10 @@ mod tests {
         assert!(handled, "press must be consumed by the close arm");
         assert!(!g.maximized, "maximize must drop immediately");
         assert!(
+            g.take_structure_dirty(),
+            "leaving maximize must rebuild the cached tiled layout",
+        );
+        assert!(
             g.has_host(1),
             "host stays in `hosts` for the fade duration — no synchronous removal",
         );
@@ -3464,6 +3479,56 @@ mod tests {
         assert!(
             g.is_closing(),
             "group-level close fade must latch once the last host has swept out",
+        );
+    }
+
+    #[test]
+    fn maximized_restore_rebuilds_the_tiled_layout() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+        use winit::event::{ElementState, MouseButton};
+
+        let mut g = make_group();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let root = taffy.parent_node(Style::default(), &[group_node]);
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+        assert!(!g.take_structure_dirty());
+
+        g.maximized = true;
+        g.restore_rect = Rect::new(0.0, 0.0, 80.0, 40.0);
+        g.last_cursor = Point::new(20.0, 20.0);
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut state = automerge::AutoCommit::new();
+        g.handle_event(
+            &press,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus_target,
+            group_node,
+            &taffy,
+        );
+
+        assert!(handled);
+        assert!(!g.maximized);
+        assert_eq!(g.take_pending_maximize_change(), Some(false));
+        assert!(
+            g.take_structure_dirty(),
+            "restore must invalidate the cached maximized geometry",
         );
     }
 
@@ -3553,7 +3618,9 @@ mod tests {
         g.maximized = true;
         assert!(g.should_show_maximized_chrome(Some(40.0)));
         assert!(g.should_show_maximized_chrome(Some(80.0)));
-        assert!(!g.should_show_maximized_chrome(Some(81.0)));
+        assert!(g.should_show_maximized_chrome(Some(109.0)));
+        assert!(g.should_show_maximized_chrome(Some(120.0)));
+        assert!(!g.should_show_maximized_chrome(Some(121.0)));
         assert!(!g.should_show_maximized_chrome(Some(400.0)));
         // No cursor observed yet is treated as "below the band".
         assert!(!g.should_show_maximized_chrome(None));
