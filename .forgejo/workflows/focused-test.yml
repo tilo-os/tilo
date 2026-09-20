@@ -88,6 +88,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+          path: control
           persist-credentials: false
       - name: Checkout exact test source separately
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -109,22 +110,22 @@ jobs:
           restore-keys: cargo-deps-
       - name: Prepare native compiler cache and headless runtime
         run: |
-          ./os/dev/assert-native-arch.sh x86_64
-          bash tools/ci/sccache.sh prepare
+          ./control/os/dev/assert-native-arch.sh x86_64
+          bash control/tools/ci/sccache.sh prepare
           driver=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           test -r "$driver"
           echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
           mkdir -p /tmp/tilo-focused-runtime
           chmod 700 /tmp/tilo-focused-runtime
-          bash tools/ensure-headless-audio.sh
+          bash control/tools/ensure-headless-audio.sh
       - name: Execute focused request
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-focused-runtime
           BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
-        run: bash tools/with-headless-audio.sh python3 -I tools/ci/focused_test.py run --root source
+        run: bash control/tools/with-headless-audio.sh python3 -I control/tools/ci/focused_test.py run --root source
       - name: Report compiler cache
         if: always()
-        run: bash tools/ci/sccache.sh report
+        run: bash control/tools/ci/sccache.sh report
       - name: Save source lockfile downloads
         if: always() && steps.downloads.outputs.cache-hit != 'true'
         continue-on-error: true
