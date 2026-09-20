@@ -245,11 +245,29 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
-      - name: Checkout
+      - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
+          fetch-depth: 1
+
+      # Clippy compares the selected packages with the immutable base already
+      # established by the select job. Fetch that one commit instead of every
+      # branch and tag in this large, short-lived repository.
+      - name: Fetch exact Clippy base
+        env:
+          CLIPPY_BASE: ${{ needs.select.outputs.base }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CLIPPY_BASE" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
+          head=$(git rev-parse HEAD)
+          test "$head" = "$GITHUB_SHA"
+          if ! git cat-file -e "$CLIPPY_BASE^{commit}" 2>/dev/null; then
+            git fetch --no-tags --no-write-fetch-head --depth=1 origin \
+              "+$CLIPPY_BASE:refs/ci/clippy-base"
+          fi
+          test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"
 
       - name: Prepare Rust build caches
         id: rust-build
