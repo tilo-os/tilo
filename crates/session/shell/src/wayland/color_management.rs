@@ -42,6 +42,7 @@ use wayland_protocols::wp::color_management::v1::server::{
     wp_color_manager_v1::{
         self, Feature, Primaries, RenderIntent, TransferFunction, WpColorManagerV1,
     },
+    wp_image_description_creator_icc_v1::WpImageDescriptionCreatorIccV1,
     wp_image_description_creator_params_v1::{self, WpImageDescriptionCreatorParamsV1},
     wp_image_description_info_v1::WpImageDescriptionInfoV1,
     wp_image_description_v1::{self, Cause as ImageCause, WpImageDescriptionV1},
@@ -700,6 +701,7 @@ where
     D: GlobalDispatch<WpColorManagerV1, ()>
         + Dispatch<WpColorManagerV1, ()>
         + Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>>
+        + Dispatch<WpImageDescriptionCreatorIccV1, ()>
         + Dispatch<WpImageDescriptionV1, ImageDescriptionData>
         + Dispatch<WpColorManagementSurfaceV1, ColorManagementSurfaceUserData>
         + Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedbackData>
@@ -749,6 +751,7 @@ impl<D> Dispatch<WpColorManagerV1, (), D> for ColorManagerState
 where
     D: Dispatch<WpColorManagerV1, ()>
         + Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>>
+        + Dispatch<WpImageDescriptionCreatorIccV1, ()>
         + Dispatch<WpImageDescriptionV1, ImageDescriptionData>
         + Dispatch<WpColorManagementSurfaceV1, ColorManagementSurfaceUserData>
         + Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedbackData>
@@ -773,14 +776,29 @@ where
                 // We don't advertise the icc_v2_v4 feature — clients
                 // that call this are asking for something we said we
                 // don't support. Post the mandated protocol error.
-                let _ = obj;
+                // Initialise the request-created object before posting the
+                // fatal error.  wayland-backend installs user data after the
+                // callback returns; killing the client while this `new_id`
+                // is still uninitialised removes it from the object map and
+                // older backends then panic while completing dispatch.
+                data_init.init(obj, ());
                 manager.post_error(
                     wp_color_manager_v1::Error::UnsupportedFeature,
                     "ICC-based image descriptions are not supported",
                 );
             }
             wp_color_manager_v1::Request::CreateWindowsScrgb { image_description } => {
-                let _ = image_description;
+                // See `CreateIccCreator`: every request `new_id` must be
+                // initialised even when the request ends in a protocol error.
+                data_init.init(
+                    image_description,
+                    ImageDescriptionData {
+                        colorimetry: Colorimetry::sdr_bt709(),
+                        hdr: None,
+                        identity: 0,
+                        queryable: false,
+                    },
+                );
                 manager.post_error(
                     wp_color_manager_v1::Error::UnsupportedFeature,
                     "Windows-scRGB image descriptions are not supported",
@@ -851,6 +869,25 @@ where
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl<D> Dispatch<WpImageDescriptionCreatorIccV1, (), D> for ColorManagerState
+where
+    D: Dispatch<WpImageDescriptionCreatorIccV1, ()> + 'static,
+{
+    fn request(
+        _state: &mut D,
+        _client: &Client,
+        _obj: &WpImageDescriptionCreatorIccV1,
+        _request: <WpImageDescriptionCreatorIccV1 as Resource>::Request,
+        _data: &(),
+        _dh: &DisplayHandle,
+        _init: &mut DataInit<'_, D>,
+    ) {
+        // The manager never advertises ICC support, so a conforming client is
+        // disconnected by `create_icc_creator` before it can reach this object.
     }
 }
 
@@ -1063,6 +1100,17 @@ fn create_image_description<D>(
             builder.mark_consumed();
         }
         None => {
+            // The request carried a `new_id`; initialise it before the fatal
+            // error removes the client and all of its protocol objects.
+            data_init.init(
+                image_description,
+                ImageDescriptionData {
+                    colorimetry: Colorimetry::sdr_bt709(),
+                    hdr: None,
+                    identity: 0,
+                    queryable: false,
+                },
+            );
             creator.post_error(
                 wp_image_description_creator_params_v1::Error::IncompleteSet,
                 "primaries + transfer are required before create",
@@ -1305,6 +1353,11 @@ macro_rules! delegate_color_management {
         smithay::reexports::wayland_server::delegate_global_dispatch!($ty:
             [
                 wayland_protocols::wp::color_management::v1::server::wp_color_manager_v1::WpColorManagerV1: ()
+            ] => $crate::wayland::color_management::ColorManagerState
+        );
+        smithay::reexports::wayland_server::delegate_dispatch!($ty:
+            [
+                wayland_protocols::wp::color_management::v1::server::wp_image_description_creator_icc_v1::WpImageDescriptionCreatorIccV1: ()
             ] => $crate::wayland::color_management::ColorManagerState
         );
         smithay::reexports::wayland_server::delegate_dispatch!($ty:
