@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ACTION_PATH = ".forgejo/actions/install-cosign"
+ACTION_PATH = ".github/actions/install-cosign"
 CONSUMERS = {
     "build-builder-image.yml": 2,
     "build-image.yml": 1,
@@ -29,7 +29,7 @@ class CosignInstallActionTests(unittest.TestCase):
         self.assertIn("if: steps.restore.outputs.cache-hit != 'true'", action)
 
     def test_workflows_do_not_reimplement_the_cosign_cache_protocol(self) -> None:
-        workflows = ROOT / ".forgejo" / "workflows"
+        workflows = ROOT / ".github" / "workflows"
         for name, expected_uses in CONSUMERS.items():
             with self.subTest(workflow=name):
                 source = (workflows / name).read_text(encoding="utf-8")
@@ -41,7 +41,7 @@ class CosignInstallActionTests(unittest.TestCase):
         self.assertNotIn("path: os/external-assets/cosign-cache", combined)
 
     def test_path_filtered_consumers_track_the_shared_action(self) -> None:
-        workflows = ROOT / ".forgejo" / "workflows"
+        workflows = ROOT / ".github" / "workflows"
         for name in (
             "build-builder-image.yml",
             "build-kernel.yml",

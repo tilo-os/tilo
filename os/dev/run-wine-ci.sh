@@ -6,7 +6,7 @@ runtime=${2:?immutable tooling image required}
 source_dir=${3:?verified source directory required}
 evidence=${4:?new evidence directory required}
 case "$target" in x86_64) config=fedora-44-x86_64 ;; i686) config=fedora-44-i386 ;; *) exit 2 ;; esac
-[[ "$runtime" =~ ^code\.podesta\.ai/qos/wine-tools@sha256:[0-9a-f]{64}$ ]]
+[[ "$runtime" =~ ^ghcr\.io/tilo-os/wine-tools@sha256:[0-9a-f]{64}$ ]]
 [[ "${GITHUB_SHA:?}" =~ ^[0-9a-f]{40}$ ]]
 [[ "${GITHUB_RUN_ID:?}" =~ ^[0-9]+$ ]]
 test "$(uname -m)" = x86_64
@@ -73,11 +73,11 @@ docker cp "$source_dir" "$resolver:/work/source"
 docker exec "$resolver" runuser -u tilo-build -- sudo -n /usr/bin/python3 /tilo/wine-mock-producer.py \
     resolve --target "$target" --runtime-image "$runtime" --pin /tilo/wine-source.json \
     --source /work/source --config "$config" --output /work/bundle --jobs 2
-snapshot_tag="code.podesta.ai/qos/wine-resolution:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${target}"
+snapshot_tag="ghcr.io/tilo-os/wine-resolution:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${target}"
 docker exec "$resolver" tar -C /work/bundle -cf - . | docker import --platform linux/amd64 - "$snapshot_tag"
 docker push "$snapshot_tag"
 snapshot_ref=$(docker image inspect --format '{{index .RepoDigests 0}}' "$snapshot_tag")
-[[ "$snapshot_ref" =~ ^code\.podesta\.ai/qos/wine-resolution@sha256:[0-9a-f]{64}$ ]]
+[[ "$snapshot_ref" =~ ^ghcr\.io/tilo-os/wine-resolution@sha256:[0-9a-f]{64}$ ]]
 printf '%s\n' "$snapshot_ref" > "$evidence/resolution-image.txt"
 docker stop "$resolver" >/dev/null
 
@@ -94,10 +94,10 @@ docker exec "$builder" runuser -u tilo-build -- sudo -n /usr/bin/python3 /tilo/w
     --bundle /inputs/bundle --output /work/output --jobs 2
 docker exec "$builder" python3 /tilo/wine_rpm_contract.py import-mock "$target" /tilo/wine-source.json \
     /work/output /inputs/bundle /work/wine-output "$snapshot_ref"
-artifact_tag="code.podesta.ai/qos/wine-rpms:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${target}"
+artifact_tag="ghcr.io/tilo-os/wine-rpms:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${target}"
 docker exec "$builder" tar -C /work -cf - wine-output | docker import --platform linux/amd64 - "$artifact_tag"
 docker push "$artifact_tag"
 artifact_ref=$(docker image inspect --format '{{index .RepoDigests 0}}' "$artifact_tag")
-[[ "$artifact_ref" =~ ^code\.podesta\.ai/qos/wine-rpms@sha256:[0-9a-f]{64}$ ]]
+[[ "$artifact_ref" =~ ^ghcr\.io/tilo-os/wine-rpms@sha256:[0-9a-f]{64}$ ]]
 printf '%s\n' "$artifact_ref" > "$evidence/wine-rpms-image.txt"
 docker cp "$builder":/work/wine-output/provenance "$evidence/provenance"

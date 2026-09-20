@@ -1,0 +1,196 @@
+name: Snapshot / WPE buildroots
+
+permissions:
+  contents: write
+  packages: write
+
+# This is the only CI boundary allowed to resolve WPE build dependencies from
+# Fedora. It promotes signed, per-architecture immutable refs; OS release jobs
+# consume those refs and cannot fall back to the network.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - os/Containerfile.wpe-buildroot
+      - os/base-snapshot.env
+      - os/external-assets/github-assets.tsv
+      - os/dev/assert-native-arch.sh
+      - os/dev/cache-github-assets.sh
+      - os/dev/install-cached-cosign.sh
+      - ".github/actions/install-cosign/**"
+      - os/dev/acquire-wpe-snapshot-credentials.sh
+      - keys/cosign.pub
+      - .github/workflows/snapshot-wpe-buildroot.yml
+
+concurrency:
+  group: snapshot-wpe-buildroot
+  # Only the newest immutable snapshot is useful. In particular, do not let an
+  # older run waiting for future runner-arm64 capacity serialize newer amd64
+  # work behind it.
+  cancel-in-progress: true
+
+jobs:
+  build:
+    timeout-minutes: 600
+    # Promotion is atomic across both native architectures. Keep automatic
+    # pushes skipped until the ARM64 pool exists instead of leaving every run
+    # permanently queued; enabling the pool is one repository-variable flip.
+    if: github.ref == 'refs/heads/main' && vars.TILO_NATIVE_ARM64_RUNNER == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x86_64
+            runner: tilo-build-x64
+          - arch: aarch64
+            runner: tilo-build-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate the native runner architecture
+        run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
+      - name: Require the OIDC credential broker
+        env:
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: test -n "$WPE_SNAPSHOT_CREDENTIAL_BROKER"
+      - name: Install checksum-pinned Cosign
+        uses: ./.github/actions/install-cosign
+        with:
+          cache-architecture: ${{ matrix.arch }}
+      - name: Load the mirrored Fedora base
+        run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
+      - name: Acquire a short-lived base-image read lease
+        env:
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh "resolve-${{ matrix.arch }}"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Resolve and build the native buildroot locally
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: os/Containerfile.wpe-buildroot
+          push: false
+          load: true
+          provenance: false
+          no-cache: true
+          build-args: |
+            BASE_REF=${{ env.BASE_REF }}
+          tags: ghcr.io/tilo-os/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}
+      - name: Revoke the base-image read lease
+        run: docker logout ghcr.io || true
+      - name: Acquire a fresh short-lived publish and signing lease
+        env:
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh "publish-${{ matrix.arch }}"
+      - name: Publish and audit the immutable buildroot
+        run: |
+          set -euo pipefail
+          tag="ghcr.io/tilo-os/tilo-wpe-buildroot:${{ matrix.arch }}-${{ github.sha }}"
+          docker push "$tag"
+          digest_ref="$(docker image inspect --format '{{index .RepoDigests 0}}' "$tag")"
+          DIGEST="${digest_ref##*@}"
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          ref="ghcr.io/tilo-os/tilo-wpe-buildroot@$DIGEST"
+          actual_arch="$(docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/wpe-buildroot-arch)"
+          test "$actual_arch" = '${{ matrix.arch }}'
+          docker run --rm --entrypoint sh "$ref" -c \
+            'test -s /usr/lib/tilo/wpe-buildroot-packages.txt && ! find /etc/yum.repos.d -type f -print -quit | grep -q .'
+          printf 'TILO_WPE_REF=%s\n' "$ref" >> "$GITHUB_ENV"
+      - name: Sign through the non-exportable leased key
+        run: |
+          set -euo pipefail
+          test -n "${TILO_WPE_SIGNER:-}"
+          "$TILO_WPE_SIGNER" "$TILO_WPE_REF"
+      - name: Verify the signature and record the immutable reference
+        run: |
+          set -euo pipefail
+          ref="$TILO_WPE_REF"
+          cosign verify --key keys/cosign.pub "$ref" >/dev/null
+          mkdir -p refs
+          case '${{ matrix.arch }}' in
+            x86_64) key=WPE_BUILDROOT_X86_64_REF ;;
+            aarch64) key=WPE_BUILDROOT_AARCH64_REF ;;
+          esac
+          printf '%s=%s\n' "$key" \
+            "$ref" > "refs/${{ matrix.arch }}.env"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wpe-buildroot-${{ matrix.arch }}
+          path: refs/${{ matrix.arch }}.env
+      - name: Revoke local registry credentials
+        if: always()
+        run: docker logout ghcr.io || true
+
+  promote:
+    timeout-minutes: 60
+    needs: build
+    runs-on: tilo-build-x64
+    env:
+      WPE_SNAPSHOT_INPUTS: |
+        os/Containerfile.wpe-buildroot
+        os/base-snapshot.env
+        os/external-assets/github-assets.tsv
+        os/dev/assert-native-arch.sh
+        os/dev/cache-github-assets.sh
+        os/dev/install-cached-cosign.sh
+        os/dev/acquire-wpe-snapshot-credentials.sh
+        keys/cosign.pub
+        .github/workflows/snapshot-wpe-buildroot.yml
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 0
+      - name: Install checksum-pinned Cosign
+        uses: ./.github/actions/install-cosign
+        with:
+          cache-architecture: x86_64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: refs
+      - name: Require the OIDC credential broker
+        env:
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: test -n "$WPE_SNAPSHOT_CREDENTIAL_BROKER"
+      - name: Acquire a short-lived registry lease
+        env:
+          WPE_SNAPSHOT_CREDENTIAL_BROKER: ${{ vars.WPE_SNAPSHOT_CREDENTIAL_BROKER }}
+        run: os/dev/acquire-wpe-snapshot-credentials.sh promote
+      - name: Verify signatures and advance both architecture pins atomically
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          x86="$(find refs -type f -name x86_64.env -print -quit)"
+          arm="$(find refs -type f -name aarch64.env -print -quit)"
+          test -n "$x86" && test -n "$arm"
+          . "$x86"
+          . "$arm"
+          for ref in "$WPE_BUILDROOT_X86_64_REF" "$WPE_BUILDROOT_AARCH64_REF"; do
+            [[ "$ref" =~ ^ghcr\.io/tilo-os/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]
+            cosign verify --key keys/cosign.pub "$ref" >/dev/null
+          done
+          git fetch --no-tags origin main
+          mapfile -t snapshot_inputs < <(printf '%s' "$WPE_SNAPSHOT_INPUTS")
+          if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${snapshot_inputs[@]}"; then
+            printf 'WPE buildroot inputs changed after this run started; refusing stale promotion\n' >&2
+            exit 1
+          fi
+          printf '%s\n' \
+            '# Per-architecture WPE buildroots, signed and pinned by digest.' \
+            '# Updated only by snapshot-wpe-buildroot.yml.' \
+            "WPE_BUILDROOT_X86_64_REF=$WPE_BUILDROOT_X86_64_REF" \
+            "WPE_BUILDROOT_AARCH64_REF=$WPE_BUILDROOT_AARCH64_REF" \
+            > os/wpe-buildroot-snapshot.env
+          if git diff --quiet -- os/wpe-buildroot-snapshot.env; then
+            exit 0
+          fi
+          blob_sha=$(gh api "repos/${GITHUB_REPOSITORY}/contents/os/wpe-buildroot-snapshot.env?ref=main" --jq .sha)
+          content=$(base64 -w0 os/wpe-buildroot-snapshot.env)
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/os/wpe-buildroot-snapshot.env" \
+            -f message='build(os): refresh WPE buildroot snapshots' \
+            -f content="$content" -f branch=main -f sha="$blob_sha" >/dev/null
+      - name: Revoke local registry credentials
+        if: always()
+        run: docker logout ghcr.io || true

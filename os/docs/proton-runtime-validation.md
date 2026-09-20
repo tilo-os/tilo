@@ -32,7 +32,7 @@ successful Proton launch.
 The bundled `_v2-entry-point` has an explicit emulation path: with a machine
 architecture plus valid emulator and graphics-provider manifest paths, it
 selects native pressure-vessel and its architecture-specific execution helper.
-For `aarch64-linux-gnu`, this selects `pressure-vessel-arm64`. The qOS
+For `aarch64-linux-gnu`, this selects `pressure-vessel-arm64`. The Tilo
 integration must implement and test that contract, including x86 child
 processes, graphics providers, and the emulator server.
 
@@ -56,7 +56,7 @@ must switch FEX from the host guest rootfs to the runtime's filesystem.
 The optional server has a defined lifecycle protocol: write `READY=1` and
 close stdout after initialization, then exit when stdin reaches EOF. This
 must not be confused with the separate FEXServer readiness pipe used by the
-existing Wine smoke harness. qOS must either supply the required adapter or
+existing Wine smoke harness. Tilo must either supply the required adapter or
 manage the server outside that optional manifest field with equivalent
 readiness and teardown guarantees.
 
@@ -66,10 +66,10 @@ On 2026-09-16, `os/tests/fex-proton-smoke.py` passed with the pinned Proton
 and sniper inputs, unmodified FEX commit
 `91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20`, and these local images:
 
-- Native host: `localhost/qos-fex-graphics-host:arm64-dev`, image ID
+- Native host: `localhost/tilo-fex-graphics-host:arm64-dev`, image ID
   `5819150611346d43c72daa5a733e207b093ef89645d727d545c4f289ce0ff8a7`.
 - Guest graphics filesystem exported from
-  `localhost/qos-fex-graphics-guest:fedora44-dev`, image ID
+  `localhost/tilo-fex-graphics-guest:fedora44-dev`, image ID
   `a2e62822ac3d9498f75d38c1005fa09c089460cb1f3de9c4fee2364e8a75db14`.
 
 The test runs native ARM pressure-vessel with an emulator manifest pointing
@@ -79,7 +79,7 @@ and switches `FEX_ROOTFS` to empty inside the assembled runtime. A managed
 FEXServer must report readiness and remain alive through the test.
 
 Proton creates a fresh prefix and runs Windows `cmd.exe`, which must write
-`QOS_PROTON_CONSOLE_PASS` into `C:\qos-console.txt`. The harness reads that file
+`TILO_PROTON_CONSOLE_PASS` into `C:\tilo-console.txt`. The harness reads that file
 from the prefix and requires the exact marker, exit 0, no timeout, and a live
 server. The checked-in harness met all four conditions. Its result and logs
 are retained in the preparation directory's `fex-proton-smoke-results`.
@@ -114,7 +114,7 @@ python3 /test.py --runtime /runtime --rootfs /rootfs \
 The direct mode validates the Proton console runner inside sniper on
 ARM. It supplies UMU's non-Steam identity (`UMU_ID=umu-0`) directly. The
 separate offline mode below also exercises the UMU entry point. Neither mode
-validates game graphics, physical GPU drivers, or the complete qOS capsule
+validates game graphics, physical GPU drivers, or the complete Tilo capsule
 policy. The known FEX graphics failures remain unresolved.
 
 ## Offline UMU entry point acceptance
@@ -146,7 +146,7 @@ that identity.
 ## Remaining integration requirements
 
 - The OS recipe now installs this runtime under
-  `/usr/lib/qos/windows-runners/steam-runtime/SteamLinuxRuntime_sniper` and
+  `/usr/lib/tilo/windows-runners/steam-runtime/SteamLinuxRuntime_sniper` and
   runs the host-native `pv-verify` during artifact preparation. The ARM
   extraction and verification commands passed in the local build container;
   this is not a completed final OS image build.
@@ -157,7 +157,7 @@ that identity.
 - Runtime content should remain immutable, with any required installation
   markers and pressure-vessel variable state confined to capsule-owned
   writable storage.
-- Validate the complete nested runtime under qOS Landlock, syscall policy,
+- Validate the complete nested runtime under Tilo Landlock, syscall policy,
   network grants, and graphics selection before changing production launch
   plans. The offline console test does not establish those integration gates.
 
@@ -165,11 +165,11 @@ that identity.
 
 The Proton registry now names the pinned runtime's individual top-level
 files and directories as read-only binds under
-`/tmp/qos-runtime/umu/steamrt3`. That parent lives in the capsule's private
+`/tmp/tilo-runtime/umu/steamrt3`. That parent lives in the capsule's private
 tmpfs, allowing UMU to create its atomic install marker without modifying
 image content. The namespace plan creates the upstream `umu` entry-point
 symlink and fixes `UMU_FOLDERS_PATH`, disables UMU runtime updates, and places
-pressure-vessel's runtime copies under `/tmp/qos-runtime/var`.
+pressure-vessel's runtime copies under `/tmp/tilo-runtime/var`.
 
 The image includes an empty platform `files/.ref` mount point. Each executor
 invocation supplies a new empty memfd through Bubblewrap's `--bind-data`

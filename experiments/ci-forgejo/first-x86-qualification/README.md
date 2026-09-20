@@ -2,7 +2,7 @@
 
 This directory preserves the reviewed first-qualification inputs and procedure.
 Its generator, tests, 29-file workflow policy and 12-file controller inventory
-belong to qOS commit `774a6886b01fbc219ff55cc1a80713e88c492d09`; reproduce them
+belong to Tilo commit `774a6886b01fbc219ff55cc1a80713e88c492d09`; reproduce them
 from a separate checkout of that exact commit, not from current main. Do not use
 the installation sequence below to overwrite a live policy or rerun a dispatch.
 It records the original empty-state procedure, not the current platform state.
@@ -19,7 +19,7 @@ when an operator later installs these exact bytes and explicitly runs the servic
 
 ## Exact scope and identities
 
-Source inspected: `b4cba2210b4c03be13ec518822756849feadb685` on merged `qos/qos/main`.
+Source inspected: `b4cba2210b4c03be13ec518822756849feadb685` on merged `tilo/tilo/main`.
 `coordinator.json` binds all **29** production `REQUIRED_PATHS` to their committed
 SHA256 values. `controller-source-hashes.json` separately records the **12** trusted
 service files that must be deployed outside candidate checkouts.
@@ -39,9 +39,9 @@ public identities, compatibility evidence and product scope are unchanged.
   current product manifest; this qualification does not change that definition.
 - App publisher: `1cb2f164d3517879cfce6e24106a1d4bc3686096b30b674e7859e6b1c896219a`.
 - Current runtime publisher: `50d099efd7805a4783847f11ba2dd4ecf338e2f6b254a3f8eb5822eec21f3dd1`,
-  freshly derived through the production signer in [run 9734](https://code.podesta.ai/qos/qos/actions/runs/9734)
+  freshly derived through the production signer in [run 9734](https://github.com/tilo-os/tilo/actions/runs/9734)
   (API23237, job85267), retained in `runtime-publisher.json`.
-- Immutable builder: `code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a`.
+- Immutable builder: `ghcr.io/tilo-os/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a`.
 - Canonical bundle SHA256: `10ad658a452b21545cf2521fa875536da5d951ee8dd509533251a0a3a0517bde`,
   **6,113,401 bytes**, exact descriptor and binary/adapter identities in `final-policy.json`.
 - Allowed x86 package ISA: **v3**. ARM is deliberately absent from this first native
@@ -113,7 +113,7 @@ workflow contract tests cover the newly landed metadata and PR-plan changes.
    allowed; changed trusted workflow/tool/config bytes require renewed review and
    policy generation. Record the actual observed source and selected app set.
 3. Install the reviewed staged immutable source ConfigMap, create a protected
-   **immutable** `qos-packaging-controller-policy` ConfigMap containing reviewed
+   **immutable** `tilo-packaging-controller-policy` ConfigMap containing reviewed
    `coordinator.json` and exact `final-policy.json`, and install the staged CronJob
    manifest with `spec.suspend: true`. Use its existing manifest template and source
    reference patch; do not substitute another coordinator. Read back the installed
@@ -171,7 +171,7 @@ fail closed if they are insufficient. No app payloads are executed by this
 canonical artifact acceptance, so interactive/install testing remains separate.
 
 This single x86 gate is an initial qualification, not a reduction of the requested
-release matrix. Preserve continuous dependency-based Linux/qOS app packaging,
+release matrix. Preserve continuous dependency-based Linux/Tilo app packaging,
 ARM apps, desktop/Linux-distribution packages, Linux/Windows setup, Windows apps
 subject to toolkit qualification, and device/architecture OS outputs. OS release
 remains manual; macOS definitions remain retained and disabled. Expansion needs

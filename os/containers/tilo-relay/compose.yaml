@@ -5,7 +5,7 @@
 # home-peer bundle are provisioned over the LAN without copying a token.
 services:
   tilo-relay:
-    image: ${TILO_RELAY_IMAGE:-code.podesta.ai/qos/tilo-relay:latest}
+    image: ${TILO_RELAY_IMAGE:-ghcr.io/tilo-os/tilo-relay:latest}
     command: ["--config", "/etc/tilo/relay.toml", "run"]
     restart: unless-stopped
     environment:

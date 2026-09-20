@@ -6,13 +6,13 @@ set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
-[ "$#" -eq 1 ] || die "usage: $0 code.podesta.ai/qos/tilo@sha256:<digest>"
+[ "$#" -eq 1 ] || die "usage: $0 ghcr.io/tilo-os/tilo@sha256:<digest>"
 image="$1"
 case "$image" in
-  code.podesta.ai/qos/tilo@sha256:*) ;;
-  *) die "published Tilo image must be an immutable code.podesta.ai/qos/tilo digest" ;;
+  ghcr.io/tilo-os/tilo@sha256:*) ;;
+  *) die "published Tilo image must be an immutable ghcr.io/tilo-os/tilo digest" ;;
 esac
-digest="${image#code.podesta.ai/qos/tilo@sha256:}"
+digest="${image#ghcr.io/tilo-os/tilo@sha256:}"
 [[ "$digest" =~ ^[0-9a-f]{64}$ ]] \
   || die "published Tilo image digest must be 64 lowercase hex characters"
 
@@ -90,7 +90,7 @@ expected_source_uri=""
 if [ -n "$expected_source" ]; then
   [[ "$expected_source" =~ ^[0-9a-f]{40}$ ]] \
     || die "TILO_EXPECTED_OS_SOURCE_REVISION must be a full lowercase Git commit"
-  expected_source_uri="git+ssh://code.podesta.ai/qos/tilo@$expected_source"
+  expected_source_uri="git+https://github.com/tilo-os/tilo@$expected_source"
 fi
 generation="$(printf '%s' "$provenance" | jq -er \
   --arg digest "sha256:$digest" --argjson children "$children" \
@@ -111,7 +111,7 @@ generation="$(printf '%s' "$provenance" | jq -er \
 # Signing a candidate does not publish it.  The immutable generation tag is the
 # dense series' commit record, so require that signed tag to resolve to this
 # exact index before installer media can consume it.
-generation_image="code.podesta.ai/qos/tilo:gen$generation"
+generation_image="ghcr.io/tilo-os/tilo:gen$generation"
 generation_signatures="$(cosign verify --key "$verify_key" "$generation_image")" \
   || die "published generation tag gen$generation has no valid release signature"
 generation_digest="$(printf '%s' "$generation_signatures" | jq -er '

@@ -8,7 +8,7 @@
 #   * drops DEBUG_INFO / KGDB — we ship the running kernel, not its
 #     ~800 MB debuginfo companion.
 #
-# Output OCI image layout (published by .forgejo/workflows/build-kernel.yml):
+# Output OCI image layout (published by .github/workflows/build-kernel.yml):
 #   /repo/
 #     tilo-kernel-<ver>.<arch>.rpm
 #     tilo-kernel-core-<ver>.<arch>.rpm
@@ -27,7 +27,7 @@
 # ---- Frozen RPM repo (build deps, cross-time reproducible) -----------------
 # Every dnf install below reads exclusively from this digest-pinned snapshot,
 # same as os/Containerfile.  Adding a build dep here => the awk scan in
-# .forgejo/workflows/snapshot-rpms.yml picks it up on the next re-snapshot
+# .github/workflows/snapshot-rpms.yml picks it up on the next re-snapshot
 # and the frozen repo grows accordingly.  See os/rpms-snapshot.env for the
 # current pin; the workflow passes it as --build-arg RPMS_REF.
 #

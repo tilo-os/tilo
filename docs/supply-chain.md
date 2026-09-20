@@ -14,7 +14,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   KMS/HSM key. Exportable private-key material is rejected by the workflow.
 - **Verify-before-update.** The image ships `/usr/share/tilo/cosign.pub` + an
   `/etc/containers/policy.json` that **requires** a valid signature for
-  `code.podesta.ai/tilo/tilo` (+ `registries.d` sigstore-attachment lookup). So
+  `ghcr.io/tilo-os/tilo` (+ `registries.d` sigstore-attachment lookup). So
   `bootc upgrade` refuses an unsigned/tampered OS image.
 - **Owner identity endorsements.** `tilo-user-identity::ImageEndorsement` gives
   locally built images a separate human-root → explicitly authorized device →
@@ -141,7 +141,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
   set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built +
-  pushed by the `snapshot-rpms` CI job to `code.podesta.ai/qos/rpms`), pinned in
+  pushed by the `snapshot-rpms` CI job to `ghcr.io/tilo-os/rpms`), pinned in
   `os/rpms-snapshot.env` (`RPMS_REF=…@sha256`). Every `os/Containerfile` `dnf
   install` mounts that repo and installs from it only
   (`--setopt=reposdir=/repo`), never live Fedora mirrors.
@@ -174,7 +174,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   `FROM quay.io/fedora/fedora-bootc@sha256:…` pin stops resolving after roughly
   a day (`manifest unknown`) and every build fails at its first `FROM` — the
   `snapshot-rpms` job included, which made the package set unrefreshable too.
-  So the base is **mirrored into `code.podesta.ai/tilo/fedora-bootc`** and every
+  So the base is **mirrored into `ghcr.io/tilo-os/fedora-bootc`** and every
   Containerfile takes it as `--build-arg BASE_REF`, pinned in
   `os/base-snapshot.env`. Our registry collects nothing, so the pin keeps
   resolving. The copy uses `skopeo copy --all --preserve-digests`, so the

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('compile_os', ROOT / 'os/dev/compile-development-os.py')
 driver = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(driver)
-WPE = 'code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + 'a' * 64
+WPE = 'ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + 'a' * 64
 REVISION = 'b' * 40
 CACHE_ENV = {'SCCACHE_ENDPOINT': 'https://s3.eu-central-1.amazonaws.com',
              'SCCACHE_BUCKET': 'podesta-agent-sccache-125650147312-eu-central-1',
@@ -62,9 +62,9 @@ class CompileBoundaries(unittest.TestCase):
                     driver.selected_pins('aarch64')
 
     def test_kernel_pin_selects_native_architecture_and_explicit_candidate(self):
-        x86 = 'code.podesta.ai/qos/qos-kernel@sha256:' + '1' * 64
-        arm = 'code.podesta.ai/qos/qos-kernel@sha256:' + '2' * 64
-        candidate = 'code.podesta.ai/qos/tilo-development-kernel-aarch64@sha256:' + '3' * 64
+        x86 = 'ghcr.io/tilo-os/tilo-kernel@sha256:' + '1' * 64
+        arm = 'ghcr.io/tilo-os/tilo-kernel@sha256:' + '2' * 64
+        candidate = 'ghcr.io/tilo-os/tilo-development-kernel-aarch64@sha256:' + '3' * 64
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             (repo / 'os').mkdir()
@@ -126,7 +126,7 @@ class CompileBoundaries(unittest.TestCase):
                 mode='native-payload', architecture='aarch64', hardware_profile='lenovo-83ed')
 
     def test_firmware_artifact_selection_is_explicit_and_independently_pinned(self):
-        reference = 'code.podesta.ai/qos/tilo-firmware@sha256:' + '1' * 64
+        reference = 'ghcr.io/tilo-os/tilo-firmware@sha256:' + '1' * 64
         valid = dict(mode='full-build', profile='lenovo-83ed', reference=reference,
                      manifest_sha256='2' * 64, required=True)
         driver.validate_firmware_selection(**valid)
@@ -134,14 +134,14 @@ class CompileBoundaries(unittest.TestCase):
         driver.validate_firmware_selection('full-build', 'generic', '', '', True)
         driver.validate_firmware_selection('cache-only', 'lenovo-83ed', '', '', True)
         for change in ({'reference': ''}, {'manifest_sha256': ''}, {'manifest_sha256': 'latest'},
-                       {'reference': 'code.podesta.ai/qos/tilo-firmware:latest'},
-                       {'reference': reference.replace('/qos/', '/other/')},
+                       {'reference': 'ghcr.io/tilo-os/tilo-firmware:latest'},
+                       {'reference': reference.replace('/tilo/', '/other/')},
                        {'profile': 'generic'}, {'mode': 'cache-only'}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 driver.validate_firmware_selection(**(valid | change))
 
     def test_firmware_import_invokes_only_the_inert_data_importer(self):
-        reference = 'code.podesta.ai/qos/tilo-firmware@sha256:' + '1' * 64
+        reference = 'ghcr.io/tilo-os/tilo-firmware@sha256:' + '1' * 64
         receipt = {'reference': reference, 'profile': 'lenovo-83ed', 'manifest_sha256': '2' * 64}
         with patch.object(driver, 'run', return_value=json.dumps(receipt)) as command:
             self.assertEqual(driver.import_hardware_inputs(reference, '2' * 64, 'lenovo-83ed', 'aarch64'), receipt)
@@ -296,8 +296,8 @@ class CompileBoundaries(unittest.TestCase):
             build.assert_not_called()
 
     def test_arm_requires_explicit_kernel_and_never_uses_x64_default(self):
-        kernel = 'code.podesta.ai/qos/tilo-kernel@sha256:' + 'c' * 64
-        rpms = 'code.podesta.ai/qos/tilo-rpms@sha256:' + 'd' * 64
+        kernel = 'ghcr.io/tilo-os/tilo-kernel@sha256:' + 'c' * 64
+        rpms = 'ghcr.io/tilo-os/tilo-rpms@sha256:' + 'd' * 64
         defaults = {'BASE_REF': WPE, 'RPMS_REF': WPE, 'KERNEL_RPMS_REF': WPE}
         with patch.object(driver, 'pinned_inputs', return_value=defaults.copy()) as pins:
             with self.assertRaisesRegex(ValueError, 'explicit immutable kernel'):
@@ -322,15 +322,15 @@ class CompileBoundaries(unittest.TestCase):
         self.assertEqual(driver.LOADER_NAMES['aarch64'], 'systemd-bootaa64.efi')
 
     def test_arm_full_build_requires_both_explicit_compatibility_input_references(self):
-        payload = 'code.podesta.ai/qos/development-payload@sha256:' + '1' * 64
-        guest = 'code.podesta.ai/qos/development-guest@sha256:' + '2' * 64
+        payload = 'ghcr.io/tilo-os/development-payload@sha256:' + '1' * 64
+        guest = 'ghcr.io/tilo-os/development-guest@sha256:' + '2' * 64
         inputs = dict(wpe=WPE, generation='7', revision=REVISION, branch='refs/heads/codex/test',
                       architecture='aarch64', kernel_candidate=WPE,
                       fex_payload_candidate=payload, windows_guest_candidate=guest)
         driver.validate_inputs(**inputs)
         for field in ('fex_payload_candidate', 'windows_guest_candidate'):
-            for invalid in ('', 'code.podesta.ai/qos/example:latest',
-                            'foreign.example/qos/example@sha256:' + '1' * 64,
+            for invalid in ('', 'ghcr.io/tilo-os/example:latest',
+                            'foreign.example/tilo/example@sha256:' + '1' * 64,
                             'code.podesta.ai/other/example@sha256:' + '1' * 64,
                             payload + ';false'):
                 with self.subTest(field=field, invalid=invalid), self.assertRaises(ValueError):
@@ -387,7 +387,7 @@ class CompileBoundaries(unittest.TestCase):
         inputs = {'architecture': 'x86_64', 'epoch': '0', 'wpe_buildroot': WPE}
         receipt = {'schema': 1, 'purpose': 'tilo-development-wpe-completed-stage',
             'production_signed': False, 'inputs': inputs,
-            'reference': 'code.podesta.ai/qos/tilo-development-wpe-stage-x86_64@sha256:' + 'a' * 64,
+            'reference': 'ghcr.io/tilo-os/tilo-development-wpe-stage-x86_64@sha256:' + 'a' * 64,
             'config_digest': 'sha256:' + 'b' * 64,
             'build': {'jobs': 6, 'revision': REVISION, 'run_id': '1', 'attempt': '1',
                       'source_completed_stage_id': 'sha256:' + 'c' * 64}}
@@ -589,7 +589,7 @@ class CompileBoundaries(unittest.TestCase):
         driver.validate_inputs(WPE, '7', REVISION, 'refs/heads/codex/install-prep')
 
     def test_rejects_aliases_other_repositories_and_shell_fragments(self):
-        for value in ('code.podesta.ai/qos/tilo-wpe-buildroot:latest',
+        for value in ('ghcr.io/tilo-os/tilo-wpe-buildroot:latest',
                       WPE.replace('tilo-wpe-buildroot', 'tilo'), WPE + '; true',
                       WPE.replace('code.podesta.ai', 'example.invalid')):
             with self.subTest(value=value), self.assertRaises(ValueError):

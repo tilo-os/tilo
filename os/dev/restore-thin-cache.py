@@ -131,7 +131,7 @@ def restore(context, approval_sha, root=Path('/build')):
     require(approval['purpose'] == 'tilo-incomplete-thin-cache-admission' and
             approval['source_revision'] == SOURCE and approval['producer_helper_revision'] == HELPER,
             'admission identity differs')
-    require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-thin-cache-aarch64@sha256:[0-9a-f]{64}',
+    require(re.fullmatch(r'ghcr\.io/tilo-os/tilo-development-partial-thin-cache-aarch64@sha256:[0-9a-f]{64}',
                          approval['checkpoint_reference']), 'immutable cache reference required')
     require(approval['restore_helper_sha256'] == sha(Path(__file__)), 'reviewed restore helper differs')
     require(approval['cargo_revalidation_required'] is True and approval['incomplete_cache_reviewed'] is True,

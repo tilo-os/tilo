@@ -34,7 +34,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 # Where the published series lives. The generation counts published images, so it
 # is read from the repository `bootc upgrade` pulls from, not from a scratch
 # registry a disk build happened to push to.
-TILO_PUBLISH_REPO="${TILO_PUBLISH_REPO:-code.podesta.ai/qos/tilo}"
+TILO_PUBLISH_REPO="${TILO_PUBLISH_REPO:-ghcr.io/tilo-os/tilo}"
 
 WANT=next
 case "${1:-}" in

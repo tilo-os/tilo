@@ -86,7 +86,7 @@ releases = []
 for arch in ("x86_64", "aarch64"):
     path = root / f"installer-{arch}/tilo-installer-linux-{arch}.img.zst"
     releases.append({"arch":arch,"hardware_profile":"generic",
-        "url":f"https://code.podesta.ai/tilo/releases/releases/download/imager-v1.2.3/{path.name}",
+        "url":f"https://ghcr.io/tilo-os/releases/releases/download/imager-v1.2.3/{path.name}",
         "archive_sha256":hashlib.sha256(path.read_bytes()).hexdigest(),
         "archive_size":path.stat().st_size,"image_sha256":"b"*64,"image_size":1024})
 destination.write_text(json.dumps({"schema":1,"tag":"imager-v1.2.3","releases":releases}))
@@ -222,10 +222,10 @@ import hashlib, json, pathlib, sys
 catalog, board = map(pathlib.Path, sys.argv[1:])
 data=json.loads(catalog.read_text()); data["schema"]=2
 entry=dict(data["releases"][1]); entry.update(hardware_profile="lenovo-83ed",
-    url=f"https://code.podesta.ai/tilo/releases/releases/download/imager-v1.2.3/{board.name}",
+    url=f"https://ghcr.io/tilo-os/releases/releases/download/imager-v1.2.3/{board.name}",
     archive_sha256=hashlib.sha256(board.read_bytes()).hexdigest(), archive_size=board.stat().st_size,
     provenance={"source_image_id":"sha256:"+"a"*64,"input_qcow2_sha256":"c"*64,
-                "hardware_profile_sha256":"d"*64,"target_update_ref":"code.podesta.ai/qos/tilo:lenovo-fixture"})
+                "hardware_profile_sha256":"d"*64,"target_update_ref":"ghcr.io/tilo-os/tilo:lenovo-fixture"})
 data["releases"].append(entry); catalog.write_text(json.dumps(data))
 PY
 (cd "$(dirname "$catalog")" && sha256sum "$(basename "$catalog")" >"$(basename "$catalog").sha256")

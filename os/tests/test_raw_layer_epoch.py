@@ -24,7 +24,7 @@ class RawLayerEpoch(unittest.TestCase):
             select.assert_not_called()
 
     def test_workflow_anchor_validation_and_optional_argv(self):
-        workflow = (Path(__file__).resolve().parents[2]/'.forgejo/workflows/development-compile.yml').read_text()
+        workflow = (Path(__file__).resolve().parents[2]/'.github/workflows/development-compile.yml').read_text()
         self.assertEqual(workflow.count('ASSEMBLY_LAYER_EPOCH_ANCHOR: ${{ inputs.assembly_layer_epoch_anchor }}'), 3)
         self.assertIn('"${layer_epoch_args[@]}"', workflow)
         self.assertIn("fetch-depth: ${{ inputs.assembly_layer_epoch_anchor != '' && '0' || '5' }}", workflow)
@@ -49,7 +49,7 @@ class RawLayerEpoch(unittest.TestCase):
             self.assertEqual(result.stdout,expected)
 
     def test_workflow_ancestry_gate_executes_against_source_checkout(self):
-        workflow = (Path(__file__).resolve().parents[2]/'.forgejo/workflows/development-compile.yml').read_text()
+        workflow = (Path(__file__).resolve().parents[2]/'.github/workflows/development-compile.yml').read_text()
         step = workflow.split('- name: Validate layer timestamp anchor before building tools',1)[1]
         shell = textwrap.dedent(step.split('        run: |\n',1)[1].split('      # The workflow checkout',1)[0])
         with tempfile.TemporaryDirectory() as directory:

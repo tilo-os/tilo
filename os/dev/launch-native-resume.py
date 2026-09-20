@@ -17,8 +17,8 @@ import time
 sys.dont_write_bytecode = True
 
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
-BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
-RPMS = 'code.podesta.ai/qos/tilo-development-rpms-aarch64@sha256:912255637bab849ee5c3f62a963481f0b994576ef08cec8ff4fe4bc4cfb9e02f'
+BUILDER = 'ghcr.io/tilo-os/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
+RPMS = 'ghcr.io/tilo-os/tilo-development-rpms-aarch64@sha256:912255637bab849ee5c3f62a963481f0b994576ef08cec8ff4fe4bc4cfb9e02f'
 CHECKPOINT_DIGESTS = {'CHECKPOINT_INITIAL': '0d474c3568ac76c984c85472e924d47007f99cd6aecbf5a0a5656b2f1f4bb750',
                       'CHECKPOINT_DELTA': '59342924ce24301542b6312c82a1aa2c8d5d5430f7b050ce4827c45ddd7153d4'}
 
@@ -79,7 +79,7 @@ def prepare_extra_partials(environment, unique):
                 and value.get('run_id') == 21554 and value.get('run_number') == 8166
                 and all(value.get(k) is False for k in ('installable','complete_native_builder','build_success','resume_admitted')),
                 'reviewed incomplete reconstructed producer required')
-            require(value.get('reference') == 'code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:'+EXTRA_PARTIALS[label][1],
+            require(value.get('reference') == 'ghcr.io/tilo-os/tilo-development-partial-native-aarch64@sha256:'+EXTRA_PARTIALS[label][1],
                     'reviewed reconstructed reference required')
     admission = documents[ADMISSION]
     require(admission.get('purpose') == 'tilo-reconstructed-partial-admission'
@@ -109,7 +109,7 @@ def prepare_receipts(environment):
                     and value.get('source_revision') == SOURCE and value.get('complete_native_builder') is False
                     and value.get('build_success') is False and value.get('installable') is False,
                     'source4583 incomplete checkpoint required')
-            require(value.get('reference') == 'code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:' + CHECKPOINT_DIGESTS[label],
+            require(value.get('reference') == 'ghcr.io/tilo-os/tilo-development-partial-native-aarch64@sha256:' + CHECKPOINT_DIGESTS[label],
                     'reviewed checkpoint reference required')
         receipts[label] = raw
     require(environment['WPE_ADOPTION_SHA256'] == 'df41194aae2531d2cd9cd815cbce8009dd9dc254551b64154137228578ef32e2',
@@ -301,7 +301,7 @@ def main():
     receipt = exports.get('reconstruction/reconstructed-native.json', {})
     require(receipt.get('purpose') == 'tilo-development-reconstructed-native-builder'
             and receipt.get('complete_native_builder') is True and receipt.get('consumer_adoption_required') is True
-            and re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-reconstructed-native-aarch64@sha256:[0-9a-f]{64}', receipt.get('reference', '')),
+            and re.fullmatch(r'ghcr\.io/tilo-os/tilo-development-reconstructed-native-aarch64@sha256:[0-9a-f]{64}', receipt.get('reference', '')),
             'successful reconstruction publication receipt was not exported')
     require(not failures, 'worker cleanup incomplete')
 

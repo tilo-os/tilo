@@ -76,7 +76,7 @@ QUALITY_ONLY_HELPERS = {
 # file in the mandatory repository-policy suite. A file missing from this exact
 # map retains native Rust checks.
 QUALITY_ONLY_CONTROL_INPUTS = {
-    ".forgejo/workflows/build-builder-image.yml": (
+    ".github/workflows/build-builder-image.yml": (
         "os/tests/test_builder_candidate_workflow.py",
         "os/tests/release_pipeline_invariants.sh",
         "os/tests/workflow_dependency_invariants.sh",
@@ -84,20 +84,20 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_ci_native_mold.py",
         "tools/tests/test_cosign_install_action.py",
     ),
-    ".forgejo/workflows/build-kernel.yml": (
+    ".github/workflows/build-kernel.yml": (
         "tools/tests/test_workflow_applicability.py",
         "os/tests/workflow_dependency_invariants.sh",
     ),
-    ".forgejo/workflows/check.yml": (
+    ".github/workflows/check.yml": (
         "tools/tests/test_ci_check_aggregate.py",
         "tools/tests/test_ci_queue_relief.py",
         "tools/tests/test_ci_receipt.sh",
     ),
-    ".forgejo/workflows/legacy-app-e2e.yml": (
+    ".github/workflows/legacy-app-e2e.yml": (
         "tools/tests/test_ci_queue_relief.py",
         "os/tests/test_builder_candidate_workflow.py",
     ),
-    ".forgejo/workflows/tilo-relay.yaml": (
+    ".github/workflows/tilo-relay.yaml": (
         "tools/tests/test_workflow_package_paths.py",
         "tools/tests/test_workflow_applicability.py",
         "os/tests/workflow_dependency_invariants.sh",
@@ -250,10 +250,10 @@ def native_dependencies_required(root: Path, changes: list[str], force_full: boo
     if not declared:
         return False
     files = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "os/Containerfile.builder",
-             ".forgejo/workflows/check.yml", "os/tests/test_openh264_source_order.py",
+             ".github/workflows/check.yml", "os/tests/test_openh264_source_order.py",
              "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/tests/test_ci_select.py",
              "tools/tests/test_ci_check_aggregate.py"}
-    prefixes = (".cargo/", ".forgejo/actions/prepare-rust-build/")
+    prefixes = (".cargo/", ".github/actions/prepare-rust-build/")
     return force_full or any(path in files or path.startswith(prefixes) for path in changes)
 
 

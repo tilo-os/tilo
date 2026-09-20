@@ -14,8 +14,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let configuration = ApplianceConfig::recommended_for(
         architecture,
         "01234567-89ab-cdef-0123-456789abcdef",
-        "/var/lib/qos/windows/system.qcow2",
-        "/var/lib/qos/windows/firmware-variables",
+        "/var/lib/tilo/windows/system.qcow2",
+        "/var/lib/tilo/windows/firmware-variables",
     );
     println!("{}", render_domain_xml(&configuration)?);
     Ok(())

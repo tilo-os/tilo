@@ -425,7 +425,7 @@ dependencies = ["markdown-parser 1.1.0"]
         )
 
     def test_main_push_selects_affected_apps_and_publishes_default_collection(self) -> None:
-        workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
+        workflow = (ROOT / ".github/workflows/release-apps.yml").read_text(
             encoding="utf-8"
         )
         selection = workflow.split(
@@ -449,7 +449,7 @@ dependencies = ["markdown-parser 1.1.0"]
         for path in (
             "tools/canonical_verifier_bundle.py",
             "tools/assemble_verified_apps.py",
-            ".forgejo/actions/restore-cargo-downloads/action.yml",
+            ".github/actions/restore-cargo-downloads/action.yml",
             "dist/apps/new-release-helper.sh",
             "tools/ci/sccache.sh",
         ):
@@ -457,7 +457,7 @@ dependencies = ["markdown-parser 1.1.0"]
                 self.assertEqual(app_release.apps_from_changes([path], catalog), expected)
 
     def test_every_global_release_input_triggers_main_packaging(self) -> None:
-        workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
+        workflow = (ROOT / ".github/workflows/release-apps.yml").read_text(
             encoding="utf-8"
         )
         push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]

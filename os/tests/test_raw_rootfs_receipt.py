@@ -36,7 +36,7 @@ class RawRootfsReceipt(unittest.TestCase):
                             ('source_date_epoch', '253402300800'), ('source_date_epoch', '01'),
                             ('generation', str(2**64)), ('generation', '0'),
                             ('architecture', 'unsupported'), ('public_manifest_sha256', 'secret'),
-                            ('target_update_ref', 'code.podesta.ai/qos/tilo:latest')]:
+                            ('target_update_ref', 'ghcr.io/tilo-os/tilo:latest')]:
             with self.subTest(name=name), self.assertRaises(ValueError):
                 receipt.document(**(self.arguments() | {name: value}))
 

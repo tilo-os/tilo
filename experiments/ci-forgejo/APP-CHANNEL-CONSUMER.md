@@ -263,7 +263,7 @@ To package already-built native tools manually:
 python3 tools/canonical_verifier_bundle.py produce \
   --pkg-binary /trusted-tools/tilo-pkg \
   --runtime-binary /trusted-tools/tilo-runtime-bundle \
-  --builder-image code.podesta.ai/qos/tilo-builder@sha256:BUILDER_DIGEST \
+  --builder-image ghcr.io/tilo-os/tilo-builder@sha256:BUILDER_DIGEST \
   --source-sha VERIFIED_TOOL_SOURCE --architecture x86_64 --output verifier.tar.gz
 ```
 
@@ -277,14 +277,14 @@ or builder compatibility changes require a new platform bundle, not app changes.
 
 Both qualification and final publication consumers fetch with the dedicated
 `TILO_VERIFIER_BUNDLE_READ_TOKEN` Actions secret: existing service identity
-`qos-packaging-controller`, token 153, scoped only to `read:package`. Its encrypted
+`tilo-packaging-controller`, token 153, scoped only to `read:package`. Its encrypted
 source is the controller registry SOPS secret; provisioning matches the decrypted
 credential against the live token ID/name/scope metadata in memory. No registry
 write credential or fallback is exposed to these steps. Historical Actions artifact
 reads retain `github.token`; the package secret is not used for artifact APIs.
 
 Forgejo `16.0.3+gitea-1.22.0` rejects this private organization's generic package
-fetch with the built-in job token (qos/qos run 23176, UI run 9680: HTTP 401).
+fetch with the built-in job token (tilo/tilo run 23176, UI run 9680: HTTP 401).
 This is not a Bearer-versus-Basic mismatch: [package routes accept both](https://codeberg.org/forgejo/forgejo/src/tag/v16.0.3/routers/api/packages/api.go),
 but [package permissions](https://codeberg.org/forgejo/forgejo/src/tag/v16.0.3/services/packages/perm.go)
 do not yet implement ActionUser access from the task's repository. All supported

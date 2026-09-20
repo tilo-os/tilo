@@ -6,7 +6,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "tools/security-boundary-invariants.txt"
 RUNNER = ROOT / "tools/run-security-boundary-invariants.sh"
-WORKFLOW = ROOT / ".forgejo/workflows/check.yml"
+WORKFLOW = ROOT / ".github/workflows/check.yml"
 
 
 def manifest_entries() -> list[str]:

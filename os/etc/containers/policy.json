@@ -4,7 +4,7 @@
   ],
   "transports": {
     "docker": {
-      "code.podesta.ai/qos/tilo": [
+      "ghcr.io/tilo-os/tilo": [
         {
           "type": "sigstoreSigned",
           "keyPath": "/usr/share/tilo/cosign.pub",

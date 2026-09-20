@@ -50,7 +50,7 @@ def manifests(root, version, base_url):
         "Tilo.Imager.locale.en-US.yaml": prefix + "PackageLocale: en-US\nPublisher: Tilo Project\n"
         "PackageName: Tilo Imager\nLicense: AGPL-3.0-only\n"
         "ShortDescription: Create and verify customised Tilo installation media.\n"
-        "PackageUrl: https://code.podesta.ai/qos/qos\nManifestType: defaultLocale\nManifestVersion: 1.9.0\n",
+        "PackageUrl: https://github.com/tilo-os/tilo\nManifestType: defaultLocale\nManifestVersion: 1.9.0\n",
     }
 
 

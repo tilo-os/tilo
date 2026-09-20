@@ -37,7 +37,7 @@ class ImportTests(unittest.TestCase):
         raw = json.dumps(manifest).encode()
         (self.firmware / 'manifest.json').write_bytes(raw)
         self.args = SimpleNamespace(repo=self.repo, profile='board', architecture='aarch64',
-            reference='code.podesta.ai/qos/firmware@sha256:' + '1' * 64,
+            reference='ghcr.io/tilo-os/firmware@sha256:' + '1' * 64,
             manifest_sha256=hashlib.sha256(raw).hexdigest())
         self.info = {'Id': 'sha256:' + '2' * 64, 'Os': 'linux', 'Architecture': 'arm64',
                      'Digest': 'sha256:' + '1' * 64, 'RepoDigests': [self.args.reference]}
@@ -130,7 +130,7 @@ class ImportTests(unittest.TestCase):
                 self.assertFalse(any(call[:2] == ('image', 'mount') for call in self.calls))
 
     def test_mutable_reference_rejected_before_tools(self):
-        self.args.reference = 'code.podesta.ai/qos/firmware:latest'
+        self.args.reference = 'ghcr.io/tilo-os/firmware:latest'
         with self.assertRaisesRegex(ValueError, 'immutable'):
             self.execute()
         self.assertEqual(self.calls, [])

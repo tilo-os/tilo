@@ -1,0 +1,29 @@
+self-hosted-runner:
+  # Labels of self-hosted runner in array of strings.
+  labels:
+    # Provider-neutral names for the large GitHub Actions pools. These are
+    # intentionally not tied to Forgejo or to one hosted-runner vendor.
+    - tilo-build-x64
+    - tilo-build-arm64
+    # GitHub-hosted preview labels not yet known by the pinned actionlint.
+    - windows-11-arm
+    - macos-15-intel
+
+# Configuration variables in array of strings defined in your repository or
+# organization. `null` means disabling configuration variables check.
+# Empty array means no configuration variable is allowed.
+config-variables: null
+
+# Configuration for file paths. The keys are glob patterns to match to file
+# paths relative to the repository root. The values are the configurations for
+# the file paths. Note that the path separator is always '/'.
+# The following configurations are available.
+#
+# "ignore" is an array of regular expression patterns. Matched error messages
+# are ignored. This is similar to the "-ignore" command line option.
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      # actionlint v1.7.7 still carries GitHub Enterprise Server's former
+      # ten-input limit. GitHub.com accepts 25 workflow_dispatch inputs.
+      - 'maximum number of inputs for "workflow_dispatch" event is 10'

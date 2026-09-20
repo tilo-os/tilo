@@ -31,9 +31,9 @@ class AcceptanceTests(unittest.TestCase):
         self.policy_sha = accept.channel.sha(self.policy)
         self.platform_policy = {'enabled': True, 'qualification_only': True, 'final_receipt_policy_sha256': self.policy_sha}
         self.intent = {'id': '11111111-1111-1111-1111-111111111111', 'baseline': None, 'baseline_evidence': None,
-            'desired': {'source_sha': 'a' * 40, 'builder_image': 'code.podesta.ai/qos/tilo-builder@sha256:' + 'b' * 64,
+            'desired': {'source_sha': 'a' * 40, 'builder_image': 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'b' * 64,
                         'collection': 'default', 'architectures': ['x86_64'], 'policy_sha256': product.core.receipt_key(self.platform_policy)}}
-        self.run = {'id': 100, 'status': 'success', 'repository': {'id': 23, 'full_name': 'qos/qos'},
+        self.run = {'id': 100, 'status': 'success', 'repository': {'id': 23, 'full_name': 'tilo/tilo'},
             'workflow_id': 'release-apps.yml', 'trigger_event': 'workflow_dispatch', 'commit_sha': 'a' * 40,
             'event_payload': json.dumps({'ref': 'a' * 40, 'inputs': accept.dispatch_inputs(self.intent)})}
         self.job = {'id': 200, 'repo_id': 23, 'run_id': 100, 'status': 'success', 'name': 'qualify-collection',
@@ -77,7 +77,7 @@ class AcceptanceTests(unittest.TestCase):
                     return [result]
                 return [copy.deepcopy(owner.artifact)]
             def raw_api(self, path, maximum):
-                assert path == 'repos/qos/qos/actions/jobs/200/logs'
+                assert path == 'repos/tilo/tilo/actions/jobs/200/logs'
                 return owner.log
         class Read:
             def get(self, path, output):
@@ -202,8 +202,8 @@ class AcceptanceTests(unittest.TestCase):
         self.run['event_payload'] = json.dumps({'ref': 'a' * 40, 'inputs': accept.dispatch_inputs(self.intent)})
         actual = product.ProductForgejo(self.platform_policy)
         def request(path):
-            if path == 'repos/qos/qos':
-                return {'id': 23, 'full_name': 'qos/qos'}
+            if path == 'repos/tilo/tilo':
+                return {'id': 23, 'full_name': 'tilo/tilo'}
             if '/contents/' in path:
                 source = path.split('/contents/', 1)[1].split('?', 1)[0]
                 if source == '':
@@ -219,7 +219,7 @@ class AcceptanceTests(unittest.TestCase):
             result = self.invoke()
         self.assertEqual(result['receipts']['x86_64'], self.receipt_sha)
         network.assert_called_once_with(['fgj', '--hostname', 'code.podesta.ai', 'api',
-                                        'repos/qos/qos/actions/jobs/200/logs'], 8 * 1024**2)
+                                        'repos/tilo/tilo/actions/jobs/200/logs'], 8 * 1024**2)
 
     def test_qualifier_emits_marker_only_after_actual_verify_returns(self):
         plan = self.root / 'plan.json'

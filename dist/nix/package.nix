@@ -124,7 +124,7 @@ rustPlatform.buildRustPackage rec {
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";
-    homepage = "https://code.podesta.ai/tilo/tilo";
+    homepage = "https://github.com/tilo-os/tilo";
     license = lib.licenses.agpl3Only;
     platforms = [ "x86_64-linux" "aarch64-linux" ];
     mainProgram = "tilo-shell";

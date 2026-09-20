@@ -9,7 +9,7 @@ the host. A development image must remain visibly identified as such.
 
 | Identity | Current input and consumer | Development gap |
 |---|---|---|
-| OS image | `keys/cosign.pub` is copied by `os/Containerfile` to `/usr/share/tilo/cosign.pub`. `os/etc/containers/policy.json` requires its signature for `code.podesta.ai/qos/tilo`. Release verification also reads the tracked public key. | The development named context supplies independent public trust, signature policy and a bound update origin. Signed disk/VM integration remains required. |
+| OS image | `keys/cosign.pub` is copied by `os/Containerfile` to `/usr/share/tilo/cosign.pub`. `os/etc/containers/policy.json` requires its signature for `ghcr.io/tilo-os/tilo`. Release verification also reads the tracked public key. | The development named context supplies independent public trust, signature policy and a bound update origin. Signed disk/VM integration remains required. |
 | PCR authorization | `keys/tpm2-pcr-signing.public.pem` is copied into the image and initramfs. `sign-target-prediction.sh` verifies signatures over the exact UKI and generation-bound PCR11 policy with the image's public key. | Test PCR trust must be injected before initramfs/UKI construction, not merely replaced in the final root filesystem. |
 | EFI/UKI | `TILO_PCR_PREDICTION_SIGNER` exports its certificate; `TILO_EFI_SIGNING_CERT_SHA256` independently pins the SHA-256 of its DER bytes. Returned signatures and the unchanged Authenticode payload are checked. | A test certificate is trusted only in a disposable VM variable store. Its fingerprint alone does not make stock firmware trust it. |
 | Marketplace registry owner | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY`, a nonzero 32-byte Ed25519 public key in hex, becomes `/usr/share/tilo/trust/tilo-main-registry-owner.pub`. | Branch CI can use the explicit RFC 8032 test-vector public key. It is not an independently held production owner identity. |
@@ -140,13 +140,13 @@ these boundaries:
    identity matches the development bundle. Adding a public key after sealing
    does not preserve the existing measurement.
 4. The development origin must explicitly name the retained HTTPS repository
-   `code.podesta.ai/qos/tilo-development`, or an isolated
+   `ghcr.io/tilo-os/tilo-development`, or an isolated
    `HOST[:PORT]/tilo-development/os` repository, with a tag or immutable SHA-256
    digest. Retained-repository tags identify the native architecture, for example
    `development-x86_64` or `development-aarch64`; known build/profile/source
    architectures must match that suffix. Digest references bind architecture
    through native image verification. Alternate hosts or explicit ports cannot
-   alias the retained repository. The production `code.podesta.ai/qos/tilo`
+   alias the retained repository. The production `ghcr.io/tilo-os/tilo`
    repository, credentials, URL schemes and other repository paths are
    rejected. The image binds this origin to its pinned public manifest. Runtime
    origin resolution requires root-owned, non-writable metadata, matching public

@@ -60,7 +60,7 @@ Select the profile when building on native aarch64 Linux, after configuring
 the normal pinned build inputs, registry access, generation and owner key:
 
 Set `TILO_TARGET_IMGREF` explicitly to the reviewed update tag or SHA-256 digest
-in the signature-required `code.podesta.ai/qos/tilo` repository. It must identify
+in the signature-required `ghcr.io/tilo-os/tilo` repository. It must identify
 a published channel or artifact that retains this board's firmware and device
 tree; this guide does not designate a release that has not been published.
 Non-generic builds reject a missing reference before building and bind it into
@@ -72,7 +72,7 @@ Generic images retain the official `latest` default and trusted overrides.
 
 The manual `development-compile.yml` workflow accepts `hardware_profile`,
 `firmware_candidate` and `firmware_manifest_sha256`. Non-generic full builds
-require an immutable `code.podesta.ai/qos/NAME@sha256:DIGEST` firmware artifact
+require an immutable `ghcr.io/tilo-os/NAME@sha256:DIGEST` firmware artifact
 and an independently reviewed SHA-256 of its exact `manifest.json` bytes.
 The artifact is a native Linux OCI image containing only `/firmware/`, with the
 manifest and exactly the files named by the selected hardware definition.

@@ -1,7 +1,7 @@
-# ARM capsule validation under the qOS kernel
+# ARM capsule validation under the Tilo kernel
 
 The disposable VM harness in [`kernel-arm-capsule-smoke.py`](../tests/kernel-arm-capsule-smoke.py)
-executes console fixtures against the built qOS kernel instead of accepting
+executes console fixtures against the built Tilo kernel instead of accepting
 WSL's insufficient Landlock ABI. Full capsule acceptance is **not complete**.
 
 ## Test boundary
@@ -19,7 +19,7 @@ unprivileged user namespace from a chroot. Networking is disabled.
 
 The three `generated_arm_*_landlock_executes_windows_console` tests retain the
 entire generated production plan, including the launcher shim, descriptor
-handoff, private namespaces, environment, Wine's qOS JIT seccomp filter and
+handoff, private namespaces, environment, Wine's Tilo JIT seccomp filter and
 Proton's existing nested-runtime policy. They require Landlock ABI >= 5 and a
 file written by Windows inside the retained capsule prefix. Exact
 test names are checked before execution, preventing an empty test selection
@@ -35,7 +35,7 @@ ruleset `FullyEnforced` with effective ABI 7.
 1. FEX's default filesystem socket follows `XDG_RUNTIME_DIR`. The capsule grants
    access to its brokered Wayland socket, not arbitrary writes to that directory.
    The native supervisor now supplies the upstream-supported absolute
-   `FEX_SERVERSOCKETPATH=/tmp/qos-fex-server.sock` to both server and clients.
+   `FEX_SERVERSOCKETPATH=/tmp/tilo-fex-server.sock` to both server and clients.
    `/tmp` is already the capsule's private writable tmpfs. Landlock rules were
    not expanded for this fix; a child-environment regression checks that
    inherited socket/rootfs overrides are replaced.
@@ -59,7 +59,7 @@ with two TCG vCPUs and 4 GiB RAM. Its executable SHA-256 is
 | `kernel-arm-capsule-console-04` | Wine64 reached fully enforced Landlock, then failed with a glibc `sysmalloc` assertion and exit 139. Wine32 and Proton were not reached. |
 | `kernel-arm-capsule-namespace-diagnostic-01` | Identical copied binaries and generated namespace reproduced the same assertion without the Landlock shim. |
 | `kernel-arm-capsule-fex-diagnostic-01` | Direct FEX guest `true` passed; guest `getconf _NPROCESSORS_ONLN` returned 2 and passed. |
-| `kernel-arm-capsule-wine-diagnostic-01` | Direct Wine with a fresh correctly mapped C drive reproduced the assertion without the capsule or qOS seccomp. |
+| `kernel-arm-capsule-wine-diagnostic-01` | Direct Wine with a fresh correctly mapped C drive reproduced the assertion without the capsule or Tilo seccomp. |
 | `kernel-arm-capsule-wine-qemu10-01` | The same direct Wine control reproduced the assertion under QEMU 10.2.2. |
 | `kernel-arm-capsule-wine-squashfs-02` | The complete original guest root mounted as read-only SquashFS over virtio-block reproduced the same direct-Wine assertion under QEMU 10.2.2. Native userspace still used 9p. |
 
@@ -116,7 +116,7 @@ pinned source, not an available runtime environment toggle.
 
 ### Page-size comparison
 
-The exact staged qOS kernel configuration has `CONFIG_ARM64_4K_PAGES=y` and
+The exact staged Tilo kernel configuration has `CONFIG_ARM64_4K_PAGES=y` and
 `CONFIG_ARM64_VA_BITS=48`; 16 KiB, 64 KiB and 52-bit configurations are disabled.
 The native WSL kernel configuration also selects 4 KiB pages and 48-bit virtual
 addresses, and its native `getconf PAGE_SIZE` reports 4096. There is therefore
@@ -276,7 +276,7 @@ The two runs are `kernel-upstream-vmovups-{sve512,sve256}-01`. Artifact SHA-256:
 A launch-only vector-length clamp is insufficient: this FEX pin forwards
 unrecognized guest `prctl` options to the host, which can change a thread's
 SVE length and exec-inheritance flags. It also has other fixed-width address
-calculations. No such workaround has been installed in qOS.
+calculations. No such workaround has been installed in Tilo.
 
 ### Current-helper initialization follow-up
 

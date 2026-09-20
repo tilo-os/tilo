@@ -11,7 +11,7 @@ import kernel_failure_checkpoint as failure
 
 
 def stage(source, destination, approval_bytes, approval_sha, checkpoint):
-    if not re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-kernel-aarch64@sha256:[0-9a-f]{64}', checkpoint):
+    if not re.fullmatch(r'ghcr\.io/tilo-os/tilo-development-partial-kernel-aarch64@sha256:[0-9a-f]{64}', checkpoint):
         raise ValueError('immutable partial-kernel reference required')
     if hashlib.sha256(approval_bytes).hexdigest() != approval_sha:
         raise ValueError('independent approval hash differs')

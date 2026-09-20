@@ -107,7 +107,7 @@ jobs:
 
         repository_metadata = load_metadata(ROOT)
         relay_text = (
-            ROOT / ".forgejo/workflows/tilo-relay.yaml"
+            ROOT / ".github/workflows/tilo-relay.yaml"
         ).read_text(encoding="utf-8")
         relay_inputs = {
             ".cargo/**",
@@ -125,8 +125,8 @@ jobs:
                 f"{sorted(relay_inputs - block)}",
             )
         pairs = (
-            ("tilo-relay", ".forgejo/workflows/tilo-relay.yaml"),
-            ("tilo-crypto", ".forgejo/workflows/build-kernel.yml"),
+            ("tilo-relay", ".github/workflows/tilo-relay.yaml"),
+            ("tilo-crypto", ".github/workflows/build-kernel.yml"),
         )
         violations: list[str] = []
         for package, relative in pairs:
@@ -138,7 +138,7 @@ jobs:
         self.assertEqual(violations, [])
 
     def test_relay_catalog_only_changes_do_not_build_an_unsigned_image(self) -> None:
-        source = (ROOT / ".forgejo/workflows/tilo-relay.yaml").read_text(
+        source = (ROOT / ".github/workflows/tilo-relay.yaml").read_text(
             encoding="utf-8"
         )
         blocks = workflow_path_blocks(source)
@@ -153,7 +153,7 @@ jobs:
             for path in (
                 "crates/hosting/tilo-relay/src/main.rs",
                 "crates/system/fs/src/lib.rs",
-                ".forgejo/actions/install-cosign/action.yml",
+                ".github/actions/install-cosign/action.yml",
             ):
                 self.assertTrue(any(fnmatchcase(path, pattern) for pattern in block), path)
         self.assertIn('    tags: ["v*"]', source)

@@ -31,7 +31,7 @@ official **claude** approval and post the author's `/merge <full-head-sha>` inte
 An authorized operator then runs this command from the `PodestaAI/infra` checkout:
 
 ```sh
-python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
+python scripts/run-tilo-reviewed-merge.py PR FULL_HEAD_SHA --execute
 ```
 
 It runs the deployed merge worker, which rechecks scope, current main, CI, author
@@ -39,14 +39,14 @@ intent and approval before integration. This command accepts only changes
 classified into the reviewed scope. Optional approval of a routine PR does not
 change its scope: it still follows normal integration and queue priority.
 Direct merges do not bypass that worker.
-The [deployed admission policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json)
+The [deployed admission policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/tilo-merge-controller/policy.json)
 defines the protected paths and bounded dependency exceptions. The OpenH264
 source-order exception additionally requires its pinned provenance and native
 dependency check; it is not ordinary vendored-source admission. Symlinks,
 submodules and malformed changes are rejected rather than treated as routine.
 
-A bounded queue pilot on 2026-09-20 created [integration PR 169](https://code.podesta.ai/qos/qos/pulls/169)
-for [author PR 162](https://code.podesta.ai/qos/qos/pulls/162), tested the generated
+A bounded queue pilot on 2026-09-20 created [integration PR 169](https://github.com/tilo-os/tilo/pulls/169)
+for [author PR 162](https://github.com/tilo-os/tilo/pulls/162), tested the generated
 candidate and landed exact commit `12fbe8301ddc9b3d410cefe49d79630b334034d3`
 without changing the author's branch. This verifies one integration through the
 pilot; it does not establish general queue availability or sustained reliability.
@@ -138,14 +138,14 @@ For CI timing, use the repository run number from the Forgejo URL or `fgj action
 run list`, not the Forgejo API's internal database ID:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --run 11408 --output target/ci-timing.json
+python3 tools/ci/timing_report.py --repo tilo/tilo --run 11408 --output target/ci-timing.json
 ```
 
 For an automatic before/after view of the newest comparable runs, no run IDs or
 manual receipts are needed:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --recent 30 \
+python3 tools/ci/timing_report.py --repo tilo/tilo --recent 30 \
   --workflow check.yml --compare-latest --output target/ci-experience.json
 ```
 
@@ -213,7 +213,7 @@ Windows-hosted checkout in place:
 
 ```bash
 mkdir -p "$HOME/src"
-git clone ssh://git@code.podesta.ai/qos/qos.git "$HOME/src/tilo-linux"
+git clone git@github.com:tilo-os/tilo.git "$HOME/src/tilo-linux"
 cd "$HOME/src/tilo-linux"
 git switch -c codex/my-change
 findmnt -T "$PWD" -o FSTYPE,TARGET
@@ -1179,7 +1179,7 @@ git config core.hooksPath .githooks
 `pre-commit` runs `scripts/check-workspace-complete.sh`, which parses the root
 manifest and rejects missing, duplicate, excluded, or stale workspace members.
 Nested fixture workspaces and explicit `[workspace].exclude` entries are ignored.
-Compilation and tests run in CI (`.forgejo/workflows/check.yml`).
+Compilation and tests run in CI (`.github/workflows/check.yml`).
 
 ### Linux PDF capture tests
 

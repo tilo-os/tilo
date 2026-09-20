@@ -14,7 +14,7 @@ spec.loader.exec_module(m)
 
 class Stage(unittest.TestCase):
     def fixture(self, source):
-        ref = 'code.podesta.ai/qos/tilo-development-partial-kernel-aarch64@sha256:' + 'a' * 64
+        ref = 'ghcr.io/tilo-os/tilo-development-partial-kernel-aarch64@sha256:' + 'a' * 64
         approval = dict(purpose='tilo-kbuild-reconstruction-admission', source_revision=m.restore.SOURCE,
                         checkpoint_reference=ref, restore_helper_sha256=m.restore.sha(Path(m.restore.__file__)))
         for flag in ('writer_mapping_complete', 'dependency_invalidation_reviewed',

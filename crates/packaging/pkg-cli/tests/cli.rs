@@ -264,7 +264,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         .args([
             "entry",
             "--url",
-            "https://packages.example/dev.qos.example.qpkg",
+            "https://packages.example/dev.tilo.example.qpkg",
             "--identity",
             identity.to_str().unwrap(),
             "--action",
@@ -302,7 +302,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         .args([
             "entry",
             "--url",
-            "https://packages.example/dev.qos.example.qpkg",
+            "https://packages.example/dev.tilo.example.qpkg",
             "--identity",
             identity.to_str().unwrap(),
             "--action",
@@ -322,7 +322,7 @@ fn cli_entry_emits_a_server_acceptable_signed_change() {
         .args([
             "entry",
             "--url",
-            "https://packages.example/dev.qos.example.qpkg",
+            "https://packages.example/dev.tilo.example.qpkg",
             "--identity",
             identity.to_str().unwrap(),
             "--action",

@@ -37,8 +37,8 @@ been promoted yet.
 
 Local preparation has verified these existing immutable inputs:
 
-- ARM buildroot: `localhost/qos-fex-buildroot@sha256:a0af121da48ed8a9a73dea795200b5b8535dc2905633c70ab8df164909c6d7a7`.
-- x86 SDK: `localhost/qos-fex-thunk-sdk@sha256:ef722888334908045f0dc84489c654476b2ff1fb4b95132daaa638c3f3ef93ef`.
+- ARM buildroot: `localhost/tilo-fex-buildroot@sha256:a0af121da48ed8a9a73dea795200b5b8535dc2905633c70ab8df164909c6d7a7`.
+- x86 SDK: `localhost/tilo-fex-thunk-sdk@sha256:ef722888334908045f0dc84489c654476b2ff1fb4b95132daaa638c3f3ef93ef`.
 
 A read-only, network-disabled buildroot probe matched all 1,157 RPM identities
 to its recorded inventory and checked Clang 21.1.8, NASM 2.16.03 (including
@@ -99,7 +99,7 @@ remain; portable CPU tuning introduced no additional failures in this suite.
 Evidence is retained in `fex-portable-validation-summary.json`,
 `fex-portable-payload-inventory.json`, `fex-portable-stage.log`, and
 `fex-portable-complete-graphics-validation.log` in the preparation tree.
-The diagnostic image is `localhost/qos-fex-portable-runtime:arm64-guests`, ID
+The diagnostic image is `localhost/tilo-fex-portable-runtime:arm64-guests`, ID
 `0e5d405552f06a46515cdd3ce49862718d73f03a056023acd0f38209b9089299`.
 Its installed FEX SHA-256 is
 `fd1ff65e292759a60d56bffaf0df522e5068ff780272ee23bea99e7da1ca505b`;
@@ -218,13 +218,13 @@ the remaining ABI, permissions, or runtime checks.
 ## Target headers for ABI verification
 
 Put `os/tests/fex-cross-clang` on the test container's `PATH` as `clang` and set
-`QOS_FEX_X86_SYSROOT` to the mounted x86 development filesystem. The wrapper
+`TILO_FEX_X86_SYSROOT` to the mounted x86 development filesystem. The wrapper
 passes its sysroot and GCC toolchain to native Clang for the two x86 targets
 requested by upstream `StructPackVerifier.py`. Other targets use native headers.
 The upstream verifier and its expected layouts remain unchanged.
 
 When using the versioned Clang 21 buildroot, also set
-`QOS_FEX_CLANG=/usr/lib64/llvm21/bin/clang`. Its loader selects libclang 21 for
+`TILO_FEX_CLANG=/usr/lib64/llvm21/bin/clang`. Its loader selects libclang 21 for
 the Python verifier; discovering headers with the default Clang 22 driver
 mixes resource headers from different versions. This caused all 20 AArch64
 checks to fail with missing `int8_t` and related types. Matching the driver to
@@ -312,7 +312,7 @@ The subsequent diagnostic SDK build explicitly invoked the fixed native FEX
 executable as the OCI `RUN` command and completed the 21-package transaction,
 including both x86 C++ development header sets and normal RPM scriptlets.
 The resulting local image is
-`localhost/qos-fex-x86-sdk:fedora44-fex-validated`, image ID
+`localhost/tilo-fex-x86-sdk:fedora44-fex-validated`, image ID
 `864eb1cb6f5f1cf6132681aae58f34489a8518c1dab6286f73c6208ac713c9ab`.
 Unlike the earlier ignored `SHELL` recipe, this build did not rely on OCI shell
 selection to launch FEX. This remains a diagnostic SDK assembled from live
@@ -331,16 +331,16 @@ Use the explicit guest toolchains in `os/dev/toolchains/` when enabling the
 upstream targets:
 
 ```sh
-export QOS_FEX_X86_SYSROOT=/x86-sdk
+export TILO_FEX_X86_SYSROOT=/x86-sdk
 cmake -S /src -B /build \
   -DCMAKE_C_COMPILER=/usr/lib64/llvm21/bin/clang \
   -DCMAKE_CXX_COMPILER=/usr/lib64/llvm21/bin/clang++ \
   -DClang_DIR=/usr/lib64/llvm21/lib64/cmake/clang \
   -DLLVM_DIR=/usr/lib64/llvm21/lib64/cmake/llvm \
   -DBUILD_THUNKS=ON -DBUILD_FEX_LINUX_TESTS=ON -DENABLE_CLANG_THUNKS=ON \
-  -DX86_DEV_ROOTFS="$QOS_FEX_X86_SYSROOT" \
-  -DX86_64_TOOLCHAIN_FILE=/qos/os/dev/toolchains/fex-cross-x86_64.cmake \
-  -DX86_32_TOOLCHAIN_FILE=/qos/os/dev/toolchains/fex-cross-i686.cmake
+  -DX86_DEV_ROOTFS="$TILO_FEX_X86_SYSROOT" \
+  -DX86_64_TOOLCHAIN_FILE=/tilo/os/dev/toolchains/fex-cross-x86_64.cmake \
+  -DX86_32_TOOLCHAIN_FILE=/tilo/os/dev/toolchains/fex-cross-i686.cmake
 cmake --build /build --parallel 2
 ```
 
@@ -383,7 +383,7 @@ skips, and the three other failures above across 110 cases (10.69 seconds).
 ## Initial Wine runtime check
 
 The diagnostic Fedora 44 runtime image
-`localhost/qos-fex-wine-runtime:fedora44-dev` completed its package transaction
+`localhost/tilo-fex-wine-runtime:fedora44-dev` completed its package transaction
 and full filesystem export, followed by the upstream host-directory exclusions.
 Its image ID is
 `2c94250fbe81422bf0c3854958d67c1eea5baf39a20c0d932dbf06174143dace`.
@@ -404,7 +404,7 @@ an init process, no network, a private executable `/tmp`, a read-only guest
 rootfs, and a writable results directory:
 
 ```sh
-python3 /qos/os/tests/fex-wine-smoke.py \
+python3 /tilo/os/tests/fex-wine-smoke.py \
   --rootfs /rootfs --output-dir /results
 ```
 
@@ -472,11 +472,11 @@ build environment. `/headers` is the pinned FEX Vulkan-Headers include directory
 
 ```sh
 clang -std=c11 -Wall -Wextra -Werror -I/headers \
-  /qos/os/tests/fixtures/fex-vulkan-buffer.c -o /tmp/native-probe \
+  /tilo/os/tests/fixtures/fex-vulkan-buffer.c -o /tmp/native-probe \
   -l:libvulkan.so.1
 clang --target=x86_64-linux-gnu --sysroot=/sdk --gcc-toolchain=/sdk/usr \
   -fuse-ld=lld -std=c11 -Wall -Wextra -Werror -I/headers \
-  /qos/os/tests/fixtures/fex-vulkan-buffer.c -o /tmp/guest-probe \
+  /tilo/os/tests/fixtures/fex-vulkan-buffer.c -o /tmp/guest-probe \
   /rootfs/usr/lib64/libvulkan.so.1
 ```
 
@@ -489,7 +489,7 @@ With an explicitly managed FEXServer, set `FEX_ROOTFS=/rootfs` and
 probe and `FEX /tmp/guest-probe`. Both passed on ARM with the normal JIT, no added
 capabilities, default Podman seccomp policy, and no network. ELF inspection
 confirmed AArch64 and x86-64 respectively. Both reported
-`QOS_VULKAN_BUFFER_PASS 4096 bytes` using Mesa 26.1.8 llvmpipe / LLVM 22.1.8.
+`TILO_VULKAN_BUFFER_PASS 4096 bytes` using Mesa 26.1.8 llvmpipe / LLVM 22.1.8.
 A separate `LD_DEBUG=libs` run confirmed the translated process loaded
 `/usr/lib64/fex-emu/HostThunks/libvulkan-host.so` and the native
 `/usr/lib64/libvulkan_lvp.so`, and passed again.
@@ -518,7 +518,7 @@ contract. It enables `VK_EXT_debug_utils`, creates a messenger with a guest
 callback and user-data pointer, submits an explicit message, and requires that
 callback to receive the message and user data exactly once. Compile it using
 the same native/guest commands as the buffer fixture. The native ARM control
-printed `QOS_VULKAN_CALLBACK_PASS`; FEX terminated with SIGILL even when using
+printed `TILO_VULKAN_CALLBACK_PASS`; FEX terminated with SIGILL even when using
 only the native llvmpipe driver. Explicit software-driver selection therefore
 does not solve callback support.
 
@@ -596,14 +596,14 @@ compiler change does not repair the separately reproduced CPU-list or Vulkan
 callback defects.
 
 The exact updated `os/Containerfile.fex-buildroot` also built successfully as
-`localhost/qos-fex-buildroot:arm64-clang21`, image ID
+`localhost/tilo-fex-buildroot:arm64-clang21`, image ID
 `2b7fdf294cd47de7465f68c96bc9ab91399950b4c63a83a052c0832158054d36`.
 It records the selected generator compiler version and refreshes the complete
 RPM inventory after installing the versioned toolchain.
 
 The complete build finished successfully in `fex-clang21-full-build.log`, using
 the checked-in guest toolchains and the unmodified pinned FEX source. Its
-installed validation image is `localhost/qos-fex-clang21-runtime:arm64-dev`,
+installed validation image is `localhost/tilo-fex-clang21-runtime:arm64-dev`,
 image ID `7f006db926f9213e38c7ba09ce4665aa5aa4951be7ff87f6a5ac959c77c7a157`.
 Keep this build evidence separate from test-suite and application acceptance.
 
@@ -655,7 +655,7 @@ file /stage/usr/share/fex-emu/GuestThunks_32/libfex_thunk_test-guest.so
 
 The resulting files were verified as x86-64 and i386 ELF libraries respectively.
 The complete local validation image is
-`localhost/qos-fex-clang21-runtime:arm64-guests`, ID
+`localhost/tilo-fex-clang21-runtime:arm64-guests`, ID
 `6213032510a9da2cb348976c9900228ac8b8c7f8bed5c88c3bcf2a41f7483a2b`.
 All 19 targeted generator and installed-thunk tests passed against this image
 in 4.90 seconds, including `thunk_testlib.64`, `thunk_testlib.32`, and
@@ -670,7 +670,7 @@ CPU-list regression fixture documented above.
 The guest diagnostic runtime was extended with `glx-utils.x86_64` and both
 x86-64/i686 Mesa DRI and Vulkan drivers, using normal RPM scriptlets through
 explicit FEX execution. Its image is
-`localhost/qos-fex-graphics-guest:fedora44-dev`, ID
+`localhost/tilo-fex-graphics-guest:fedora44-dev`, ID
 `a2e62822ac3d9498f75d38c1005fa09c089460cb1f3de9c4fee2364e8a75db14`.
 The exported package inventory contains 1,070 entries. These diagnostic
 packages came from Fedora repositories; they are not promoted frozen release
@@ -707,7 +707,7 @@ physical GPU, shader workload, DXVK, or Proton acceptance.
 `os/tests/fixtures/fex-gl-pixels.c` creates a GLX context, clears a 16×16 RGBA
 surface, and verifies all 1,024 returned color channels (one unit of rounding
 tolerance). It synchronizes OpenGL and X11 and completes context/display
-cleanup before printing `QOS_GL_PIXELS_PASS`. It can exercise a window with
+cleanup before printing `TILO_GL_PIXELS_PASS`. It can exercise a window with
 `--window`, or a pbuffer with no argument; retain both cases.
 
 Build the native control with `clang -std=c11 -Wall -Wextra -Werror` and

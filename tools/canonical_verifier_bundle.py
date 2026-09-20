@@ -33,7 +33,7 @@ def elf_arch(path, architecture):
 def identity(builder, source, architecture):
     channel.require(architecture in channel.ARCHES, 'unsupported verifier architecture')
     channel.digest(source, 40)
-    channel.require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-builder@sha256:[0-9a-f]{64}', builder), 'immutable compatible builder required')
+    channel.require(re.fullmatch(r'ghcr\.io/tilo-os/tilo-builder@sha256:[0-9a-f]{64}', builder), 'immutable compatible builder required')
 
 
 def produce(pkg, runtime, output, builder, source, architecture):
@@ -61,7 +61,7 @@ def produce(pkg, runtime, output, builder, source, architecture):
     sha = channel.sha(output)
     descriptor = {'sha256': sha, 'bytes': output.stat().st_size, 'canonical_binaries': hashes,
                   'source_sha': source, 'compatible_builder': builder, 'verifier_sha256': manifest['verifier_sha256'],
-                  'url': f'https://code.podesta.ai/api/packages/qos/generic/tilo-canonical-verifiers/{sha}/{architecture}.tar.gz'}
+                  'url': f'https://code.podesta.ai/api/packages/tilo/generic/tilo-canonical-verifiers/{sha}/{architecture}.tar.gz'}
     output.with_suffix('.descriptor.json').write_text(json.dumps(descriptor, sort_keys=True, indent=2) + '\n')
     return descriptor
 
@@ -122,7 +122,7 @@ def fetch(policy_path, policy_sha, output, builder, token, architecture=None):
     policy = channel.pinned_json(policy_path.read_bytes(), policy_sha)
     resolved = resolve_policy(policy, architecture)
     descriptor = policy['canonical_verifier_bundles'][architecture]
-    expected = f"https://code.podesta.ai/api/packages/qos/generic/tilo-canonical-verifiers/{descriptor['sha256']}/{architecture}.tar.gz"
+    expected = f"https://code.podesta.ai/api/packages/tilo/generic/tilo-canonical-verifiers/{descriptor['sha256']}/{architecture}.tar.gz"
     channel.require(descriptor['url'] == expected, 'bundle URL must pin its content digest at the trusted origin')
     channel.require(descriptor['compatible_builder'] == builder, 'verifier builder compatibility mismatch')
     class NoRedirect(urllib.request.HTTPRedirectHandler):

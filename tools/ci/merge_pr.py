@@ -16,11 +16,11 @@ import urllib.request
 
 
 HOST = "code.podesta.ai"
-REPO = "qos/qos"
+REPO = "tilo/tilo"
 BRANCH = "main"
-INTEGRATOR = "qos-integrator"
+INTEGRATOR = "tilo-integrator"
 REVIEWERS = {"claude"}
-FETCHED_MAIN_REF = "refs/qos-integration/observed-main"
+FETCHED_MAIN_REF = "refs/tilo-integration/observed-main"
 REQUIRED_CONTEXTS = {
     "CI / affected packages / checks (pull_request)",
     "CI / fast quality / quality (pull_request)",

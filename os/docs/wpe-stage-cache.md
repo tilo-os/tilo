@@ -2,7 +2,7 @@
 
 The optional `TILO_WPE_BUILD_CACHE_REF` setting enables only the native WPE
 engine stage cache during fresh development image builds. It must name an
-untagged repository under `code.podesta.ai/qos/tilo-development-wpe-cache-`
+untagged repository under `ghcr.io/tilo-os/tilo-development-wpe-cache-`
 ending in the native architecture (`x86_64` or `aarch64`). Registry write access
 is a build trust boundary: writers can supply cached build output. Keep this
 repository restricted to authorized development CI writers.
@@ -30,7 +30,7 @@ The existing full browser and application payload remain required.
 
 The setting is opt-in for the general image builder. The provisional compile
 driver enables it after native acceptance in
-[run 6992](https://code.podesta.ai/qos/qos/actions/runs/6992), source
+[run 6992](https://github.com/tilo-os/tilo/actions/runs/6992), source
 `d161be91dffe82cec90a4ab3d9be3b1b3eb525eb`: both x86-64 and ARM64 passed with
 Podman 5.8.4. This small disposable fixture uses a local registry and
 two separate VFS stores. It requires a cold build followed by a remote cache

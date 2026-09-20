@@ -2,7 +2,7 @@
   "status": "passed",
   "uid": 1000,
   "architecture": "x86_64",
-  "builder_image_operator_assertion": "code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+  "builder_image_operator_assertion": "ghcr.io/tilo-os/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
   "verifier_source_sha": "a987e76bac313e27f11c6f67d4c10779b2c3909f",
   "verifier_bundle_sha256": "10ad658a452b21545cf2521fa875536da5d951ee8dd509533251a0a3a0517bde",
   "canonical_binaries": {

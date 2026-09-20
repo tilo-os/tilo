@@ -81,9 +81,9 @@ class WorkerContract(unittest.TestCase):
                 'signer': '/var/lib/tilo-signing-bridge/remote-development-signer.py',
                 'receipt_sha256': 'b' * 64, 'manifest_sha256': 'c' * 64,
                 'new_manifest_sha256': 'd' * 64, 'new_owner': 'e' * 64,
-                'target': 'code.podesta.ai/qos/tilo-development:old-aarch64',
-                'new_target': 'code.podesta.ai/qos/tilo-development:new-aarch64',
-                'publish_repository': 'code.podesta.ai/qos/tilo-development',
+                'target': 'ghcr.io/tilo-os/tilo-development:old-aarch64',
+                'new_target': 'ghcr.io/tilo-os/tilo-development:new-aarch64',
+                'publish_repository': 'ghcr.io/tilo-os/tilo-development',
                 'generation': 1, 'source_date_epoch': 1789690573, 'systemd_version': '259.1',
                 'minimum_free_bytes': 8 * 1024**3, 'stage_timeout_seconds': 1800,
                 'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 5400,
@@ -99,7 +99,7 @@ class WorkerContract(unittest.TestCase):
     def test_misplaced_native_suffix_fails_at_worker_admission(self):
         for field in ('target', 'new_target'):
             request = self.request()
-            request[field] = 'code.podesta.ai/qos/tilo-development:installed-ca33fae89a24-aarch64-9787'
+            request[field] = 'ghcr.io/tilo-os/tilo-development:installed-ca33fae89a24-aarch64-9787'
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'matching native architecture'):
                 self.check(request)
 
@@ -120,7 +120,7 @@ class WorkerContract(unittest.TestCase):
 
     def test_workflow_encloses_gate_supervision_and_receipt_cleanup(self):
         workflow = (Path(__file__).resolve().parents[2]
-                    / '.forgejo/workflows/development-finalize.yml').read_text()
+                    / '.github/workflows/development-finalize.yml').read_text()
         self.assertIn('timeout-minutes: 280', workflow)
         self.assertIn('timeout-minutes: 270', workflow)
 
@@ -268,8 +268,8 @@ class WorkerContract(unittest.TestCase):
             ['docker', 'volume', 'rm', 'owned-storage']])
 
     def test_success_requires_matching_exported_publication_receipts(self):
-        request = {'publish_repository': 'code.podesta.ai/qos/tilo-development',
-                   'new_target': 'code.podesta.ai/qos/tilo-development:next'}
+        request = {'publish_repository': 'ghcr.io/tilo-os/tilo-development',
+                   'new_target': 'ghcr.io/tilo-os/tilo-development:next'}
         binding = hashlib.sha256(json.dumps(request, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         published = {'schema': 1, 'request_sha256': binding, 'stage': 'published',
                      'image_id': 'sha256:' + 'a' * 64, 'config_digest': 'sha256:' + 'a' * 64,

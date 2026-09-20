@@ -211,7 +211,7 @@ mod tests {
             description: "CRDT-native text editor".into(),
             categories: vec!["Productivity".into(), "Text".into()],
             icon_url: Some("https://apps.tilo.dev/editor/icon.png".into()),
-            source_url: Some("https://code.podesta.ai/qos/editor".into()),
+            source_url: Some("https://code.podesta.ai/tilo/editor".into()),
             homepage: None,
             publisher_pubkey_hex: "aa".repeat(32),
             versions: vec![RegistryVersion {

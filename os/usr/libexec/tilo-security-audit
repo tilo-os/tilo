@@ -561,7 +561,7 @@ for tool in p11tool gnutls-cli; do
 done
 
 if [ -r "$policy" ] \
-   && grep -Fq '"code.podesta.ai/qos/tilo"' "$policy" \
+   && grep -Fq '"ghcr.io/tilo-os/tilo"' "$policy" \
    && grep -Fq '"type": "sigstoreSigned"' "$policy" \
    && grep -Fq '"keyPath": "/usr/share/tilo/cosign.pub"' "$policy" \
    && [ -s /usr/share/tilo/cosign.pub ]; then

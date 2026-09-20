@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ============================================================================
-# Frozen RPM repo snapshot — published by CI (.forgejo/workflows/
+# Frozen RPM repo snapshot — published by CI (.github/workflows/
 # snapshot-rpms.yml), or built locally for unpublished preparation. Resolves the exact install transaction
 # against the digest-pinned base and packages it as a tiny FROM-scratch OCI
 # image. os/Containerfile then installs ONLY from this (pinned by digest), so

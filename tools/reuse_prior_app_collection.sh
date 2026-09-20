@@ -50,7 +50,7 @@ public_base=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
 # Repository variables created by older runners can contain the cluster-local
 # Forgejo address. Never send the bearer token over that plain-HTTP URL: use
 # the equivalent public TLS origin for every authenticated read.
-cluster_package_api=http://forgejo.forgejo.svc.cluster.local:3000/api/packages/
+cluster_package_api=http://forgejo.github.svc.cluster.local:3000/api/packages/
 case "$prior_url" in
   "$cluster_package_api"*/generic/*)
     prior_url="$public_base/${prior_url#*/generic/}"

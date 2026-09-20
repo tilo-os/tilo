@@ -35,7 +35,7 @@ def validate(args):
         if not re.fullmatch('[1-9][0-9]*', getattr(args, field)):
             raise ValueError('CI run identity required')
     for field, repository in (('wpe', 'tilo-wpe-buildroot'), ('tools_builder', 'tilo-builder')):
-        if not re.fullmatch('code\\.podesta\\.ai/qos/' + repository + '@sha256:[0-9a-f]{64}', getattr(args, field)):
+        if not re.fullmatch('code\\.podesta\\.ai/tilo/' + repository + '@sha256:[0-9a-f]{64}', getattr(args, field)):
             raise ValueError('reviewed immutable native image required')
 
 
@@ -182,14 +182,14 @@ def main():
             raise ValueError('explicit 23 GiB producer cgroup required')
         if not capacity_ok(min(free.values()), starting=True):
             raise ValueError('starting storage reserve not met')
-        inputs = vars(args) | {'jobs': 6, 'epoch': '0', 'runner_class': 'qos-package',
+        inputs = vars(args) | {'jobs': 6, 'epoch': '0', 'runner_class': 'tilo-package',
                               'disk_capacity_proven': False}
         write('inputs.json', inputs)
         pins = {}
         for variable, filename in (('base', 'base-snapshot.env'), ('rpms', 'rpms-snapshot.env'),
                                    ('kernel', 'kernel-snapshot.env')):
             key = {'base': 'BASE_REF', 'rpms': 'RPMS_REF', 'kernel': 'KERNEL_RPMS_REF'}[variable]
-            values = re.findall('^' + key + r'=(code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64})$',
+            values = re.findall('^' + key + r'=(ghcr\.io/tilo-os/[a-z0-9-]+@sha256:[0-9a-f]{64})$',
                                 (REPO / 'os' / filename).read_text(), re.MULTILINE)
             if len(values) != 1:
                 raise ValueError('immutable dependency parse inputs required')
@@ -214,7 +214,7 @@ def main():
                     '--repo', str(REPO), '--assets', str(REPO / 'os/external-assets/cache'),
                     '--wpe', args.wpe, '--revision', args.revision, '--run-id', args.run_id,
                     '--attempt', args.attempt, '--cache',
-                    'code.podesta.ai/qos/tilo-development-wpe-cache-' + args.architecture]
+                    'ghcr.io/tilo-os/tilo-development-wpe-cache-' + args.architecture]
             for key, value in pins.items():
                 argv.extend(['--' + key, value])
             result['real_wpe_build_attempted'] = True

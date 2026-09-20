@@ -8,7 +8,7 @@ ROOT = Path(__file__).parents[2]
 
 class FeedbackScopeTests(unittest.TestCase):
     def test_feedback_checks_closure_but_tests_explicit_test_scope(self):
-        workflow = (ROOT / '.forgejo/workflows/check.yml').read_text(encoding='utf-8')
+        workflow = (ROOT / '.github/workflows/check.yml').read_text(encoding='utf-8')
         self.assertRegex(workflow, r'python3 tools/ci/compiler_inputs\.py --output target/ci/compiler-inputs\.json --\s+check --locked --all-targets \$\{\{ matrix\.packages \}\}')
         self.assertIn('cargo nextest run --locked --profile ci ${{ matrix.test_packages }}', workflow)
         self.assertIn("if: matrix.test_packages != ''", workflow)
@@ -26,9 +26,9 @@ class FeedbackScopeTests(unittest.TestCase):
         self.assertIn('refs/heads/codex/package-desktop-release', selection)
 
     def test_nightly_executes_complete_coverage_on_both_native_architectures(self):
-        workflow = (ROOT / '.forgejo/workflows/nightly.yml').read_text(encoding='utf-8')
+        workflow = (ROOT / '.github/workflows/nightly.yml').read_text(encoding='utf-8')
         pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)
-        self.assertEqual(pairs, [('x86_64', 'runner'), ('aarch64', 'runner-arm64')])
+        self.assertEqual(pairs, [('x86_64', 'tilo-build-x64'), ('aarch64', 'tilo-build-arm64')])
         self.assertIn('runs-on: ${{ matrix.runner }}', workflow)
         self.assertIn("./os/dev/assert-native-arch.sh '${{ matrix.arch }}'", workflow)
         self.assertIn('lvp_icd.${{ matrix.arch }}.json', workflow)

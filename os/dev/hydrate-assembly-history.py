@@ -85,7 +85,7 @@ def main():
     token = env.pop('TILO_HISTORY_TOKEN')
     user = env.pop('TILO_HISTORY_USER')
     remote = subprocess.check_output(['git', '-C', args.repo, 'remote', 'get-url', 'origin'], text=True).strip()
-    if remote not in ('https://code.podesta.ai/qos/qos', 'https://code.podesta.ai/qos/qos.git'):
+    if remote not in ('https://github.com/tilo-os/tilo', 'https://github.com/tilo-os/tilo.git'):
         raise ValueError('unexpected source remote')
     header = 'Authorization: Basic ' + base64.b64encode((user+':'+token).encode()).decode()
     env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://code.podesta.ai/.extraHeader', GIT_CONFIG_VALUE_0=header, GIT_TERMINAL_PROMPT='0')

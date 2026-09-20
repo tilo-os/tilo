@@ -245,7 +245,7 @@ Follow `DEVELOPMENT.md` and the controller's scope decision. Routine integration
 need an extra human approval unless the change's policy requires one. Explicitly
 authorized emergency CI/infra fixes may be integrated directly.
 
-Keep check/lint results for every main commit. Affected qOS/Linux apps package
+Keep check/lint results for every main commit. Affected Tilo/Linux apps package
 after relevant main changes; unchanged collection members are reused. Full OS
 and desktop distribution builds remain explicit or scheduled; do not restore
 broad per-push full builds to obtain a development artifact. Use the existing workflow's

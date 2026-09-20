@@ -2,7 +2,7 @@
 """Inspect pinned guest7532 public loader bytes; never start its container."""
 import argparse,hashlib,io,json,os,posixpath,re,selectors,subprocess,tarfile,time
 from pathlib import Path
-REFERENCE='code.podesta.ai/qos/tilo-development-windows-guest@sha256:592518b08a4c88395b7054c293eab9aeb52750869aba3a59dbe87d98556ae765'
+REFERENCE='ghcr.io/tilo-os/tilo-development-windows-guest@sha256:592518b08a4c88395b7054c293eab9aeb52750869aba3a59dbe87d98556ae765'
 CONFIG='sha256:98cc5759016c9371d67a5374c34445397ec9ca4910b7792c6091c677fb3ef720'
 LOADERS=('usr/bin/wine32','usr/bin/wine64','usr/lib64/wine/i386-unix/wine','usr/lib/wine/x86_64-unix/wine','usr/lib/wine/i386-unix/wine','usr/lib64/wine/x86_64-unix/wine')
 INVENTORY='usr/lib/tilo/windows-guest/installed-packages.tsv'

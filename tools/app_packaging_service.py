@@ -17,7 +17,7 @@ import app_channel_manifest as channel
 import canonical_verifier_bundle as bundle
 
 ORIGIN = 'https://code.podesta.ai'
-PREFIX = 'repos/qos/qos'
+PREFIX = 'repos/tilo/tilo'
 DISPATCH = PREFIX + '/actions/workflows/release-apps.yml/dispatches'
 MAX_JSON = 2 * 1024**2
 
@@ -33,7 +33,7 @@ def allowed(path, method):
     if method != 'GET':
         return False
     return path in ('user', PREFIX, PREFIX + '/branches/main') or bool(re.fullmatch(
-        r'repos/qos/qos/(?:contents/[A-Za-z0-9_./-]*\?ref=[0-9a-f]{40}'
+        r'repos/tilo/tilo/(?:contents/[A-Za-z0-9_./-]*\?ref=[0-9a-f]{40}'
         r'|actions/runs/[1-9][0-9]*(?:/jobs|/artifacts\?page=1&limit=50)?'
         r'|actions/(?:jobs/[1-9][0-9]*/logs|artifacts/[1-9][0-9]*/zip))', path)) and '..' not in path.split('?', 1)[0].split('/')
 
@@ -130,7 +130,7 @@ def validate_policy(policy, final_bytes):
     product.require(descriptor['compatible_builder'] == builder, 'verifier builder compatibility mismatch')
     product.require(type(descriptor['bytes']) is int and 0 < descriptor['bytes'] <= bundle.MAX_BYTES,
                     'invalid verifier bundle size')
-    product.require(descriptor['url'] == f"{ORIGIN}/api/packages/qos/generic/tilo-canonical-verifiers/{descriptor['sha256']}/{architecture}.tar.gz",
+    product.require(descriptor['url'] == f"{ORIGIN}/api/packages/tilo/generic/tilo-canonical-verifiers/{descriptor['sha256']}/{architecture}.tar.gz",
                     'verifier bundle must use fixed trusted origin and content identity')
     return final_sha
 
@@ -184,7 +184,7 @@ def invoke(state_path, policy_path, final_path, token_path, apply=False, reconci
         product.require(type(user.get('id')) is int and user['id'] == policy['service_user_id']
                         and user.get('is_admin') is False, 'unexpected or administrative service identity')
         repo = api.call(PREFIX)
-        product.require(repo.get('id') == 23 and repo.get('full_name') == 'qos/qos', 'repository identity mismatch')
+        product.require(repo.get('id') == 23 and repo.get('full_name') == 'tilo/tilo', 'repository identity mismatch')
         if reconcile_run_id is None:
             branch = api.call(PREFIX + '/branches/main')
             product.require(branch.get('name') == 'main', 'main branch identity mismatch')

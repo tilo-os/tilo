@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 
-REPOSITORY = 'code.podesta.ai/qos/tilo-wpe-buildroot'
+REPOSITORY = 'ghcr.io/tilo-os/tilo-wpe-buildroot'
 ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
 
 
@@ -18,7 +18,7 @@ def receipt(args):
     expected_tag = f'{REPOSITORY}:candidate-{args.revision}-{args.run_id}-{args.attempt}-{args.architecture}'
     if args.tag != expected_tag or not re.fullmatch(re.escape(REPOSITORY) + r'@sha256:[0-9a-f]{64}', args.reference):
         raise ValueError('candidate repository or unique tag differs')
-    if not re.fullmatch(r'code\.podesta\.ai/qos/fedora-bootc@sha256:[0-9a-f]{64}', args.base):
+    if not re.fullmatch(r'ghcr\.io/tilo-os/fedora-bootc@sha256:[0-9a-f]{64}', args.base):
         raise ValueError('base must be the pinned Fedora mirror')
     images = json.loads(args.inspection.read_text())
     if not isinstance(images, list) or len(images) != 1:

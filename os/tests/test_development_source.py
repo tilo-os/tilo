@@ -49,7 +49,7 @@ class IdentityTests(unittest.TestCase):
         source.inputs(self.reference, self.repository + ':test', 'aarch64', self.revision)
 
     def test_retained_registry_target_matches_native_source_architecture(self):
-        repository = 'code.podesta.ai/qos/tilo-development'
+        repository = 'ghcr.io/tilo-os/tilo-development'
         for architecture in ('aarch64', 'x86_64'):
             source.inputs(repository + '@' + self.digest, repository + ':development-' + architecture,
                           architecture, self.revision)
@@ -60,7 +60,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_reject_wrong_repository_mutable_source_and_production(self):
         for ref in (self.repository + ':test', self.reference.replace('5000', '5001'),
-                    'code.podesta.ai/qos/tilo@' + self.digest):
+                    'ghcr.io/tilo-os/tilo@' + self.digest):
             with self.subTest(ref=ref), self.assertRaises(ValueError):
                 source.inputs(ref, self.repository + ':test', 'aarch64', self.revision)
 

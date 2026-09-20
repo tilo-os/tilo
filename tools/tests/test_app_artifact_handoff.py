@@ -219,7 +219,7 @@ exit 99
                 # Read the actual upload patterns, including the common directory
                 # prefix which upload-artifact strips from the transported paths.
                 patterns = re.findall(r"^\s+dist/app-release/(\S+)\s*$",
-                                      (ROOT / ".forgejo/workflows/release-apps.yml").read_text(), re.M)
+                                      (ROOT / ".github/workflows/release-apps.yml").read_text(), re.M)
                 self.assertTrue(patterns, "workflow upload selection is missing")
                 for pattern in patterns:
                     for name in glob.glob(str(out / pattern), recursive=True):

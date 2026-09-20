@@ -16,7 +16,7 @@ WebKit as a fallback.
 Run `development-wpe-stage.yml` only when a matching completed artifact is not
 available. Select the native architecture and reviewed immutable WPE buildroot;
 the tools builder must also support that architecture. This producer uses six
-jobs on the native `qos-package` class, with an explicit 23 GiB container limit.
+jobs on the native `tilo-package` class, with an explicit 23 GiB container limit.
 It restores and checksum-verifies only the three WPE source archives, saving
 them before compilation so a later failure does not require another download.
 The archives are shared across architectures; compiled stages are architecture
@@ -60,7 +60,7 @@ triggering another complete compile. The full-build path stops at the raw-rootfs
 handoff and retains it before signing and sealing. Run 7025 passed the native
 registry, signature and historical-layer audit fixtures on both architectures.
 Each build must independently pass the scoped layer audit before publishing
-to `code.podesta.ai/qos/tilo-development-rootfs`. Publication uses registry layer
+to `ghcr.io/tilo-os/tilo-development-rootfs`. Publication uses registry layer
 deduplication instead of creating a second on-disk image archive. The audit scans
 all historical layers for the supplied private material and PEM private keys;
 it is not a universal secret detector. `retained-rootfs.json` binds the exact

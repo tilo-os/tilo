@@ -83,7 +83,7 @@ def validate_request(request):
             hardware_profile.development_target(request[name], request['architecture'])
         except ValueError as error:
             raise ValueError(f'invalid {name}: {error}') from error
-    if (not re.fullmatch(r'code\.podesta\.ai/qos/tilo-development', request['publish_repository'])
+    if (not re.fullmatch(r'ghcr\.io/tilo-os/tilo-development', request['publish_repository'])
             or not re.fullmatch(re.escape(request['publish_repository']) + r':[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', request['new_target'])):
         raise ValueError('publication must use the bound development repository with a separate staging tag')
     bounds = {'generation': (1, 2**64 - 1), 'source_date_epoch': (0, 253402300799),

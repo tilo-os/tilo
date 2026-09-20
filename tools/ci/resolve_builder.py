@@ -13,8 +13,8 @@ import time
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-IMAGE = "code.podesta.ai/qos/tilo-builder"
-FILES_URL = "https://code.podesta.ai/api/v1/packages/qos/container/tilo-builder/latest/files"
+IMAGE = "ghcr.io/tilo-os/tilo-builder"
+FILES_URL = "https://code.podesta.ai/api/v1/packages/tilo/container/tilo-builder/latest/files"
 MAX_RESPONSE = 1024 * 1024
 ATTEMPTS = 3
 # errno.errorcode can prefer Winsock aliases on Windows. Keep supported

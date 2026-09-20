@@ -39,7 +39,7 @@ jq -e --arg prefix "$release_prefix" '
       (.provenance.source_image_id | test("^sha256:[0-9a-f]{64}$")) and
       (.provenance.input_qcow2_sha256 | test("^[0-9a-f]{64}$")) and
       (.provenance.hardware_profile_sha256 | test("^[0-9a-f]{64}$")) and
-      (.provenance.target_update_ref | test("^code\\.podesta\\.ai/qos/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$"))
+      (.provenance.target_update_ref | test("^code\\.podesta\\.ai/tilo/tilo(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})$"))
     end))
 ' --arg tag "$GITHUB_REF_NAME" "$catalog" >/dev/null
 schema="$(jq -r .schema "$catalog")"

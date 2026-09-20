@@ -84,7 +84,7 @@ class AdoptionTests(unittest.TestCase):
 
     def test_bad_receipt_fails_before_any_registry_or_build_command(self):
         for field, value in [('purpose', fixtures.wpe.PURPOSE), ('audit_sha256', '0' * 64),
-                             ('reference', 'code.podesta.ai/qos/tilo:latest'),
+                             ('reference', 'ghcr.io/tilo-os/tilo:latest'),
                              ('projection_epoch', '-1'), ('production_signed', True)]:
             with self.subTest(field=field), patch.object(adoption.wpe, 'command') as command:
                 with self.assertRaises(ValueError):

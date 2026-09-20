@@ -13,7 +13,7 @@ import canonical_verifier_bundle as bundle
 import final_app_receipt as final
 import test_app_channel_manifest as fixtures
 
-BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:' + 'a' * 64
+BUILDER = 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'a' * 64
 
 
 def executable(path, machine=62):
@@ -149,7 +149,7 @@ class BundleTests(unittest.TestCase):
                 network.assert_not_called()
 
     def test_workflow_consumes_platform_bundle_without_shipping_per_build_tools(self):
-        text = (Path(__file__).parents[2] / '.forgejo/workflows/release-apps.yml').read_text()
+        text = (Path(__file__).parents[2] / '.github/workflows/release-apps.yml').read_text()
         self.assertNotIn('name: canonical-verifiers-', text)
         self.assertNotIn('cp target/release/tilo-pkg target/release/tilo-runtime-bundle', text)
         self.assertEqual(text.count('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch'), 2)

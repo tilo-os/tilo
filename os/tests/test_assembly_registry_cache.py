@@ -13,7 +13,7 @@ class AssemblyCache(unittest.TestCase):
   return e
  def test_fixed_arch_cache_has_no_compiler_secret_arguments(self):
   e=self.env();before=e.copy();r=d.assembly_cache(e,'aarch64','full-build',e['TILO_NATIVE_BUILDER_IMAGE_ID'],'a'*64)
-  self.assertEqual(r['repository'],'code.podesta.ai/qos/tilo-development-assembly-cache-aarch64-v1')
+  self.assertEqual(r['repository'],'ghcr.io/tilo-os/tilo-development-assembly-cache-aarch64-v1')
   self.assertNotIn('--secret',e['TILO_BUILD_ARGS'])
   self.assertIn('--skip-unused-stages=true',e['TILO_BUILD_ARGS'])
   self.assertEqual({k:v for k,v in e.items() if k!='TILO_BUILD_ARGS'},{k:v for k,v in before.items() if k!='TILO_BUILD_ARGS'})

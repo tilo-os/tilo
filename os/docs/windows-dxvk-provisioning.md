@@ -7,9 +7,9 @@ DXVK packages, they must not simply replace files in Wine's builtin directories.
 
 ## Immutable inputs and private destinations
 
-The helper requires `WINEPREFIX=/run/qos/capsule/prefix`. It reads the verified
-payload and provenance from `/opt/qos/x86/usr/share/qos/dxvk`, and uses the
-immutable `usr/lib/qos/windows-guest/installed-packages.tsv` inventory to detect
+The helper requires `WINEPREFIX=/run/tilo/capsule/prefix`. It reads the verified
+payload and provenance from `/opt/tilo/x86/usr/share/tilo/dxvk`, and uses the
+immutable `usr/lib/tilo/windows-guest/installed-packages.tsv` inventory to detect
 guest runtime changes. These files are produced by the guest image build.
 
 | Managed mode | Payload | Prefix destination |
@@ -117,7 +117,7 @@ console-test times, not isolated
 DXVK provisioning overhead measurements. Each test required a Windows
 file marker and retained the generated offline namespace and JIT syscall
 filter. These fixtures omit the executable Landlock shim on the WSL kernel;
-they do not establish full qOS-kernel sandbox acceptance.
+they do not establish full Tilo-kernel sandbox acceptance.
 
 The standalone native DXVK load fixture produced these results:
 
@@ -136,8 +136,8 @@ mixed-architecture row is not accepted merely because `syswow64` contains the
 execution evidence. Export lookup does not establish Direct3D device creation,
 Vulkan translation, or rendering.
 
-`os/tests/managed-fex-wine-smoke.py` requires a disposable writable `/run/qos`
+`os/tests/managed-fex-wine-smoke.py` requires a disposable writable `/run/tilo`
 mount and the complete guest payload. It checks console output, exit codes,
 and all installed DLL hashes, retaining its test prefixes inside the disposable
-container. Full graphics, qOS-kernel sandbox, and final-image acceptance remain
+container. Full graphics, Tilo-kernel sandbox, and final-image acceptance remain
 separate requirements.

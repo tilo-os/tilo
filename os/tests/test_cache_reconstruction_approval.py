@@ -47,7 +47,7 @@ class CacheApprovalTests(unittest.TestCase):
             resume_admitted=False, original_recipe_executed_verbatim=False)
         raw = a.canonical(value)
         checkpoint = dict(schema=1, purpose=self.resume.RECONSTRUCTED_PARTIAL,
-            reference='code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:'+'a'*64,
+            reference='ghcr.io/tilo-os/tilo-development-partial-native-aarch64@sha256:'+'a'*64,
             config_digest='sha256:'+'b'*64, metadata_sha256=a.sha(raw), source_revision=a.SOURCE,
             helper_revision=OLD, run_number=8166, run_id=21554, inventory={'fs': record},
             reconstruction_sha256=prior_sha, installable=False, complete_native_builder=False,
@@ -62,9 +62,9 @@ class CacheApprovalTests(unittest.TestCase):
         cache = dict(purpose='tilo-incomplete-thin-cache-admission', source_revision=a.SOURCE,
             producer_helper_revision=OLD, restore_helper_sha256=a.sha(self.material['restore_helper']),
             source_metadata_sha256='3'*64, cargo_revalidation_required=True, incomplete_cache_reviewed=True,
-            checkpoint_reference='code.podesta.ai/qos/tilo-development-partial-thin-cache-aarch64@sha256:'+'4'*64,
+            checkpoint_reference='ghcr.io/tilo-os/tilo-development-partial-thin-cache-aarch64@sha256:'+'4'*64,
             checkpoint_config_digest='sha256:'+'5'*64,
-            source_metadata_reference='code.podesta.ai/qos/tilo-development-thin-cache-metadata-aarch64@sha256:'+'6'*64,
+            source_metadata_reference='ghcr.io/tilo-os/tilo-development-thin-cache-metadata-aarch64@sha256:'+'6'*64,
             source_metadata_config_digest='sha256:'+'7'*64, archive_sha256='8'*64, metadata_sha256='9'*64)
         cache_receipt = dict(purpose='tilo-development-incomplete-thin-cargo-cache', resume_admitted=False,
             complete=False, installable=False, reference=cache['checkpoint_reference'],

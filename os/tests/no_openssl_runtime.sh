@@ -27,7 +27,7 @@ for package in aws-lc-rs aws-lc-sys; do
   fi
 done
 
-manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
+manifest_hits="$(find "$repo/os" "$repo/.github" -type f \
     \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) -print0 \
   | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \
   | grep -Ev '(^|:)[0-9]+:[[:space:]]*#|rpm -q|microdnf remove|dnf remove|libssl|libcrypto' \

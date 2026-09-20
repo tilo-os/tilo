@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-patch-staging-') as directory:
     source = root / 'public'; source.mkdir()
     record = dict(approval, purpose='tilo-kbuild-reconstruction-admission',
                   source_revision=restore.SOURCE,
-                  checkpoint_reference='code.podesta.ai/qos/tilo-development-partial-kernel-aarch64@sha256:' + '1' * 64,
+                  checkpoint_reference='ghcr.io/tilo-os/tilo-development-partial-kernel-aarch64@sha256:' + '1' * 64,
                   restore_helper_sha256=restore.sha(restore.__file__))
     for field in ('writer_mapping_complete', 'dependency_invalidation_reviewed',
                   'toolchain_identity_required', 'excluded_selftests_not_build_inputs'):

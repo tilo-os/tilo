@@ -25,7 +25,7 @@
 # Every `dnf install` below installs ONLY from this digest-pinned snapshot of
 # the exact RPM set (built by os/Containerfile.rpms / the snapshot-rpms CI
 # job), never live Fedora mirrors — so the same source rebuilds the same image
-# regardless of when. RPMS_REF (code.podesta.ai/qos/rpms@sha256:...) comes from
+# regardless of when. RPMS_REF (ghcr.io/tilo-os/rpms@sha256:...) comes from
 # os/rpms-snapshot.env via the build scripts.
 # ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
 # new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
@@ -36,7 +36,7 @@
 # `base name (${…}) should not be blank` when the next FROM tries to
 # use it.
 #
-# BASE_REF (code.podesta.ai/qos/fedora-bootc@sha256:...) is the Fedora bootc
+# BASE_REF (ghcr.io/tilo-os/fedora-bootc@sha256:...) is the Fedora bootc
 # base, mirrored into our registry and pinned by digest — see
 # os/base-snapshot.env for why the mirror exists and how to refresh it. Every
 # fedora-bootc stage below uses it, so builder and final share one base and
@@ -76,7 +76,7 @@ FROM ${BASE_REF} AS public-trust-tools
 # os/Containerfile.rpms), but its content is a rebuilt Fedora kernel with
 # our config fragment applied (static storage/net/USB/HID + PREEMPT +
 # HZ=1000 + THP=always + trimmed debuginfo).  Built by
-# .forgejo/workflows/build-kernel.yml and pinned by digest via
+# .github/workflows/build-kernel.yml and pinned by digest via
 # os/kernel-snapshot.env — the runtime stage below swaps kernel-core for
 # tilo-kernel-core out of it.
 FROM ${KERNEL_RPMS_REF} AS kernel-rpms
@@ -1983,7 +1983,7 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 # --- Signing trust roots (security plan §9 image signing, §4 measured boot) ---
 # Public keys only (the private keys are git-excluded; see keys/README.md).
 #  - cosign.pub verifies the OS image signature before `bootc upgrade` applies
-#    it (policy.json below). CI signs each pushed image (see .forgejo/workflows).
+#    it (policy.json below). CI signs each pushed image (see .github/workflows).
 #  - tpm2-pcr-signing.public.pem is the trust root for SIGNED PCR policies, and
 #    nothing reads it yet. LUKS binds to PCR 7 (the Secure Boot policy) because
 #    that value is stable across OS updates; binding to PCR 4 — the boot
@@ -2018,7 +2018,7 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
  && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools /run/tilo-trust-inputs
 
 # Container signature policy: REQUIRE a valid cosign signature for
-# code.podesta.ai/qos/tilo (everything else stays permissive), so a tampered or
+# ghcr.io/tilo-os/tilo (everything else stays permissive), so a tampered or
 # unsigned OS image is refused at `bootc upgrade`. registries.d points the
 # verifier at cosign's sigstore attachment in the same repo.
 
@@ -2026,7 +2026,7 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # ---------------------------------------------------------------------------
 # Custom Tilo kernel: swap Fedora's kernel-core for our tuned tilo-kernel-core.
 # ---------------------------------------------------------------------------
-# The kernel image (see os/kernel/Containerfile + .forgejo/workflows/
+# The kernel image (see os/kernel/Containerfile + .github/workflows/
 # build-kernel.yml) rebuilds Fedora's kernel with a config fragment that:
 #   * links storage/USB/HID boot-path drivers statically while keeping network
 #     drivers signed and modular because networking is off the login path, so the
@@ -2039,7 +2039,7 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
 # we mount it alongside the frozen repo, write a two-repo dnf config on
 # the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
 # in-house RPMs aren't signed by Fedora's key; provenance for the whole
-# image is verified via cosign against the existing code.podesta.ai/qos/qos-kernel repository
+# image is verified via cosign against the existing ghcr.io/tilo-os/tilo-kernel repository
 # (see os/etc/containers/policy.json).
 #
 # An initramfs is mandatory, and the static drivers do not remove the need

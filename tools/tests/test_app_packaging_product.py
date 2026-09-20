@@ -28,7 +28,7 @@ def cargo_listing(path):
 
 
 def desired(char='a'):
-    return {'source_sha': char * 40, 'builder_image': 'code.podesta.ai/qos/tilo-builder@sha256:' + 'd' * 64,
+    return {'source_sha': char * 40, 'builder_image': 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'd' * 64,
             'collection': 'default', 'architectures': ['x86_64', 'aarch64'],
             'policy_sha256': core.receipt_key(POLICY)}
 
@@ -78,7 +78,7 @@ class API(product.ProductForgejo):
             return self.runs[int(path.rsplit('/', 1)[1])]
         self.calls.append(data)
         rid = len(self.calls)
-        self.runs[rid] = {'id': rid, 'repository': {'id': 23, 'full_name': 'qos/qos'},
+        self.runs[rid] = {'id': rid, 'repository': {'id': 23, 'full_name': 'tilo/tilo'},
                          'workflow_id': 'release-apps.yml', 'trigger_event': 'workflow_dispatch',
                          'commit_sha': data['ref'], 'event_payload': json.dumps({'ref': data['ref'], 'inputs': data['inputs']}),
                          'status': 'running'}
@@ -173,7 +173,7 @@ class ProductTests(unittest.TestCase):
 
     def test_artifact_forged_zero_count_cannot_override_trusted_plan_log(self):
         self.start()
-        trusted_log = self.api.raw_api('repos/qos/qos/actions/jobs/1/logs', 9999)
+        trusted_log = self.api.raw_api('repos/tilo/tilo/actions/jobs/1/logs', 9999)
         self.api.documents[1]['plan'] = {'count': 0, 'apps': [], 'packages': [], 'catalog': [], 'features': []}
         self.api.raw_api = lambda *_: trusted_log
         self.api.runs[1]['status'] = 'success'
@@ -281,7 +281,7 @@ class ProductTests(unittest.TestCase):
     def test_builder_change_forces_full_collection(self):
         intent = {'id': 'intent', 'desired': desired('b'), 'baseline': desired(), 'baseline_evidence': None}
         intent['baseline_evidence'] = proof({'desired': desired()}, {'id': 1})
-        intent['desired']['builder_image'] = 'code.podesta.ai/qos/tilo-builder@sha256:' + 'f' * 64
+        intent['desired']['builder_image'] = 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'f' * 64
         self.assertEqual(product.dispatch_inputs(intent)['baseline_sha'], '')
 
     def test_same_source_new_immutable_builder_dispatches_full_collection(self):
@@ -289,7 +289,7 @@ class ProductTests(unittest.TestCase):
         self.api.runs[1]['status'] = 'success'
         self.api.verifier = proof
         core.tick(self.store, self.api)
-        updated = dict(desired(), builder_image='code.podesta.ai/qos/tilo-builder@sha256:' + 'f' * 64)
+        updated = dict(desired(), builder_image='ghcr.io/tilo-os/tilo-builder@sha256:' + 'f' * 64)
         self.store.observe(2, updated)
         core.tick(self.store, self.api)
         self.assertEqual(len(self.api.calls), 2)

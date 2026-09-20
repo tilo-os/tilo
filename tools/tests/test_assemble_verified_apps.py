@@ -128,7 +128,7 @@ class AssemblyTests(unittest.TestCase):
                 fetch(API(), root / 'bad-receipt')
 
     def test_workflow_is_nonpublishing_and_uses_only_task_token_for_read(self):
-        text = (Path(__file__).parents[2] / '.forgejo/workflows/release-apps.yml').read_text()
+        text = (Path(__file__).parents[2] / '.github/workflows/release-apps.yml').read_text()
         job = text.split('\n  qualify-collection:\n')[1].split('\n  publish:\n')[0]
         self.assertIn("needs.plan.outputs.publish == 'false'", job)
         self.assertIn('FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}', job)

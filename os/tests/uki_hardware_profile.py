@@ -60,7 +60,7 @@ class HardwareProfileTests(unittest.TestCase):
             "schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64",
             "devicetree": "/" + self.dtb.relative_to(self.root).as_posix(),
             "devicetree_sha256": hashlib.sha256(self.dtb.read_bytes()).hexdigest(),
-            "target_update_ref": "code.podesta.ai/qos/tilo:board-fixture",
+            "target_update_ref": "ghcr.io/tilo-os/tilo:board-fixture",
         }
         self.write_profile()
         # Model Linux image metadata even on Windows/non-root test hosts. File
@@ -103,10 +103,10 @@ class HardwareProfileTests(unittest.TestCase):
         self.metadata.unlink()
         (self.root / "usr/lib/tilo/hardware-profile-definition.json").unlink()
         self.assertEqual(install_update_origin(self.root), DEFAULT_TARGET_IMGREF)
-        for value in ("code.podesta.ai/qos/tilo:fixture", "code.podesta.ai/qos/tilo@sha256:" + "a" * 64):
+        for value in ("ghcr.io/tilo-os/tilo:fixture", "ghcr.io/tilo-os/tilo@sha256:" + "a" * 64):
             self.assertEqual(install_update_origin(self.root, value), value)
-        for value in ("registry.invalid/tilo:fixture", "code.podesta.ai/qos/tilo:",
-                      "code.podesta.ai/qos/tilo:fixture/elsewhere", "code.podesta.ai/qos/tilo@sha256:x"):
+        for value in ("registry.invalid/tilo:fixture", "ghcr.io/tilo-os/tilo:",
+                      "ghcr.io/tilo-os/tilo:fixture/elsewhere", "ghcr.io/tilo-os/tilo@sha256:x"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 install_update_origin(self.root, value)
 
@@ -120,7 +120,7 @@ class HardwareProfileTests(unittest.TestCase):
             install_update_origin(self.root)
 
     def test_untrusted_bound_origin_is_rejected_by_installer_and_uki_builder(self):
-        for value in (None, "", "registry.invalid/tilo:fixture", "code.podesta.ai/qos/tilo:"):
+        for value in (None, "", "registry.invalid/tilo:fixture", "ghcr.io/tilo-os/tilo:"):
             self.data["target_update_ref"] = value
             self.write_profile()
             with self.subTest(value=value):

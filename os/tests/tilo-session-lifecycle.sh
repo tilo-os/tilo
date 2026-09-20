@@ -11,7 +11,7 @@ selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
 recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
-release_workflow="$repo/.forgejo/workflows/build-image.yml"
+release_workflow="$repo/.github/workflows/build-image.yml"
 shell_main="$repo/crates/session/shell/src/linux_main.rs"
 
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' "$target"

@@ -32,7 +32,7 @@ class MediaProfilesTests(unittest.TestCase):
             "schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64",
             "devicetree": "/usr/lib/modules/fixture/dtb/" + self.definition["devicetree"],
             "devicetree_sha256": "b" * 64,
-            "target_update_ref": "code.podesta.ai/qos/tilo:board-fixture",
+            "target_update_ref": "ghcr.io/tilo-os/tilo:board-fixture",
         }
 
     def create_sidecar(self, qcow=None, image_id=IMAGE_ID):
@@ -92,7 +92,7 @@ class MediaProfilesTests(unittest.TestCase):
         self.profile["target_update_ref"] = "untrusted.example/tilo:latest"
         with self.assertRaises(ValueError):
             self.create_sidecar()
-        self.profile["target_update_ref"] = "code.podesta.ai/qos/tilo:board-fixture"
+        self.profile["target_update_ref"] = "ghcr.io/tilo-os/tilo:board-fixture"
         self.definition["firmware"] = {}
         with self.assertRaisesRegex(ValueError, "reviewed packaging definition"):
             self.create_sidecar()

@@ -19,7 +19,7 @@ class CargoTrustTests(unittest.TestCase):
         self.api = product.ProductForgejo(policy)
         self.listings = {'': [{'name': '.cargo', 'type': 'dir'}],
                          '.cargo': [{'name': 'config.toml', 'type': 'file'}]}
-        self.receipt = {'source_sha': 'a' * 40, 'builder_image': 'code.podesta.ai/qos/tilo-builder@sha256:' + 'b' * 64,
+        self.receipt = {'source_sha': 'a' * 40, 'builder_image': 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'b' * 64,
                         'collection': 'default', 'architectures': ['x86_64'], 'policy_sha256': self.api.policy_sha}
         self.api.call = self.read
 

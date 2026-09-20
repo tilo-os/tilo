@@ -8,7 +8,7 @@ cargo test -p installer --locked
 cargo build --release -p installer --locked
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.aarch64.json \
   bash os/tests/installer-render-smoke.sh \
-  target/release/qos-installer /path/to/new-render-results
+  target/release/tilo-installer /path/to/new-render-results
 ```
 
 Select the Vulkan driver installed for the machine being tested; the example

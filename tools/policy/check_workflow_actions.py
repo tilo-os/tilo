@@ -60,7 +60,7 @@ def main() -> int:
     parser.add_argument(
         "--workflows",
         type=Path,
-        default=ROOT / ".forgejo",
+        default=ROOT / ".github",
         help="Forgejo configuration tree to audit recursively",
     )
     args = parser.parse_args()

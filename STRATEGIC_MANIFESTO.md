@@ -1,4 +1,4 @@
-# qOS: The Protocol for the Agentic Era
+# Tilo: The Protocol for the Agentic Era
 **Strategic Manifesto & Founding Vision**
 
 ## 1. The Core Thesis: The Agentic Inflection Point
@@ -6,7 +6,7 @@ The history of computing is defined by the interface. For 40 years, the interfac
 
 We are entering the **Agentic Inflection Point**. As the world moves from "Generative AI" (talking) to "Agentic AI" (doing), the human-centric GUI becomes a massive, low-frequency bottleneck. The new era requires a paradigm shift from **Pixels to Protocols.**
 
-**qOS is the foundational coordination layer for this transition. We are building the interface for the next billion autonomous agents.**
+**Tilo is the foundational coordination layer for this transition. We are building the interface for the next billion autonomous agents.**
 
 ---
 
@@ -18,10 +18,10 @@ Current operating systems and applications are fundamentally incompatible with a
 
 ---
 
-## 3. The Solution: The qOS Stack
-qOS is not an "application"; it is a stack of interrelated primitives designed for high-frequency, collaborative, and machine-native interaction.
+## 3. The Solution: The Tilo Stack
+Tilo is not an "application"; it is a stack of interrelated primitives designed for high-frequency, collaborative, and machine-native interaction.
 
-*   **`qos-actions` (The Gate):** The core protocol. A structured, typed, and secure registry of capabilities. An agent does not "click a button"; it "invokes an action."
+*   **`tilo-actions` (The Gate):** The core protocol. A structured, typed, and secure registry of capabilities. An agent does not "click a button"; it "invokes an action."
 *   **`ui` (The Interface):** A CRDT-native, retained-mode toolkit. It decouples rendering from state, allowing for seamless human-agent collaboration and Wasm-based cross-platform deployment.
 *   **`shell` (The Environment):** A Wayland-based compositor that manages workspaces, strips, and sandboxed environments. It provides the "containment" required for safe agentic execution.
 *   **`fs` (The Memory):** A P2P, content-addressed filesystem. It allows for instantaneous state hydration and versioned, collaborative data access across distributed agents.
@@ -42,7 +42,7 @@ We do not compete with the "Brains" (OpenAI, Anthropic); we provide the "Body."
 
 *   **Neutrality:** Unlike OpenAI or Microsoft, we are not building a closed ecosystem. We are the **neutral protocol** that allows agents to interact across *all* software.
 *   **Security:** We provide a specialized, sandboxed environment that general-purpose OSs cannot match, making us the mandatory choice for enterprise agent deployment.
-*   **Standardization:** By owning the `qos-actions` registry, we become the "tax" on the action economy.
+*   **Standardization:** By owning the `tilo-actions` registry, we become the "tax" on the action economy.
 
 ---
 
@@ -53,9 +53,9 @@ We are targeting a high-leverage, high-valuation Seed round (e.g., **\$150M Pre 
 
 1.  **Elite Talent:** Acquiring the top 0.1% of engineers in distributed systems, kernel internals, and formal verification.
 2.  **Massive-Scale R&D:** Funding the high-compute simulations required to prove our protocol can handle the "Agentic Swarm."
-3.  **Standardization & Diplomacy:** Building the technical ambassador network required to convince the world's largest software companies to adopt the `qos-actions` protocol.
+3.  **Standardization & Diplomacy:** Building the technical ambassador network required to convince the world's largest software companies to adopt the `tilo-actions` protocol.
 4.  **Defensive Infrastructure:** Building the legal and IP moat necessary to defend our category against incumbent retaliation.
 
 ---
 
-**qOS is not just a new way to use a computer. It is the protocol for how the future will work.**
+**Tilo is not just a new way to use a computer. It is the protocol for how the future will work.**

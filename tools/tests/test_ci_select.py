@@ -50,7 +50,7 @@ class SelectorTests(unittest.TestCase):
         # whose production command must fail rather than convert absence to skip.
         for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
                      "vendor/openh264-sys2/build.rs", "os/tests/test_openh264_source_order.py",
-                     ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py"):
+                     ".github/workflows/check.yml", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py"):
             with self.subTest(path=path):
                 plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
                 self.assertTrue(plan["native_dependencies_required"])
@@ -60,7 +60,7 @@ class SelectorTests(unittest.TestCase):
 
     def test_native_contract_bootstrap_does_not_break_other_dependencies_or_full_runs(self):
         for changes in (["Cargo.lock"], ["Cargo.toml"], ["rust-toolchain.toml"],
-                        [".forgejo/workflows/check.yml", "tools/ci/affected_packages.py",
+                        [".github/workflows/check.yml", "tools/ci/affected_packages.py",
                          "os/tests/test_openh264_source_order.py"], ["tools/ci/workspace_graph.py"], []):
             with self.subTest(changes=changes):
                 self.assertFalse(ci_select.native_dependencies_required(self.root, changes))
@@ -147,7 +147,7 @@ class SelectorTests(unittest.TestCase):
         self.install_quality_helpers()
         self.install_control_inputs()
         excluded = [
-            ".forgejo/workflows/check.yml",
+            ".github/workflows/check.yml",
             "os/tests/security-boundaries.sh",
             "tools/run-security-boundary-invariants.sh",
             "Cargo.toml",
@@ -275,7 +275,7 @@ class SelectorTests(unittest.TestCase):
     def test_builder_recipe_mixed_inputs_and_deletion_retain_full_checks(self) -> None:
         self.install_builder_recipe()
         for extra in ("leaf/src/lib.rs", "Cargo.lock", ".cargo/config.toml",
-                      "rust-toolchain.toml", ".forgejo/workflows/check.yml"):
+                      "rust-toolchain.toml", ".github/workflows/check.yml"):
             with self.subTest(extra=extra):
                 plan = ci_select.make_plan(
                     self.metadata, self.root, ["os/Containerfile.builder", extra], 2)
@@ -352,7 +352,7 @@ class SelectorTests(unittest.TestCase):
             self.metadata,
             self.root,
             [
-                ".forgejo/workflows/check.yml",
+                ".github/workflows/check.yml",
                 "os/tests/imager_ephemeral_runner.sh",
                 "scripts/check-install-contract.py",
                 "tools/ci/runners/imager-ephemeral-linux.sh",
@@ -395,7 +395,7 @@ class SelectorTests(unittest.TestCase):
     def test_ci_helper_exception_preserves_unknown_mixed_and_full_checks(self) -> None:
         self.install_quality_helpers()
         for source in ci_select.QUALITY_ONLY_HELPERS:
-            for extra in ("tools/unknown.py", ".forgejo/workflows/check.yml",
+            for extra in ("tools/unknown.py", ".github/workflows/check.yml",
                           "os/tests/security-boundaries.sh",
                           "leaf/src/lib.rs", "Cargo.lock", "tools/../tools/ci/affected_packages.py"):
                 with self.subTest(source=source, extra=extra):
@@ -432,9 +432,9 @@ class SelectorTests(unittest.TestCase):
         # Exact file set from PR #86, whose first two checks selected all 140
         # Rust packages even though every change was CI orchestration or its test.
         changes = [
-            ".forgejo/workflows/check.yml",
-            ".forgejo/workflows/legacy-app-e2e.yml",
-            ".forgejo/workflows/tilo-relay.yaml",
+            ".github/workflows/check.yml",
+            ".github/workflows/legacy-app-e2e.yml",
+            ".github/workflows/tilo-relay.yaml",
             "os/Containerfile.builder",
             "os/tests/test_builder_candidate_workflow.py",
             "tools/ci/affected_packages.py",
@@ -455,7 +455,7 @@ class SelectorTests(unittest.TestCase):
         self.install_quality_helpers()
         self.install_control_inputs()
         for path in (
-            ".forgejo/workflows/build-builder-image.yml",
+            ".github/workflows/build-builder-image.yml",
             "os/tests/test_builder_candidate_workflow.py",
             "tools/ci/native-mold-linker.sh",
             "tools/ci/verify-native-mold.sh",
@@ -468,7 +468,7 @@ class SelectorTests(unittest.TestCase):
         recipe.parent.mkdir(parents=True, exist_ok=True)
         recipe.write_text("FROM scratch\n")
         changes = [
-            ".forgejo/workflows/build-builder-image.yml",
+            ".github/workflows/build-builder-image.yml",
             "os/Containerfile.builder",
             "os/tests/test_builder_candidate_workflow.py",
             "tools/ci/native-mold-linker.sh",
@@ -484,7 +484,7 @@ class SelectorTests(unittest.TestCase):
         self.install_quality_helpers()
         self.install_control_inputs()
         changes = [
-            ".forgejo/workflows/build-builder-image.yml",
+            ".github/workflows/build-builder-image.yml",
             "tools/tests/test_cargo_download_cache_action.py",
         ]
         plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -494,7 +494,7 @@ class SelectorTests(unittest.TestCase):
         self.install_quality_helpers()
         self.install_control_inputs()
         changes = [
-            ".forgejo/workflows/build-builder-image.yml",
+            ".github/workflows/build-builder-image.yml",
             "os/tests/test_builder_candidate_workflow.py",
             "os/tests/release_pipeline_invariants.sh",
             "os/tests/workflow_dependency_invariants.sh",
@@ -545,7 +545,7 @@ class SelectorTests(unittest.TestCase):
         recipe.parent.mkdir(parents=True, exist_ok=True)
         recipe.write_text("FROM scratch\n")
         changes = [
-            ".forgejo/workflows/build-builder-image.yml",
+            ".github/workflows/build-builder-image.yml",
             "os/Containerfile.builder",
             "os/external-assets/github-assets.tsv",
             "os/tests/test_builder_candidate_workflow.py",
@@ -606,8 +606,8 @@ class SelectorTests(unittest.TestCase):
 
     def test_ci_control_plane_mapping_stays_exact_and_conservative(self) -> None:
         self.install_control_inputs()
-        source = ".forgejo/workflows/check.yml"
-        for extra in (".forgejo/workflows/unknown.yml", "leaf/src/lib.rs",
+        source = ".github/workflows/check.yml"
+        for extra in (".github/workflows/unknown.yml", "leaf/src/lib.rs",
                       "Cargo.lock", ".cargo/config.toml"):
             with self.subTest(extra=extra):
                 plan = ci_select.make_plan(self.metadata, self.root, [source, extra], 2)
@@ -626,7 +626,7 @@ class SelectorTests(unittest.TestCase):
         recipe.parent.mkdir(parents=True, exist_ok=True)
         recipe.write_text("FROM scratch\n")
         for extra in ("leaf/src/lib.rs", "Cargo.lock", ".cargo/config.toml",
-                      ".forgejo/workflows/unknown.yml"):
+                      ".github/workflows/unknown.yml"):
             with self.subTest(extra=extra):
                 plan = ci_select.make_plan(
                     self.metadata, self.root, ["os/Containerfile.builder", extra], 2)

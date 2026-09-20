@@ -17,11 +17,11 @@ import native_resume
 
 class ConsumerTests(unittest.TestCase):
     def inputs(self):
-        return dict(wpe='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:'+'a'*64,
+        return dict(wpe='ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:'+'a'*64,
             generation='7', revision=d.RECONSTRUCTION_SOURCE, branch='refs/heads/main', mode='full-build',
-            architecture='aarch64', kernel_candidate='code.podesta.ai/qos/kernel@sha256:'+'b'*64,
-            fex_payload_candidate='code.podesta.ai/qos/fex@sha256:'+'c'*64,
-            windows_guest_candidate='code.podesta.ai/qos/guest@sha256:'+'d'*64,
+            architecture='aarch64', kernel_candidate='ghcr.io/tilo-os/kernel@sha256:'+'b'*64,
+            fex_payload_candidate='ghcr.io/tilo-os/fex@sha256:'+'c'*64,
+            windows_guest_candidate='ghcr.io/tilo-os/guest@sha256:'+'d'*64,
             reconstructed_native_receipt='reconstructed.json', reconstructed_native_sha256='e'*64,
             approved_reconstruction_sha256='f'*64)
 

@@ -30,7 +30,7 @@ expires=$(( issued + ttl ))
 [ "$expires" -gt "$issued" ] || { echo 'release freshness: timestamp overflow' >&2; exit 1; }
 
 jq -S -n \
-  --arg repository 'code.podesta.ai/qos/tilo' \
+  --arg repository 'ghcr.io/tilo-os/tilo' \
   --arg digest "$RELEASE_DIGEST" \
   --arg source "$GITHUB_SHA" \
   --argjson generation "$TILO_GENERATION" \

@@ -36,7 +36,7 @@ def stage(native, approval_path, approval_sha, work):
          [('source-metadata.json', 'source_metadata_sha256', 32*1024**2)])):
         reference = approval[prefix + '_reference']
         config = approval[prefix + '_config_digest']
-        if (not re.fullmatch('code\\.podesta\\.ai/qos/' + repository + '@sha256:[0-9a-f]{64}', reference)
+        if (not re.fullmatch('code\\.podesta\\.ai/tilo/' + repository + '@sha256:[0-9a-f]{64}', reference)
                 or not re.fullmatch('sha256:[0-9a-f]{64}', config)
                 or t.registry_identity(reference, 'aarch64') != config):
             raise ValueError('thin cache immutable registry identity differs')

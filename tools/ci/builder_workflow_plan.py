@@ -19,8 +19,8 @@ REBUILD_PATHS = {
     "tools/ci/native-mold-linker.sh",
     "tools/ci/verify-native-mold.sh",
 }
-REBUILD_PREFIXES = (".forgejo/actions/install-cosign/",)
-WORKFLOW = ".forgejo/workflows/build-builder-image.yml"
+REBUILD_PREFIXES = (".github/actions/install-cosign/",)
+WORKFLOW = ".github/workflows/build-builder-image.yml"
 
 
 def job(text, name):

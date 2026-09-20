@@ -1,6 +1,6 @@
 # Hand-rolled UI primitives audit
 
-**What this is.** An evidence-based sweep of every qOS app that hand-rolls an
+**What this is.** An evidence-based sweep of every Tilo app that hand-rolls an
 interactive UI primitive instead of using the shared `ui` toolkit widget. These
 are the things that MUST be unified: a painted rect with a manual hit-test, or a
 `String` field you `push`/`pop` on raw key events, silently drops text selection,
@@ -346,7 +346,7 @@ Left for later, with the reason each isn't a clean face-swap:
 | `apps/api_tester/src/app.rs:704` `draw_select` | api_tester | HTTP-method + ENV pickers | `Dropdown` | M |
 | `apps/logs/src/app.rs:74/75` `unit_trigger`/`boot_trigger` | logs | unit-filter + boot-selection popups | `Dropdown` | M |
 | `apps/ebook/src/app.rs:550/553/557` font/sort/font-picker menus | ebook | bool-gated overlay menus | `Dropdown`/`ContextMenu` | M |
-| `apps/remote/src/app.rs:128` `SetKind` + AuthMethod | remote | SSH/VNC/RDP/qOS + auth pickers | `Dropdown`/`Segmented` | M |
+| `apps/remote/src/app.rs:128` `SetKind` + AuthMethod | remote | SSH/VNC/RDP/Tilo + auth pickers | `Dropdown`/`Segmented` | M |
 | `apps/db_client/src/connect_modal.rs:48` `engine_btns` | db_client | Postgres/MySQL/SQLite segmented picker | `Segmented`/`Dropdown` | M |
 | `apps/containers/src/combobox.rs` `ComboState` | containers | typeable image field — **documented `ui` gap** | `ComboBox` (new) | M |
 
@@ -416,7 +416,7 @@ triage the overwhelming majority of these literals are *not* chrome. The
 app chrome (bars, panels, buttons, borders, selection, accents) is already
 theme-driven in every app checked — proven by rendering each in light **and**
 dark and confirming the whole chrome flips while only content stays put
-(`QOS_SHOTS_THEME=light|high-contrast` was added to the `--shots` renderers to
+(`TILO_SHOTS_THEME=light|high-contrast` was added to the `--shots` renderers to
 make this repeatable). What remains hard-coded is legitimately *not* theme-tracking:
 
 - **Document / paper palettes** — a page authored for a light sheet with dark

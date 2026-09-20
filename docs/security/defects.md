@@ -533,7 +533,7 @@ integrity rests on the pin being real rather than aspirational: a pin that relia
 "just point it at whatever resolves today" away from becoming an unpinned build under deadline
 pressure, and the frozen RPM set would then be resolved against an unrecorded base.
 
-**Fix direction:** mirror the base into `code.podesta.ai/tilo/fedora-bootc` and pin against the
+**Fix direction:** mirror the base into `ghcr.io/tilo-os/fedora-bootc` and pin against the
 mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
 our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
@@ -550,7 +550,7 @@ Two adjacent holes in the same guarantee were found alongside it:
   written (it hardcodes the `tilo/fedora-bootc` destination and asserts an `ostree.linux` label
   fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
   fedora-minimal, and add a second ref to `os/base-snapshot.env` that
-  `.forgejo/workflows/tilo-relay.yaml` passes alongside `BASE_REF`.
+  `.github/workflows/tilo-relay.yaml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
   still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
@@ -709,7 +709,7 @@ Held by `os/tests/kernel_hardening_invariants.sh`.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
-`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/tilo/tilo`
+`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `ghcr.io/tilo-os/tilo`
 only; every other image reference is unverified.
 
 ---

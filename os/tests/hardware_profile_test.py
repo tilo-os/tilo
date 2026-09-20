@@ -24,7 +24,7 @@ NAMES = (
     "qcdxkmsuc8380.mbn", "qcvss8380.mbn", "qcadsp8380.mbn",
     "adsp_dtbs.elf", "qccdsp8380.mbn", "cdsp_dtbs.elf",
 )
-TARGET_REF = "code.podesta.ai/qos/tilo:board-fixture"
+TARGET_REF = "ghcr.io/tilo-os/tilo:board-fixture"
 
 
 class HardwareProfileTest(unittest.TestCase):
@@ -127,8 +127,8 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
 
     def test_missing_or_untrusted_update_reference_fails_before_writes(self):
-        for value in (None, "", "registry.invalid/tilo:fixture", "code.podesta.ai/qos/tilo:",
-                      "code.podesta.ai/qos/tilo@sha256:bad", TARGET_REF + "\n"):
+        for value in (None, "", "registry.invalid/tilo:fixture", "ghcr.io/tilo-os/tilo:",
+                      "ghcr.io/tilo-os/tilo@sha256:bad", TARGET_REF + "\n"):
             with self.subTest(value=value):
                 before = self.snapshot()
                 with self.assertRaisesRegex(ValueError, "TILO_TARGET_IMGREF"):

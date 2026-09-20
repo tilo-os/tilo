@@ -115,7 +115,7 @@ def checkpoint_union(checkpoints, required):
         require(receipt['purpose'] == 'tilo-development-partial-native-checkpoint' and receipt['source_revision'] == SOURCE
                 and all(receipt[k] is False for k in ('installable', 'complete_native_builder', 'build_success')),
                 'checkpoint source or completion claim differs')
-        require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}', receipt['reference'])
+        require(re.fullmatch(r'ghcr\.io/tilo-os/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}', receipt['reference'])
                 and DIGEST.fullmatch(receipt['config_digest']) and HEX.fullmatch(receipt['metadata_sha256']),
                 'checkpoint immutable identity differs')
         require(isinstance(receipt['inventory'], dict) and receipt['inventory'], 'empty checkpoint inventory')
@@ -141,7 +141,7 @@ def approve(receipt, receipt_sha, checkpoints, required, inputs, resume, materia
     require(receipt['complete_native_builder'] is True and receipt['production_signed'] is False
             and receipt['installable'] is False and receipt['consumer_adoption_required'] is True,
             'reconstructed completion claims differ')
-    require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-reconstructed-native-aarch64@sha256:[0-9a-f]{64}', receipt['reference'])
+    require(re.fullmatch(r'ghcr\.io/tilo-os/tilo-development-reconstructed-native-aarch64@sha256:[0-9a-f]{64}', receipt['reference'])
             and DIGEST.fullmatch(receipt['config_digest']) and HEX.fullmatch(receipt['metadata_sha256']),
             'reconstructed immutable identity differs')
     if extensions is None:

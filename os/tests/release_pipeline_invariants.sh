@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Cheap policy checks for the component release boundaries. These catch the
-# expensive mistakes (coupled tags, full native matrices on every PR, ignored
-# Forgejo keys) before a runner is allocated.
+# expensive mistakes (coupled tags and full native matrices on every PR)
+# before a runner is allocated.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-workflows="$repo/.forgejo/workflows"
+workflows="$repo/.github/workflows"
 fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-if grep -R -n -E '^[[:space:]]*permissions:' "$workflows"; then
-  bad 'Forgejo-ignored permissions keys remain in workflows'
+if find "$workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) \
+    -exec grep -L '^permissions:' {} + | grep -q .; then
+  bad 'a GitHub workflow is missing an explicit token-permissions boundary'
 else
-  ok 'workflows use Forgejo authorization/OIDC controls without ignored permissions keys'
+  ok 'GitHub workflows declare explicit token permissions'
 fi
 
 desktop="$workflows/package-desktop.yml"
@@ -21,8 +22,8 @@ apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
 
-if grep -Fq '[[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]]' "$os" \
-   && grep -Fq '[[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh"; then
+if grep -Fq '[[ "$RPMS_REF" =~ ^ghcr\.io/tilo-os/rpms@sha256:[0-9a-f]{64}$ ]]' "$os" \
+   && grep -Fq '[[ "$RPMS_REF" =~ ^ghcr\.io/tilo-os/rpms@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh"; then
   ok 'CI and local OS builds accept the published digest-pinned RPM namespace'
 else
   bad 'an OS build rejects the RPM namespace published by snapshot-rpms'
@@ -45,13 +46,13 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
-grep -Fq 'qos-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Eq 'cache-to:.*qos-kernel-buildcache:.*mode=max' "$workflows/build-kernel.yml" \
+grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Eq 'cache-to:.*tilo-kernel-buildcache:.*mode=max' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
-if grep -Fq 'runner: runner-disk-100g-arm64' "$workflows/build-kernel.yml" \
-  && grep -Fxq '            runner: runner-disk-100g' "$workflows/build-kernel.yml" \
+if grep -Fq 'runner: tilo-build-arm64' "$workflows/build-kernel.yml" \
+  && grep -Fxq '            runner: tilo-build-x64' "$workflows/build-kernel.yml" \
   && grep -Fq 'platforms: ${{ matrix.platform }}' "$workflows/build-kernel.yml" \
   && grep -Fq 'needs: build-and-push-kernel' "$workflows/build-kernel.yml" \
   && grep -Fq 'promote-native-kernels:' "$workflows/build-kernel.yml" \
@@ -74,7 +75,7 @@ fi
 if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
   && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-builder-image.yml" \
   && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-builder-image.yml" \
-  && grep -Fq 'runner: runner-arm64' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'runner: tilo-build-arm64' "$workflows/build-builder-image.yml" \
   && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
   ok 'native CI builder publication waits for cache acceptance on both architectures'
@@ -84,13 +85,13 @@ fi
 
 if grep -Fq 'x86_64) ref="$KERNEL_RPMS_X86_64_REF"; expected_arch=amd64' "$os" \
    && grep -Fq 'aarch64) ref="$KERNEL_RPMS_AARCH64_REF"; expected_arch=arm64' "$os" \
-   && grep -Fq '[[ "$ref" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]]' "$os" \
+   && grep -Fq '[[ "$ref" =~ ^ghcr\.io/tilo-os/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$os" \
    && grep -Fq 'cosign verify --key keys/cosign.pub "$ref"' "$os" \
    && grep -Fq 'cosign verify-attestation --key keys/cosign.pub' "$os" \
    && grep -Fq 'https://tilo.dev/buildtypes/kernel-rpm/v1' "$os" \
    && grep -Fq 'actual_arch="$(skopeo inspect "docker://$ref" | jq -er .Architecture)"' "$os" \
    && grep -Fq 'echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"' "$os" \
-   && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
+   && grep -Fq '[[ "$KERNEL_RPMS_REF" =~ ^ghcr\.io/tilo-os/tilo-kernel@sha256:[0-9a-f]{64}$ ]]' "$repo/os/dev/build-image.sh" \
    && grep -Fq 'cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF"' "$repo/os/dev/build-image.sh" \
    && grep -Fq 'cosign verify-attestation' "$repo/os/dev/build-image.sh" \
    && grep -Fq 'https://tilo.dev/buildtypes/kernel-rpm/v1' "$repo/os/dev/build-image.sh"; then
@@ -100,15 +101,15 @@ else
 fi
 
 kernel_workflow="$workflows/build-kernel.yml"
-if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
-   && grep -Fq 'runner: runner-disk-100g-arm64' "$kernel_workflow" \
+if grep -Fq 'runner: tilo-build-x64' "$kernel_workflow" \
+   && grep -Fq 'runner: tilo-build-arm64' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
-   && grep -Fq 'qos-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
+   && grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
    && grep -Fq 'promote-native-kernels:' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF=$KERNEL_RPMS_X86_64_REF' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_AARCH64_REF=$KERNEL_RPMS_AARCH64_REF' "$kernel_workflow" \
-   && grep -Fq 'kernel inputs changed during promotion; refusing stale push' "$kernel_workflow" \
+   && grep -Fq 'repos/${GITHUB_REPOSITORY}/contents/os/kernel-snapshot.env' "$kernel_workflow" \
    && grep -Fq "github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'" "$kernel_workflow" \
    && ! grep -Fq "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$kernel_workflow" \
    && grep -Fq 'kernel-build-support.sh stage-boot "$(uname -m)"' "$repo/os/kernel/Containerfile" \
@@ -137,7 +138,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq '  schedule:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
   && grep -Fq '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
-  && grep -Fq 'arm64_runner=runner-large-arm64' "$desktop" \
+  && grep -Fq 'arm64_runner=tilo-build-arm64' "$desktop" \
   && grep -Fq 'release_arches=amd64,arm64' "$desktop" \
   && grep -Fq 'release_arches: ${{ steps.lanes.outputs.release_arches }}' "$desktop" \
   && grep -Fq 'RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}' "$desktop" \
@@ -163,7 +164,7 @@ grep -Fq 'with_browser=0' "$os" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
   && grep -Fq 'CONTINUOUS_RELEASE: "0"' "$os" \
-  && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
+  && ! grep -Fq 'token: ${{ github.token }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
   && grep -Fq 'installed OS, desktop, and app integration passed; publication was not requested' "$os" \
@@ -193,8 +194,8 @@ fi
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
-  && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \
-  && grep -Fq 'runner":"imager-linux-aarch64"' "$imager" \
+  && grep -Fq 'runner":"ubuntu-24.04"' "$imager" \
+  && grep -Fq 'runner":"tilo-build-arm64"' "$imager" \
   && ! grep -Fq 'pull_request:' "$imager" \
   && ! grep -Fq 'branches: ["main"]' "$imager" \
   && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
@@ -217,8 +218,8 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '    needs: plan' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      image: ${{ needs.plan.outputs.builder_image }}' >/dev/null \
-  && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
-  && grep -Fq 'enable-openid-connect: true' "$apps" \
+  && grep -Fq 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' "$apps" \
+  && grep -Fq 'id-token: write' "$apps" \
   && grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \
   && grep -Fq 'TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}' "$apps" \
   && grep -Fq 'bundle_url="$package_public_api/tilo-app-collections/' "$apps" \
@@ -229,16 +230,15 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  publish:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
-  && ! awk '{sub(/\r$/, "")} /^  publish:/{publish=1} publish && /^    steps:/{steps=1} publish && steps' "$apps" | grep -F 'secrets.REGISTRY_TOKEN' >/dev/null \
+  && ! awk '{sub(/\r$/, "")} /^  publish:/{publish=1} publish && /^    steps:/{steps=1} publish && steps' "$apps" | grep -F 'github.token' >/dev/null \
   && ok 'app collections serialize channel updates and remain durable across workflows' \
   || bad 'app releases can cancel a required channel update or cannot be consumed later'
 
 grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'TILO_APP_COLLECTION_URL_AARCH64' "$os" \
-  && grep -Fq 'enable-openid-connect: true' "$os" \
+  && grep -Fq 'id-token: write' "$os" \
   && grep -Fq 'TILO_OS_APP_COLLECTION_AUDIENCE' "$os" \
-  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*' "$os")" -eq 2 \
-  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/*' "$os")" -eq 2 \
+  && test "$(grep -Fc 'http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*' "$os")" -eq 4 \
   && test "$(grep -Fc -- "--proto '=https' --proto-redir '=https'" "$os")" -eq 4 \
   && test "$(grep -Fc 'https:\/\/code.podesta.ai}' "$os")" -eq 2 \
   && ! grep -Fq -- "--proto '=http'" "$os" \

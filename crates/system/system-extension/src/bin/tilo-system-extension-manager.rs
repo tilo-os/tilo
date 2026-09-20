@@ -376,7 +376,7 @@ fn verify_pci_catalog_against(
     let payload = PciCatalogSigningPayload {
         // This is a signed wire-format identifier, independent of product branding.
         // Changing it invalidates the already published v1 catalogue signature.
-        domain: "qos.system-extension.pci-recommendations.v1",
+        domain: "tilo.system-extension.pci-recommendations.v1",
         schema_version: signed.schema_version,
         key_id: &signed.key_id,
         catalog: &signed.catalog,

@@ -17,7 +17,7 @@
             "-c",
             "import time; time.sleep(900)"
           ],
-          "image": "code.podesta.ai/qos/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06",
+          "image": "ghcr.io/tilo-os/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06",
           "imagePullPolicy": "IfNotPresent",
           "name": "probe",
           "resources": {
@@ -164,7 +164,7 @@
           },
           "containerID": "containerd://315a00913d542ccc4b7977363579f0afb5f15bb5041608785c1625912fdb5fe0",
           "image": "sha256:dcce3566ab2d8f87c5cf41486a1e79d9f7ed9506632193c2c9a16a3739095147",
-          "imageID": "code.podesta.ai/qos/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06",
+          "imageID": "ghcr.io/tilo-os/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06",
           "lastState": {},
           "name": "probe",
           "ready": true,
@@ -222,7 +222,7 @@
           "ip": "10.72.9.63"
         }
       ],
-      "qosClass": "Guaranteed",
+      "tiloClass": "Guaranteed",
       "startTime": "2026-09-18T01:15:47Z"
     }
   },
@@ -439,7 +439,7 @@
           "io.kubernetes.container.terminationMessagePolicy": "File",
           "io.kubernetes.cri.container-name": "probe",
           "io.kubernetes.cri.container-type": "container",
-          "io.kubernetes.cri.image-name": "code.podesta.ai/qos/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06",
+          "io.kubernetes.cri.image-name": "ghcr.io/tilo-os/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06",
           "io.kubernetes.cri.sandbox-id": "efc5bb4528a6fd34550b4636cebb29bd4febf40a18e62e83cb10c65fbf50f9ba",
           "io.kubernetes.cri.sandbox-name": "kata-arm64-filesystem-probe",
           "io.kubernetes.cri.sandbox-namespace": "kata-system",

@@ -83,7 +83,7 @@ def main():
                 pins.extend((f'{variable}={name}', f'{variable}_SHA256={wpe.sha(data)}'))
             (repo / 'os/dev/build-wpe.sh').write_text('\n'.join(pins) + '\n')
             (repo / 'os/Containerfile').write_text((source / 'Containerfile').read_text())
-            buildroot = 'code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '1' * 64
+            buildroot = 'ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + '1' * 64
             inputs = wpe.dependency_inputs(repo, assets, architecture, '0', buildroot)
 
             # Only the destination repository is substituted. All production

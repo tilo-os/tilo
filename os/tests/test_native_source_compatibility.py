@@ -202,11 +202,11 @@ class CompatibilityTests(unittest.TestCase):
         with self.assertRaises(ValueError):c.verify_policy_placement(recipe.replace(b'FROM x AS builder',b'FROM x AS builder\nCOPY os/scripts/verify-runtime-crypto-packages.sh /tmp/'))
 
     def test_selection_requires_explicit_full_reconstructed_adoption(self):
-        kwargs=dict(wpe='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:'+'a'*64,generation='1',
+        kwargs=dict(wpe='ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:'+'a'*64,generation='1',
             revision='c'*40,branch='refs/heads/main',mode='full-build',architecture='aarch64',
-            kernel_candidate='code.podesta.ai/qos/kernel@sha256:'+'d'*64,
-            fex_payload_candidate='code.podesta.ai/qos/fex@sha256:'+'e'*64,
-            windows_guest_candidate='code.podesta.ai/qos/guest@sha256:'+'f'*64,
+            kernel_candidate='ghcr.io/tilo-os/kernel@sha256:'+'d'*64,
+            fex_payload_candidate='ghcr.io/tilo-os/fex@sha256:'+'e'*64,
+            windows_guest_candidate='ghcr.io/tilo-os/guest@sha256:'+'f'*64,
             reconstructed_native_receipt='receipt.json',reconstructed_native_sha256='a'*64,
             approved_reconstruction_sha256='b'*64,native_source_compatibility='compatibility.json',
             native_source_compatibility_sha256='d'*64)

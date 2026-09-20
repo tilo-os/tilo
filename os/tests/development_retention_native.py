@@ -67,7 +67,7 @@ def main():
                     '--output', str(public)))['manifest_sha256']
                 context = root / 'context'
                 image_root = context / 'rootfs'
-                target = 'code.podesta.ai/qos/tilo-development:retention-fixture-' + native
+                target = 'ghcr.io/tilo-os/tilo-development:retention-fixture-' + native
                 revision, generation, epoch = 'b' * 40, 7, 1700000000
                 run('python3', str(DEV / 'install-public-trust.py'), '--source', str(public), '--official', str(public),
                     '--destination', str(image_root / 'usr/share/tilo'), '--mode', 'development',

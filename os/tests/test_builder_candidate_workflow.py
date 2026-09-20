@@ -13,8 +13,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-BUILD = (ROOT / '.forgejo/workflows/build-builder-image.yml').read_text()
-CHECK = (ROOT / '.forgejo/workflows/check.yml').read_text()
+BUILD = (ROOT / '.github/workflows/build-builder-image.yml').read_text()
+CHECK = (ROOT / '.github/workflows/check.yml').read_text()
 SPEC = importlib.util.spec_from_file_location('builder_canary', ROOT / 'os/dev/builder-canary-inputs.py')
 CANARY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CANARY)
@@ -98,7 +98,7 @@ class BuilderCandidates(unittest.TestCase):
         for subject in subjects[1:]:
             self.assertNotIn(subject, recipe)
         self.assertIn("gnome-text-editor", recipe)
-        legacy = (ROOT / '.forgejo/workflows/legacy-app-e2e.yml').read_text()
+        legacy = (ROOT / '.github/workflows/legacy-app-e2e.yml').read_text()
         script = step_script(legacy, 'Install and verify real app subjects')
         # Execute the workflow script with package installation and subject
         # discovery intercepted. Missing subjects must still fail after dnf.
@@ -131,12 +131,12 @@ class BuilderCandidates(unittest.TestCase):
             return result, output.read_text() if output.exists() else ''
 
     def test_only_immutable_same_repository_override_is_accepted(self):
-        image = 'code.podesta.ai/qos/tilo-builder@sha256:' + 'a' * 64
+        image = 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'a' * 64
         result, output = self.resolve(image)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output, f'image={image}\n')
         for invalid in [image[:-1], image.replace('tilo-builder', 'other'),
-                        'code.podesta.ai/qos/tilo-builder:latest', image + '\ninjected=value',
+                        'ghcr.io/tilo-os/tilo-builder:latest', image + '\ninjected=value',
                         '$(touch /tmp/should-not-run)']:
             with self.subTest(invalid=invalid):
                 result, output = self.resolve(invalid)
@@ -215,12 +215,12 @@ class BuilderCandidates(unittest.TestCase):
         security_job = CHECK.split('  security:\n', 1)[1].split('\n  affected:\n', 1)[0]
         select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
         self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
-        self.assertRegex(select_job, r'image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}\n')
+        self.assertRegex(select_job, r'image: ghcr\.io/tilo-os/ci-fast@sha256:[0-9a-f]{64}\n')
         qualified_image = next(line.strip() for line in
-                               (ROOT / '.forgejo/workflows/lint.yml').read_text().splitlines()
+                               (ROOT / '.github/workflows/lint.yml').read_text().splitlines()
                                if line.strip().startswith('image: '))
         self.assertIn(qualified_image, select_job)
-        self.assertIn('runs-on: runner-quality', select_job)
+        self.assertIn('runs-on: ubuntu-24.04', select_job)
         self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
         self.assertIn('run: python3 tools/policy/check_repository_layout.py', select_job)
         self.assertIn('python3 tools/ci/affected_packages.py --base "$base" --shards 2', select_job)
@@ -233,7 +233,7 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('    needs: [builder, select]', affected_job)
         self.assertIn('image: ${{ needs.builder.outputs.image }}', affected_job)
         builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
-        self.assertIn('image: code.podesta.ai/qos/ci-control@sha256:', builder_job)
+        self.assertIn('image: ghcr.io/tilo-os/ci-control@sha256:', builder_job)
         self.assertNotIn('needs.builder.outputs.image', builder_job)
         self.assertIn('DOCKER_BUILDKIT: "1"', builder_job)
         self.assertIn('run: bash os/tests/named_public_trust_context.sh docker', builder_job)

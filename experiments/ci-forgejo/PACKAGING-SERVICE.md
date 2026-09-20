@@ -27,7 +27,7 @@ The existing trusted coordinator policy additionally supplies:
 - `service_user_id`: exact positive user ID; `/user` must return that ID and
   `is_admin=false`. The credential comes only from the dedicated token file.
 - `builder_image`, `collection`, `architectures`: the single central desired
-  product scope. Normal ticks observe the freshly read `qos/qos` `main` SHA;
+  product scope. Normal ticks observe the freshly read `tilo/tilo` `main` SHA;
   explicit recovery retains the active intent's immutable source.
 - `final_receipt_policy_sha256`: exact bytes of the separately mounted final
   policy, already required by the product adapter.

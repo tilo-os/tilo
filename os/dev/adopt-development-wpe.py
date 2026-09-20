@@ -109,7 +109,7 @@ def verify_local(audit, assets):
 
 def repository(architecture):
     require(architecture in wpe.ARCHES, 'unsupported architecture')
-    return 'code.podesta.ai/qos/tilo-development-wpe-adopted-' + architecture
+    return 'ghcr.io/tilo-os/tilo-development-wpe-adopted-' + architecture
 
 
 def validate_receipt(receipt, audit, audit_sha256):

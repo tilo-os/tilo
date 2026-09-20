@@ -22,9 +22,9 @@ from app_packaging_contract import (require, digest, validate_cargo_inputs,
                                    validate_local_cargo_inputs, validate_desired, validate_evidence)
 from ci.resolve_builder import resolve
 
-REPO = 'qos/qos'
+REPO = 'tilo/tilo'
 WORKFLOW = 'release-apps.yml'
-REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
+REQUIRED_PATHS = {'.github/workflows/' + WORKFLOW,
                   'rust-toolchain.toml', '.cargo/config.toml',
                   'tools/ci/python.py', 'tools/ci/__init__.py',
                   'tools/app_packaging_contract.py',
@@ -39,7 +39,7 @@ REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'dist/apps/assemble-collection.sh', 'tools/apps/assemble_app_collection.py',
                   'tools/ci/rustc-thin-app-wrapper.sh', 'os/scripts/bake-runtime-bundle.sh',
                   'os/scripts/verify-elf-hardening.sh', 'tools/ci/sccache.sh',
-                  '.forgejo/actions/restore-cargo-downloads/action.yml',
+                  '.github/actions/restore-cargo-downloads/action.yml',
                   'tools/canonical_verifier_bundle.py'}
 
 

@@ -36,7 +36,7 @@ BINARY_INPUTS = {
     "tools/ci/resolve_builder.py",
     "tools/ci/python.py",
     "tools/ci/sccache.sh",
-    ".forgejo/actions/restore-cargo-downloads/action.yml",
+    ".github/actions/restore-cargo-downloads/action.yml",
 }
 PACKAGING_INPUTS = {
     "dist/apps/package-apps.sh",
@@ -57,12 +57,12 @@ VERIFICATION_INPUTS = {
     "os/scripts/verify-elf-hardening.sh",
     "tools/canonical_verifier_bundle.py",
     "tools/app_packaging_qualification.py",
-    ".forgejo/workflows/release-apps.yml",
+    ".github/workflows/release-apps.yml",
 }
 GLOBAL_INPUTS = BINARY_INPUTS | PACKAGING_INPUTS | VERIFICATION_INPUTS
 GLOBAL_PREFIXES = (".cargo/", "vendor/")
 FULL_REBUILD_PREFIXES = (
-    ".forgejo/actions/restore-cargo-downloads/",
+    ".github/actions/restore-cargo-downloads/",
     "dist/apps/",
     "tools/apps/",
 )

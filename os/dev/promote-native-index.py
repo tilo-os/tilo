@@ -80,7 +80,7 @@ def inspect_index(reference, digest, children):
 
 
 def promote(repository, tags, revision, descriptors, public_key, signing_key):
-    if not re.fullmatch(r"code\.podesta\.ai/qos/[a-z0-9][a-z0-9-]*", repository):
+    if not re.fullmatch(r"ghcr\.io/tilo-os/[a-z0-9][a-z0-9-]*", repository):
         raise ValueError("native index repository is invalid")
     if not tags or any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag) for tag in tags):
         raise ValueError("native index tags are invalid")

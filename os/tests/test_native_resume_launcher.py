@@ -51,7 +51,7 @@ class LauncherContract(unittest.TestCase):
                 'source_revision':launch.SOURCE,'helper_revision':'9d7a6b259c9b75b6c5031472bfed05b6461c1893',
                 'run_id':21554,'run_number':8166,'installable':False,'complete_native_builder':False,
                 'build_success':False,'resume_admitted':False,'inventory':{label:{'size':1,'sha256':'a'*64}},
-                'reference':'code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:'+digest}
+                'reference':'ghcr.io/tilo-os/tilo-development-partial-native-aarch64@sha256:'+digest}
             raw=json.dumps(value);sha=hashlib.sha256(raw.encode()).hexdigest()
             env[label]=raw;env[label+'_SHA256']=sha;entries[sha]={'inventory':value['inventory']}
         raw=json.dumps({'purpose':'tilo-reconstructed-partial-admission','receipts':entries})

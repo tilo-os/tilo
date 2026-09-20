@@ -24,7 +24,7 @@ def context(job='old'):
     return dict(schema=1, job_id=job, pod_uid='pod-' + job, container_id='1' * 64,
                 image_id='sha256:' + '2' * 64, revision='a' * 40,
                 architecture='aarch64', manifest_sha256='e' * 64,
-                target='code.podesta.ai/qos/tilo-development:new-aarch64')
+                target='ghcr.io/tilo-os/tilo-development:new-aarch64')
 
 
 def metadata(ctx, nonce, data):
@@ -55,7 +55,7 @@ class OperatorTests(unittest.TestCase):
             original_public=self.inputs / 'old', new_public=self.inputs / 'new',
             helper_archive=self.inputs / 'helpers.tar', archive_sha256=s.digest(self.archive_raw),
             tools_image_id='sha256:' + '2' * 64, hardware_profile='generic',
-            initial_free_bytes=2**30, forgejo_host='code.podesta.ai', repository='qos/qos',
+            initial_free_bytes=2**30, forgejo_host='code.podesta.ai', repository='tilo/tilo',
             dispatch_ref='feature/device-support')
 
     @staticmethod
@@ -106,7 +106,7 @@ class OperatorTests(unittest.TestCase):
         directory.mkdir(mode=0o700)
         for name in ('received', 'responses', 'checkpoints'):
             (directory / name).mkdir(mode=0o700)
-        ctx = context('qos/qos/23/2/42')
+        ctx = context('tilo/tilo/23/2/42')
         binding = dict(schema=1, namespace='agent-sandboxes', pod='fixture', container='dind',
             pod_uid=ctx['pod_uid'], container_id='containerd://fixture', image='fixture:image',
             image_id='sha256:' + '3' * 64, restart_count=0, pod_spec_sha256='4' * 64,
@@ -361,7 +361,7 @@ class OperatorTests(unittest.TestCase):
         run, job = self.event(c)
         directory = o.run_path(self.args.operation, 23, 2)
         directory.mkdir(mode=0o700)
-        ctx = context('qos/qos/23/2/42')
+        ctx = context('tilo/tilo/23/2/42')
         self.put(directory / 'signing-context.json', s.canonical(ctx))
         self.put(directory / 'binding.json', b'{}')
         with patch.object(o, 'actual_job', return_value=(run, job)), patch.object(o.stage, 'bound_context'):

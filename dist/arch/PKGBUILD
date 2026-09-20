@@ -4,7 +4,7 @@ pkgname=(tilo-session tilo-session-devel)
 pkgver=0.1.12
 pkgrel=1
 pkgdesc='Tilo collaborative compositor as a Wayland session'
-url='https://code.podesta.ai/tilo/tilo'
+url='https://github.com/tilo-os/tilo'
 license=('AGPL-3.0-only')
 arch=('x86_64' 'aarch64')
 # Arch enables split debug packages through makepkg.conf on some builders.

@@ -46,9 +46,9 @@ class QualificationPolicyTests(unittest.TestCase):
     def local_api(self, policy=None, corrupt=None):
         api = product.ProductForgejo(policy or self.policy)
         def call(path, *args):
-            prefix = "repos/qos/qos"
+            prefix = "repos/tilo/tilo"
             if path == prefix:
-                return {"id": 23, "full_name": "qos/qos"}
+                return {"id": 23, "full_name": "tilo/tilo"}
             suffix = path[len(prefix + "/contents/"):]
             name, source = suffix.split("?ref=", 1)
             self.assertEqual(source, self.source)

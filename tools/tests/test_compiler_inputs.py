@@ -51,7 +51,7 @@ class CompilerInputsTests(unittest.TestCase):
             self.assertEqual(receipt["build_scripts"][0]["unknown"], ["build-script output unavailable"])
 
     def test_workflow_retains_check_scope_and_uploads_before_clippy(self):
-        workflow = (Path(__file__).parents[2] / ".forgejo/workflows/check.yml").read_text()
+        workflow = (Path(__file__).parents[2] / ".github/workflows/check.yml").read_text()
         check = workflow.index("python3 tools/ci/compiler_inputs.py")
         upload = workflow.index("- name: Save observed compiler inputs")
         clippy = workflow.index("- name: Clippy shard")
@@ -130,7 +130,7 @@ class CompilerInputsTests(unittest.TestCase):
         self.assertIn('receipt_name=clippy-base-inputs.json', body)
         self.assertIn('receipt_name=clippy-head-inputs.json', body)
         self.assertIn('"$root/target/ci/$receipt_name"', body)
-        workflow = (root / ".forgejo/workflows/check.yml").read_text()
+        workflow = (root / ".github/workflows/check.yml").read_text()
         upload = workflow.index("- name: Save observed Clippy inputs")
         self.assertLess(workflow.index("- name: Clippy shard"), upload)
         self.assertIn("if: always()", workflow[upload:upload + 400])

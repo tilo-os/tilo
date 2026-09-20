@@ -717,8 +717,8 @@ mod tests {
                     let mut configuration = ApplianceConfig::recommended_for(
                         architecture,
                         "01234567-89ab-cdef-0123-456789abcdef",
-                        "/var/lib/qos/windows/system.qcow2",
-                        "/var/lib/qos/windows/firmware-state",
+                        "/var/lib/tilo/windows/system.qcow2",
+                        "/var/lib/tilo/windows/firmware-state",
                     );
                     configuration.performance.cpu_mode = mode;
                     configuration.performance.vcpus = cores;
@@ -737,13 +737,13 @@ mod tests {
         let configuration = ApplianceConfig::recommended_for(
             crate::GuestArchitecture::Aarch64,
             "01234567-89ab-cdef-0123-456789abcdef",
-            "/var/lib/qos/windows/system.qcow2",
-            "/var/lib/qos/windows/vars.json",
+            "/var/lib/tilo/windows/system.qcow2",
+            "/var/lib/tilo/windows/vars.json",
         );
         let xml = render_domain_xml(&configuration).unwrap();
         assert!(xml.contains("arch='aarch64' machine='virt'"));
         assert!(xml.contains("/usr/bin/qemu-system-aarch64"));
-        assert!(xml.contains("<varstore path='/var/lib/qos/windows/vars.json'/>"));
+        assert!(xml.contains("<varstore path='/var/lib/tilo/windows/vars.json'/>"));
         assert!(xml.contains("enabled='yes' name='secure-boot'"));
         assert!(xml.contains("enabled='yes' name='enrolled-keys'"));
         assert!(xml.contains("<gic version='3'/>"));

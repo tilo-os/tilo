@@ -1,7 +1,7 @@
 # Fast quality needs Rust metadata/formatting and repository policy tools, not
 # the compositor's graphics, media, browser or legacy application test subjects.
 # Reuse the reviewed compiler and audit binaries; never resolve a floating Rust.
-ARG TOOLS_IMAGE=code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+ARG TOOLS_IMAGE=ghcr.io/tilo-os/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 FROM ${TOOLS_IMAGE} AS tools
 
 FROM registry.fedoraproject.org/fedora:42@sha256:e78cd1a688cd079c23864f289a89a49a3f4ad66d817864e325e1d058310ee95c

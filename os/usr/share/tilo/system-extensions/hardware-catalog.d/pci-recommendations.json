@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "key_id": "qos-pci-catalog-v1",
+  "key_id": "tilo-pci-catalog-v1",
   "catalog": {
     "schema_version": 1,
     "recommendations": []

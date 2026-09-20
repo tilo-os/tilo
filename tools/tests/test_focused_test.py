@@ -79,11 +79,11 @@ class FocusedTests(unittest.TestCase):
             focused.request(dict(self.values, OPERATION='check-tests'))
 
     def test_workflow_keeps_source_separate_and_request_out_of_shell(self):
-        workflow = (PATH.parents[2] / '.forgejo/workflows/focused-test.yml').read_text()
+        workflow = (PATH.parents[2] / '.github/workflows/focused-test.yml').read_text()
         self.assertNotIn('pull_request:', workflow)
         self.assertNotIn('push:', workflow)
         self.assertEqual(workflow.count('persist-credentials: false'), 3)
-        self.assertIn('uses: ./control/.forgejo/actions/restore-cargo-downloads', workflow)
+        self.assertIn('uses: ./control/.github/actions/restore-cargo-downloads', workflow)
         self.assertIn('lockfile: source/Cargo.lock', workflow)
         self.assertIn('key: ${{ steps.downloads.outputs.cache-key }}', workflow)
         self.assertIn('ref: ${{ needs.builder.outputs.source }}', workflow)
@@ -93,7 +93,7 @@ class FocusedTests(unittest.TestCase):
         self.assertEqual(native.count('path: source'), 1)
         for line in workflow.splitlines():
             if 'secrets.' in line:
-                self.assertIn('secrets.REGISTRY_TOKEN', line)
+                self.assertIn('github.token', line)
 
     def test_parent_cargo_config_is_rejected_before_compiling(self):
         with tempfile.TemporaryDirectory() as tmp:

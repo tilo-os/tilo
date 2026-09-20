@@ -3,7 +3,7 @@
 The private fixture `artifact-token-probe.yml` tests existing Forgejo behavior
 without compiling software, publishing packages, installing credentials or
 changing production workflow variables. Repository ID 59 is
-`qos/ci-workflow-pilot-20260918-9245-repeat`; the fixture lives only on
+`tilo/ci-workflow-pilot-20260918-9245-repeat`; the fixture lives only on
 `codex/artifact-token-probe` there.
 
 At source `6f909596b653ce4c49dac94637dcaf641541980d`, dispatch once with an empty

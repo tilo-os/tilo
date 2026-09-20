@@ -18,7 +18,7 @@ import uuid
 
 from app_packaging_contract import canonical, receipt_key
 
-REPO = 'qos/ci-workflow-pilot-20260918-9245-repeat'
+REPO = 'tilo/ci-workflow-pilot-20260918-9245-repeat'
 WORKFLOW = 'packaging-coordinator-probe.yml'
 FIXTURE = Path(__file__).resolve().parents[1] / 'experiments/ci-forgejo' / WORKFLOW
 TERMINAL = {'success', 'failure', 'cancelled', 'skipped'}
@@ -99,7 +99,7 @@ class Forgejo:
         repository = self.call('repos/' + REPO)
         if repository.get('full_name') != REPO or repository.get('private') is not True:
             raise ValueError('fixture repository identity/privacy mismatch')
-        contents = self.call(f'repos/{REPO}/contents/.forgejo/workflows/{WORKFLOW}?ref={sha}')
+        contents = self.call(f'repos/{REPO}/contents/.github/workflows/{WORKFLOW}?ref={sha}')
         if base64.b64decode(contents['content']).replace(b'\r\n', b'\n') != FIXTURE.read_text().encode():
             raise ValueError('source does not contain exact nonpublishing fixture')
 

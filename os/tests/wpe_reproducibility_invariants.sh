@@ -9,10 +9,10 @@ build_script="$repo/os/dev/build-wpe.sh"
 image_script="$repo/os/dev/build-image.sh"
 manifest="$repo/os/external-assets/github-assets.tsv"
 pins="$repo/os/wpe-buildroot-snapshot.env"
-snapshot_workflow="$repo/.forgejo/workflows/snapshot-wpe-buildroot.yml"
+snapshot_workflow="$repo/.github/workflows/snapshot-wpe-buildroot.yml"
 credential_helper="$repo/os/dev/acquire-wpe-snapshot-credentials.sh"
 arch_helper="$repo/os/dev/assert-native-arch.sh"
-image_workflow="$repo/.forgejo/workflows/build-image.yml"
+image_workflow="$repo/.github/workflows/build-image.yml"
 fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
@@ -78,24 +78,24 @@ has "$buildroot" 'find /etc/yum.repos.d -type f -delete' \
 has "$buildroot" '/usr/lib/tilo/wpe-buildroot-packages.txt' \
   'promoted WPE buildroot records its exact installed package set'
 
-published_pattern='^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$'
+published_pattern='^ghcr\.io/tilo-os/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$'
 for consumer in "$image_script" "$image_workflow" "$snapshot_workflow"; do
   has "$consumer" "$published_pattern" 'WPE verifier accepts the namespace actually published by the snapshot'
 done
-has "$snapshot_workflow" 'ref="code.podesta.ai/qos/tilo-wpe-buildroot@$DIGEST"' \
+has "$snapshot_workflow" 'ref="ghcr.io/tilo-os/tilo-wpe-buildroot@$DIGEST"' \
   'WPE producer and verifiers share the same repository'
 digest=$(printf 'a%.0s' {1..64})
-[[ "code.podesta.ai/qos/tilo-wpe-buildroot@sha256:$digest" =~ $published_pattern ]] \
+[[ "ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:$digest" =~ $published_pattern ]] \
   && ok 'published immutable WPE reference is accepted' || bad 'published WPE reference is rejected'
-for invalid in "code.podesta.ai/tilo/tilo-wpe-buildroot@sha256:$digest" \
-    'code.podesta.ai/qos/tilo-wpe-buildroot:latest'; do
+for invalid in "ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:$digest" \
+    'ghcr.io/tilo-os/tilo-wpe-buildroot:latest'; do
   [[ ! "$invalid" =~ $published_pattern ]] \
     && ok 'wrong namespace or mutable WPE reference is rejected' || bad 'invalid WPE reference accepted'
 done
 
 for arch in X86_64 AARCH64; do
   value="$(sed -n "s/^WPE_BUILDROOT_${arch}_REF=//p" "$pins")"
-  if [ -z "$value" ] || [[ "$value" =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]; then
+  if [ -z "$value" ] || [[ "$value" =~ ^ghcr\.io/tilo-os/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]]; then
     ok "$arch buildroot pin is either explicit bootstrap-empty or digest-pinned"
   else
     bad "$arch WPE buildroot uses a mutable or malformed reference"
@@ -113,7 +113,7 @@ has "$snapshot_workflow" 'actual_arch="$(docker run --rm --entrypoint cat "$ref"
   'WPE snapshot proves each image was built on its declared native architecture'
 has "$snapshot_workflow" 'WPE_SNAPSHOT_CREDENTIAL_BROKER' \
   'WPE snapshots use an OIDC credential broker in steady state'
-has "$snapshot_workflow" 'enable-openid-connect: true' \
+has "$snapshot_workflow" 'id-token: write' \
   'WPE snapshot jobs explicitly enable Forgejo OIDC'
 has "$snapshot_workflow" '"$TILO_WPE_SIGNER" "$TILO_WPE_REF"' \
   'WPE buildroots are signed through a leased non-exportable signer'
@@ -129,7 +129,7 @@ has "$credential_helper" "trusted_root_executable \"\$signer\" 'WPE signer'" \
   'brokered WPE signer and its path are controlled by root'
 has "$snapshot_workflow" 'token: ${{ github.token }}' \
   'WPE pin promotion uses only the job-scoped Forgejo repository token'
-if grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$snapshot_workflow"; then
+if grep -Fq 'token: ${{ github.token }}' "$snapshot_workflow"; then
   bad 'WPE promotion still uses the persistent registry PAT for checkout'
 else
   ok 'persistent registry PAT is not used for repository checkout or promotion'
@@ -150,7 +150,7 @@ snapshot_inputs=(
   os/dev/install-cached-cosign.sh
   os/dev/acquire-wpe-snapshot-credentials.sh
   keys/cosign.pub
-  .forgejo/workflows/snapshot-wpe-buildroot.yml
+  .github/workflows/snapshot-wpe-buildroot.yml
 )
 trigger_block="$(sed -n '/^[[:space:]]*paths:/,/^$/p' "$snapshot_workflow")"
 input_block="$(sed -n '/^[[:space:]]*WPE_SNAPSHOT_INPUTS:/,/^[[:space:]]*enable-openid-connect:/p' "$snapshot_workflow")"
@@ -180,8 +180,8 @@ fi
 has "$image_script" 'TILO_WPE_BOOTSTRAP:=0' 'local WPE bootstrap is opt-in and off by default'
 has "$image_script" 'build-wpe-buildroot.sh' 'local bootstrap has an explicit implementation'
 if grep -Fq './os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE"' \
-     "$repo/.forgejo/workflows/release-imager.yml" \
-   && ! grep -Fq './os/dev/build-image.sh' "$repo/.forgejo/workflows/release-imager.yml" \
+     "$repo/.github/workflows/release-imager.yml" \
+   && ! grep -Fq './os/dev/build-image.sh' "$repo/.github/workflows/release-imager.yml" \
    && grep -Fq 'cosign verify --key "$verify_key" "$image"' \
      "$repo/os/dev/use-published-image.sh"; then
   ok 'installation-medium release consumes the signed OS whose build verified WPE'

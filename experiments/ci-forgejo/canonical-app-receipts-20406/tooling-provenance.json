@@ -1,6 +1,6 @@
 {
   "source_sha": "4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc",
-  "reconstruction_image": "code.podesta.ai/qos/tilo-development-reconstructed-native-aarch64@sha256:d695db34b54d6997d400034312fafeaf9d4cee507f282fc5d61284cc2fc964f4",
+  "reconstruction_image": "ghcr.io/tilo-os/tilo-development-reconstructed-native-aarch64@sha256:d695db34b54d6997d400034312fafeaf9d4cee507f282fc5d61284cc2fc964f4",
   "config_digest": "sha256:8dcd072168f4d49b4d178d58dc75397b8a85a3b41bbb58bef575f514294a0fa4",
   "inventory_receipt": "os/output/install-prep/native8544-public-evidence/reconstruction-reconstructed-native.json",
   "tools": [

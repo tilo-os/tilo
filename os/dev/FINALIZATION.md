@@ -44,7 +44,7 @@ Schema1 has exactly these fields:
   the non-signing command deadline. The 140-minute maximum leaves cleanup and
   evidence-export time inside the preserved 155-minute post-gate allowance.
   The complete worker deadline is also bounded independently by the launcher.
-- `publish_repository`: `code.podesta.ai/qos/tilo-development`, exactly the
+- `publish_repository`: `ghcr.io/tilo-os/tilo-development`, exactly the
   repository portion of `new_target`. The driver never updates the intended
   update tag. It writes `finalization-<canonical-request-sha256>` and records the
   immutable manifest reference. Other repositories are rejected so signatures

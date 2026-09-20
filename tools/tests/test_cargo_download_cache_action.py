@@ -5,8 +5,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-ACTION_PATH = ".forgejo/actions/restore-cargo-downloads"
-PREPARE_ACTION_PATH = ".forgejo/actions/prepare-rust-build"
+ACTION_PATH = ".github/actions/restore-cargo-downloads"
+PREPARE_ACTION_PATH = ".github/actions/prepare-rust-build"
 DIRECT_CONSUMERS = {
     "build-builder-image.yml": 2,
     "canonical-verifier-bundle.yml": 1,
@@ -48,7 +48,7 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
         )
 
     def test_every_cargo_download_consumer_uses_a_shared_action(self) -> None:
-        workflows = ROOT / ".forgejo" / "workflows"
+        workflows = ROOT / ".github" / "workflows"
         for name, expected_uses in DIRECT_CONSUMERS.items():
             with self.subTest(workflow=name):
                 source = (workflows / name).read_text(encoding="utf-8")
@@ -75,7 +75,7 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
 
     def test_builder_cold_canary_seeds_a_missing_architecture_cache(self) -> None:
         workflow = (
-            ROOT / ".forgejo" / "workflows" / "build-builder-image.yml"
+            ROOT / ".github" / "workflows" / "build-builder-image.yml"
         ).read_text(encoding="utf-8")
         cold = workflow.split("  cache-cold:", 1)[1].split("  cache-warm:", 1)[0]
 
@@ -91,7 +91,7 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
         )
 
     def test_path_filtered_consumers_track_the_shared_action(self) -> None:
-        workflows = ROOT / ".forgejo" / "workflows"
+        workflows = ROOT / ".github" / "workflows"
         expected = {
             "build-builder-image.yml": (ACTION_PATH,),
             "legacy-app-e2e.yml": (ACTION_PATH, PREPARE_ACTION_PATH),

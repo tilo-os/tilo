@@ -1,0 +1,70 @@
+name: CI / weekly quality
+
+permissions:
+  contents: read
+  packages: read
+
+# These compile-heavy whole-tree gates do not need to consume the shared runner
+# on every pull request. Nightly covers compilation/tests; this weekly job covers
+# the warning ratchet, Clippy baseline, docs, and release-size promises.
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: weekly-quality
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    runs-on: tilo-build-x64
+    timeout-minutes: 240
+    container:
+      image: ghcr.io/tilo-os/tilo-builder:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    env:
+      CARGO_HOME: /cargo-home
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      # CI consumes diagnostics from rustc, not debugger symbols. Keeping the
+      # dev profile aligned with check/nightly also lets sccache share their
+      # objects instead of maintaining a second full-debuginfo namespace.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+
+      - name: Prepare Rust build caches
+        uses: ./.github/actions/prepare-rust-build
+
+      - name: No rustc warnings
+        run: bash tools/ci/measure.sh "workspace warnings" -- tools/ci/check-warnings.sh
+
+      - name: Clippy ratchet
+        run: bash tools/ci/measure.sh "workspace clippy" -- tools/ci/clippy-ratchet.sh
+
+      - name: Documentation (warnings are errors)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: >-
+          bash tools/ci/measure.sh "workspace docs" --
+          cargo doc --workspace --no-deps --locked
+
+      - name: Build release binaries
+        run: >-
+          bash tools/ci/measure.sh "workspace release" --
+          cargo build --release --workspace --locked
+
+      - name: Check binary sizes against budget
+        run: tools/check-binary-size.sh
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: bash tools/ci/sccache.sh report || true

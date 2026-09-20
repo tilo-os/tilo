@@ -12,9 +12,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 BUILD_INTERCEPTED = 73
-KERNEL_PIN = "code.podesta.ai/qos/qos-kernel@sha256:" + "1" * 64
-RPMS_PIN = "code.podesta.ai/qos/rpms@sha256:" + "2" * 64
-TARGET_REF = "code.podesta.ai/qos/tilo:board-fixture"
+KERNEL_PIN = "ghcr.io/tilo-os/tilo-kernel@sha256:" + "1" * 64
+RPMS_PIN = "ghcr.io/tilo-os/rpms@sha256:" + "2" * 64
+TARGET_REF = "ghcr.io/tilo-os/tilo:board-fixture"
 
 
 class ImageBuildProfileTests(unittest.TestCase):
@@ -247,8 +247,8 @@ assert '--public-bundle' not in sys.argv
 print('sha256:''' + '3' * 64 + '''')
 ''')
         self.commit_fixture()
-        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '4' * 64,
-            TILO_WPE_BUILD_CACHE_REF='code.podesta.ai/qos/tilo-development-wpe-cache-aarch64',
+        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + '4' * 64,
+            TILO_WPE_BUILD_CACHE_REF='ghcr.io/tilo-os/tilo-development-wpe-cache-aarch64',
             TILO_WPE_SOURCE_DATE_EPOCH='0')
         result = self.run_builder(**inputs)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -267,14 +267,14 @@ args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
 assert args['--architecture'] == 'aarch64'
 assert args['--epoch'] == '0'
 assert args['--receipt'] == '/private/receipt with spaces.json'
-assert args['--wpe'] == 'code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '4' * 64
+assert args['--wpe'] == 'ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + '4' * 64
 assert Path(args['--assets']) == Path(args['--repo']) / 'os/external-assets/cache'
 print('sha256:' + '5' * 64)
 """)
         self.commit_fixture()
-        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '4' * 64,
+        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + '4' * 64,
             TILO_WPE_STAGE_RECEIPT='/private/receipt with spaces.json', TILO_WPE_SOURCE_DATE_EPOCH='0',
-            TILO_WPE_BUILD_CACHE_REF='code.podesta.ai/qos/tilo-development-wpe-cache-aarch64')
+            TILO_WPE_BUILD_CACHE_REF='ghcr.io/tilo-os/tilo-development-wpe-cache-aarch64')
         result = self.run_builder(**inputs)
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = self.log.read_bytes().decode().split('\0')
@@ -327,9 +327,9 @@ print('sha256:' + '6' * 64)
     def test_completed_wpe_import_failure_never_falls_back_to_compilation(self):
         inputs = self.development_pipeline_inputs()
         self.write('os/dev/prepare-wpe-stage.py', "raise AssertionError('must never compile WPE')\n")
-        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '4' * 64,
+        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + '4' * 64,
             TILO_WPE_STAGE_RECEIPT='/private/required.json', TILO_WPE_SOURCE_DATE_EPOCH='0',
-            TILO_WPE_BUILD_CACHE_REF='code.podesta.ai/qos/tilo-development-wpe-cache-aarch64')
+            TILO_WPE_BUILD_CACHE_REF='ghcr.io/tilo-os/tilo-development-wpe-cache-aarch64')
         for source, status in (("raise SystemExit(82)\n", 82), ("print('mutable:tag')\n", 1)):
             with self.subTest(source=source):
                 self.write('os/dev/wpe-stage-artifact.py', source)
@@ -343,12 +343,12 @@ print('sha256:' + '6' * 64)
         inputs = self.development_pipeline_inputs()
         self.assert_rejected_before_build(self.run_builder(TILO_WPE_STAGE_RECEIPT='/private/required.json'),
                                           'WPE artifact import requires a fresh full-browser development build')
-        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '4' * 64,
+        inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + '4' * 64,
                       TILO_WPE_STAGE_RECEIPT='/private/required.json')
         self.assert_rejected_before_build(self.run_builder(**inputs), 'WPE artifact import requires an explicit dependency epoch')
 
     def test_wpe_cache_is_rejected_for_production_or_browserless_build(self):
-        result = self.run_builder(TILO_WPE_BUILD_CACHE_REF='code.podesta.ai/qos/tilo-development-wpe-cache-aarch64')
+        result = self.run_builder(TILO_WPE_BUILD_CACHE_REF='ghcr.io/tilo-os/tilo-development-wpe-cache-aarch64')
         self.assert_rejected_before_build(result, 'WPE stage caching requires a fresh full-browser development build')
 
     def test_development_signer_failure_never_enters_sealing(self):
@@ -387,7 +387,7 @@ print('sha256:' + '6' * 64)
 
     def test_development_rejects_skip_build_and_production_alias(self):
         inputs = self.development_inputs()
-        for override in ({"TILO_SKIP_BUILD": "1"}, {"TILO_IMAGE": "code.podesta.ai/qos/tilo:latest"}):
+        for override in ({"TILO_SKIP_BUILD": "1"}, {"TILO_IMAGE": "ghcr.io/tilo-os/tilo:latest"}):
             result = self.run_builder(**(inputs | override))
             self.assertNotEqual(result.returncode, BUILD_INTERCEPTED)
             self.assertNotEqual(result.returncode, 0)
@@ -457,8 +457,8 @@ print('sha256:' + '6' * 64)
                         self.run_builder(**{key: value}), "Windows provider inputs are incomplete")
 
     def test_explicit_unpublished_refs_survive_loading_the_snapshot_pins(self):
-        kernel = "code.podesta.ai/qos/qos-kernel@sha256:" + "5" * 64
-        rpms = "code.podesta.ai/qos/rpms@sha256:" + "6" * 64
+        kernel = "ghcr.io/tilo-os/tilo-kernel@sha256:" + "5" * 64
+        rpms = "ghcr.io/tilo-os/rpms@sha256:" + "6" * 64
         arguments = self.build_arguments(self.run_builder(KERNEL_RPMS_REF=kernel, RPMS_REF=rpms))
         self.assertEqual(arguments["KERNEL_RPMS_REF"], kernel)
         self.assertEqual(arguments["RPMS_REF"], rpms)
@@ -471,8 +471,8 @@ print('sha256:' + '6' * 64)
 
     def test_hardware_profile_requires_explicit_trusted_update_reference(self):
         self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
-        for value in ("", "registry.invalid/tilo:fixture", "code.podesta.ai/qos/tilo:",
-                      "code.podesta.ai/qos/tilo@sha256:bad", TARGET_REF + "\n"):
+        for value in ("", "registry.invalid/tilo:fixture", "ghcr.io/tilo-os/tilo:",
+                      "ghcr.io/tilo-os/tilo@sha256:bad", TARGET_REF + "\n"):
             with self.subTest(value=value):
                 result = self.run_builder(TILO_HARDWARE_PROFILE="lenovo-83ed", TILO_TARGET_IMGREF=value)
                 self.assert_rejected_before_build(result, "TILO_TARGET_IMGREF")

@@ -307,7 +307,7 @@ impl CardHandle {
             // Writeback connectors are capture sinks rather than physical or
             // virtual displays.  Do not infer that from the human-readable
             // connector name: QEMU/virtio/Bochs expose perfectly usable KMS
-            // displays as `Virtual-N`, and rejecting that label makes qOS
+            // displays as `Virtual-N`, and rejecting that label makes Tilo
             // immediately exit in a VM even while the connector is connected
             // and advertises modes.
             if info.interface() == connector::Interface::Writeback {

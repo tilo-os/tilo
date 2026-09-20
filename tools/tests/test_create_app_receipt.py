@@ -97,7 +97,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
 
             receipt_path = tree / 'final-publication-receipt.json'
             receipt_hash = producer.channel.sha(receipt_path)
-            url = 'https://code.podesta.ai/api/packages/qos/generic/tilo-app-collections/0.0.0-' + 'a' * 40 + '/tilo-apps-x86_64.tar.gz'
+            url = 'https://code.podesta.ai/api/packages/tilo/generic/tilo-app-collections/0.0.0-' + 'a' * 40 + '/tilo-apps-x86_64.tar.gz'
             output = tree / 'published-receipt.json'
             bound = final.bind(receipt_path, receipt_hash, archive, url, policy_path, policy_hash, output)
             self.assertEqual(bound['publication']['status'], 'published')
@@ -142,7 +142,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
 
     def test_workflow_runs_receipt_before_upload_even_without_publication(self):
         root = Path(__file__).parents[2]
-        workflow = (root / '.forgejo/workflows/release-apps.yml').read_text()
+        workflow = (root / '.github/workflows/release-apps.yml').read_text()
         step = workflow.split('- name: Generate unpublished receipt with canonical verifiers', 1)[1].split('\n      - ', 1)[0]
         self.assertNotIn('if:', step)
         self.assertIn('python3 tools/apps/create_app_receipt.py', step)

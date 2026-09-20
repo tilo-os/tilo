@@ -31,7 +31,7 @@ class ChannelReaderTests(unittest.TestCase):
                         'publication': {'status': 'unpublished'}}
         self.upload = {'schema': 'tilo.app-upload/v1', 'source_sha': 'a' * 40, 'architecture': 'x86_64',
                        'sha256': '4' * 64, 'bytes': 123,
-                       'url': 'https://code.podesta.ai/api/packages/qos/generic/tilo-app-collections/0.0.0-' + 'a' * 40 + '/tilo-apps-x86_64.tar.gz'}
+                       'url': 'https://code.podesta.ai/api/packages/tilo/generic/tilo-app-collections/0.0.0-' + 'a' * 40 + '/tilo-apps-x86_64.tar.gz'}
 
     def published(self):
         raw = encode(self.upload)

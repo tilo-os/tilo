@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location('wine_repository', ROOT / 'os/dev/development-wine-repository.py')
 wine = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(wine)
-REF = 'code.podesta.ai/qos/wine-paired@sha256:' + '1' * 64
+REF = 'ghcr.io/tilo-os/wine-paired@sha256:' + '1' * 64
 
 
 class DevelopmentWineTrust(unittest.TestCase):

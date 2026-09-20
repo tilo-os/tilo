@@ -14,28 +14,28 @@ health guarantee.
 
 | Repository / revision | Delivered behavior |
 | --- | --- |
-| `qos/qos` `e6449447a` | Stops broad per-main-push/PR full OS and distribution build fan-out. Preserves explicit release/manual paths and scheduled backstops; PR desktop/app planning or contracts remain lightweight. Continuous OS publication is disabled. |
-| `qos/qos` `8e704f963` | Keeps macOS definitions deferred without requiring those lanes for enabled releases; adds bounded waiting-run coalescing. |
-| `qos/qos` `e6f0e61aa` | Deployed integration checkpoint containing the relief changes and upstream work. This is a merge commit, not a standalone feature to revert wholesale. Includes `3fd676546`, which preserves every main commit's check/lint work during queue cleanup. |
-| `qos/qos` `e0c6484e6` | Deployed follow-up integration checkpoint: task-branch instructions, runtime artifact layout repair, confined audio dependency helper, narrow design-only Rust applicability, fail-closed aggregate with the Forgejo sentinel-matrix workaround, and rename-owner coverage. Includes unrelated upstream work; do not revert the whole merge. |
-| `qos/qos` `e279fbf35` | Later deployed checkpoint includes focused development helpers (`8f768b116`) and per-main-SHA check/lint concurrency groups. Deployment is not evidence that its actual CI passed. |
-| `qos/qos` `0975d89a8` | Deployed checkpoint containing `f660a53a4`: lean pinned fast-quality image, native toolchain smoke, and the exclusive `runner-quality` lane. Its actual production lint run 22696 passed; the separate check run 22695 is not claimed green here. |
-| `qos/qos` `f2f4664a4` | Deployed follow-up checkpoint includes isolated Clippy target/cache corrections and explicit lean images for status/report jobs. It contains unrelated upstream changes; do not revert the whole merge. |
-| `qos/qos` `ec3facc4b` | Deployed checkpoint includes lightweight quality-lane builder resolution/control and affected-package selection. Native compilation and security jobs still use the full builder. |
-| Infrastructure `93be3f6` | Enables `forgejo/qos-ci-queue-coalescer`, using the heavy-only policy. |
+| `tilo/tilo` `e6449447a` | Stops broad per-main-push/PR full OS and distribution build fan-out. Preserves explicit release/manual paths and scheduled backstops; PR desktop/app planning or contracts remain lightweight. Continuous OS publication is disabled. |
+| `tilo/tilo` `8e704f963` | Keeps macOS definitions deferred without requiring those lanes for enabled releases; adds bounded waiting-run coalescing. |
+| `tilo/tilo` `e6f0e61aa` | Deployed integration checkpoint containing the relief changes and upstream work. This is a merge commit, not a standalone feature to revert wholesale. Includes `3fd676546`, which preserves every main commit's check/lint work during queue cleanup. |
+| `tilo/tilo` `e0c6484e6` | Deployed follow-up integration checkpoint: task-branch instructions, runtime artifact layout repair, confined audio dependency helper, narrow design-only Rust applicability, fail-closed aggregate with the Forgejo sentinel-matrix workaround, and rename-owner coverage. Includes unrelated upstream work; do not revert the whole merge. |
+| `tilo/tilo` `e279fbf35` | Later deployed checkpoint includes focused development helpers (`8f768b116`) and per-main-SHA check/lint concurrency groups. Deployment is not evidence that its actual CI passed. |
+| `tilo/tilo` `0975d89a8` | Deployed checkpoint containing `f660a53a4`: lean pinned fast-quality image, native toolchain smoke, and the exclusive `runner-quality` lane. Its actual production lint run 22696 passed; the separate check run 22695 is not claimed green here. |
+| `tilo/tilo` `f2f4664a4` | Deployed follow-up checkpoint includes isolated Clippy target/cache corrections and explicit lean images for status/report jobs. It contains unrelated upstream changes; do not revert the whole merge. |
+| `tilo/tilo` `ec3facc4b` | Deployed checkpoint includes lightweight quality-lane builder resolution/control and affected-package selection. Native compilation and security jobs still use the full builder. |
+| Infrastructure `93be3f6` | Enables `forgejo/tilo-ci-queue-coalescer`, using the heavy-only policy. |
 | Infrastructure `8c1de67` + `4c20a8e` | Pins the attempted broker fix image and permits bounded startup reconciliation before liveness enforcement. Operator reports Argo applications synced/healthy at `4c20a8e`, but subsequent runtime inspection found the performance guard was not loaded; see below. |
 | Infrastructure `506195f` | Deploys the corrected image that patches the imported runtime module, retaining the startup probe. Superseded by the current broker below. |
 | Infrastructure `a30e1c8` | Adds one exclusive on-prem `runner-quality` slot, with a 2 CPU / 4 GiB Docker-in-Docker workload envelope; general/heavy jobs cannot use its reserved capacity. |
 | Infrastructure `ffbd0a1` | Adds completed-cleanup tolerance and live-runner deletion guards, retained in later images. These guards do not prove the cause of historical runner loss. |
 | Infrastructure `3e2e8ba` | Deploys repository-scoped full-builder seed clones with broker image `48a5bf...`. Actual repository 23 snapshot cloning is proven; its first observed job used a public image, so this is not private-builder cache-hit evidence. |
 | Infrastructure `a970175` | Deploys broker `c80bd455...` with both AX41 v2 seeds. Both replicas Ready with zero restarts at acceptance. Normal repository 23 control and lint jobs received isolated snapshot clones and created their pinned containers without a pull event; timings below. |
-| Infrastructure `64d2359` | Broker `ef490a74...` disables unrelated generic pre-pull only after verifying qOS repository scope. Global reserve, readiness and lifecycle behavior remain. Both replicas Ready with zero restarts; 316 installed-runtime tests passed. |
+| Infrastructure `64d2359` | Broker `ef490a74...` disables unrelated generic pre-pull only after verifying Tilo repository scope. Global reserve, readiness and lifecycle behavior remain. Both replicas Ready with zero restarts; 316 installed-runtime tests passed. |
 | Infrastructure `021fb14` | Broker `8d313aa7...` adds priority 1000 with `preemptionPolicy: Never` only for actual disk-heavy demand, not speculative reserves. Both replicas Ready; 326 installed-runtime tests passed. EKS bootstrap persistence follows in `d1fdf88`. |
 | Infrastructure `46e7edc` | Broker `05cdedb0...` introduced fresh ephemeral scratch formatting with `mkfs.ext4 -m0`. Existing disks remain untouched. Retry 9404 subsequently passed the unchanged 80 GiB admission guard with 84.13 GiB available. |
 | Infrastructure `0370999` | Broker `51b50312...` accounts for the selected RuntimeClass in admission, including ARM's actual 7 GiB / 1 CPU overhead. Both updated replicas were Ready; 341 installed-runtime tests passed. Existing workers are not resized. |
-| `qos/qos` `e29c756c7` | Moves bounded security invariants to reserved quality capacity. Production job 84070 passed all 64 checks in 74.41 seconds; cached container creation took 297 ms. |
-| `qos/qos` `5ade281b0` | Generates unpublished app receipts with existing canonical Rust signature verifiers. Receipt and handoff tests passed; continuous publication remains paused and final publication receipts still require qualification. |
-| `qos/qos` `ce0eff803` | Includes `6625e7ad3`, updating the stale literal app-builder guard to verify the resolver, output and job dependency. Both complete shell guard suites and four regression tests passed; this is not a claim that all live CI at this checkpoint passed. |
+| `tilo/tilo` `e29c756c7` | Moves bounded security invariants to reserved quality capacity. Production job 84070 passed all 64 checks in 74.41 seconds; cached container creation took 297 ms. |
+| `tilo/tilo` `5ade281b0` | Generates unpublished app receipts with existing canonical Rust signature verifiers. Receipt and handoff tests passed; continuous publication remains paused and final publication receipts still require qualification. |
+| `tilo/tilo` `ce0eff803` | Includes `6625e7ad3`, updating the stale literal app-builder guard to verify the resolver, output and job dependency. Both complete shell guard suites and four regression tests passed; this is not a claim that all live CI at this checkpoint passed. |
 
 Broker image:
 
@@ -158,7 +158,7 @@ accepting either intentional skip.
 
 The earlier deployed product checkpoint `0975d89a87367b8625e8bb3b6d898cf997a684af`
 provided the following historical timing evidence.
-Its production lint [run 9257](https://code.podesta.ai/qos/qos/actions/runs/9257)
+Its production lint [run 9257](https://github.com/tilo-os/tilo/actions/runs/9257)
 (API run 22696, job 83334) finished **successfully**. The timing record in
 `target/main-fast-quality-timing.json` and a fresh exact-run API readback agree:
 
@@ -176,14 +176,14 @@ not a latency guarantee for every future worker. The separate main **check** run
 as main advances.
 
 The lean image
-`code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
+`ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
 contains the pinned Rust toolchain and lint tools, without the full builder's
 native graphics/media/application stack. Compressed layers total 393 MB versus
 1.694 GB for its source builder. Its unchanged OpenSSL exclusion invariant
 passed; no runtime-policy exemption was introduced.
 
 Before production rollout, the complete lint workflow passed on the exclusive
-2 CPU / 4 GiB lane in [run 9253](https://code.podesta.ai/qos/qos/actions/runs/9253).
+2 CPU / 4 GiB lane in [run 9253](https://github.com/tilo-os/tilo/actions/runs/9253).
 That qualification took 3m49s end-to-end, including about 93s pull/unpack and 76s
 dependency-usage analysis. Another image pilot measured a 36s pull interval.
 These observations show material worker/network variation; the 9.905s
@@ -242,7 +242,7 @@ Normal main revision `6d221fd9` supplied these actual workflow observations:
 | Request | Pinned image | Received to container creation | Observed result |
 | --- | --- | --- | --- |
 | Check 22761, builder job 83565, task 75054 | `ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5` | 22:55:12.230 to 22:55:12.766 UTC: 535.6 ms | Job succeeded at 22:55:27.021, about 14.8 seconds after receipt |
-| [Lint 22762](https://code.podesta.ai/qos/qos/actions/runs/9318), job 83571, task 75056 | `ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a` | 22:55:20.276 to 22:55:20.620 UTC: 343.9 ms | Succeeded at 22:57:28.187: 127.911 seconds from task receipt through policy, cargo-deny and cargo-machete |
+| [Lint 22762](https://github.com/tilo-os/tilo/actions/runs/9318), job 83571, task 75056 | `ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a` | 22:55:20.276 to 22:55:20.620 UTC: 343.9 ms | Succeeded at 22:57:28.187: 127.911 seconds from task receipt through policy, cargo-deny and cargo-machete |
 
 Neither log contained a Docker pull event. These intervals are **task receipt to
 container creation**, not pull-to-create or isolated network timings. They prove
@@ -274,11 +274,11 @@ Keep manual hardware/bring-up requests intact while delivering those changes.
 Run these read-only commands on an operations host with the configured contexts:
 
 ```sh
-fgj --hostname code.podesta.ai api repos/qos/qos/branches/main
-fgj --hostname code.podesta.ai api repos/qos/qos/actions/runs/RUN_ID
-fgj --hostname code.podesta.ai api repos/qos/qos/actions/runs/RUN_ID/jobs
-kubectl -n forgejo get cronjob qos-ci-queue-coalescer
-kubectl -n forgejo get jobs -l app=qos-ci-queue-coalescer
+fgj --hostname code.podesta.ai api repos/tilo/tilo/branches/main
+fgj --hostname code.podesta.ai api repos/tilo/tilo/actions/runs/RUN_ID
+fgj --hostname code.podesta.ai api repos/tilo/tilo/actions/runs/RUN_ID/jobs
+kubectl -n forgejo get cronjob tilo-ci-queue-coalescer
+kubectl -n forgejo get jobs -l app=tilo-ci-queue-coalescer
 kubectl -n sandbox-broker get deployment sandbox-broker
 kubectl -n sandbox-broker rollout status deployment/sandbox-broker --timeout=180s
 ```
@@ -304,8 +304,8 @@ published through the authorized infrastructure path.
 **Stop coalescing first if its behavior is suspect:**
 
 ```sh
-kubectl -n forgejo patch cronjob qos-ci-queue-coalescer --type=merge -p '{"spec":{"suspend":true}}'
-kubectl -n forgejo get jobs -l app=qos-ci-queue-coalescer
+kubectl -n forgejo patch cronjob tilo-ci-queue-coalescer --type=merge -p '{"spec":{"suspend":true}}'
+kubectl -n forgejo get jobs -l app=tilo-ci-queue-coalescer
 ```
 
 Set `spec.suspend: true` in `apps/forgejo/ci-queue-coalescer.yaml` and publish that

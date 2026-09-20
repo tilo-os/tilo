@@ -17,7 +17,7 @@ sys.path.append(str(ROOT / 'tools'))
 import canonical_verifier_bundle as bundle
 
 SOURCE = 'a987e76bac313e27f11c6f67d4c10779b2c3909f'
-BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a'
+BUILDER = 'ghcr.io/tilo-os/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a'
 ARCHIVE_SHA = '10ad658a452b21545cf2521fa875536da5d951ee8dd509533251a0a3a0517bde'
 
 
@@ -34,7 +34,7 @@ def verify(download, output):
             and artifact['expired'] is False, 'wrong artifact identity')
     require(run['id'] == 23012 and run['commit_sha'] == SOURCE
             and run['workflow_id'] == 'canonical-verifier-bundle.yml'
-            and run['repository']['full_name'] == 'qos/qos', 'wrong producing run')
+            and run['repository']['full_name'] == 'tilo/tilo', 'wrong producing run')
     job = next(j for j in jobs if j['id'] == 84455)
     require(job['run_id'] == 23012 and job['repo_id'] == 23 and job['status'] == 'success'
             and job['attempt'] == 1 and job['task_id'] == 75605, 'x86 attempt not successful')
@@ -55,7 +55,7 @@ def verify(download, output):
     descriptor = json.loads((output / 'x86_64.tar.descriptor.json').read_text())
     require(descriptor['source_sha'] == SOURCE and descriptor['compatible_builder'] == BUILDER
             and descriptor['sha256'] == ARCHIVE_SHA, 'source/builder/archive identity mismatch')
-    require(descriptor['url'] == 'https://code.podesta.ai/api/packages/qos/generic/tilo-canonical-verifiers/'
+    require(descriptor['url'] == 'https://code.podesta.ai/api/packages/tilo/generic/tilo-canonical-verifiers/'
             + ARCHIVE_SHA + '/x86_64.tar.gz', 'wrong intended content-addressed URL')
     frozen = subprocess.check_output(['git', '--work-tree=' + str(ROOT), '-C', str(ROOT),
                                       'show', SOURCE + ':tools/canonical_app_verifier.py'])

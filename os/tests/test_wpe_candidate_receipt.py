@@ -18,7 +18,7 @@ class CandidateReceiptTests(unittest.TestCase):
         self.args = argparse.Namespace(architecture='x86_64', revision='b' * 40,
                                        run_id='123', attempt='2',
                                        reference=candidate.REPOSITORY + '@sha256:' + 'a' * 64,
-                                       base='code.podesta.ai/qos/fedora-bootc@sha256:' + 'c' * 64,
+                                       base='ghcr.io/tilo-os/fedora-bootc@sha256:' + 'c' * 64,
                                        inspection=root / 'inspect.json', packages=root / 'packages',
                                        recipe=root / 'Containerfile')
         self.args.packages.write_bytes(b'aaa-0:1-1.x86_64\nbbb-0:2-1.noarch\n')
@@ -55,7 +55,7 @@ class CandidateReceiptTests(unittest.TestCase):
 
     def test_mutable_or_wrong_namespace_reference_and_reused_tag_fail(self):
         for field, value in [('reference', candidate.REPOSITORY + ':latest'),
-                             ('reference', self.args.reference.replace('/qos/', '/tilo/')),
+                             ('reference', self.args.reference.replace('/tilo/', '/tilo/')),
                              ('tag', candidate.REPOSITORY + ':latest'), ('attempt', '0'),
                              ('revision', 'main'), ('base', 'fedora:latest')]:
             original = getattr(self.args, field)

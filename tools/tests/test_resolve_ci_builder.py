@@ -64,11 +64,11 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertEqual(resolver.resolve(image, fetch=unexpected_fetch), image)
 
     def test_workflow_routes_native_consumers_through_resolved_output(self):
-        workflow = (ROOT / '.forgejo/workflows/check.yml').read_text()
-        self.assertIn('REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}', workflow)
+        workflow = (ROOT / '.github/workflows/check.yml').read_text()
+        self.assertIn('REGISTRY_TOKEN: ${{ github.token }}', workflow)
         self.assertIn('run: python3 tools/ci/resolve_builder.py', workflow)
         self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 3)
-        self.assertNotIn('image=code.podesta.ai/qos/tilo-builder:latest', workflow)
+        self.assertNotIn('image=ghcr.io/tilo-os/tilo-builder:latest', workflow)
 
 
 class MetadataTransportTests(unittest.TestCase):

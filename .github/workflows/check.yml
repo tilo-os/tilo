@@ -1,0 +1,467 @@
+name: CI / affected packages
+
+permissions:
+  contents: read
+  packages: read
+
+# Pull requests and pushes check affected reverse dependencies on native x86,
+# and test changed packages plus contract suites. Full native coverage remains
+# mandatory in nightly.yml; this job is the short feedback path.
+# Manual dispatch validates the complete workspace on both native architectures.
+on:
+  push:
+    # Temporary branch triggers while desktop packaging and ARM support are being
+    # validated without changing main.
+    branches: ["main", "codex/package-desktop-release", "codex/arm64-platform-support"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      builder_image:
+        description: 'Optional immutable tested builder index (ghcr.io/tilo-os/tilo-builder@sha256:...)'
+        required: false
+        type: string
+
+concurrency:
+  # Keep every event and commit independent so required PR evidence cannot be
+  # replaced by a push or by a newer revision.
+  group: check-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_HOME: /cargo-home
+  CARGO_BUILD_JOBS: "4"
+  CARGO_INCREMENTAL: "0"
+  # Match the test profile below. Cargo keeps dev/test artifacts in the same
+  # target tree, but a different debuginfo setting gives them different
+  # fingerprints and recompiles the dependency graph for the all-target pass.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  # Cache availability changes speed, never correctness or mergeability.
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  RUSTFLAGS: "-D warnings"
+  WGPU_BACKEND: vulkan
+  # Every runner may expose a different physical adapter. Goldens are rendered
+  # with Mesa's CPU Vulkan driver, so make all headless GPU tests use that same
+  # adapter and fail instead of silently selecting runner hardware.
+  WGPU_ADAPTER_NAME: llvmpipe
+  # Software-Vulkan goldens are intentionally exercised by nightly.yml after
+  # its parallel suite has drained. Under the affected-package shards their
+  # atomic rasterisation changes with runner load, producing repeatable false
+  # pixel deltas even though the same canonical image passes while isolated.
+  GOLDEN_FILTER: >-
+    (package(ui) and test(typography_visual_regression::)) or
+    (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
+    (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
+
+jobs:
+  builder:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    container:
+      image: ghcr.io/tilo-os/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - name: Checkout public-trust context fixture
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+      - name: Resolve the CI builder before starting job containers
+        id: resolve
+        env:
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: python3 tools/ci/resolve_builder.py
+      - name: Verify named public-trust contexts with Docker BuildKit
+        env:
+          DOCKER_BUILDKIT: "1"
+        run: bash os/tests/named_public_trust_context.sh docker
+
+  select:
+    # Selection uses its pinned tools image and needs no builder result.
+    # Leave admission to the scheduler instead of serializing independent jobs.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      base: ${{ steps.plan.outputs.base }}
+      full: ${{ steps.plan.outputs.full }}
+      rust_required: ${{ steps.plan.outputs.rust_required }}
+      security_required: ${{ steps.plan.outputs.security_required }}
+      native_dependencies_required: ${{ steps.plan.outputs.native_dependencies_required }}
+      selected_count: ${{ steps.plan.outputs.selected_count }}
+      workspace_count: ${{ steps.plan.outputs.workspace_count }}
+      estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
+      shard_count: ${{ steps.plan.outputs.shard_count }}
+    steps:
+      - name: Checkout head for change selection
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 0
+
+      - name: Fetch comparison base
+        shell: bash
+        run: |
+          if [ '${{ github.event_name }}' = workflow_dispatch ] || \
+             [ '${{ github.ref }}' = 'refs/heads/codex/package-desktop-release' ]; then
+            # Refresh main explicitly so the release gate always compares the
+            # complete branch diff against the current integration branch.
+            git fetch origin \
+              +refs/heads/main:refs/remotes/origin/main
+          else
+            base='${{ github.event.pull_request.base.sha }}'
+            if [ -z "$base" ] || [ "$base" = "null" ]; then
+              base='${{ github.event.before }}'
+            fi
+            if [ -n "$base" ] &&
+               [ "$base" != "0000000000000000000000000000000000000000" ] &&
+               ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              git fetch origin "$base"
+            fi
+          fi
+
+      - name: Workspace membership guard
+        run: ./scripts/check-workspace-complete.sh
+
+      - name: Repository layout guard
+        run: python3 tools/policy/check_repository_layout.py
+      - name: Select and balance affected packages
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='${{ github.event.pull_request.base.sha }}'
+          selection_args=()
+          if [ '${{ github.event_name }}' = pull_request ]; then
+            selection_args+=(--allow-security-skip)
+          elif [ '${{ github.event_name }}' = workflow_dispatch ]; then
+            # Dispatch has no pull-request base or push-before SHA. Do not
+            # silently reduce an acceptance run to the last commit's changes.
+            base=origin/main
+            selection_args+=(--full)
+          elif [ '${{ github.ref }}' = 'refs/heads/codex/package-desktop-release' ]; then
+            # Every iteration must cover the complete release diff. Comparing
+            # only with github.event.before would forget changes from earlier
+            # branch pushes and could produce a misleading exact-SHA receipt.
+            base=origin/main
+            selection_args+=(--full)
+          elif [ -z "$base" ] || [ "$base" = "null" ]; then
+            base='${{ github.event.before }}'
+          fi
+          if [ -z "$base" ] \
+              || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=HEAD^
+          fi
+          echo "base=$(git rev-parse "$base^{commit}")" >> "$GITHUB_OUTPUT"
+          python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
+            --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
+          {
+            echo '```json'
+            cat ci-plan.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Shell, image-configuration, and workflow policy cannot be selected through
+  # Cargo's dependency graph. Run these checks beside selection so they do not
+  # delay the affected-package matrix. Pull requests containing only audited
+  # prose or self-tested quality helpers may omit this independent suite.
+  security:
+    if: needs.select.outputs.security_required == 'true'
+    needs: [builder, select]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
+      CARGO_BUILD_JOBS: '2'
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    steps:
+      - name: Checkout security boundary inputs
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+
+      # The image may lag a newly required check tool.
+      - name: Ensure invariant test tooling
+        run: |
+          command -v jq >/dev/null || dnf install -y jq
+          python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
+
+      - name: Security boundary invariants
+        run: bash tools/run-security-boundary-invariants.sh
+
+  native-dependencies:
+    if: needs.select.outputs.native_dependencies_required == 'true'
+    needs: [builder, select]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CARGO_BUILD_JOBS: '2'
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    steps:
+      - name: Checkout native dependency tests
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+      - name: Verify deterministic native archive inputs
+        id: native-check
+        run: |
+          python3 os/tests/test_openh264_source_order.py -v
+
+  affected:
+    if: needs.select.outputs.rust_required == 'true'
+    needs: [builder, select]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      # The native ARM runner has enough memory for one of the largest test
+      # links, but not four simultaneously. Most compile work is served by
+      # sccache, so serialize ARM rustc/linker processes without slowing x86.
+      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      # Forgejo removes an empty matrix job entirely, leaving its aggregate
+      # blocked. Keep one inert row when Rust is inapplicable; the job-level
+      # condition skips it without consuming a runner.
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"tilo-build-x64"}]}') }}
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 0
+
+      - name: Prepare Rust build caches
+        id: rust-build
+        uses: ./.github/actions/prepare-rust-build
+
+      - name: Prepare headless runtime
+        run: |
+          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+          driver="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
+          test -r "$driver"
+          echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
+          mkdir -p /tmp/tilo-xdg-runtime
+          chmod 700 /tmp/tilo-xdg-runtime
+
+      # Older/explicitly selected builders may predate the audio fixture.
+      # The helper replaces only the conflicting audio daemon; other installed
+      # packages retain their pinned versions.
+      - name: Ensure isolated audio test dependency
+        run: bash tools/ensure-headless-audio.sh
+
+      # Pinned/older builders may predate native PDF capture coverage. Stage
+      # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
+      - name: Ensure native PDF capture dependency
+        if: contains(matrix.test_packages, '-p pdf-viewer')
+        run: |
+          asset=$(bash tools/ci/install-pdfium.sh --asset-name)
+          ./os/dev/cache-github-assets.sh "$asset"
+          library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
+          printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
+
+      # Build and run tests first. The resulting rlibs/rmeta are then reusable
+      # by the all-target check; doing this in the opposite order makes rustc
+      # perform metadata-only work before doing codegen for the same crates.
+      # app-catalogue's registry integration tests execute the installer;
+      # it is deliberately not a Rust dependency, so an affected-only Cargo
+      # invocation does not otherwise produce that binary.
+      - name: Build installer used by app-catalogue integration tests
+        if: contains(matrix.test_packages, '-p app-catalogue')
+        run: >-
+          bash tools/ci/measure.sh "build tilo-install test fixture" --
+          bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
+          cargo build --locked -p install
+
+      - name: Test shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        env:
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
+        run: >-
+          bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
+          bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
+          -E "not ($GOLDEN_FILTER)"
+
+      - name: Check all targets in shard ${{ matrix.shard }}
+        env:
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
+        run: >-
+          bash tools/ci/measure.sh "check shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
+          python3 tools/ci/compiler_inputs.py --output target/ci/compiler-inputs.json --
+          check --locked --all-targets ${{ matrix.packages }}
+
+      - name: Save observed compiler inputs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/ci/compiler-inputs.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      # Lint the exact same reverse-dependency closure at the selected base and
+      # at HEAD. Historical diagnostics in an otherwise untouched dependant do
+      # not make an unrelated change impossible to merge, while compiler errors
+      # and every newly introduced Clippy site still fail this exact SHA. The
+      # release-app workflow separately compiles the shipped thin-app feature;
+      # `--all-features` is deliberately invalid here because it also selects
+      # ui/webview-wpe, whose native SDK exists only in the OS image builder.
+      # Clippy's Rust-level analysis is authoritative once per selected package
+      # set on x86_64; ARM still runs the complete native test and all-target
+      # check paths above, without compiling two more isolated lint graphs.
+      #
+      # Compilation deliberately stays here rather than in the pre-commit
+      # hook: local hooks are bypassable and must remain fast enough to keep
+      # their formatting, secret, and staged-diff checks useful. This is the
+      # authoritative, base-aware lint gate.
+      - name: Clippy shard ${{ matrix.shard }}
+        if: matrix.arch == 'x86_64'
+        env:
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
+        run: >-
+          bash tools/ci/measure.sh "clippy shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
+          tools/ci/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
+
+      - name: Save observed Clippy inputs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: clippy-inputs-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/ci/clippy-*-inputs.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: |
+          echo "### sccache shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # One writer avoids two shards racing to create the same immutable key.
+      - name: Save Cargo downloads
+        if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+
+  checks:
+    if: always()
+    needs: [builder, select, security, affected, native-dependencies]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    steps:
+      - name: Require applicable checks and explain intentional non-applicability
+        id: aggregate
+        env:
+          BUILDER_RESULT: ${{ needs.builder.result }}
+          SELECT_RESULT: ${{ needs.select.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          AFFECTED_RESULT: ${{ needs.affected.result }}
+          NATIVE_DEPENDENCIES_RESULT: ${{ needs.native-dependencies.result }}
+          NATIVE_DEPENDENCIES_REQUIRED: ${{ needs.select.outputs.native_dependencies_required }}
+          EVENT_NAME: ${{ github.event_name }}
+          SECURITY_REQUIRED: ${{ needs.select.outputs.security_required }}
+          RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
+          SELECTED_COUNT: ${{ needs.select.outputs.selected_count }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$BUILDER_RESULT" = success
+          test "$SELECT_RESULT" = success
+          case "$EVENT_NAME:$SECURITY_REQUIRED:$SECURITY_RESULT" in
+            *:true:success)
+              ;;
+            pull_request:false:skipped)
+              echo 'Security checks not applicable: audited pull-request-only inputs.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '::error::Security checks failed, were skipped unexpectedly, or selection outputs are invalid.'
+              exit 1
+              ;;
+          esac
+          case "$NATIVE_DEPENDENCIES_REQUIRED:$NATIVE_DEPENDENCIES_RESULT" in
+            true:success) ;;
+            false:skipped)
+              echo 'Native dependency checks not applicable: no matching build inputs changed.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '::error::Native dependency checks failed or applicability is invalid.'
+              exit 1
+              ;;
+          esac
+          case "$RUST_REQUIRED:$SELECTED_COUNT:$AFFECTED_RESULT" in
+            false:0:skipped)
+              echo 'Rust checks not applicable: audited non-compiling inputs.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            true:*:success)
+              [[ "$SELECTED_COUNT" =~ ^[1-9][0-9]*$ ]]
+              echo "Rust checks passed for $SELECTED_COUNT selected packages." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '::error::Required checks failed, were skipped unexpectedly, or selection outputs are invalid.'
+              exit 1
+              ;;
+          esac
+
+      # Reuse this runner for the main-branch receipt, including failed gates.
+      # PRs finish after aggregation without another checkout or note write.
+      - name: Checkout CI receipt tool
+        id: receipt-checkout
+        if: >-
+          always() &&
+          (github.ref == 'refs/heads/main' ||
+           github.ref == 'refs/heads/codex/package-desktop-release')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 0
+      - name: Record an observable CI receipt without touching a branch
+        if: always() && steps.receipt-checkout.outcome == 'success'
+        env:
+          SELECT_RESULT: ${{ needs.select.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          AFFECTED_RESULT: ${{ steps.aggregate.outcome }}
+        run: >-
+          tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
+          "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin

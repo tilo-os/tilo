@@ -19,7 +19,7 @@ class RetentionBoundary(unittest.TestCase):
     def test_publication_requires_matching_epoch_and_successful_audit(self):
         image_id = 'sha256:' + 'c' * 64
         revision, manifest = 'a' * 40, 'b' * 64
-        target = 'code.podesta.ai/qos/tilo-development:testing-x86_64'
+        target = 'ghcr.io/tilo-os/tilo-development:testing-x86_64'
         handoff = {'schema': 1, 'purpose': 'tilo-development-raw-rootfs-handoff',
                    'raw_rootfs_id': image_id, 'revision': revision, 'source_date_epoch': 123,
                    'architecture': 'x86_64', 'generation': 7, 'target_update_ref': target,
@@ -31,7 +31,7 @@ class RetentionBoundary(unittest.TestCase):
                               ('rejected-private-material', 123, 'aarch64'),
                               ('passed-scoped-scan', 124, 'aarch64')]:
             handoff['architecture'] = architecture
-            target = 'code.podesta.ai/qos/tilo-development:testing-' + architecture
+            target = 'ghcr.io/tilo-os/tilo-development:testing-' + architecture
             handoff['target_update_ref'] = target
             with self.subTest(status=status, epoch=epoch), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
@@ -75,7 +75,7 @@ class RetentionBoundary(unittest.TestCase):
         image_id = 'sha256:' + 'c' * 64
         revision, manifest = 'a' * 40, 'b' * 64
         for architecture in ('x86_64', 'aarch64'):
-            target = 'code.podesta.ai/qos/tilo-development:testing-' + architecture
+            target = 'ghcr.io/tilo-os/tilo-development:testing-' + architecture
             handoff = {'schema': 1, 'purpose': 'tilo-development-raw-rootfs-handoff',
                        'raw_rootfs_id': image_id, 'revision': revision, 'source_date_epoch': 123,
                        'architecture': architecture, 'generation': 7, 'target_update_ref': target,

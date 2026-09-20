@@ -43,18 +43,18 @@ Version:        %{tilo_version}
 Release:        1%{?dist}
 Summary:        %{tilo_summary}
 License:        AGPL-3.0-only
-URL:            https://code.podesta.ai/qos/tilo
+URL:            https://github.com/tilo-os/tilo
 Source0:        %{name}-%{version}.tar.gz
 
-# qOS was renamed to Tilo at 0.1.9.  Keep this as an ordinary RPM rename so a
+# Tilo was renamed to Tilo at 0.1.9.  Keep this as an ordinary RPM rename so a
 # package-manager update replaces the old package instead of installing a
 # second login session beside it.  The bounded Obsoletes deliberately leaves
-# any hypothetical post-rename qOS fork alone; the versioned Provides lets
+# any hypothetical post-rename Tilo fork alone; the versioned Provides lets
 # dependencies on the former package name remain satisfiable during the
 # transition.  Conflicts would prevent the solver from performing the rename,
 # so none belongs here.
-Provides:       qos-session = %{version}-%{release}
-Obsoletes:      qos-session < 0.1.9
+Provides:       tilo-session = %{version}-%{release}
+Obsoletes:      tilo-session < 0.1.9
 
 # The payload contains native ELF binaries. CI builds it on each enabled
 # native release architecture; rpmbuild rejects every other architecture.
@@ -104,7 +104,7 @@ Requires:       vulkan-loader
 # not Fedora's current provider package name, so RPM can select whichever
 # implementation supplies it without tripping explicit-library policy.
 Requires:       libEGL.so.1()(64bit)
-# A session without its qOS application store is not a usable desktop: Quick
+# A session without its Tilo application store is not a usable desktop: Quick
 # Settings opens Settings through the ordinary package launcher, and the
 # launcher has no system rows to offer on a first login.  Keep the store in a
 # version-locked subpackage so normal `rpm-ostree update` advances the shell,
@@ -143,8 +143,8 @@ Summary:        %{tilo_summary} — immutable Tilo application store
 Requires:       %{name} = %{version}-%{release}
 Requires:       bubblewrap
 Requires:       systemd
-Provides:       qos-session-apps = %{version}-%{release}
-Obsoletes:      qos-session-apps < 0.1.9
+Provides:       tilo-session-apps = %{version}-%{release}
+Obsoletes:      tilo-session-apps < 0.1.9
 
 %description apps
 The Tilo applications and signed shared runtime used by the Tilo host session.
@@ -156,8 +156,8 @@ applications and their state are never overwritten by an RPM update.
 %package devel
 Summary:        %{tilo_summary} — developer session entry
 Requires:       %{name} = %{version}-%{release}
-Provides:       qos-session-devel = %{version}-%{release}
-Obsoletes:      qos-session-devel < 0.1.9
+Provides:       tilo-session-devel = %{version}-%{release}
+Obsoletes:      tilo-session-devel < 0.1.9
 # Every check the entry makes is a stat, a realpath or a grep.
 Requires:       coreutils
 Requires:       grep

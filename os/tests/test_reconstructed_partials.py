@@ -38,7 +38,7 @@ class ReconstructedPartials(unittest.TestCase):
    'inventory':inventory,'capture_script_sha256':'2'*64,'reconstruction':reconstruction,'reconstruction_sha256':sha(canonical(reconstruction))}
   for key in ['installable','complete_native_builder','build_success','resume_admitted','original_recipe_executed_verbatim']:self.value[key]=False
   self.receipt={k:self.value[k] for k in ['schema','purpose','source_revision','helper_revision','run_id','run_number','inventory','reconstruction_sha256','installable','complete_native_builder','build_success','resume_admitted']}
-  self.receipt.update(reference='code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:'+'3'*64,config_digest='sha256:'+'c'*64,
+  self.receipt.update(reference='ghcr.io/tilo-os/tilo-development-partial-native-aarch64@sha256:'+'3'*64,config_digest='sha256:'+'c'*64,
    raw_manifest_verified=True,raw_config_verified=True,payload_hashes_verified=True,temporary_public_context_removed_on_exit=True)
   self.save()
  def save(self):

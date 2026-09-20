@@ -171,7 +171,7 @@ _tilo_rpms_ref_override="${RPMS_REF:-}"
 [ -f "$TILO_OS_DIR/rpms-snapshot.env" ] && . "$TILO_OS_DIR/rpms-snapshot.env"
 RPMS_REF="${_tilo_rpms_ref_override:-${RPMS_REF:-}}"
 [ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run the snapshot-rpms workflow or follow os/docs/rpm-snapshot-packaging.md"
-# The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
+# The digest-pinned tilo-kernel image (built by .github/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.
 # An explicit digest is useful while validating a newly published kernel, but
@@ -200,8 +200,8 @@ fi
 # building one. The image builds in CI on this project, so the local half of
 # this pipeline is usually the disk step alone:
 #
-#   podman pull code.podesta.ai/qos/tilo:<tag>
-#   podman tag  code.podesta.ai/qos/tilo:<tag> localhost/tilo:latest
+#   podman pull ghcr.io/tilo-os/tilo:<tag>
+#   podman tag  ghcr.io/tilo-os/tilo:<tag> localhost/tilo:latest
 #   TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 #
 # The seal loop further down still runs, and still has to: it rewrites the UKI
@@ -213,8 +213,8 @@ fi
 # about an image that already exists.
 if [ "$TILO_SKIP_BUILD" != "1" ]; then
 if [ "${TILO_PUBLIC_TRUST_MODE:-production}" = production ]; then
-[[ "$RPMS_REF" =~ ^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$ ]] \
-  || die "RPMS_REF must pin code.podesta.ai/qos/rpms by sha256 digest"
+[[ "$RPMS_REF" =~ ^ghcr\.io/tilo-os/rpms@sha256:[0-9a-f]{64}$ ]] \
+  || die "RPMS_REF must pin ghcr.io/tilo-os/rpms by sha256 digest"
 command -v cosign >/dev/null || die "building an OS image requires cosign to verify the frozen RPM repository"
 _tilo_rpms_digest="${RPMS_REF##*@}"
 _tilo_package_set_sha256="$({ "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch x86_64; "$TILO_OS_DIR/dev/derive-rpm-package-set.py" --arch aarch64; } | LC_ALL=C sort -u | sha256sum | cut -d' ' -f1)"
@@ -245,8 +245,8 @@ _tilo_rpms_platforms="$(skopeo inspect --raw "docker://$RPMS_REF" | jq -c \
   || die "could not inspect the frozen RPM index"
 [ "$_tilo_rpms_platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
   || die "frozen RPM index does not contain exactly amd64 and arm64"
-[[ "$KERNEL_RPMS_REF" =~ ^code\.podesta\.ai/qos/qos-kernel@sha256:[0-9a-f]{64}$ ]] \
-  || die "KERNEL_RPMS_REF must pin code.podesta.ai/qos/qos-kernel by sha256 digest"
+[[ "$KERNEL_RPMS_REF" =~ ^ghcr\.io/tilo-os/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
+  || die "KERNEL_RPMS_REF must pin ghcr.io/tilo-os/tilo-kernel by sha256 digest"
 command -v cosign >/dev/null || die "building an OS image requires cosign to verify the Tilo kernel"
 cosign verify --key "$TILO_REPO/keys/cosign.pub" "$KERNEL_RPMS_REF" >/dev/null \
   || die "Tilo kernel signature verification failed"
@@ -365,7 +365,7 @@ fi
 # Dockerfile FROM references are resolved even for a pruned browser stage.
 [ -n "$WPE_BUILDROOT_REF" ] || WPE_BUILDROOT_REF="$BASE_REF"
 if [ "${TILO_REQUIRE_WPE_SIGNATURE:-0}" = 1 ] && [ "$TILO_WITH_BROWSER" = 1 ]; then
-  [[ "$WPE_BUILDROOT_REF" =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
+  [[ "$WPE_BUILDROOT_REF" =~ ^ghcr\.io/tilo-os/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
     || die "release builds require a digest-pinned WPE buildroot"
   command -v cosign >/dev/null || die "release builds require cosign to verify the WPE buildroot"
   cosign verify --key "$TILO_REPO/keys/cosign.pub" "$WPE_BUILDROOT_REF" >/dev/null \
@@ -463,8 +463,8 @@ fi
 if [ "$TILO_SKIP_BUILD" = "1" ]; then
   podman image exists "$TILO_IMAGE" || die "TILO_SKIP_BUILD=1, but $TILO_IMAGE is not in local
   storage, so there is nothing to image. Pull the published image and tag it:
-    podman pull code.podesta.ai/qos/tilo:<tag>
-    podman tag  code.podesta.ai/qos/tilo:<tag> $TILO_IMAGE"
+    podman pull ghcr.io/tilo-os/tilo:<tag>
+    podman tag  ghcr.io/tilo-os/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
   msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; generation=$TILO_GENERATION)"

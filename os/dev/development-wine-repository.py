@@ -19,8 +19,8 @@ def digest(path):
 
 
 def reference(value):
-    if not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', value):
-        raise ValueError('expected immutable qos development artifact reference')
+    if not re.fullmatch(r'ghcr\.io/tilo-os/[a-z0-9-]+@sha256:[0-9a-f]{64}', value):
+        raise ValueError('expected immutable tilo development artifact reference')
     return value
 
 

@@ -14,7 +14,7 @@ ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
-DEFAULT_TARGET_IMGREF = "code.podesta.ai/qos/tilo:latest"
+DEFAULT_TARGET_IMGREF = "ghcr.io/tilo-os/tilo:latest"
 
 
 def validate_target_imgref(value, *, root=None):
@@ -26,9 +26,9 @@ def validate_target_imgref(value, *, root=None):
                 raise ValueError("update origin differs from immutable development origin")
             return value
     if not isinstance(value, str) or not re.fullmatch(
-        r"code\.podesta\.ai/qos/tilo(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
+        r"ghcr\.io/tilo-os/tilo(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
     ):
-        raise ValueError("TILO_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in the signature-required code.podesta.ai/qos/tilo repository")
+        raise ValueError("TILO_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in the signature-required ghcr.io/tilo-os/tilo repository")
     return value
 
 
@@ -38,14 +38,14 @@ DEVELOPMENT_ORIGIN = DEVELOPMENT_PATH / "origin.json"
 
 def development_target(value, architecture=None):
     """One explicitly selected development repository, never production."""
-    match = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?/(tilo-development/os|qos/tilo-development)(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value or "")
+    match = re.fullmatch(r"([a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::([0-9]{1,5}))?/(tilo-development/os|tilo/tilo-development)(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value or "")
     if not match:
         raise ValueError("development origin must name an approved development repository with an explicit tag or digest")
     host, port, path, selector = match.groups()
     if architecture is not None and architecture not in ARCH_CONFIG:
         raise ValueError("unsupported development image architecture")
-    retained = host == "code.podesta.ai" and port is None and path == "qos/tilo-development"
-    if (host == "code.podesta.ai" or path == "qos/tilo-development") and not retained:
+    retained = host == "code.podesta.ai" and port is None and path == "tilo/tilo-development"
+    if (host == "code.podesta.ai" or path == "tilo/tilo-development") and not retained:
         raise ValueError("retained development repository must use its exact HTTPS registry identity")
     if host == "localhost" or ".." in host or any(not part or part.startswith('-') or part.endswith('-') for part in host.split('.')):
         raise ValueError("development registry host is invalid or a production alias")

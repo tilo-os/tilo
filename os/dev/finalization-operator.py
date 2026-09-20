@@ -142,7 +142,7 @@ def initialize(args):
         helper_revision=q['helpers_revision'], archive_sha256=args.archive_sha256,
         operator_sha256=operator_identity(),
         tools_image_id=args.tools_image_id, hardware_profile=retained_profile,
-        initial_free_bytes=args.initial_free_bytes, forgejo_host=args.forgejo_host,
+        initial_free_bytes=args.initial_free_bytes, forgejo_host=args.github_host,
         repository=args.repository, dispatch_ref=args.dispatch_ref,
         files={name: spool.digest(data) for name, data in files.items()}))
     require(c['initial_free_bytes'] >= q['minimum_free_bytes'], 'capacity below continuing floor')

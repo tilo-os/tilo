@@ -7,7 +7,7 @@ described below does not qualify the packaging workflow. This reuses
 latest-pending state machine. There is no second queue implementation or service.
 The private fixture adapter and its ten regression tests remain supported.
 
-`tools/app_packaging_product.py` targets only repository ID 23 (`qos/qos`) and
+`tools/app_packaging_product.py` targets only repository ID 23 (`tilo/tilo`) and
 `release-apps.yml`. It always dispatches a full source SHA and `publish=false`.
 The receipt identity includes the exact builder digest, collection, architecture
 list and trusted policy hash. API receipt validation checks the source, workflow,
@@ -48,7 +48,7 @@ artifacts, then return:
   "run_id": 123,
   "desired": {
     "source_sha": "<40 lowercase hex>",
-    "builder_image": "code.podesta.ai/qos/tilo-builder@sha256:<64 hex>",
+    "builder_image": "ghcr.io/tilo-os/tilo-builder@sha256:<64 hex>",
     "collection": "default",
     "architectures": ["x86_64", "aarch64"],
     "policy_sha256": "<64 hex>"
@@ -104,7 +104,7 @@ Read-only live API checks on 2026-09-19 confirmed the jobs endpoint's array
 response and `attempt`, `task_id`, `handle`, `repo_id`, `run_id` fields; artifact
 listing also returns an array with run identity, expiry and byte size. Fetching
 artifact 34748's ZIP returned HTTP 200 without a redirect using an operator
-credential. Subsequently, nonadmin service account `qos-packaging-controller`
+credential. Subsequently, nonadmin service account `tilo-packaging-controller`
 (user 82) dispatched the tiny `artifact-token-probe.yml` fixture at immutable
 source `a987e76ba`: API run 23095/job 84767 succeeded, and its built-in job token
 read historical artifact 38734 from run 22993. Infra records this bounded result

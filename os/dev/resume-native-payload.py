@@ -118,7 +118,7 @@ def main():
                    'original 80GiB initial scratch admission required')
     resume.require(not args.evidence.exists(), 'fresh evidence directory required; no automatic replay')
     args.evidence.mkdir(mode=0o700, parents=True)
-    builder = 'code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
+    builder = 'ghcr.io/tilo-os/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
     with tempfile.TemporaryDirectory(prefix='tilo-native-resume-', dir='/work') as temporary:
         work = Path(temporary)
         partial = work / 'partial'

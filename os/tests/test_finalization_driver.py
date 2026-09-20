@@ -19,9 +19,9 @@ def request():
     return {'schema': 1, 'source_revision': 'a' * 40, 'source_dir': '/verified/source', 'helpers_revision': 'b' * 40,
             'receipt': '/verified/receipt.json', 'receipt_sha256': 'c' * 64,
             'public_bundle': '/verified/original', 'manifest_sha256': 'd' * 64,
-            'target': 'code.podesta.ai/qos/tilo-development:old-aarch64',
+            'target': 'ghcr.io/tilo-os/tilo-development:old-aarch64',
             'new_public_bundle': '/verified/new', 'new_manifest_sha256': 'e' * 64,
-            'new_target': 'code.podesta.ai/qos/tilo-development:new-aarch64', 'new_owner': 'f' * 64,
+            'new_target': 'ghcr.io/tilo-os/tilo-development:new-aarch64', 'new_owner': 'f' * 64,
             'architecture': 'aarch64', 'generation': 7, 'source_date_epoch': 1234,
             'base_ref': 'registry.invalid/base@sha256:' + '1' * 64,
             'rpms_ref': 'registry.invalid/rpms@sha256:' + '2' * 64,
@@ -30,7 +30,7 @@ def request():
             'signer': '/var/lib/bridge/signer', 'systemd_version': '259.1',
             'minimum_free_bytes': 1024**3, 'stage_timeout_seconds': 600,
             'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 3600,
-            'publish_repository': 'code.podesta.ai/qos/tilo-development'}
+            'publish_repository': 'ghcr.io/tilo-os/tilo-development'}
 
 
 class FinalizationTests(unittest.TestCase):
@@ -160,7 +160,7 @@ class FinalizationTests(unittest.TestCase):
         (bridge / 'bridge.json').write_bytes(spool.canonical({'context': context}))
         value = finalizer.Driver(q, '/verified/helpers', self.root).current_context()
         self.assertEqual(value['sha256'], spool.context(context))
-        context['target'] = 'code.podesta.ai/qos/tilo-development:other-aarch64'
+        context['target'] = 'ghcr.io/tilo-os/tilo-development:other-aarch64'
         (bridge / 'bridge.json').write_bytes(spool.canonical({'context': context}))
         with self.assertRaisesRegex(ValueError, 'current signing context differs'):
             finalizer.Driver(q, '/verified/helpers', self.root).current_context()
@@ -251,7 +251,7 @@ class FinalizationTests(unittest.TestCase):
             resumed.restore_checkpoint()
 
     def test_no_cross_repository_or_mutable_build_inputs(self):
-        for change in ({'publish_repository': 'code.podesta.ai/qos/tilo-development-other'},
+        for change in ({'publish_repository': 'ghcr.io/tilo-os/tilo-development-other'},
                        {'base_ref': 'registry.invalid/base:latest'}, {'stage_timeout_seconds': 99999}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 finalizer.validate_request(request() | change)
@@ -267,7 +267,7 @@ class FinalizationTests(unittest.TestCase):
             'prediction_stage_timeout_seconds': 2401})['prediction_stage_timeout_seconds'], 2401)
 
     def test_target_origins_require_the_matching_native_suffix(self):
-        repository = 'code.podesta.ai/qos/tilo-development'
+        repository = 'ghcr.io/tilo-os/tilo-development'
         for field in ('target', 'new_target'):
             for suffix in ('installed-ca33fae89a24-aarch64-9787', 'latest', 'next-x86_64'):
                 with self.subTest(field=field, suffix=suffix), self.assertRaisesRegex(
@@ -275,7 +275,7 @@ class FinalizationTests(unittest.TestCase):
                     finalizer.validate_request(request() | {field: repository + ':' + suffix})
 
     def test_native_tags_and_retained_digests_use_shared_origin_contract(self):
-        repository = 'code.podesta.ai/qos/tilo-development'
+        repository = 'ghcr.io/tilo-os/tilo-development'
         for architecture in ('aarch64', 'x86_64'):
             new_target = repository + ':installed-ca33fae89a24-9787-' + architecture
             for target in (repository + ':' + architecture,
@@ -288,9 +288,9 @@ class FinalizationTests(unittest.TestCase):
                     self.assertEqual(finalizer.validate_request(value), value)
 
     def test_target_origin_rejects_aliases_and_invalid_digest_without_widening_publication(self):
-        repository = 'code.podesta.ai/qos/tilo-development'
-        for target in ('alias.example/qos/tilo-development:old-aarch64',
-                       'code.podesta.ai/qos/tilo:old-aarch64',
+        repository = 'ghcr.io/tilo-os/tilo-development'
+        for target in ('alias.example/tilo/tilo-development:old-aarch64',
+                       'ghcr.io/tilo-os/tilo:old-aarch64',
                        repository + '@sha256:' + 'A' * 64,
                        repository + '@sha256:' + 'a' * 63, None):
             with self.subTest(target=target), self.assertRaises(ValueError):

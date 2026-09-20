@@ -10,7 +10,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('tools', Path(__file__).parents[1] / 'dev/build-compile-tools.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-BASE = 'code.podesta.ai/qos/tilo-builder@sha256:' + 'a' * 64
+BASE = 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'a' * 64
 
 class CacheTests(unittest.TestCase):
     def test_all_effective_inputs_change_key(self):

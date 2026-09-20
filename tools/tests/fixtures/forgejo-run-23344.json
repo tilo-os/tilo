@@ -8,17 +8,17 @@
     "trigger_event": "workflow_dispatch",
     "commit_sha": "c23e71726aa2f192fd347e8ad56c8e26b3ab996a",
     "status": "running",
-    "html_url": "https://code.podesta.ai/qos/qos/actions/runs/9825",
+    "html_url": "https://github.com/tilo-os/tilo/actions/runs/9825",
     "repository": {
       "id": 23,
-      "full_name": "qos/qos"
+      "full_name": "tilo/tilo"
     },
     "trigger_user": {
       "id": 82,
-      "login": "qos-packaging-controller",
+      "login": "tilo-packaging-controller",
       "is_admin": false
     },
-    "event_payload": "{\"inputs\": {\"architectures\": \"x86_64\", \"builder_image\": \"code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a\", \"collection\": \"default\", \"coordinator_intent\": \"5d4e785f-db2f-43dc-b241-f1399380bc46\", \"coordinator_policy_sha256\": \"25f1bedff8a3d23f8fd5a98843a0adb738271aa26819326fdf4c9427d815c720\", \"publish\": \"false\", \"verify_final_receipt\": \"false\"}, \"ref\": \"c23e71726aa2f192fd347e8ad56c8e26b3ab996a\"}"
+    "event_payload": "{\"inputs\": {\"architectures\": \"x86_64\", \"builder_image\": \"ghcr.io/tilo-os/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a\", \"collection\": \"default\", \"coordinator_intent\": \"5d4e785f-db2f-43dc-b241-f1399380bc46\", \"coordinator_policy_sha256\": \"263acae72ea2180fd7f87e28070f41921fc3a0f7e9110ed2f9f9c71cba3f6f66\", \"publish\": \"false\", \"verify_final_receipt\": \"false\"}, \"ref\": \"c23e71726aa2f192fd347e8ad56c8e26b3ab996a\"}"
   },
   "intent": {
     "id": "5d4e785f-db2f-43dc-b241-f1399380bc46",
@@ -26,19 +26,19 @@
     "baseline_evidence": null,
     "desired": {
       "source_sha": "c23e71726aa2f192fd347e8ad56c8e26b3ab996a",
-      "builder_image": "code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+      "builder_image": "ghcr.io/tilo-os/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
       "collection": "default",
       "architectures": [
         "x86_64"
       ],
-      "policy_sha256": "25f1bedff8a3d23f8fd5a98843a0adb738271aa26819326fdf4c9427d815c720"
+      "policy_sha256": "263acae72ea2180fd7f87e28070f41921fc3a0f7e9110ed2f9f9c71cba3f6f66"
     }
   },
   "policy": {
     "architectures": [
       "x86_64"
     ],
-    "builder_image": "code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+    "builder_image": "ghcr.io/tilo-os/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
     "bundle_compatibility_approved": true,
     "collection": "default",
     "enabled": true,

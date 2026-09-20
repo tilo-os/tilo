@@ -42,8 +42,8 @@ use crate::cert::{DeviceCert, DeviceCertError, verify_device_cert_at};
 use crate::revocation::{RevocationError, RevocationList};
 
 /// Signing-domain tag for a directory delta. Same shape as the
-/// other v1 tags: `qos-dir-delta-v1\0`.
-pub const DIR_DELTA_PREIMAGE_TAG: &[u8] = b"qos-dir-delta-v1\0";
+/// other v1 tags: `tilo-dir-delta-v1\0`.
+pub const DIR_DELTA_PREIMAGE_TAG: &[u8] = b"tilo-dir-delta-v1\0";
 
 /// A workspace's stable id — 64-bit blob-addr-style handle.
 pub type WorkspaceId = u64;

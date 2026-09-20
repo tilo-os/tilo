@@ -36,7 +36,7 @@ python3 "$operator" --operation "$operation" init \
   --tools-image-id "$tools_image_id" \
   --hardware-profile "$hardware_profile" \
   --initial-free-bytes "$initial_free_bytes" \
-  --forgejo-host code.podesta.ai --repository qos/qos \
+  --forgejo-host code.podesta.ai --repository tilo/tilo \
   --dispatch-ref "$controller_branch"
 ```
 

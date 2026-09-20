@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-workflow="$repo/.forgejo/workflows/release-imager.yml"
+workflow="$repo/.github/workflows/release-imager.yml"
 fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
@@ -95,7 +95,7 @@ else
 fi
 
 grep -Fq 'id-token: write' "$workflow" \
-  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 8 ] \
+  && [ "$(grep -Fc 'id-token: write' "$workflow")" -eq 8 ] \
   && grep -Fq 'IMAGER_LINUX_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINDOWS_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_MACOS_CREDENTIAL_BROKER' "$workflow" \
@@ -244,7 +244,7 @@ grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
 grep -Fxq 'os/tests/imager_linux_release_trust.sh' \
     "$repo/tools/security-boundary-invariants.txt" \
   && grep -Fq 'bash tools/run-security-boundary-invariants.sh' \
-    "$repo/.forgejo/workflows/check.yml" \
+    "$repo/.github/workflows/check.yml" \
   && ok 'Linux release trust tamper test runs in required checks' \
   || bad 'Linux release trust tamper test is not wired into CI'
 
@@ -378,7 +378,7 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'published_os_image' "$workflow" \
    && grep -Fq './os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE"' "$workflow" \
    && ! grep -Fq './os/dev/build-image.sh' "$workflow" \
-   && grep -Fq 'code.podesta.ai/qos/tilo@sha256:' "$published_image" \
+   && grep -Fq 'ghcr.io/tilo-os/tilo@sha256:' "$published_image" \
    && grep -Fq 'cosign verify --key "$verify_key" "$image"' "$published_image" \
    && grep -Fq 'cosign verify-attestation --key "$verify_key"' "$published_image" \
    && grep -Fq 'externalParameters.generation' "$published_image" \
@@ -387,7 +387,7 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'trap cleanup_auth EXIT' "$published_image" \
    && grep -Fq 'podman manifest inspect "${manifest_args[@]}" "$image"' "$published_image" \
    && grep -Fq 'externalParameters.children | sort_by(.architecture)' "$published_image" \
-   && grep -Fq 'generation_image="code.podesta.ai/qos/tilo:gen$generation"' "$published_image" \
+   && grep -Fq 'generation_image="ghcr.io/tilo-os/tilo:gen$generation"' "$published_image" \
    && grep -Fq 'generation_digest' "$published_image" \
    && grep -Fq 'published generation tag gen$generation binds' "$published_image" \
    && grep -Fq 'TILO_EXPECTED_OS_SOURCE_REVISION: ${{ github.sha }}' "$workflow" \
@@ -512,11 +512,11 @@ grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v'
   && ok 'tag promotion is serialized while stale branch validation is superseded' \
   || bad 'release promotion can regress or stale validation can block the current commit'
 
-winget_monitor="$repo/.forgejo/workflows/monitor-winget.yml"
+winget_monitor="$repo/.github/workflows/monitor-winget.yml"
 winget_reconcile="$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
 grep -Fq 'cron: "23 */6 * * *"' "$winget_monitor" \
   && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != '' || vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP == '1'" "$winget_monitor" \
-  && grep -Fq 'enable-openid-connect: true' "$winget_monitor" \
+  && grep -Fq 'id-token: write' "$winget_monitor" \
   && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$winget_monitor" \
   && grep -Fq 'acquire-release-token.sh' "$winget_monitor" \
   && grep -Fq 'state="$(jq -r '\''.channels.winget // empty'\'' "$manifest")"' "$winget_reconcile" \

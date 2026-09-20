@@ -19,7 +19,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Tilo app registry server" \
       org.opencontainers.image.description="Signed Tilo application catalogue and moderation service" \
-      org.opencontainers.image.source="https://code.podesta.ai/qos/qos" \
+      org.opencontainers.image.source="https://github.com/tilo-os/tilo" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 
 COPY --from=builder --chown=65532:65532 /out/tilo-registry-server /usr/local/bin/tilo-registry-server

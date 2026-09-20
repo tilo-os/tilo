@@ -27,7 +27,7 @@ class ApprovalTests(unittest.TestCase):
 
     def setUp(self):
         checkpoint = {'purpose':'tilo-development-partial-native-checkpoint','source_revision':a.SOURCE,
-            'reference':'code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:'+'1'*64,
+            'reference':'ghcr.io/tilo-os/tilo-development-partial-native-aarch64@sha256:'+'1'*64,
             'config_digest':'sha256:'+'2'*64,'metadata_sha256':'3'*64,
             'inventory':{'shell':{'size':64,'sha256':'4'*64}},
             'installable':False,'complete_native_builder':False,'build_success':False}
@@ -46,7 +46,7 @@ class ApprovalTests(unittest.TestCase):
             'remaining_phases':['thin-app-shared-graph','elf-hardening','runtime-bundle','app-store'],
             'original_recipe_executed_verbatim':False}
         self.receipt={'schema':1,'purpose':'tilo-development-reconstructed-native-builder','inputs':self.inputs,
-            'reference':'code.podesta.ai/qos/tilo-development-reconstructed-native-aarch64@sha256:'+'6'*64,
+            'reference':'ghcr.io/tilo-os/tilo-development-reconstructed-native-aarch64@sha256:'+'6'*64,
             'config_digest':'sha256:'+'7'*64,'metadata_sha256':'8'*64,'reconstruction':reconstruction,
             'reconstruction_sha256':a.sha(a.canonical(reconstruction)),'complete_native_builder':True,
             'production_signed':False,'installable':False,'consumer_adoption_required':True}

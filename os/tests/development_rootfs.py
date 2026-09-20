@@ -71,7 +71,7 @@ def main():
                 '--efi-certificate', metadata['efi_certificate'], '--registry-owner', str(owner),
                 '--output', str(bundle)))
             digest = public['manifest_sha256']
-            target = f'code.podesta.ai/qos/tilo-development:fixture-{architecture}'
+            target = f'ghcr.io/tilo-os/tilo-development:fixture-{architecture}'
             context = root / 'context'
             context.mkdir()
             image_root = context / 'rootfs'

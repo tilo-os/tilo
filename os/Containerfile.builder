@@ -1,7 +1,7 @@
 # CI build environment: everything `cargo check`/`test`/`nextest` needs for the
 # workspace, so jobs do not `dnf install` ~30 packages on every run.
 #
-# Rebuilt weekly by .forgejo/workflows/build-builder-image.yml. Fedora rather
+# Rebuilt weekly by .github/workflows/build-builder-image.yml. Fedora rather
 # than the runner's default Ubuntu image: the OS is Fedora-based, so the build
 # deps and their versions match what the image build uses.
 FROM scratch AS external-assets

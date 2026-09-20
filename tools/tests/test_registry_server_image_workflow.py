@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class RegistryServerImageWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.source = (ROOT / ".forgejo/workflows/registry-server-image.yml").read_text()
+        self.source = (ROOT / ".github/workflows/registry-server-image.yml").read_text()
 
     def test_pull_requests_build_and_smoke_test_without_registry_write(self) -> None:
         self.assertIn('pull_request:\n    branches: ["main"]', self.source)

@@ -16,7 +16,7 @@ import struct
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 PURPOSE = 'tilo-development-reconstructed-native-builder'
 PARTIAL = 'tilo-development-partial-native-checkpoint'
-REPOSITORY = 'code.podesta.ai/qos/tilo-development-reconstructed-native-aarch64'
+REPOSITORY = 'ghcr.io/tilo-os/tilo-development-reconstructed-native-aarch64'
 WINDOWS = {'tilo-windows-vm-control', 'tilo-windows-rail'}
 THIN_CACHE_EVIDENCE = 'out/thin-cache-restoration.json'
 
@@ -108,7 +108,7 @@ def checkpointed_payload(native, identity, inputs, reconstruction, work, evidenc
         inventory = native.inventory(root, inputs)
         inventory_raw = t.canonical(inventory)
         require(len(inventory_raw) <= 16 * 1024 * 1024, 'checkpoint inventory exceeds bound')
-        repository = 'code.podesta.ai/qos/tilo-development-unapproved-native-payload-aarch64'
+        repository = 'ghcr.io/tilo-os/tilo-development-unapproved-native-payload-aarch64'
         require(inputs['architecture'] == 'aarch64', 'checkpoint architecture differs')
         reconstruction_raw = t.canonical(reconstruction)
         require(len(reconstruction_raw) <= 65536, 'checkpoint reconstruction evidence exceeds bound')
@@ -164,7 +164,7 @@ def validate_partial(native, receipt, expected, builder, destination, union):
                             'inventory', 'installable', 'complete_native_builder', 'build_success'}, 'partial receipt schema differs')
     require(receipt['purpose'] == PARTIAL and receipt['source_revision'] == SOURCE and
             all(receipt[k] is False for k in ('installable', 'complete_native_builder', 'build_success')), 'not an honest partial checkpoint')
-    require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}', receipt['reference']), 'partial repository differs')
+    require(re.fullmatch(r'ghcr\.io/tilo-os/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}', receipt['reference']), 'partial repository differs')
     require(t.registry_identity(receipt['reference'], 'aarch64') == receipt['config_digest'], 'partial registry config differs')
     t.command('podman', '--remote=false', 'pull', '--tls-verify=true', '--platform=linux/arm64', receipt['reference'])
     identity = t.inspect_local(receipt['reference'], 'aarch64', receipt['config_digest'])
@@ -299,7 +299,7 @@ def validate_reconstructed_metadata(native, receipt, raw, approval, receipt_sha,
 
 def validate_reconstructed_partial(native, receipt, receipt_sha, approval, source, legacy_checkpoints, legacy_union, destination, union):
     t = native.tools
-    require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}',receipt['reference']), 'partial repository differs')
+    require(re.fullmatch(r'ghcr\.io/tilo-os/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}',receipt['reference']), 'partial repository differs')
     require(t.registry_identity(receipt['reference'],'aarch64') == receipt['config_digest'], 'partial registry config differs')
     t.command('podman','--remote=false','pull','--tls-verify=true','--platform=linux/arm64',receipt['reference'])
     identity=t.inspect_local(receipt['reference'],'aarch64',receipt['config_digest'])

@@ -70,12 +70,12 @@ class ServiceFixture(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.state, self.policyfile, self.finalfile, self.tokenfile = [self.root / x for x in ('state', 'policy', 'final', 'token')]
-        self.builder = 'code.podesta.ai/qos/tilo-builder@sha256:' + 'a'*64
+        self.builder = 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'a'*64
         descriptor = {'sha256': 'b'*64, 'bytes': 100, 'source_sha': 'c'*40,
             'compatible_builder': self.builder, 'verifier_sha256': 'd'*64,
             'canonical_binaries': {'tilo_pkg_sha256': 'e'*64, 'tilo_runtime_bundle_sha256': 'f'*64}}
         arch = service.bundle.native_arch()
-        descriptor['url'] = f"{service.ORIGIN}/api/packages/qos/generic/tilo-canonical-verifiers/{descriptor['sha256']}/{arch}.tar.gz"
+        descriptor['url'] = f"{service.ORIGIN}/api/packages/tilo/generic/tilo-canonical-verifiers/{descriptor['sha256']}/{arch}.tar.gz"
         self.finalfile.write_text(json.dumps({'verifier_sha256': 'd'*64, 'canonical_verifier_bundles': {arch: descriptor}}))
         self.policy = {'enabled': True, 'qualification_only': True, 'service_user_id': 42,
             'bundle_compatibility_approved': True, 'builder_image': self.builder,
@@ -102,7 +102,7 @@ class ServiceFixture(unittest.TestCase):
                 if path == 'user':
                     value = owner.user
                 elif path == service.PREFIX:
-                    value = {'id': 23, 'full_name': 'qos/qos'}
+                    value = {'id': 23, 'full_name': 'tilo/tilo'}
                 elif path == service.PREFIX + '/branches/main':
                     value = {'name': 'main', 'commit': {'id': owner.source}}
                 elif data is not None:
@@ -221,7 +221,7 @@ class RecoveryTests(ServiceFixture):
         with self.assertRaisesRegex(ValueError, 'lost dispatch response'):
             self.invoke()
         data = self.dispatches[0]
-        self.responses[17] = {'id': 17, 'repository': {'id': 23, 'full_name': 'qos/qos'},
+        self.responses[17] = {'id': 17, 'repository': {'id': 23, 'full_name': 'tilo/tilo'},
             'workflow_id': 'release-apps.yml', 'trigger_event': 'workflow_dispatch',
             'commit_sha': data['ref'], 'event_payload': json.dumps({'ref': data['ref'], 'inputs': data['inputs']}),
             'trigger_user': {'id': 42, 'is_admin': False}, 'status': 'running'}
@@ -264,7 +264,7 @@ class RecoveryTests(ServiceFixture):
             dict(good, trigger_user={'id': 42, 'is_admin': True}),
             dict(good, trigger_user=None), dict(good, trigger_user={'id': 42}),
             dict(good, workflow_id='other.yml'), dict(good, trigger_event='push'),
-            dict(good, commit_sha='2'*40), dict(good, repository={'id': 24, 'full_name': 'qos/qos'}),
+            dict(good, commit_sha='2'*40), dict(good, repository={'id': 24, 'full_name': 'tilo/tilo'}),
             dict(good, repository={'id': 23, 'full_name': 'other/repo'}),
             dict(good, event_payload=None)]
         for key, value in [('coordinator_intent', 'unrelated-intent'), ('publish', 'true')]:

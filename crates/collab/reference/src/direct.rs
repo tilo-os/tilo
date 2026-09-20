@@ -23,7 +23,7 @@ use crate::delivery::Id;
 /// a future scheme bumps it instead.
 /// Keep the original protocol namespace across product renames: this value is
 /// persistent identity, not a user-facing product name.
-const ROOM_ID_DOMAIN: &[u8] = b"qos.direct-room.v1";
+const ROOM_ID_DOMAIN: &[u8] = b"tilo.direct-room.v1";
 
 /// A room with exactly two members — the room a direct message is held in.
 ///

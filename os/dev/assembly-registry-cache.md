@@ -2,7 +2,7 @@
 
 The controller enables registry intermediate-layer caching only after successful
 complete reconstructed-native import with adopted WPE in full-build mode. It uses
-`code.podesta.ai/qos/tilo-development-assembly-cache-ARCH-v1`, with layers enabled,
+`ghcr.io/tilo-os/tilo-development-assembly-cache-ARCH-v1`, with layers enabled,
 cache-from/cache-to and skip-unused-stages. Existing registry authentication is
 used; credentials are not placed in image layers. This is a performance cache,
 not release artifact/signature acceptance. Final layer audit, retention, registry

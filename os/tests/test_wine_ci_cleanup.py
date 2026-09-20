@@ -40,7 +40,7 @@ sys.exit(0)
             docker.chmod(0o755)
             result = subprocess.run([
                 '/bin/bash', str(SCRIPT), 'x86_64',
-                'code.podesta.ai/qos/wine-tools@sha256:' + 'a' * 64,
+                'ghcr.io/tilo-os/wine-tools@sha256:' + 'a' * 64,
                 str(source), str(root / 'evidence')],
                 env={**os.environ, 'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'],
                      'GITHUB_SHA': 'b' * 40, 'GITHUB_RUN_ID': '123',

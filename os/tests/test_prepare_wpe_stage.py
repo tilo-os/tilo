@@ -72,12 +72,12 @@ class WpeStageTests(unittest.TestCase):
 
     def setUp(self):
         self.args = argparse.Namespace(architecture='x86_64', epoch='0',
-            cache='code.podesta.ai/qos/tilo-development-wpe-cache-x86_64',
+            cache='ghcr.io/tilo-os/tilo-development-wpe-cache-x86_64',
             repo=Path('/private/source tree'), assets=Path('/private/source tree/assets'),
-            base='code.podesta.ai/qos/fedora-bootc@sha256:' + '1' * 64,
-            rpms='code.podesta.ai/qos/rpms@sha256:' + '2' * 64,
-            kernel='code.podesta.ai/qos/qos-kernel@sha256:' + '3' * 64,
-            wpe='code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '4' * 64)
+            base='ghcr.io/tilo-os/fedora-bootc@sha256:' + '1' * 64,
+            rpms='ghcr.io/tilo-os/rpms@sha256:' + '2' * 64,
+            kernel='ghcr.io/tilo-os/tilo-kernel@sha256:' + '3' * 64,
+            wpe='ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + '4' * 64)
 
     def test_only_dependency_target_can_be_cached(self):
         argv = wpe.build_command(self.args, Path('/private/image.id'))
@@ -105,7 +105,7 @@ class WpeStageTests(unittest.TestCase):
     def test_rejects_wrong_arch_cache_mutable_input_and_invalid_epoch(self):
         for field, value in [('cache', self.args.cache + ':latest'),
                              ('cache', self.args.cache.replace('x86_64', 'aarch64')),
-                             ('cache', 'code.podesta.ai/qos/tilo-buildcache'),
+                             ('cache', 'ghcr.io/tilo-os/tilo-buildcache'),
                              ('epoch', '01'), ('epoch', '-1'), ('epoch', '253402300800'),
                              ('epoch', '$(id)'), ('wpe', self.args.wpe.split('@')[0] + ':latest'),
                              ('base', 'fedora:latest')]:

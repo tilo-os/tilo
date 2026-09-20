@@ -53,7 +53,7 @@ class PromotionTests(unittest.TestCase):
         with patch.object(promotion, "run", side_effect=self.command), \
                 patch.object(promotion.subprocess, "check_output", return_value=self.raw), \
                 patch.object(promotion.subprocess, "run"):
-            return promotion.promote("code.podesta.ai/qos/rpms", ["latest", self.revision],
+            return promotion.promote("ghcr.io/tilo-os/rpms", ["latest", self.revision],
                                      self.revision, self.directory, Path("keys/cosign.pub"), "env://COSIGN_PRIVATE_KEY")
 
     def test_signed_complete_index_precedes_release_tags(self):

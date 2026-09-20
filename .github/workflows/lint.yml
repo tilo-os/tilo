@@ -1,0 +1,68 @@
+name: CI / fast quality
+
+permissions:
+  contents: read
+  packages: read
+
+# Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
+# This path runs on every change.
+on:
+  # Run on every branch before it opens or updates a PR.
+  push: {}
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  # Push and pull-request checks are distinct required evidence. Include both
+  # event and commit so neither can replace another result.
+  group: lint-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 2
+          fetch-tags: false
+
+      - name: Verify native fast-quality toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          cargo --version
+          rustc --version
+          rustfmt --version
+          cargo deny --version
+          cargo machete --version
+
+      - name: Check formatting of changed Rust files
+        shell: bash
+        run: >-
+          bash tools/ci/check-changed-rustfmt.sh
+          '${{ github.event.pull_request.base.sha }}'
+          '${{ github.event.before }}'
+
+      - name: Require reasons for Rust lint exceptions in changed files
+        run: >-
+          python3 tools/ci/check_changed_rust_allows.py
+          '${{ github.event.pull_request.base.sha }}'
+          '${{ github.event.before }}'
+
+      - name: Repository policy suite
+        run: bash tools/policy/run.sh
+
+      - name: cargo deny
+        run: cargo deny --workspace check --hide-inclusion-graph
+
+      - name: cargo machete
+        run: bash tools/ci/check-unused-dependencies.sh

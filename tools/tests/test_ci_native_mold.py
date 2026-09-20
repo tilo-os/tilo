@@ -106,7 +106,7 @@ class NativeMoldBuilderPolicyTests(unittest.TestCase):
             encoding="utf-8"
         )
         workflow = (
-            ROOT / ".forgejo" / "workflows" / "build-builder-image.yml"
+            ROOT / ".github" / "workflows" / "build-builder-image.yml"
         ).read_text(encoding="utf-8")
         self.assertNotIn("dnf install -y --setopt=install_weak_deps=False mold", recipe)
         self.assertIn("mold-source.txt", recipe)

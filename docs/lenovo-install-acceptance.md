@@ -100,7 +100,7 @@ first installation and belong in issue #49.
 
 Audio, Bluetooth, battery reporting and suspend/resume are not gates for this
 first installation. Track their hardware results and fixes in
-[issue #49](https://code.podesta.ai/qos/qos/issues/49) once the base system is
+[issue #49](https://github.com/tilo-os/tilo/issues/49) once the base system is
 usable. Deferral does not imply these functions work.
 
 ## Windows encryption choices

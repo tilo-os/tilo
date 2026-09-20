@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HOOK = ROOT / ".githooks" / "pre-commit"
-CHECK_WORKFLOW = ROOT / ".forgejo" / "workflows" / "check.yml"
+CHECK_WORKFLOW = ROOT / ".github" / "workflows" / "check.yml"
 CLIPPY_DIFF = ROOT / "tools/ci/clippy-diff.sh"
 
 

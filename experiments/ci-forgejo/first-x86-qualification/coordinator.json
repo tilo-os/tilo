@@ -2,7 +2,7 @@
   "architectures": [
     "x86_64"
   ],
-  "builder_image": "code.podesta.ai/qos/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
+  "builder_image": "ghcr.io/tilo-os/tilo-builder@sha256:027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a",
   "bundle_compatibility_approved": true,
   "collection": "default",
   "enabled": true,

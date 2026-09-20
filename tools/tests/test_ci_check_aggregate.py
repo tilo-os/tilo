@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class CheckAggregateTests(unittest.TestCase):
     def setUp(self):
-        self.workflow = (ROOT / ".forgejo/workflows/check.yml").read_text()
+        self.workflow = (ROOT / ".github/workflows/check.yml").read_text()
         self.bash = ("C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash"))
         self.assertTrue(self.bash, "bash is required to observe the production aggregate")
 
@@ -165,7 +165,7 @@ class CheckAggregateTests(unittest.TestCase):
         affected = section(self.workflow, "affected", 2)
         self.assertIn("if: needs.select.outputs.rust_required == 'true'", affected)
         self.assertIn("fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix ||", affected)
-        self.assertIn('{"include":[{"runner":"runner"}]}', affected)
+        self.assertIn('{"include":[{"runner":"tilo-build-x64"}]}', affected)
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
         self.assertIn("needs: [builder, select, security, affected, native-dependencies]", checks)
@@ -201,7 +201,7 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertIn("always() &&", checkout)
         self.assertIn("(github.ref == 'refs/heads/main' ||\n"
                       "           github.ref == 'refs/heads/codex/package-desktop-release')", checkout)
-        self.assertIn("token: ${{ secrets.REGISTRY_TOKEN }}", checkout)
+        self.assertIn("token: ${{ github.token }}", checkout)
         self.assertIn("fetch-depth: 0", checkout)
         self.assertIn("if: always() && steps.receipt-checkout.outcome == 'success'", receipt)
         self.assertIn("SELECT_RESULT: ${{ needs.select.result }}", receipt)

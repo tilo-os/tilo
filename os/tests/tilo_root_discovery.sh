@@ -154,8 +154,8 @@ if TILO_PREFLIGHT_PUBLIC_KEY="$work/public.pem" TILO_PREFLIGHT_SKIP_PLATFORM=1 \
 fi
 echo 'ok: PCR7-only prediction is rejected rather than weakening release authorization'
 
-grep -Fq 'arch: x86_64' "$repo/.forgejo/workflows/release-imager.yml"
-grep -Fq 'arch: aarch64' "$repo/.forgejo/workflows/release-imager.yml"
+grep -Fq 'arch: x86_64' "$repo/.github/workflows/release-imager.yml"
+grep -Fq 'arch: aarch64' "$repo/.github/workflows/release-imager.yml"
 # shellcheck source=lib/containerfile.sh
 . "$repo/os/tests/lib/containerfile.sh"
 containerfile_has_copy "$repo/os/Containerfile" \

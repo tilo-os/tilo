@@ -107,7 +107,7 @@ def import_artifact(args):
         raise ValueError('unsupported firmware architecture')
     if any(os.environ.get(key) for key in ('CONTAINER_HOST', 'CONTAINER_CONNECTION', 'CONTAINER_SSHKEY', 'DOCKER_HOST')):
         raise ValueError('remote container configuration is unsupported')
-    if not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}', args.reference):
+    if not re.fullmatch(r'ghcr\.io/tilo-os/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}', args.reference):
         raise ValueError('firmware requires an immutable registry reference')
     if not re.fullmatch('[0-9a-f]{64}', args.manifest_sha256):
         raise ValueError('firmware requires an independent manifest SHA256')

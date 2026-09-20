@@ -43,7 +43,7 @@ class Cache(unittest.TestCase):
         for name,value in [('cache-metadata.json',metadata),('source-metadata.json',sources)]:
             (context/name).write_text(json.dumps(value))
         approval=dict(purpose='tilo-incomplete-thin-cache-admission',source_revision=m.SOURCE,
-                      producer_helper_revision=m.HELPER,checkpoint_reference='code.podesta.ai/qos/tilo-development-partial-thin-cache-aarch64@sha256:'+'a'*64,
+                      producer_helper_revision=m.HELPER,checkpoint_reference='ghcr.io/tilo-os/tilo-development-partial-thin-cache-aarch64@sha256:'+'a'*64,
                       restore_helper_sha256=m.sha(Path(m.__file__)),cargo_revalidation_required=True,incomplete_cache_reviewed=True,
                       metadata_sha256=m.sha(context/'cache-metadata.json'),source_metadata_sha256=m.sha(context/'source-metadata.json'),
                       archive_sha256=m.sha(archive))
@@ -143,7 +143,7 @@ class Cache(unittest.TestCase):
             base=Path(d);context,root,digest,stamp=self.fixture(base)
             approval=json.loads((context/'approval.json').read_bytes())
             approval.update(checkpoint_config_digest='sha256:'+'b'*64,
-                source_metadata_reference='code.podesta.ai/qos/tilo-development-thin-cache-metadata-aarch64@sha256:'+'c'*64,
+                source_metadata_reference='ghcr.io/tilo-os/tilo-development-thin-cache-metadata-aarch64@sha256:'+'c'*64,
                 source_metadata_config_digest='sha256:'+'d'*64)
             (context/'approval.json').write_text(json.dumps(approval));raw=(context/'approval.json').read_bytes()
             image=base/'image';image.mkdir();(image/'checkpoint').symlink_to(context,target_is_directory=True)

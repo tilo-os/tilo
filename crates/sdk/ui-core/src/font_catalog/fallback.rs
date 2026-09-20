@@ -2,7 +2,7 @@
 use cosmic_text::Fallback;
 use unicode_script::Script;
 
-pub(super) struct QosFallback;
+pub(super) struct TiloFallback;
 
 fn han(locale: &str) -> &'static [&'static str] {
     let normalized = locale.replace('_', "-").to_ascii_lowercase();
@@ -16,7 +16,7 @@ fn han(locale: &str) -> &'static [&'static str] {
     }
 }
 
-impl Fallback for QosFallback {
+impl Fallback for TiloFallback {
     fn common_fallback(&self) -> &[&'static str] {
         &[
             "Noto Sans",
@@ -103,16 +103,16 @@ mod tests {
         ] {
             assert_eq!(han(locale), [format!("Noto Sans CJK {family}")]);
             assert_eq!(
-                QosFallback.script_fallback(Script::Hiragana, locale),
+                TiloFallback.script_fallback(Script::Hiragana, locale),
                 ["Noto Sans CJK JP"]
             );
             assert_eq!(
-                QosFallback.script_fallback(Script::Hangul, locale),
+                TiloFallback.script_fallback(Script::Hangul, locale),
                 ["Noto Sans CJK KR"]
             );
         }
         assert_eq!(
-            QosFallback.common_fallback(),
+            TiloFallback.common_fallback(),
             [
                 "Noto Sans",
                 "Noto Sans Mono",
@@ -121,6 +121,6 @@ mod tests {
                 "Noto Sans Symbols 2"
             ]
         );
-        assert_eq!(QosFallback.forbidden_fallback(), [".LastResort"]);
+        assert_eq!(TiloFallback.forbidden_fallback(), [".LastResort"]);
     }
 }

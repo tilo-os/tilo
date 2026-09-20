@@ -1,0 +1,18 @@
+name: Prepare Rust build
+description: Restore Cargo downloads and configure the optional remote compiler cache.
+
+outputs:
+  cargo-cache-hit:
+    description: Whether the exact Cargo.lock download cache was restored.
+    value: ${{ steps.cargo-downloads.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Cargo downloads
+      id: cargo-downloads
+      uses: ./.github/actions/restore-cargo-downloads
+
+    - name: Configure optional compiler cache
+      shell: bash
+      run: bash tools/ci/sccache.sh prepare

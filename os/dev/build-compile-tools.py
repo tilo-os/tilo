@@ -7,11 +7,11 @@ from pathlib import Path
 import re
 import subprocess
 
-REPOSITORY = 'code.podesta.ai/qos/tilo-compile-tools-cache'
+REPOSITORY = 'ghcr.io/tilo-os/tilo-compile-tools-cache'
 
 
 def fingerprint(recipe, builder, cosign, platform):
-    if not re.fullmatch(r'code\.podesta\.ai/qos/[a-z0-9-]+@sha256:[0-9a-f]{64}', builder):
+    if not re.fullmatch(r'ghcr\.io/tilo-os/[a-z0-9-]+@sha256:[0-9a-f]{64}', builder):
         raise ValueError('immutable builder required')
     if platform not in ('linux/arm64', 'linux/amd64'):
         raise ValueError('unsupported tools platform')

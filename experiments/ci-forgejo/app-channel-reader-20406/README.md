@@ -32,10 +32,10 @@ declared published or installable. The first failure and subsequent explicit aud
 exercise the real adapter, not a synthetic archive.
 
 The existing verifier is
-`../qos-artifact-replay/tools/replay_app_artifact.py` in the neighboring retained
+`../tilo-artifact-replay/tools/replay_app_artifact.py` in the neighboring retained
 worktree. The archive/tree live under that worktree's
 `dist/replay-20406/output/`; crypto runs with
-`/tmp/qos-artifact-replay-venv/bin/python` in WSL FedoraLinux-42. Its reviewed helper
+`/tmp/tilo-artifact-replay-venv/bin/python` in WSL FedoraLinux-42. Its reviewed helper
 was not copied into the production reader or silently made a trust authority.
 
 Nine schema/reader tests independently cover successful architecture-specific

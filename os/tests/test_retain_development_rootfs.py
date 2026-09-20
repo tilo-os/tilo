@@ -18,7 +18,7 @@ spec.loader.exec_module(retain)
 class RetentionTests(unittest.TestCase):
     def setUp(self):
         self.revision, self.manifest = 'a' * 40, 'b' * 64
-        self.target = 'code.podesta.ai/qos/tilo-development:development-x86_64'
+        self.target = 'ghcr.io/tilo-os/tilo-development:development-x86_64'
         self.receipt = {'schema': 1, 'purpose': 'tilo-development-raw-rootfs-handoff',
                         'revision': self.revision, 'architecture': 'x86_64',
                         'public_manifest_sha256': self.manifest, 'target_update_ref': self.target,

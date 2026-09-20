@@ -54,7 +54,7 @@ class WorkflowActionTests(unittest.TestCase):
         self.write(
             "build.yml",
             "steps:\n"
-            "  - uses: ./.forgejo/actions/setup\n"
+            "  - uses: ./.github/actions/setup\n"
             "  - uses: docker://alpine:3.22\n",
         )
         self.assertEqual(workflow_actions.audit(self.workflows), [])

@@ -64,7 +64,7 @@ private key or cloud credential on the native fleet.
 Installer media never allocate an OS generation. Set the protected
 `TILO_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed Tilo
 multi-architecture manifest-list reference of the form
-`code.podesta.ai/tilo/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
+`ghcr.io/tilo-os/tilo@sha256:<64 lowercase hex>`. Both native Linux lanes
 verify that same digest and its SLSA provenance, require its immutable `genN`
 tag to bind the exact digest, pull their native manifest,
 and require the generation embedded in the image to equal the single generation
@@ -331,7 +331,7 @@ administrators):
 | the seven `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
 | `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional public binary repository in `OWNER/REPOSITORY` form; omit for `tilo/releases` |
 | `TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex Tilo-main registry-owner Ed25519 public key |
-| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.podesta.ai/tilo/tilo@sha256:...` manifest-list reference used by installer media |
+| `TILO_INSTALLER_OS_IMAGE` | signed, published multi-architecture `ghcr.io/tilo-os/tilo@sha256:...` manifest-list reference used by installer media |
 | `TILO_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
 | `TILO_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
@@ -403,7 +403,7 @@ environment without validating the signed JWT is not conforming.
 `TILO_WPE_SIGNER` must resolve to an executable, non-symlink, root-owned path
 outside the checkout and job temporary directory. It receives one argument:
 the immutable
-`code.podesta.ai/tilo/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
+`ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:...` reference. The wrapper must
 hold or acquire a non-exportable KMS/HSM signing lease, reject every other
 repository/reference shape, sign at most once for its build lease, upload the
 transparency-log entry, and return only after signing succeeds. CI immediately

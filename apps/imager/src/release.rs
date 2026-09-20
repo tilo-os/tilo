@@ -69,9 +69,9 @@ impl MediaProvenance {
             "The release catalog is missing a hardware update origin.".to_string()
         })?;
         let valid_origin =
-            if let Some(digest) = origin.strip_prefix("code.podesta.ai/qos/tilo@sha256:") {
+            if let Some(digest) = origin.strip_prefix("ghcr.io/tilo-os/tilo@sha256:") {
                 validate_digest(digest).is_ok()
-            } else if let Some(tag) = origin.strip_prefix("code.podesta.ai/qos/tilo:") {
+            } else if let Some(tag) = origin.strip_prefix("ghcr.io/tilo-os/tilo:") {
                 !tag.is_empty()
                     && tag.len() <= 128
                     && tag
@@ -780,7 +780,7 @@ mod tests {
             "source_image_id": format!("sha256:{}", "d".repeat(64)),
             "input_qcow2_sha256": "e".repeat(64),
             "hardware_profile_sha256": "f".repeat(64),
-            "target_update_ref": "code.podesta.ai/qos/tilo:board-fixture",
+            "target_update_ref": "ghcr.io/tilo-os/tilo:board-fixture",
         });
         catalog["releases"].as_array_mut().unwrap().push(board);
         catalog

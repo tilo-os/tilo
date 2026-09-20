@@ -4,9 +4,9 @@
   "workflow_id": "canonical-verifier-bundle.yml",
   "event": "",
   "status": "waiting",
-  "html_url": "https://code.podesta.ai/qos/qos/actions/runs/9525",
+  "html_url": "https://github.com/tilo-os/tilo/actions/runs/9525",
   "repository": {
     "id": 23,
-    "full_name": "qos/qos"
+    "full_name": "tilo/tilo"
   }
 }

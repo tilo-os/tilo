@@ -9,7 +9,7 @@ import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOWS = ROOT / ".forgejo" / "workflows"
+WORKFLOWS = ROOT / ".github" / "workflows"
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 TIMEOUT = re.compile(r"^    timeout-minutes:\s*([0-9]+)\s*$")
 

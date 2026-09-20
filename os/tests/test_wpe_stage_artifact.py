@@ -31,7 +31,7 @@ class WpeArtifactTests(unittest.TestCase):
             script.extend((f'{variable}={name}', f'{variable}_SHA256={wpe.sha(data)}'))
         (self.repo / 'os/dev/build-wpe.sh').write_text('\n'.join(script) + '\n')
         (self.repo / 'os/Containerfile').write_text('FROM scratch\n')
-        self.buildroot = 'code.podesta.ai/qos/tilo-wpe-buildroot@sha256:' + '1' * 64
+        self.buildroot = 'ghcr.io/tilo-os/tilo-wpe-buildroot@sha256:' + '1' * 64
         self.inputs = self.dependencies()
         self.config = wpe.canonical({'architecture': 'amd64', 'os': 'linux'})
         self.identity = 'sha256:' + wpe.sha(self.config)

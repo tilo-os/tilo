@@ -65,7 +65,7 @@ class WorkflowTimeoutTests(unittest.TestCase):
         )
 
     def test_every_repository_workflow_is_bounded(self) -> None:
-        self.assertEqual(audit(ROOT / ".forgejo" / "workflows"), [])
+        self.assertEqual(audit(ROOT / ".github" / "workflows"), [])
 
 
 if __name__ == "__main__":

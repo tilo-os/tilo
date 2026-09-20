@@ -36,7 +36,7 @@ class BuilderPlanTests(unittest.TestCase):
         self.assertEqual(plan.choose("push", changed, workflow(), workflow("echo seed cache"))[0], "reuse")
 
     def test_every_image_and_publication_input_rebuilds(self):
-        for path in sorted(plan.REBUILD_PATHS) + [".forgejo/actions/install-cosign/action.yml"]:
+        for path in sorted(plan.REBUILD_PATHS) + [".github/actions/install-cosign/action.yml"]:
             with self.subTest(path=path):
                 self.assertEqual(plan.choose("push", [path])[0], "build")
 

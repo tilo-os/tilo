@@ -27,7 +27,7 @@ assert contract["completeSystem"]["alongside"] == {
     "resizesExistingFilesystems": False,
 }
 
-imager_workflow = (ROOT / ".forgejo/workflows/release-imager.yml").read_text()
+imager_workflow = (ROOT / ".github/workflows/release-imager.yml").read_text()
 for runner, architecture in (
     ("imager-linux-x86_64", "x86_64"),
     ("imager-linux-aarch64", "aarch64"),
@@ -63,7 +63,7 @@ assert "smithay-clipboard" not in ui_manifest["dependencies"]
 linux_ui_dependencies = ui_manifest["target"]['cfg(target_os = "linux")']["dependencies"]
 assert "smithay-clipboard" in linux_ui_dependencies
 
-session_workflow = (ROOT / ".forgejo/workflows/package-desktop.yml").read_text()
+session_workflow = (ROOT / ".github/workflows/package-desktop.yml").read_text()
 packaging_docs = (ROOT / "docs/packaging.md").read_text()
 rpm_publisher = (ROOT / "dist/ci/publish-forgejo-packages.sh").read_text()
 rpm_signer = (ROOT / "dist/rpm/sign-rpms.sh").read_text()

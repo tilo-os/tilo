@@ -42,7 +42,7 @@ def reproduce_extensions(api, checkpoints, required, resume, material, inputs):
                     'source decoding differs; run Python with -X utf8')
         for checkpoint in newer:
             receipt = checkpoint['receipt']
-            require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}',
+            require(re.fullmatch(r'ghcr\.io/tilo-os/tilo-development-partial-native-aarch64@sha256:[0-9a-f]{64}',
                                  receipt['reference']) and re.fullmatch('sha256:[0-9a-f]{64}', receipt['config_digest']),
                     'partial immutable identity differs')
             # Execute the unchanged independently pinned validator against two
@@ -67,7 +67,7 @@ def reproduce_extensions(api, checkpoints, required, resume, material, inputs):
             and cache['cargo_revalidation_required'] is True and cache['incomplete_cache_reviewed'] is True,
             'cache admission identity differs')
     for prefix, repository in (('checkpoint', 'partial-thin-cache'), ('source_metadata', 'thin-cache-metadata')):
-        require(re.fullmatch('code\\.podesta\\.ai/qos/tilo-development-' + repository +
+        require(re.fullmatch('code\\.podesta\\.ai/tilo/tilo-development-' + repository +
                              '-aarch64@sha256:[0-9a-f]{64}', cache[prefix + '_reference'])
                 and re.fullmatch('sha256:[0-9a-f]{64}', cache[prefix + '_config_digest']),
                 'cache immutable identity differs')

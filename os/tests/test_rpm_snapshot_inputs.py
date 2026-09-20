@@ -17,7 +17,7 @@ class Inputs(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.repo=Path(self.temp.name)
-        self.inputs=list(gate.parser.SOURCES)+['os/base-snapshot.env','os/Containerfile.rpms','.forgejo/actions/install-cosign']
+        self.inputs=list(gate.parser.SOURCES)+['os/base-snapshot.env','os/Containerfile.rpms','.github/actions/install-cosign']
         self.git('init','-q'); self.git('config','user.email','test@example.invalid'); self.git('config','user.name','test')
         for source in gate.parser.SOURCES:self.write(source,(ROOT/source).read_text(encoding='utf-8'))
         self.write('os/base-snapshot.env','BASE_REF=registry/base@sha256:one\n')
@@ -39,7 +39,7 @@ class Inputs(unittest.TestCase):
                 self.write('os/Containerfile',(ROOT/'os/Containerfile').read_text(encoding='utf-8')+'\n'+addition+'\n')
                 self.assertFalse(self.same())
     def test_base_recipe_signing_changes_rebuild(self):
-        for path in ('os/base-snapshot.env','os/Containerfile.rpms','.forgejo/actions/install-cosign/action.yml'):
+        for path in ('os/base-snapshot.env','os/Containerfile.rpms','.github/actions/install-cosign/action.yml'):
             with self.subTest(path=path):
                 self.write(path,'changed\n');self.assertFalse(self.same())
     def test_deleted_source_cannot_prove_equivalence(self):

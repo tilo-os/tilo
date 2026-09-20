@@ -10,8 +10,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / '.forgejo/workflows/canonical-verifier-bundle.yml'
-BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:' + 'a' * 64
+WORKFLOW = ROOT / '.github/workflows/canonical-verifier-bundle.yml'
+BUILDER = 'ghcr.io/tilo-os/tilo-builder@sha256:' + 'a' * 64
 
 
 def production_script():
@@ -25,12 +25,12 @@ class VerifierWorkflowTests(unittest.TestCase):
         source = WORKFLOW.read_text()
         triggers = source.split('\non:\n', 1)[1].split('\nconcurrency:', 1)[0]
         self.assertEqual(['workflow_dispatch'], re.findall(r'^  ([a-z_]+):', triggers, re.M))
-        self.assertIn('arch: x86_64\n            runner: runner', source)
-        self.assertIn('arch: aarch64\n            runner: runner-arm64', source)
+        self.assertIn('arch: x86_64\n            runner: tilo-build-x64', source)
+        self.assertIn('arch: aarch64\n            runner: tilo-build-arm64', source)
         self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
         self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
-        self.assertIn('uses: ./.forgejo/actions/restore-cargo-downloads', source)
-        self.assertEqual({'REGISTRY_TOKEN'}, set(re.findall(r'secrets\.([A-Z_]+)', source)))
+        self.assertIn('uses: ./.github/actions/restore-cargo-downloads', source)
+        self.assertEqual(set(), set(re.findall(r'secrets\.([A-Z_]+)', source)))
         bundle_job = source.split('\n  bundle:\n', 1)[1]
         self.assertNotIn('REGISTRY_TOKEN:', bundle_job)
         self.assertNotIn('CARGO_TARGET_DIR', source)

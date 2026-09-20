@@ -22,7 +22,7 @@ secret_policy="$repo_root/os/usr/libexec/tilo-startup-secret-policy"
 prediction_signer="$repo_root/os/dev/sign-target-prediction.sh"
 # shellcheck source=lib/containerfile.sh
 . "$repo_root/os/tests/lib/containerfile.sh"
-os_image_workflow="$repo_root/.forgejo/workflows/build-image.yml"
+os_image_workflow="$repo_root/.github/workflows/build-image.yml"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -286,9 +286,9 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
    && grep -Fq 'sign-target-prediction.sh "$repro_image"' "$os_image_workflow" \
-   && grep -Fq 'enable-openid-connect: true' "$os_image_workflow" \
+   && grep -Fq 'id-token: write' "$os_image_workflow" \
    && grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" \
-      "$repo_root/.forgejo/workflows/release-imager.yml"; then
+      "$repo_root/.github/workflows/release-imager.yml"; then
   ok "release prediction path uses systemd-measure and a broker signer without private-key custody"
 else
   bad "release PCR prediction path can bypass authoritative measurement or protected signing"

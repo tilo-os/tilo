@@ -89,7 +89,7 @@ class CatalogSelectionTests(unittest.TestCase):
                 entry["provenance"] = {"source_image_id": "sha256:" + "a" * 64,
                                        "input_qcow2_sha256": "c" * 64,
                                        "hardware_profile_sha256": "d" * 64,
-                                       "target_update_ref": "code.podesta.ai/qos/tilo:lenovo-fixture"}
+                                       "target_update_ref": "ghcr.io/tilo-os/tilo:lenovo-fixture"}
             entries.append(entry)
         return {"schema": 2, "tag": "imager-v1.2.3", "releases": entries}
 

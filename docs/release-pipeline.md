@@ -95,7 +95,7 @@ compatibility channel.
 
 App publication requires `TILO_PACKAGE_PUBLIC_BASE_URL`, set to the public
 HTTPS generic-package base (currently
-`https://code.podesta.ai/api/packages/qos/generic`). Registry traffic may use
+`https://code.podesta.ai/api/packages/tilo/generic`). Registry traffic may use
 the runner's internal endpoint, but receipts and persisted collection-channel
 URLs always derive from this public base.
 

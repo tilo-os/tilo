@@ -16,7 +16,7 @@ import zipfile
 import app_channel_manifest as channel
 import final_app_receipt as final
 
-API = 'https://code.podesta.ai/api/v1/repos/qos/qos'
+API = 'https://code.podesta.ai/api/v1/repos/tilo/tilo'
 MAX_BYTES = 2 * 1024**3
 MAX_EXPANDED = 4 * 1024**3
 
@@ -179,7 +179,7 @@ def main():
     args = parser.parse_args()
     channel.require(args.qualifier_attempt > 0, 'positive qualifier attempt required')
     channel.digest(args.source_sha, 40)
-    channel.require(re.fullmatch(r'code\.podesta\.ai/qos/tilo-builder@sha256:[0-9a-f]{64}', args.builder_image), 'immutable builder required')
+    channel.require(re.fullmatch(r'ghcr\.io/tilo-os/tilo-builder@sha256:[0-9a-f]{64}', args.builder_image), 'immutable builder required')
     policy, _ = final.preflight(args.pkg_binary, args.runtime_binary, args.trust_policy, args.trust_policy_sha256)
     args.work.mkdir(parents=True, exist_ok=False)
     baseline = None

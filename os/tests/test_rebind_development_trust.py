@@ -85,7 +85,7 @@ class RebindTests(unittest.TestCase):
     def test_invalid_independent_inputs_leave_all_old_bytes_unchanged(self):
         for field, value in [('old_manifest', '0' * 64), ('new_manifest', '0' * 64),
                              ('old_target', 'registry.test/tilo-development/os:wrong'),
-                             ('new_target', 'code.podesta.ai/qos/tilo:latest'),
+                             ('new_target', 'ghcr.io/tilo-os/tilo:latest'),
                              ('new_owner', 'ef' * 32), ('generation', 8), ('disposable', False),
                              ('architecture', 'wrong')]:
             before = self.snapshot()

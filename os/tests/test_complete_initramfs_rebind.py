@@ -66,7 +66,7 @@ class CompletionTests(unittest.TestCase):
 
     def test_invalid_independent_inputs_never_call_verifier_or_clear_marker(self):
         for field, value in [('marker_sha256', '0' * 64), ('manifest_sha256', '0' * 64),
-                             ('generation', 8), ('target', 'code.podesta.ai/qos/tilo:latest'),
+                             ('generation', 8), ('target', 'ghcr.io/tilo-os/tilo:latest'),
                              ('disposable', False), ('architecture', 'foreign')]:
             with self.subTest(field=field), patch.object(gate, 'verify_artifact') as verify:
                 with self.assertRaises(ValueError):

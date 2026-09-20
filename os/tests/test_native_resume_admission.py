@@ -52,7 +52,7 @@ class Admission(unittest.TestCase):
         raw = native.tools.canonical(metadata)
         (self.payload / 'partial-checkpoint.json').write_bytes(raw)
         return {'purpose': resume.PARTIAL, 'source_revision': resume.SOURCE,
-            'reference': 'code.podesta.ai/qos/tilo-development-partial-native-aarch64@sha256:' + 'a' * 64,
+            'reference': 'ghcr.io/tilo-os/tilo-development-partial-native-aarch64@sha256:' + 'a' * 64,
             'config_digest': 'sha256:' + 'b' * 64, 'metadata_sha256': native.tools.sha(raw),
             'inventory': inventory, 'installable': False, 'complete_native_builder': False, 'build_success': False}
 

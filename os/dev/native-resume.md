@@ -60,7 +60,7 @@ lifetime. No whole native build is launched by tests or recipe preparation.
 ## Honest provenance and consumer seam
 
 The producer uses purpose `tilo-development-reconstructed-native-builder` and
-repository `code.podesta.ai/qos/tilo-development-reconstructed-native-aarch64`.
+repository `ghcr.io/tilo-os/tilo-development-reconstructed-native-aarch64`.
 It does not call the legacy exporter or claim the original recipe ran verbatim.
 Reconstruction metadata binds the original source/input/recipe, derived recipe
 and driver hashes, controller/helper hashes, complete checkpoint receipts,
