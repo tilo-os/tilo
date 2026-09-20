@@ -1,0 +1,1 @@
+build=failure upload=skipped detail=stage=install-dependencies status=255 line=234 error: failed to initialize alpm library: stage=install-dependencies status=255 line=234 native architecture: arm64 error: failed to initialize alpm library: (root: /, dbpath: /var/lib/pacman/) could not find or read directory  run=13663 sha=424fc33ba4c2cf063ad4fdf246d9c8c9820c161d

@@ -1,0 +1,1 @@
+build=failure upload=skipped detail=stage=copy-artifacts status=1 stage=copy-artifacts status=1 Error response from daemon: Could not find the file /artifacts/. in container 6a6ed1ca760a0c715f2dba0cf00031a7ebd1062834f8da0964a6aee4f16bb6aa exec /bin/sh: exec format error  run=13659 sha=a1c7897bd66c0642a65d056232696ae65f07152e
