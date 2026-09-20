@@ -205,7 +205,7 @@ class CreationTests(unittest.TestCase):
     def test_fixed_verified_id_and_signature_policy(self):
         receipt = self.execute()
         argv = self.calls[-1]
-        for flag in ('--remote=false', '--pull=never', '--generic-image',
+        for flag in ('--remote=false', '--pull=never', '--ipc=private', '--generic-image',
                      '--enforce-container-sigpolicy', '--run-fetch-check',
                      '--filesystem=btrfs'):
             self.assertIn(flag, argv)
