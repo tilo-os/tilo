@@ -77,8 +77,13 @@ Scope tests to what you are proving — the compile dominates, and a whole-crate
 
 ```bash
 cargo test -p shell --lib room_activity
-cargo test -p shell --test interaction_test   # headless Wayland state, no GPU
+cargo test --locked -p shell --test it interaction_test::   # headless Wayland state, no GPU
 ```
+
+Shell integration files are modules of the single `it` target, not individual
+Cargo targets. Use `--test it MODULE::` to select a module, or its full
+`MODULE::TEST` path with `-- --exact` for one case. For remote native execution,
+see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
 targets, which is how test files have silently stopped building for days at a time.
@@ -147,7 +152,7 @@ click handler is invisible to every one of them.
 
 `tilo-control` is the CLI over the compositor's control socket — path from `$TILO_TEST_CONTROL`,
 default `/tmp/tilo.sock`. It is a `shell` binary and is **not on PATH**; run it with
-`cargo run -q --bin tilo-control --` , or `cargo install --path shell --bin tilo-control` once
+`cargo run -q --bin tilo-control --` , or `cargo install --locked --path crates/session/shell --bin tilo-control` once
 if you use it often. It has two halves; reach for the first.
 
 Semantic — how a collaborator, an agent or a script drives an app:
@@ -231,14 +236,19 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 Use a task branch and a pull request for routine integration. Group related,
 tested changes into small coherent increments; do not push work-in-progress or
 minute-by-minute fixups directly to main. Keep the PR updated rather than opening
-another PR for each iteration. Obtain an independent review and successful
-applicable CI for the current head before merging. Routine integration does not
-need an extra human approval unless the change's policy requires one. Explicitly
-authorized emergency CI/infra fixes may be integrated directly.
+another PR for each iteration. Obtain successful applicable CI for the current
+head and post the author's `/merge <full-head-sha>` or `/queue <full-head-sha>`
+intent. Review is optional and informational for every path: review requests,
+approvals and change requests never block integration. CI policy, publication,
+signing and named security-boundary changes retain protected-path CI and
+provenance checks, but require no review. Follow `DEVELOPMENT.md` and the
+controller's scope decision. Explicitly authorized emergency CI/infra fixes may
+be integrated directly.
 
-Keep check/lint results for every main commit. Full OS, desktop distribution and
-app packaging builds are currently explicit or scheduled; do not restore broad
-per-push triggers to obtain a development artifact. Use the existing workflow's
+Keep check/lint results for every main commit. Affected qOS/Linux apps package
+after relevant main changes; unchanged collection members are reused. Full OS
+and desktop distribution builds remain explicit or scheduled; do not restore
+broad per-push full builds to obtain a development artifact. Use the existing workflow's
 manual dispatch and the smallest applicable app/architecture inputs instead.
 
 The existing CI scheduler owns runner slots, admission and queue order. Submit

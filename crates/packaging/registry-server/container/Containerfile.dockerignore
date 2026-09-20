@@ -1,0 +1,6 @@
+.git
+.git/**
+**/target
+**/target/**
+os/output
+os/output/**
