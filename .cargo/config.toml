@@ -157,10 +157,11 @@ CXXFLAGS_aarch64_apple_darwin = { value = "-fstack-protector-strong", force = tr
 CFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
 CXXFLAGS_x86_64_apple_darwin = { value = "-fstack-protector-strong", force = true }
 
-# sccache refuses `-C incremental=`; with it on, 13,417/16,947 requests refused.
-# Here rather than Cargo.toml: a config [profile] overrides the manifest.
+# Native edits reuse unchanged work inside a crate. The Cargo shim and CI cache
+# setup disable incremental compilation only when selecting sccache, which
+# cannot cache incremental rustc invocations (ported from 52324d37b).
 [profile.dev]
-incremental = false
+incremental = true
 
 [profile.release]
 incremental = false

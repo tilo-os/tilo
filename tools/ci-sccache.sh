@@ -22,8 +22,11 @@ case "$mode" in
         sccache --stop-server >/dev/null 2>&1 || true
       fi
       if sccache --zero-stats; then
+        # Native dev builds are incremental; sccache needs whole-crate inputs.
+        export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
         if [ -n "${GITHUB_ENV:-}" ]; then
           printf 'RUSTC_WRAPPER=%s\n' "$path" >> "$GITHUB_ENV"
+          printf 'CARGO_INCREMENTAL=%s\n' "$CARGO_INCREMENTAL" >> "$GITHUB_ENV"
           if [ -n "${QOS_SCCACHE_KEY_PREFIX:-}" ]; then
             printf 'SCCACHE_S3_KEY_PREFIX=%s\n' "$QOS_SCCACHE_KEY_PREFIX" >> "$GITHUB_ENV"
           fi

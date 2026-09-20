@@ -60,9 +60,15 @@ derive_cache_size() {
 }
 
 use_sccache() {
-  [ -n "${RUSTC_WRAPPER:-}" ] && return 0          # caller already chose; leave it alone
-  command -v sccache >/dev/null 2>&1 || return 0   # not installed; a plain build is fine
-  export RUSTC_WRAPPER=sccache
+  if [ -z "${RUSTC_WRAPPER:-}" ]; then
+    command -v sccache >/dev/null 2>&1 || return 0 # plain Cargo keeps incremental builds
+    export RUSTC_WRAPPER=sccache
+  fi
+  [ "${RUSTC_WRAPPER##*/}" = sccache ] || return 0 # preserve other wrappers
+  # sccache cannot cache incremental rustc invocations. Scope this policy to
+  # cache users, so native builds can reuse work within changed crates. An
+  # explicit caller choice still wins, including CARGO_INCREMENTAL=1.
+  export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
   export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-$(derive_cache_size)}"
 }
 
