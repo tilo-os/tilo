@@ -44,13 +44,16 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         plan = source.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:\n', 1)[0]
         self.assertIn('    needs: coordinator-preguard', plan)
         self.assertIn('app_release_history.py \\\n              fetch-base "$1" "$GITHUB_SHA"', plan)
-        self.assertIn('require-main-tip "$GITHUB_SHA"', plan)
+        self.assertNotIn('require-main-tip "$GITHUB_SHA"', plan)
         self.assertNotIn('+refs/heads/main:refs/remotes/origin/main', plan)
         builder = plan.index('      - name: Resolve one immutable builder for every architecture\n')
-        preparation = plan.index('      - name: Prepare exact coordinator baseline history\n')
+        preparation = plan.index('      - name: Prepare exact release comparison history\n')
+        authorization = plan.index('      - name: Authorize current main for publication planning\n')
         guard = plan.index('      - name: Validate prepared nonpublishing coordinator qualification\n')
         selection = plan.index('      - name: Select only the affected apps or requested collection\n')
         self.assertLess(builder, preparation)
+        self.assertLess(preparation, authorization)
+        self.assertLess(authorization, guard)
         self.assertLess(preparation, guard)
         self.assertLess(guard, selection)
         preguard = source.split('\n  coordinator-preguard:\n', 1)[1].split('\n  plan:\n', 1)[0]
@@ -74,14 +77,20 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertIn('app_packaging_qualification.py --preflight', sanitized)
         self.assertNotIn('SOURCE_TOKEN', sanitized)
         self.assertNotIn('github.token', sanitized)
-        preparation_step = plan[preparation:guard]
-        self.assertIn(
-            "if: github.event.inputs.coordinator_intent != '' && github.event.inputs.baseline_sha != ''",
-            preparation_step,
-        )
+        preparation_step = plan[preparation:authorization]
+        self.assertIn("if: \"github.event_name != 'workflow_dispatch'", preparation_step)
+        self.assertIn('SOURCE_TOKEN: ${{ github.token }}', preparation_step)
         self.assertIn('BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}', preparation_step)
-        self.assertIn('fetch-base "$BASELINE_SHA" "$GITHUB_SHA"', preparation_step)
-        self.assertEqual(plan.count('require-main-tip "$GITHUB_SHA"'), 1)
+        self.assertNotIn('tools/', preparation_step)
+        self.assertIn('/usr/bin/git fetch --no-tags --no-write-fetch-head', preparation_step)
+        self.assertIn('GIT_CONFIG_KEY_0=http.https://code.podesta.ai/.extraheader', preparation_step)
+        authorization_step = plan[authorization:guard]
+        self.assertIn('SOURCE_TOKEN: ${{ github.token }}', authorization_step)
+        self.assertNotIn('tools/', authorization_step)
+        self.assertIn('/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', authorization_step)
+        selection_step = plan[selection:]
+        self.assertNotIn('SOURCE_TOKEN', selection_step)
+        self.assertNotIn('github.token', selection_step)
         self.assertNotIn('if [[ $GITHUB_REF != refs/heads/main ]]; then', plan)
         publishing = plan.split('          if [[ ( $GITHUB_EVENT_NAME == push', 1)[1].split(
             "          else\n", 1
@@ -118,6 +127,18 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertNotIn('tools/', final_authorization)
         self.assertNotIn('secrets.', final_authorization)
         self.assertNotIn('enable-openid-connect', final_authorization)
+        build = source.split('\n  build:\n', 1)[1].split(
+            '\n  final-collection:\n', 1
+        )[0]
+        revalidation = build.split(
+            '      - name: Revalidate publication source immediately before signing\n', 1
+        )[1].split('\n      - name:', 1)[0]
+        self.assertIn('SOURCE_TOKEN: ${{ github.token }}', revalidation)
+        self.assertNotIn('tools/', revalidation)
+        self.assertIn('/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', revalidation)
+        history_helper = (ROOT / 'tools/ci/app_release_history.py').read_text()
+        self.assertNotIn('SOURCE_TOKEN', history_helper)
+        self.assertNotIn('extraheader', history_helper)
         publish = source.split('\n  publish:\n', 1)[1]
         self.assertIn('needs: [plan, authorize-publish, build, authorize-publish-final]', publish)
         self.assertIn('persist-credentials: false', publish)
@@ -138,6 +159,22 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         preguard = source.split('\n  coordinator-preguard:\n', 1)[1].split('\n  plan:\n', 1)[0]
         script = textwrap.dedent(preguard.split('        run: |\n', 1)[1])
         subprocess.run(['bash', '-n'], input=script, text=True, check=True)
+
+    def test_token_scoped_git_steps_are_syntactically_complete(self):
+        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        for name in (
+            'Prepare exact release comparison history',
+            'Authorize current main for publication planning',
+            'Revalidate publication source immediately before signing',
+        ):
+            with self.subTest(name=name):
+                step = source.split(f'      - name: {name}\n', 1)[1].split(
+                    '\n      - name:', 1
+                )[0]
+                script = textwrap.dedent(
+                    step.split('        run: |\n', 1)[1]
+                ).replace('\r', '')
+                subprocess.run(['bash', '-n'], input=script.encode(), check=True)
 
     class Response:
         status = 200
@@ -304,7 +341,9 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             "RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}",
             build,
         )
-        self.assertIn('require-main-tip "$GITHUB_SHA"', build)
+        self.assertIn(
+            '/usr/bin/git ls-remote --exit-code --refs origin refs/heads/main', build
+        )
 
     def check(self, workflow):
         script = (ROOT / 'os/tests/release_pipeline_invariants.sh').read_text()
