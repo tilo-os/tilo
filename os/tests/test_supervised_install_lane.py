@@ -124,9 +124,15 @@ class LaneAdmission(unittest.TestCase):
         argv = command.call_args.args[0]
         script = argv[-1]
         self.assertIn('umask 077', script)
+        self.assertLess(script.index('test ! -L /work'), script.index('chmod 0700 /work'))
+        self.assertLess(script.index("stat -c '%u:%g:%F' /work"),
+                        script.index('chmod 0700 /work'))
+        self.assertIn("stat -c '%d' /work", script)
+        self.assertLess(script.index('chmod 0700 /work'),
+                        script.index("stat -c '%u:%g:%a:%F' /work"))
         self.assertLess(script.index('test ! -e /work/disk-output'),
                         script.index('mkdir -m 0700 /work/disk-output'))
-        self.assertIn("0:0:700:directory", script)
+        self.assertEqual(script.count("0:0:700:directory"), 2)
         self.assertEqual(command.call_args.kwargs, {'timeout': 30})
 
     def test_creator_inspects_then_prepares_then_executes(self):
