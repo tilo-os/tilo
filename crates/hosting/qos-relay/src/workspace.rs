@@ -204,6 +204,14 @@ impl WorkspaceRuntime {
             .is_some_and(|served| !served.contains(channel))
     }
 
+    /// Record that one live checkpoint reached the current device session.
+    /// Call only after the delivery queue accepted the checkpoint.
+    pub(crate) fn mark_checkpoint_served(&mut self, device: &[u8; 32], channel: [u8; 32]) {
+        if let Some(served) = self.checkpoint_served.get_mut(device) {
+            served.insert(channel);
+        }
+    }
+
     ///
     /// # Errors
     ///
@@ -369,9 +377,7 @@ impl WorkspaceRuntime {
         }
         if let Some(channel) = checkpoint_channel {
             for d in satisfied {
-                if let Some(served) = self.checkpoint_served.get_mut(&d) {
-                    served.insert(channel);
-                }
+                self.mark_checkpoint_served(&d, channel);
             }
         }
         // 2. Store-and-forward for offline members AND for live subscribers

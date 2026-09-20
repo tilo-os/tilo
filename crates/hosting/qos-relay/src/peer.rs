@@ -1443,6 +1443,16 @@ async fn enqueue_state_inner(
                         let bytes = match &*commit.envelope { Envelope::Delta {delta, ..} => delta.len().saturating_add(256), _ => 1 };
                         (LiveEnvelope::Original(commit.envelope.clone()), crate::persistence::delivery_budget(bytes).map(Some))
                     } else { break };
+                    let checkpoint_channel = match &envelope {
+                        LiveEnvelope::Original(original) => match &**original {
+                            Envelope::Delta { delta, .. } => match crate::coedit::CoeditPayload::decode(delta) {
+                                Some(crate::coedit::CoeditPayload::Checkpoint { channel, .. }) => Some(channel),
+                                _ => None,
+                            },
+                            _ => None,
+                        },
+                        LiveEnvelope::Selected(_) => None,
+                    };
                     // Every hydration/worker wait precedes a fresh current-source,
                     // recipient membership and exact subscriber-channel fence.
                     let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
@@ -1455,6 +1465,8 @@ async fn enqueue_state_inner(
                         if !sub.tx.same_channel(original) { continue; }
                         let Some(target) = runtime.state_sessions.get(recipient) else { continue };
                         if !state_member(&runtime, &target.peer) || source.as_ref().is_some_and(|s| !s.cert(&target.peer)) { continue; }
+                        if target.peer.role == crate::auth::PeerRole::Device
+                            && checkpoint_channel.is_some_and(|channel| !runtime.needs_checkpoint(recipient, &channel)) { continue; }
                         // Durable coverage was committed before publication. If
                         // the shared live-byte budget is full, leave that coverage
                         // for replay/anti-entropy without fencing a healthy wire.
@@ -1467,7 +1479,12 @@ async fn enqueue_state_inner(
                             _budget: budget.clone(), live: target.live.clone(),
                         };
                         match target.tx.try_send(delivery) {
-                            Ok(()) => delivered = delivered.saturating_add(1),
+                            Ok(()) => {
+                                delivered = delivered.saturating_add(1);
+                                if target.peer.role == crate::auth::PeerRole::Device && let Some(channel) = checkpoint_channel {
+                                    runtime.mark_checkpoint_served(recipient, channel);
+                                }
+                            }
                             // A full live queue is backpressure. Dropping this
                             // delivery keeps its pending/retained coverage intact.
                             Err(mpsc::error::TrySendError::Full(_)) => {}

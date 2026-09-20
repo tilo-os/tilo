@@ -23,6 +23,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_delivery_capacity(32)
+    }
+    fn with_delivery_capacity(delivery_capacity: usize) -> Self {
         let (root, user) = UserIdentity::generate("owner", 1);
         let (author, _) = certified_device(&root, user.public_key, "author");
         let (recipient, _) = certified_device(&root, user.public_key, "recipient");
@@ -34,7 +37,7 @@ impl Fixture {
         }
         let (source_tx, source_rx) = mpsc::channel(32);
         let (recipient_tx, recipient_state_rx) = mpsc::channel(32);
-        let (delivery, recipient_rx) = mpsc::channel(32);
+        let (delivery, recipient_rx) = mpsc::channel(delivery_capacity);
         let (source_disconnect, _) = mpsc::channel(1);
         let (recipient_disconnect, recipient_disconnected) = mpsc::channel(1);
         for (peer, tx, disconnect) in [
@@ -127,6 +130,28 @@ impl Fixture {
         .await
         .unwrap();
     }
+    async fn enqueue_checkpoint(&self, authored_at_ns: u64, body: Vec<u8>) {
+        enqueue_state(
+            &self.workspace,
+            Envelope::Delta {
+                workspace_id: 7,
+                author_device_public_key: self.source.peer.device_public_key,
+                authored_at_ns,
+                delta: crate::coedit::CoeditPayload::Checkpoint {
+                    channel: [3; 32],
+                    body,
+                }
+                .encode()
+                .unwrap(),
+                signature: [0; 64],
+            },
+            Some(self.source.clone()),
+            PeerRole::Device,
+            self.metrics.clone(),
+        )
+        .await
+        .unwrap();
+    }
     async fn drained(&self) {
         let owner = crate::persistence::handle(&self.workspace).await;
         crate::persistence::receipt(owner.read(1, |_| Ok(())).unwrap())
@@ -152,6 +177,79 @@ impl Fixture {
             .await
             .unwrap();
     }
+}
+
+#[tokio::test]
+async fn ordered_checkpoints_reach_a_device_once_per_channel_until_rearmed() {
+    let mut fixture = Fixture::new();
+
+    fixture.enqueue_checkpoint(1, vec![1; 64]).await;
+    fixture.drained().await;
+    assert!(fixture.recipient_rx.try_recv().is_ok(), "initial checkpoint was not delivered");
+
+    fixture.enqueue_checkpoint(20, vec![2; 16 * 1024 * 1024]).await;
+    fixture.drained().await;
+    assert!(fixture.recipient_rx.try_recv().is_err(), "an already-current device received the next idle checkpoint");
+    fixture.enqueue(2).await;
+    fixture.drained().await;
+    assert!(fixture.recipient_rx.try_recv().is_ok(), "a large gated checkpoint obstructed the next ordered delta");
+
+    fixture.workspace.lock().await.request_checkpoint(&fixture.recipient.device_public_key);
+    fixture.enqueue_checkpoint(3, vec![3; 64]).await;
+    fixture.drained().await;
+    assert!(fixture.recipient_rx.try_recv().is_ok(), "rearmed checkpoint was not delivered");
+
+    fixture.enqueue_checkpoint(4, vec![4; 64]).await;
+    fixture.drained().await;
+    assert!(fixture.recipient_rx.try_recv().is_err(), "rearm delivered more than one checkpoint");
+    assert!(fixture.recipient_disconnected.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn ordered_checkpoint_is_marked_served_only_after_successful_enqueue() {
+    let mut fixture = Fixture::with_delivery_capacity(1);
+    fixture.enqueue(0).await;
+    fixture.drained().await;
+
+    fixture.enqueue_checkpoint(1, vec![1; 64]).await;
+    fixture.drained().await;
+    assert!(
+        fixture.workspace.lock().await.needs_checkpoint(
+            &fixture.recipient.device_public_key,
+            &[3; 32],
+        ),
+        "a full delivery queue incorrectly marked the checkpoint served"
+    );
+
+    fixture.recipient_rx.try_recv().unwrap();
+    fixture.enqueue_checkpoint(2, vec![2; 64]).await;
+    fixture.drained().await;
+    assert!(fixture.recipient_rx.try_recv().is_ok(), "the checkpoint was not retried after capacity returned");
+    assert!(!fixture.workspace.lock().await.needs_checkpoint(
+        &fixture.recipient.device_public_key,
+        &[3; 32],
+    ));
+}
+
+#[tokio::test]
+async fn ordered_checkpoints_remain_live_for_peer_relays() {
+    let mut fixture = Fixture::new();
+    fixture.recipient.role = PeerRole::PeerRelay;
+    fixture.recipient.cert.capabilities.can_act_as_host = true;
+    qos_user_identity::sign_device_cert(&mut fixture.recipient.cert, &fixture.root_key).unwrap();
+    {
+        let mut runtime = fixture.workspace.lock().await;
+        runtime.record_peer_relay(fixture.recipient.device_public_key);
+        runtime.subscribers.get_mut(&fixture.recipient.device_public_key).unwrap().role = PeerRole::PeerRelay;
+        runtime.state_sessions.get_mut(&fixture.recipient.device_public_key).unwrap().peer = fixture.recipient.clone();
+    }
+
+    fixture.enqueue_checkpoint(1, vec![1; 64]).await;
+    fixture.drained().await;
+    assert!(fixture.recipient_rx.try_recv().is_ok());
+    fixture.enqueue_checkpoint(2, vec![2; 64]).await;
+    fixture.drained().await;
+    assert!(fixture.recipient_rx.try_recv().is_ok(), "peer relay checkpoint was incorrectly gated");
 }
 
 #[tokio::test]
