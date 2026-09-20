@@ -8046,10 +8046,9 @@ mod tests {
         );
 
         assert!(
-            fb.host_mut().focus_window_widget(strip, group, first),
-            "the existing tab can be focused through the production widget path"
+            fb.host_mut().focus_window_on_strip(strip, group, first),
+            "the existing tab can be focused through the production focus path"
         );
-        fb.host_mut().flush_active_tab_writeback();
         let _ = fb.paint_settled();
         assert_eq!(
             visible_tiled_surface_rects(&fb)

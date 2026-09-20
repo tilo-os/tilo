@@ -261,4 +261,3 @@ fn validate_digest(digest: &str) -> Result<(), String> {
         Err("The release catalog contains an invalid SHA-256 digest.".into())
     }
 }
-

@@ -45,9 +45,20 @@ struct TextEntry {
 }
 
 struct TextSnapshot {
-    revision: u64,
+    revision: String,
     entries: Vec<TextEntry>,
     index: ui::search::SearchTextIndex,
+}
+
+/// Tree membership and record content jointly define a text-app search
+/// projection. Chrome revision alone misses edits made directly in the
+/// record CRDT between shell-layout changes.
+pub fn text_search_revision(chrome: &ChromeState) -> String {
+    format!(
+        "{}:{}",
+        chrome.revision,
+        chrome.records().content_revision()
+    )
 }
 
 /// Does `tile` host the shell text app called `app`, matched case-insensitively?
@@ -178,9 +189,9 @@ pub fn query_text_app_page(
     budget: SearchBudget,
 ) -> SearchPage {
     if !ctx.wanted.contains(kind) || budget.max_results == 0 || budget.max_work == 0 {
-        return SearchPage::exhausted(ctx.chrome.revision.to_string(), Vec::new());
+        return SearchPage::exhausted(text_search_revision(ctx.chrome), Vec::new());
     }
-    let revision = ctx.chrome.revision.to_string();
+    let revision = text_search_revision(ctx.chrome);
     let after = match cursor {
         Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
         Some(cursor) => {
@@ -204,9 +215,9 @@ pub fn query_text_app_page(
     let mut slot = cache.snapshot.borrow_mut();
     if slot
         .as_ref()
-        .is_none_or(|snapshot| snapshot.revision != ctx.chrome.revision)
+        .is_none_or(|snapshot| snapshot.revision != revision)
     {
-        *slot = Some(build_snapshot(ctx, app, body_key));
+        *slot = Some(build_snapshot(ctx, app, body_key, revision.clone()));
     }
     let Some(snapshot) = slot.as_ref() else {
         return SearchPage::exhausted(revision, Vec::new());
@@ -263,7 +274,12 @@ pub fn query_text_app_page(
     }
 }
 
-fn build_snapshot(ctx: &SearchContext<'_>, app: &str, body_key: &str) -> TextSnapshot {
+fn build_snapshot(
+    ctx: &SearchContext<'_>,
+    app: &str,
+    body_key: &str,
+    revision: String,
+) -> TextSnapshot {
     let mut entries = Vec::new();
     let tree = ctx.chrome.tree();
     for workspace in &tree.workspaces {
@@ -295,7 +311,7 @@ fn build_snapshot(ctx: &SearchContext<'_>, app: &str, body_key: &str) -> TextSna
             .map(|entry| format!("{}\u{1f}{}", entry.title_lower, entry.body_lower)),
     );
     TextSnapshot {
-        revision: ctx.chrome.revision,
+        revision,
         entries,
         index,
     }

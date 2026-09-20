@@ -83,6 +83,7 @@ use crate::shell::capture_surface::{
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::collaborators_overlay::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay,
+    collaborator_roster_rows_with_local_user,
 };
 pub use crate::shell::collaborators_overlay::{RosterRow, collaborator_roster_rows};
 use crate::shell::file_picker_overlay::FilePickerOverlay;
@@ -1402,6 +1403,7 @@ impl TabContextMenu {
 struct OverlayInputs {
     search_registry: crate::shell::search::SearchRegistry,
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
+    collaboration_preferences: CollaborationPreferences,
     shortcut_config: settings_store::hardware::ShortcutConfig,
     desktop_controls: DesktopControlsSource,
     qs_root: QuickSettingsRoot,
@@ -1411,6 +1413,7 @@ struct OverlayInputs {
     room_activity: crate::shell::room_activity::RoomActivityPane,
     projection_overlay: ProjectionOverlay,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
+    status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     portal_dialogs: PortalDialogController,
 }
 
@@ -2585,6 +2588,7 @@ impl ShellOverlayHost {
             OverlayInputs {
                 search_registry,
                 room_records,
+                collaboration_preferences: CollaborationPreferences::load(),
                 shortcut_config: settings_store::hardware::ShortcutConfig::load(),
                 desktop_controls: DesktopControlsSource::Persisted,
                 qs_root: QuickSettingsRoot::load_persisted(),
@@ -2597,6 +2601,7 @@ impl ShellOverlayHost {
                 history_narrator: Some(
                     crate::shell::history_narrative::LocalHistoryNarrator::default(),
                 ),
+                status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
             },
         )
     }
@@ -2630,6 +2635,9 @@ impl ShellOverlayHost {
             OverlayInputs {
                 search_registry,
                 room_records,
+                collaboration_preferences: CollaborationPreferences::from_values(
+                    &serde_json::Map::new(),
+                ),
                 shortcut_config: settings_store::hardware::ShortcutConfig::default(),
                 desktop_controls: DesktopControlsSource::Explicit(
                     settings_store::hardware::DesktopControlsConfig::default(),
@@ -2644,6 +2652,7 @@ impl ShellOverlayHost {
                     "shell-fixture".into(),
                 ),
                 history_narrator: None,
+                status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
                 portal_dialogs: PortalDialogController::new(
                     crate::shell::portal_dialog::PortalDialogQueue::default(),
                 ),
@@ -2667,7 +2676,7 @@ impl ShellOverlayHost {
         // The shell paints scope + kind controls into the palette's own
         // reserved filter band, inside the card.
         palette.set_host_filter_strip(true);
-        let collaboration_preferences = CollaborationPreferences::load();
+        let collaboration_preferences = inputs.collaboration_preferences;
         Self {
             rect: Rect::ZERO,
             interaction: ui::InteractionEnvironment::default(),
@@ -2791,7 +2800,7 @@ impl ShellOverlayHost {
             session_audio_policy: None,
             room_activity: inputs.room_activity,
             history_narrator: inputs.history_narrator,
-            status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+            status_narrator: inputs.status_narrator,
             status_narrative_request: None,
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
@@ -4476,6 +4485,25 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Whether the requested fullscreen/maximized group is represented by a
+    /// live retained row. Chrome stays visible until this becomes true.
+    fn fullscreen_group_is_owned(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let group = {
+            let state = chrome.borrow();
+            state.fullscreen_group().or_else(|| state.maximized_group())
+        };
+        group.is_some_and(|group| {
+            self.group_row_ids.values().any(|&row| {
+                crate::shell::desktop_row(self.content.as_ref(), row)
+                    .group_ids()
+                    .contains(&group)
+            })
+        })
+    }
+
     fn reconcile_active_group_off_closing(&self) {
         if self.group_row_ids.is_empty() {
             return;
@@ -4580,6 +4608,14 @@ impl ShellOverlayHost {
         if changed {
             tree.flush_to_disk();
         }
+        drop(tree);
+        drop(st);
+
+        // The Expand interaction takes effect at this harvest boundary,
+        // before the next layout. Mirror retained-row ownership into chrome
+        // now so the top bar and wheel observe the same atomic transition.
+        let fullscreen = self.fullscreen_group_is_owned();
+        chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
     }
 
     /// Mirrors the widget-side `TabBar::active_id` back into the persisted
@@ -6182,7 +6218,8 @@ impl ShellOverlayHost {
         let peer_id = self.followed_peer.as_deref()?;
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        collaborator_roster_rows(&state.tree())
+        let local_user = state.active_local_user();
+        collaborator_roster_rows_with_local_user(&state.tree(), &local_user)
             .into_iter()
             .find(|row| row.id == peer_id && row.followable)
     }
@@ -8630,10 +8667,7 @@ impl ShellOverlayHost {
         let local_ids = {
             let state = chrome.borrow();
             let tree = state.tree();
-            let mut ids = vec![
-                state.local_user_id.clone(),
-                crate::shell::state::local_user_id(),
-            ];
+            let mut ids = vec![state.local_user_id.clone()];
             if let Some(workspace) = tree.active_workspace() {
                 ids.push(state.local_user_for_room(&workspace.room));
             }
@@ -8938,7 +8972,11 @@ impl ShellOverlayHost {
     /// for one set of rooms and painted with another.
     fn overview_cards(&self) -> Vec<crate::shell::overview::RoomCard> {
         match self.chrome.as_ref() {
-            Some(c) => crate::shell::overview::room_cards(&c.borrow().tree()),
+            Some(chrome) => {
+                let state = chrome.borrow();
+                let local_user = state.active_local_user();
+                crate::shell::overview::room_cards_with_local_user(&state.tree(), &local_user)
+            }
             None => Vec::new(),
         }
     }
@@ -11426,7 +11464,11 @@ impl ShellOverlayHost {
             let member_count = self
                 .chrome
                 .as_ref()
-                .map(|chrome| collaborator_roster_rows(&chrome.borrow().tree()).len())
+                .map(|chrome| {
+                    let state = chrome.borrow();
+                    let local_user = state.active_local_user();
+                    collaborator_roster_rows_with_local_user(&state.tree(), &local_user).len()
+                })
                 .unwrap_or_default();
             self.collaborators_overlay
                 .change_people_page(hit == CollaboratorsHit::NextPeople, member_count);
@@ -11436,7 +11478,8 @@ impl ShellOverlayHost {
         if let CollaboratorsHit::ToggleFollow(index) = hit {
             let target = self.chrome.as_ref().and_then(|chrome| {
                 let state = chrome.borrow();
-                collaborator_roster_rows(&state.tree())
+                let local_user = state.active_local_user();
+                collaborator_roster_rows_with_local_user(&state.tree(), &local_user)
                     .get(index)
                     .filter(|row| row.followable)
                     .cloned()
@@ -13228,6 +13271,10 @@ impl ShellOverlayHost {
             if self.add_workspace_rect.area() > 0.0 && self.add_workspace_rect.contains(p) {
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
+                    // Creation switches to the new workspace. Release the
+                    // overview's input grab in the same transaction so the
+                    // first navigation gesture reaches that workspace.
+                    st.overlays.overview = false;
                     // Mirrors the wheel-disc slot: both create
                     // affordances seed "Untitled".
                     st.add_workspace("Untitled");
@@ -14271,11 +14318,15 @@ impl Widget for ShellOverlayHost {
         // fullscreen collapse and per-display width resolution are in
         // effect — the latter is what makes a single-frame offscreen
         // render match the live shell's geometry.
+        // A client can request fullscreen before its group is adopted into
+        // the rendered tree. Keep that request in chrome for the later
+        // reconcile, but suppress desktop chrome only once a live row owns
+        // the group. Otherwise a stale or racing id blanks the entire shell.
         self.sync_fullscreen_from_chrome();
-        let fullscreen = self
-            .chrome
-            .as_ref()
-            .is_some_and(|c| c.borrow().is_fullscreen());
+        let fullscreen = self.fullscreen_group_is_owned();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
+        }
         let spans = self.strip_output_spans();
         for &ptr in self.group_row_ids.values() {
             {
@@ -17008,6 +17059,10 @@ impl ShellOverlayHost {
         bounds
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
+    )]
     fn draw_collaborators_dropdown(
         &mut self,
         scene: &mut Scene,
@@ -17022,8 +17077,9 @@ impl ShellOverlayHost {
                 || (Vec::new(), None, None),
                 |chrome| {
                     let state = chrome.borrow();
+                    let local_user = state.active_local_user();
                     (
-                        collaborator_roster_rows(&state.tree()),
+                        collaborator_roster_rows_with_local_user(&state.tree(), &local_user),
                         state.collab_unavailable.clone(),
                         collaborators_screen_exposure(&state),
                     )
@@ -19602,6 +19658,7 @@ impl ShellOverlayHost {
             return Vec::new();
         };
         let state = chrome.borrow();
+        let local_user = state.active_local_user();
         let tree = state.tree();
         let Some(workspace) = tree.active_workspace() else {
             return Vec::new();
@@ -19609,7 +19666,7 @@ impl ShellOverlayHost {
         let key = PresenceKey::Workspace {
             id: workspace.room.to_string(),
         };
-        let rows = collaborator_roster_rows(&tree);
+        let rows = collaborator_roster_rows_with_local_user(&tree, &local_user);
         let Some(pointers) = presence.pointers.get(&key) else {
             return Vec::new();
         };
@@ -19709,13 +19766,11 @@ impl ShellOverlayHost {
         // Scope by the workspace's room, not local `WorkspaceId` — the room
         // is the durable identity apps address collaboration to (stamped in
         // as `QOS_WORKSPACE_ID`); the local id differs per machine.
-        let room = {
+        let (room, local) = {
             let chrome = chrome_rc.borrow();
-            let tree = chrome.tree();
-            tree.workspaces
-                .iter()
-                .find(|w| w.id == tree.active)
-                .map(|w| w.room.to_string())
+            let local = chrome.active_local_user();
+            let room = chrome.tree().active_workspace().map(|w| w.room.to_string());
+            (room, local)
         };
         let Some(room) = room else {
             return Vec::new();
@@ -19728,7 +19783,6 @@ impl ShellOverlayHost {
         // Settle colours over the whole room (including the local user)
         // before filtering to what's on screen, so every host computes
         // the same assignment and a person is one colour everywhere.
-        let local = crate::shell::state::local_user_id();
         let mut room_ids: Vec<&str> = peers.iter().map(|(u, _)| u.0.as_str()).collect();
         room_ids.push(local.as_str());
         let reserved: Vec<(u8, u8, u8)> = presence.color_overrides.values().copied().collect();
@@ -22678,9 +22732,10 @@ mod empty_workspace_tests {
                 "Tasks",
                 "Plan a meeting",
                 "Invite people",
-                "Catch up"
+                "Catch up",
+                "Open an app"
             ],
-            "first use presents the actual collaboration jobs, not a generic app picker"
+            "first use presents collaboration jobs plus the explicit app escape hatch"
         );
         let rect = launchpad_rect(host.content.as_ref()).expect("launchpad is mounted");
         assert!(
@@ -24076,7 +24131,12 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
+        let settings = tempfile::tempdir().expect("isolated settings directory");
+        let old_config = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: the process_env serial group excludes concurrent env users.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", settings.path()) };
         let (mut host, _) = host_with_chrome();
         let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let capture = std::rc::Rc::clone(&published);
@@ -24105,11 +24165,22 @@ mod palette_dispatch_tests {
             &automerge::ROOT,
             &mut handled,
         ));
+        assert!(
+            host.pump_presence_requests(),
+            "the next production update applies the queued semantic status request"
+        );
         assert_eq!(host.local_status.as_deref(), Some("Preparing Q2 review"));
         assert_eq!(
             published.borrow().as_slice(),
             &[Some("Preparing Q2 review".into())]
         );
+        // SAFETY: restore the serialised process environment.
+        unsafe {
+            match old_config {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
     }
 
     #[test]
@@ -25216,7 +25287,11 @@ mod palette_dispatch_tests {
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
 
-        let (mut host, chrome) = host_with_chrome();
+        // This is deliberately the production constructor: the behavior under
+        // test is its real app-launch service and unavailable-package notice.
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         chrome.borrow_mut().overlays.quick_settings = true;
         host.apply_quick_settings_root_action(RootAction::OpenSettings, &chrome);
 
@@ -28984,7 +29059,7 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let content = Box::new(StubContent::new());
-        let host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        let host = ShellOverlayHost::with_fixture_content(content).with_chrome(chrome.clone());
         build_harness_with_host(host, chrome)
     }
 
@@ -29229,6 +29304,8 @@ mod tests {
             let mut chrome = h.chrome.borrow_mut();
             chrome
                 .tree_mut()
+                .active_workspace_mut()
+                .expect("fixture has an active workspace")
                 .collaborators
                 .push(crate::shell::state::Collaborator::new("ada", "Ada").with_role("editor"));
             chrome.overlays.collaborators = true;
@@ -30356,6 +30433,9 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
+        h.host.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::ApplicationsProvider::new(),
+        ));
         h.host
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
@@ -30412,7 +30492,7 @@ mod tests {
     }
 
     /// Search must reach the focused app's own *content*, not just its tab
-    /// title. `nir` appears only in the note's body, so
+    /// title. `Welcome` appears only in the note's body, so
     /// a provider looking it up by tab id rather than by document
     /// answers nothing.
     #[test]
@@ -30444,7 +30524,7 @@ mod tests {
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
 
-        h.host.palette.set_query("nir");
+        h.host.palette.set_query("Welcome");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
         let hit = h
@@ -31937,7 +32017,7 @@ mod resync_strips_tests {
         reason = "the frame-writeback regression keeps input, persistence, and next-frame assertions together"
     )]
     #[test]
-    fn active_tab_writeback_is_flushed_before_the_next_frame() {
+    fn active_tab_focus_is_flushed_before_the_next_frame() {
         let (mut tree, strip_id, group_id) = one_group_seed();
         let state_dir = tempfile::tempdir().expect("state directory");
         let state_path = state_dir.path().join("state.json");
@@ -31953,9 +32033,7 @@ mod resync_strips_tests {
                 },
             });
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        assert!(host.focus_window_widget(strip_id, group_id, 2));
-
-        host.flush_active_tab_writeback();
+        assert!(host.focus_window_on_strip(strip_id, group_id, 2));
 
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("selection writeback creates valid durable state");

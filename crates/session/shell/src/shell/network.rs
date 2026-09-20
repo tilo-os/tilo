@@ -651,17 +651,49 @@ pub fn personal_continuity_topic_id(user_public_key: &[u8; 32]) -> u64 {
 /// file, so one device has one identity rather than one per subsystem.
 pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
 
-/// The active collaboration identity tree unless `TILO_PEER_KEY_PATH` names
-/// somewhere else. Full-system sessions resolve to [`DEFAULT_KEYPAIR_PATH`];
+/// Resolve one network configuration value while keeping the current Tilo
+/// name authoritative and accepting the former qOS name only when the Tilo
+/// name is absent or empty.
+fn preferred_network_env(
+    tilo_name: &'static str,
+    qos_name: &'static str,
+) -> Option<(&'static str, std::ffi::OsString)> {
+    std::env::var_os(tilo_name)
+        .filter(|value| !value.is_empty())
+        .map(|value| (tilo_name, value))
+        .or_else(|| {
+            std::env::var_os(qos_name)
+                .filter(|value| !value.is_empty())
+                .map(|value| (qos_name, value))
+        })
+}
+
+fn preferred_network_env_string(
+    tilo_name: &'static str,
+    qos_name: &'static str,
+) -> Option<(&'static str, String)> {
+    let (name, value) = preferred_network_env(tilo_name, qos_name)?;
+    match value.into_string() {
+        Ok(value) => Some((name, value)),
+        Err(_) => {
+            tracing::warn!(config = name, "network configuration must be valid UTF-8");
+            None
+        }
+    }
+}
+
+/// The active collaboration identity tree unless `TILO_PEER_KEY_PATH` (or
+/// the compatibility fallback `QOS_PEER_KEY_PATH`) names somewhere else.
+/// Full-system sessions resolve to [`DEFAULT_KEYPAIR_PATH`];
 /// host-installed sessions select an XDG-owned tree at process startup. The
 /// override is what makes two sessions on one machine two
 /// *peers*: the key is the shell's network identity, so two processes
 /// reading one key file are one peer talking to itself.
 pub fn peer_key_path() -> std::path::PathBuf {
-    match std::env::var("TILO_PEER_KEY_PATH") {
-        Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
-        _ => crate::firstboot::collaboration_identity_paths().device_privkey,
-    }
+    preferred_network_env("TILO_PEER_KEY_PATH", "QOS_PEER_KEY_PATH").map_or_else(
+        || crate::firstboot::collaboration_identity_paths().device_privkey,
+        |(_, value)| std::path::PathBuf::from(value),
+    )
 }
 
 fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
@@ -675,19 +707,25 @@ fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
 
 fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
     let mut hosts = Vec::new();
-    if let Ok(value) = std::env::var("TILO_COLLAB_HOSTS") {
+    if let Some((name, value)) =
+        preferred_network_env_string("TILO_COLLAB_HOSTS", "QOS_COLLAB_HOSTS")
+    {
         match serde_json::from_str::<Vec<iroh::EndpointAddr>>(&value) {
             Ok(parsed) => hosts.extend(parsed),
             Err(error) => {
-                tracing::warn!(%error, "TILO_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses");
+                tracing::warn!(config = name, %error, "collaboration hosts must be a JSON array of Iroh endpoint addresses");
             }
         }
     }
-    if let Ok(value) = std::env::var("TILO_COLLAB_HOST") {
+    if let Some((name, value)) = preferred_network_env_string("TILO_COLLAB_HOST", "QOS_COLLAB_HOST")
+    {
         if let Some(addr) = parse_host_addr(&value) {
             hosts.push(addr);
         } else {
-            tracing::warn!("TILO_COLLAB_HOST is not a valid Iroh endpoint address or id");
+            tracing::warn!(
+                config = name,
+                "collaboration host is not a valid Iroh endpoint address or id"
+            );
         }
     }
     hosts.sort_by_key(|addr| addr.id.to_string());
@@ -701,20 +739,18 @@ const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
 const MAX_HOME_PEER_WORKSPACES: usize = 4096;
 
 fn home_peer_registry_path() -> PathBuf {
-    std::env::var_os("TILO_HOME_PEERS_PATH")
-        .filter(|path| !path.is_empty())
-        .map_or_else(
-            || {
-                let paths = crate::firstboot::collaboration_identity_paths();
-                paths
-                    .user_pubkey
-                    .parent()
-                    .and_then(std::path::Path::parent)
-                    .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from)
-                    .join("home-peers.json")
-            },
-            PathBuf::from,
-        )
+    preferred_network_env("TILO_HOME_PEERS_PATH", "QOS_HOME_PEERS_PATH").map_or_else(
+        || {
+            let paths = crate::firstboot::collaboration_identity_paths();
+            paths
+                .user_pubkey
+                .parent()
+                .and_then(std::path::Path::parent)
+                .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from)
+                .join("home-peers.json")
+        },
+        |(_, path)| PathBuf::from(path),
+    )
 }
 
 fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
@@ -1278,17 +1314,21 @@ pub struct InboundPresence {
     pub ts: u64,
 }
 
-/// Start mDNS LAN peer discovery when `TILO_COLLAB_LAN_DISCOVERY` requests
-/// it, registering it with `endpoint`'s address lookup. Returns `None`
+fn lan_discovery_requested() -> bool {
+    preferred_network_env("TILO_COLLAB_LAN_DISCOVERY", "QOS_COLLAB_LAN_DISCOVERY")
+        .is_some_and(|(_, value)| value != "0")
+}
+
+/// Start mDNS LAN peer discovery when `TILO_COLLAB_LAN_DISCOVERY` (or its
+/// `QOS_COLLAB_LAN_DISCOVERY` compatibility fallback) requests it, registering
+/// it with `endpoint`'s address lookup. Returns `None`
 /// when discovery is disabled, disallowed by the env var, or the mDNS
 /// service or address-lookup registry is unavailable — the caller then
 /// simply skips [`spawn_lan_discovery_forwarding`].
 fn init_lan_discovery(
     endpoint: &iroh::Endpoint,
 ) -> Option<iroh_mdns_address_lookup::MdnsAddressLookup> {
-    let lan_discovery = std::env::var_os("TILO_COLLAB_LAN_DISCOVERY")
-        .is_some_and(|value| value != "0" && !value.is_empty());
-    if !lan_discovery {
+    if !lan_discovery_requested() {
         return None;
     }
     let mdns = match iroh_mdns_address_lookup::MdnsAddressLookup::builder()
@@ -3207,7 +3247,7 @@ impl ShellNetwork {
     /// checkpoint to one exact certified transport peer.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the transfer boundary keeps the certified target, request/transfer IDs, size, resume checkpoint, hashes and spool path explicit"
+        reason = "the transfer boundary keeps the authenticated certified target and complete resumable-content contract explicit"
     )]
     pub(crate) fn start_nearby_transfer(
         &self,
@@ -5316,7 +5356,7 @@ impl ShellNetwork {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "invite redemption keeps room/expiry/recipient checks, membership persistence and post-admission certification in order"
+        reason = "identity redemption keeps certificate, invitation, room, expiry, recipient, persistence and post-admission certification checks in one atomic path"
     )]
     fn redeem_invited_identity(
         &self,
@@ -5709,6 +5749,92 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn network_config_prefers_tilo_names_and_falls_back_to_qos_names() {
+        const NAMES: [&str; 10] = [
+            "TILO_PEER_KEY_PATH",
+            "QOS_PEER_KEY_PATH",
+            "TILO_COLLAB_HOSTS",
+            "QOS_COLLAB_HOSTS",
+            "TILO_COLLAB_HOST",
+            "QOS_COLLAB_HOST",
+            "TILO_HOME_PEERS_PATH",
+            "QOS_HOME_PEERS_PATH",
+            "TILO_COLLAB_LAN_DISCOVERY",
+            "QOS_COLLAB_LAN_DISCOVERY",
+        ];
+        let previous = NAMES.map(|name| std::env::var_os(name));
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            for name in NAMES {
+                std::env::remove_var(name);
+            }
+        }
+
+        let temp = tempfile::tempdir().expect("temp config root");
+        let qos_key_path = temp.path().join("qos-peer-key");
+        let tilo_key_path = temp.path().join("tilo-peer-key");
+        let qos_home_path = temp.path().join("qos-home-peers.json");
+        let tilo_home_path = temp.path().join("tilo-home-peers.json");
+        let qos_list_host = iroh::SecretKey::from_bytes(&[0x31; 32]).public();
+        let qos_single_host = iroh::SecretKey::from_bytes(&[0x32; 32]).public();
+        let tilo_list_host = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
+        let tilo_single_host = iroh::SecretKey::from_bytes(&[0x34; 32]).public();
+        let qos_hosts = serde_json::to_string(&vec![iroh::EndpointAddr::new(qos_list_host)])
+            .expect("qOS host list");
+        let tilo_hosts = serde_json::to_string(&vec![iroh::EndpointAddr::new(tilo_list_host)])
+            .expect("Tilo host list");
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            std::env::set_var("QOS_PEER_KEY_PATH", &qos_key_path);
+            std::env::set_var("QOS_COLLAB_HOSTS", qos_hosts);
+            std::env::set_var("QOS_COLLAB_HOST", qos_single_host.to_string());
+            std::env::set_var("QOS_HOME_PEERS_PATH", &qos_home_path);
+            std::env::set_var("QOS_COLLAB_LAN_DISCOVERY", "1");
+        }
+        assert_eq!(peer_key_path(), qos_key_path);
+        assert_eq!(home_peer_registry_path(), qos_home_path);
+        assert!(lan_discovery_requested());
+        assert_eq!(
+            configured_host_addrs()
+                .into_iter()
+                .map(|host| host.id)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([qos_list_host, qos_single_host]),
+        );
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            std::env::set_var("TILO_PEER_KEY_PATH", &tilo_key_path);
+            std::env::set_var("TILO_COLLAB_HOSTS", tilo_hosts);
+            std::env::set_var("TILO_COLLAB_HOST", tilo_single_host.to_string());
+            std::env::set_var("TILO_HOME_PEERS_PATH", &tilo_home_path);
+            std::env::set_var("TILO_COLLAB_LAN_DISCOVERY", "0");
+        }
+        assert_eq!(peer_key_path(), tilo_key_path);
+        assert_eq!(home_peer_registry_path(), tilo_home_path);
+        assert!(!lan_discovery_requested());
+        assert_eq!(
+            configured_host_addrs()
+                .into_iter()
+                .map(|host| host.id)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([tilo_list_host, tilo_single_host]),
+        );
+
+        // SAFETY: guarded by the process_env serial group.
+        unsafe {
+            for (name, value) in NAMES.into_iter().zip(previous) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
         crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
@@ -6737,10 +6863,10 @@ mod tests {
             target_key.public().as_bytes(),
         ))
         .unwrap();
-        net.registered_home_peer_ids
+        net.registered_home_device_ids
             .lock()
             .unwrap()
-            .insert(target_key.public());
+            .insert(*target_key.public().as_bytes());
         let request_id = net
             .send_personal_fabric_action(
                 &target,
@@ -8692,10 +8818,12 @@ mod tests {
         let identity_root = temp.path().join("user-data/tilo");
         let old_identity_root = std::env::var_os("TILO_IDENTITY_ROOT");
         let old_registry = std::env::var_os("TILO_HOME_PEERS_PATH");
+        let old_qos_registry = std::env::var_os("QOS_HOME_PEERS_PATH");
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             std::env::set_var("TILO_IDENTITY_ROOT", &identity_root);
             std::env::remove_var("TILO_HOME_PEERS_PATH");
+            std::env::remove_var("QOS_HOME_PEERS_PATH");
         }
         assert_eq!(
             home_peer_registry_path(),
@@ -8711,6 +8839,10 @@ mod tests {
             match old_registry {
                 Some(value) => std::env::set_var("TILO_HOME_PEERS_PATH", value),
                 None => std::env::remove_var("TILO_HOME_PEERS_PATH"),
+            }
+            match old_qos_registry {
+                Some(value) => std::env::set_var("QOS_HOME_PEERS_PATH", value),
+                None => std::env::remove_var("QOS_HOME_PEERS_PATH"),
             }
         }
     }
@@ -9051,12 +9183,12 @@ mod tests {
 
     /// Build the inbound event a LAN peer's signed document publish arrives as.
     fn app_document_event(
+        app_id: &str,
         cluster_id: &str,
         from_peer_hash: u64,
         peer: iroh::PublicKey,
         device: &ed25519_dalek::SigningKey,
     ) -> NetEvent {
-        let app_id = "dev.tilo.notes";
         let record_id = "note-1";
         let mut envelope = collab_types::SignedOp::new_unsigned(
             collab_types::DocumentMutation::Incremental(vec![1, 2, 3, 4])
@@ -9153,6 +9285,7 @@ mod tests {
 
         net.event_tx
             .try_send(app_document_event(
+                "dev.tilo.notes",
                 &stranger_room.to_string(),
                 0xBBBBu64,
                 device.public(),
@@ -9167,6 +9300,7 @@ mod tests {
 
         net.event_tx
             .try_send(app_document_event(
+                "dev.tilo.notes",
                 "not-a-room",
                 0xBBBBu64,
                 device.public(),
@@ -9181,6 +9315,7 @@ mod tests {
 
         net.event_tx
             .try_send(app_document_event(
+                "dev.tilo.notes",
                 &our_room.to_string(),
                 0xBBBBu64,
                 device.public(),
@@ -9192,6 +9327,22 @@ mod tests {
         assert_eq!(
             delivered, 1,
             "a delta for a room this machine is in must still reach the broker queue",
+        );
+
+        net.event_tx
+            .try_send(app_document_event(
+                "dev.qos.notes",
+                &our_room.to_string(),
+                0xBBBBu64,
+                device.public(),
+                &device_signing,
+            ))
+            .expect("queue the legacy qOS app publish");
+        net.tick();
+        assert_eq!(
+            net.inbound_documents_handle().lock().unwrap().len(),
+            2,
+            "the durable protocol keeps accepting the exact legacy dev.qos app domain",
         );
     }
 
