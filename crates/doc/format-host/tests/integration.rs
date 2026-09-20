@@ -26,7 +26,7 @@ use std::time::Duration;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use format_host::format_router_capnp::format_router;
 use format_host::router::{Router, load_into};
-use format_host::runner::{LoadedComponent, spawn_epoch_ticker};
+use format_host::runner::{LoadedComponent, MAX_WALLCLOCK, spawn_epoch_ticker};
 use format_host::{transport, watch::spawn_watcher};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -329,14 +329,17 @@ fn resource_limit_kills_runaway() {
             .await
             .expect("join ok");
         let elapsed = started.elapsed();
-        // Within the 10-s budget plus a generous fudge (slow CI hosts).
-        assert!(elapsed < Duration::from_secs(20), "took {elapsed:?}");
+        // Preserve a generous allowance for a heavily scheduled CI host while
+        // deriving the bound from the production deadline.
+        let latest_expected = MAX_WALLCLOCK + MAX_WALLCLOCK;
+        assert!(elapsed < latest_expected, "took {elapsed:?}");
         match res {
             Ok(_) => panic!("infinite-loop component returned cleanly — epoch not bumping?"),
             Err(e) => {
+                assert_eq!(e.kind, "resource_limit", "unexpected error {e:?}");
                 assert!(
-                    e.kind == "resource_limit" || e.kind == "trap",
-                    "unexpected error kind {e:?}"
+                    e.message.starts_with("wallclock budget exhausted:"),
+                    "the runaway must reach epoch interruption, not fail early in canonical ABI lowering: {e:?}"
                 );
             }
         }
