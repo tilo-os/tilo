@@ -59,7 +59,7 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
         smoke = (
             ROOT / "crates/packaging/registry-server/container/test-image.sh"
         ).read_text()
-        self.assertIn('docker volume create "$volume"', smoke)
+        self.assertIn("--opt o=uid=65532,gid=65532,mode=0750,size=64m", smoke)
         self.assertIn(
             '--mount "type=volume,source=$volume,target=/var/lib/tilo-registry"',
             smoke,
