@@ -59,7 +59,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
@@ -94,7 +94,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout signing policy
@@ -596,22 +596,9 @@ jobs:
       # Set up buildx with the docker-container driver — the default `docker`
       # driver doesn't support cache export (the registry-backed cache we
       # need to survive across ephemeral runners).
-      - name: Set up buildx (docker-container driver for cache export)
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
         id: buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
-          # The OS graph contains several large RPM and Rust stages. Letting
-          # BuildKit run all of them at once exhausts the ephemeral runner's
-          # backing store and can tear SQLite's rpmdb while a layer is being
-          # committed. In particular, composefs needs temporary room comparable
-          # to the completed root while sealing the UKI; a second active solver
-          # operation has exhausted that headroom on otherwise healthy runners.
-          # Serialize the solver so the installed-image and AT-SPI gates are not
-          # skipped because an unrelated stage consumed composefs's workspace.
-          buildkitd-config-inline: |
-            [worker.oci]
-              max-parallelism = 1
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -640,7 +627,7 @@ jobs:
       # the complete build and registry cache without retaining output.
       - name: Build the Tilo image
         id: build
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        uses: useblacksmith/build-push-action@v2
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
@@ -696,15 +683,13 @@ jobs:
           # (~1-2 min). Export only final-stage dependencies: mode=max
           # duplicates the multi-gigabyte Rust build graph and can exhaust
           # the runner before BuildKit can finish or clean up.
-          cache-from: type=registry,ref=ghcr.io/tilo-os/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=ghcr.io/tilo-os/tilo-buildcache:${{ matrix.arch }},mode=min
 
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
       - name: Independently rebuild the release candidate
         if: steps.release-mode.outputs.validate == 'true'
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        uses: useblacksmith/build-push-action@v2
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
@@ -1105,7 +1090,7 @@ jobs:
   promote-multiarch:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

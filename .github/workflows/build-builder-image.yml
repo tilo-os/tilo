@@ -37,10 +37,10 @@ jobs:
         include:
           - arch: x86_64
             platform: linux/amd64
-            runner: ubuntu-24.04
+            runner: blacksmith-4vcpu-ubuntu-2404
           - arch: aarch64
             platform: linux/arm64
-            runner: ubuntu-24.04-arm
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
@@ -82,12 +82,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Build and publish the native image
         id: image
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           build-contexts: github-assets=os/external-assets/cache
@@ -97,8 +97,6 @@ jobs:
           provenance: false
           build-args: RUST_CHANNEL=${{ env.RUST_CHANNEL }}
           tags: ghcr.io/tilo-os/tilo-builder:sha-${{ github.sha }}-${{ matrix.arch }}
-          cache-from: type=gha,scope=tilo-builder-${{ matrix.arch }}
-          cache-to: type=gha,scope=tilo-builder-${{ matrix.arch }},mode=max
 
       - name: Attest the image
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
@@ -123,7 +121,7 @@ jobs:
   manifest:
     name: Publish multi-architecture manifest
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
       - name: Download native digests

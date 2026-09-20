@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   native-inputs:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     outputs:
       runtime: ghcr.io/tilo-os/wine-tools@${{ steps.tools.outputs.digest }}
@@ -55,14 +55,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Set up native image builder
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Freeze native tooling image
         id: tools
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: os/Containerfile.wine-tools
@@ -101,7 +99,7 @@ jobs:
 
   build:
     needs: native-inputs
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -146,7 +144,7 @@ jobs:
 
   pair:
     needs: [native-inputs, build]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     steps:
       - name: Download x86-64 artifact reference

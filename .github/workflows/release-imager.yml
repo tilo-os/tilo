@@ -38,7 +38,7 @@ env:
 jobs:
   plan:
     timeout-minutes: 15
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       linux-matrix: ${{ steps.lanes.outputs.linux-matrix }}
     steps:
@@ -241,7 +241,7 @@ jobs:
   catalog:
     timeout-minutes: 60
     needs: [plan, medium]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       linux-matrix: ${{ needs.plan.outputs.linux-matrix }}
     steps:
@@ -452,9 +452,9 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: windows-2025
+            runner: blacksmith-4vcpu-windows-2025
           - arch: aarch64
-            runner: windows-11-arm
+            runner: blacksmith-4vcpu-windows-2025
     runs-on: ${{ matrix.runner }}
     env:
       TILO_WINDOWS_ARCH: ${{ matrix.arch }}
@@ -589,9 +589,9 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: macos-15-intel
+            runner: blacksmith-6vcpu-macos-15
           - arch: aarch64
-            runner: macos-15
+            runner: blacksmith-6vcpu-macos-15
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -733,7 +733,7 @@ jobs:
     timeout-minutes: 60
     if: startsWith(github.ref, 'refs/tags/imager-v')
     needs: [linux, windows]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
     steps:
@@ -812,7 +812,7 @@ jobs:
     # tag may retain private repository assets without publishing them elsewhere.
     if: startsWith(github.ref, 'refs/tags/imager-v') && vars.TILO_PUBLIC_RELEASES_ENABLED == '1'
     needs: publish
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     permissions:
       contents: read
       id-token: write
@@ -853,9 +853,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-24.04
+          - runner: blacksmith-4vcpu-ubuntu-2404
             package_kind: formula
-          - runner: ubuntu-24.04-arm
+          - runner: blacksmith-4vcpu-ubuntu-2404-arm
             package_kind: formula
     runs-on: ${{ matrix.runner }}
     steps:
@@ -884,9 +884,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-15-intel
+          - runner: blacksmith-6vcpu-macos-15
             package_kind: cask
-          - runner: macos-15
+          - runner: blacksmith-6vcpu-macos-15
             package_kind: cask
     runs-on: ${{ matrix.runner }}
     steps:
@@ -912,7 +912,7 @@ jobs:
     timeout-minutes: 60
     if: startsWith(github.ref, 'refs/tags/imager-v') && vars.TILO_PUBLIC_RELEASES_ENABLED == '1'
     needs: publish
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       id-token: write
@@ -948,7 +948,7 @@ jobs:
     timeout-minutes: 30
     if: startsWith(github.ref, 'refs/tags/imager-v') && vars.TILO_PUBLIC_RELEASES_ENABLED == '1'
     needs: [homebrew-install-test, winget]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: read
       id-token: write

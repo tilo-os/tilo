@@ -57,7 +57,7 @@ env:
 
 jobs:
   builder:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       image: ${{ steps.resolve.outputs.image }}
@@ -80,7 +80,7 @@ jobs:
   select:
     # Selection uses its pinned tools image and needs no builder result.
     # Leave admission to the scheduler instead of serializing independent jobs.
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -169,7 +169,7 @@ jobs:
   security:
     if: needs.select.outputs.security_required == 'true'
     needs: [builder, select]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     env:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
@@ -197,7 +197,7 @@ jobs:
   native-dependencies:
     if: needs.select.outputs.native_dependencies_required == 'true'
     needs: [builder, select]
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     env:
       CARGO_BUILD_JOBS: '2'
@@ -402,7 +402,7 @@ jobs:
     needs: [builder, select, security, affected, native-dependencies]
     permissions:
       contents: write
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Require applicable checks and explain intentional non-applicability

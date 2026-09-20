@@ -70,7 +70,7 @@ env:
 jobs:
   inputs:
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
@@ -89,7 +89,7 @@ jobs:
   signing-preflight:
     needs: inputs
     if: github.ref == 'refs/heads/main' && needs.inputs.outputs.changed == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout signing policy
@@ -128,7 +128,7 @@ jobs:
             runner: ubuntu-24.04
           - arch: aarch64
             platform: linux/arm64
-            runner: ubuntu-24.04-arm
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 170
     steps:
@@ -208,14 +208,12 @@ jobs:
           docker system prune --all --force --volumes
           df -h /
 
-      - name: Set up buildx for native snapshot construction
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Build + push the frozen RPM repo image
         id: rpms
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           build-contexts: |
@@ -269,7 +267,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     timeout-minutes: 60
     needs: snapshot
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       actions: write
       contents: write
@@ -333,10 +331,8 @@ jobs:
             --signing-key "$COSIGN_KEY_REF" --output rpms-index.txt
           echo "RPMS_REF=$(cat rpms-index.txt)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Set up buildx for index inspection
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Attest and verify the native snapshot index
         env:

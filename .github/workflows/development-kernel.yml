@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   kernel:
-    runs-on: ubuntu-24.04-arm
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
     timeout-minutes: 170
     env:
       # This runner allocates four CPUs. Two jobs left roughly half idle;
@@ -79,16 +79,11 @@ jobs:
             test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$ref")" = linux/arm64
           done
 
-      - name: Set up bounded native BuildKit
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
-          driver-opts: |
-            memory=9g
-            memory-swap=9g
+      - name: Setup Blacksmith Builder
+        uses: useblacksmith/setup-docker-builder@v1
 
       - name: Compile and retain the kernel once
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: os/kernel/Containerfile
@@ -102,10 +97,6 @@ jobs:
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_BUILD_JOBS=${{ env.KERNEL_BUILD_JOBS }}
-          cache-from: |
-            type=registry,ref=ghcr.io/tilo-os/tilo-development-kernel-buildcache:aarch64
-            type=registry,ref=ghcr.io/tilo-os/tilo-kernel-buildcache:aarch64
-          cache-to: type=registry,ref=ghcr.io/tilo-os/tilo-development-kernel-buildcache:aarch64,mode=min
           provenance: false
 
       - name: Inspect packaged RPM without executing its payload
