@@ -125,6 +125,15 @@ impl StandaloneHistory {
         Ok(session)
     }
 
+    /// Validate authority for an immutable observation of the last rendered
+    /// frame. This does not refresh rows or close a pending edit transaction.
+    pub(crate) fn validate(&self, context: &HistoryReadContext<'_>) -> Result<(), HistoryError> {
+        if let Some(error) = &self.invalidated {
+            return Err(error.clone());
+        }
+        self.target.read(context, |_| ())
+    }
+
     /// Revalidate even on a cache hit. The host must refresh before exposing
     /// cached rows or comparison snapshots to a frame or semantic reader.
     pub(crate) fn refresh(

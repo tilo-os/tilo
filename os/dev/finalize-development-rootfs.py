@@ -24,12 +24,34 @@ import hardware_profile
 import installer_overlay
 import signing_spool as spool
 
+
+class CommandFailure(ValueError):
+    """Bounded command failure details for a public, sanitized receipt."""
+
+    def __init__(self, reason, arguments, output, exit_code=None):
+        super().__init__(reason)
+        self.reason = reason
+        self.arguments = tuple(arguments)
+        self.output = bytes(output)
+        self.exit_code = exit_code
+
+
+def sanitized_tail(output, limit=4096):
+    text = output[-limit * 4:].decode('utf-8', errors='replace')
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    text = re.sub(r'(?i)([a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@', r'\1***:***@', text)
+    text = re.sub(r'(?i)\b(authorization|password|passwd|token|secret|credential|auth)\b(\s*[:=]\s*)([^\s,;]+)',
+                  r'\1\2***', text)
+    text = ''.join(character if character in '\n\t' or character.isprintable() else '\ufffd' for character in text)
+    return text[-limit:]
+
 STAGES = ('rebind', 'loader', 'provisional', 'composefs', 'reseal', 'prediction', 'verified', 'published')
 FIELDS = {'schema', 'source_revision', 'source_dir', 'helpers_revision', 'receipt', 'receipt_sha256',
           'public_bundle', 'manifest_sha256', 'target', 'new_public_bundle', 'new_manifest_sha256',
           'new_target', 'new_owner', 'architecture', 'generation', 'source_date_epoch', 'base_ref',
           'rpms_ref', 'kernel_ref', 'wpe_ref', 'signer', 'systemd_version', 'minimum_free_bytes',
-          'stage_timeout_seconds', 'publish_repository'}
+          'stage_timeout_seconds', 'signing_response_timeout_seconds',
+          'prediction_stage_timeout_seconds', 'publish_repository'}
 
 
 def validate_request(request):
@@ -65,10 +87,17 @@ def validate_request(request):
             or not re.fullmatch(re.escape(request['publish_repository']) + r':[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', request['new_target'])):
         raise ValueError('publication must use the bound development repository with a separate staging tag')
     bounds = {'generation': (1, 2**64 - 1), 'source_date_epoch': (0, 253402300799),
-              'minimum_free_bytes': (1024**3, 1024**4), 'stage_timeout_seconds': (60, 3600)}
+              'minimum_free_bytes': (1024**3, 1024**4), 'stage_timeout_seconds': (60, 3600),
+              'signing_response_timeout_seconds': (60, 1800),
+              # Leave fifteen minutes inside the workflow's 155-minute step
+              # deadline for launcher/export cleanup and failure evidence.
+              'prediction_stage_timeout_seconds': (300, 8400)}
     for name, (low, high) in bounds.items():
         if type(request[name]) is not int or not low <= request[name] <= high:
             raise ValueError('invalid finalization execution bound')
+    if request['prediction_stage_timeout_seconds'] <= (
+            request['signing_response_timeout_seconds'] + request['stage_timeout_seconds']):
+        raise ValueError('prediction deadline must exceed signing response and non-signing command budgets')
     if not re.fullmatch(r'259(?:[.][0-9]+)?(?:[-+][A-Za-z0-9_.+-]+)?', request['systemd_version']):
         raise ValueError('independently pinned systemd259 version required')
     return request
@@ -85,15 +114,16 @@ def run_bounded(arguments, environment, timeout):
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not selector.select(remaining):
-                    raise ValueError('finalization stage exceeded deadline')
+                    raise CommandFailure('finalization stage exceeded deadline', arguments, data)
                 chunk = process.stdout.read1(65536)
                 if not chunk:
                     break
                 data.extend(chunk)
                 if len(data) > 16 * 1024**2:
-                    raise ValueError('finalization stage output exceeded bound')
-        if process.wait(timeout=max(0.01, deadline - time.monotonic())):
-            raise ValueError('finalization command failed; checkpoint not accepted')
+                    raise CommandFailure('finalization stage output exceeded bound', arguments, data)
+        exit_code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        if exit_code:
+            raise CommandFailure('finalization command failed; checkpoint not accepted', arguments, data, exit_code)
         completed = True
         return bytes(data)
     finally:
@@ -114,15 +144,27 @@ def image_id(value):
     return value
 
 
-def verify_registry_bytes(manifest_raw, config_raw, manifest_digest, config_digest, architecture, revision):
-    if 'sha256:' + spool.digest(manifest_raw) != manifest_digest or 'sha256:' + spool.digest(config_raw) != config_digest:
-        raise ValueError('published registry bytes differ from immutable digest')
+def verify_registry_bytes(manifest_raw, config_raw, registry_manifest_digest, manifest_digest,
+                          config_digest, architecture, revision):
+    # Skopeo may reserialize both inspection outputs. Bind the image through
+    # the registry-reported manifest digest and its config descriptor, then
+    # validate the decoded config properties instead of hashing presentation
+    # bytes as though they were raw registry blobs.
+    if image_id(registry_manifest_digest) != manifest_digest:
+        raise ValueError('published registry manifest differs from immutable digest')
     manifest = json.loads(manifest_raw, object_pairs_hook=spool.unique)
     config = json.loads(config_raw, object_pairs_hook=spool.unique)
     if (manifest.get('schemaVersion') != 2 or manifest.get('config', {}).get('digest') != config_digest
             or config.get('os') != 'linux' or config.get('architecture') != {'aarch64': 'arm64', 'x86_64': 'amd64'}[architecture]
             or (config.get('config', {}).get('Labels') or {}).get('org.opencontainers.image.revision') != revision):
         raise ValueError('published image configuration identity differs')
+
+
+def checkpoint_binding(request, request_sha256):
+    """Stable identity that may cross workers; deliberately excludes pod/job IDs."""
+    return {'request_sha256': request_sha256, 'source_revision': request['source_revision'],
+            'helpers_revision': request['helpers_revision'], 'architecture': request['architecture'],
+            'new_target': request['new_target'], 'new_manifest_sha256': request['new_manifest_sha256']}
 
 
 def build_final_command(request, signed_id, iidfile):
@@ -153,9 +195,29 @@ class Driver:
         self.environment.update(PATH='/usr/local/bin:/usr/bin:/bin', LANG='C.UTF-8',
                                 SOURCE_DATE_EPOCH=str(request['source_date_epoch']))
         self.receipts = []
+        self.restored_stage = None
 
-    def command(self, arguments):
-        return self.runner([str(a) for a in arguments], self.environment, self.request['stage_timeout_seconds'])
+    def command(self, arguments, timeout=None):
+        if timeout is None:
+            timeout = self.request['stage_timeout_seconds']
+        arguments = [str(a) for a in arguments]
+        try:
+            return self.runner(arguments, self.environment, timeout)
+        except CommandFailure as error:
+            receipt = {'schema': 1, 'request_sha256': self.binding,
+                       'reason': error.reason, 'executable': Path(error.arguments[0]).name,
+                       'argument_count': len(error.arguments),
+                       'arguments_sha256': spool.digest(spool.canonical(list(error.arguments))),
+                       'exit_code': error.exit_code, 'output_sha256': spool.digest(error.output),
+                       'output_tail': sanitized_tail(error.output)}
+            try:
+                status = spool.document(self.evidence / 'status.json')
+                if status.get('request_sha256') == self.binding and isinstance(status.get('stage'), str):
+                    receipt['stage'] = status['stage']
+                spool.publish(self.evidence / 'failure.json', spool.canonical(receipt))
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+            raise
 
     def helper(self, name, arguments):
         raw = self.command(['/usr/bin/python3', self.dev / name, *arguments])
@@ -167,6 +229,87 @@ class Driver:
                 or info[0].get('Os') != 'linux' or info[0].get('Architecture') != {'aarch64': 'arm64', 'x86_64': 'amd64'}[self.request['architecture']]
                 or (info[0].get('Labels') or {}).get('org.opencontainers.image.revision') != self.request['source_revision']):
             raise ValueError('checkpoint image identity or revision differs')
+
+    def current_context(self):
+        """Bind this attempt without making its ephemeral identity part of the checkpoint."""
+        context = spool.document(spool.signer.trusted(Path(self.request['signer']).with_name('bridge.json')))['context']
+        spool.context(context)
+        expected = {'revision': self.request['source_revision'], 'architecture': self.request['architecture'],
+                    'manifest_sha256': self.request['new_manifest_sha256'], 'target': self.request['new_target']}
+        if any(context.get(key) != value for key, value in expected.items()):
+            raise ValueError('current signing context differs from checkpoint request')
+        return {'sha256': spool.context(context), **expected}
+
+    def registry_bytes(self, reference):
+        digest = image_id(self.command(
+            ['skopeo', 'inspect', '--tls-verify=true', '--format={{.Digest}}', 'docker://' + reference]
+        ).decode().strip())
+        manifest = self.command(['skopeo', 'inspect', '--tls-verify=true', '--raw', 'docker://' + reference])
+        config = self.command(['skopeo', 'inspect', '--tls-verify=true', '--config', 'docker://' + reference])
+        return manifest, config, digest
+
+    def publish_checkpoint(self, image, stage):
+        if stage not in (2, 5):
+            raise ValueError('unsupported registry checkpoint stage')
+        tag = self.request['publish_repository'] + f':finalization-{self.binding}-stage{stage}'
+        digestfile = self.evidence / f'.stage{stage}-published.digest'
+        self.command(['podman', '--remote=false', 'push', '--tls-verify=true', '--digestfile', digestfile,
+                      image_id(image), 'docker://' + tag])
+        manifest_digest = image_id(spool.snapshot(digestfile, 128).decode().strip())
+        reference = self.request['publish_repository'] + '@' + manifest_digest
+        manifest, config, registry_digest = self.registry_bytes(reference)
+        verify_registry_bytes(manifest, config, registry_digest, manifest_digest, image, self.request['architecture'],
+                              self.request['source_revision'])
+        # Retain producer context as provenance, but do not require a later
+        # explicit attempt to reuse the same ephemeral pod/job identity.
+        return {'checkpoint_reference': reference, 'checkpoint_manifest_digest': manifest_digest,
+                'checkpoint_config_digest': image, 'checkpoint_binding': checkpoint_binding(self.request, self.binding),
+                'checkpoint_stage': stage, 'producer_context_sha256': self.current_context()['sha256']}
+
+    def restore_checkpoint(self):
+        """Restore one complete immutable stage-2 or stage-5 chain."""
+        available = [(self.evidence / f'{number:02d}-{STAGES[number - 1]}.json').exists()
+                     for number in range(1, 6)]
+        if not any(available):
+            return False
+        if available == [True, True, False, False, False]:
+            stage = 2
+        elif available == [True] * 5:
+            stage = 5
+        else:
+            raise ValueError('registry checkpoint receipt set is incomplete')
+        paths = [self.evidence / f'{number:02d}-{STAGES[number - 1]}.json'
+                 for number in range(1, stage + 1)]
+        receipts, parent_sha = [], None
+        for number, path in enumerate(paths, 1):
+            receipt = spool.document(path)
+            if (receipt.get('schema') != 1 or receipt.get('request_sha256') != self.binding
+                    or receipt.get('stage') != STAGES[number - 1]
+                    or receipt.get('parent_receipt_sha256') != parent_sha):
+                raise ValueError(f'stage-{stage} checkpoint receipt chain differs')
+            receipts.append(receipt)
+            parent_sha = spool.digest(spool.canonical(receipt))
+        checkpoint = receipts[-1]
+        manifest_digest = image_id(checkpoint.get('checkpoint_manifest_digest'))
+        config_digest = image_id(checkpoint.get('checkpoint_config_digest'))
+        reference = checkpoint.get('checkpoint_reference')
+        if (checkpoint.get('image_id') != config_digest
+                or reference != self.request['publish_repository'] + '@' + manifest_digest
+                or checkpoint.get('checkpoint_binding') != checkpoint_binding(self.request, self.binding)
+                or checkpoint.get('checkpoint_stage', 5 if stage == 5 else None) != stage):
+            raise ValueError(f'stage-{stage} checkpoint stable binding differs')
+        if not re.fullmatch(r'[0-9a-f]{64}', checkpoint.get('producer_context_sha256', '')):
+            raise ValueError(f'stage-{stage} checkpoint producer context identity invalid')
+        # current_context validates this new attempt against the stable request.
+        # Its digest is intentionally allowed to differ from the producer.
+        self.current_context()
+        manifest, config, registry_digest = self.registry_bytes(reference)
+        verify_registry_bytes(manifest, config, registry_digest, manifest_digest, config_digest, self.request['architecture'],
+                              self.request['source_revision'])
+        self.command(['podman', '--remote=false', 'pull', '--tls-verify=true', reference])
+        self.inspect(config_digest)
+        self.restored_stage = stage
+        return True
 
     def preflight(self):
         q = self.request
@@ -217,7 +360,7 @@ class Driver:
             if (receipt.get('request_sha256') != self.binding or receipt.get('stage') != name
                     or receipt.get('parent_receipt_sha256') != parent_sha):
                 raise ValueError('completed checkpoint belongs to another input chain')
-            if receipt.get('image_id'):
+            if receipt.get('image_id') and (number == self.restored_stage or self.restored_stage is None):
                 self.inspect(receipt['image_id'])
             self.receipts.append(receipt)
             return receipt
@@ -240,6 +383,7 @@ class Driver:
     def execute(self):
         q = self.request
         self.preflight()
+        self.restore_checkpoint()
         base = ['--receipt', q['receipt'], '--public-bundle', q['public_bundle'], '--revision', q['source_revision'],
                 '--architecture', q['architecture'], '--manifest-sha256', q['manifest_sha256'], '--target', q['target'],
                 '--generation', str(q['generation']), '--source-date-epoch', str(q['source_date_epoch'])]
@@ -252,7 +396,8 @@ class Driver:
             receipt = self.helper('sign-development-rootfs.py', ['--rootfs-id', rebound_id, '--architecture', q['architecture'],
                 '--revision', q['source_revision'], '--public-bundle', q['new_public_bundle'], '--manifest-sha256', q['new_manifest_sha256'],
                 '--target', q['new_target'], '--source-date-epoch', str(q['source_date_epoch']), '--signer', q['signer']])
-            return {'image_id': image_id(receipt['signed_rootfs_id']), 'evidence': receipt}
+            identifier = image_id(receipt['signed_rootfs_id'])
+            return {'image_id': identifier, 'evidence': receipt, **self.publish_checkpoint(identifier, 2)}
         signed_id = self.stage(2, loader)['image_id']
         def provisional():
             iid = self.evidence / '.provisional.iid'
@@ -283,19 +428,27 @@ class Driver:
             iid = self.evidence / '.resealed.iid'
             self.command(['/bin/bash', self.dev / 'reseal-image.sh', provisional_id, seal,
                           '--iidfile', iid, '--source-date-epoch', str(q['source_date_epoch'])])
-            return {'image_id': image_id(spool.snapshot(iid, 128).decode().strip()), 'composefs_digest': seal}
+            identifier = image_id(spool.snapshot(iid, 128).decode().strip())
+            return {'image_id': identifier, 'composefs_digest': seal, **self.publish_checkpoint(identifier, 5)}
         resealed_id = self.stage(5, reseal)['image_id']
         def prediction():
+            deadline = time.monotonic() + q['prediction_stage_timeout_seconds']
+            def command(arguments, *, aggregate=False):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('prediction stage exceeded aggregate deadline')
+                timeout = remaining if aggregate else min(q['stage_timeout_seconds'], remaining)
+                return self.command(arguments, timeout=timeout)
             # Existing helper accepts a mutable local alias. Confine it to this
             # request-owned alias; retain only immutable IDs in receipts.
             alias = 'localhost/tilo-finalization-' + self.binding + ':prediction'
-            self.command(['podman', '--remote=false', 'tag', resealed_id, alias])
+            command(['podman', '--remote=false', 'tag', resealed_id, alias])
             sys.path.insert(0, str(self.dev))
             trust = self.module('finalization_trust', 'development-trust.py')
             metadata = trust.validate(Path(q['new_public_bundle']), q['new_manifest_sha256'])
             self.environment['TILO_EFI_SIGNING_CERT_SHA256'] = metadata['identities']['efi-signing.crt']
-            self.command(['/bin/bash', self.dev / 'sign-target-prediction.sh', alias, q['signer']])
-            value = json.loads(self.command(['podman', '--remote=false', 'image', 'inspect', alias]))
+            command(['/bin/bash', self.dev / 'sign-target-prediction.sh', alias, q['signer']], aggregate=True)
+            value = json.loads(command(['podman', '--remote=false', 'image', 'inspect', alias]))
             return {'image_id': image_id('sha256:' + value[0]['Id'].removeprefix('sha256:')), 'composefs_digest': seal}
         final_id = self.stage(6, prediction)['image_id']
         def verify():
@@ -320,9 +473,9 @@ class Driver:
             manifest_digest = spool.snapshot(digestfile, 128).decode().strip()
             image_id(manifest_digest)
             reference = q['publish_repository'] + '@' + manifest_digest
-            manifest = self.command(['skopeo', 'inspect', '--raw', '--tls-verify=true', 'docker://' + reference])
-            configuration = self.command(['skopeo', 'inspect', '--config', '--raw', '--tls-verify=true', 'docker://' + reference])
-            verify_registry_bytes(manifest, configuration, manifest_digest, final_id, q['architecture'], q['source_revision'])
+            manifest, configuration, registry_digest = self.registry_bytes(reference)
+            verify_registry_bytes(manifest, configuration, registry_digest, manifest_digest, final_id,
+                                  q['architecture'], q['source_revision'])
             return {'image_id': final_id, 'published_reference': reference, 'manifest_digest': manifest_digest,
                     'config_digest': final_id, 'staging_tag': tag, 'target_update_ref': q['new_target'],
                     'boot_profile': q.get('boot_profile', 'installed-target'),

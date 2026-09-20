@@ -77,6 +77,15 @@ helper with Rust or global build inputs still selects the affected closure or
 full workspace. Do not dispatch a full native check just to replace an intentional
 skipped Rust row for an audited helper edit.
 
+On pull requests only, that same existing-file prose allowlist and the exact
+`QUALITY_ONLY_HELPERS` source/test pairs may also make the independent security
+suite inapplicable. This security exception is narrower than the Rust exception:
+workflow and other `QUALITY_ONLY_CONTROL_INPUTS`, OS or security files, manifests,
+unknown paths, mixed changes, deletions, and helpers whose mapped observer is
+missing all keep the security suite required. Main pushes and manual dispatches
+always require it. The selector emits `security_required=true` by default and
+only the pull-request workflow enables the audited exception.
+
 For a change to either lint helper, run its production-path regression tests
 locally without compiling Rust:
 
@@ -90,10 +99,12 @@ PR comparison regressions. CI's `tools/policy/run.sh` still discovers all
 
 The workflow retains a skipped sentinel matrix row because a literally empty
 matrix removed the job and stranded its aggregate on this Forgejo installation.
-Selection and security must succeed before the aggregate accepts intentional
-Rust non-applicability. Repository policy, cargo-deny and cargo-machete remain
-active, so a docs-only change can still expose a broken baseline; a skipped Rust
-matrix does not certify those independent checks.
+The builder and selector must succeed before the aggregate accepts any
+intentional skip. It accepts a skipped security job only for a pull request with
+an exact `security_required=false` selector output; missing or malformed outputs
+fail. Repository policy, cargo-deny and cargo-machete remain active, so an
+allowlisted change can still expose a broken baseline; skipped native and
+security jobs do not certify those independent checks.
 
 For local documentation of installer or packaging behavior, run the relevant
 existing contract directly before waiting for CI:

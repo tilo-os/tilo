@@ -3,7 +3,9 @@
 use super::App;
 use crate::history_source::HistoryComparison;
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
-use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, StandaloneHistoryHost};
+use crate::standalone_history_host::{
+    HISTORY_OPERATION, HistoryCommand, SEARCH_OPERATION, StandaloneHistoryHost,
+};
 use crate::widget::{HistoryEntry, HistoryEntryId, Widget};
 
 #[derive(Clone, Debug)]
@@ -18,6 +20,12 @@ impl App {
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> bool {
+        if encoded.type_id == crate::close_admission::OPERATION {
+            return self.close_admission.dialog.is_some();
+        }
+        if encoded.type_id == SEARCH_OPERATION {
+            return self.history_chrome_enabled && self.document_history.has_search();
+        }
         if encoded.type_id == HISTORY_OPERATION {
             return self.history_chrome_enabled;
         }
@@ -32,6 +40,14 @@ impl App {
             &taffy::TaffyTree<()>,
         ) -> R,
     ) -> Result<R, String> {
+        if let Some(dialog) = self.close_admission.dialog.as_deref() {
+            return Ok(visit(
+                dialog,
+                &self.node_map,
+                self.focused_node,
+                &self.taffy,
+            ));
+        }
         let Some(layout) = self.history_layout else {
             return Ok(visit(
                 self.root_widget.as_ref(),
@@ -78,13 +94,20 @@ impl App {
         handled: &mut bool,
         focus: &mut Option<taffy::NodeId>,
     ) -> bool {
+        if self.close_handle_event(event, scale) {
+            *handled = true;
+            return true;
+        }
         self.history_handle_event(event, scale, handled, focus);
         let history_handled = *handled
-            || (matches!(event, winit::event::WindowEvent::KeyboardInput { .. })
-                && self
-                    .focused_node
-                    .is_some_and(|node| self.is_history_node(node)));
+            || (matches!(
+                event,
+                winit::event::WindowEvent::KeyboardInput { .. } | winit::event::WindowEvent::Ime(_)
+            ) && self
+                .focused_node
+                .is_some_and(|node| self.is_history_node(node)));
         if !*handled
+            && !history_handled
             && self.history_layout.is_none_or(|layout| layout.app_visible)
             && let Some(root) = self
                 .history_layout
@@ -119,6 +142,9 @@ impl App {
         self.document_history
             .toolbar_mut()
             .refresh_control_action_availability(&allowed);
+        if let Some(search) = self.document_history.search_mut() {
+            search.refresh_control_action_availability(&allowed);
+        }
         if let Some(pane) = self.document_history.pane_mut() {
             pane.refresh_control_action_availability(&allowed);
         }
@@ -126,7 +152,7 @@ impl App {
 
     pub(super) fn history_local_resources(&mut self) -> Vec<tilo_actions::Resource> {
         if !self.history_chrome_enabled {
-            return Vec::new();
+            return self.close_admission.resources();
         }
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
@@ -144,6 +170,8 @@ impl App {
             })
             .unwrap_or_default();
         self.history_changed(revision, open);
+        let mut resources = resources;
+        resources.extend(self.close_admission.resources());
         resources
     }
 
@@ -176,6 +204,18 @@ impl App {
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
+        if encoded.type_id == crate::close_admission::OPERATION {
+            return self.invoke_close_encoded(encoded);
+        }
+        if encoded.type_id == SEARCH_OPERATION {
+            if !self.history_chrome_enabled || !self.document_history.has_search() {
+                return Err("Search host is unavailable".into());
+            }
+            serde_json::from_slice::<()>(&encoded.payload)
+                .map_err(|_| "Invalid Search operation")?;
+            self.open_action_palette();
+            return Ok(());
+        }
         if encoded.type_id == HISTORY_OPERATION {
             return self.invoke_history_local(encoded);
         }
@@ -240,6 +280,11 @@ impl App {
         {
             pending.push(intent);
         }
+        if let Some(search) = self.document_history.search_mut() {
+            while let Some(intent) = search.take_control_invocation() {
+                pending.push(intent);
+            }
+        }
         if let Some(pane) = self.document_history.pane_mut() {
             while let Some(intent) = pane.take_control_invocation() {
                 pending.push(intent);
@@ -258,6 +303,9 @@ impl App {
             self.document_history
                 .toolbar_mut()
                 .on_control_invocation_result(&intent.address, &result);
+            if let Some(search) = self.document_history.search_mut() {
+                search.on_control_invocation_result(&intent.address, &result);
+            }
             if let Some(pane) = self.document_history.pane_mut() {
                 pane.on_control_invocation_result(&intent.address, &result);
             }
@@ -270,6 +318,21 @@ impl App {
     }
 
     pub(super) fn build_history_presentation(&mut self) {
+        if let Some(dialog) = self.close_admission.dialog.as_mut() {
+            self.taffy = taffy::TaffyTree::new();
+            dialog.sync(&mut self.state.doc, &self.state.root);
+            let root = dialog.build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
+            self.root_node = Some(root);
+            self.history_layout = None;
+            // SAFETY: this modal is the sole presented root in this fresh
+            // arena. The app tree remains alive, but cannot receive input.
+            unsafe {
+                self.bindings
+                    .rebuild(dialog.as_ref(), &self.taffy, root, &self.node_map);
+            }
+            return;
+        }
+
         let app = self
             .root_widget
             .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
@@ -308,9 +371,11 @@ impl App {
             .unwrap_or_default();
         let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(self.root_widget.as_ref(), app)];
         roots.extend(
-            chrome
-                .into_iter()
-                .zip(std::iter::once(layout.toolbar).chain(layout.pane)),
+            chrome.into_iter().zip(
+                std::iter::once(layout.toolbar)
+                    .chain(layout.search)
+                    .chain(layout.pane),
+            ),
         );
         // SAFETY: every root and node belongs to this same freshly built arena;
         // chrome is admitted separately and does not inherit app authority.
@@ -400,6 +465,22 @@ impl App {
                 &self.taffy,
             );
         }
+        if !*handled
+            && !keyboard
+            && let (Some(search), Some(node)) = (self.document_history.search_mut(), layout.search)
+        {
+            search.handle_event(
+                event,
+                scale,
+                &self.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                handled,
+                focus,
+                node,
+                &self.taffy,
+            );
+        }
         let pane_focused = self
             .focused_node
             .is_some_and(|node| node != layout.toolbar && self.is_history_node(node));
@@ -483,6 +564,7 @@ impl App {
             return false;
         };
         let mut pending = vec![layout.toolbar];
+        pending.extend(layout.search);
         pending.extend(layout.pane);
         while let Some(next) = pending.pop() {
             if next == node {
@@ -512,6 +594,7 @@ impl App {
     /// root. Native windows enable this automatically; embedding remains opt-in.
     pub fn enable_document_history_chrome(&mut self) {
         self.history_chrome_enabled = true;
+        self.document_history.enable_search(self.platform);
         self.remember_history_content();
         self.structure_dirty = true;
         self.layout_dirty = true;

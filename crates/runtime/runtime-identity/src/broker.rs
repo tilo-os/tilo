@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NotAvailable, SigningIdentity, SigningSource};
+use super::{NotAvailable, SigningIdentity, SigningSource};
 
 pub const BROKER_ENV_VAR: &str = "TILO_IDENTITY_BROKER_FD";
 pub const BROKER_CHILD_FD: RawFd = 15;

@@ -137,8 +137,7 @@ pub enum CalculatorAction {
         expr: String,
         result: String,
     },
-    /// Remove one history entry by position (newest = 0). Out of range is a
-    /// no-op.
+    /// Remove one history entry by stable id. A missing id is a no-op.
     DeleteHistoryEntry { id: String },
     /// Empty the whole history list.
     ClearHistory { ids: Vec<String> },
@@ -160,7 +159,7 @@ pub enum CalculatorAction {
     /// Flip a graph row's visibility. Recomputed from the document's base state
     /// (an absent flag reads as visible) so replicas converge.
     ToggleGraphVisible { kind: GraphKind, id: String },
-    /// Delete a graph row by position. Out of range is a no-op.
+    /// Delete a graph row by stable id. A missing id is a no-op.
     DeleteGraph { kind: GraphKind, id: String },
 }
 

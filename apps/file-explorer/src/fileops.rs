@@ -11,6 +11,8 @@
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
+const MAX_DESTINATION_SUFFIX: u32 = 10_000;
+
 /// Accept one portable filesystem leaf name, never a path expression.
 ///
 /// Both action prompts and inline rename reach these operations. In
@@ -170,10 +172,27 @@ pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
 /// Pick a non-colliding path for `name` inside `dir`. If `dir/name` is
 /// free it's returned as-is; otherwise a numeric suffix is inserted
 /// before the extension: `report.txt` → `report 2.txt` → `report 3.txt`.
-pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
+///
+/// # Errors
+/// Returns an error if a candidate cannot be inspected or all supported suffixes
+/// are occupied. Never falls back to an occupied directory entry.
+pub fn unique_destination(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let is_free = |candidate: &Path| match std::fs::symlink_metadata(candidate) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(crate::i18n::t_args(
+            "files-destination-inspect-failed",
+            &[
+                crate::i18n::arg("path", candidate.to_string_lossy().into_owned()),
+                crate::i18n::arg("error", error.to_string()),
+            ],
+        )),
+    };
+    // A dangling link still occupies its directory entry. Following it here
+    // would let a later copy create its target, or a move replace the link.
     let candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
+    if is_free(&candidate)? {
+        return Ok(candidate);
     }
     let path = Path::new(name);
     let stem = path
@@ -181,18 +200,26 @@ pub fn unique_destination(dir: &Path, name: &str) -> PathBuf {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let ext = path.extension().map(|e| e.to_string_lossy().into_owned());
-    for n in 2..10_000 {
-        let trial_name = match &ext {
-            Some(ext) => format!("{stem} {n}.{ext}"),
-            None => format!("{stem} {n}"),
-        };
-        let trial = dir.join(trial_name);
-        if !trial.exists() {
-            return trial;
+    for n in 2..MAX_DESTINATION_SUFFIX {
+        let trial = dir.join(suffixed_name(&stem, ext.as_deref(), n));
+        if is_free(&trial)? {
+            return Ok(trial);
         }
     }
-    // Pathological fallback — extremely unlikely.
-    dir.join(name)
+    Err(crate::i18n::t_args(
+        "files-destination-names-exhausted",
+        &[
+            crate::i18n::arg("name", name),
+            crate::i18n::arg("path", dir.to_string_lossy().into_owned()),
+        ],
+    ))
+}
+
+fn suffixed_name(stem: &str, extension: Option<&str>, suffix: u32) -> String {
+    match extension {
+        Some(extension) => format!("{stem} {suffix}.{extension}"),
+        None => format!("{stem} {suffix}"),
+    }
 }
 
 /// Create a new folder named `name` (deduplicated) inside `parent`.
@@ -207,7 +234,7 @@ pub fn new_folder(parent: &Path, name: &str) -> Result<PathBuf, String> {
         Err(_) if name.trim().is_empty() => return Err(crate::i18n::t("files-folder-name-empty")),
         Err(error) => return Err(error),
     };
-    let dest = unique_destination(parent, name);
+    let dest = unique_destination(parent, name)?;
     std::fs::create_dir(&dest).map_err(|e| e.to_string())?;
     Ok(dest)
 }
@@ -272,93 +299,575 @@ pub fn delete_to_trash(paths: &[PathBuf]) -> Result<(), String> {
 /// Returns an error if `src` has no file name, or the recursive copy fails
 /// (a read/write/permission error partway through the tree).
 pub fn copy_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
-    ensure_destination_is_outside_source(src, dest_dir)?;
-    let name = src
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
-    let dest = unique_destination(dest_dir, &name);
-    copy_recursive(src, &dest).map_err(|e| e.to_string())?;
-    Ok(dest)
+    transfer_into_with(src, dest_dir, false, &mut NoopTransferObserver)
 }
 
-/// Move `src` into `dest_dir`. Tries a cheap rename first; on a
-/// cross-device error falls back to copy-then-delete.
+/// Move `src` into `dest_dir` without replacing a concurrent destination.
+/// Linux, macOS and Windows use an atomic no-replace rename on the same
+/// filesystem. The cross-filesystem fallback stages a complete private copy,
+/// removes the source, and only then publishes the destination atomically.
 ///
 /// # Errors
 ///
-/// Returns an error if `src` has no file name, or if both the rename and
-/// the copy-then-delete fallback fail (a read/write/permission error, or
-/// `src` could not be removed after a successful copy).
+/// Returns an error if `src` has no file name, staging fails, the source cannot
+/// be removed, or the staged tree cannot be published or restored.
 pub fn move_into(src: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
+    transfer_into_with(src, dest_dir, true, &mut NoopTransferObserver)
+}
+
+trait TransferObserver {
+    fn allow_direct_rename(&self) -> bool {
+        true
+    }
+
+    fn before_copy_source(&mut self, _source: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn before_publish(&mut self, _destination: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn before_source_remove(&mut self, _source: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct NoopTransferObserver;
+impl TransferObserver for NoopTransferObserver {}
+
+fn transfer_into_with(
+    src: &Path,
+    dest_dir: &Path,
+    remove_source: bool,
+    observer: &mut impl TransferObserver,
+) -> Result<PathBuf, String> {
     ensure_destination_is_outside_source(src, dest_dir)?;
     let name = src
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
+        .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| crate::i18n::t("files-source-no-name"))?;
     let source_parent = src
         .parent()
         .and_then(|parent| std::fs::canonicalize(parent).ok());
     let destination_dir = std::fs::canonicalize(dest_dir).ok();
-    if source_parent.is_some() && source_parent == destination_dir {
+    if remove_source && source_parent.is_some() && source_parent == destination_dir {
         return Err("the item is already in this folder".into());
     }
-    let dest = unique_destination(dest_dir, &name);
-    if let Ok(()) = std::fs::rename(src, &dest) {
-        Ok(dest)
-    } else {
-        // Likely a cross-filesystem move — copy then remove.
-        copy_recursive(src, &dest).map_err(|e| e.to_string())?;
-        remove_path(src).map_err(|e| e.to_string())?;
-        Ok(dest)
+
+    let names = DestinationNames::new(&name);
+    // Preserve the existing diagnostic for an inaccessible destination before
+    // allocating staging storage beneath it.
+    inspect_destination(&dest_dir.join(names.for_suffix(1)))?;
+
+    if remove_source && observer.allow_direct_rename() {
+        for suffix in 1..MAX_DESTINATION_SUFFIX {
+            let destination = dest_dir.join(names.for_suffix(suffix));
+            if !inspect_destination(&destination)? {
+                continue;
+            }
+            observer
+                .before_publish(&destination)
+                .map_err(|error| error.to_string())?;
+            match rename_noreplace(src, &destination) {
+                Ok(()) => return Ok(destination),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
+    let staging = stage_private_copy(src, dest_dir, observer).map_err(|error| error.to_string())?;
+    if remove_source {
+        let quarantine = match quarantine_source(src) {
+            Ok(path) => path,
+            Err(error) => return Err(staging.error_with_cleanup(error.to_string())),
+        };
+        let deletion = observer
+            .before_source_remove(&quarantine)
+            .and_then(|()| remove_path(&quarantine));
+        if let Err(error) = deletion {
+            return Err(restore_failed_cut(
+                src,
+                &quarantine,
+                &staging,
+                error.to_string(),
+            ));
+        }
+    }
+
+    match publish_staging(&staging.path, dest_dir, &names, observer) {
+        Ok(destination) => {
+            staging.finish_success();
+            Ok(destination)
+        }
+        Err(publish_error) if remove_source => Err(restore_failed_cut(
+            src,
+            Path::new(""),
+            &staging,
+            publish_error,
+        )),
+        Err(error) => Err(staging.error_with_cleanup(error)),
     }
 }
 
-fn remove_path(p: &Path) -> std::io::Result<()> {
-    if p.is_dir() {
-        std::fs::remove_dir_all(p)
+fn quarantine_source(src: &Path) -> std::io::Result<PathBuf> {
+    let parent = src
+        .parent()
+        .ok_or_else(|| std::io::Error::other("source has no parent directory"))?;
+    for _ in 0..32 {
+        let quarantine = parent.join(format!(".tilo-transfer-source-{}", uuid::Uuid::new_v4()));
+        match rename_noreplace(src, &quarantine) {
+            Ok(()) => {
+                if let Err(error) = mark_private_path(&quarantine) {
+                    return match rename_noreplace(&quarantine, src) {
+                        Ok(()) => Err(error),
+                        Err(rollback_error) => Err(std::io::Error::new(
+                            rollback_error.kind(),
+                            format!(
+                                "{error}; source rollback failed: {rollback_error}; original retained at {}",
+                                quarantine.display()
+                            ),
+                        )),
+                    };
+                }
+                return Ok(quarantine);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate private source quarantine",
+    ))
+}
+
+fn restore_failed_cut(
+    source: &Path,
+    quarantine: &Path,
+    staging: &StagingPath,
+    original_error: String,
+) -> String {
+    let quarantine_error = if quarantine.as_os_str().is_empty() {
+        None
     } else {
-        std::fs::remove_file(p)
+        remove_path(quarantine).err()
+    };
+    match copy_tree_exclusive(&staging.path, source, &mut NoopTransferObserver) {
+        Ok(()) => {
+            let mut error = staging.error_with_cleanup(original_error);
+            if let Some(quarantine_error) = quarantine_error {
+                error.push_str(&format!(
+                    "; partial source quarantine retained at {}: {quarantine_error}",
+                    quarantine.display()
+                ));
+            }
+            error
+        }
+        Err(restore_error) => {
+            staging.retain();
+            format!(
+                "{original_error}; source restoration failed: {restore_error}; staged data retained at {}",
+                staging.path.display()
+            )
+        }
     }
 }
 
-/// Copy a file or (recursively) a directory tree to an exact `dest` path.
-fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
-    let meta = std::fs::symlink_metadata(src)?;
-    if meta.file_type().is_symlink() {
-        // Never silently dereference a link: that could copy an unbounded
-        // tree outside the source a person selected. Preserve the link object,
-        // including a dangling link, just as a same-filesystem move does.
-        copy_symlink(src, dest)
-    } else if meta.is_dir() {
-        std::fs::create_dir_all(dest)?;
-        for entry in std::fs::read_dir(src)? {
+struct DestinationNames {
+    original: String,
+    stem: String,
+    extension: Option<String>,
+}
+
+impl DestinationNames {
+    fn new(name: &str) -> Self {
+        let path = Path::new(name);
+        Self {
+            original: name.to_owned(),
+            stem: path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            extension: path
+                .extension()
+                .map(|extension| extension.to_string_lossy().into_owned()),
+        }
+    }
+
+    fn for_suffix(&self, suffix: u32) -> String {
+        if suffix == 1 {
+            self.original.clone()
+        } else {
+            suffixed_name(&self.stem, self.extension.as_deref(), suffix)
+        }
+    }
+}
+
+fn inspect_destination(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(destination_inspection_error(path, error)),
+    }
+}
+
+fn publish_staging(
+    staging: &Path,
+    dest_dir: &Path,
+    names: &DestinationNames,
+    observer: &mut impl TransferObserver,
+) -> Result<PathBuf, String> {
+    for suffix in 1..MAX_DESTINATION_SUFFIX {
+        let destination = dest_dir.join(names.for_suffix(suffix));
+        if !inspect_destination(&destination)? {
+            continue;
+        }
+        observer
+            .before_publish(&destination)
+            .map_err(|error| error.to_string())?;
+        match rename_noreplace(staging, &destination) {
+            Ok(()) => return Ok(destination),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err(crate::i18n::t_args(
+        "files-destination-names-exhausted",
+        &[
+            crate::i18n::arg("name", names.original.clone()),
+            crate::i18n::arg("path", dest_dir.to_string_lossy().into_owned()),
+        ],
+    ))
+}
+
+struct StagingPath {
+    container: PathBuf,
+    path: PathBuf,
+    retain: std::cell::Cell<bool>,
+}
+
+impl StagingPath {
+    fn retain(&self) {
+        self.retain.set(true);
+    }
+
+    fn error_with_cleanup(&self, error: String) -> String {
+        match remove_path(&self.container) {
+            Ok(()) => {
+                self.retain();
+                error
+            }
+            Err(cleanup_error) => {
+                self.retain();
+                format!(
+                    "{error}; private staging retained at {}: {cleanup_error}",
+                    self.path.display()
+                )
+            }
+        }
+    }
+
+    fn finish_success(&self) {
+        // Publication moved the payload out, so failure here can leave only
+        // an empty private container and must not make a successful transfer
+        // retry under another suffix.
+        if let Err(error) = remove_path(&self.container) {
+            tracing::warn!(
+                path = %self.container.display(),
+                %error,
+                "empty Files transfer staging container could not be removed"
+            );
+        }
+        self.retain();
+    }
+}
+
+impl Drop for StagingPath {
+    fn drop(&mut self) {
+        if !self.retain.get() {
+            if let Err(error) = remove_path(&self.container) {
+                tracing::warn!(
+                    path = %self.container.display(),
+                    %error,
+                    "Files transfer staging cleanup failed during unwinding"
+                );
+            }
+        }
+    }
+}
+
+fn stage_private_copy(
+    src: &Path,
+    dest_dir: &Path,
+    observer: &mut impl TransferObserver,
+) -> std::io::Result<StagingPath> {
+    for _ in 0..32 {
+        let container = dest_dir.join(format!(".tilo-transfer-{}", uuid::Uuid::new_v4()));
+        match create_private_container(&container) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+        let path = container.join("payload");
+        match copy_tree_exclusive(src, &path, observer) {
+            Ok(()) => {
+                return Ok(StagingPath {
+                    container,
+                    path,
+                    retain: std::cell::Cell::new(false),
+                });
+            }
+            Err(error) => {
+                return match remove_path(&container) {
+                    Ok(()) => Err(error),
+                    Err(cleanup_error) => Err(std::io::Error::new(
+                        cleanup_error.kind(),
+                        format!(
+                            "{error}; private staging retained at {}: {cleanup_error}",
+                            path.display()
+                        ),
+                    )),
+                };
+            }
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate private transfer staging",
+    ))
+}
+
+/// Rename without replacement. These are the only host-specific pieces of the
+/// transfer algorithm; all staging, cleanup and retry policy is shared.
+#[cfg(target_os = "linux")]
+fn rename_noreplace(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let src = std::ffi::CString::new(src.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let dest = std::ffi::CString::new(dest.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: both pointers refer to live, NUL-terminated path buffers.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            src.as_ptr(),
+            libc::AT_FDCWD,
+            dest.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn rename_noreplace(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn renamex_np(
+            from: *const libc::c_char,
+            to: *const libc::c_char,
+            flags: u32,
+        ) -> libc::c_int;
+    }
+    const RENAME_EXCL: u32 = 0x0000_0004;
+    let src = std::ffi::CString::new(src.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    let dest = std::ffi::CString::new(dest.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: both pointers refer to live, NUL-terminated path buffers.
+    let result = unsafe { renamex_np(src.as_ptr(), dest.as_ptr(), RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn rename_noreplace(src: &Path, dest: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn MoveFileW(existing: *const u16, new: *const u16) -> i32;
+    }
+
+    let src: Vec<u16> = src.as_os_str().encode_wide().chain(Some(0)).collect();
+    let dest: Vec<u16> = dest.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: both pointers refer to live, NUL-terminated UTF-16 path buffers.
+    let result = unsafe { MoveFileW(src.as_ptr(), dest.as_ptr()) };
+    if result != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn rename_noreplace(_src: &Path, _dest: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
+fn destination_inspection_error(path: &Path, error: std::io::Error) -> String {
+    crate::i18n::t_args(
+        "files-destination-inspect-failed",
+        &[
+            crate::i18n::arg("path", path.to_string_lossy().into_owned()),
+            crate::i18n::arg("error", error.to_string()),
+        ],
+    )
+}
+
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            std::fs::remove_dir_all(path)
+        }
+        Ok(_) => std::fs::remove_file(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn copy_tree_exclusive(
+    src: &Path,
+    dest: &Path,
+    observer: &mut impl TransferObserver,
+) -> std::io::Result<()> {
+    let parent_path = src
+        .parent()
+        .ok_or_else(|| std::io::Error::other("source has no parent directory"))?;
+    let name = src
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("source has no file name"))?;
+    let parent = cap_std::fs::Dir::open_ambient_dir(parent_path, cap_std::ambient_authority())?;
+    copy_capability_entry(&parent, name, src, dest, observer)
+}
+
+fn copy_capability_entry(
+    parent: &cap_std::fs::Dir,
+    name: &std::ffi::OsStr,
+    display_path: &Path,
+    dest: &Path,
+    observer: &mut impl TransferObserver,
+) -> std::io::Result<()> {
+    use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsMaybeDirExt};
+
+    let initial = parent.symlink_metadata(name)?;
+    observer.before_copy_source(display_path)?;
+    if initial.file_type().is_symlink() {
+        let target = parent.read_link_contents(name)?;
+        return create_symlink(&target, dest);
+    }
+
+    let mut options = cap_std::fs::OpenOptions::new();
+    options
+        .read(true)
+        .follow(FollowSymlinks::No)
+        .maybe_dir(true);
+    let opened = parent.open_with(name, &options)?.into_std();
+    let metadata = opened.metadata()?;
+
+    if metadata.is_dir() {
+        std::fs::create_dir(dest)?;
+        let source = cap_std::fs::Dir::from_std_file(opened);
+        for entry in source.entries()? {
             let entry = entry?;
-            let child_dest = dest.join(entry.file_name());
-            copy_recursive(&entry.path(), &child_dest)?;
+            let child_name = entry.file_name();
+            copy_capability_entry(
+                &source,
+                &child_name,
+                &display_path.join(&child_name),
+                &dest.join(&child_name),
+                observer,
+            )?;
         }
-        Ok(())
-    } else {
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(src, dest)?;
-        Ok(())
+        std::fs::set_permissions(dest, metadata.permissions())?;
+        return Ok(());
     }
+    if !metadata.is_file() {
+        return Err(std::io::Error::other("source type changed during copy"));
+    }
+
+    let mut source = opened;
+    let mut destination = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)?;
+    std::io::copy(&mut source, &mut destination)?;
+    destination.set_permissions(metadata.permissions())
 }
 
 #[cfg(unix)]
-fn copy_symlink(src: &Path, dest: &Path) -> std::io::Result<()> {
+fn create_symlink(target: &Path, dest: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::symlink;
+    symlink(target, dest)
+}
 
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
+#[cfg(unix)]
+fn create_private_container(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700).create(path)
+}
+
+#[cfg(not(windows))]
+fn mark_private_path(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_private_container(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)?;
+    if let Err(error) = mark_private_path(path) {
+        let _ = std::fs::remove_dir(path);
+        return Err(error);
     }
-    symlink(std::fs::read_link(src)?, dest)
+    Ok(())
+}
+
+#[cfg(windows)]
+fn mark_private_path(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    unsafe extern "system" {
+        fn GetFileAttributesW(path: *const u16) -> u32;
+        fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32;
+    }
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
+    const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `wide` is a live, NUL-terminated UTF-16 path buffer for both
+    // calls. Existing attributes are retained while adding Hidden.
+    let attributes = unsafe { GetFileAttributesW(wide.as_ptr()) };
+    if attributes == INVALID_FILE_ATTRIBUTES {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { SetFileAttributesW(wide.as_ptr(), attributes | FILE_ATTRIBUTE_HIDDEN) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_private_container(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
 }
 
 #[cfg(not(unix))]
-fn copy_symlink(_src: &Path, _dest: &Path) -> std::io::Result<()> {
+fn create_symlink(_target: &Path, _dest: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "copying symbolic links is not supported on this platform",
@@ -388,6 +897,66 @@ pub fn purge_entries(_entries: &[PathBuf]) -> Result<usize, String> {
 mod tests {
     use super::*;
     use std::fs;
+
+    type TestHook<'a> = Box<dyn FnMut(&Path) -> std::io::Result<()> + 'a>;
+
+    #[derive(Default)]
+    struct TestTransferObserver<'a> {
+        force_staging: bool,
+        before_copy_source: Option<TestHook<'a>>,
+        before_publish: Option<TestHook<'a>>,
+        before_source_remove: Option<TestHook<'a>>,
+    }
+
+    impl TransferObserver for TestTransferObserver<'_> {
+        fn allow_direct_rename(&self) -> bool {
+            !self.force_staging
+        }
+
+        fn before_copy_source(&mut self, source: &Path) -> std::io::Result<()> {
+            self.before_copy_source
+                .as_mut()
+                .map_or(Ok(()), |hook| hook(source))
+        }
+
+        fn before_publish(&mut self, destination: &Path) -> std::io::Result<()> {
+            self.before_publish
+                .as_mut()
+                .map_or(Ok(()), |hook| hook(destination))
+        }
+
+        fn before_source_remove(&mut self, source: &Path) -> std::io::Result<()> {
+            self.before_source_remove
+                .as_mut()
+                .map_or(Ok(()), |hook| hook(source))
+        }
+    }
+
+    fn assert_no_transfer_staging(directory: &Path) {
+        assert!(
+            fs::read_dir(directory).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tilo-transfer-")
+            }),
+            "private transfer staging was cleaned"
+        );
+    }
+
+    fn assert_no_source_quarantine(directory: &Path) {
+        assert!(
+            fs::read_dir(directory).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".tilo-transfer-source-")
+            }),
+            "source quarantine was cleaned"
+        );
+    }
 
     #[test]
     #[cfg(windows)]
@@ -443,14 +1012,26 @@ mod tests {
         let d = tmp();
         let root = d.path();
         // Free name is returned verbatim.
-        assert_eq!(unique_destination(root, "a.txt"), root.join("a.txt"));
+        assert_eq!(
+            unique_destination(root, "a.txt").unwrap(),
+            root.join("a.txt")
+        );
         fs::write(root.join("a.txt"), b"x").unwrap();
-        assert_eq!(unique_destination(root, "a.txt"), root.join("a 2.txt"));
+        assert_eq!(
+            unique_destination(root, "a.txt").unwrap(),
+            root.join("a 2.txt")
+        );
         fs::write(root.join("a 2.txt"), b"x").unwrap();
-        assert_eq!(unique_destination(root, "a.txt"), root.join("a 3.txt"));
+        assert_eq!(
+            unique_destination(root, "a.txt").unwrap(),
+            root.join("a 3.txt")
+        );
         // Extension-less names.
         fs::create_dir(root.join("folder")).unwrap();
-        assert_eq!(unique_destination(root, "folder"), root.join("folder 2"));
+        assert_eq!(
+            unique_destination(root, "folder").unwrap(),
+            root.join("folder 2")
+        );
     }
 
     #[test]
@@ -500,6 +1081,280 @@ mod tests {
         // A second copy into the same dir dedups the folder name.
         let copied2 = copy_into(&src, &destdir).unwrap();
         assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
+    }
+
+    #[test]
+    fn copy_and_move_publish_after_a_racing_root_without_replacing_it() {
+        for remove_source in [false, true] {
+            let directory = tmp();
+            let source = directory.path().join("report.txt");
+            let destination = directory.path().join("destination");
+            fs::write(&source, b"selected bytes").unwrap();
+            fs::create_dir(&destination).unwrap();
+
+            let mut raced = false;
+            let mut observer = TestTransferObserver {
+                force_staging: true,
+                before_publish: Some(Box::new(|candidate| {
+                    if !raced {
+                        raced = true;
+                        fs::write(candidate, b"competitor bytes")?;
+                    }
+                    Ok(())
+                })),
+                ..Default::default()
+            };
+            let transferred =
+                transfer_into_with(&source, &destination, remove_source, &mut observer).unwrap();
+            drop(observer);
+
+            assert!(raced, "the test forced the post-selection collision");
+            assert_eq!(transferred, destination.join("report 2.txt"));
+            assert_eq!(
+                fs::read(destination.join("report.txt")).unwrap(),
+                b"competitor bytes"
+            );
+            assert_eq!(fs::read(&transferred).unwrap(), b"selected bytes");
+            assert_eq!(source.exists(), !remove_source);
+            assert_no_transfer_staging(&destination);
+        }
+    }
+
+    #[test]
+    fn direct_move_retries_when_the_selected_name_is_claimed() {
+        let directory = tmp();
+        let source = directory.path().join("report.txt");
+        let destination = directory.path().join("destination");
+        fs::write(&source, b"selected bytes").unwrap();
+        fs::create_dir(&destination).unwrap();
+
+        let mut raced = false;
+        let mut observer = TestTransferObserver {
+            before_publish: Some(Box::new(|candidate| {
+                if !raced {
+                    raced = true;
+                    fs::write(candidate, b"competitor bytes")?;
+                }
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let moved = transfer_into_with(&source, &destination, true, &mut observer).unwrap();
+        drop(observer);
+
+        assert_eq!(moved, destination.join("report 2.txt"));
+        assert_eq!(
+            fs::read(destination.join("report.txt")).unwrap(),
+            b"competitor bytes"
+        );
+        assert_eq!(fs::read(&moved).unwrap(), b"selected bytes");
+        assert!(!source.exists());
+    }
+
+    #[test]
+    fn racing_descendants_are_never_overwritten_by_directory_publication() {
+        let directory = tmp();
+        let source = directory.path().join("project");
+        let destination = directory.path().join("destination");
+        let outside = directory.path().join("outside.txt");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("selected.txt"), b"selected bytes").unwrap();
+        fs::write(&outside, b"outside bytes").unwrap();
+        fs::create_dir(&destination).unwrap();
+
+        let mut raced = false;
+        let mut observer = TestTransferObserver {
+            force_staging: true,
+            before_publish: Some(Box::new(|candidate| {
+                if !raced {
+                    raced = true;
+                    fs::create_dir(candidate)?;
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&outside, candidate.join("selected.txt"))?;
+                    #[cfg(not(unix))]
+                    fs::write(candidate.join("selected.txt"), b"competitor bytes")?;
+                }
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let copied = transfer_into_with(&source, &destination, false, &mut observer).unwrap();
+        drop(observer);
+
+        assert_eq!(copied, destination.join("project 2"));
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_link(destination.join("project/selected.txt")).unwrap(),
+            outside
+        );
+        #[cfg(not(unix))]
+        assert_eq!(
+            fs::read(destination.join("project/selected.txt")).unwrap(),
+            b"competitor bytes"
+        );
+        assert_eq!(
+            fs::read(copied.join("selected.txt")).unwrap(),
+            b"selected bytes"
+        );
+        assert_eq!(fs::read(&outside).unwrap(), b"outside bytes");
+        assert_no_transfer_staging(&destination);
+    }
+
+    #[test]
+    fn failed_recursive_copy_publishes_nothing_and_cleans_private_staging() {
+        let directory = tmp();
+        let source = directory.path().join("project");
+        let destination = directory.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("first.txt"), b"first bytes").unwrap();
+        fs::write(source.join("second.txt"), b"second bytes").unwrap();
+        fs::create_dir(&destination).unwrap();
+
+        let root = source.clone();
+        let mut visited_child = false;
+        let mut observer = TestTransferObserver {
+            force_staging: true,
+            before_copy_source: Some(Box::new(move |path| {
+                if path != root {
+                    if visited_child {
+                        return Err(std::io::Error::other("injected recursive copy failure"));
+                    }
+                    visited_child = true;
+                }
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let result = transfer_into_with(&source, &destination, false, &mut observer);
+
+        assert!(result.is_err());
+        assert!(source.join("first.txt").exists());
+        assert!(source.join("second.txt").exists());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        assert_no_transfer_staging(&destination);
+    }
+
+    #[test]
+    fn failed_cut_source_deletion_publishes_nothing_and_cleans_staging() {
+        let directory = tmp();
+        let source = directory.path().join("project");
+        let destination = directory.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("first.txt"), b"first bytes").unwrap();
+        fs::write(source.join("second.txt"), b"second bytes").unwrap();
+        fs::create_dir(&destination).unwrap();
+
+        let mut observer = TestTransferObserver {
+            force_staging: true,
+            before_source_remove: Some(Box::new(|quarantine| {
+                fs::remove_file(quarantine.join("first.txt"))?;
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected partial source deletion failure",
+                ))
+            })),
+            ..Default::default()
+        };
+        let result = transfer_into_with(&source, &destination, true, &mut observer);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(source.join("first.txt")).unwrap(), b"first bytes");
+        assert_eq!(
+            fs::read(source.join("second.txt")).unwrap(),
+            b"second bytes"
+        );
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        assert_no_transfer_staging(&destination);
+        assert_no_source_quarantine(directory.path());
+
+        let retried = move_into(&source, &destination).unwrap();
+        assert_eq!(retried, destination.join("project"));
+        assert_eq!(fs::read(retried.join("first.txt")).unwrap(), b"first bytes");
+        assert_eq!(
+            fs::read(retried.join("second.txt")).unwrap(),
+            b"second bytes"
+        );
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_swap_to_symlink_is_refused_without_reading_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tmp();
+        let source = directory.path().join("report.txt");
+        let destination = directory.path().join("destination");
+        let outside = directory.path().join("outside.txt");
+        fs::write(&source, b"selected bytes").unwrap();
+        fs::write(&outside, b"outside secret").unwrap();
+        fs::create_dir(&destination).unwrap();
+
+        let selected = source.clone();
+        let target = outside.clone();
+        let mut swapped = false;
+        let mut observer = TestTransferObserver {
+            force_staging: true,
+            before_copy_source: Some(Box::new(move |path| {
+                if path == selected && !swapped {
+                    swapped = true;
+                    fs::remove_file(path)?;
+                    symlink(&target, path)?;
+                }
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let result = transfer_into_with(&source, &destination, false, &mut observer);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&outside).unwrap(), b"outside secret");
+        assert_eq!(fs::read_link(&source).unwrap(), outside);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        assert_no_transfer_staging(&destination);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_directory_swap_to_symlink_is_refused_without_traversal() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tmp();
+        let source = directory.path().join("project");
+        let saved_source = directory.path().join("saved-project");
+        let destination = directory.path().join("destination");
+        let outside = directory.path().join("outside");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
+        fs::create_dir(&destination).unwrap();
+
+        let selected = source.clone();
+        let saved = saved_source.clone();
+        let target = outside.clone();
+        let mut swapped = false;
+        let mut observer = TestTransferObserver {
+            force_staging: true,
+            before_copy_source: Some(Box::new(move |path| {
+                if path == selected && !swapped {
+                    swapped = true;
+                    fs::rename(path, &saved)?;
+                    symlink(&target, path)?;
+                }
+                Ok(())
+            })),
+            ..Default::default()
+        };
+        let result = transfer_into_with(&source, &destination, false, &mut observer);
+
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read(outside.join("secret.txt")).unwrap(),
+            b"outside secret"
+        );
+        assert!(saved_source.is_dir());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        assert_no_transfer_staging(&destination);
     }
 
     #[test]
@@ -586,5 +1441,116 @@ mod tests {
         assert!(moved.exists());
         assert!(!f.exists());
         assert_eq!(moved.parent().unwrap(), destdir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_and_move_propagate_destination_metadata_failure() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("report.txt");
+        let destination = directory.path().join("destination");
+        fs::write(&source, b"selected bytes").unwrap();
+        symlink("destination", &destination).unwrap();
+        let candidate = destination.join("report.txt");
+        let metadata_error = fs::symlink_metadata(&candidate).unwrap_err();
+        let expected = crate::i18n::t_args(
+            "files-destination-inspect-failed",
+            &[
+                crate::i18n::arg("path", candidate.to_string_lossy().into_owned()),
+                crate::i18n::arg("error", metadata_error.to_string()),
+            ],
+        );
+        for result in [
+            copy_into(&source, &destination),
+            move_into(&source, &destination),
+        ] {
+            let error = result.unwrap_err();
+            assert_eq!(error, expected);
+            assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+            assert_eq!(
+                fs::read_link(&destination).unwrap(),
+                PathBuf::from("destination")
+            );
+        }
+    }
+
+    #[test]
+    fn exhausted_destination_names_do_not_overwrite_existing_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("report.txt");
+        let destination = directory.path().join("destination");
+        fs::write(&source, b"selected bytes").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let occupied = destination.join("report.txt");
+        fs::write(&occupied, b"existing bytes").unwrap();
+        for suffix in 2..10_000 {
+            fs::write(
+                destination.join(format!("report {suffix}.txt")),
+                b"suffix bytes",
+            )
+            .unwrap();
+        }
+        assert!(copy_into(&source, &destination).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+        assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+        assert!(move_into(&source, &destination).is_err());
+        assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+        assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 9_999);
+        for suffix in 2..10_000 {
+            assert_eq!(
+                fs::read(destination.join(format!("report {suffix}.txt"))).unwrap(),
+                b"suffix bytes"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_and_move_preserve_dangling_destination_entries() {
+        use std::os::unix::fs::symlink;
+
+        for move_source in [false, true] {
+            for numbered_collision in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let source = directory.path().join("report.txt");
+                let destination = directory.path().join("destination");
+                let outside = directory.path().join("unselected-target.txt");
+                fs::write(&source, b"selected bytes").unwrap();
+                fs::create_dir(&destination).unwrap();
+                let occupied = destination.join("report.txt");
+                let (link, expected) = if numbered_collision {
+                    fs::write(&occupied, b"existing bytes").unwrap();
+                    (
+                        destination.join("report 2.txt"),
+                        destination.join("report 3.txt"),
+                    )
+                } else {
+                    (occupied.clone(), destination.join("report 2.txt"))
+                };
+                symlink(&outside, &link).unwrap();
+                let result = if move_source {
+                    move_into(&source, &destination)
+                } else {
+                    copy_into(&source, &destination)
+                }
+                .unwrap();
+                assert_eq!(result, expected);
+                assert_eq!(fs::read(&result).unwrap(), b"selected bytes");
+                assert_eq!(fs::read_link(&link).unwrap(), outside);
+                assert!(
+                    !outside.exists(),
+                    "copy must not write through the destination link"
+                );
+                assert_eq!(source.exists(), !move_source);
+                if !move_source {
+                    assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+                }
+                if numbered_collision {
+                    assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+                }
+            }
+        }
     }
 }

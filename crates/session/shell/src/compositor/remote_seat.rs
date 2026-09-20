@@ -284,6 +284,11 @@ impl RemoteSeats {
             .collect()
     }
 
+    /// Remaining local and remote holders of the shared physical key state.
+    pub fn key_holder_count(&self, keycode: u32) -> usize {
+        self.key_holders.get(&keycode).copied().unwrap_or(0)
+    }
+
     #[cfg(test)]
     pub fn button_holder_count(&self, button: u32) -> usize {
         self.button_holders.get(&button).copied().unwrap_or(0)

@@ -64,6 +64,12 @@ pub enum BundleReviewError {
         expected: u64,
         actual: u64,
     },
+    #[error("package {version} final-byte BLAKE3 mismatch")]
+    ContentHashMismatch { version: String },
+    #[error("package {version} has no supported signed execution target")]
+    UnsupportedTarget { version: String },
+    #[error("package {version} target does not match its signed manifest")]
+    TargetMismatch { version: String },
     #[error("package {version} has an invalid publisher key: {reason}")]
     Publisher { version: String, reason: String },
     #[error("package {version} has an invalid root id: {reason}")]
@@ -93,6 +99,22 @@ pub fn inspect_entry(
     entry: &RegistryEntry,
     policy: InspectionPolicy,
 ) -> Result<Vec<InspectedVersion>, BundleReviewError> {
+    Ok(fetch_entry_bytes(entry, policy)?
+        .into_iter()
+        .map(|(inspection, _bytes)| inspection)
+        .collect())
+}
+
+/// Fetch every version and retain the exact verified bytes for a later
+/// networkless signing step.
+///
+/// # Errors
+/// Returns the same URL, fetch, size, identity, and package verification
+/// failures as [`inspect_entry`].
+pub fn fetch_entry_bytes(
+    entry: &RegistryEntry,
+    policy: InspectionPolicy,
+) -> Result<Vec<(InspectedVersion, Vec<u8>)>, BundleReviewError> {
     if entry.versions.is_empty() {
         return Err(BundleReviewError::NoVersions);
     }
@@ -107,7 +129,7 @@ fn fetch_and_inspect(
     entry: &RegistryEntry,
     version: &RegistryVersion,
     policy: InspectionPolicy,
-) -> Result<InspectedVersion, BundleReviewError> {
+) -> Result<(InspectedVersion, Vec<u8>), BundleReviewError> {
     if version.qpkg_size_bytes > policy.max_package_bytes {
         return Err(BundleReviewError::TooLarge {
             version: version.version.clone(),
@@ -191,7 +213,8 @@ fn fetch_and_inspect(
             reason: error.to_string(),
         })?;
     check_size(version, bytes.len() as u64, policy.max_package_bytes)?;
-    inspect_bytes(entry, version, &bytes)
+    let inspection = inspect_bytes(entry, version, &bytes)?;
+    Ok((inspection, bytes))
 }
 
 fn fetch_error(version: &RegistryVersion, error: &reqwest::Error) -> BundleReviewError {
@@ -231,6 +254,16 @@ pub fn inspect_bytes(
     bytes: &[u8],
 ) -> Result<InspectedVersion, BundleReviewError> {
     check_size(version, bytes.len() as u64, u64::MAX)?;
+    let actual_hash = blake3::hash(bytes).to_hex().to_string();
+    if !version
+        .qpkg_blake3_hex
+        .as_ref()
+        .is_some_and(|expected| expected.eq_ignore_ascii_case(&actual_hash))
+    {
+        return Err(BundleReviewError::ContentHashMismatch {
+            version: version.version.clone(),
+        });
+    }
     let publisher =
         parse_32(&entry.publisher_pubkey_hex).map_err(|reason| BundleReviewError::Publisher {
             version: version.version.clone(),
@@ -265,6 +298,30 @@ pub fn inspect_bytes(
             actual_version: meta.manifest.package.version,
             expected_id: entry.package_id.clone(),
             expected_version: version.version.clone(),
+        });
+    }
+    let target = version
+        .target
+        .as_ref()
+        .ok_or_else(|| BundleReviewError::UnsupportedTarget {
+            version: version.version.clone(),
+        })?;
+    if target.architecture != "x86_64" {
+        return Err(BundleReviewError::UnsupportedTarget {
+            version: version.version.clone(),
+        });
+    }
+    let manifest_isa = meta
+        .manifest
+        .package
+        .isa
+        .for_arch(pkg::manifest::Arch::X86_64)
+        .map(|isa| isa.wire_label().to_string());
+    if manifest_isa.as_deref() != Some(target.isa.as_str())
+        || meta.manifest.package.runtime != target.runtime
+    {
+        return Err(BundleReviewError::TargetMismatch {
+            version: version.version.clone(),
         });
     }
     Ok(InspectedVersion {
@@ -373,6 +430,7 @@ mod tests {
         entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
         entry.versions[0].qpkg_root_hash_hex = hex::encode(package_id.as_bytes());
         entry.versions[0].qpkg_size_bytes = bytes.len() as u64;
+        entry.versions[0].qpkg_blake3_hex = Some(blake3::hash(&bytes).to_hex().to_string());
 
         let inspected = inspect_bytes(&entry, &entry.versions[0], &bytes).unwrap();
         assert_eq!(inspected.version, "1.0.0");
@@ -414,6 +472,9 @@ id = "dev.tilo.editor"
 version = "1.0.0"
 kind = "app"
 
+[package.isa]
+x86_64 = "v3"
+
 [publisher]
 identity = "ed25519:{publisher}"
 signature = ""
@@ -453,6 +514,12 @@ type = "gui"
                 qpkg_root_hash_hex: "bb".repeat(32),
                 qpkg_size_bytes: 10,
                 released_at_unix: 1,
+                qpkg_blake3_hex: Some("cc".repeat(32)),
+                target: Some(registry_types::RegistryTarget {
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),

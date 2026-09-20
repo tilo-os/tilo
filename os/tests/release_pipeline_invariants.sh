@@ -71,7 +71,9 @@ else
   bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
 fi
 
-if grep -Fq 'needs: [build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
+if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-builder-image.yml" \
+  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-builder-image.yml" \
   && grep -Fq 'runner: runner-arm64' "$workflows/build-builder-image.yml" \
   && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
@@ -218,6 +220,12 @@ grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \
+  && grep -Fq 'TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}' "$apps" \
+  && grep -Fq 'bundle_url="$package_public_api/tilo-app-collections/' "$apps" \
+  && grep -Fq 'bundle_upload_url="$package_api/tilo-app-collections/' "$apps" \
+  && ! grep -Fq 'channel_url=$bundle_upload_url' "$apps" \
+  && grep -Fq 'tools/upload_immutable_packages.sh "$upload_manifest"' "$apps" \
+  && grep -Fq 'tools/reuse_prior_app_collection.sh' "$apps" \
   && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
   && awk '{sub(/\r$/, "")} /^  publish:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
@@ -242,7 +250,9 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
   && grep -Fq -- '-C codegen-units=1' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
   && ! grep -Fq -- '--icf=all' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
-  && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
+  && grep -Fq 'tools/reuse_prior_app_collection.sh' "$apps" \
+  && grep -Fq 'shared runtime changed; the full collection must be rebuilt' \
+       "$repo/tools/reuse_prior_app_collection.sh" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
 

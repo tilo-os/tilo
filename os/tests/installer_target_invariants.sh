@@ -75,6 +75,8 @@ if grep -Fq 'tilo-uki-cmdline remove systemd.show_status' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove rd.udev.log_level' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove loglevel' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline remove vt.global_cursor_default' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline remove root' "$containerfile" \
+   && grep -Fq 'tilo-uki-cmdline remove rd.luks.options' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline append tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.mode=normal' "$containerfile" \
    && grep -Fq 'tilo-uki-cmdline show | grep -qw tilo.install' "$containerfile"; then

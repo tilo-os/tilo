@@ -144,9 +144,15 @@ publisher key together. Fixture tests exercise both architecture layouts, not
 full native signing/packaging acceptance. The audio helper's actual qualification
 passed both native architectures in run 9230; this does not establish that all
 tests on the latest main revision passed. Rust skipping applies narrowly to
-`docs/designs/*.md` and the explicit audited CI/developer-prose allowlist in
-`tools/ci/affected_packages.py`; security and selection remain mandatory, mixed changes
-retain Rust coverage, and explicit full checks override the skip.
+`docs/designs/*.md`, the explicit audited CI/developer-prose allowlist, and the
+verified helper/control mappings in `tools/ci/affected_packages.py`; mixed
+changes retain Rust coverage and explicit full checks override the skip. On pull
+requests only, security may also skip when every changed path is existing audited
+prose or an exact `QUALITY_ONLY_HELPERS` source/test path with its observer
+present. Workflow/control, OS, security, manifest, unknown, mixed, deleted, and
+unobserved-helper changes keep security required. Main and manual runs require
+security, and the aggregate requires successful builder and selector jobs before
+accepting either intentional skip.
 
 ## Current validation limits and next work
 
@@ -184,8 +190,8 @@ These observations show material worker/network variation; the 9.905s
 production observation must not be generalized into a universal cold-start bound.
 Lint, the final check aggregate, and receipt jobs now use `runner-quality`.
 Builder resolution now uses the pinned `ci-control` image and selection uses
-`ci-fast`, both on the quality lane. Native compilation and security checks retain
-their full-builder/architecture lanes. Native control qualification run **22746**
+`ci-fast`, both on the quality lane. Applicable native compilation and security
+checks retain their full-builder/architecture lanes. Native control qualification run **22746**
 passed, including a roughly **172-second cold pull**. This proves the control path
 works; it does not demonstrate consistently fast cold provisioning.
 

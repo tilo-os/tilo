@@ -118,6 +118,7 @@ class RepositoryLayoutTests(unittest.TestCase):
         self.assertEqual(
             checker.retired_source_root_violations(
                 [
+                    "apps/imager/profile-tool/src/main.rs",
                     "crates/app/tilo-app/src/lib.rs",
                     "crates/format/format-host/src/main.rs",
                     "crates/identity/tilo-user-identity/src/lib.rs",
@@ -130,6 +131,8 @@ class RepositoryLayoutTests(unittest.TestCase):
                     "os/usr/lib/systemd/system/tilo-power.service",
                     "plan/security.md",
                     "release/local-models/recipe.sh",
+                    "scripts/demo-home.py",
+                    "scripts/yc-demo.py",
                     "shell/src/main.rs",
                     "tools/check-windows-start-apps.ps1",
                     "tools/gstreamer-licenses/sources.json",
@@ -140,6 +143,7 @@ class RepositoryLayoutTests(unittest.TestCase):
                 ]
             ),
             [
+                "tracked file uses retired source root `apps/imager/profile-tool/`; move it under `tools/imager-profile/`: apps/imager/profile-tool/src/main.rs",
                 "tracked file uses retired source root `crates/app/`; move it under `crates/sdk/`: crates/app/tilo-app/src/lib.rs",
                 "tracked file uses retired source root `crates/format/`; move it under `crates/doc/`: crates/format/format-host/src/main.rs",
                 "tracked file uses retired source root `crates/identity/`; move it under `crates/collab/`: crates/identity/tilo-user-identity/src/lib.rs",
@@ -151,6 +155,8 @@ class RepositoryLayoutTests(unittest.TestCase):
                 "tracked file uses retired source root `os/usr/lib/systemd/system/tilo-power.service`; move it under `crates/system/power/`: os/usr/lib/systemd/system/tilo-power.service",
                 "tracked file uses retired source root `plan/`; move it under `docs/architecture/`: plan/security.md",
                 "tracked file uses retired source root `release/`; move it under `dist/`: release/local-models/recipe.sh",
+                "tracked file uses retired source root `scripts/demo-home.py`; move it under `scripts/demo/home.py`: scripts/demo-home.py",
+                "tracked file uses retired source root `scripts/yc-demo.py`; move it under `scripts/demo/run.py`: scripts/yc-demo.py",
                 "tracked file uses retired source root `shell/`; move it under `crates/session/shell/`: shell/src/main.rs",
                 "tracked file uses retired source root `tools/check-windows-`; move it under `tools/windows/check-`: tools/check-windows-start-apps.ps1",
                 "tracked file uses retired source root `tools/gstreamer-licenses/`; move it under `tools/windows/gstreamer-licenses/`: tools/gstreamer-licenses/sources.json",

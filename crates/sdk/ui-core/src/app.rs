@@ -8,6 +8,7 @@ use winit::{
 
 use std::cell::{Cell, RefCell};
 
+mod close_admission;
 mod document_history;
 pub use document_history::DocumentHistorySnapshot;
 
@@ -706,6 +707,7 @@ pub struct App {
     node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
+    close_admission: crate::close_admission::Admission,
     layout_dirty: bool,
     /// Set when a widget reports `take_structure_dirty()`: without a taffy
     /// rebuild before the next layout pass, runtime-spawned widgets (e.g. a
@@ -1361,6 +1363,7 @@ impl App {
             node_map: std::collections::HashMap::new(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             component_close_reports: vec![],
+            close_admission: crate::close_admission::Admission::default(),
             layout_dirty: true,
             structure_dirty: false,
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
@@ -3989,7 +3992,7 @@ impl App {
             Err(tilo_actions::DoorError::ConfirmationRequired) => {
                 self.open_action_palette();
                 if let Some(palette) = self.action_palette.as_mut() {
-                    palette.activate_bound(target);
+                    palette.activate_bound_with_arguments(target, &intent.arguments);
                 }
                 true
             }
@@ -4003,6 +4006,7 @@ impl App {
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same door/lifecycle as every other caller.
     fn dispatch_control_invocations(&mut self) -> usize {
+        self.service_close_admission();
         let mut dispatched = self.dispatch_history_controls();
         let bound = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
         if let Some(error) = bound.error {
@@ -4042,7 +4046,13 @@ impl App {
                     &intent.address,
                     &Err(tilo_actions::DoorError::ConfirmationRequired),
                 );
-                let _ = self.open_action_palette_at(&intent.address);
+                self.open_action_palette();
+                let activated = self.action_palette.as_mut().is_some_and(|palette| {
+                    palette.activate_address_with_arguments(&intent.address, &intent.arguments)
+                });
+                if !activated {
+                    self.close_action_palette();
+                }
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
@@ -4210,10 +4220,20 @@ impl App {
                 Err(_) => {
                     self.bound_invocations.remove(&invocation);
                     self.local_invocations.remove(&invocation);
+                    if self.close_admission.save_local == Some(invocation) {
+                        self.close_admission.save_result =
+                            Some(Err("save target is no longer available".into()));
+                    }
                     continue;
                 }
             };
             let invalid_identity = update.invocation() != invocation;
+            if !invalid_identity && self.close_admission.save_local == Some(invocation) {
+                self.observe_close_save(&update);
+            } else if invalid_identity && self.close_admission.save_local == Some(invocation) {
+                self.close_admission.save_result =
+                    Some(Err("save returned an invalid invocation identity".into()));
+            }
             if update.is_terminal() || invalid_identity {
                 self.bound_invocations.remove(&invocation);
                 self.local_invocations.remove(&invocation);
@@ -5624,6 +5644,9 @@ impl App {
                     self.request_invocation_cancellation(id);
                 }
                 CollabEvent::PublishedInvocationResult { request_id, result } => {
+                    if self.close_broker_result(request_id, &result) {
+                        continue;
+                    }
                     let Some(invocation) = self.pending_application_launches.remove(&request_id)
                     else {
                         continue;
@@ -5809,6 +5832,9 @@ impl App {
                 self.request_invocation_cancellation(id);
             }
             CollabEvent::PublishedInvocationResult { request_id, result } => {
+                if self.close_broker_result(request_id, &result) {
+                    return;
+                }
                 let Some(invocation) = self.pending_application_launches.remove(&request_id) else {
                     return;
                 };
@@ -6429,6 +6455,48 @@ impl App {
             self.inspect_node(node, |widget| widget.wants_tab_input())
                 .unwrap_or(false)
         })
+    }
+
+    /// Shared native Tab admission, preserving text-input and modal capture.
+    fn handle_tab_navigation(
+        &mut self,
+        event: &WindowEvent,
+        modal_rect: Option<KurboRect>,
+    ) -> bool {
+        if self.focused_widget_wants_tab_input() || !self.keyboard_nav_allowed(modal_rect) {
+            return false;
+        }
+        if matches!(event, WindowEvent::KeyboardInput { event, .. }
+            if event.state == winit::event::ElementState::Pressed
+                && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
+        {
+            return self.focus_tab(self.modifiers.state().shift_key());
+        }
+        false
+    }
+
+    /// Native Enter/Space fallback, after the focused widget has declined input.
+    fn activate_focused_control_key(&mut self, event: &WindowEvent) -> bool {
+        if !matches!(event, WindowEvent::KeyboardInput { event, .. }
+            if event.state == winit::event::ElementState::Pressed
+                && matches!(event.logical_key, winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space)))
+        {
+            return false;
+        }
+        let Some(fid) = self.focused_node else {
+            return false;
+        };
+        let did = self
+            .dispatch_node(fid, |widget, doc, root| {
+                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+            })
+            .unwrap_or(false);
+        if did {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+        did
     }
 
     fn focus_tab(&mut self, shift: bool) -> bool {
@@ -7677,6 +7745,15 @@ fn draw_frame_content(
             app.layout_dirty = true;
         }
     }
+    if let Some(dialog) = app.close_admission.dialog.as_mut() {
+        dialog.draw(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            &app.presence_ctx,
+        );
+    }
     if let Some(ap) = app.action_palette.as_mut() {
         let win_w = f64::from(width) / f64::from(scale_factor);
         let card_w = (win_w * 0.6).clamp(360.0, 640.0);
@@ -7824,6 +7901,10 @@ fn run_layout_pass(
         CompositionFocus, composition_geometry, settle_widget_composition,
     };
     let logical = crate::scale::logical_size((width, height), f64::from(scale_factor));
+    if app.close_admission.dialog.is_some() {
+        app.layout_close_dialog(logical);
+        return Some((true, 0, 0));
+    }
     let viewport_changed = app.last_layout_logical != Some(logical);
     if app.history_chrome_enabled {
         if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
@@ -9253,6 +9334,10 @@ impl AppHandler {
     fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) {
         let _entry = self.app.enter_wake_scope();
         let event = other;
+        if self.app.close_handle_event(&event, window.scale_factor()) {
+            window.request_redraw();
+            return;
+        }
         let app = &mut self.app;
         let detected_interaction = if self.dispatching_touch_pointer {
             None
@@ -9485,21 +9570,8 @@ impl AppHandler {
             }
         }
 
-        if !handled
-            && !app.focused_widget_wants_tab_input()
-            && app.keyboard_nav_allowed(modal_rect)
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let shift = app.modifiers.state().shift_key();
-            handled = app.focus_tab(shift);
+        if !handled && app.handle_tab_navigation(&event, modal_rect) {
+            handled = true;
         }
 
         if !handled
@@ -9637,33 +9709,8 @@ impl AppHandler {
             }
         }
 
-        // If no widget consumed Enter/Space (text inputs do), activate
-        // the focused control the same way a mouse click would.
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key:
-                            winit::keyboard::Key::Named(
-                                winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space,
-                            ),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-            && let Some(fid) = app.focused_node
-        {
-            let did = app
-                .dispatch_node(fid, |widget, doc, root| {
-                    widget.perform_action(&crate::a11y::Action::Activate, doc, root)
-                })
-                .unwrap_or(false);
-            if did {
-                handled = true;
-                app.needs_sync = true;
-                app.layout_dirty = true;
-            }
+        if !handled && app.activate_focused_control_key(&event) {
+            handled = true;
         }
 
         // A focused range control consumes Left/Right; Up/Down and Tab
@@ -10002,6 +10049,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
         )]
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::ActiveEventLoopExtMacOS;
+            if let Err(error) = event_loop.set_quit_request_window(Some(window.id())) {
+                crate::diag!("tilo: cannot protect application Quit: {error}");
+                event_loop.exit();
+                return;
+            }
+        }
         tilo_startup_metrics::mark("primary-window-created");
         // Some backends only honour the icon post-creation; a no-op on
         // Wayland compositors that source it from the app_id instead.
@@ -10057,7 +10113,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // gone.  This also makes the ordering explicit instead of relying on
         // AppHandler field-drop order.
         self.a11y_adapter = None;
-        self.app.autosave_flush();
+        if !self.app.close_admission.admitted {
+            self.app.autosave_flush();
+        }
         self.app.close_native_content();
         self.close_audience_presentation();
         for surface in &mut self.floating_windows {
@@ -10223,7 +10281,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.dispatching_touch_pointer = false;
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                if self.app.admit_native_close_request() {
+                    event_loop.exit();
+                } else {
+                    window.request_redraw();
+                }
+            }
             WindowEvent::Resized(_size) => {
                 // Handled lazily on the worker via the next `RenderRequest`'s
                 // dimensions; main only needs to drive a redraw.
@@ -10255,6 +10319,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         reason = "winit idle work must remain ordered within its single lifecycle callback"
     )]
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.app.service_close_admission();
+        if self.app.finish_close_if_ready() {
+            event_loop.exit();
+            return;
+        }
+
         let _entry = self.app.enter_wake_scope();
         let Some(window) = self.window.clone() else {
             return;
@@ -10396,7 +10466,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
-        let scheduled_deadline = app.root_widget.next_wake_deadline();
+        let scheduled_deadline = crate::close_admission::wake_deadline(
+            app.root_widget.next_wake_deadline(),
+            app.close_admission.save_waiting,
+            Instant::now(),
+        );
         let scheduled_due = scheduled_deadline.is_some_and(|deadline| deadline <= Instant::now());
         if scheduled_due {
             app.needs_sync = true;
@@ -12280,6 +12354,56 @@ mod action_palette_tests {
     /// One open resource exporting a [`Flip`] action, plus a searchable
     /// People provider.
     struct Publisher;
+    struct ConsumingKeyboardRoot;
+    impl Widget for ConsumingKeyboardRoot {
+        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            doc: &mut AutoCommit,
+            _: &ObjId,
+            handled: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            ) {
+                doc.put(&ROOT, "escaped_keyboard", true).unwrap();
+                *handled = true;
+            }
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+        fn name(&self) -> &'static str {
+            "consuming-keyboard-root"
+        }
+    }
     impl Widget for Publisher {
         fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
@@ -12498,6 +12622,182 @@ mod action_palette_tests {
             device_id: winit::event::DeviceId::dummy(),
             event,
             is_synthetic: false,
+        }
+    }
+
+    #[test]
+    fn tab_focused_host_buttons_keep_enter_and_space_out_of_consuming_app() {
+        for open_search in [false, true] {
+            for key in [NamedKey::Enter, NamedKey::Space] {
+                let mut app =
+                    App::new_with_controlled_inputs(State::new(), Box::new(ConsumingKeyboardRoot));
+                app.enable_document_history_chrome();
+                app.init_layout();
+                let layout = app.history_layout.unwrap();
+                let target = if open_search {
+                    layout.search.unwrap()
+                } else {
+                    layout.toolbar
+                };
+                app.set_focused_node(None);
+                let mut tab = synth_enter();
+                if let WindowEvent::KeyboardInput { event, .. } = &mut tab {
+                    event.logical_key = Key::Named(NamedKey::Tab);
+                }
+                // Exercise the real native Tab event route, rather than assigning
+                // the target directly or activating the Button as an AT action.
+                for _ in 0..app.focusable_order.len() {
+                    assert!(app.handle_tab_navigation(&tab, None));
+                    if app.focused_node == Some(target) {
+                        break;
+                    }
+                }
+                assert_eq!(app.focused_node, Some(target), "Tab reaches host control");
+                let ime = WindowEvent::Ime(winit::event::Ime::Commit("composed text".into()));
+                let mut handled = false;
+                let mut focus = None;
+                assert!(app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus));
+                assert!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .is_none(),
+                    "IME input focused on host chrome must never reach app content"
+                );
+                let mut event = synth_enter();
+                if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                    event.logical_key = Key::Named(key);
+                }
+                let mut handled = false;
+                let mut focus = None;
+                assert!(app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus));
+                assert!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .is_none(),
+                    "focused chrome input must never reach consuming app content"
+                );
+                assert!(!handled, "Button leaves activation to the native fallback");
+                assert!(app.activate_focused_control_key(&event));
+                assert_eq!(app.dispatch_control_invocations(), 1);
+                assert_eq!(app.action_palette().is_some(), open_search);
+                assert_eq!(app.document_history.is_open(), !open_search);
+                assert!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .is_none()
+                );
+                // Positive control: the same fixture consumes and mutates when
+                // its own app node receives this event with chrome unfocused.
+                app.set_focused_node(Some(layout.app));
+                let mut handled = false;
+                app.presentation_handle_event(&event, 1.0, &mut handled, &mut focus);
+                assert!(handled);
+                assert_eq!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .and_then(|(value, _)| value.to_bool()),
+                    Some(true)
+                );
+                app.state.doc.delete(&ROOT, "escaped_keyboard").unwrap();
+                let mut handled = false;
+                app.presentation_handle_event(&ime, 1.0, &mut handled, &mut focus);
+                assert!(
+                    handled,
+                    "app-focused IME reaches the same consuming fixture"
+                );
+                assert_eq!(
+                    app.state
+                        .doc
+                        .get(&ROOT, "escaped_keyboard")
+                        .unwrap()
+                        .and_then(|(value, _)| value.to_bool()),
+                    Some(true)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn visible_search_uses_existing_palette_and_fresh_authority() {
+        for revoke in [false, true] {
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+            app.enable_document_history_chrome();
+            app.init_layout();
+            let node = app
+                .history_layout
+                .unwrap()
+                .search
+                .expect("retained Search button");
+            assert!(app.is_history_node(node), "Search is admitted local chrome");
+            let button = app
+                .document_history
+                .search_mut()
+                .expect("palette-capable host shows Search");
+            assert_eq!(button.test_id(), Some("standalone-search-open"));
+            assert!(button.perform_action(
+                &crate::a11y::Action::Activate,
+                &mut app.state.doc,
+                &app.state.root
+            ));
+            assert_eq!(app.dispatch_history_controls(), 1);
+            assert!(
+                app.action_palette().is_some(),
+                "real semantic button opens existing palette"
+            );
+            app.action_palette.as_mut().unwrap().set_query("Flip it");
+            assert!(
+                app.action_palette()
+                    .unwrap()
+                    .result_labels()
+                    .iter()
+                    .any(|label| label.contains("Flip it"))
+            );
+            if revoke {
+                app.set_permission_ctx(PermissionContext::from_capabilities(
+                    collab_types::caps::Actor::person(None, "restricted"),
+                    Vec::new(),
+                ));
+            }
+            assert!(app.action_palette_handle_key(&synth_enter()));
+            assert_eq!(
+                app.state.doc.get(&ROOT, "flipped").unwrap().is_some(),
+                !revoke,
+                "activation re-resolves current permission rather than cached row authority"
+            );
+            assert!(
+                !app.collect_resources()
+                    .iter()
+                    .any(|resource| resource.id.as_str()
+                        == crate::standalone_history_host::SEARCH_RESOURCE),
+                "host Search never becomes an application/broker resource"
+            );
+            let address = tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::SEARCH_RESOURCE,
+                "open",
+            );
+            assert!(
+                app.invoke_resource_action(
+                    &address,
+                    None,
+                    "same-local-name",
+                    false,
+                    true,
+                    None,
+                    None,
+                    None
+                )
+                .is_err(),
+                "broker admission and matching actor names do not grant host UI locality"
+            );
         }
     }
 
@@ -14251,6 +14551,34 @@ mod semantic_tree_app_tests {
             vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
         );
         assert!(host.action_palette().is_some());
+    }
+
+    #[test]
+    fn confirmed_control_preserves_captured_arguments_through_palette_dispatch() {
+        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+        probe.confirmation = true;
+        probe.typed_text = true;
+        observed.enqueue_text("run", "captured before confirmation");
+        let mut host = App::new_with_controlled_inputs(State::new(), Box::new(probe));
+
+        assert_eq!(host.dispatch_control_invocations(), 1);
+        assert!(
+            host.action_palette()
+                .is_some_and(crate::action_palette::ActionPalette::in_argument_mode),
+            "captured arguments enter confirmation directly"
+        );
+        assert!(observed.payloads.borrow().is_empty());
+
+        host.action_palette
+            .as_mut()
+            .expect("confirmation palette is open")
+            .set_query("CONFIRM");
+        assert!(host.action_palette_handle_key(&action_palette_tests::synth_enter()));
+        assert_eq!(
+            observed.payloads.borrow().as_slice(),
+            ["captured before confirmation"],
+            "confirmation dispatches the original intent arguments"
+        );
     }
 
     #[test]
@@ -16035,7 +16363,25 @@ mod bound_component_tests {
             assert!(receiver.try_recv().is_ok(), "{label} missed child");
             assert!(rx.try_recv().is_err(), "{label} woke outer");
         }
+        let close_probe = *app.bound_invocations.keys().next().unwrap();
+        app.local_invocations.insert(
+            close_probe,
+            (
+                tilo_actions::ActionAddress::new("bound:probe", "follow-up"),
+                tilo_actions::OperationKind::Effect,
+            ),
+        );
+        app.close_admission.save_waiting = true;
+        app.close_admission.save_local = Some(close_probe);
         app.close_components();
+        // The target was revoked while its canonical operation was Accepted.
+        // The actual poll path must turn refusal into recoverable close UI.
+        app.poll_directed_invocations();
+        assert!(matches!(app.close_admission.save_result, Some(Err(_))));
+        app.service_close_admission();
+        assert!(!app.close_admission.save_waiting);
+        assert!(!app.close_admission.admitted);
+        assert!(app.close_admission.dialog.is_some());
         assert_eq!(
             CAPTURES.with_borrow(|c| c
                 .iter()

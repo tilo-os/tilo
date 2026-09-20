@@ -4,7 +4,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import stat
 import subprocess
 import sys
 import tempfile
@@ -25,35 +24,13 @@ REVISION = 'b' * 40
 
 
 class RootfsIdentityTests(unittest.TestCase):
-    def test_native_fixture_installs_the_crypto_verifier_into_the_raw_rootfs(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            source = root / 'source-crypto'
-            source.write_bytes(b'fixture verifier')
-            source.chmod(0o755)
-            context = root / 'context'
-            context.mkdir()
-            destination = fixture.stage_rootfs_crypto(context, source)
-
-            self.assertEqual(destination.read_bytes(), source.read_bytes())
-            self.assertTrue(destination.stat().st_mode & stat.S_IXUSR)
-            self.assertIn(
-                'COPY tilo-crypto /usr/local/bin/tilo-crypto',
-                fixture.raw_rootfs_containerfile(),
-            )
-
-    def test_native_fixture_refuses_a_verifier_without_executable_mode(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            source = root / 'source-crypto'
-            source.write_bytes(b'fixture verifier')
-            source.chmod(0o644)
-            context = root / 'context'
-            context.mkdir()
-
-            with self.assertRaisesRegex(RuntimeError, 'missing executable'):
-                fixture.stage_rootfs_crypto(context, source)
-            self.assertFalse((context / 'tilo-crypto').exists())
+    def test_loader_layer_uses_verified_hashes_without_target_crypto_tools(self):
+        containerfile = (DEV.parent / 'Containerfile.development-loader').read_text()
+        self.assertIn('ARG ORIGINAL_SHA256', containerfile)
+        self.assertIn('ARG SIGNED_SHA256', containerfile)
+        self.assertIn('verify-authenticode-envelope.py', containerfile)
+        self.assertNotIn('/usr/bin/openssl', containerfile)
+        self.assertNotIn('verify-development-loader.py', containerfile)
 
     def test_podman_preserves_explicit_local_storage_without_caller_secrets(self):
         settings = {name: '/fixture/' + name.lower() for name in producer.LOCAL_STORAGE_ENVIRONMENT}

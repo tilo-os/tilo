@@ -2,8 +2,8 @@
 FROM raw-rootfs
 ARG LOADER_NAME
 ARG ARCHITECTURE
-ARG CERTIFICATE_SHA256
 ARG ORIGINAL_SHA256
+ARG SIGNED_SHA256
 RUN --mount=type=bind,from=signed-loader,target=/run/tilo-loader \
     --mount=type=bind,from=loader-tools,target=/run/tilo-loader-tools \
     set -eu; \
@@ -13,9 +13,8 @@ RUN --mount=type=bind,from=signed-loader,target=/run/tilo-loader \
     esac; \
     original="/usr/lib/systemd/boot/efi/$LOADER_NAME"; \
     printf '%s  %s\n' "$ORIGINAL_SHA256" "$original" | sha256sum --check --status; \
-    python3 /run/tilo-loader-tools/verify-development-loader.py \
-      --original "$original" --signed /run/tilo-loader/loader.efi \
-      --certificate /usr/share/tilo/development-trust/efi-signing.crt \
-      --certificate-sha256 "$CERTIFICATE_SHA256" --architecture "$ARCHITECTURE"; \
+    printf '%s  %s\n' "$SIGNED_SHA256" /run/tilo-loader/loader.efi | sha256sum --check --status; \
+    python3 /run/tilo-loader-tools/verify-authenticode-envelope.py \
+      "$original" /run/tilo-loader/loader.efi; \
     test ! -e "$original.signed" && test ! -L "$original.signed"; \
     install -m 0644 /run/tilo-loader/loader.efi "$original.signed"

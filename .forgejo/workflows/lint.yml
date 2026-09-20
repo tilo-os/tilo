@@ -10,12 +10,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # A branch push and its pull_request synchronization describe the same head.
-  # Normalize both event shapes so the later event cancels duplicate work.
-  group: lint-${{ github.ref == 'refs/heads/main' && github.sha || github.event.pull_request.head.ref || github.ref_name }}
-  # Every main commit keeps its result and can run concurrently. Branches
-  # continue to supersede obsolete revisions.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Push and pull-request checks are distinct required evidence. Include both
+  # event and commit so neither can replace another result.
+  group: lint-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   quality:

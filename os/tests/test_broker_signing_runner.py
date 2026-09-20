@@ -34,11 +34,14 @@ class BrokerTests(unittest.TestCase):
 
     def test_public_input_and_transient_token_stream_with_bound_failure(self):
         events = []
+        token_issued = False
         def process(argv, sink, limit, source=None, timeout=120):
+            nonlocal token_issued
             self.assertGreater(timeout, 0)
             self.assertLessEqual(timeout, 30)
             self.assertNotIn('k8s-aws-v1.fixture', str(argv))
             if 'aws' in argv:
+                token_issued = True
                 sink.write(b'{"status":{"token":"k8s-aws-v1.fixture"}}')
                 return 42
             header = json.loads(source.readline())
@@ -55,7 +58,14 @@ class BrokerTests(unittest.TestCase):
             '/work/helpers/os/dev/stage-finalization-worker.py','receive']
         output = io.BytesIO()
         data = bytes(range(256))*1024
-        runner(argv, output, 65536, source=io.BytesIO(data), timeout=30)
+        class SeekableSource(io.BytesIO):
+            def read(self, *args):
+                self.assert_token()
+                return super().read(*args)
+            def assert_token(self):
+                if not token_issued:
+                    raise AssertionError('seekable input was staged before token acquisition')
+        runner(argv, output, 65536, source=SeekableSource(data), timeout=30)
         self.assertEqual(events[0][1], data)
         self.assertEqual(output.getvalue(), b'public reply')
         with patch.object(b, 'MAX_STREAM', 10), self.assertRaises(ValueError):

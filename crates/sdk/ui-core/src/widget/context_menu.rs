@@ -38,6 +38,10 @@ pub enum MenuItem {
         /// Destructive rows are styled as danger actions and are never the
         /// implicit keyboard target when a menu opens.
         destructive: bool,
+        /// Disabled rows remain visible and announced but reject pointer,
+        /// keyboard, touch, and semantic activation without dismissing the
+        /// menu.
+        enabled: bool,
     },
     Separator,
 }
@@ -66,6 +70,7 @@ impl MenuItem {
             icon: None,
             checked: None,
             destructive: false,
+            enabled: true,
         }
     }
 
@@ -81,6 +86,7 @@ impl MenuItem {
             icon: Some(icon),
             checked: None,
             destructive: false,
+            enabled: true,
         }
     }
 
@@ -98,6 +104,7 @@ impl MenuItem {
             icon: None,
             checked: None,
             destructive: true,
+            enabled: true,
         }
     }
 
@@ -116,6 +123,19 @@ impl MenuItem {
         self
     }
 
+    /// Set whether this command can currently be invoked.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        if let MenuItem::Action {
+            enabled: item_enabled,
+            ..
+        } = &mut self
+        {
+            *item_enabled = enabled;
+        }
+        self
+    }
+
     /// A persistent choice/toggle row. Checked and unchecked peers share the
     /// same leading gutter, so labels never jump as state changes.
     pub fn checked_action<F>(label: impl Into<String>, checked: bool, action: F) -> Self
@@ -128,6 +148,7 @@ impl MenuItem {
             icon: None,
             checked: Some(checked),
             destructive: false,
+            enabled: true,
         }
     }
 
@@ -149,6 +170,10 @@ impl MenuItem {
             MenuItem::Action { checked, .. } => *checked,
             MenuItem::Separator => None,
         }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, MenuItem::Action { enabled: true, .. })
     }
 
     fn is_destructive(&self) -> bool {
@@ -225,6 +250,29 @@ impl ContextMenu {
         &self.items
     }
 
+    /// Refresh a row's availability while a menu is open. If the row owned
+    /// keyboard focus when it became disabled, move focus to the next
+    /// available command.
+    pub fn set_item_enabled(&mut self, index: usize, enabled: bool) {
+        let Some(MenuItem::Action {
+            enabled: item_enabled,
+            ..
+        }) = self.items.get_mut(index)
+        else {
+            return;
+        };
+        *item_enabled = enabled;
+        if !enabled && self.hovered == Some(index) {
+            // Keep the old index as the navigation origin so disabling a
+            // focused middle row advances to its next peer instead of
+            // restarting at the first command.
+            self.move_hover(1);
+            if self.hovered == Some(index) {
+                self.hovered = None;
+            }
+        }
+    }
+
     /// Also computes `rect` immediately (via
     /// [`layout_at_position`](Self::layout_at_position)) so
     /// [`item_at`](Self::item_at) / [`contains`](Self::contains) are usable
@@ -238,12 +286,12 @@ impl ContextMenu {
         self.hovered = self
             .items
             .iter()
-            .find(|item| matches!(item, MenuItem::Action { .. }))
+            .find(|item| item.is_enabled())
             .filter(|item| item.is_destructive())
             .and_then(|_| {
-                self.items.iter().position(|item| {
-                    matches!(item, MenuItem::Action { .. }) && !item.is_destructive()
-                })
+                self.items
+                    .iter()
+                    .position(|item| item.is_enabled() && !item.is_destructive())
             });
         self.layout_at_position();
     }
@@ -394,13 +442,17 @@ impl ContextMenu {
             return;
         };
         match item {
-            MenuItem::Action { action, .. } => {
+            MenuItem::Action {
+                action,
+                enabled: true,
+                ..
+            } => {
                 let cb = action.clone();
                 cb();
                 self.selection = Some(idx);
                 self.open = false;
             }
-            MenuItem::Separator => {}
+            MenuItem::Action { .. } | MenuItem::Separator => {}
         }
     }
 
@@ -544,9 +596,10 @@ impl ContextMenu {
                     icon,
                     checked,
                     destructive,
+                    enabled,
                     ..
                 } => {
-                    if self.hovered == Some(idx) {
+                    if *enabled && self.hovered == Some(idx) {
                         let hl = Rect::new(
                             self.rect.x0 + 4.0 * self.text_scale,
                             y + self.text_scale,
@@ -574,12 +627,24 @@ impl ContextMenu {
                         let leading_icon =
                             (*icon).or_else(|| (*checked == Some(true)).then_some(Icon::Check));
                         if let Some(icon) = leading_icon {
+                            let icon_color = if *enabled {
+                                theme.tokens.colors.text_primary
+                            } else {
+                                theme
+                                    .tokens
+                                    .colors
+                                    .on_surface_at(
+                                        theme.tokens.colors.surfaces.overlay,
+                                        crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+                                    )
+                                    .ink_dim
+                            };
                             draw_icon(
                                 scene,
                                 transform,
                                 icon_rect,
                                 icon,
-                                theme.tokens.colors.text_primary,
+                                icon_color,
                                 1.8 * self.text_scale,
                             );
                         }
@@ -589,15 +654,25 @@ impl ContextMenu {
                     };
                     let rendered_label =
                         self.rendered_label(label, text_renderer, text_size, label_x);
+                    let label_color = if !*enabled {
+                        theme
+                            .tokens
+                            .colors
+                            .on_surface_at(
+                                theme.tokens.colors.surfaces.overlay,
+                                crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+                            )
+                            .ink_dim
+                    } else if *destructive {
+                        theme.tokens.colors.semantic.danger
+                    } else {
+                        theme.tokens.colors.text_primary
+                    };
                     text_renderer.draw_text(
                         scene,
                         &rendered_label,
                         text_size,
-                        if *destructive {
-                            theme.tokens.colors.semantic.danger
-                        } else {
-                            theme.tokens.colors.text_primary
-                        },
+                        label_color,
                         transform.pre_translate(Vec2::new(label_x, label_y)),
                         None,
                     );
@@ -678,7 +753,7 @@ impl ContextMenu {
             None => n.saturating_sub(1),
         };
         for _ in 0..n {
-            if matches!(self.items.get(idx), Some(MenuItem::Action { .. })) {
+            if self.items.get(idx).is_some_and(MenuItem::is_enabled) {
                 self.hovered = Some(idx);
                 self.ensure_item_visible(idx);
                 return;
@@ -815,7 +890,9 @@ impl Widget for ContextMenu {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
+                self.hovered = self
+                    .item_at([self.last_cursor.x, self.last_cursor.y])
+                    .filter(|index| self.items[*index].is_enabled());
                 // Not marked handled (so cursor presence still flows) —
                 // only presses are.
             }
@@ -827,7 +904,9 @@ impl Widget for ContextMenu {
                     MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor,
                 };
                 self.scroll_by(amount);
-                self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
+                self.hovered = self
+                    .item_at([self.last_cursor.x, self.last_cursor.y])
+                    .filter(|index| self.items[*index].is_enabled());
                 *handled = true;
             }
             WindowEvent::KeyboardInput {
@@ -883,12 +962,16 @@ impl Widget for ContextMenu {
                     winit::event::TouchPhase::Started if self.active_touch.is_none() => {
                         self.active_touch = Some(touch.id);
                         self.last_cursor = point;
-                        self.hovered = self.item_at([point.x, point.y]);
+                        self.hovered = self
+                            .item_at([point.x, point.y])
+                            .filter(|index| self.items[*index].is_enabled());
                         *handled = true;
                     }
                     winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
                         self.last_cursor = point;
-                        self.hovered = self.item_at([point.x, point.y]);
+                        self.hovered = self
+                            .item_at([point.x, point.y])
+                            .filter(|index| self.items[*index].is_enabled());
                         *handled = true;
                     }
                     winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
@@ -946,7 +1029,13 @@ impl Widget for ContextMenu {
             .iter()
             .enumerate()
             .filter_map(|(index, item)| {
-                let MenuItem::Action { label, checked, .. } = item else {
+                let MenuItem::Action {
+                    label,
+                    checked,
+                    enabled,
+                    ..
+                } = item
+                else {
                     return None;
                 };
                 action_position = action_position.saturating_add(1);
@@ -956,10 +1045,11 @@ impl Widget for ContextMenu {
                         .with_action_target(format!("context-menu:item:{index}"))
                         .with_position(action_position, action_count)
                         .with_state(AccessState {
-                            focusable: true,
+                            focusable: *enabled,
                             focused: self.open && self.hovered == Some(index),
                             hidden: !self.open,
                             checked: *checked,
+                            disabled: !*enabled,
                             ..Default::default()
                         }),
                 )
@@ -992,7 +1082,7 @@ impl Widget for ContextMenu {
         else {
             return false;
         };
-        if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
+        if !self.items.get(index).is_some_and(MenuItem::is_enabled) {
             return false;
         }
         self.click_item(index);
@@ -1068,6 +1158,29 @@ mod a11y_tests {
         assert_eq!(node.children[0].state.checked, Some(true));
         assert_eq!(node.children[1].name.as_deref(), Some("Grid"));
         assert_eq!(node.children[1].state.checked, Some(false));
+    }
+
+    #[test]
+    fn accessibility_exposes_disabled_rows_as_unfocusable() {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::selection("Paste").with_enabled(false));
+        menu.open_at([10.0, 20.0]);
+
+        let node = Widget::accessibility(&menu).unwrap();
+        assert!(node.children[0].state.disabled);
+        assert!(!node.children[0].state.focusable);
+        assert!(!Widget::perform_semantic_action(
+            &mut menu,
+            "context-menu:item:0",
+            &crate::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+        ));
+        assert!(
+            menu.is_open(),
+            "a denied semantic action keeps the menu open"
+        );
+        assert!(menu.take_selection().is_none());
     }
 }
 
@@ -1245,6 +1358,57 @@ mod tests {
             "Enter fired the second action"
         );
         assert_eq!(m.take_selection(), Some(2));
+    }
+
+    #[test]
+    fn disabled_rows_reject_pointer_and_keyboard_without_dismissing() {
+        let fired = Arc::new(AtomicU32::new(0));
+        let denied_fired = fired.clone();
+        let allowed_fired = fired.clone();
+        let mut menu = ContextMenu::new();
+        menu.push(
+            MenuItem::action("Denied", move || {
+                denied_fired.fetch_add(1, Ordering::SeqCst);
+            })
+            .with_enabled(false),
+        );
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Allowed", move || {
+            allowed_fired.fetch_add(10, Ordering::SeqCst);
+        }));
+        menu.open_at([100.0, 100.0]);
+        lay_out(&mut menu);
+
+        let denied = menu.item_rect(0).unwrap().center();
+        dispatch(&mut menu, &cursor_at(denied));
+        assert_eq!(menu.hovered(), None, "disabled rows do not highlight");
+        assert!(dispatch(&mut menu, &left_press()));
+        assert!(menu.is_open(), "a disabled click does not dismiss the menu");
+        assert_eq!(fired.load(Ordering::SeqCst), 0);
+        assert!(menu.take_selection().is_none());
+
+        dispatch(&mut menu, &key(NamedKey::ArrowDown));
+        assert_eq!(menu.hovered(), Some(2), "keyboard skips disabled rows");
+        dispatch(&mut menu, &key(NamedKey::Enter));
+        assert_eq!(fired.load(Ordering::SeqCst), 10);
+        assert_eq!(menu.take_selection(), Some(2));
+    }
+
+    #[test]
+    fn disabling_the_focused_middle_row_advances_to_its_next_peer() {
+        let mut menu = ContextMenu::new();
+        for label in ["First", "Second", "Third"] {
+            menu.push(MenuItem::selection(label));
+        }
+        menu.open_at([10.0, 20.0]);
+        menu.move_hover(1);
+        menu.move_hover(1);
+        assert_eq!(menu.hovered(), Some(1));
+
+        menu.set_item_enabled(1, false);
+
+        assert_eq!(menu.hovered(), Some(2));
+        assert!(!menu.items()[1].is_enabled());
     }
 
     #[test]

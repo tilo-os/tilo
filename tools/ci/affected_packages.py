@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Iterable
@@ -24,6 +25,7 @@ from typing import Iterable
 # pkg/tests/{app_manifests,verify_attest} and qdoc/tests/{convergence,office_roundtrip}.
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc"}
+EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
 # is inspected by tilo-dev, and docs/packaging.md is a packaging contract input.
@@ -44,11 +46,50 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
+    "tools/ci/merge_pr.py": "tools/tests/test_ci_merge_pr.py",
+    "tools/ci/builder_workflow_plan.py": "tools/tests/test_builder_workflow_plan.py",
+    "tools/ci/resolve_promoted_builder.py": "tools/tests/test_resolve_promoted_builder.py",
+    "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
+    "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
+    "tools/ci/dispatch_merge.py": "tools/tests/test_ci_merge_dispatch.py",
+    "tools/ci/workflow_applicability.py": "tools/tests/test_workflow_applicability.py",
+    "tools/policy/run.sh": "tools/tests/test_ci_select.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
     "tools/policy/check_workflow_actions.py": "tools/tests/test_workflow_actions.py",
     "tools/policy/check_workflow_package_paths.py": "tools/tests/test_workflow_package_paths.py",
     "tools/policy/check_workflow_timeouts.py": "tools/tests/test_workflow_timeouts.py",
+}
+# Control-plane files are validated by tests that read or execute the production
+# file in the mandatory repository-policy suite. A file missing from this exact
+# map retains native Rust checks.
+QUALITY_ONLY_CONTROL_INPUTS = {
+    ".forgejo/workflows/build-builder-image.yml": (
+        "os/tests/test_builder_candidate_workflow.py",
+        "os/tests/release_pipeline_invariants.sh",
+        "os/tests/workflow_dependency_invariants.sh",
+        "tools/tests/test_cargo_download_cache_action.py",
+        "tools/tests/test_ci_native_mold.py",
+        "tools/tests/test_cosign_install_action.py",
+    ),
+    ".forgejo/workflows/build-kernel.yml": (
+        "tools/tests/test_workflow_applicability.py",
+        "os/tests/workflow_dependency_invariants.sh",
+    ),
+    ".forgejo/workflows/check.yml": (
+        "tools/tests/test_ci_check_aggregate.py",
+        "tools/tests/test_ci_queue_relief.py",
+        "tools/tests/test_ci_receipt.sh",
+    ),
+    ".forgejo/workflows/legacy-app-e2e.yml": (
+        "tools/tests/test_ci_queue_relief.py",
+        "os/tests/test_builder_candidate_workflow.py",
+    ),
+    ".forgejo/workflows/tilo-relay.yaml": (
+        "tools/tests/test_workflow_package_paths.py",
+        "tools/tests/test_workflow_applicability.py",
+        "os/tests/workflow_dependency_invariants.sh",
+    ),
 }
 NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
 GLOBAL_FILES = {
@@ -58,6 +99,7 @@ GLOBAL_FILES = {
     "rust-toolchain.toml",
     "deny.toml",
     "os/Containerfile.builder",
+    EXTERNAL_ASSET_MANIFEST,
 }
 GLOBAL_PREFIXES = (
     ".cargo/",
@@ -101,19 +143,23 @@ def package_maps(metadata: dict, root: Path) -> tuple[dict[str, dict], dict[Path
     return packages, by_dir
 
 
-def changed_files(root: Path, base: str | None, head: str) -> list[str]:
+def comparison_merge_base(root: Path, base: str | None, head: str) -> str:
     if not base:
         base = run("git", "rev-parse", f"{head}^", cwd=root)
     try:
-        merge_base = run("git", "merge-base", base, head, cwd=root)
-    except subprocess.CalledProcessError:
-        # A depth-limited checkout may have the event's exact base tree without
-        # enough ancestry to compute a merge base. Comparing those two trees can
-        # over-select files for a pull request whose base moved, but it cannot
-        # omit a file that differs between the advertised base and head.
-        diff_range = f"{base}..{head}"
-    else:
-        diff_range = f"{merge_base}...{head}"
+        return run("git", "merge-base", base, head, cwd=root)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"cannot determine merge base for {base!r} and {head!r}; "
+            "refusing to select packages from a two-tree diff"
+        ) from error
+
+
+def changed_files(root: Path, base: str | None, head: str) -> list[str]:
+    merge_base = comparison_merge_base(root, base, head)
+    # Compare the PR side with the common ancestor. A direct base..head diff
+    # would also report files changed only on an advanced base branch.
+    diff_range = f"{merge_base}..{head}"
     # A move affects both the old owner and the new owner. Rename detection's
     # name-only output reports only the destination, losing the old package's
     # reverse dependants. NUL delimiters also avoid Git quoting Unicode paths
@@ -124,6 +170,60 @@ def changed_files(root: Path, base: str | None, head: str) -> list[str]:
     )
     return [path.decode("utf-8", errors="surrogateescape")
             for path in output.split(b"\0") if path]
+
+
+def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{EXTERNAL_ASSET_MANIFEST}"],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if result.returncode:
+        return None
+    try:
+        text = result.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    entries: dict[str, tuple[str, str]] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3 or not all(fields):
+            return None
+        checksum, name, url = fields
+        if not re.fullmatch(r"[0-9a-f]{64}", checksum) or name in entries:
+            return None
+        entries[name] = (checksum, url)
+    return entries
+
+
+def builder_mold_asset(name: str, entry: tuple[str, str]) -> bool:
+    match = re.fullmatch(
+        r"mold-(\d+\.\d+\.\d+)-(x86_64|aarch64)-linux\.tar\.gz", name
+    )
+    if not match:
+        return False
+    version = match.group(1)
+    return entry[1] == (
+        f"https://github.com/rui314/mold/releases/download/v{version}/{name}"
+    )
+
+
+def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) -> bool:
+    merge_base = comparison_merge_base(root, base, head)
+    before = manifest_at(root, merge_base)
+    after = manifest_at(root, head)
+    if before is None or after is None:
+        return False
+    changed_names = {
+        name for name in before.keys() | after.keys()
+        if before.get(name) != after.get(name)
+    }
+    return bool(changed_names) and all(
+        (name not in before or builder_mold_asset(name, before[name]))
+        and (name not in after or builder_mold_asset(name, after[name]))
+        for name in changed_names
+    )
 
 
 def owner_for(path: str, by_dir: dict[Path, str]) -> str | None:
@@ -204,10 +304,26 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     return min(max(1, maximum), len(names), cost_limited)
 
 
-def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, *, force_full: bool = False) -> dict:
+def make_plan(
+    metadata: dict,
+    root: Path,
+    changes: list[str],
+    shard_count: int,
+    *,
+    force_full: bool = False,
+    builder_only_external_assets: bool = False,
+    allow_security_skip: bool = False,
+) -> dict:
     packages, by_dir = package_maps(metadata, root)
     seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
-    global_change = any(path in GLOBAL_FILES or path.startswith(GLOBAL_PREFIXES) for path in changes)
+    projected_quality_paths = (
+        {EXTERNAL_ASSET_MANIFEST} if builder_only_external_assets else set()
+    )
+    global_change = any(
+        (path in GLOBAL_FILES and path not in projected_quality_paths)
+        or path.startswith(GLOBAL_PREFIXES)
+        for path in changes
+    )
     workspace_source_roots = ("apps/", "crates/")
     unmapped_workspace_change = any(
         path.startswith(workspace_source_roots) and owner_for(path, by_dir) is None
@@ -221,15 +337,48 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
             path.startswith("docs/designs/") and path.endswith(".md")
             and ".." not in Path(path).parts))
 
-    quality_paths = {
+    quality_helper_paths = {
         path for source, test in QUALITY_ONLY_HELPERS.items()
         if (root / source).is_file() and (root / test).is_file()
         for path in (source, test)
     }
-    quality_only = bool(changes) and all(prose(path) or path in quality_paths for path in changes)
+    security_prose = {
+        path for path in changes if prose(path) and (root / path).is_file()
+    }
+    # Security may be omitted only for pull-request inputs whose observers do
+    # not live in the security suite itself. Workflow and OS control inputs are
+    # added to Rust's broader quality-only set below, after this decision.
+    security_not_applicable = (
+        allow_security_skip
+        and not force_full
+        and bool(changes)
+        and all(path in security_prose or path in quality_helper_paths for path in changes)
+    )
+    quality_paths = set(quality_helper_paths)
+    quality_paths.update(
+        path for source, observers in QUALITY_ONLY_CONTROL_INPUTS.items()
+        if (root / source).is_file()
+        and all((root / observer).is_file() for observer in observers)
+        for path in (source, *observers)
+    )
+    # Ordinary checks use the already-published builder, so compiling Rust
+    # cannot validate an edited recipe. Its dedicated workflow builds and
+    # qualifies the candidate. Deletion and mixed build inputs remain full.
+    recipe_present = (
+        "os/Containerfile.builder" in changes
+        and (root / "os/Containerfile.builder").is_file()
+    )
+    quality_only = bool(changes) and all(
+        prose(path) or path in quality_paths
+        or path in projected_quality_paths
+        or (recipe_present and path == "os/Containerfile.builder")
+        for path in changes
+    )
     if quality_only and not force_full:
         selected = set()
-        reason = ("audited developer/CI or design prose only; Rust checks not applicable"
+        reason = ("builder recipe covered by mandatory policy checks; candidate image qualification is separate"
+                  if recipe_present else
+                  "audited developer/CI or design prose only; Rust checks not applicable"
                   if all(prose(path) for path in changes) else
                   "audited CI helpers covered by mandatory repository-policy tests; Rust checks not applicable")
         full = False
@@ -259,6 +408,7 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, 
     return {
         "full": full,
         "rust_required": bool(selected),
+        "security_required": not security_not_applicable,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -279,6 +429,7 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"matrix={compact_matrix}\n")
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
         handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
+        handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")
@@ -291,6 +442,11 @@ def main() -> int:
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--shards", type=int, default=2)
     parser.add_argument("--full", action="store_true", help="check the complete workspace on each native architecture")
+    parser.add_argument(
+        "--allow-security-skip",
+        action="store_true",
+        help="allow audited pull-request-only inputs to omit security invariants",
+    )
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--metadata", type=Path, help="read metadata JSON instead of invoking Cargo")
     parser.add_argument("--changes", type=Path, help="read changed paths instead of invoking git")
@@ -299,7 +455,20 @@ def main() -> int:
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)
     changes = args.changes.read_text().splitlines() if args.changes else changed_files(root, args.base, args.head)
-    plan = make_plan(metadata, root, changes, args.shards, force_full=args.full)
+    builder_only_external_assets = (
+        args.changes is None
+        and EXTERNAL_ASSET_MANIFEST in changes
+        and builder_only_asset_manifest_change(root, args.base, args.head)
+    )
+    plan = make_plan(
+        metadata,
+        root,
+        changes,
+        args.shards,
+        force_full=args.full,
+        builder_only_external_assets=builder_only_external_assets,
+        allow_security_skip=args.allow_security_skip,
+    )
     print(json.dumps(plan, indent=2))
     if args.github_output:
         emit_github(plan, args.github_output)

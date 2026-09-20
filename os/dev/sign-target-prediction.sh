@@ -57,7 +57,7 @@ podman run --rm -v "$work:/out:Z" --entrypoint /bin/bash "$image" -ceu '
   else
     [ "$n" -eq 1 ] || { echo "explicit target UKI required when multiple live UKIs exist" >&2; exit 1; }
     source="$(find /boot/EFI/Linux -type f -name "*.efi" -print -quit)"
-    awk -F "\t" -v source="${source#/boot/}" '$1 == source {print $2}' \
+    awk -F "\t" -v source="${source#/boot/}" "\$1 == source {print \$2}" \
       /out/live.manifest > /out/target-source
   fi
   [ -n "$source" ]

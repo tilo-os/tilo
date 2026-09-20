@@ -29,6 +29,7 @@ def request():
             'wpe_ref': 'registry.invalid/wpe@sha256:' + '4' * 64,
             'signer': '/var/lib/bridge/signer', 'systemd_version': '259.1',
             'minimum_free_bytes': 1024**3, 'stage_timeout_seconds': 600,
+            'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 3600,
             'publish_repository': 'code.podesta.ai/qos/tilo-development'}
 
 
@@ -97,23 +98,173 @@ class FinalizationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.driver().stage(1, lambda: self.fail('must not run'))
 
-    def test_registry_exact_manifest_and_config_identity(self):
+    def test_registry_reported_manifest_and_config_descriptor_identity(self):
         config = spool.canonical({'os': 'linux', 'architecture': 'arm64', 'config': {'Labels': {'org.opencontainers.image.revision': 'a' * 40}}})
         config_id = 'sha256:' + spool.digest(config)
         manifest = spool.canonical({'schemaVersion': 2, 'config': {'digest': config_id}})
         manifest_id = 'sha256:' + spool.digest(manifest)
-        finalizer.verify_registry_bytes(manifest, config, manifest_id, config_id, 'aarch64', 'a' * 40)
-        for args in ((manifest + b'\n', config, manifest_id, config_id, 'aarch64', 'a' * 40),
-                     (manifest, config + b'\n', manifest_id, config_id, 'aarch64', 'a' * 40),
-                     (manifest, config, manifest_id, config_id, 'x86_64', 'a' * 40)):
+        # Skopeo reserializes ``inspect --config`` output. Its bytes need not
+        # hash to the raw blob digest carried by the immutable manifest.
+        inspected_config = json.dumps(json.loads(config), indent=2).encode() + b'\n'
+        self.assertNotEqual('sha256:' + spool.digest(inspected_config), config_id)
+        finalizer.verify_registry_bytes(manifest + b'\n', inspected_config, manifest_id, manifest_id,
+                                        config_id, 'aarch64', 'a' * 40)
+        wrong_descriptor = spool.canonical({'schemaVersion': 2, 'config': {'digest': 'sha256:' + '0' * 64}})
+        wrong_architecture = spool.canonical({'os': 'linux', 'architecture': 'amd64',
+            'config': {'Labels': {'org.opencontainers.image.revision': 'a' * 40}}})
+        for args in ((manifest, inspected_config, 'sha256:' + '9' * 64, manifest_id,
+                      config_id, 'aarch64', 'a' * 40),
+                     (wrong_descriptor, inspected_config, 'sha256:' + spool.digest(wrong_descriptor),
+                      'sha256:' + spool.digest(wrong_descriptor), config_id, 'aarch64', 'a' * 40),
+                     (manifest, wrong_architecture, manifest_id, manifest_id, config_id, 'aarch64', 'a' * 40),
+                     (manifest, inspected_config, manifest_id, manifest_id, config_id, 'x86_64', 'a' * 40)):
             with self.assertRaises(ValueError):
                 finalizer.verify_registry_bytes(*args)
+
+    def test_stage5_checkpoint_publishes_and_verifies_immutable_registry_bytes(self):
+        q = request()
+        driver = self.driver()
+        config = spool.canonical({'os': 'linux', 'architecture': 'arm64',
+            'config': {'Labels': {'org.opencontainers.image.revision': q['source_revision']}}})
+        image = 'sha256:' + spool.digest(config)
+        manifest = spool.canonical({'schemaVersion': 2, 'config': {'digest': image}})
+        digest = 'sha256:' + spool.digest(manifest)
+        calls = []
+        driver.current_context = lambda: {'sha256': '7' * 64, 'revision': q['source_revision'],
+            'architecture': q['architecture'], 'manifest_sha256': q['new_manifest_sha256'],
+            'target': q['new_target']}
+        driver.registry_bytes = lambda reference: (manifest, config, digest)
+        def command(arguments):
+            calls.append([str(value) for value in arguments])
+            Path(arguments[arguments.index('--digestfile') + 1]).write_text(digest)
+            return b''
+        driver.command = command
+        result = driver.publish_checkpoint(image, 5)
+        self.assertEqual(result['checkpoint_reference'], q['publish_repository'] + '@' + digest)
+        self.assertEqual(result['checkpoint_config_digest'], image)
+        self.assertEqual(result['checkpoint_stage'], 5)
+        self.assertEqual(result['checkpoint_binding'], finalizer.checkpoint_binding(q, driver.binding))
+        self.assertEqual(result['producer_context_sha256'], '7' * 64)
+        self.assertEqual(calls[0][-2:], [image, 'docker://' + q['publish_repository'] +
+            ':finalization-' + driver.binding + '-stage5'])
+
+    def test_checkpoint_context_binds_stable_fields_but_allows_a_new_attempt_identity(self):
+        q = request()
+        bridge = self.root / 'bridge'
+        bridge.mkdir(mode=0o700)
+        q['signer'] = str(bridge / 'signer')
+        context = {'schema': 1, 'job_id': 'new-job', 'pod_uid': 'new-pod', 'container_id': 'new-container',
+            'image_id': 'sha256:' + '1' * 64, 'revision': q['source_revision'],
+            'architecture': q['architecture'], 'manifest_sha256': q['new_manifest_sha256'],
+            'target': q['new_target']}
+        (bridge / 'bridge.json').write_bytes(spool.canonical({'context': context}))
+        value = finalizer.Driver(q, '/verified/helpers', self.root).current_context()
+        self.assertEqual(value['sha256'], spool.context(context))
+        context['target'] = 'code.podesta.ai/qos/tilo-development:other-aarch64'
+        (bridge / 'bridge.json').write_bytes(spool.canonical({'context': context}))
+        with self.assertRaisesRegex(ValueError, 'current signing context differs'):
+            finalizer.Driver(q, '/verified/helpers', self.root).current_context()
+
+    def test_stage5_checkpoint_restores_across_contexts_without_replaying_prior_stages(self):
+        q = request()
+        config = spool.canonical({'os': 'linux', 'architecture': 'arm64',
+            'config': {'Labels': {'org.opencontainers.image.revision': q['source_revision']}}})
+        image = 'sha256:' + spool.digest(config)
+        manifest = spool.canonical({'schemaVersion': 2, 'config': {'digest': image}})
+        digest = 'sha256:' + spool.digest(manifest)
+        producer = {'sha256': '7' * 64, 'revision': q['source_revision'], 'architecture': q['architecture'],
+                    'manifest_sha256': q['new_manifest_sha256'], 'target': q['new_target']}
+        writer = self.driver()
+        for number in range(1, 5):
+            writer.stage(number, lambda number=number: {'image_id': 'sha256:' + str(number) * 64})
+        writer.stage(5, lambda: {'image_id': image, 'composefs_digest': 'a' * 128,
+            'checkpoint_reference': q['publish_repository'] + '@' + digest,
+            'checkpoint_manifest_digest': digest, 'checkpoint_config_digest': image,
+            'checkpoint_binding': finalizer.checkpoint_binding(q, writer.binding),
+            'checkpoint_stage': 5,
+            'producer_context_sha256': producer['sha256']})
+        restored = self.driver()
+        restored.current_context = lambda: {**producer, 'sha256': '8' * 64}
+        restored.registry_bytes = lambda reference: (manifest, config, digest)
+        commands, inspected = [], []
+        restored.command = lambda arguments: commands.append([str(value) for value in arguments]) or b''
+        restored.inspect = lambda identifier: inspected.append(identifier)
+        self.assertTrue(restored.restore_checkpoint())
+        for number in range(1, 6):
+            restored.stage(number, lambda: self.fail('completed stage must not replay'))
+        self.assertEqual(inspected, [image, image])
+        self.assertEqual(commands, [['podman', '--remote=false', 'pull', '--tls-verify=true',
+                                     q['publish_repository'] + '@' + digest]])
+
+    def test_stage2_checkpoint_restores_loader_without_rebinding_or_signing(self):
+        q = request()
+        config = spool.canonical({'os': 'linux', 'architecture': 'arm64',
+            'config': {'Labels': {'org.opencontainers.image.revision': q['source_revision']}}})
+        image = 'sha256:' + spool.digest(config)
+        manifest = spool.canonical({'schemaVersion': 2, 'config': {'digest': image}})
+        digest = 'sha256:' + spool.digest(manifest)
+        context = {'sha256': '7' * 64, 'revision': q['source_revision'],
+            'architecture': q['architecture'], 'manifest_sha256': q['new_manifest_sha256'],
+            'target': q['new_target']}
+        writer = self.driver()
+        writer.stage(1, lambda: {'image_id': 'sha256:' + '1' * 64})
+        writer.stage(2, lambda: {'image_id': image,
+            'checkpoint_reference': q['publish_repository'] + '@' + digest,
+            'checkpoint_manifest_digest': digest, 'checkpoint_config_digest': image,
+            'checkpoint_binding': finalizer.checkpoint_binding(q, writer.binding),
+            'checkpoint_stage': 2, 'producer_context_sha256': context['sha256']})
+        restored = self.driver()
+        restored.current_context = lambda: {**context, 'sha256': '8' * 64}
+        restored.registry_bytes = lambda reference: (manifest, config, digest)
+        commands, inspected = [], []
+        restored.command = lambda arguments: commands.append([str(value) for value in arguments]) or b''
+        restored.inspect = lambda identifier: inspected.append(identifier)
+        self.assertTrue(restored.restore_checkpoint())
+        for number in (1, 2):
+            restored.stage(number, lambda: self.fail('rebind/loader must not replay'))
+        self.assertEqual(restored.restored_stage, 2)
+        self.assertEqual(inspected, [image, image])
+        self.assertEqual(commands, [['podman', '--remote=false', 'pull', '--tls-verify=true',
+                                     q['publish_repository'] + '@' + digest]])
+
+    def test_stage5_restore_rejects_changed_stable_or_registry_identity_before_pull(self):
+        q = request()
+        driver = self.driver()
+        for number in range(1, 5):
+            driver.stage(number, lambda number=number: {'image_id': 'sha256:' + str(number) * 64})
+        image, digest = 'sha256:' + '5' * 64, 'sha256:' + '6' * 64
+        context = {'sha256': '7' * 64, 'revision': q['source_revision'], 'architecture': q['architecture'],
+                   'manifest_sha256': q['new_manifest_sha256'], 'target': q['new_target']}
+        driver.stage(5, lambda: {'image_id': image, 'composefs_digest': 'a' * 128,
+            'checkpoint_reference': q['publish_repository'] + '@' + digest,
+            'checkpoint_manifest_digest': digest, 'checkpoint_config_digest': image,
+            'checkpoint_binding': finalizer.checkpoint_binding(q, driver.binding),
+            'checkpoint_stage': 5,
+            'producer_context_sha256': context['sha256']})
+        receipt = spool.document(self.root / '05-reseal.json')
+        receipt['checkpoint_binding']['helpers_revision'] = '0' * 40
+        (self.root / '05-reseal.json').write_bytes(spool.canonical(receipt))
+        resumed = self.driver()
+        resumed.current_context = lambda: {**context, 'sha256': '8' * 64}
+        resumed.command = lambda arguments: self.fail('untrusted checkpoint must not touch registry')
+        with self.assertRaisesRegex(ValueError, 'stable binding'):
+            resumed.restore_checkpoint()
 
     def test_no_cross_repository_or_mutable_build_inputs(self):
         for change in ({'publish_repository': 'code.podesta.ai/qos/tilo-development-other'},
                        {'base_ref': 'registry.invalid/base:latest'}, {'stage_timeout_seconds': 99999}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 finalizer.validate_request(request() | change)
+
+    def test_prediction_deadline_exceeds_signing_and_non_signing_budgets(self):
+        for change in ({'signing_response_timeout_seconds': 1801},
+                       {'prediction_stage_timeout_seconds': 8401},
+                       {'prediction_stage_timeout_seconds': 2400},
+                       {'prediction_stage_timeout_seconds': 2399}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                finalizer.validate_request(request() | change)
+        self.assertEqual(finalizer.validate_request(request() | {
+            'prediction_stage_timeout_seconds': 2401})['prediction_stage_timeout_seconds'], 2401)
 
     def test_target_origins_require_the_matching_native_suffix(self):
         repository = 'code.podesta.ai/qos/tilo-development'
@@ -159,7 +310,12 @@ class FinalizationTests(unittest.TestCase):
         final_id = 'sha256:' + spool.digest(config)
         manifest = spool.canonical({'schemaVersion': 2, 'config': {'digest': final_id}})
         manifest_id = 'sha256:' + spool.digest(manifest)
-        calls = []
+        loader_config = spool.canonical({'os': 'linux', 'architecture': 'arm64',
+            'config': {'Labels': {'org.opencontainers.image.revision': q['source_revision'],
+                                  'fixture.stage': 'loader'}}})
+        loader_id = 'sha256:' + spool.digest(loader_config)
+        registry = {}
+        calls, timed_calls = [], []
         driver = finalizer.Driver(q, '/verified/helpers', self.root)
         driver.preflight = lambda: None
         driver.capacity = lambda: None
@@ -169,25 +325,39 @@ class FinalizationTests(unittest.TestCase):
             if name == 'rebind-development-rootfs.py':
                 return {'rootfs_id': 'sha256:' + '1' * 64}
             if name == 'sign-development-rootfs.py':
-                return {'signed_rootfs_id': 'sha256:' + '2' * 64}
+                return {'signed_rootfs_id': loader_id}
             if name == 'compute-development-composefs.py':
                 return {'composefs_digest': 'a' * 128}
             self.fail('unknown delegated helper')
         driver.helper = helper
         driver.module = lambda *args: SimpleNamespace(validate=lambda *args: {'identities': {'efi-signing.crt': 'f' * 64}})
-        def command(arguments):
+        driver.current_context = lambda: {'sha256': '7' * 64, 'revision': q['source_revision'],
+            'architecture': q['architecture'], 'manifest_sha256': q['new_manifest_sha256'],
+            'target': q['new_target']}
+        def command(arguments, timeout=None):
             argv = [str(x) for x in arguments]
             calls.append(argv)
+            if timeout is not None:
+                timed_calls.append((argv, timeout))
             if '--iidfile' in argv:
-                Path(argv[argv.index('--iidfile') + 1]).write_text('sha256:' + '3' * 64)
+                Path(argv[argv.index('--iidfile') + 1]).write_text(final_id)
             if 'inspect' in argv and argv[0] == 'podman':
                 return spool.canonical([{'Id': final_id}])
             if 'verify-finalized-development-image.py' in ' '.join(argv):
                 return spool.canonical({'installable': False, 'fixture': 'delegated verification mocked'})
             if 'push' in argv:
-                Path(argv[argv.index('--digestfile') + 1]).write_text(manifest_id)
+                pushed = argv[-2]
+                pushed_config = loader_config if pushed == loader_id else config
+                pushed_manifest = spool.canonical({'schemaVersion': 2, 'config': {'digest': pushed}})
+                pushed_digest = 'sha256:' + spool.digest(pushed_manifest)
+                registry[pushed_digest] = (pushed_manifest, pushed_config)
+                Path(argv[argv.index('--digestfile') + 1]).write_text(pushed_digest)
             if argv[0] == 'skopeo':
-                return config if '--config' in argv else manifest
+                digest = argv[-1].rsplit('@', 1)[-1]
+                found_manifest, found_config = registry[digest]
+                if '--format={{.Digest}}' in argv:
+                    return digest.encode()
+                return found_config if '--config' in argv else found_manifest
             return b''
         driver.command = command
         result = driver.execute()
@@ -196,9 +366,16 @@ class FinalizationTests(unittest.TestCase):
         self.assertFalse(result['installable'])
         self.assertTrue(result['cosign_signing_required'])
         self.assertTrue((self.root / '08-published.json').is_file())
+        prediction_timeout = next(timeout for argv, timeout in timed_calls
+                                  if 'sign-target-prediction.sh' in ' '.join(argv))
+        inspect_timeout = next(timeout for argv, timeout in timed_calls
+                               if argv[:4] == ['podman', '--remote=false', 'image', 'inspect'])
+        self.assertGreater(prediction_timeout, q['signing_response_timeout_seconds'] + q['stage_timeout_seconds'])
+        self.assertLessEqual(prediction_timeout, q['prediction_stage_timeout_seconds'])
+        self.assertLessEqual(inspect_timeout, q['stage_timeout_seconds'])
         pushes = [c for c in calls if isinstance(c, list) and 'push' in c]
-        self.assertEqual(len(pushes), 1)
-        self.assertNotEqual(pushes[0][-1], 'docker://' + q['new_target'])
+        self.assertEqual(len(pushes), 3)
+        self.assertTrue(all(push[-1] != 'docker://' + q['new_target'] for push in pushes))
 
     def test_timeout_kills_descendant_after_leader_exits(self):
         pidfile = self.root / 'descendant.pid'
@@ -214,6 +391,27 @@ class FinalizationTests(unittest.TestCase):
             time.sleep(0.01)
         else:
             self.fail('descendant retained stdout after deadline')
+
+    def test_failed_command_writes_bounded_sanitized_diagnostics(self):
+        q = request()
+        driver = finalizer.Driver(q, '/verified/helpers', self.root)
+        driver.status({'stage': 'provisional', 'state': 'running', 'automatic_retry': False})
+        script = ('import sys;print("useful failure");print("TOKEN=do-not-publish");'
+                  'print("https://operator:private@example.invalid/path");sys.exit(7)')
+        with self.assertRaisesRegex(finalizer.CommandFailure, 'checkpoint not accepted'):
+            driver.command([sys.executable, '-c', script])
+        receipt = spool.document(self.root / 'failure.json')
+        self.assertEqual(receipt['stage'], 'provisional')
+        self.assertEqual(receipt['exit_code'], 7)
+        self.assertEqual(receipt['executable'], Path(sys.executable).name)
+        self.assertEqual(receipt['argument_count'], 3)
+        self.assertRegex(receipt['arguments_sha256'], r'^[0-9a-f]{64}$')
+        self.assertRegex(receipt['output_sha256'], r'^[0-9a-f]{64}$')
+        self.assertIn('useful failure', receipt['output_tail'])
+        self.assertNotIn('do-not-publish', receipt['output_tail'])
+        self.assertNotIn('private', receipt['output_tail'])
+        self.assertIn('https://***:***@example.invalid/path', receipt['output_tail'])
+        self.assertLessEqual(len(receipt['output_tail']), 4096)
 
 if __name__ == '__main__':
     unittest.main()

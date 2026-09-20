@@ -48,7 +48,19 @@ def checked_bundle(files, expected):
             manifest != {'schema': 1, 'purpose': 'tilo-development',
                          'sha256': {n: spool.digest(files[n]) for n in trust.FILES}}):
         raise ValueError('public manifest binding differs')
-    return trust.identities({n: files[n] for n in trust.FILES})
+    inputs = {n: files[n] for n in trust.FILES}
+    # development-trust intentionally delegates public-key parsing to the
+    # native crypto helper, whose interface accepts filesystem paths.  Keep
+    # the remotely supplied bytes authoritative by materializing only this
+    # already manifest-verified snapshot into private temporary files.
+    with tempfile.TemporaryDirectory(prefix='tilo-finalization-public-', dir='/var/lib') as temporary:
+        directory = Path(temporary)
+        paths = {}
+        for name, data in inputs.items():
+            path = directory / name
+            spool.write_new(path, data)
+            paths[name] = path
+        return trust.identities(inputs, paths)
 
 
 def validate(packet, request_raw):
@@ -157,7 +169,8 @@ def receive(packet, work=Path('/work'), bridge=BRIDGE):
     spool.write_new(bridge / 'efi-signing.crt', cert)
     config = {'schema': 1, 'context': packet['context'], 'spool': str(bridge / 'requests'),
               'public_certificate': str(bridge / 'efi-signing.crt'),
-              'certificate_sha256': spool.digest(cert), 'timeout_seconds': 1800}
+              'certificate_sha256': spool.digest(cert),
+              'timeout_seconds': request['signing_response_timeout_seconds']}
     spool.write_new(bridge / 'bridge.json', spool.canonical(config))
     receipt = {'schema': 1, 'request_sha256': packet['request_sha256'],
                'context_sha256': spool.context(packet['context']), 'packet_sha256': spool.digest(spool.canonical(packet)),

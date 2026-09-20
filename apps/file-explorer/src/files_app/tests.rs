@@ -1234,6 +1234,118 @@ mod command_path_tests {
         assert!(w.clipboard_cut, "the remaining item keeps cut semantics");
     }
 
+    fn invoke_transfer_action(
+        files: &mut FileExplorerWidget,
+        source: Option<&Path>,
+        action: &str,
+    ) -> Result<bool, String> {
+        use ui::tilo_actions::{ActionAddress, door};
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(files, &doc);
+        let resource = source.map_or_else(
+            || resources.first().unwrap().id.as_str().to_owned(),
+            crate::search_provider::entry_resource_id,
+        );
+        let encoded = door::encode_json(
+            &resources,
+            &ActionAddress::new(resource, action),
+            &serde_json::Map::new(),
+        )
+        .expect("the current resource must export the transfer action");
+        Widget::invoke_resource_operation(
+            files,
+            OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exported_paste_preserves_dangling_destination_links() {
+        for cut in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("report.txt");
+            let destination = directory.path().join("destination");
+            let outside = directory.path().join("unselected-target.txt");
+            std::fs::write(&source, b"selected bytes").unwrap();
+            std::fs::create_dir(&destination).unwrap();
+            let occupied = destination.join("report.txt");
+            let numbered = destination.join("report 2.txt");
+            std::os::unix::fs::symlink(&outside, &occupied).unwrap();
+            std::os::unix::fs::symlink(&outside, &numbered).unwrap();
+            let mut files =
+                FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
+            files.navigate(directory.path().into());
+            assert!(
+                invoke_transfer_action(&mut files, Some(&source), if cut { "cut" } else { "copy" })
+                    .unwrap()
+            );
+            files.navigate(destination.clone());
+            assert!(invoke_transfer_action(&mut files, None, "paste").unwrap());
+
+            assert_eq!(std::fs::read_link(&occupied).unwrap(), outside);
+            assert_eq!(std::fs::read_link(&numbered).unwrap(), outside);
+            assert!(
+                !outside.exists(),
+                "Paste must not write to either link target"
+            );
+            assert_eq!(
+                std::fs::read(destination.join("report 3.txt")).unwrap(),
+                b"selected bytes"
+            );
+            assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 3);
+            assert_eq!(source.exists(), !cut);
+            if !cut {
+                assert_eq!(std::fs::read(&source).unwrap(), b"selected bytes");
+            }
+            assert_eq!(files.clipboard.is_empty(), cut);
+            assert!(
+                files
+                    .displayed_entries()
+                    .iter()
+                    .any(|entry| entry.name == "report 3.txt")
+            );
+        }
+    }
+
+    #[test]
+    fn exported_cut_paste_reports_destination_failure_and_keeps_retryable_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("report.txt");
+        let destination = directory.path().join("destination");
+        std::fs::write(&source, b"selected bytes").unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
+        files.navigate(directory.path().into());
+        assert!(invoke_transfer_action(&mut files, Some(&source), "cut").unwrap());
+        files.navigate(destination.clone());
+        // The folder disappears after selection. A file now occupies that
+        // entry: failure must preserve both objects and keep Cut retryable.
+        std::fs::remove_dir(&destination).unwrap();
+        std::fs::write(&destination, b"replacement bytes").unwrap();
+        assert!(invoke_transfer_action(&mut files, None, "paste").is_err());
+        assert_eq!(std::fs::read(&source).unwrap(), b"selected bytes");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"replacement bytes");
+        assert_eq!(files.clipboard, vec![source.clone()]);
+        assert!(files.clipboard_cut);
+
+        // Restore only this owned fixture directory and use the same public
+        // Paste action again, without rebuilding the selection or clipboard.
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        assert!(invoke_transfer_action(&mut files, None, "paste").unwrap());
+        assert_eq!(
+            std::fs::read(destination.join("report.txt")).unwrap(),
+            b"selected bytes"
+        );
+        assert!(!source.exists());
+        assert!(files.clipboard.is_empty());
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
+    }
+
     #[test]
     fn history_back_and_forward_traverse_visited_dirs() {
         let d = tempfile::tempdir().unwrap();

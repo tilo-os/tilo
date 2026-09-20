@@ -215,19 +215,6 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         session_id: String,
     },
-    /// The exact destination could not open the requested session. Reasons
-    /// are typed so remote process details never cross the personal fabric.
-    MediaRejected {
-        request_id: [u8; 16],
-        session_id: String,
-        failure: MediaHandoffFailure,
-    },
-    /// Stop waiting for one exact request without affecting playback on the
-    /// destination or granting broader control of it.
-    MediaCancelled {
-        request_id: [u8; 16],
-        session_id: String,
-    },
     /// Ask the receiving device to author this placement in its next
     /// snapshot. The sender never forges another device's durable state.
     SetDisplayPlacement {
@@ -471,6 +458,21 @@ pub enum PersonalFabricAction {
     /// Revoke one exact mirror session on both peers.
     DisplayMirrorStop {
         session_id: [u8; 16],
+    },
+    // Keep additions at the end: postcard uses declaration-order tags, and
+    // inserting media outcomes beside MediaAccepted renumbers older actions.
+    /// The exact destination could not open the requested session. Reasons
+    /// are typed so remote process details never cross the personal fabric.
+    MediaRejected {
+        request_id: [u8; 16],
+        session_id: String,
+        failure: MediaHandoffFailure,
+    },
+    /// Stop waiting for one exact request without affecting playback on the
+    /// destination or granting broader control of it.
+    MediaCancelled {
+        request_id: [u8; 16],
+        session_id: String,
     },
 }
 
@@ -2774,6 +2776,26 @@ mod tests {
             })
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
+    fn legacy_display_placement_bytes_decode_as_the_original_action() {
+        let action = PersonalFabricAction::SetDisplayPlacement {
+            rect: DisplayRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        };
+        // The original wire tag and postcard field encoding, independent of
+        // the current enum serializer. Encoding and decoding must both agree.
+        let original = [2, 0, 0, 1, 1];
+        assert_eq!(postcard::to_allocvec(&action).unwrap(), original);
+        assert_eq!(
+            postcard::from_bytes::<PersonalFabricAction>(&original).unwrap(),
+            action
         );
     }
 

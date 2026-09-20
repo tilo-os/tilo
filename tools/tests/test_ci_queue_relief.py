@@ -45,18 +45,24 @@ class QueueReliefTests(unittest.TestCase):
         quality = section(workflow("lint"), "quality", 2)
         expected = section(quality, "container", 4)
         self.assertRegex(expected, r"image: code\.podesta\.ai/qos/ci-fast@sha256:[0-9a-f]{64}")
-        for name in ("select", "checks", "report-check-result"):
+        for name in ("select", "checks"):
             with self.subTest(job=name):
                 job = section(workflow("check"), name, 2)
                 self.assertEqual(section(job, "container", 4), expected)
                 self.assertIn("runs-on: runner-quality", job)
 
-    def test_every_main_commit_keeps_checks_without_serializing_revisions(self):
+    def test_fast_checks_never_cancel_another_commit_or_event(self):
         for name in ("check", "lint"):
             with self.subTest(workflow=name):
-                concurrency = section(workflow(name), "concurrency")
-                self.assertIn("github.ref == 'refs/heads/main' && github.sha", concurrency)
-                self.assertIn("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}", concurrency)
+                text = workflow(name)
+                events = section(text, "on")
+                self.assertRegex(events, r"(?m)^  push:")
+                self.assertRegex(events, r"(?m)^  pull_request:")
+                concurrency = section(text, "concurrency")
+                self.assertIn("github.event_name", concurrency)
+                self.assertIn("github.sha", concurrency)
+                self.assertIn("cancel-in-progress: false", concurrency)
+                self.assertNotRegex(section(text, "jobs"), r"(?m)^\s+concurrency:")
 
     def test_component_release_tags_and_manual_runs_remain(self):
         for name, tags in (("build-image", '["v*"]'),
@@ -66,7 +72,10 @@ class QueueReliefTests(unittest.TestCase):
                 events = section(workflow(name), "on")
                 push = section(events, "push", 2)
                 self.assertIn("tags: " + tags, push)
-                self.assertNotRegex(push, r"(?m)^    branches(?:-ignore)?:")
+                if name == "release-apps":
+                    self.assertRegex(push, r"(?m)^    branches: \[main\]$")
+                else:
+                    self.assertNotRegex(push, r"(?m)^    branches(?:-ignore)?:")
                 self.assertRegex(events, r"(?m)^  workflow_dispatch:")
 
     def test_os_full_build_is_not_a_pr_gate(self):
@@ -92,6 +101,11 @@ class QueueReliefTests(unittest.TestCase):
                 for event in ("pull_request", "schedule", "workflow_dispatch"):
                     self.assertRegex(events, rf"(?m)^  {event}:")
                 self.assertTrue(section(workflow(name), "jobs"))
+
+    def test_builder_recipe_does_not_run_e2e_against_the_old_image(self):
+        legacy_events = section(workflow("legacy-app-e2e"), "on")
+        self.assertNotIn('os/Containerfile.builder', legacy_events)
+        self.assertIn('os/Containerfile.builder', section(workflow("build-builder-image"), "on"))
 
     def test_os_candidate_can_run_after_skipped_signing_preflight(self):
         build = section(workflow("build-image"), "build-and-push", 2)
