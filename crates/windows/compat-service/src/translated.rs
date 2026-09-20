@@ -310,7 +310,21 @@ impl Drop for PreparationChildren {
 fn direct_children() -> io::Result<Vec<libc::pid_t>> {
     let mut children = Vec::new();
     for task in std::fs::read_dir("/proc/self/task")? {
-        for pid in std::fs::read_to_string(task?.path().join("children"))?.split_whitespace() {
+        let task = match task {
+            Ok(task) => task,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let raw = match std::fs::read_to_string(task.path().join("children")) {
+            Ok(raw) => raw,
+            // A test-harness thread can exit between read_dir and this read.
+            // Production preparation is single-threaded, but treating that
+            // procfs race as an empty, already-gone task keeps the preflight
+            // reliable without weakening child ownership.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for pid in raw.split_whitespace() {
             children.push(
                 pid.parse()
                     .map_err(|_| io::Error::other("invalid child PID"))?,
