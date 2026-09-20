@@ -202,7 +202,9 @@ jobs:
         run: |
           bash scripts/ci-run.sh "replica receipt clock skew" -- cargo test --locked -p fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
           bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p fs sync::tests::a_read_only_peer_pulls_updates_but_cannot_author --lib -- --nocapture
-          bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- cargo test --locked -p fs fs::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions --lib -- --nocapture
+          SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=fs TEST_TARGET= OPERATION=test-lib \
+            TEST_NAME=fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions \
+            bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- python3 -I tools/ci/focused_test.py run --root .
 
       - name: Reject corrupted collaborative state and prove legacy name migration
         run: |

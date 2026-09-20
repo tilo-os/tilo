@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one explicitly named integration test or compile one package's tests."""
+"""Run one explicitly named integration/library test or check package tests."""
 import argparse
 import json
 import os
@@ -16,11 +16,13 @@ def request(env):
         raise ValueError('source must be a full lowercase commit SHA')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['PACKAGE']):
         raise ValueError('package must be a Cargo package name')
-    if values['OPERATION'] not in ('test', 'check-tests'):
-        raise ValueError('operation must be test or check-tests')
-    if values['OPERATION'] == 'test':
-        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['TEST_TARGET']):
+    if values['OPERATION'] not in ('test', 'test-lib', 'check-tests'):
+        raise ValueError('operation must be test, test-lib or check-tests')
+    if values['OPERATION'] in ('test', 'test-lib'):
+        if values['OPERATION'] == 'test' and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['TEST_TARGET']):
             raise ValueError('an integration test target is required')
+        if values['OPERATION'] == 'test-lib' and values['TEST_TARGET']:
+            raise ValueError('test-lib does not accept an integration target')
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*', values['TEST_NAME']):
             raise ValueError('an exact Rust test path is required')
     elif values['TEST_TARGET'] or values['TEST_NAME']:
@@ -48,11 +50,17 @@ def execute(root, values):
         command = ['cargo', 'check', '--locked', '-p', values['PACKAGE'], '--tests']
         print(json.dumps({'source_sha': actual, 'command': command}), flush=True)
         return subprocess.run(command, cwd=root).returncode
-    if not any(t['name'] == values['TEST_TARGET'] and 'test' in t['kind']
-               for t in packages[0]['targets']):
-        raise ValueError('integration test target does not belong to package')
+    if values['OPERATION'] == 'test-lib':
+        if not any('lib' in t['kind'] for t in packages[0]['targets']):
+            raise ValueError('package has no library target')
+        target = ['--lib']
+    else:
+        if not any(t['name'] == values['TEST_TARGET'] and 'test' in t['kind']
+                   for t in packages[0]['targets']):
+            raise ValueError('integration test target does not belong to package')
+        target = ['--test', values['TEST_TARGET']]
     command = ['cargo', 'test', '--locked', '-p', values['PACKAGE'],
-               '--test', values['TEST_TARGET'], '--', values['TEST_NAME'], '--exact']
+               *target, '--', values['TEST_NAME'], '--exact']
     # libtest succeeds with zero selected tests. Reject that before executing,
     # and reject ignored tests afterwards rather than reporting false evidence.
     listed = read(command + ['--list'])
