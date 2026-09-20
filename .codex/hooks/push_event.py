@@ -17,6 +17,18 @@ def literal_call(code: str) -> dict | None:
     code = code.strip()
     if code.startswith("// @exec:"):
         code = code.partition("\n")[2].strip()
+    # A common observed turn applies a literal patch before its one shell call.
+    # Consume that inert JSON string; never search its contents for commands.
+    prefix = "text(await tools.apply_patch("
+    while code.startswith(prefix):
+        try:
+            value, consumed = json.JSONDecoder().raw_decode(code[len(prefix):])
+        except ValueError:
+            return None
+        rest = code[len(prefix) + consumed:].lstrip()
+        if not isinstance(value, str) or not rest.startswith("));"):
+            return None
+        code = rest[3:].strip()
     match = re.fullmatch(
         r"(?:text\(\s*await\s+|await\s+|(?:const|let)\s+(?P<var>\w+)\s*=\s*await\s+)"
         r"tools\.exec_command\(\s*(?P<object>\{.*\})\s*\)(?P<tail>.*)",
