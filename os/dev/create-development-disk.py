@@ -321,7 +321,8 @@ def _create_verified_disk(args):
             # Only a newly allocated file is bound, never the guest root. The
             # operator must provision this VM without device passthrough;
             # privileged Podman still has access to the VM's own devices.
-            bootc_install([*run, '--privileged', '--network=host', *auth_args,
+            bootc_install([*run, '--privileged', '--network=host',
+                '--tmpfs', '/run/udev:rw,nosuid,nodev,noexec', *auth_args,
                 '--volume', f'{path}:/output/disk.raw:rw',
                 '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
                 '--entrypoint=/usr/bin/python3', verified.image_id,

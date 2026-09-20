@@ -18,6 +18,21 @@ DIGEST='sha256:'+'1'*64
 
 
 class RegistryWarmupTests(unittest.TestCase):
+    def test_private_udev_preflight_requires_pid1_mount_and_no_database(self):
+        directory=SimpleNamespace(st_mode=wrapper.stat.S_IFDIR|0o755,st_dev=42)
+        with patch.object(wrapper.os,'stat',side_effect=[directory,directory]), \
+                patch.object(wrapper.os.path,'lexists',return_value=False):
+            self.assertIsNone(wrapper.require_private_udev())
+        wrong=SimpleNamespace(st_mode=wrapper.stat.S_IFDIR|0o755,st_dev=43)
+        with patch.object(wrapper.os,'stat',side_effect=[directory,wrong]), \
+                patch.object(wrapper.os.path,'lexists',return_value=False), \
+                self.assertRaisesRegex(ValueError,'differs from PID 1'):
+            wrapper.require_private_udev()
+        with patch.object(wrapper.os,'stat',side_effect=[directory,directory]), \
+                patch.object(wrapper.os.path,'lexists',return_value=True), \
+                self.assertRaisesRegex(ValueError,'stale database'):
+            wrapper.require_private_udev()
+
     def test_inspect_uses_exact_argv_without_a_shell_and_requires_digest(self):
         result=SimpleNamespace(returncode=0,stdout=(DIGEST+'\n').encode())
         with patch.dict(os.environ,{'REGISTRY_AUTH_FILE':'/private/auth.json'},clear=True), \

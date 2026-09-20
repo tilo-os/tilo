@@ -4,12 +4,24 @@ import argparse
 import os
 import re
 import signal
+import stat
 import subprocess
 import threading
 import time
 
 
 SOURCE = re.compile(r'docker://code\.podesta\.ai/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})')
+
+
+def require_private_udev():
+    current = os.stat('/run/udev', follow_symlinks=False)
+    pid1 = os.stat('/proc/1/root/run/udev', follow_symlinks=False)
+    if not stat.S_ISDIR(current.st_mode) or not stat.S_ISDIR(pid1.st_mode):
+        raise ValueError('supervised udev namespace is not a directory')
+    if current.st_dev != pid1.st_dev:
+        raise ValueError('supervised udev namespace differs from PID 1')
+    if os.path.lexists('/run/udev/data'):
+        raise ValueError('supervised udev namespace contains a stale database')
 
 
 def inspect_digest(source, expected, *, timeout=20):
@@ -94,6 +106,7 @@ def main():
     parser.add_argument('bootc', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     argv = args.bootc[1:] if args.bootc[:1] == ['--'] else args.bootc
+    require_private_udev()
     return run_bootc(args.source, args.expected_digest, argv)
 
 
