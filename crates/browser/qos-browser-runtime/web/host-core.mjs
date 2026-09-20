@@ -39,6 +39,7 @@ export function keyboardRoute(event,composing,mac) {
   if(primary&&clipboardCommands.has(lower))return 'clipboard';
   if(primary&&!event.altKey&&applicationCommands.has(lower))return 'forward';
   const altGraph=Boolean(event.ctrlKey&&event.altKey&&!event.metaKey);
+  if(key==='Dead')return 'text';
   if(key.length===1&&(!primary||altGraph))return 'text';
   if(primary||event.metaKey||event.altKey)return 'browser';
   if(['Alt','Control','Meta','Shift'].includes(key))return 'modifier';

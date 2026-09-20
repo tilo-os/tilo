@@ -53,6 +53,8 @@ test('hidden editor gives printable text only to beforeinput and forwards editin
   assert.equal(typeof hostCore.keyboardRoute,'function','the shared host owns one keyboard route');
   const route=hostCore.keyboardRoute;
   assert.equal(route({key:'é'},false,false),'text');
+  assert.equal(route({key:'Dead'},false,false),'text','dead keys stay native so the browser can start composition');
+  assert.equal(route({key:'Dead',altKey:true},false,true),'text','modifier-produced dead keys also stay native');
   assert.equal(route({key:'Backspace'},false,false),'forward');
   assert.equal(route({key:'Enter'},false,false),'forward');
   assert.equal(route({key:'Enter',isComposing:true},true,false),'composition');

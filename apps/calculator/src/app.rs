@@ -809,6 +809,16 @@ impl CalculatorApp {
     // -- keyboard ------------------------------------------------------------
 
     fn on_key(&mut self, key: &WKey, modifiers: winit::event::Modifiers, doc: &mut AutoCommit) {
+        self.on_key_with_paste(key, modifiers, doc, ui::clipboard_paste);
+    }
+
+    fn on_key_with_paste(
+        &mut self,
+        key: &WKey,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        paste: impl FnOnce() -> Option<String>,
+    ) {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
         // Ctrl+digit always switches mode, from any screen.
@@ -906,6 +916,16 @@ impl CalculatorApp {
             }
             WKey::Character(s) => {
                 if ctrl {
+                    if self.model.mode == Mode::Calc
+                        && matches!(s.as_str(), "v" | "V")
+                        && let Some(paste) = paste()
+                    {
+                        self.on_key(
+                            &WKey::Character(paste.into()),
+                            winit::event::Modifiers::default(),
+                            doc,
+                        );
+                    }
                     return;
                 }
                 if self.model.mode == Mode::Calc {
@@ -1134,6 +1154,22 @@ impl Widget for CalculatorApp {
 
     fn is_focused(&self) -> bool {
         self.host_focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.host_focused {
+            return None;
+        }
+        match self.model.mode {
+            Mode::Calc => self.calc.expression_ime_rect(),
+            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
+            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
+        }
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.host_focused
+            .then_some(winit::window::ImePurpose::Normal)
     }
 
     fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
@@ -1389,6 +1425,17 @@ impl Widget for CalculatorApp {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
                 self.on_key(&key_event.logical_key, *modifiers, state);
+                *handled = true;
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.on_key(
+                    &WKey::Character(text.clone().into()),
+                    winit::event::Modifiers::default(),
+                    state,
+                );
+                *handled = true;
+            }
+            WindowEvent::Ime(_) => {
                 *handled = true;
             }
             _ => {}
@@ -2047,6 +2094,150 @@ impl CalculatorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn keyboard(key: WKey) -> WindowEvent {
+        let text = if let WKey::Character(text) = &key {
+            Some(text.clone())
+        } else {
+            None
+        };
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: winit::event::KeyEvent::synthetic(
+                winit::event::RawKeyEvent {
+                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                        winit::keyboard::NativeKeyCode::Unidentified,
+                    ),
+                    state: ElementState::Pressed,
+                },
+                key.clone(),
+                text.clone(),
+                winit::keyboard::KeyLocation::Standard,
+                false,
+                text,
+                key,
+            ),
+            is_synthetic: false,
+        }
+    }
+
+    #[test]
+    fn power_input_physical_keys_evaluates_once() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        for text in ["2", "^", "2"] {
+            send(
+                &mut app,
+                &mut state,
+                &keyboard(WKey::Character(text.into())),
+            );
+        }
+        assert_eq!(app.model.expr, "2^2");
+        send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Enter)),
+        );
+        assert_eq!(app.model.ans, 4.0);
+        assert_eq!(app.model.history.len(), 1);
+    }
+
+    #[test]
+    fn power_input_dead_key_commit_preserves_caret() {
+        use winit::event::Ime;
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        send(&mut app, &mut state, &keyboard(WKey::Character("2".into())));
+        send(&mut app, &mut state, &keyboard(WKey::Dead(Some('^'))));
+        send(
+            &mut app,
+            &mut state,
+            &WindowEvent::Ime(Ime::Preedit("^".into(), Some((1, 1)))),
+        );
+        assert_eq!(app.model.expr, "2", "preedit must not insert an operator");
+        send(
+            &mut app,
+            &mut state,
+            &WindowEvent::Ime(Ime::Commit("^".into())),
+        );
+        send(&mut app, &mut state, &keyboard(WKey::Character("2".into())));
+        assert_eq!(app.model.expr, "2^2");
+        send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Enter)),
+        );
+        assert_eq!(app.model.ans, 4.0);
+        assert_eq!(app.model.history.len(), 1);
+    }
+
+    #[test]
+    fn power_input_browser_commits_evaluate_once() {
+        let mut app = CalculatorApp::new();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        for text in ["2", "^", "2"] {
+            send(
+                &mut app,
+                &mut state,
+                &WindowEvent::Ime(winit::event::Ime::Commit(text.into())),
+            );
+        }
+        assert_eq!(app.model.expr, "2^2");
+        send(
+            &mut app,
+            &mut state,
+            &keyboard(WKey::Named(NamedKey::Enter)),
+        );
+        assert_eq!(app.model.ans, 4.0);
+        assert_eq!(app.model.history.len(), 1);
+    }
+
+    #[test]
+    fn power_input_focused_calculator_enables_browser_text_editor() {
+        let mut app = CalculatorApp::new();
+        app.area = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.relayout();
+        app.layout_active();
+        assert!(app.ime_cursor_rect().is_none());
+        app.set_focus(true);
+        let caret = app
+            .ime_cursor_rect()
+            .expect("text entry must enable the browser editor and platform IME");
+        assert!(caret.height() > 0.0 && app.body.contains(caret.center()));
+        assert_eq!(app.ime_purpose(), Some(winit::window::ImePurpose::Normal));
+        app.set_focus(false);
+        assert!(app.ime_cursor_rect().is_none());
+        assert_eq!(app.ime_purpose(), None);
+    }
+
+    #[test]
+    fn power_input_paste_shortcuts_evaluate_once() {
+        for primary in [
+            winit::keyboard::ModifiersState::CONTROL,
+            winit::keyboard::ModifiersState::SUPER,
+        ] {
+            let mut app = CalculatorApp::new();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            app.on_key_with_paste(
+                &WKey::Character("v".into()),
+                primary.into(),
+                &mut state.doc,
+                || Some("2^2".into()),
+            );
+            assert_eq!(app.model.expr, "2^2");
+            send(
+                &mut app,
+                &mut state,
+                &keyboard(WKey::Named(NamedKey::Enter)),
+            );
+            assert_eq!(app.model.ans, 4.0);
+            assert_eq!(app.model.history.len(), 1);
+        }
+    }
 
     #[test]
     fn live_launch_is_empty_calc_mode() {
