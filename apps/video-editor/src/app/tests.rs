@@ -3345,13 +3345,13 @@ fn the_header_lock_pill_locks_a_track_and_blocks_its_edits() {
     let r = app.regions();
     let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
     let header = app.track_head_rect(&r, &lane);
-    let pill = app.lock_pill_rect(header);
+    let pill = app.track_head_layout(header).lock;
     assert!(
         header.contains(pill.center()),
         "the lock pill sits inside the track header"
     );
     assert!(
-        pill.x1 <= app.mute_pill_rect(header).x0,
+        pill.x1 <= app.track_head_layout(header).mute.x0,
         "the lock pill sits clear of the mute pill",
     );
     // Click the pill through the real press path.
@@ -3416,7 +3416,7 @@ fn a_locked_lane_refuses_a_bin_drop_and_the_clip_lands_elsewhere() {
     let r = app.regions();
     let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
     let header = app.track_head_rect(&r, &lane);
-    let pill = app.lock_pill_rect(header);
+    let pill = app.track_head_layout(header).lock;
     click(&mut app, &mut doc, pill.center().x, pill.center().y);
     let before = app.project.clips_on(tid).len();
     let (_mid, row) = app
@@ -3825,7 +3825,7 @@ fn the_pointer_says_what_each_region_does() {
         .unwrap()
         .2;
     let header = app.track_head_rect(&r, &lane);
-    let pill = app.lock_pill_rect(header);
+    let pill = app.track_head_layout(header).lock;
     click(&mut app, &mut doc, pill.center().x, pill.center().y);
     assert_eq!(app.cursor_shape(cr.center()), Some(CursorIcon::NotAllowed));
 }
@@ -5354,7 +5354,7 @@ fn pasting_after_its_track_is_locked_lands_on_a_track_that_accepts_it() {
     );
     // Lock the source track, then paste.
     let header = app.track_head_rect(&r, &lane);
-    let pill = app.lock_pill_rect(header);
+    let pill = app.track_head_layout(header).lock;
     click(&mut app, &mut doc, pill.center().x, pill.center().y);
     app.playhead = 2.0;
     assert!(
@@ -8712,9 +8712,9 @@ fn two_x_text_scales_every_canvas_band_without_collisions() {
             "{track:?} retains its scaled row height"
         );
         let pills = [
-            app.solo_pill_rect(header),
-            app.lock_pill_rect(header),
-            app.mute_pill_rect(header),
+            app.track_head_layout(header).solo,
+            app.track_head_layout(header).lock,
+            app.track_head_layout(header).mute,
         ];
         for pill in pills {
             assert!(
@@ -8726,7 +8726,7 @@ fn two_x_text_scales_every_canvas_band_without_collisions() {
             );
         }
         assert!(
-            app.track_meter_rect(header).y0 >= pills[0].y1,
+            app.track_head_layout(header).meter.y0 >= pills[0].y1,
             "the meter is below the track controls, not behind their labels"
         );
     }
@@ -10300,7 +10300,7 @@ fn a_picture_lane_is_metered_only_when_its_footage_carries_sound() {
         .find(|(_, kind, _)| *kind == TrackKind::Video)
         .expect("the sample timeline has a picture lane");
     let header = app.track_head_rect(&r, &lane);
-    let strip = app.track_meter_rect(header);
+    let strip = app.track_head_layout(header).meter;
     // The head only, never the lane: turning the sound on also asks for a
     // waveform, and a waveform lands on the *clip*. Comparing the whole
     // row would be reading one change as the other.
