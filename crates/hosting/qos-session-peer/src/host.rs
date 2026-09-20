@@ -601,6 +601,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let mut pump = tokio::time::interval(Duration::from_millis(10));
     let mut action_error: Option<String> = None;
     let mut subscription_generation = 0u64;
+    let mut replaying = false;
     let mut error = None;
     let mut reconnect: Option<Reconnect> = None;
     let mut delay = Duration::ZERO;
@@ -750,7 +751,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 match connection {
                     Ok(next) => {
                         let _timing = crate::action_timing::Timing::new("subscription_replaying");
-                        session=Some(next); error=Some("Native subscription is applying retained state".into()); delay=Duration::from_secs(1);
+                        session=Some(next); replaying=true; error=Some("Native subscription is applying retained state".into()); delay=Duration::from_secs(1);
                     }
                     Err(problem) => { tracing::warn!(%problem, "native reconnect failed"); error = Some(problem.to_string()); delay = if delay.is_zero() { Duration::from_secs(1) } else { (delay * 2).min(Duration::from_secs(4)) }; }
                 }
@@ -758,6 +759,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             inbound = async { match session.as_mut() { Some(current) => current.recv().await, None => std::future::pending().await } } => {
                 match inbound {
                     Some(Inbound::Ready { pending }) => {
+                        replaying = false;
                         let _timing = crate::action_timing::Timing::new("subscription_ready_work");
                         subscription_generation = subscription_generation.checked_add(1).context("native subscription generation exhausted")?;
                         tracing::info!(replayed = pending, generation = subscription_generation, "native subscription ready after relay replay");
@@ -782,7 +784,11 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     Some(message) => {
                         let _timing = crate::action_timing::Timing::slow("owner_inbound");
                         let (origin, bytes) = match message {
-                            Inbound::Delta {author,data} => (qos_peer_state::TransportOrigin::RelayDelta(author),data),
+                            Inbound::Delta {author,data} => (
+                                if replaying { qos_peer_state::TransportOrigin::RetainedRelayDelta(author) }
+                                else { qos_peer_state::TransportOrigin::RelayDelta(author) },
+                                data,
+                            ),
                             Inbound::Presence {author,payload} => (qos_peer_state::TransportOrigin::UntrustedPresence(author),payload),
                             Inbound::Ready {..} => unreachable!(),
                         };

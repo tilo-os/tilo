@@ -63,6 +63,7 @@ pub struct ReceiveOutcome {
 #[derive(Clone, Copy, Debug)]
 pub enum TransportOrigin {
     RelayDelta([u8; 32]),
+    RetainedRelayDelta([u8; 32]),
     UntrustedPresence([u8; 32]),
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -145,7 +146,7 @@ pub struct StatePeer {
     receipts: BTreeMap<String, Vec<u8>>,
     room_doc: Option<CachedDocument>,
     documents: BTreeMap<Route, Document>,
-    pending: VecDeque<([u8; 32], NeighbourMsg)>,
+    pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
     pending_bytes: usize,
     checkpoint_times: BTreeMap<Route, SystemTime>,
 }
@@ -520,8 +521,9 @@ impl StatePeer {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
-        let source = match origin {
-            TransportOrigin::RelayDelta(source) => source,
+        let (source, retained_replay) = match origin {
+            TransportOrigin::RelayDelta(source) => (source, false),
+            TransportOrigin::RetainedRelayDelta(source) => (source, true),
             TransportOrigin::UntrustedPresence(source) => {
                 if matches!(
                     message,
@@ -529,11 +531,11 @@ impl StatePeer {
                 ) {
                     return Err("state requires relay-authenticated Delta carrier".into());
                 }
-                source
+                (source, false)
             }
         };
         let mut candidate = self.clone();
-        let outcome = candidate.receive(source, message, now)?;
+        let outcome = candidate.receive_with_context(source, message, now, retained_replay)?;
         *self = candidate;
         Ok(outcome)
     }
@@ -542,6 +544,15 @@ impl StatePeer {
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
+    ) -> Result<ReceiveOutcome, String> {
+        self.receive_with_context(source, message, now, false)
+    }
+    fn receive_with_context(
+        &mut self,
+        source: [u8; 32],
+        message: NeighbourMsg,
+        now: SystemTime,
+        retained_replay: bool,
     ) -> Result<ReceiveOutcome, String> {
         match message {
             NeighbourMsg::IdentityHello { cert, revocations } => {
@@ -662,8 +673,8 @@ impl StatePeer {
                 self.pending_bytes = 0;
                 let mut applied = changed;
                 let mut rejected = 0;
-                for (author, message) in pending {
-                    match self.receive(author, message, now) {
+                for (author, message, replayed) in pending {
+                    match self.receive_with_context(author, message, now, replayed) {
                         Ok(outcome) => {
                             applied |= outcome.changed;
                             metadata_changed |= outcome.metadata_changed;
@@ -683,19 +694,19 @@ impl StatePeer {
             }
             message @ NeighbourMsg::AppDocument { .. } => {
                 if self.room_doc.is_none() || !self.certificates.contains_key(&source) {
-                    return self.defer(source, message);
+                    return self.defer(source, message, retained_replay);
                 }
-                self.receive_document(source, message, now)
+                self.receive_document(source, message, now, retained_replay)
             }
             _ => Ok(ReceiveOutcome::default()),
         }
     }
-    fn defer(&mut self, source: [u8; 32], message: NeighbourMsg) -> Result<ReceiveOutcome, String> {
+    fn defer(&mut self, source: [u8; 32], message: NeighbourMsg, retained_replay: bool) -> Result<ReceiveOutcome, String> {
         let bytes = postcard::to_allocvec(&message).map_err(err)?;
         if self
             .pending
             .iter()
-            .any(|(key, prior)| key == &source && *prior == message)
+            .any(|(key, prior, replayed)| key == &source && *prior == message && *replayed == retained_replay)
         {
             return Ok(ReceiveOutcome {
                 deferred: true,
@@ -706,7 +717,7 @@ impl StatePeer {
             return Err("app prerequisite queue full; fresh checkpoint required".into());
         }
         self.pending_bytes += bytes.len();
-        self.pending.push_back((source, message));
+        self.pending.push_back((source, message, retained_replay));
         Ok(ReceiveOutcome {
             deferred: true,
             ..Default::default()
@@ -717,8 +728,9 @@ impl StatePeer {
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
+        retained_replay: bool,
     ) -> Result<ReceiveOutcome, String> {
-        self.admit_document(source, message, now, false)
+        self.admit_document(source, message, now, false, retained_replay)
     }
     /// Host-local SDK publication after its certified connection was admitted.
     /// No wire message can select this door. Unlike a retained checkpoint, an
@@ -746,12 +758,13 @@ impl StatePeer {
             },
             now,
             true,
+            false,
         )
     }
 
     fn admit_document(
         &mut self, source: [u8; 32], message: NeighbourMsg,
-        now: SystemTime, local_app: bool,
+        now: SystemTime, local_app: bool, retained_replay: bool,
     ) -> Result<ReceiveOutcome, String> {
         let NeighbourMsg::AppDocument {
             peer,
@@ -769,8 +782,9 @@ impl StatePeer {
         {
             return Err("transport author or document room mismatch".into());
         }
-        let role = self.role(&source, now)?;
-        let cert = self.certificate(&source, now)?;
+        let authorization_time = if retained_replay { envelope.timestamp } else { now };
+        let role = self.role(&source, authorization_time)?;
+        let cert = self.certificate(&source, authorization_time)?;
         let (_, _, caps) =
             room::extract_governed_fields(self.room_doc.as_deref().ok_or("missing governance")?);
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
@@ -787,7 +801,7 @@ impl StatePeer {
             &resource,
             collab_types::caps::verb_for_opclass(envelope.op_class),
             &caps,
-            Some(now_secs(now)),
+            Some(now_secs(authorization_time)),
         ) != CapDecision::Allow
         {
             return Err("document capability forbidden".into());
@@ -827,8 +841,8 @@ impl StatePeer {
             &envelope,
             role,
             &mut validated_channel,
-            now,
-            Duration::from_secs(300),
+            authorization_time,
+            if retained_replay { Duration::ZERO } else { Duration::from_secs(300) },
         ) {
             Ok(()) => {}
             Err(collab_types::ValidationError::ReplaySeq { .. }) => {
@@ -865,6 +879,7 @@ impl StatePeer {
                         record_id: route.record,
                         envelope,
                     },
+                    retained_replay,
                 );
             };
             if coverage.sequence < envelope.seq {
@@ -877,6 +892,7 @@ impl StatePeer {
                         record_id: route.record,
                         envelope,
                     },
+                    retained_replay,
                 );
             }
             let snapshot = AutoCommit::load(bytes).map_err(err)?;
@@ -923,6 +939,7 @@ impl StatePeer {
                     record_id: route.record,
                     envelope,
                 },
+                retained_replay,
             );
         }
         let changed = document::merge_committed(&mut candidate.doc, &mutation)

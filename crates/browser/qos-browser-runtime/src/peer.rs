@@ -306,6 +306,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         });
     }
     wasm_bindgen_futures::spawn_local(async move {
+        let mut replaying = true;
         while let Some(inbound) = session.recv().await {
             if peer.closed.get() || peer.transport_generation.get()!=transport_generation {
                 return;
@@ -314,6 +315,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                 Inbound::Delta { author, data } => (author, data, true),
                 Inbound::Presence { author, payload } => (author, payload, false),
                 Inbound::Ready { .. } => {
+                    replaying = false;
                     peer.last_relay_contact.set(Some(js_sys::Date::now()));
                     report(&peer, "admitting", None);
                     continue;
@@ -346,7 +348,11 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
             let pending_before=candidate.pending_count();
             let result = candidate.receive_from(
                 if authenticated {
-                    TransportOrigin::RelayDelta(author)
+                    if replaying {
+                        TransportOrigin::RetainedRelayDelta(author)
+                    } else {
+                        TransportOrigin::RelayDelta(author)
+                    }
                 } else {
                     TransportOrigin::UntrustedPresence(author)
                 },

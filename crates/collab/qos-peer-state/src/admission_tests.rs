@@ -243,6 +243,31 @@ fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
         .unwrap();
     (native, a, b, bc, now)
 }
+
+#[test]
+fn retained_relay_replay_accepts_certified_document_after_live_freshness_window() {
+    let (mut governor, authority, _, browser_cert, authored_at) = seeded();
+    let replayed_at = authored_at + Duration::from_secs(301);
+    let mut browser = StatePeer::new(
+        governor.room(),
+        governor.authority().clone(),
+        vec![browser_cert],
+        RevocationList::new(),
+        replayed_at,
+    )
+    .unwrap();
+    let origin = TransportOrigin::RetainedRelayDelta(authority.verifying_key().to_bytes());
+
+    for message in governor.bootstrap_messages(&authority, authored_at).unwrap() {
+        browser.receive_from(origin, message, replayed_at).unwrap();
+    }
+
+    assert_eq!(browser.rows(), governor.rows());
+    assert_eq!(
+        browser.document_heads("test.app", "tab:1"),
+        governor.document_heads("test.app", "tab:1")
+    );
+}
 #[test]
 fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_sequence() {
     let (mut native, a, b, bc, now) = seeded();
