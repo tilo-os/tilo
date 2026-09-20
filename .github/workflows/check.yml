@@ -154,10 +154,7 @@ jobs:
             base=HEAD^
           fi
           echo "base=$(git rev-parse "$base^{commit}")" >> "$GITHUB_OUTPUT"
-          # Explicit full-workspace qualification needs smaller target trees on
-          # standard hosted runners. Ordinary push/PR selection remains capped
-          # by affected_packages.py at its existing developer-feedback limits.
-          python3 tools/ci/affected_packages.py --base "$base" --shards 8 "${selection_args[@]}" \
+          python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
             --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
           {
             echo '```json'
@@ -241,6 +238,15 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ github.token }}
+      # The build itself runs in this pinned container, but its target tree and
+      # runner diagnostics consume the host filesystem. Mount only the parent
+      # directories containing unrelated preinstalled SDKs so they can be
+      # reclaimed without exposing the Docker socket or the rest of the host.
+      volumes:
+        - /opt:/__tilo-host/opt
+        - /usr/local/lib:/__tilo-host/usr-local-lib
+        - /usr/local/share:/__tilo-host/usr-local-share
+        - /usr/share:/__tilo-host/usr-share
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -253,6 +259,18 @@ jobs:
       # this bind-mounted checkout as having dubious host ownership.
       - name: Trust the checked-out workspace inside the job container
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Reclaim unused hosted-runner SDKs for Rust targets
+        run: |
+          set -euo pipefail
+          df -h "$GITHUB_WORKSPACE"
+          rm -rf -- \
+            /__tilo-host/opt/ghc \
+            /__tilo-host/opt/hostedtoolcache \
+            /__tilo-host/usr-local-lib/android \
+            /__tilo-host/usr-local-share/boost \
+            /__tilo-host/usr-share/dotnet
+          df -h "$GITHUB_WORKSPACE"
 
       - name: Prepare Rust build caches
         id: rust-build
