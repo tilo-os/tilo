@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import selectors
 import stat
 import subprocess
 import tarfile
@@ -152,7 +153,7 @@ def write_private(path, value):
         except FileNotFoundError: pass
 
 
-def binding(pod, node):
+def binding(pod, node, expected_manifest=None):
     status = pod['status'].get('containerStatuses', [])
     if (pod['status']['phase'] != 'Running' or len(status) != 1 or not status[0].get('ready')
             or status[0].get('restartCount') or pod['metadata'].get('deletionTimestamp')):
@@ -160,6 +161,19 @@ def binding(pod, node):
     expected = pod['spec']['containers'][0]['image']
     if status[0].get('imageID') != expected or not digest_reference(expected):
         raise ValueError('running worker image differs from its pinned image')
+    if expected_manifest is not None:
+        wanted=expected_manifest['spec']; actual=pod['spec']
+        scalar=('runtimeClassName','restartPolicy','activeDeadlineSeconds','automountServiceAccountToken',
+                'nodeSelector','tolerations','imagePullSecrets','volumes')
+        if any(actual.get(key)!=wanted.get(key) for key in scalar):
+            raise ValueError('admitted worker specification differs from requested isolation')
+        if (actual.get('hostPID') or actual.get('hostIPC') or actual.get('hostNetwork')
+                or actual.get('initContainers') or actual.get('ephemeralContainers')
+                or len(actual.get('containers',[]))!=1):
+            raise ValueError('admitted worker contains an unexpected execution surface')
+        keys=('name','image','command','env','securityContext','resources','volumeMounts')
+        if any(actual['containers'][0].get(key)!=wanted['containers'][0].get(key) for key in keys):
+            raise ValueError('admitted worker container differs from requested isolation')
     return {'pod':pod['metadata']['name'],'pod_uid':pod['metadata']['uid'],
             'namespace':pod['metadata']['namespace'],'node':pod['spec']['nodeName'],
             'node_uid':node['metadata']['uid'],'spec':pod['spec'],
@@ -181,7 +195,7 @@ def create_worker(context, manifest):
                     '--timeout=10m', 'pod/' + name), timeout=620)
     pod = api_json(context, '-n', namespace, 'get', 'pod', name, '--request-timeout=15s')
     node = api_json(context, 'get', 'node', pod['spec']['nodeName'], '--request-timeout=15s')
-    return binding(pod, node)
+    return binding(pod, node, manifest)
 
 
 def stream_file(context, namespace, pod, container, destination, content):
@@ -216,6 +230,9 @@ def git_archive(root, revision):
     actual = command(['git','-C',str(root),'rev-parse','HEAD']).strip()
     if actual != revision:
         raise ValueError('helper checkout differs from requested revision')
+    if command(['git','-C',str(root),'status','--porcelain','--untracked-files=no','--',
+                'os/dev','os/tests/test_supervised_install_lane.py']):
+        raise ValueError('tracked install-lane controller or helpers differ from the requested revision')
     return subprocess.run(['git','-C',str(root),'archive','--format=tar',revision,'os'],
                           check=True,capture_output=True).stdout
 
@@ -224,7 +241,9 @@ def registry_auth(args):
     if args.registry_auth:
         path = args.registry_auth
         info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 2 <= info.st_size <= 1024*1024:
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid!=os.geteuid() or info.st_mode&0o077
+                or not 2<=info.st_size<=1024*1024):
             raise ValueError('registry auth must be a bounded regular file')
         fd=os.open(path,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0))
         try:
@@ -291,7 +310,7 @@ def controller(root, args, disk, agent, inspect_only):
 
 
 def verify_disk(context, disk, values):
-    argv = ['python3','-B','/work/helpers/os/dev/verify-installed-development-disk.py']
+    argv = ['python3','-B','/work/verifier/os/dev/verify-installed-development-disk.py']
     mapping = [('source','source'),('target','target'),('architecture','architecture'),
       ('revision','revision'),('manifest-sha256','manifest_sha256'),('generation','generation'),
       ('composefs-digest','composefs_digest'),('systemd-version','systemd_version')]
@@ -301,6 +320,20 @@ def verify_disk(context, disk, values):
       '--source-live-uki',values['source_live_uki'],'--offline-key-signature']
     return command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--',
                            '/usr/bin/unshare','--mount','--propagation','private','--',*argv),timeout=7200)
+
+
+def validate_finalized_verification(document, creation, composefs_digest=None):
+    verification=document.get('verification',document)
+    audit=verification.get('layer_material_audit') or {}
+    source=creation.get('source') or {}
+    if ('verification' in document and (document.get('image_id')!=source.get('image_id')
+                                        or document.get('composefs_digest')!=composefs_digest)):
+        raise ValueError('finalized verification wrapper differs from the created source')
+    if (audit.get('status')!='passed-scoped-scan' or audit.get('image_id')!=source.get('image_id')
+            or verification.get('hardware_profile')!=source.get('hardware_profile')
+            or verification.get('prediction')!=creation.get('boot')
+            or not isinstance(verification.get('selected_boot'),dict)):
+        raise ValueError('finalized source-layer verification does not bind the created medium')
 
 
 def raw_identity(context, disk):
@@ -323,7 +356,12 @@ def sparse_transfer(context, disk, vm):
     script = 'set -eu; umask 077; mkdir -p /work/verified; test ! -e /work/verified/installer.raw; tar --sparse --no-same-owner -C /work/verified -xf -; mv /work/verified/disk.raw /work/verified/installer.raw'
     target = subprocess.Popen(kubectl(context,'-n',vm['namespace'],'exec','-i',vm['pod'],'-c','qemu',
       '--','sh','-ceu',script),stdin=source.stdout,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    source.stdout.close(); _, error = target.communicate(); source_rc = source.wait()
+    source.stdout.close()
+    try:
+        target.communicate(timeout=7200);source_rc=source.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        target.kill();source.kill();target.wait();source.wait()
+        raise ValueError('sparse media transfer exceeded deadline')
     if source_rc or target.returncode:
         raise ValueError(f'sparse media transfer failed ({source_rc}, {target.returncode})')
 
@@ -376,11 +414,67 @@ def acceptance_evidence(context, vm, cycle):
     return evidence
 
 
+def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
+    directory=cycle+'-evidence'
+    process=subprocess.Popen(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu',
+      '--','tar','-C','/work','-cf','-',directory),stdout=subprocess.PIPE,
+      stderr=subprocess.DEVNULL)
+    fd,temporary=tempfile.mkstemp(prefix='.cycle-evidence-',suffix='.tar',dir=destination.parent)
+    size=0;digest=hashlib.sha256()
+    try:
+        os.fchmod(fd,0o600)
+        selector=selectors.DefaultSelector();selector.register(process.stdout,selectors.EVENT_READ)
+        deadline=time.monotonic()+600
+        with os.fdopen(fd,'wb') as output:
+            while True:
+                remaining=deadline-time.monotonic()
+                if remaining<=0:
+                    process.kill();raise ValueError('cycle evidence export exceeded deadline')
+                if not selector.select(min(1,remaining)):
+                    if process.poll() is not None:break
+                    continue
+                chunk=os.read(process.stdout.fileno(),1024*1024)
+                if not chunk:break
+                size+=len(chunk)
+                if size>limit:
+                    process.kill();raise ValueError('cycle evidence archive exceeds bound')
+                output.write(chunk);digest.update(chunk)
+            output.flush();os.fsync(output.fileno())
+        selector.close()
+        if process.wait()!=0:raise ValueError('cycle evidence export failed')
+        with tarfile.open(temporary,'r:') as archive:
+            names=set()
+            for member in archive:
+                path=Path(member.name)
+                if (path.is_absolute() or '..' in path.parts or path.parts[0]!=directory
+                        or not (member.isfile() or member.isdir())):
+                    raise ValueError('cycle evidence archive contains an unsafe member')
+                names.add('/'.join(path.parts[1:]))
+            required={'verdict.txt','exit-status.txt','boot-timing.txt',
+                      'alongside-preservation-before-target-boot.txt',
+                      '07-target-greeter.png','15-desktop-config.png'}
+            if not required.issubset(names):
+                raise ValueError('cycle evidence archive lacks cold-boot or desktop proof')
+        os.replace(temporary,destination)
+    finally:
+        try:os.unlink(temporary)
+        except FileNotFoundError:pass
+        if process.poll() is None:process.kill();process.wait()
+    return {'path':destination.name,'sha256':digest.hexdigest(),'bytes':size,
+            'required_files':sorted(required)}
+
+
+def remove_remote_auth(context,disk):
+    command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--',
+                    'rm','-f','--','/work/registry-auth.json'),timeout=30)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--context',required=True);p.add_argument('--operation-dir',type=Path,required=True)
     p.add_argument('--disk-args',type=Path,required=True);p.add_argument('--public-bundle',type=Path,required=True)
     p.add_argument('--host-pins',type=Path,required=True);p.add_argument('--helper-revision',required=True)
+    p.add_argument('--finalized-verification',type=Path,required=True)
     p.add_argument('--acceptance-id',required=True);p.add_argument('--disk-node');p.add_argument('--vm-node')
     auth=p.add_mutually_exclusive_group(required=True)
     auth.add_argument('--registry-auth',type=Path);auth.add_argument('--registry-secret',default=None)
@@ -408,16 +502,29 @@ def main():
     stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/public-trust',public)
     stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
     stream_file(args.context,disk['namespace'],disk['pod'],'disk','/work/registry-auth.json',auth_bytes)
+    remote_auth_cleanup=lambda: remove_remote_auth(args.context,disk)
+    atexit.register(remote_auth_cleanup)
     controller(root,args,disk,agent,True)
     controller(root,args,disk,agent,False)
     creation=(args.operation_dir/'creation.json').read_bytes()
     stream_file(args.context,disk['namespace'],disk['pod'],'disk','/work/disk-output/creation.json',creation)
+    # The verifier tree is introduced only after the privileged source installer
+    # has exited, so it was never writable by that workload.
+    stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/verifier',helpers)
     verification=verify_disk(args.context,disk,values)
     parsed=json.loads(verification)
     if (parsed.get('purpose') != 'tilo-installed-boot-and-root-verification'
             or not parsed.get('checks') or not all(parsed['checks'].values())):
         raise ValueError('independent installed-disk verification did not pass')
     write_private(args.operation_dir/'installed-verification.json',(json.dumps(parsed,indent=2,sort_keys=True)+'\n').encode())
+    finalized_bytes=args.finalized_verification.read_bytes()
+    if not 16<=len(finalized_bytes)<=128*1024*1024:
+        raise ValueError('finalized verification receipt exceeds bound')
+    finalized=json.loads(finalized_bytes)
+    validate_finalized_verification(finalized,json.loads(creation),values['composefs_digest'])
+    finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
+    remove_remote_auth(args.context,disk);atexit.unregister(remote_auth_cleanup)
+    cleanup_auth();atexit.unregister(cleanup_auth)
     freeze_raw(args.context,disk)
     identity=raw_identity(args.context,disk)
     write_private(args.operation_dir/'raw-identity.json',(json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
@@ -425,16 +532,19 @@ def main():
     sparse_transfer(args.context,disk,vm)
     require_same_worker(args.context,disk);require_same_worker(args.context,vm)
     cycle=convert_and_cycle(args.context,vm,identity,args.acceptance_id)
+    require_same_worker(args.context,vm)
     cycle_evidence=acceptance_evidence(args.context,vm,cycle)
     write_private(args.operation_dir/'cycle-evidence.json',
                   (json.dumps(cycle_evidence,indent=2,sort_keys=True)+'\n').encode())
+    archive=collect_cycle_archive(args.context,vm,cycle,args.operation_dir/'cycle-evidence.tar')
     result={'schema':1,'purpose':'tilo-arm-installer-prepared-alongside-acceptance',
       'helper_revision':args.helper_revision,'source':values['source'],'raw_media':identity,
+      'finalized_verification_sha256':finalization_verification_sha256,
       'disk_worker':disk,'vm_worker':vm,'cycle':cycle,'cold_boot_verified':True,
       'prepared_alongside_verified':True,'cycle_evidence_file':'cycle-evidence.json',
+      'cycle_evidence_archive':archive,
       'workers_retained_for_followup':True}
     write_private(args.operation_dir/'acceptance.json',(json.dumps(result,indent=2,sort_keys=True)+'\n').encode())
-    cleanup_auth();atexit.unregister(cleanup_auth)
     print(json.dumps(result,sort_keys=True))
 
 
