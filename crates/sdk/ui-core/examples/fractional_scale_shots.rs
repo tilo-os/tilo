@@ -24,13 +24,13 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Point;
 
-use ui::State;
-use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::scale::{composite_transform, physical_len};
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
+use tilo_ui::State;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::presence::PresenceCtx;
+use tilo_ui::scale::{composite_transform, physical_len};
+use tilo_ui::text_render::TextRenderer;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::Widget;
 
 use super::gallery_scene;
 
@@ -123,7 +123,7 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: &
 }
 
 pub fn run(_args: &[String]) {
-    ui::i18n::I18nManager::init("en-US");
+    tilo_ui::i18n::I18nManager::init("en-US");
     let dir = std::env::var("FRAC_SCALE_SHOTS_OUT")
         .unwrap_or_else(|_| "/tmp/frac_scale_shots".to_string());
     if let Err(e) = std::fs::create_dir_all(&dir) {

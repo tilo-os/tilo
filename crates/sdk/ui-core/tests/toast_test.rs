@@ -9,7 +9,7 @@
 )]
 
 use std::time::Duration;
-use ui::widget::toast::{ToastKind, ToastStack};
+use tilo_ui::widget::toast::{ToastKind, ToastStack};
 
 #[test]
 fn toast_stack_expires_entries() {

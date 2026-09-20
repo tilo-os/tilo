@@ -21,8 +21,8 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use ui::widget::{Alternative, Column, ConflictBanner, ConflictKind, ConflictPicker};
-use ui::{App, State};
+use tilo_ui::widget::{Alternative, Column, ConflictBanner, ConflictKind, ConflictPicker};
+use tilo_ui::{App, State};
 
 fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
     Alternative {
@@ -37,7 +37,7 @@ fn alt(label: &str, summary: &str, author: &str, secs_ago: u64) -> Alternative {
 }
 
 pub fn run(_args: &[String]) {
-    let wake_scope = ui::wake::WakeScope::new();
+    let wake_scope = tilo_ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     // Two writers concurrently moved the same kanban card to
     // different columns. Wrap that as a `PickOne` kind so the

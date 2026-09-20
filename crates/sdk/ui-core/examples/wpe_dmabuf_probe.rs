@@ -13,9 +13,9 @@
 
 use std::time::{Duration, Instant};
 
-use ui::webview::wpe::WpeEngine;
-use ui::webview::wpe::import::import_dmabuf;
-use ui::webview::{WebViewCommand, WebViewEngine};
+use tilo_ui::webview::wpe::WpeEngine;
+use tilo_ui::webview::wpe::import::import_dmabuf;
+use tilo_ui::webview::{WebViewCommand, WebViewEngine};
 use vello::wgpu;
 
 pub fn run(_args: &[String]) {
