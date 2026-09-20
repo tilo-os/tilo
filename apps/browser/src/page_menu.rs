@@ -20,6 +20,10 @@ impl Default for PageMenu {
     }
 }
 impl PageMenu {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the engine event and its surface geometry are kept together at this boundary"
+    )]
     pub fn open(
         &mut self,
         id: u32,
