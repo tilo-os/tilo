@@ -830,6 +830,7 @@ impl Widget for ContextMenu {
                     checked,
                     destructive,
                     enabled,
+                    ..
                 } => {
                     // The row Enter / a click would activate. Painted the way
                     // every other menu-like list in the toolkit paints its
