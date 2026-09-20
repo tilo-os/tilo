@@ -894,6 +894,184 @@ mod enrollment_migration_tests {
 #[cfg(test)]
 mod desktop_migration_tests {
     use super::*;
+
+    fn app_id(tab: &qos_desktop::projection::ReplicatedTab) -> Option<&str> {
+        match tab.tile.as_ref()? {
+            qos_desktop::TileContent::AppPlaceholder {
+                kind: qos_desktop::AppKind::Other(app),
+                ..
+            } => Some(app),
+            _ => None,
+        }
+    }
+
+    fn topology(owner: &SessionOwner) -> Vec<qos_desktop::projection::ReplicatedStrip> {
+        qos_desktop::projection::RoomProjection::contents_of(owner.peer().admitted_room().unwrap())
+    }
+
+    fn persist_legacy_shared_writer_notes(owner: &mut SessionOwner) {
+        use qos_desktop::projection::RoomProjection;
+        use ui::automerge::{ROOT, transaction::Transactable};
+        let mut doc = owner.peer().admitted_room().unwrap().clone();
+        doc.delete(ROOT, "writer_notes_split_v1").unwrap();
+        let routes = RoomProjection::record_routes(&doc);
+        let mut strips = RoomProjection::contents_of(&doc)
+            .into_iter()
+            .map(RoomProjection::hydrate_strip)
+            .collect::<Vec<_>>();
+        let strip = strips.first_mut().unwrap();
+        let location = |app: &str| {
+            strip
+                .window_groups
+                .iter()
+                .enumerate()
+                .find_map(|(group_index, group)| {
+                    group
+                        .tabs
+                        .iter()
+                        .position(|tab| match &tab.tile {
+                            qos_desktop::TileContent::AppPlaceholder {
+                                kind: qos_desktop::AppKind::Other(id),
+                                ..
+                            } => id == app,
+                            _ => false,
+                        })
+                        .map(|tab_index| (group_index, tab_index))
+                })
+                .unwrap()
+        };
+        let (writer_group, _) = location("dev.qos.word-processor");
+        let (notes_group, notes_tab) = location("dev.qos.notes");
+        if writer_group != notes_group {
+            let mut group = strip.window_groups.remove(notes_group);
+            let notes = group.tabs.remove(notes_tab);
+            let writer_group = if notes_group < writer_group {
+                writer_group - 1
+            } else {
+                writer_group
+            };
+            strip.window_groups[writer_group].tabs.push(notes);
+        }
+        let salt = qos_desktop::identity::peer_salt_of(strip.id.0);
+        RoomProjection::project_owned_contents(&mut doc, &strips, salt, None);
+        for (tab, record) in routes {
+            let (strip, group) = strips
+                .iter()
+                .find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .any(|candidate| candidate.id == tab)
+                            .then_some((strip.id.0, group.id))
+                    })
+                })
+                .unwrap();
+            RoomProjection::bind_record(&mut doc, strip, group, tab, &record).unwrap();
+        }
+        doc.commit();
+        owner
+            .peer
+            .install_seed(
+                qos_peer_state::SeedState {
+                    room_changes: doc
+                        .get_changes(&[])
+                        .iter()
+                        .map(|change| change.raw_bytes().to_vec())
+                        .collect(),
+                    documents: vec![],
+                },
+                &owner.identity.native,
+                SystemTime::now(),
+            )
+            .unwrap();
+        owner.aggregate.peer = owner.peer.durable().unwrap();
+        owner
+            .store
+            .commit(&encode(&owner.aggregate, &owner.identity).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn new_session_places_writer_notes_and_chat_in_three_visible_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::initialize(&dir.path().join("separate-groups")).unwrap();
+        let strips = topology(&owner);
+        assert_eq!(strips.len(), 1);
+        assert_eq!(strips[0].groups.len(), 3);
+        let apps = strips[0]
+            .groups
+            .iter()
+            .map(|group| {
+                assert_eq!(group.tabs.len(), 1);
+                app_id(&group.tabs[0]).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            apps,
+            ["dev.qos.word-processor", "dev.qos.notes", "dev.qos.chat"]
+        );
+    }
+
+    #[test]
+    fn reopening_legacy_shared_documents_splits_once_without_reidentifying_them() {
+        use qos_desktop::projection::RoomProjection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy-shared-documents");
+        let mut owner = SessionOwner::initialize(&path).unwrap();
+        let initial = topology(&owner);
+        let tab_ids = initial[0]
+            .groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+            .collect::<std::collections::BTreeSet<_>>();
+        let chat_group = initial[0]
+            .groups
+            .iter()
+            .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.chat"))
+            .unwrap()
+            .id;
+        let routes = RoomProjection::record_routes(owner.peer().admitted_room().unwrap());
+        persist_legacy_shared_writer_notes(&mut owner);
+        assert_eq!(topology(&owner)[0].groups.len(), 2);
+        let generation = owner.status().generation;
+        drop(owner);
+
+        let owner = SessionOwner::open(&path).unwrap();
+        let migrated = topology(&owner);
+        assert_eq!(migrated[0].groups.len(), 3);
+        assert!(migrated[0].groups.iter().all(|group| group.tabs.len() == 1));
+        assert_eq!(
+            migrated[0]
+                .groups
+                .iter()
+                .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+                .collect::<std::collections::BTreeSet<_>>(),
+            tab_ids
+        );
+        assert_eq!(
+            migrated[0]
+                .groups
+                .iter()
+                .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.chat"))
+                .unwrap()
+                .id,
+            chat_group
+        );
+        assert_eq!(
+            RoomProjection::record_routes(owner.peer().admitted_room().unwrap()),
+            routes
+        );
+        assert_eq!(owner.status().generation, generation + 1);
+        let durable = owner.peer().durable().unwrap();
+        drop(owner);
+
+        let owner = SessionOwner::open(&path).unwrap();
+        assert_eq!(owner.status().generation, generation + 1);
+        assert_eq!(owner.peer().durable().unwrap(), durable);
+    }
+
     #[test]
     fn existing_multi_namespace_topology_survives_native_restart_unchanged() {
         use ui::automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};

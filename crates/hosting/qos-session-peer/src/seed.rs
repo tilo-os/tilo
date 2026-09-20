@@ -5,6 +5,137 @@ use ui::{
     portable_storage::PortableStorage,
     record::{RecordCheckout, RecordId, RecordOwners},
 };
+
+struct LegacyWriterNotesSplit {
+    strips: Vec<qos_desktop::Strip>,
+    salt: u16,
+    strip: u64,
+    writer_group: u64,
+    notes_group: u64,
+    notes_tab: u64,
+    notes_record: String,
+}
+
+fn legacy_writer_notes_split(
+    doc: &ui::automerge::AutoCommit,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<Option<LegacyWriterNotesSplit>, String> {
+    use qos_desktop::{AppKind, TileContent, identity, projection::RoomProjection};
+    use ui::automerge::{ROOT, ReadDoc};
+
+    let owners = doc
+        .get(ROOT, "contents_owners_v1")
+        .map_err(|e| e.to_string())?
+        .map(|(_, id)| id)
+        .ok_or("desktop identity custody is missing")?;
+    let authority = hex::encode(key.verifying_key().to_bytes());
+    let owned_salts = doc
+        .keys(&owners)
+        .filter_map(|entry| {
+            let salt = u16::from_str_radix(&entry, 16).ok()?;
+            let (value, _) = doc.get(&owners, &entry).ok()??;
+            (salt != 0 && value.to_str() == Some(authority.as_str())).then_some(salt)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let routes = RoomProjection::record_routes(doc);
+    let mut strips = RoomProjection::contents_of(doc)
+        .into_iter()
+        .map(RoomProjection::hydrate_strip)
+        .collect::<Vec<_>>();
+    let app_is = |tile: &TileContent, expected: &str| match tile {
+        TileContent::AppPlaceholder {
+            kind: AppKind::Other(app),
+            ..
+        } => app == expected,
+        _ => false,
+    };
+    let mut matched = None;
+    for (strip_index, strip) in strips.iter().enumerate() {
+        for (group_index, group) in strip.window_groups.iter().enumerate() {
+            if group.tabs.len() != 2 {
+                continue;
+            }
+            let writer = group
+                .tabs
+                .iter()
+                .position(|tab| app_is(&tab.tile, "dev.qos.word-processor"));
+            let notes = group
+                .tabs
+                .iter()
+                .position(|tab| app_is(&tab.tile, "dev.qos.notes"));
+            if writer.is_some() && notes.is_some() {
+                if matched.is_some() {
+                    return Err("multiple legacy Writer and Notes groups".into());
+                }
+                matched = Some((strip_index, group_index, notes.unwrap()));
+            }
+        }
+    }
+    let Some((strip_index, group_index, notes_index)) = matched else {
+        return Ok(None);
+    };
+    let salt = identity::peer_salt_of(strips[strip_index].window_groups[group_index].id);
+    if !owned_salts.contains(&salt) {
+        return Err("legacy Writer and Notes group is not owned by native authority".into());
+    }
+    if identity::peer_salt_of(strips[strip_index].id.0) != salt
+        || strips[strip_index].window_groups[group_index]
+            .tabs
+            .iter()
+            .any(|tab| identity::peer_salt_of(tab.id) != salt)
+    {
+        return Err("legacy Writer and Notes identities cross topology owners".into());
+    }
+    let maximum = strips
+        .iter()
+        .flat_map(|strip| {
+            std::iter::once(strip.id.0).chain(strip.window_groups.iter().flat_map(|group| {
+                std::iter::once(group.id).chain(group.tabs.iter().map(|tab| tab.id))
+            }))
+        })
+        .filter(|id| identity::peer_salt_of(*id) == salt)
+        .map(identity::counter_of)
+        .max()
+        .unwrap_or(0);
+    let mut counter = maximum
+        .checked_add(1)
+        .ok_or("topology identities exhausted")?;
+    let notes_group = identity::mint_in_namespace(salt, &mut counter)?;
+    let writer_group = strips[strip_index].window_groups[group_index].id;
+    let notes = strips[strip_index].window_groups[group_index]
+        .tabs
+        .remove(notes_index);
+    let notes_tab = notes.id;
+    let notes_record = routes.get(&notes_tab).cloned().unwrap_or_else(|| {
+        qos_desktop::records::component_record(
+            "dev.qos.notes",
+            notes_tab,
+            notes::definition().record_kind.clone(),
+        )
+        .id
+        .as_str()
+        .to_owned()
+    });
+    strips[strip_index].window_groups.insert(
+        group_index + 1,
+        qos_desktop::WindowGroup {
+            id: notes_group,
+            active_tab: notes_tab,
+            tabs: vec![notes],
+            width: qos_desktop::WindowWidth::Normal,
+            maximized: false,
+        },
+    );
+    Ok(Some(LegacyWriterNotesSplit {
+        strip: strips[strip_index].id.0,
+        strips,
+        salt,
+        writer_group,
+        notes_group,
+        notes_tab,
+        notes_record,
+    }))
+}
 pub(crate) fn seed(
     room: &str,
     authority: &DeviceCert,
@@ -62,9 +193,9 @@ pub(crate) fn seed(
     })
 }
 
-/// One-time migration for the durable native authority. Existing records and
-/// existing topology are never recreated. Caller commits the candidate behind
-/// the same signed aggregate barrier before publishing its checkpoint.
+/// One-time migration for the durable native authority. Existing records,
+/// tabs, and unrelated topology retain their identities. Caller commits the
+/// candidate behind the same signed aggregate barrier before publishing it.
 pub(crate) fn bootstrap_desktop(
     peer: &mut qos_peer_state::StatePeer,
     key: &ed25519_dalek::SigningKey,
@@ -86,7 +217,51 @@ pub(crate) fn bootstrap_desktop(
         .map_err(|e| e.to_string())?
         .is_some()
     {
-        return Ok(false);
+        if doc
+            .get(ROOT, "writer_notes_split_v1")
+            .map_err(|e| e.to_string())?
+            .and_then(|(value, _)| value.to_u64())
+            == Some(1)
+        {
+            return Ok(false);
+        }
+        let Some(split) = legacy_writer_notes_split(&doc, key)? else {
+            return Ok(false);
+        };
+        if peer
+            .document("dev.qos.word-processor", "tab:0000000000000001")
+            .is_none()
+            || peer
+                .document("dev.qos.notes", &split.notes_record)
+                .is_none()
+        {
+            return Err("legacy Writer or Notes record missing during topology migration".into());
+        }
+        RoomProjection::project_owned_contents(&mut doc, &split.strips, split.salt, None);
+        RoomProjection::bind_record(
+            &mut doc,
+            split.strip,
+            split.notes_group,
+            split.notes_tab,
+            &split.notes_record,
+        )?;
+        // The original group and its Writer binding remain at the same ids.
+        debug_assert_ne!(split.writer_group, split.notes_group);
+        doc.put(ROOT, "writer_notes_split_v1", 1_u64)
+            .map_err(|e| e.to_string())?;
+        doc.commit();
+        let seed = SeedState {
+            room_changes: doc
+                .get_changes(&[])
+                .iter()
+                .map(|c| c.raw_bytes().to_vec())
+                .collect(),
+            documents: vec![],
+        };
+        let mut candidate = peer.clone();
+        candidate.install_seed(seed, key, web_time::SystemTime::now())?;
+        *peer = candidate;
+        return Ok(true);
     }
     if peer
         .document("dev.qos.word-processor", "tab:0000000000000001")
@@ -117,8 +292,9 @@ pub(crate) fn bootstrap_desktop(
     let mut counter = 1;
     let mut mint = || qos_desktop::identity::mint_in_namespace(salt, &mut counter);
     let strip = mint()?;
-    let document_group = mint()?;
+    let writer_group = mint()?;
     let writer = mint()?;
+    let notes_group = mint()?;
     let notes = mint()?;
     let chat_group = mint()?;
     let chat = mint()?;
@@ -154,12 +330,16 @@ pub(crate) fn bootstrap_desktop(
         name: "Workspace".into(),
         window_groups: vec![
             WindowGroup {
-                id: document_group,
-                tabs: vec![
-                    tile(writer, "Writer", "dev.qos.word-processor"),
-                    tile(notes, "Notes", "dev.qos.notes"),
-                ],
+                id: writer_group,
+                tabs: vec![tile(writer, "Writer", "dev.qos.word-processor")],
                 active_tab: writer,
+                width: WindowWidth::Normal,
+                maximized: false,
+            },
+            WindowGroup {
+                id: notes_group,
+                tabs: vec![tile(notes, "Notes", "dev.qos.notes")],
+                active_tab: notes,
                 width: WindowWidth::Normal,
                 maximized: false,
             },
@@ -187,14 +367,17 @@ pub(crate) fn bootstrap_desktop(
         hex::encode(key.verifying_key().to_bytes()),
     )
     .map_err(|e| e.to_string())?;
+    doc.put(ROOT, "writer_notes_split_v1", 1_u64)
+        .map_err(|e| e.to_string())?;
     RoomProjection::project_owned_contents(&mut doc, &strips, salt, None);
     RoomProjection::bind_record(
         &mut doc,
         strip,
-        document_group,
+        writer_group,
         writer,
         "tab:0000000000000001",
     )?;
+    RoomProjection::bind_record(&mut doc, strip, notes_group, notes, checkout.id.as_str())?;
     RoomProjection::bind_record(&mut doc, strip, chat_group, chat, "")?;
     doc.commit();
     let seed = SeedState {
