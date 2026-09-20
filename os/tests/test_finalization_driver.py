@@ -98,15 +98,26 @@ class FinalizationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.driver().stage(1, lambda: self.fail('must not run'))
 
-    def test_registry_exact_manifest_and_config_identity(self):
+    def test_registry_reported_manifest_and_config_descriptor_identity(self):
         config = spool.canonical({'os': 'linux', 'architecture': 'arm64', 'config': {'Labels': {'org.opencontainers.image.revision': 'a' * 40}}})
         config_id = 'sha256:' + spool.digest(config)
         manifest = spool.canonical({'schemaVersion': 2, 'config': {'digest': config_id}})
         manifest_id = 'sha256:' + spool.digest(manifest)
-        finalizer.verify_registry_bytes(manifest, config, manifest_id, config_id, 'aarch64', 'a' * 40)
-        for args in ((manifest + b'\n', config, manifest_id, config_id, 'aarch64', 'a' * 40),
-                     (manifest, config + b'\n', manifest_id, config_id, 'aarch64', 'a' * 40),
-                     (manifest, config, manifest_id, config_id, 'x86_64', 'a' * 40)):
+        # Skopeo reserializes ``inspect --config`` output. Its bytes need not
+        # hash to the raw blob digest carried by the immutable manifest.
+        inspected_config = json.dumps(json.loads(config), indent=2).encode() + b'\n'
+        self.assertNotEqual('sha256:' + spool.digest(inspected_config), config_id)
+        finalizer.verify_registry_bytes(manifest + b'\n', inspected_config, manifest_id, manifest_id,
+                                        config_id, 'aarch64', 'a' * 40)
+        wrong_descriptor = spool.canonical({'schemaVersion': 2, 'config': {'digest': 'sha256:' + '0' * 64}})
+        wrong_architecture = spool.canonical({'os': 'linux', 'architecture': 'amd64',
+            'config': {'Labels': {'org.opencontainers.image.revision': 'a' * 40}}})
+        for args in ((manifest, inspected_config, 'sha256:' + '9' * 64, manifest_id,
+                      config_id, 'aarch64', 'a' * 40),
+                     (wrong_descriptor, inspected_config, 'sha256:' + spool.digest(wrong_descriptor),
+                      'sha256:' + spool.digest(wrong_descriptor), config_id, 'aarch64', 'a' * 40),
+                     (manifest, wrong_architecture, manifest_id, manifest_id, config_id, 'aarch64', 'a' * 40),
+                     (manifest, inspected_config, manifest_id, manifest_id, config_id, 'x86_64', 'a' * 40)):
             with self.assertRaises(ValueError):
                 finalizer.verify_registry_bytes(*args)
 
@@ -122,7 +133,7 @@ class FinalizationTests(unittest.TestCase):
         driver.current_context = lambda: {'sha256': '7' * 64, 'revision': q['source_revision'],
             'architecture': q['architecture'], 'manifest_sha256': q['new_manifest_sha256'],
             'target': q['new_target']}
-        driver.registry_bytes = lambda reference: (manifest, config)
+        driver.registry_bytes = lambda reference: (manifest, config, digest)
         def command(arguments):
             calls.append([str(value) for value in arguments])
             Path(arguments[arguments.index('--digestfile') + 1]).write_text(digest)
@@ -174,7 +185,7 @@ class FinalizationTests(unittest.TestCase):
             'producer_context_sha256': producer['sha256']})
         restored = self.driver()
         restored.current_context = lambda: {**producer, 'sha256': '8' * 64}
-        restored.registry_bytes = lambda reference: (manifest, config)
+        restored.registry_bytes = lambda reference: (manifest, config, digest)
         commands, inspected = [], []
         restored.command = lambda arguments: commands.append([str(value) for value in arguments]) or b''
         restored.inspect = lambda identifier: inspected.append(identifier)
@@ -204,7 +215,7 @@ class FinalizationTests(unittest.TestCase):
             'checkpoint_stage': 2, 'producer_context_sha256': context['sha256']})
         restored = self.driver()
         restored.current_context = lambda: {**context, 'sha256': '8' * 64}
-        restored.registry_bytes = lambda reference: (manifest, config)
+        restored.registry_bytes = lambda reference: (manifest, config, digest)
         commands, inspected = [], []
         restored.command = lambda arguments: commands.append([str(value) for value in arguments]) or b''
         restored.inspect = lambda identifier: inspected.append(identifier)
@@ -344,6 +355,8 @@ class FinalizationTests(unittest.TestCase):
             if argv[0] == 'skopeo':
                 digest = argv[-1].rsplit('@', 1)[-1]
                 found_manifest, found_config = registry[digest]
+                if '--format={{.Digest}}' in argv:
+                    return digest.encode()
                 return found_config if '--config' in argv else found_manifest
             return b''
         driver.command = command
