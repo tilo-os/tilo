@@ -355,7 +355,10 @@ def main():
                     'controller_revision': run('git', '-C', str(args.controller), 'rev-parse', 'HEAD')}
         (args.evidence / 'worker-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
         print(json.dumps(identity), flush=True)
-        result = run('docker', 'wait', container, timeout=9000)
+        # Five operator-mediated signatures can each use the request's
+        # two-hour response window. Keep observation alive across those waits;
+        # this is not a build-stage timeout.
+        result = run('docker', 'wait', container, timeout=42000)
         if result != '0':
             raise RuntimeError('finalization failed; inspect public receipts, do not blindly retry')
     finally:

@@ -37,13 +37,12 @@ Schema1 has exactly these fields:
   must separately admit the complete raw image and scratch peak to its volume.
 - `stage_timeout_seconds`: bounded non-signing command timeout, 60–3600 seconds.
 - `signing_response_timeout_seconds`: request-bound deadline for each external
-  signing response, 60–1800 seconds. The staged bridge copies this exact value
+  signing response, 60–7200 seconds. The staged bridge copies this exact value
   into its configuration; it is never supplied by worker-local defaults.
 - `prediction_stage_timeout_seconds`: aggregate deadline for all stage-6 work,
-  300–8400 seconds. It must be greater than the signing-response deadline plus
-  the non-signing command deadline. The 140-minute maximum leaves cleanup and
-  evidence-export time inside the workflow step's 155-minute deadline.
-  The complete worker deadline is also bounded independently by the launcher.
+  300–8400 seconds, excluding four separately bounded human signing-response
+  windows. The complete worker deadline is bounded independently by the
+  launcher and workflow.
 - `publish_repository`: `code.sandbox.example/qos/tilo-development`, exactly the
   repository portion of `new_target`. The driver never updates the intended
   update tag. It writes `finalization-<canonical-request-sha256>` and records the
