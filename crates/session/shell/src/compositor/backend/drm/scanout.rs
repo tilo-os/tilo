@@ -7,8 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use smithay::backend::session::Session;
 use smithay::reexports::drm as drm_re;
@@ -200,6 +201,28 @@ pub enum DirectSubmit {
     Queued,
     Busy,
     Failed(String),
+}
+
+/// A successfully queued direct flip is not retired when the ioctl returns:
+/// KMS still owns both double-buffered targets until its page-flip event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectRetirement {
+    Complete,
+    TimedOut,
+}
+
+fn retirement_after_poll(
+    awaited: crtc::Handle,
+    completed: &[crtc::Handle],
+    deadline_reached: bool,
+) -> Option<DirectRetirement> {
+    if completed.contains(&awaited) {
+        Some(DirectRetirement::Complete)
+    } else if deadline_reached {
+        Some(DirectRetirement::TimedOut)
+    } else {
+        None
+    }
 }
 
 impl DirectScanoutTargets {
@@ -1906,6 +1929,49 @@ impl DrmScanout {
         done
     }
 
+    /// Wait for the page-flip event for this CRTC without spinning.
+    ///
+    /// The card fd is nonblocking for ordinary drains; `poll(2)` supplies the
+    /// blocking boundary here. Events for sibling CRTCs are returned as well
+    /// because every dup of a card shares one DRM event stream.
+    pub fn wait_flip_completions(
+        &mut self,
+        timeout: Duration,
+    ) -> (DirectRetirement, Vec<crtc::Handle>) {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        loop {
+            let completed = self.poll_flip_completions();
+            let now = Instant::now();
+            if let Some(retirement) = retirement_after_poll(self.crtc, &completed, now >= deadline)
+            {
+                return (retirement, completed);
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+            let mut fd = libc::pollfd {
+                fd: self.card.as_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `fd` points to one valid pollfd for the duration of the
+            // call and the borrowed card descriptor outlives it.
+            let ready = unsafe { libc::poll(&mut fd, 1, timeout_ms) };
+            if ready == 0 {
+                return (DirectRetirement::TimedOut, completed);
+            }
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                tracing::warn!(%error, "DRM page-flip retirement poll failed");
+                return (DirectRetirement::TimedOut, completed);
+            }
+        }
+    }
+
     /// Clear `flip_pending` iff `crtc` is this scanout's crtc.
     pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
         if crtc == self.crtc {
@@ -2570,6 +2636,23 @@ mod tests {
             assert_eq!(state.front, expected);
         }
         assert!(!state.complete(), "duplicate completion is ignored");
+    }
+
+    #[test]
+    fn direct_retirement_waits_for_the_exact_crtc() {
+        let awaited = crtc::Handle::from(std::num::NonZeroU32::new(7).unwrap());
+        let sibling = crtc::Handle::from(std::num::NonZeroU32::new(9).unwrap());
+
+        assert_eq!(retirement_after_poll(awaited, &[], false), None);
+        assert_eq!(retirement_after_poll(awaited, &[sibling], false), None);
+        assert_eq!(
+            retirement_after_poll(awaited, &[sibling, awaited], false),
+            Some(DirectRetirement::Complete)
+        );
+        assert_eq!(
+            retirement_after_poll(awaited, &[sibling], true),
+            Some(DirectRetirement::TimedOut)
+        );
     }
 
     #[test]
