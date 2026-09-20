@@ -801,6 +801,11 @@ struct PendingPlacement {
     /// actual GUI process maps a window. Keep the destination until this
     /// deadline; a truly windowless launch is retired once it passes.
     retire_after: Option<Instant>,
+    /// A started launcher must produce a toplevel within a bounded interval.
+    /// This is independent of `retire_after`: the latter handles a process
+    /// that already exited after daemonising, while this deadline prevents a
+    /// still-running but windowless process from pinning "Opening…" forever.
+    present_before: Instant,
 }
 
 impl PendingPlacement {
@@ -2459,6 +2464,7 @@ pub fn set_pending_placement_for_identities(
         continuity_instance: None,
         claimed_by: None,
         retire_after: None,
+        present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
     });
 }
 
@@ -2536,6 +2542,7 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
             continuity_instance: Some(instance),
             claimed_by: None,
             retire_after: None,
+            present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
         });
     }
 }
@@ -2652,13 +2659,28 @@ fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
 
 /// Retire windowless clean launches without waiting for another application
 /// with the same identity to map.
-pub fn expire_pending_placements() {
-    expire_pending_placements_at(Instant::now());
+pub fn expire_pending_placements() -> Vec<String> {
+    expire_pending_placements_at(Instant::now())
 }
 
-fn expire_pending_placements_at(now: Instant) {
-    lock(&PENDING_PLACEMENT).retain(|note| note.retire_after.is_none_or(|deadline| now < deadline));
+fn expire_pending_placements_at(now: Instant) -> Vec<String> {
+    let mut expired = Vec::new();
+    lock(&PENDING_PLACEMENT).retain(|note| {
+        let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
+        let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
+        let keep = !presentation_timed_out && !retired;
+        if presentation_timed_out {
+            expired.push(note.key.clone());
+        }
+        keep
+    });
+    expired
 }
+
+/// A normal desktop application should announce its first surface promptly.
+/// Keep enough headroom for cold Electron startup and VM software rendering,
+/// while still turning a dead launch into actionable feedback.
+const PENDING_PRESENTATION_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Long enough for a daemonising desktop entry to hand off to its GUI child,
 /// while keeping a genuinely windowless launch from steering a later app.
@@ -2875,8 +2897,24 @@ mod tests {
 
         let now = Instant::now();
         retire_pending_placement_at(package, now);
-        expire_pending_placements_at(now);
+        assert_eq!(expire_pending_placements_at(now), Vec::<String>::new());
         assert_eq!(placement_for_toplevel("windowless", 702), None);
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn live_windowless_launch_reports_its_key_at_the_presentation_deadline() {
+        clear_pending_placements();
+        let package = "dev.tilo.never-mapped";
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(57));
+        let deadline = lock(&PENDING_PLACEMENT)[0].present_before;
+
+        assert_eq!(
+            expire_pending_placements_at(deadline),
+            vec![package.to_string()]
+        );
+        assert_eq!(placement_for_toplevel("never-mapped", 704), None);
         clear_pending_placements();
     }
 
