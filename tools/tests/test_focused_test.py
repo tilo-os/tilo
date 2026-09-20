@@ -83,7 +83,9 @@ class FocusedTests(unittest.TestCase):
         self.assertNotIn('pull_request:', workflow)
         self.assertNotIn('push:', workflow)
         self.assertEqual(workflow.count('persist-credentials: false'), 3)
-        self.assertIn("hashFiles('source/Cargo.lock')", workflow)
+        self.assertIn('uses: ./control/.forgejo/actions/restore-cargo-downloads', workflow)
+        self.assertIn('lockfile: source/Cargo.lock', workflow)
+        self.assertIn('key: ${{ steps.downloads.outputs.cache-key }}', workflow)
         self.assertIn('ref: ${{ needs.builder.outputs.source }}', workflow)
         self.assertIn('python3 -I control/tools/ci/focused_test.py run --root source', workflow)
         native = workflow.split('  focused:', 1)[1]
