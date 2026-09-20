@@ -111,7 +111,7 @@ fn quick_settings_state_defaults_and_mutates_through_chrome() {
 #[test]
 fn commit_workspace_name_applies_buffer_to_active_workspace() {
     let mut tree = WorkspaceTree::bootstrap_default();
-    tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+    tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
     let chrome = ChromeState::new(tree);
 
     {
