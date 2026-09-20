@@ -179,7 +179,8 @@ def _create_verified_disk(args):
                     getattr(args, 'source_live_uki', None), args.architecture, args.generation, args.composefs_digest)
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', verified.image_id):
                 raise ValueError('source verifier did not return an immutable local image ID')
-            run = ['/usr/bin/podman', '--remote=false', 'run', '--rm', '--pull=never']
+            run = ['/usr/bin/podman', '--remote=false', 'run', '--rm', '--pull=never',
+                   '--ipc=private']
             help_text = bootc_help([*run, '--network=none', '--cap-drop=ALL',
                                     '--entrypoint=/usr/bin/bootc', verified.image_id,
                                     'install', 'to-disk', '--help'])
