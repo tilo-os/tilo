@@ -32,6 +32,17 @@ class Response:
 
 
 class RegionalBuilderReplicationTest(unittest.TestCase):
+    @staticmethod
+    def token_for(**overrides):
+        claims = {
+            "iss": MODULE.OIDC_ISSUER,
+            "sub": MODULE.OIDC_SUBJECT,
+            "aud": "tilo-builder-replication",
+        }
+        claims.update(overrides)
+        payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+        return "header." + payload + ".signature"
+
     def setUp(self):
         self.raw = json.dumps(
             {
@@ -55,16 +66,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             separators=(",", ":"),
         ).encode()
         self.digest = "sha256:" + hashlib.sha256(self.raw).hexdigest()
-        payload = base64.urlsafe_b64encode(
-            json.dumps(
-                {
-                    "iss": MODULE.OIDC_ISSUER,
-                    "sub": MODULE.OIDC_SUBJECT,
-                    "aud": "tilo-builder-replication",
-                }
-            ).encode()
-        ).decode().rstrip("=")
-        self.token = "header." + payload + ".signature"
+        self.token = self.token_for()
         self.calls = []
         self.aws_environments = []
         self.cosign_auth = []
@@ -160,6 +162,186 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                         Path(temporary) / "output",
                     )
             self.assertFalse(any(call[:2] == ("skopeo", "copy") for call in self.calls))
+
+    def test_oidc_denials_happen_before_aws_credentials_are_requested(self):
+        cases = (
+            ("missing environment", {}, self.token, "environment"),
+            (
+                "malformed token",
+                {
+                    "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
+                },
+                "not-a-jwt",
+                "malformed",
+            ),
+            (
+                "wrong issuer",
+                {
+                    "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
+                },
+                self.token_for(iss="https://attacker.invalid"),
+                "issuer or subject",
+            ),
+            (
+                "wrong subject",
+                {
+                    "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
+                },
+                self.token_for(sub="repo:other/repo:ref:refs/heads/main"),
+                "issuer or subject",
+            ),
+            (
+                "wrong audience",
+                {
+                    "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
+                },
+                self.token_for(aud="another-service"),
+                "audience",
+            ),
+        )
+        for name, environment, token, message in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                self.calls.clear()
+                source = Path(temporary) / "python-index.txt"
+                source.write_text("docker.io/library/python@" + self.digest + "\n")
+                with patch.dict(MODULE.os.environ, environment, clear=True), patch.object(
+                    MODULE.urllib.request, "urlopen", return_value=Response({"value": token})
+                ), patch.object(MODULE.subprocess, "run", side_effect=self.execute):
+                    with self.assertRaisesRegex(ValueError, message):
+                        MODULE.replicate(
+                            source,
+                            "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
+                            "arn:aws:iam::125650147312:role/burst-us-qos-builder-replication",
+                            "us-west-2",
+                            "tilo-builder-replication",
+                            None,
+                            Path(temporary) / "output",
+                        )
+                self.assertFalse(any(call[:2] == ("aws", "sts") for call in self.calls))
+                self.assertFalse(any(call[:2] == ("skopeo", "copy") for call in self.calls))
+
+    def test_unexpected_aws_identity_stops_before_ecr_or_copy(self):
+        identities = (
+            {"Account": "000000000000", "Arn": "arn:aws:sts::000000000000:assumed-role/wrong/run"},
+            {"Account": "125650147312", "Arn": "arn:aws:iam::125650147312:user/not-a-role"},
+            {"Account": "125650147312"},
+        )
+        for identity in identities:
+            with self.subTest(identity=identity), tempfile.TemporaryDirectory() as temporary:
+                self.calls.clear()
+                source = Path(temporary) / "python-index.txt"
+                source.write_text("docker.io/library/python@" + self.digest + "\n")
+                environment = {
+                    "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
+                }
+
+                def execute(arguments, **kwargs):
+                    arguments = tuple(str(value) for value in arguments)
+                    if arguments[:3] == ("aws", "sts", "get-caller-identity"):
+                        self.calls.append(arguments)
+                        return subprocess.CompletedProcess(arguments, 0, stdout=json.dumps(identity))
+                    return self.execute(arguments, **kwargs)
+
+                with patch.dict(MODULE.os.environ, environment, clear=True), patch.object(
+                    MODULE.urllib.request, "urlopen", return_value=Response({"value": self.token})
+                ), patch.object(MODULE.subprocess, "run", side_effect=execute):
+                    with self.assertRaisesRegex(ValueError, "unexpected replication identity"):
+                        MODULE.replicate(
+                            source,
+                            "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
+                            "arn:aws:iam::125650147312:role/burst-us-qos-builder-replication",
+                            "us-west-2",
+                            "tilo-builder-replication",
+                            None,
+                            Path(temporary) / "output",
+                        )
+                self.assertFalse(any(call[:2] == ("aws", "ecr") for call in self.calls))
+                self.assertFalse(any(call[:2] == ("skopeo", "copy") for call in self.calls))
+
+    def test_source_mapping_and_regional_scope_reject_before_external_commands(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source.txt"
+            source.write_text("code.sandbox.example/qos/unknown@" + self.digest + "\n")
+            with self.assertRaisesRegex(ValueError, "no configured regional repository"):
+                MODULE.replicate(
+                    source,
+                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/unknown",
+                    "arn:aws:iam::125650147312:role/replicator",
+                    "us-west-2",
+                    "tilo-builder-replication",
+                    None,
+                    Path(temporary) / "output",
+                )
+            source.write_text("docker.io/library/python@" + self.digest + "\n")
+            with self.assertRaisesRegex(ValueError, "no configured regional repository"):
+                MODULE.replicate(
+                    source,
+                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder",
+                    "arn:aws:iam::125650147312:role/replicator",
+                    "us-west-2",
+                    "tilo-builder-replication",
+                    None,
+                    Path(temporary) / "output",
+                )
+        for role, repository, region, message in (
+            ("not-an-arn", "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder", "us-west-2", "invalid"),
+            ("arn:aws:iam::125650147312:role/replicator", "bad.example/qos/tilo-builder", "us-west-2", "invalid"),
+            ("arn:aws:iam::000000000000:role/replicator", "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder", "us-west-2", "do not agree"),
+            ("arn:aws:iam::125650147312:role/replicator", "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder", "eu-central-1", "do not agree"),
+        ):
+            with self.subTest(role=role, repository=repository, region=region), self.assertRaisesRegex(ValueError, message):
+                MODULE.regional_identity(role, repository, region)
+        self.assertEqual(self.calls, [])
+
+    def test_existing_target_is_verified_without_copy_and_bad_ecr_counts_fail_closed(self):
+        for existing, succeeds in (("1", True), ("2", False)):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as temporary:
+                self.calls.clear()
+                source = Path(temporary) / "python-index.txt"
+                source.write_text("docker.io/library/python@" + self.digest + "\n")
+                environment = {
+                    "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
+                }
+
+                def execute(arguments, **kwargs):
+                    arguments = tuple(str(value) for value in arguments)
+                    if arguments[:3] == ("aws", "ecr", "batch-get-image"):
+                        self.calls.append(arguments)
+                        return subprocess.CompletedProcess(arguments, 0, stdout=existing + "\n")
+                    return self.execute(arguments, **kwargs)
+
+                with patch.dict(MODULE.os.environ, environment, clear=True), patch.object(
+                    MODULE.urllib.request, "urlopen", return_value=Response({"value": self.token})
+                ), patch.object(MODULE.subprocess, "run", side_effect=execute):
+                    if succeeds:
+                        target = MODULE.replicate(
+                            source,
+                            "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
+                            "arn:aws:iam::125650147312:role/burst-us-qos-builder-replication",
+                            "us-west-2",
+                            "tilo-builder-replication",
+                            None,
+                            Path(temporary) / "output",
+                        )
+                        self.assertTrue(target.endswith("@" + self.digest))
+                    else:
+                        with self.assertRaisesRegex(ValueError, "invalid image-existence result"):
+                            MODULE.replicate(
+                                source,
+                                "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
+                                "arn:aws:iam::125650147312:role/burst-us-qos-builder-replication",
+                                "us-west-2",
+                                "tilo-builder-replication",
+                                None,
+                                Path(temporary) / "output",
+                            )
+                self.assertFalse(any(call[:2] == ("skopeo", "copy") for call in self.calls))
 
     def test_generic_mapping_preserves_external_index_without_claiming_qos_signature(self):
         with tempfile.TemporaryDirectory() as temporary:
