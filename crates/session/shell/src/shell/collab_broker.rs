@@ -19,7 +19,7 @@ use collab_types::{
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use ui::collaboration::CollabEvent;
 
-use crate::shell::collab_broker_capnp::CapnpBrokerState;
+use crate::shell::collab_broker_capnp::{CapnpBrokerState, LocalSessionLifecycle};
 pub use crate::shell::collab_core::{
     AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
 };
@@ -405,6 +405,7 @@ impl FanoutState {
 
 /// Owns the typed broker and optional peer-network drain.
 pub struct BrokerHandle {
+    local_session: LocalSessionLifecycle,
     capnp_socket_path: PathBuf,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
@@ -653,6 +654,10 @@ impl AppActionBroker {
 }
 
 impl BrokerHandle {
+    pub(crate) fn local_session_lifecycle(&self) -> LocalSessionLifecycle {
+        self.local_session.clone()
+    }
+
     /// Apply a typed, handle-only MLS membership transaction at the trusted
     /// workspace lifecycle boundary. Apps cannot call this interface.
     ///
@@ -822,6 +827,7 @@ impl BrokerHandle {
 
 impl Drop for BrokerHandle {
     fn drop(&mut self) {
+        self.local_session.close();
         self.drain_quit.store(true, Ordering::Relaxed);
         self.capnp_quit.store(true, Ordering::Relaxed);
         let _ = std::fs::remove_file(&self.capnp_socket_path);
@@ -1267,7 +1273,7 @@ fn spawn_inner(
 
     // Typed RPC interface, attached to the shared fanout state.
     let capnp_quit = Arc::new(AtomicBool::new(false));
-    let capnp_thread = crate::shell::collab_broker_capnp::spawn(
+    let (capnp_thread, capnp_state) = crate::shell::collab_broker_capnp::spawn(
         capnp_socket_path.clone(),
         &table,
         Arc::clone(&channels),
@@ -1279,6 +1285,7 @@ fn spawn_inner(
     )?;
 
     Ok(BrokerHandle {
+        local_session: capnp_state.local_session_lifecycle(),
         capnp_socket_path,
         drain_thread,
         drain_quit,

@@ -16,6 +16,19 @@
 //! exhausted-but-empty batch triggers no fallback push, callers repeat the
 //! fetch instead.
 
+mod local_consent;
+#[cfg(test)]
+mod local_consent_tests;
+
+pub(crate) use local_consent::LocalSessionLifecycle;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use local_consent::LocalSessionLiveness;
+#[cfg(test)]
+pub(crate) use local_consent_tests::{
+    native_consent_fixture_root, run_isolated_native_consent_test,
+    wait_for_local_session_worker_teardown,
+};
+
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::os::fd::AsRawFd;
@@ -1683,6 +1696,7 @@ fn pause_realtime_consent_after_mint() {
 
 /// Shared typed broker state, attached to the transport-neutral fanout core.
 pub struct CapnpBrokerState {
+    local_session: local_consent::LocalSessionAuthority,
     /// Keyed by `join_channel`'s `channel_id`; lazily inserted on first join.
     channels: Mutex<HashMap<String, ChannelSubscribers>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
@@ -2543,6 +2557,7 @@ impl CapnpBrokerState {
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
         (
             Arc::new(Self {
+                local_session: local_consent::LocalSessionAuthority::new(),
                 channels: Mutex::new(HashMap::new()),
                 fanout: Arc::downgrade(fanout),
                 broker_channels,
@@ -2573,6 +2588,14 @@ impl CapnpBrokerState {
             }),
             bridge_rx,
         )
+    }
+
+    pub(crate) fn local_session_lifecycle(&self) -> LocalSessionLifecycle {
+        self.local_session.lifecycle()
+    }
+
+    fn active_local_session(&self) -> Option<local_consent::LiveLocalSession> {
+        self.local_session.active_session()
     }
 
     #[cfg(test)]
@@ -9171,7 +9194,7 @@ pub fn spawn(
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
     workspace_control_network: Option<Arc<crate::shell::network::ShellNetwork>>,
     quit: Arc<AtomicBool>,
-) -> std::io::Result<JoinHandle<()>> {
+) -> std::io::Result<(JoinHandle<()>, Arc<CapnpBrokerState>)> {
     let _ = std::fs::remove_file(&socket_path);
     let wired = publisher.is_wired();
     let (state, bridge_rx) = CapnpBrokerState::new(
@@ -9185,6 +9208,7 @@ pub fn spawn(
         state.attach_workspace_control_network(network);
     }
     fanout.attach_capnp(Arc::clone(&state));
+    let broker_state = Arc::clone(&state);
 
     // Bind on the caller's thread: from the worker thread, a bind
     // failure surfaces only via a log line.
@@ -9265,7 +9289,7 @@ pub fn spawn(
             });
         })?;
 
-    Ok(thread)
+    Ok((thread, broker_state))
 }
 
 /// Dial the capnp socket at `path` for tests. Production apps go through
