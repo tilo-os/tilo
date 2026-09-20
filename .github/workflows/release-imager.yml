@@ -454,7 +454,7 @@ jobs:
           - arch: x86_64
             runner: blacksmith-4vcpu-windows-2025
           - arch: aarch64
-            runner: blacksmith-4vcpu-windows-2025
+            runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
     env:
       TILO_WINDOWS_ARCH: ${{ matrix.arch }}
