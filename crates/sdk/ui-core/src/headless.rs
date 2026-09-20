@@ -1210,7 +1210,7 @@ impl FrameHarness {
 
         let t_draw = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.scene.reset();
-        self.root.native_view_frame_start();
+        crate::widget::native_view_frame_start(self.root.as_mut());
         if self.history_layout.is_none_or(|layout| layout.app_visible) {
             self.root.draw_with_presence(
                 &mut self.scene,
