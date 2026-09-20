@@ -253,7 +253,8 @@ def report(evidence):
     for run in evidence["runs"]:
         created, started, stopped = (run.get(key) for key in ("created", "started", "stopped"))
         attempt, attempt_created = attempt_identity(run)
-        item = {"id": run["id"], "workflow_id": run.get("workflow_id"),
+        item = {"id": run["id"], "index_in_repo": run.get("index_in_repo"),
+                "workflow_id": run.get("workflow_id"),
                 "commit_sha": run.get("commit_sha"), "event": run.get("event"),
                 "ref": run.get("prettyref", run.get("ref")), "status": run.get("status"),
                 "collection_errors": run.get("collection_errors", []),
@@ -538,7 +539,9 @@ def human_summary(result):
     for run in result["runs"]:
         identity = " / ".join(value for value in (run.get("workflow_id"), run.get("commit_sha")) if value)
         attempt = f" attempt {run['attempt']}" if run.get("attempt", 1) > 1 else ""
-        lines.append(f"Run {run['id']}{attempt} ({identity or 'unknown'}): queue {fmt(run['queue_seconds'])}; wall {fmt(run['wall_seconds'])}")
+        number = run.get("index_in_repo")
+        label = f"Run {number} (API ID {run['id']})" if number else f"Run {run['id']}"
+        lines.append(f"{label}{attempt} ({identity or 'unknown'}): queue {fmt(run['queue_seconds'])}; wall {fmt(run['wall_seconds'])}")
         if run["collection_errors"]:
             gaps = ", ".join(f"{gap['stage']}:{gap['kind']}" for gap in run["collection_errors"])
             lines.append(f"  Evidence gap: {gaps}")

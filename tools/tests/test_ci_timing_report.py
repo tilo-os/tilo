@@ -26,6 +26,9 @@ class TimingTests(unittest.TestCase):
             mock.call(args, "repos/qos/qos/actions/runs/25458/jobs"),
         ])
         self.assertEqual(evidence["runs"][0]["index_in_repo"], 11408)
+        result = timing.report(evidence)
+        self.assertEqual(result["runs"][0]["index_in_repo"], 11408)
+        self.assertIn("Run 11408 (API ID 25458)", timing.human_summary(result))
 
     def test_explicit_run_rejects_wrong_identity_before_fetching_logs(self):
         args = SimpleNamespace(repo="qos/qos", run=[11408])
