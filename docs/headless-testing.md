@@ -82,7 +82,7 @@ A wrapper binary ships in the same workspace. Subcommands take human-friendly ar
 
 ```bash
 cargo build -p shell --bin tilo-control      # lands in target/debug, NOT on PATH
-alias qc='cargo run -q --bin tilo-control --' # or: cargo install --path shell --bin tilo-control
+alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/shell --bin tilo-control
 
 qc list-targets                             # PNAME (X, Y, W, H) per line
 qc click add_workspace                      # click_named
