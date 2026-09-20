@@ -34,6 +34,11 @@ pub(crate) enum Publication {
     Activate(PathBuf),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SelectionOutcome {
+    Published(Publication),
+    UnresolvedTailDependencies,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainOutcome {
     pub written: u64,
     pub publication: Publication,
@@ -361,7 +366,7 @@ impl Selection {
         )
         .ok())
     }
-    pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<Publication>, StoreError> {
+    pub(crate) fn step(&mut self, limit: WorkLimit) -> Result<Step<SelectionOutcome>, StoreError> {
         let limit = limit.checked()?;
         self.sorter.stats.last_step_work = 1;
         match self.phase {
@@ -626,9 +631,7 @@ impl Selection {
                     if decision.floor != FloorSafety::Unknown
                         && (self.fallback || self.old.room.is_none())
                     {
-                        return Err(invalid(
-                            "unresolved shell tail floor or dependencies prevent coherent selection",
-                        ));
+                        return Ok(Step::Done(SelectionOutcome::UnresolvedTailDependencies));
                     }
                     self.blocked = true;
                 } else {
@@ -767,17 +770,12 @@ impl Selection {
                         .ok_or_else(|| invalid("missing sorted tail snapshot"))?;
                     self.tail_readiness = Some((key, snapshot.ordered_tail_readiness()));
                 }
-                let ready = self
-                    .tail_readiness
-                    .as_mut()
-                    .is_some_and(|(_, cursor)| {
-                        cursor.append(value.source, value.channel, &value.body)
-                    });
+                let ready = self.tail_readiness.as_mut().is_some_and(|(_, cursor)| {
+                    cursor.append(value.source, value.channel, &value.body)
+                });
                 if !ready {
                     if self.fallback || self.old.room.is_none() {
-                        return Err(invalid(
-                            "unresolved shell tail floor or dependencies prevent coherent selection",
-                        ));
+                        return Ok(Step::Done(SelectionOutcome::UnresolvedTailDependencies));
                     }
                     self.basis = self.old.clone();
                     self.fallback = true;
@@ -878,13 +876,13 @@ impl Selection {
                 }
             }
             Phase::Done => {
-                return Ok(Step::Done(if self.changed {
+                return Ok(Step::Done(SelectionOutcome::Published(if self.changed {
                     Publication::Activate(self.staged.clone())
                 } else if self.incoming_staged {
                     Publication::Suppress
                 } else {
                     Publication::Original
-                }));
+                })));
             }
         }
         Ok(Step::More)

@@ -387,12 +387,26 @@ impl WorkspaceStore {
             return Err(invalid("replay store mismatch"));
         }
         if let Some(selection) = &mut build.selection {
-            if let Step::Done(_) = selection.step(limit)? {
-                build.selection = None;
-                let path = retained::current(&self.root.join(super::shell_selection::DIRECTORY))?
-                    .ok_or_else(|| invalid("missing selected shell basis"))?;
-                build.selected = Some(File::open(path.join("basis.manifest"))?);
+            let unresolved = match selection.step(limit)? {
+                Step::More => return Ok(Step::More),
+                Step::Done(super::shell_selection::SelectionOutcome::Published(_)) => false,
+                Step::Done(
+                    super::shell_selection::SelectionOutcome::UnresolvedTailDependencies,
+                ) => true,
+            };
+            let current = retained::current(&self.root.join(super::shell_selection::DIRECTORY))?;
+            if unresolved && current.is_none() {
+                return Err(invalid(
+                    "unresolved shell tail floor or dependencies prevent coherent selection",
+                ));
             }
+            // Selection validated the immutable CURRENT generation before it
+            // considered newer retained inputs. Those inputs remain untouched;
+            // subscription replay can still use CURRENT plus pending frames.
+            let path = current.ok_or_else(|| invalid("missing selected shell basis"))?;
+            let selected = File::open(path.join("basis.manifest"))?;
+            build.selection = None;
+            build.selected = Some(selected);
             return Ok(Step::More);
         }
         if build.phase > 4 {

@@ -467,34 +467,33 @@ fn synthetic_frame(
 }
 
 #[test]
-fn shell_selection_readiness_fallback_rebuilds_sorter_before_prior_basis() {
+fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite() {
     use super::replay::*;
     use automerge::transaction::Transactable;
 
     let (key, authority, mut owner, now) = synthetic_owner();
     let cp1 = owner.durable_bootstrap_messages(&key, now, 1).unwrap();
-    let tmp = tempfile::tempdir().unwrap();
-    let workspace_id = crate::room_workspace_id(authority.room()).unwrap();
-    let mut store = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
-    for msg in &cp1 {
-        retain_frame(&store, &synthetic_frame(&authority, msg, true));
-    }
-    store.bind_shell_authority(authority.clone()).unwrap();
-    let prior_frames = replay_frames(&store);
-    let selected_before = retained::current(&store.root.join("shell-selected-v1"))
-        .unwrap()
-        .unwrap();
-    drop(store);
-
-    let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
-    let NeighbourMsg::AppDocument { envelope, .. } = &cp2[1] else {
+    let NeighbourMsg::AppDocument { envelope, .. } = &cp1[1] else {
         panic!()
     };
     let mut branch =
         automerge::AutoCommit::load(&owner.document("selector.app", "one").unwrap()).unwrap();
+    let baseline_heads = branch.get_heads();
     branch.put(automerge::ROOT, "first", "T1").unwrap();
     branch.commit();
     let t1_heads = branch.get_heads();
+    let t1_bytes = branch
+        .get_changes(&baseline_heads)
+        .iter()
+        .flat_map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let t1 = synthetic_signed(
+        &key,
+        authority.room(),
+        collab_types::DocumentMutation::Incremental(t1_bytes),
+        envelope.seq + 1,
+        now,
+    );
     branch.put(automerge::ROOT, "second", "T2").unwrap();
     branch.commit();
     let t2_bytes = branch
@@ -509,6 +508,42 @@ fn shell_selection_readiness_fallback_rebuilds_sorter_before_prior_basis() {
         envelope.seq + 2,
         now,
     );
+    let tmp = tempfile::tempdir().unwrap();
+    let workspace_id = crate::room_workspace_id(authority.room()).unwrap();
+    let mut store = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
+    store.bind_shell_authority(authority.clone()).unwrap();
+    for msg in &cp1 {
+        retain_frame(&store, &synthetic_frame(&authority, msg, true));
+    }
+    let t1_frame = synthetic_frame(&authority, &t1, false);
+    retain_frame(&store, &t1_frame);
+    let prior_frames = replay_frames(&store);
+    assert!(
+        prior_frames
+            .iter()
+            .any(|frame| { crate::transport::encode(frame).unwrap() == t1_frame })
+    );
+    let selected_before = retained::current(&store.root.join("shell-selected-v1"))
+        .unwrap()
+        .unwrap();
+    let mut removed_original = false;
+    for lineage in fs::read_dir(store.root.join("retained/v2")).unwrap() {
+        let lineage = lineage.unwrap().path();
+        let Some(active) = retained::current(&lineage).unwrap() else {
+            continue;
+        };
+        for entry in fs::read_dir(active).unwrap() {
+            let path = entry.unwrap().path();
+            if fs::read(&path).unwrap() == t1_frame {
+                fs::remove_file(path).unwrap();
+                removed_original = true;
+            }
+        }
+    }
+    assert!(removed_original, "fixture did not isolate T1 in CURRENT");
+    drop(store);
+
+    let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
     let cp2_frames = cp2
         .iter()
         .map(|msg| synthetic_frame(&authority, msg, true))
@@ -521,19 +556,55 @@ fn shell_selection_readiness_fallback_rebuilds_sorter_before_prior_basis() {
     }
     retain_frame(&reopened, &t2_frame);
     reopened.bind_shell_authority(authority).unwrap();
+    let pending = crate::transport::encode(&Envelope::Presence {
+        workspace_id,
+        payload: b"pending subscription frame".to_vec(),
+    })
+    .unwrap();
+    reopened.enqueue_pending(&[2; 32], 1, &pending).unwrap();
     let mut build = reopened
         .start_replay_capture(ReplayId(rand::random()), [2; 32])
         .unwrap();
-    let error = loop {
-        match reopened.capture_replay_step(&mut build, WorkLimit::default()) {
-            Err(error) => break error,
-            Ok(Step::More) => (),
-            Ok(Step::Done(_)) => panic!("T2 without T1 became selected"),
+    let mut snapshot = loop {
+        match reopened
+            .capture_replay_step(&mut build, WorkLimit::default())
+            .unwrap()
+        {
+            Step::More => (),
+            Step::Done(snapshot) => break snapshot,
         }
     };
+    while matches!(
+        reopened
+            .prepare_replay_step(&mut snapshot, WorkLimit::default())
+            .unwrap(),
+        Step::More
+    ) {}
+    let budget = ReplayBudget::new(256 * 1024 * 1024);
+    let mut replayed = Vec::new();
+    loop {
+        let mut batch = reopened
+            .read_replay_batch(&mut snapshot, ReplayLimits::default(), &budget)
+            .unwrap();
+        while let Some(frame) = batch.front() {
+            replayed.push(crate::transport::encode(frame).unwrap());
+            batch.pop_written();
+        }
+        if batch.eof {
+            break;
+        }
+    }
     assert!(
-        error.to_string().contains("unresolved shell tail"),
-        "fallback failed before validating the prior basis: {error}"
+        replayed.contains(&t1_frame),
+        "CURRENT tail was not replayed"
+    );
+    assert!(
+        replayed.contains(&pending),
+        "pending frame was not replayed"
+    );
+    assert!(
+        !replayed.contains(&t2_frame),
+        "unresolved tail was replayed"
     );
     assert_eq!(
         retained::current(&reopened.root.join("shell-selected-v1"))
@@ -543,7 +614,10 @@ fn shell_selection_readiness_fallback_rebuilds_sorter_before_prior_basis() {
     );
     let stored = reopened.load_shared().unwrap();
     for frame in cp2_frames.iter().chain(std::iter::once(&t2_frame)) {
-        assert!(stored.contains(frame), "unresolved original was not retained");
+        assert!(
+            stored.contains(frame),
+            "unresolved original was not retained"
+        );
     }
     let work = reopened.root.join("store-work-v1");
     let mut replay_work = fs::read_dir(&work)
@@ -560,7 +634,7 @@ fn shell_selection_readiness_fallback_rebuilds_sorter_before_prior_basis() {
     let work_root = replay_work.pop().unwrap();
     let fallback_sort = work_root.join("extras-sort-fallback");
     assert!(fs::read_dir(&fallback_sort).unwrap().next().is_some());
-    let mut discard = build.into_discard().unwrap();
+    let mut discard = snapshot.into_discard().unwrap();
     while matches!(discard.step(WorkLimit::default()).unwrap(), Step::More) {}
     assert!(!work_root.exists(), "fallback sort survived direct discard");
 
@@ -573,10 +647,7 @@ fn shell_selection_readiness_fallback_rebuilds_sorter_before_prior_basis() {
     )
     .unwrap();
     let mut reclaimer = reopened.start_work_reclamation().unwrap();
-    while matches!(
-        reclaimer.step(WorkLimit::default()).unwrap(),
-        Step::More
-    ) {}
+    while matches!(reclaimer.step(WorkLimit::default()).unwrap(), Step::More) {}
     assert!(
         !abandoned.exists(),
         "fallback sort survived startup reclamation"

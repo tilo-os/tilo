@@ -630,7 +630,16 @@ impl RetainBuild {
                         }
                         match self.selection.as_mut().unwrap().step(limit)? {
                             Step::More => return Ok(Step::More),
-                            Step::Done(publication) => self.publication = Some(publication),
+                            Step::Done(super::shell_selection::SelectionOutcome::Published(
+                                publication,
+                            )) => self.publication = Some(publication),
+                            Step::Done(
+                                super::shell_selection::SelectionOutcome::UnresolvedTailDependencies,
+                            ) => {
+                                return Err(invalid(
+                                    "unresolved shell tail floor or dependencies prevent coherent selection",
+                                ));
+                            }
                         }
                     } else {
                         self.publication = Some(super::shell_selection::Publication::Original);
