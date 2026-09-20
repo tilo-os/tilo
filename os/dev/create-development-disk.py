@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,21 @@ def command(argv):
         # Registry/tool diagnostics may contain credentials; do not echo them.
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout.decode('utf-8', 'strict')
+
+
+def ensure_fuse_device(device=Path('/dev/fuse'), misc=Path('/proc/misc'),
+                       sys_device=Path('/sys/class/misc/fuse/dev')):
+    expected = os.makedev(10, 229)
+    try:
+        info = device.lstat()
+    except FileNotFoundError:
+        entries = [line.split() for line in misc.read_text().splitlines()]
+        if entries.count(['229', 'fuse']) != 1 or sys_device.read_text().strip() != '10:229':
+            raise ValueError('kernel does not expose the expected FUSE misc device')
+        os.mknod(device, stat.S_IFCHR | 0o600, expected)
+        info = device.lstat()
+    if not stat.S_ISCHR(info.st_mode) or info.st_rdev != expected:
+        raise ValueError('FUSE device identity differs from character device 10:229')
 
 
 def reject_firmware_access(mountinfo=Path('/proc/self/mountinfo'),
@@ -85,6 +101,7 @@ def guest_inputs(args, *, supervised=False):
     # Privileged image execution must not receive a TPM or firmware variable
     # store, even belonging to the temporary build guest.
     reject_firmware_access()
+    ensure_fuse_device()
     if ':' in str(args.output):
         raise ValueError('disk output path cannot contain volume option delimiters')
     source.inputs(args.source, args.target, args.architecture, args.revision)
