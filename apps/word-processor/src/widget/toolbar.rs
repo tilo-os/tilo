@@ -23,7 +23,6 @@ pub(super) const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
     [0xff, 0xb1, 0x4d],
 ];
 
-pub(super) const TOOLBAR_RIGHT_PAD: f64 = 18.0;
 pub(super) const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

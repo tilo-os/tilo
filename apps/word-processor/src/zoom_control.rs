@@ -19,14 +19,6 @@ enum Action {
     In,
 }
 
-#[derive(Clone, Copy)]
-struct ButtonStyle {
-    center_y: f64,
-    scale: f64,
-    chip: Color,
-    text: Color,
-}
-
 /// Owns the local zoom preference, transform geometry and toolbar interaction.
 pub(crate) struct ZoomControl {
     factor: f64,
@@ -63,7 +55,6 @@ impl Default for Metrics {
 }
 
 impl ZoomControl {
-    pub(crate) const WIDTH: f64 = 88.0;
     /// Stable semantic targets for the three controls painted by this component.
     /// Keeping these beside the hit-testing means assistive technology and the
     /// pointer path cannot grow different zoom behaviours.
