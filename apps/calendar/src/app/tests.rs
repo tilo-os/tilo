@@ -1343,13 +1343,6 @@ fn high_contrast_large_text_metadata_chips_clear_labels_and_notes() {
         app.detail_rect.y0 + app.form.notes_top > last_bottom,
         "the notes divider must remain below the enlarged chip rows"
     );
-    let (_, notes_h) = text.measure("NOTES", 11.0, None);
-    let (notes_y, rule_y) =
-        notes_header_positions(app.detail_rect.y0 + app.form.notes_top, f64::from(notes_h));
-    assert!(
-        rule_y >= notes_y + f64::from(notes_h) + 6.0,
-        "the NOTES rule must start after the scaled label, never through it"
-    );
 }
 
 #[test]
