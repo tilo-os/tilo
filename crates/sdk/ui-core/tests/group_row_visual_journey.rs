@@ -29,7 +29,9 @@ use vello::peniko::Color;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::{AppKind, GroupRow, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth};
+use tilo_ui::widget::{
+    AppKind, GroupRow, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
+};
 
 fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

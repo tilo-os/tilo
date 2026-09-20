@@ -150,7 +150,8 @@ fn child_body() -> ! {
     }));
 
     // `false` means "do the Vello stage too", the stage that needs an adapter.
-    let handle = tilo_ui::warmup::spawn_warmup(false).expect("warmup should be enabled in the child");
+    let handle =
+        tilo_ui::warmup::spawn_warmup(false).expect("warmup should be enabled in the child");
     match handle.join() {
         Ok(()) => {
             eprintln!("child: warmup finished without an adapter");

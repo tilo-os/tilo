@@ -1072,7 +1072,11 @@ fn prepared_headless_flush_failure_is_durability_exit_with_original_bytes() {
         })
         .unwrap();
     assert_eq!(
-        tilo_ui::headless::run_component(&tilo_ui::headless::Spec::default(), component, runner_inputs()),
+        tilo_ui::headless::run_component(
+            &tilo_ui::headless::Spec::default(),
+            component,
+            runner_inputs()
+        ),
         3
     );
     assert_eq!(std::fs::read(&retained).unwrap(), original);

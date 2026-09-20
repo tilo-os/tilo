@@ -48,7 +48,10 @@ fn room_status_arrives_with_honest_provenance_and_can_be_cleared() {
         .status_for(&xaver, SystemTime::now())
         .expect("status should be visible in the universal room model");
     assert_eq!(status.text, "Reconciling forecast against actuals");
-    assert!(matches!(status.origin, tilo_ui::StatusOrigin::Inferred { .. }));
+    assert!(matches!(
+        status.origin,
+        tilo_ui::StatusOrigin::Inferred { .. }
+    ));
 
     a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
         user_id: xaver.0.clone(),

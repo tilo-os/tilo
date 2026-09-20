@@ -292,7 +292,9 @@ fn build_column_inner(tree: TreeView<()>) -> Box<dyn Widget> {
             .push(caption("row_basics"))
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(tilo_ui::widget::Button::new("btn", "btn_save", None)))
+                    .push(Box::new(tilo_ui::widget::Button::new(
+                        "btn", "btn_save", None,
+                    )))
                     .push(Box::new(tilo_ui::widget::Toggle::new("tog", "toggle_1")))
                     .push(Box::new(tilo_ui::widget::Checkbox::new("chk", "check_1")))
                     .push(Box::new(tilo_ui::widget::Slider::new("sld", "slider_1")))
