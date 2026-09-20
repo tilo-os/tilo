@@ -184,9 +184,6 @@ pub struct SidebarRow {
     /// One-shot local navigation request. Category selection is deliberately
     /// not document state: it is only this window's current presentation.
     selection_request: ui::LocalState<Option<Category>>,
-    /// The live system text scale. Sidebar chrome is custom-painted, so its
-    /// geometry must scale alongside the shared renderer's glyphs.
-    text_scale: f64,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -209,20 +206,10 @@ impl SidebarRow {
         active: bool,
         selection_request: ui::LocalState<Option<Category>>,
     ) -> Self {
-        Self::with_selection_request_and_scale(category, active, selection_request, 1.0)
-    }
-
-    fn with_selection_request_and_scale(
-        category: Category,
-        active: bool,
-        selection_request: ui::LocalState<Option<Category>>,
-        text_scale: f32,
-    ) -> Self {
         Self {
             category,
             active,
             selection_request,
-            text_scale: f64::from(text_scale.clamp(0.5, 4.0)),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -614,19 +601,6 @@ pub fn build(
     query: &str,
     selection_request: &ui::LocalState<Option<Category>>,
 ) -> Box<dyn Widget> {
-    build_with_text_scale(selected, query, selection_request, 1.0)
-}
-
-/// Build the sidebar with a geometry scale matching the system text scale.
-/// This is intentionally Settings-local: these custom-painted navigation rows
-/// carry their own fixed dimensions, unlike normal shared text controls.
-pub fn build_with_text_scale(
-    selected: Category,
-    query: &str,
-    selection_request: &ui::LocalState<Option<Category>>,
-    text_scale: f32,
-) -> Box<dyn Widget> {
-    let scale = text_scale.clamp(0.5, 4.0);
     // Three explicit steps of the spacing scale carry the whole rhythm, so
     // the eye reads groups rather than a list of equally spaced lines:
     //
