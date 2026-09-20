@@ -26,22 +26,22 @@ class AppReleaseTests(unittest.TestCase):
                 self.assertEqual(
                     app_release.architecture_matrix(ref, event),
                     {"include": [
-                        {"arch": "aarch64", "runner": "runner-arm64"},
-                        {"arch": "x86_64", "runner": "runner"},
+                        {"arch": "aarch64", "runner": "tilo-build-arm64"},
+                        {"arch": "x86_64", "runner": "tilo-build-x64"},
                     ]},
                 )
 
     def test_manual_build_can_explicitly_select_one_architecture(self) -> None:
         self.assertEqual(
             app_release.architecture_matrix("refs/heads/main", "workflow_dispatch", requested="aarch64"),
-            {"include": [{"arch": "aarch64", "runner": "runner-arm64"}]},
+            {"include": [{"arch": "aarch64", "runner": "tilo-build-arm64"}]},
         )
 
     def test_main_architecture_switch_and_tags_cover_both(self) -> None:
         both = {
             "include": [
-                {"arch": "aarch64", "runner": "runner-arm64"},
-                {"arch": "x86_64", "runner": "runner"},
+                {"arch": "aarch64", "runner": "tilo-build-arm64"},
+                {"arch": "x86_64", "runner": "tilo-build-x64"},
             ]
         }
         self.assertEqual(

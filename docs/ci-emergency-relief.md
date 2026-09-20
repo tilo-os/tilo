@@ -176,7 +176,7 @@ not a latency guarantee for every future worker. The separate main **check** run
 as main advances.
 
 The lean image
-`ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
+`ghcr.io/tilo-os/retired-fast-image@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a`
 contains the pinned Rust toolchain and lint tools, without the full builder's
 native graphics/media/application stack. Compressed layers total 393 MB versus
 1.694 GB for its source builder. Its unchanged OpenSSL exclusion invariant
@@ -189,8 +189,8 @@ dependency-usage analysis. Another image pilot measured a 36s pull interval.
 These observations show material worker/network variation; the 9.905s
 production observation must not be generalized into a universal cold-start bound.
 Lint, the final check aggregate, and receipt jobs now use `runner-quality`.
-Builder resolution now uses the pinned `ci-control` image and selection uses
-`ci-fast`, both on the quality lane. Applicable native compilation and security
+Builder resolution now uses the pinned `retired-control-image` image and selection uses
+`retired-fast-image`, both on the quality lane. Applicable native compilation and security
 checks retain their full-builder/architecture lanes. Native control qualification run **22746**
 passed, including a roughly **172-second cold pull**. This proves the control path
 works; it does not demonstrate consistently fast cold provisioning.
@@ -241,8 +241,8 @@ Normal main revision `6d221fd9` supplied these actual workflow observations:
 
 | Request | Pinned image | Received to container creation | Observed result |
 | --- | --- | --- | --- |
-| Check 22761, builder job 83565, task 75054 | `ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5` | 22:55:12.230 to 22:55:12.766 UTC: 535.6 ms | Job succeeded at 22:55:27.021, about 14.8 seconds after receipt |
-| [Lint 22762](https://github.com/tilo-os/tilo/actions/runs/9318), job 83571, task 75056 | `ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a` | 22:55:20.276 to 22:55:20.620 UTC: 343.9 ms | Succeeded at 22:57:28.187: 127.911 seconds from task receipt through policy, cargo-deny and cargo-machete |
+| Check 22761, builder job 83565, task 75054 | `retired-control-image@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5` | 22:55:12.230 to 22:55:12.766 UTC: 535.6 ms | Job succeeded at 22:55:27.021, about 14.8 seconds after receipt |
+| [Lint 22762](https://github.com/tilo-os/tilo/actions/runs/9318), job 83571, task 75056 | `retired-fast-image@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a` | 22:55:20.276 to 22:55:20.620 UTC: 343.9 ms | Succeeded at 22:57:28.187: 127.911 seconds from task receipt through policy, cargo-deny and cargo-machete |
 
 Neither log contained a Docker pull event. These intervals are **task receipt to
 container creation**, not pull-to-create or isolated network timings. They prove

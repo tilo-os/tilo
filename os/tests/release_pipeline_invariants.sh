@@ -72,13 +72,13 @@ else
   bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
 fi
 
-if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-builder-image.yml" \
-  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-builder-image.yml" \
-  && grep -Fq 'runner: tilo-build-arm64' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
+if grep -Fq 'runner: ubuntu-24.04-arm' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'runner: ubuntu-24.04' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'uses: docker/build-push-action@' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'uses: actions/attest-build-provenance@' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'docker buildx imagetools create' "$workflows/build-builder-image.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
-  ok 'native CI builder publication waits for cache acceptance on both architectures'
+  ok 'CI builder is built natively on GitHub and published with provenance'
 else
   bad 'native CI builder or affected-package architecture coverage is missing'
 fi

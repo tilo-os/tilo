@@ -310,7 +310,7 @@ jobs:
             self.assertIn("if: ${{ github.event_name == 'pull_request' }}", gate_job)
             self.assertIn('runs-on: ubuntu-24.04', gate_job)
             self.assertIn('timeout-minutes: 5', gate_job)
-            self.assertRegex(gate_job, r'image: ghcr\.io/tilo-os/ci-fast@sha256:[0-9a-f]{64}')
+            self.assertNotIn('    container:', gate_job)
             self.assertIn('fetch-depth: 2', gate_job)
             self.assertNotIn('fetch-depth: 0', gate_job)
             self.assertIn('sparse-checkout-cone-mode: false', gate_job)

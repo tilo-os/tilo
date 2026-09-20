@@ -7,7 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ".github/actions/install-cosign"
 CONSUMERS = {
-    "build-builder-image.yml": 2,
     "build-image.yml": 1,
     "build-kernel.yml": 2,
     "snapshot-rpms.yml": 1,
@@ -43,7 +42,6 @@ class CosignInstallActionTests(unittest.TestCase):
     def test_path_filtered_consumers_track_the_shared_action(self) -> None:
         workflows = ROOT / ".github" / "workflows"
         for name in (
-            "build-builder-image.yml",
             "build-kernel.yml",
             "snapshot-rpms.yml",
             "snapshot-wpe-buildroot.yml",

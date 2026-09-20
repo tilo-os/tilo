@@ -1,150 +1,57 @@
-name: Snapshot / CI builder
+name: Build / Tilo builder image
 
 permissions:
   contents: read
   packages: write
+  attestations: write
   id-token: write
-
-# Publishes ghcr.io/tilo-os/tilo-builder, which check.yml runs in. Weekly so
-# the base and the package set stay current; on dispatch, and whenever the
-# inputs that define the environment change.
 
 on:
   schedule:
     - cron: "0 4 * * 1"
   push:
-    branches: ["main"]
+    branches: [main]
     paths:
       - "os/Containerfile.builder"
       - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
-      - "os/dev/install-cached-cosign.sh"
-      - "os/dev/promote-native-index.py"
-      - "os/dev/builder-canary-inputs.py"
       - "rust-toolchain.toml"
       - "crates/system/atomic-file/**"
       - "tools/ci/check-build-env.sh"
-      - "tools/ci/builder_workflow_plan.py"
       - "tools/ci/install-pdfium.sh"
-      - "tools/ci/measure.sh"
       - "tools/ci/native-mold-linker.sh"
-      - "tools/ci/sccache-canary.sh"
-      - "tools/ci/sccache.sh"
-      - "tools/ci/resolve_promoted_builder.py"
       - "tools/ci/verify-native-mold.sh"
-      - ".github/actions/install-cosign/**"
-      - ".github/actions/restore-cargo-downloads/**"
       - ".github/workflows/build-builder-image.yml"
   workflow_dispatch:
-    inputs:
-      cache_revision:
-        description: 'Optional full commit SHA whose candidate buildcache may accelerate this build; all acceptance gates still run'
-        required: false
-        type: string
 
 concurrency:
-  group: build-builder-image-${{ github.ref }}
+  group: tilo-builder-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  plan:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    container:
-      image: ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
-    outputs:
-      mode: ${{ steps.plan.outputs.mode }}
-      reason: ${{ steps.plan.outputs.reason }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          token: ${{ github.token }}
-      - name: Choose native build or promoted-builder qualification
-        id: plan
-        env:
-          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
-        run: python3 -I tools/ci/builder_workflow_plan.py
-
-  signing-preflight:
-    needs: plan
-    if: needs.plan.outputs.mode == 'build'
-    runs-on: tilo-build-x64
-    timeout-minutes: 5
-    steps:
-      - name: Checkout signing policy
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Install checksum-pinned Cosign
-        uses: ./.github/actions/install-cosign
-        with:
-          cache-architecture: ${{ runner.arch }}
-      - name: Require non-exportable builder signing authority
-        env:
-          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
-          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
-        run: |
-          set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
-          . os/dev/configure-cosign-kms.sh
-          resolved="$RUNNER_TEMP/builder-signing-authority.pub"
-          cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
-          cmp --silent keys/cosign.pub "$resolved" || {
-            echo '::error::builder KMS/HSM authority does not match keys/cosign.pub'
-            exit 1
-          }
-
   build:
-    needs: [plan, signing-preflight]
-    if: >-
-      ${{
-        always() && needs.plan.result == 'success' &&
-        needs.plan.outputs.mode == 'build' && needs.signing-preflight.result == 'success'
-      }}
+    name: Build ${{ matrix.arch }}
     strategy:
       fail-fast: false
-      # Forgejo's package-blob insert is not race-safe when native jobs upload
-      # an identical layer concurrently. Builder rebuilds are rare; serialize
-      # only their registry writers while routine qualification reuses images.
-      max-parallel: 1
       matrix:
         include:
           - arch: x86_64
             platform: linux/amd64
-            runner: tilo-build-x64
+            runner: ubuntu-24.04
           - arch: aarch64
             platform: linux/arm64
-            runner: tilo-build-arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ github.token }}
 
-      - name: Require a native build host
+      - name: Require the native architecture
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
 
-      - name: Select an optional candidate buildcache
-        env:
-          REQUESTED_CACHE_REVISION: ${{ github.event.inputs.cache_revision }}
-        run: |
-          set -euo pipefail
-          revision="${REQUESTED_CACHE_REVISION:-$GITHUB_SHA}"
-          [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || {
-            echo '::error::cache_revision must be a full lowercase Git SHA'
-            exit 1
-          }
-          printf 'BUILDER_CACHE_REVISION=%s\n' "$revision" >> "$GITHUB_ENV"
-
-      - name: Restore checksum-verified GitHub build inputs
-        id: github-assets-cache
+      - name: Restore immutable build inputs
+        id: assets-cache
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: os/external-assets/cache
@@ -152,380 +59,98 @@ jobs:
           restore-keys: |
             github-assets-all-v1-
 
-      - name: Materialize immutable GitHub build inputs
+      - name: Materialize immutable build inputs
         run: ./os/dev/cache-github-assets.sh
 
-      - name: Save checksum-verified GitHub build inputs immediately
-        if: steps.github-assets-cache.outputs.cache-hit != 'true'
+      - name: Save immutable build inputs
+        if: steps.assets-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: os/external-assets/cache
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
 
-      - name: Log in to the registry
+      - name: Read the pinned Rust toolchain
+        run: |
+          channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
+          test -n "$channel"
+          echo "RUST_CHANNEL=$channel" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      # The image bakes the toolchain the workspace pins, so a job cannot
-      # silently compile with a different one.
-      - name: Read the pinned toolchain
-        run: |
-          ch=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
-          [ -n "$ch" ] || { echo "no channel in rust-toolchain.toml"; exit 1; }
-          echo "RUST_CHANNEL=$ch" >> "$GITHUB_ENV"
-          echo "building for toolchain $ch"
-
-      # The runner provides docker, not podman.
-      - name: Set up buildx
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
 
-      # The Containerfile runs tools/ci/check-build-env.sh during the build, so a
-      # missing native dependency fails here rather than in every later job.
-      - name: Build and push
-        id: build
+      - name: Build and publish the native image
+        id: image
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
-          build-contexts: |
-            github-assets=os/external-assets/cache
+          build-contexts: github-assets=os/external-assets/cache
           file: os/Containerfile.builder
           platforms: ${{ matrix.platform }}
           push: true
           provenance: false
-          labels: org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            RUST_CHANNEL=${{ env.RUST_CHANNEL }}
-          tags: ghcr.io/tilo-os/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
-          cache-from: |
-            type=registry,ref=ghcr.io/tilo-os/tilo-builder-buildcache:${{ matrix.arch }}
-            type=registry,ref=ghcr.io/tilo-os/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
+          build-args: RUST_CHANNEL=${{ env.RUST_CHANNEL }}
+          tags: ghcr.io/tilo-os/tilo-builder:sha-${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=tilo-builder-${{ matrix.arch }}
+          cache-to: type=gha,scope=tilo-builder-${{ matrix.arch }},mode=max
 
-      # Forgejo's registry can reject the same blob when BuildKit pushes the
-      # image and cache concurrently. Reuse the completed local BuildKit graph,
-      # but give each registry exporter its own action invocation.
-      - name: Export build cache
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+      - name: Attest the image
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
-          context: .
-          build-contexts: |
-            github-assets=os/external-assets/cache
-          file: os/Containerfile.builder
-          platforms: ${{ matrix.platform }}
-          push: false
-          provenance: false
-          labels: org.opencontainers.image.revision=${{ github.sha }}
-          build-args: |
-            RUST_CHANNEL=${{ env.RUST_CHANNEL }}
-          tags: ghcr.io/tilo-os/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
-          cache-from: |
-            type=registry,ref=ghcr.io/tilo-os/tilo-builder-buildcache:${{ matrix.arch }}
-            type=registry,ref=ghcr.io/tilo-os/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
-          cache-to: type=registry,ref=ghcr.io/tilo-os/tilo-builder-buildcache:${{ github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}', github.sha, matrix.arch) }},mode=max
+          subject-name: ghcr.io/tilo-os/tilo-builder
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
 
-      - name: Install checksum-pinned Cosign
-        run: ./os/dev/install-cached-cosign.sh
-      - name: Sign and describe the native builder
-        env:
-          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
-          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
-          CHILD_ARCH: ${{ matrix.arch }}
-          CHILD_DIGEST: ${{ steps.build.outputs.digest }}
+      - name: Retain the digest for the manifest job
         run: |
-          set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
-          . os/dev/configure-cosign-kms.sh
-          ref="ghcr.io/tilo-os/tilo-builder@${CHILD_DIGEST}"
-          cosign sign --yes --key "$COSIGN_KEY_REF" "$ref"
-          cosign verify --key keys/cosign.pub "$ref" >/dev/null
-          mkdir -p native-child
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          Path("native-child/child.json").write_text(json.dumps({
-              "architecture": os.environ["CHILD_ARCH"],
-              "digest": os.environ["CHILD_DIGEST"],
-              "sourceRevision": os.environ["GITHUB_SHA"],
-          }))
-          PY
-      - name: Upload the native child descriptor
+          mkdir -p digest
+          printf '%s\n' '${{ steps.image.outputs.digest }}' > digest/${{ matrix.arch }}
+
+      - name: Upload the digest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: builder-native-${{ matrix.arch }}-${{ github.run_attempt }}
-          path: native-child/
+          name: tilo-builder-${{ matrix.arch }}
+          path: digest/${{ matrix.arch }}
           if-no-files-found: error
+          retention-days: 1
 
-  images:
-    # Forgejo's run_attempt counts each job separately. Consumers must use
-    # producer artifacts, not reconstruct an image tag from their own attempt.
-    needs: [plan, build]
-    if: >-
-      ${{
-        always() && needs.plan.result == 'success' &&
-        ((needs.plan.outputs.mode == 'build' && needs.build.result == 'success') ||
-         (needs.plan.outputs.mode == 'reuse' && needs.build.result == 'skipped'))
-      }}
-    runs-on: tilo-build-x64
-    timeout-minutes: 20
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
+  manifest:
+    name: Publish multi-architecture manifest
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - if: needs.plan.outputs.mode == 'build'
+      - name: Download native digests
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: native-candidates
-      - name: Resolve exact successful native producer attempts
-        id: built
-        if: needs.plan.outputs.mode == 'build'
-        run: |
-          python3 os/tests/test_builder_candidate_workflow.py
-          python3 os/tests/native_index_promotion.py
-          python3 os/dev/builder-canary-inputs.py matrix native-candidates
-      - name: Log in to read the promoted builder
-        if: needs.plan.outputs.mode == 'reuse'
+          pattern: tilo-builder-*
+          path: digests
+          merge-multiple: true
+
+      - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
-      - name: Install checksum-pinned Cosign
-        if: needs.plan.outputs.mode == 'reuse'
-        uses: ./.github/actions/install-cosign
-        with:
-          cache-architecture: ${{ runner.arch }}
-      - name: Set up registry inspection
-        if: needs.plan.outputs.mode == 'reuse'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Resolve the signed promoted native builders
-        id: reused
-        if: needs.plan.outputs.mode == 'reuse'
-        env:
-          REGISTRY_TOKEN: ${{ github.token }}
-        run: python3 -I tools/ci/resolve_promoted_builder.py
-      - name: Select the canary matrix
-        id: select
-        env:
-          MODE: ${{ needs.plan.outputs.mode }}
-          BUILT_MATRIX: ${{ steps.built.outputs.matrix }}
-          REUSED_MATRIX: ${{ steps.reused.outputs.matrix }}
+
+      - name: Publish manifest
         run: |
           set -euo pipefail
-          case "$MODE" in
-            build) matrix=$BUILT_MATRIX ;;
-            reuse) matrix=$REUSED_MATRIX ;;
-            *) echo '::error::invalid builder plan mode'; exit 1 ;;
-          esac
-          test -n "$matrix"
-          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
-
-  # Two separate, fresh job containers prove that an object written by the
-  # first compiler process is read back from the remote S3 cache by another.
-  # A unique prefix makes the first run cold without deleting or
-  # disturbing the production cache. The package is deliberately small: this
-  # is a cache-path assertion, not another workspace build.
-  cache-cold:
-    needs: images
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.images.outputs.matrix) }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
-    container:
-      image: ${{ matrix.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
-    env:
-      CARGO_HOME: /cargo-home
-      CARGO_INCREMENTAL: "0"
-      CARGO_TARGET_DIR: /tmp/tilo-sccache-canary-target
-      SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
-      # The runner injects the production SCCACHE_S3_KEY_PREFIX after ordinary
-      # workflow env. The prepare hook promotes this non-conflicting request
-      # after injection and restarts sccache under the isolated namespace.
-      CANDIDATE_ARCH: ${{ matrix.arch }}
-      CANDIDATE_IMAGE: ${{ matrix.image }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ github.token }}
-      - name: Restore Cargo downloads
-        id: cargo-cache
-        uses: ./.github/actions/restore-cargo-downloads
-      - name: Create a fresh cold cache receipt
-        run: python3 os/dev/builder-canary-inputs.py cold cold-receipt
-      - name: Enable remote compiler cache
-        run: |
-          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-          bash tools/ci/sccache.sh prepare
-      - name: Populate a new remote cache namespace
-        run: |
-          test -n "${RUSTC_WRAPPER:-}"
-          bash tools/ci/measure.sh "sccache cold canary" -- \
-            cargo build -p atomic-file --locked
-          bash tools/ci/sccache-canary.sh cold
-      - name: Save Cargo downloads
-        if: steps.cargo-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-      - name: Retain only successful cold acceptance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: builder-cache-cold-${{ matrix.arch }}-${{ github.run_attempt }}
-          path: cold-receipt/
-          if-no-files-found: error
-
-  cache-warm:
-    needs: [images, cache-cold]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.images.outputs.matrix) }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
-    container:
-      image: ${{ matrix.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
-    env:
-      CARGO_HOME: /cargo-home
-      CARGO_INCREMENTAL: "0"
-      CARGO_TARGET_DIR: /tmp/tilo-sccache-canary-target
-      SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
-      CANDIDATE_ARCH: ${{ matrix.arch }}
-      CANDIDATE_IMAGE: ${{ matrix.image }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ github.token }}
-      - name: Restore Cargo downloads
-        uses: ./.github/actions/restore-cargo-downloads
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: cold-receipts
-      - name: Select the exact successful cold namespace
-        run: python3 os/dev/builder-canary-inputs.py warm cold-receipts
-      - name: Enable remote compiler cache
-        run: |
-          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-          bash tools/ci/sccache.sh prepare
-      - name: Require remote hits from a fresh compiler process
-        run: |
-          test -n "${RUSTC_WRAPPER:-}"
-          bash tools/ci/measure.sh "sccache warm canary" -- \
-            cargo build -p atomic-file --locked
-          bash tools/ci/sccache-canary.sh warm
-      - name: Retain only successful warm acceptance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: builder-cache-warm-${{ matrix.arch }}-${{ github.run_attempt }}
-          path: warm-receipt/
-          if-no-files-found: error
-
-  accept-builder:
-    timeout-minutes: 20
-    needs: [plan, build, images, cache-cold, cache-warm]
-    if: >-
-      ${{
-        always() && needs.plan.result == 'success' && needs.images.result == 'success' &&
-        needs.cache-cold.result == 'success' && needs.cache-warm.result == 'success' &&
-        ((needs.plan.outputs.mode == 'reuse' && needs.build.result == 'skipped') ||
-         (needs.plan.outputs.mode == 'build' && needs.build.result == 'success'))
-      }}
-    runs-on: tilo-build-x64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: acceptance-receipts
-      - name: Verify the exact native identities used by both canaries
-        env:
-          CANDIDATE_MATRIX: ${{ needs.images.outputs.matrix }}
-        run: python3 os/dev/builder-canary-inputs.py verify acceptance-receipts
-
-  promote-builder:
-    timeout-minutes: 60
-    needs: [plan, build, images, accept-builder]
-    if: >-
-      ${{
-        always() && needs.plan.result == 'success' && needs.plan.outputs.mode == 'build' &&
-        needs.build.result == 'success' && needs.images.result == 'success' &&
-        needs.accept-builder.result == 'success'
-      }}
-    runs-on: tilo-build-x64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Preserve native identities for publication
-        env:
-          CANDIDATE_MATRIX: ${{ needs.images.outputs.matrix }}
-        run: python3 os/dev/builder-canary-inputs.py descriptors native-children
-      - name: Log in to ghcr.io
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Install publication tools
-        run: |
-          ./os/dev/install-cached-cosign.sh
-          if command -v apt-get >/dev/null; then
-            sudo -n apt-get update
-            sudo -n apt-get install -y --no-install-recommends podman skopeo
-          else
-            sudo -n dnf install -y podman skopeo
+          refs=()
+          for arch in x86_64 aarch64; do
+            digest=$(<"digests/$arch")
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            refs+=("ghcr.io/tilo-os/tilo-builder@$digest")
+          done
+          tags=(--tag "ghcr.io/tilo-os/tilo-builder:sha-${GITHUB_SHA}")
+          if [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            tags+=(--tag ghcr.io/tilo-os/tilo-builder:latest)
           fi
-      - name: Verify and publish the tested native builder index
-        env:
-          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
-          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
-          BUILDER_REF: ${{ github.ref }}
-        run: |
-          set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
-          . os/dev/configure-cosign-kms.sh
-          # Index assembly needs manifest metadata, not mounted image layers.
-          # Use an isolated VFS store inside the containerized runner; its
-          # overlay root cannot host another unconfigured overlay store.
-          storage="$(mktemp -d "$RUNNER_TEMP/tilo-builder-manifests.XXXXXX")"
-          trap 'rm -rf -- "$storage"' EXIT
-          export CONTAINERS_STORAGE_CONF="$storage/storage.conf"
-          printf '[storage]\ndriver = "vfs"\ngraphroot = "%s/graph"\nrunroot = "%s/run"\n' \
-            "$storage" "$storage" > "$CONTAINERS_STORAGE_CONF"
-          channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
-          # Feature builds are candidates. Only main may advance shared builder
-          # aliases after the native/cache acceptance gates.
-          tags=(--tag "candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}")
-          if [ "$BUILDER_REF" = refs/heads/main ]; then
-            tags=(--tag "$GITHUB_SHA" --tag "$channel" --tag latest)
-          fi
-          python3 os/dev/promote-native-index.py \
-            --repository ghcr.io/tilo-os/tilo-builder \
-            "${tags[@]}" \
-            --revision "$GITHUB_SHA" --descriptors native-children \
-            --signing-key "$COSIGN_KEY_REF" --output builder-index.txt
-          cat builder-index.txt >> "$GITHUB_STEP_SUMMARY"
-      - name: Retain the immutable builder reference
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: builder-index-${{ github.sha }}
-          path: builder-index.txt
-          if-no-files-found: error
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"

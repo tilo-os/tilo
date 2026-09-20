@@ -30,7 +30,7 @@ Product-repository qualification also passed at source
 `196ff1b0f` on the isolated packaging branch. Run 22993 produced artifact 38734;
 run 23001/job 84408 (task 75579, attempt 1) emitted
 `HISTORICAL_TASK_TOKEN_READ_PASS 22993 38734` and finished successfully. The
-product probe uses the immutable `ci-fast` image and the existing container-pull
+product probe uses the immutable `retired-fast-image` image and the existing container-pull
 credential; artifact API calls use only its built-in task token. Run 22993's
 container started 0.391 seconds after task receipt, with no image pull in its log.
 

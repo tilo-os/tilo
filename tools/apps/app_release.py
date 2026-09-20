@@ -93,7 +93,7 @@ def architecture_matrix(
         "include": [
             {
                 "arch": architecture,
-                "runner": "runner" if architecture == "x86_64" else "runner-arm64",
+                "runner": "tilo-build-x64" if architecture == "x86_64" else "tilo-build-arm64",
             }
             for architecture in architectures
         ]

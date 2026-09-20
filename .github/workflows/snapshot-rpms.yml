@@ -70,11 +70,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    container:
-      image: ghcr.io/tilo-os/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
     outputs:
       changed: ${{ steps.compare.outputs.changed }}
     steps:

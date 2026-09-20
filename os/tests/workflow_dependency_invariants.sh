@@ -31,7 +31,6 @@ github_cache_workflows=(
   "$workflows/snapshot-rpms.yml"
 )
 cosign_workflows=(
-  "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
   "$workflows/tilo-relay.yaml"
@@ -41,7 +40,6 @@ cosign_workflows=(
 )
 syft_workflow="$workflows/build-image.yml"
 release_signed_workflows=(
-  "$workflows/build-builder-image.yml"
   "$workflows/build-image.yml"
   "$workflows/build-kernel.yml"
   "$workflows/tilo-relay.yaml"
@@ -232,12 +230,13 @@ if [ "$fail" = 0 ]; then
   printf 'ok    OS, kernel, RPM, and relay releases use KMS signing, transparency, and digest verification\n'
 fi
 builder_workflow="$workflows/build-builder-image.yml"
-if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$builder_workflow" \
-   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$builder_workflow" \
-   && grep -Fq 'needs: [plan, signing-preflight]' "$builder_workflow"; then
-  printf 'ok    native builder work starts only after KMS authority matches the pinned public key\n'
+if grep -Fq 'uses: actions/attest-build-provenance@' "$builder_workflow" \
+   && grep -Fq 'attestations: write' "$builder_workflow" \
+   && grep -Fq 'id-token: write' "$builder_workflow" \
+   && grep -Fq 'push-to-registry: true' "$builder_workflow"; then
+  printf 'ok    native builder publication carries GitHub build provenance\n'
 else
-  printf 'native builder can start before its signing authority is identity-bound\n' >&2
+  printf 'native builder publication lacks GitHub build provenance\n' >&2
   fail=1
 fi
 if ! grep -Fq 'cache-github-assets.sh" "$asset"' \

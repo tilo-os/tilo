@@ -59,11 +59,6 @@ jobs:
   builder:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    container:
-      image: ghcr.io/tilo-os/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -87,11 +82,6 @@ jobs:
     # Leave admission to the scheduler instead of serializing independent jobs.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    container:
-      image: ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       base: ${{ steps.plan.outputs.base }}
@@ -385,11 +375,6 @@ jobs:
     needs: [builder, select, security, affected, native-dependencies]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    container:
-      image: ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate

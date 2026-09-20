@@ -102,7 +102,7 @@ for arch in X86_64 AARCH64; do
   fi
 done
 
-has "$snapshot_workflow" 'runner: runner-arm64' 'WPE snapshot builds on a native ARM64 runner'
+has "$snapshot_workflow" 'runner: tilo-build-arm64' 'WPE snapshot builds on a native ARM64 runner'
 has "$snapshot_workflow" 'runner: runner' 'WPE snapshot builds on the native x86-64 runner'
 has "$snapshot_workflow" './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' \
   'WPE snapshot fails early when a native runner label points at the wrong architecture'

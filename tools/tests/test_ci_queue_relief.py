@@ -34,21 +34,18 @@ class QueueReliefTests(unittest.TestCase):
     def test_builder_resolution_keeps_native_context_fixture_in_control_lane(self):
         builder = section(workflow("check"), "builder", 2)
         self.assertIn("runs-on: ubuntu-24.04", builder)
-        container = section(builder, "container", 4)
-        self.assertRegex(container, r"image: ghcr\.io/tilo-os/ci-control@sha256:[0-9a-f]{64}")
-        self.assertIn("password: ${{ github.token }}", container)
+        self.assertNotIn("    container:", builder)
         self.assertIn("image: ${{ steps.resolve.outputs.image }}", builder)
         self.assertIn('DOCKER_BUILDKIT: "1"', builder)
         self.assertIn("run: bash os/tests/named_public_trust_context.sh docker", builder)
 
-    def test_final_gates_use_qualified_lightweight_image(self):
+    def test_fast_gates_use_github_hosted_images(self):
         quality = section(workflow("lint"), "quality", 2)
-        expected = section(quality, "container", 4)
-        self.assertRegex(expected, r"image: ghcr\.io/tilo-os/ci-fast@sha256:[0-9a-f]{64}")
+        self.assertNotIn("    container:", quality)
         for name in ("select", "checks"):
             with self.subTest(job=name):
                 job = section(workflow("check"), name, 2)
-                self.assertEqual(section(job, "container", 4), expected)
+                self.assertNotIn("    container:", job)
                 self.assertIn("runs-on: ubuntu-24.04", job)
 
     def test_fast_checks_never_cancel_another_commit_or_event(self):

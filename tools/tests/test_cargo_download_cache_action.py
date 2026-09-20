@@ -8,7 +8,6 @@ ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ".github/actions/restore-cargo-downloads"
 PREPARE_ACTION_PATH = ".github/actions/prepare-rust-build"
 DIRECT_CONSUMERS = {
-    "build-builder-image.yml": 2,
     "canonical-verifier-bundle.yml": 1,
     "release-apps.yml": 1,
 }
@@ -71,29 +70,11 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
             path.read_text(encoding="utf-8").count("key: cargo-deps-")
             for path in workflows.glob("*.y*ml")
         )
-        self.assertEqual(remaining_keys, 3)
-
-    def test_builder_cold_canary_seeds_a_missing_architecture_cache(self) -> None:
-        workflow = (
-            ROOT / ".github" / "workflows" / "build-builder-image.yml"
-        ).read_text(encoding="utf-8")
-        cold = workflow.split("  cache-cold:", 1)[1].split("  cache-warm:", 1)[0]
-
-        self.assertIn("id: cargo-cache", cold)
-        self.assertIn("if: steps.cargo-cache.outputs.cache-hit != 'true'", cold)
-        self.assertIn(
-            "uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684",
-            cold,
-        )
-        self.assertLess(
-            cold.index("cargo build -p atomic-file --locked"),
-            cold.index("- name: Save Cargo downloads"),
-        )
+        self.assertEqual(remaining_keys, 2)
 
     def test_path_filtered_consumers_track_the_shared_action(self) -> None:
         workflows = ROOT / ".github" / "workflows"
         expected = {
-            "build-builder-image.yml": (ACTION_PATH,),
             "legacy-app-e2e.yml": (ACTION_PATH, PREPARE_ACTION_PATH),
             "release-apps.yml": (ACTION_PATH,),
         }

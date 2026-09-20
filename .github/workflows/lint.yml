@@ -23,11 +23,6 @@ jobs:
   quality:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    container:
-      image: ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -35,6 +30,11 @@ jobs:
           token: ${{ github.token }}
           fetch-depth: 2
           fetch-tags: false
+
+      - name: Install Rust policy tools
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2
+        with:
+          tool: cargo-deny,cargo-machete
 
       - name: Verify native fast-quality toolchain
         run: |

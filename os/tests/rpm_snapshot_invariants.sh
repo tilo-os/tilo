@@ -82,7 +82,7 @@ has "$workflow" "--arch '\${{ matrix.arch }}'" \
 
 has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'
-has "$workflow" 'runner: runner-arm64' \
+has "$workflow" 'runner: tilo-build-arm64' \
   'snapshot builds ARM64 dependencies on a native runner'
 has "$workflow" 'platforms: ${{ matrix.platform }}' \
   'snapshot explicitly selects each native OCI platform'

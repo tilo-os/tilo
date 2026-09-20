@@ -55,11 +55,6 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    container:
-      image: ghcr.io/tilo-os/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
     steps:

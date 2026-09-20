@@ -38,7 +38,7 @@ def matrix(directory, revision):
                 raise ValueError('native descriptor artifact architecture mismatch')
             shutil.copyfile(path, selected / f'{arch}.json')
         children = native.load_children(selected, revision)
-    return {'include': [dict(arch=arch, runner='runner-arm64' if arch == 'aarch64' else 'runner',
+    return {'include': [dict(arch=arch, runner='tilo-build-arm64' if arch == 'aarch64' else 'tilo-build-x64',
                              image=f'{REPOSITORY}@{digest}')
                         for arch, digest in sorted(children.items())]}
 
