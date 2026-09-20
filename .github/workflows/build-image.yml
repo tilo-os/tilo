@@ -597,7 +597,7 @@ jobs:
       # driver doesn't support cache export (the registry-backed cache we
       # need to survive across ephemeral runners).
       - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
+        uses: useblacksmith/setup-docker-builder@e4c1c000c95f9cc255f72940e9c56bcbd1239436 # v1
         id: buildx
 
       - name: Extract image metadata (tags, labels)
@@ -627,7 +627,7 @@ jobs:
       # the complete build and registry cache without retaining output.
       - name: Build the Tilo image
         id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
@@ -689,7 +689,7 @@ jobs:
       # resulting OCI manifest before a candidate is installed or published.
       - name: Independently rebuild the release candidate
         if: steps.release-mode.outputs.validate == 'true'
-        uses: useblacksmith/build-push-action@v2
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
