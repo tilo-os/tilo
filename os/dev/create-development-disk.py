@@ -44,6 +44,11 @@ FLAGS = ('--via-loopback', '--generic-image', '--composefs-backend', '--bootload
 TRANSIENT_CRUN_NAMESPACE_ERROR = (
     b'error: reading /proc/1/ns/ipc: No such file or directory (os error 2)')
 
+TRANSIENT_REGISTRY_TLS_ERROR = (
+    b'error: Installing to disk: Verifying fetch: Preparing import: Fetching manifest: '
+    b'failed to invoke method OpenImage: pinging container registry code.sandbox.example: '
+    b'Get "https://code.sandbox.example/v2/": net/http: TLS handshake timeout')
+
 
 DIAGNOSTIC_STREAM_LIMIT = 256 * 1024
 
@@ -89,6 +94,50 @@ def command(argv, *, failure_diagnostic=None):
         # Registry/tool diagnostics may contain credentials; do not echo them.
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout.decode('utf-8', 'strict')
+
+
+def _pristine_disk_identity(disk):
+    disk.validate()
+    info = os.fstat(disk.fileno())
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+            or info.st_blocks != 0):
+        raise ValueError('bootc fetch retry requires an unchanged pristine disk')
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mode,
+            info.st_uid, info.st_gid, info.st_nlink)
+
+
+def _transient_registry_tls(stderr):
+    return stderr in (TRANSIENT_REGISTRY_TLS_ERROR,
+                      TRANSIENT_REGISTRY_TLS_ERROR + b'\n',
+                      TRANSIENT_REGISTRY_TLS_ERROR + b'\r\n')
+
+
+def bootc_install(argv, disk, failure_diagnostic, attempts=3, delays=(2, 5)):
+    """Retry only bootc's pre-write fetch-check TLS timeout."""
+    if attempts != 3 or tuple(delays) != (2, 5):
+        raise ValueError('bootc install retry policy is fixed')
+    baseline = _pristine_disk_identity(disk)
+    for attempt in range(attempts):
+        result = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+        if not result.returncode:
+            return result.stdout.decode('utf-8', 'strict')
+        if attempt + 1 < attempts and _transient_registry_tls(result.stderr):
+            try:
+                if _pristine_disk_identity(disk) != baseline:
+                    raise ValueError('bootc fetch retry disk identity changed')
+                time.sleep(delays[attempt])
+                if _pristine_disk_identity(disk) != baseline:
+                    raise ValueError('bootc fetch retry disk identity changed')
+            except BaseException:
+                write_failure_diagnostic(failure_diagnostic, argv, result)
+                raise
+            continue
+        write_failure_diagnostic(failure_diagnostic, argv, result)
+        raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
+    raise AssertionError('unreachable bootc retry state')
 
 
 def bootc_help(argv, attempts=3, delay_seconds=2):
@@ -264,15 +313,15 @@ def _create_verified_disk(args):
             # Only a newly allocated file is bound, never the guest root. The
             # operator must provision this VM without device passthrough;
             # privileged Podman still has access to the VM's own devices.
-            command([*run, '--privileged', '--network=host', *auth_args,
+            bootc_install([*run, '--privileged', '--network=host', *auth_args,
                 '--volume', f'{path}:/output/disk.raw:rw',
                 '--entrypoint=/usr/bin/bootc', verified.image_id,
                 'install', 'to-disk', '--via-loopback', '--generic-image',
                 '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
                 '--source-imgref=docker://' + args.source,
                 '--target-imgref=' + args.target,
-                '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'],
-                failure_diagnostic=args.output.with_name('bootc-install.failure.json'))
+                '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'], disk,
+                args.output.with_name('bootc-install.failure.json'))
             disk.validate()
             if media:
                 media_receipt = materialize_created_media(disk, verified, args)
