@@ -13,9 +13,9 @@
 //! closed channel and drops to no presenter, so a lost display doesn't take the session (and
 //! clients' unsaved work) with it. The headless backend stays synchronous, since its `submit_frame` output is read back immediately by the test-control `snapshot` command.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -84,6 +84,10 @@ pub struct PresentPipe {
     /// separately from `inflight`: the latter is a bounded queue depth, not
     /// an identity that survives a completed presentation.
     submitted: Arc<AtomicU64>,
+    /// Monotonic completion time of the newest frame the presenter returned
+    /// from. The timestamp and serial are read under one lock so metrics never
+    /// associate an old time with a newer frame.
+    last_retirement: Arc<Mutex<Option<(u64, Instant)>>>,
     /// Ticks on which the paint gate declined because the pipe was full. Surfaced in the paint stats — a large number means the GPU is the bottleneck, a different diagnosis from a slow scene build.
     backpressured: u64,
     /// Set by the render thread just before it returns; lets [`Self::shutdown`] tell "finished" from "wedged" without committing to a `join` that might never return.
@@ -107,8 +111,10 @@ impl PresentPipe {
         let inflight = Arc::new(AtomicUsize::new(0));
         let presented_frames = Arc::new(AtomicU64::new(0));
         let submitted_frames = Arc::new(AtomicU64::new(0));
+        let last_retirement = Arc::new(Mutex::new(None));
         let thread_inflight = inflight.clone();
         let thread_presented = presented_frames.clone();
+        let thread_last_retirement = last_retirement.clone();
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = finished.clone();
         let spawned = std::thread::Builder::new()
@@ -124,6 +130,10 @@ impl PresentPipe {
                             serial,
                         } => {
                             presenter.present_frame(&frame, output);
+                            *thread_last_retirement
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some((serial, Instant::now()));
                             thread_presented.store(serial, Ordering::Release);
                             // Decrement *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
                             thread_inflight.fetch_sub(1, Ordering::Release);
@@ -158,6 +168,7 @@ impl PresentPipe {
             inflight,
             presented: presented_frames,
             submitted: submitted_frames,
+            last_retirement,
             backpressured: 0,
             finished,
             handle,
@@ -191,6 +202,18 @@ impl PresentPipe {
         self.submitted.load(Ordering::Acquire)
     }
 
+    /// Newest presenter-return boundary with its monotonic timestamp.
+    ///
+    /// This is deliberately called a retirement rather than a physical
+    /// display time: each backend defines when `present_frame` returns. The
+    /// DRM direct path separately tightens that boundary to a page-flip event.
+    pub fn latest_retirement(&self) -> Option<(u64, Instant)> {
+        *self
+            .last_retirement
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Whether the render thread has exited, normally or through a panic.
     /// A caller waiting for a specific frame must distinguish this from a
     /// merely slow presentation: no later retirement can satisfy its wait.
@@ -206,11 +229,11 @@ impl PresentPipe {
     /// Hand a dense scene to the render thread. Never blocks. Returns `false` if the render
     /// thread has gone away — fatal for presentation but not the compositor: the caller logs it and keeps serving clients.
     pub fn submit(&mut self, scene: Scene, output: OutputId) -> bool {
-        self.submit_frame(FramePaint::full(scene), output)
+        self.submit_frame(FramePaint::full(scene), output).is_some()
     }
 
     /// Hand a finished scene with retained-damage authority to the render thread.
-    pub fn submit_frame(&mut self, frame: FramePaint, output: OutputId) -> bool {
+    pub fn submit_frame(&mut self, frame: FramePaint, output: OutputId) -> Option<u64> {
         // Serial zero is the unambiguous "no frame" value used by callers
         // before their first successful submit.  A closed pipe may consume a
         // number, but its caller immediately takes the lost-presenter path,
@@ -230,9 +253,9 @@ impl PresentPipe {
             .is_err()
         {
             self.inflight.fetch_sub(1, Ordering::AcqRel);
-            return false;
+            return None;
         }
-        true
+        Some(serial)
     }
 
     pub fn resize(&self, size: (u32, u32)) {
