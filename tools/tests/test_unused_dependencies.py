@@ -32,7 +32,7 @@ class UnusedDependencyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, "unused-dependency failures must propagate")
             args = output.read_text().splitlines()
             self.assertEqual(args[:2], ["machete", "--with-metadata"])
-            self.assertCountEqual(args[2:], paths[:-1])
+            self.assertCountEqual(args[2:], ["Cargo.toml", "apps", "tools", "crates"])
 
 
 if __name__ == "__main__":

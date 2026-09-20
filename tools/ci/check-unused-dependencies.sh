@@ -10,4 +10,15 @@ git ls-files -z --cached --others --exclude-standard -- \
     Cargo.toml '*/Cargo.toml' ':(top,exclude)vendor/**' >"$paths"
 mapfile -d '' manifests <"$paths"
 (( ${#manifests[@]} > 0 )) || { echo 'no first-party Cargo manifests found' >&2; exit 1; }
-cargo machete --with-metadata "${manifests[@]}"
+# Scan each first-party subtree once so machete can analyze its crates in parallel.
+# Passing each manifest separately would serialize cargo metadata across the fleet.
+declare -A seen=()
+roots=()
+for manifest in "${manifests[@]}"; do
+    root=${manifest%%/*}
+    if [[ -z ${seen[$root]:-} ]]; then
+        roots+=("$root")
+        seen[$root]=1
+    fi
+done
+cargo machete --with-metadata "${roots[@]}"
