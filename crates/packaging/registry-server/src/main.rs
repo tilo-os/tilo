@@ -613,9 +613,15 @@ fn cmd_publish_staged_first_party(
         &authorization.channel_pubkey_hex,
         "channel",
     )?;
-    let staged = storage
-        .load_staged_promotion()?
-        .ok_or_else(|| anyhow::anyhow!("no collected first-party batch"))?;
+    let staged = match storage.load_staged_promotion()? {
+        Some(staged) => staged,
+        None if active_journal.is_none() => {
+            drop(writer);
+            println!("{}", serde_json::json!({"status": "noop", "published": 0}));
+            return Ok(());
+        }
+        None => anyhow::bail!("promotion recovery is missing its collected first-party batch"),
+    };
     let [delegated_publisher] = authorization.publishers.as_slice() else {
         anyhow::bail!("delegated authorization must contain exactly one publisher");
     };

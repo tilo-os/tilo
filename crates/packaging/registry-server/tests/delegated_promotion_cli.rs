@@ -124,6 +124,20 @@ async fn networkless_publisher_reverifies_content_addressed_bytes_and_delegated_
     assert!(authorized_again.status.success());
     assert_eq!(authorized_again.stdout, authorized.stdout);
 
+    let idle_publish = run(
+        temp.path(),
+        &[
+            "publish-staged-first-party",
+            "--channel-key-file",
+            channel_path.to_str().unwrap(),
+        ],
+    );
+    assert!(idle_publish.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&idle_publish.stdout).unwrap()["status"],
+        "noop"
+    );
+
     let blocking_journal = PromotionJournal {
         publisher_pubkey_hex: publisher_hex.clone(),
         reviewer: "auto".into(),
