@@ -40,6 +40,7 @@ SCCACHE = {
     "cache_hits": re.compile(r"^Cache hits\s+([0-9]+)\s*$"),
     "cache_misses": re.compile(r"^Cache misses\s+([0-9]+)\s*$"),
 }
+PHASE_LABELS = ("checkout", "build", "check", "clippy", "compile", "test")
 
 
 def stamp(value):
@@ -51,6 +52,11 @@ def stamp(value):
     return parsed
 
 
+def canonical_timestamp(value):
+    """Render an already-validated timestamp without retaining its raw text."""
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def elapsed(start, end):
     left, right = stamp(start), stamp(end)
     if left is None or right is None:
@@ -59,6 +65,12 @@ def elapsed(start, end):
     if seconds < 0:
         raise ValueError("timestamps are out of order")
     return round(seconds, 3)
+
+
+def fixed_phase_label(value):
+    """Classify an untrusted log label without retaining any of its text."""
+    words = set(re.findall(r"[a-z]+", value.casefold()))
+    return next((label for label in PHASE_LABELS if label in words), "other")
 
 
 def extract_events(log):
@@ -82,8 +94,9 @@ def extract_events(log):
                     # same image as a job whose initial create needed no pull.
                     if event == "pull_requested" and "container_create" in found:
                         continue
-                if stamp(timestamp) is not None:
-                    found[event] = timestamp
+                parsed_timestamp = stamp(timestamp)
+                if parsed_timestamp is not None:
+                    found[event] = canonical_timestamp(parsed_timestamp)
     return found
 
 
@@ -94,6 +107,7 @@ def extract_job_metrics(log):
     sccache = {}
     steps = []
     current_step = None
+    current_step_raw = None
     pending_measurement = None
     pending_lines = 0
     last_timestamp = None
@@ -110,6 +124,7 @@ def extract_job_metrics(log):
             continue
         if parsed_timestamp is None:
             continue
+        timestamp = canonical_timestamp(parsed_timestamp)
         last_timestamp = timestamp
 
         match = STEP_START.match(message)
@@ -118,24 +133,27 @@ def extract_job_metrics(log):
                 current_step["stopped"] = timestamp
                 current_step["seconds"] = elapsed(current_step["started"], timestamp)
                 steps.append(current_step)
-            current_step = {"name": match.group(1), "started": timestamp,
+            current_step_raw = match.group(1)
+            current_step = {"name": fixed_phase_label(current_step_raw), "started": timestamp,
                             "stopped": None, "seconds": None}
             continue
         match = STEP_FINISH.match(message)
-        if match and current_step and match.group(1) == current_step["name"]:
+        if match and current_step and match.group(1) == current_step_raw:
             current_step["stopped"] = timestamp
             current_step["seconds"] = elapsed(current_step["started"], timestamp)
             steps.append(current_step)
             current_step = None
-        elif current_step and current_step["name"].casefold() == "checkout" and CHECKOUT_FINISH.match(message):
+            current_step_raw = None
+        elif current_step and current_step["name"] == "checkout" and CHECKOUT_FINISH.match(message):
             current_step["stopped"] = timestamp
             current_step["seconds"] = elapsed(current_step["started"], timestamp)
             steps.append(current_step)
             current_step = None
+            current_step_raw = None
 
         match = MEASUREMENT.match(message)
         if match:
-            pending_measurement = match.group(1)
+            pending_measurement = fixed_phase_label(match.group(1))
             pending_lines = 0
             continue
         if pending_measurement is not None:
@@ -260,6 +278,9 @@ def report(evidence):
                 "startup_pull_observed": (None if job.get("collection_error")
                                             else "pull_requested" in events),
                 "queue_seconds": elapsed(job.get("created_at"), job.get("started_at")),
+                "run_created_to_runner_received_seconds": (
+                    elapsed(created, events.get("runner_received")) if attempt == 1 else None
+                ),
                 "attempt_created_to_runner_received_seconds": elapsed(
                     attempt_created, events.get("runner_received")
                 ),

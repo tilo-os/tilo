@@ -68,6 +68,8 @@ sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs a
 credentials are not written to the report; use `--input` for saved local fixtures.
 Forgejo reruns retain the original run creation time, so the report labels the
 attempt and leaves its queue time unknown unless that attempt's creation is present.
+Schema 3 keeps the deprecated run-created-to-runner field for first attempts and
+reports it as unknown for reruns; its replacement is explicitly attempt-scoped.
 Pass two runs in baseline/current order with `--compare` to print queue, wall and
 same-named job deltas directly. Job names appear beside Forgejo's numeric IDs, so
 the report can be read without a second API lookup.
