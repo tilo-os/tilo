@@ -136,6 +136,10 @@ HEAVY_PACKAGES = {
 # rebuilding shared dependencies than it saves in wall time. Shard timing and
 # CPU figures are emitted by tools/ci/measure.sh so this can be tuned from runs.
 SHARD_COST_BUDGET = 1_000
+# Complete native qualification links every selected package's tests. Keep its
+# target trees below the hosted-runner disk ceiling without increasing the
+# ordinary developer-feedback matrix.
+FULL_SHARD_COST_BUDGET = 750
 # Ordinary global-input checks use at most two existing x86 runners (four
 # Cargo workers each). Keep small/reverse-closure changes on one warm target;
 # explicit full qualification retains its native architecture matrix.
@@ -233,9 +237,17 @@ def balance(names: set[str], packages: dict[str, dict], shard_count: int) -> lis
     return result
 
 
-def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int) -> int:
+def useful_shard_count(
+    names: set[str],
+    packages: dict[str, dict],
+    maximum: int,
+    *,
+    cost_budget: int | None = None,
+) -> int:
+    if cost_budget is None:
+        cost_budget = SHARD_COST_BUDGET
     total_cost = sum(package_cost(packages[name]) for name in names)
-    cost_limited = max(1, (total_cost + SHARD_COST_BUDGET - 1) // SHARD_COST_BUDGET)
+    cost_limited = max(1, (total_cost + cost_budget - 1) // cost_budget)
     return min(max(1, maximum), len(names), cost_limited)
 
 
@@ -351,7 +363,12 @@ def make_plan(
     tested = (selected if full else (seeds | ALWAYS_PACKAGES) & selected)
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
-    effective_shards = useful_shard_count(selected, packages, shard_limit)
+    effective_shards = useful_shard_count(
+        selected,
+        packages,
+        shard_limit,
+        cost_budget=FULL_SHARD_COST_BUDGET if force_full else SHARD_COST_BUDGET,
+    )
     runners = NATIVE_RUNNERS if force_full else {"x86_64": NATIVE_RUNNERS["x86_64"]}
     matrix = []
     for arch, runner in runners.items():

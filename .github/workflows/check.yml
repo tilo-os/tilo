@@ -157,7 +157,7 @@ jobs:
           # Explicit full-workspace qualification needs smaller target trees on
           # standard hosted runners. Ordinary push/PR selection remains capped
           # by affected_packages.py at its existing developer-feedback limits.
-          python3 tools/ci/affected_packages.py --base "$base" --shards 4 "${selection_args[@]}" \
+          python3 tools/ci/affected_packages.py --base "$base" --shards 8 "${selection_args[@]}" \
             --github-output "$GITHUB_OUTPUT" | tee ci-plan.json
           {
             echo '```json'
