@@ -249,7 +249,7 @@ def native_dependencies_required(root: Path, changes: list[str], force_full: boo
         return False
     files = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "os/Containerfile.builder",
              ".forgejo/workflows/check.yml", "os/tests/test_openh264_source_order.py",
-             "tools/ci/affected_packages.py", "tools/tests/test_ci_select.py",
+             "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/tests/test_ci_select.py",
              "tools/tests/test_ci_check_aggregate.py"}
     prefixes = (".cargo/", ".forgejo/actions/prepare-rust-build/")
     return force_full or any(path in files or path.startswith(prefixes) for path in changes)
