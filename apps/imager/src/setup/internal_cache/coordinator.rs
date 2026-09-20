@@ -31,10 +31,13 @@ fn next_operation(counter: &AtomicU64) -> Result<u64, String> {
 
 /// Read-only cooperative stop view for a scoped consumer. The transfer latch
 /// cannot be reset or retained beyond the borrowed consumption scope.
-pub(in crate::setup) struct Cancellation<'a>(&'a AtomicBool);
+pub(in crate::setup) struct Cancellation<'a> {
+    _cancel: &'a AtomicBool,
+}
 impl Cancellation<'_> {
+    #[cfg(test)]
     pub(in crate::setup) fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self._cancel.load(Ordering::Acquire)
     }
 }
 
@@ -98,6 +101,7 @@ struct Request {
 }
 #[derive(Clone, Copy)]
 enum Action {
+    #[cfg(test)]
     Consume,
     Release,
 }
@@ -233,6 +237,7 @@ impl Worker {
         self.shared.wake.notify_all();
         Ok(())
     }
+    #[cfg(test)]
     pub(in crate::setup) fn consume(&self, token: &Token) -> Result<(), String> {
         self.action(token, Action::Consume)
     }
@@ -407,7 +412,7 @@ impl Ready<'_> {
         let [first, second] = &mut self.finals;
         first.with_verified_reader(cancel, |a| {
             second.with_verified_reader(cancel, |b| {
-                consumer(self.selected, &Cancellation(cancel), a, b)
+                consumer(self.selected, &Cancellation { _cancel: cancel }, a, b)
             })
         })
     }
@@ -551,6 +556,7 @@ fn run_selected<'s>(
     stop(flags)?;
     match action {
         Action::Release => status.phase = Phase::Released,
+        #[cfg(test)]
         Action::Consume => {
             status.phase = Phase::Consuming;
             report(shared, status);

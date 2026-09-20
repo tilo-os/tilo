@@ -63,10 +63,6 @@ extern crate runtime_dylib;
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     #[cfg(target_os = "linux")]
-    if let Some(code) = imager::setup::connection::maybe_run_lease_receiver(&args) {
-        std::process::exit(code);
-    }
-    #[cfg(target_os = "linux")]
     if let Some(code) = imager::setup::migration_native::maybe_run_command(&args)? {
         std::process::exit(code);
     }
