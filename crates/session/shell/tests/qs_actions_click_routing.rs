@@ -731,12 +731,13 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
     let click_x = rect.x0 + rect.width() / 2.0;
     // Read the discovery list's rhythm from the host rather than restating
     // it: the click lands mid-row wherever the header, hotspot affordance
-    // and row pitch put row `i`.
-    let row_y = |i: usize| host.quick_settings_wifi_row_rect_for_tests(i).center().y;
+    // and row pitch put each row.
+    let secured_row_y = host.quick_settings_wifi_row_rect_for_tests(0).center().y;
+    let connected_row_y = host.quick_settings_wifi_row_rect_for_tests(1).center().y;
 
     // Row 0 — secured, not joined: must prompt for a passphrase rather than
     // firing a connect that would fail silently.
-    click_at(&mut host, &taffy, host_node, click_x, row_y(0));
+    click_at(&mut host, &taffy, host_node, click_x, secured_row_y);
     {
         let st = chrome.borrow();
         let prompt = st
@@ -762,7 +763,7 @@ fn wifi_drill_in_row_click_prompts_or_marks_an_async_join() {
         st.quick_settings.wifi_password = None;
         st.bump();
     }
-    click_at(&mut host, &taffy, host_node, click_x, row_y(1));
+    click_at(&mut host, &taffy, host_node, click_x, connected_row_y);
     let calls = recorder.0.calls();
     assert!(
         calls.is_empty(),
