@@ -132,6 +132,18 @@ def unique(pairs):
     return result
 
 
+def operator_gate_timeout(request_path):
+    """Use the request-bound human response window for initial staging."""
+    raw = Path(request_path).read_bytes()
+    if not 0 < len(raw) <= 65536:
+        raise ValueError('bounded finalization request required')
+    value = json.loads(raw, object_pairs_hook=unique)
+    timeout = value.get('signing_response_timeout_seconds') if isinstance(value, dict) else None
+    if type(timeout) is not int or not 60 <= timeout <= 7200:
+        raise ValueError('invalid operator preparation timeout')
+    return timeout
+
+
 def request_bytes(raw, digest, helpers):
     data = raw.encode()
     if not 0 < len(data) <= 65536 or not HEX.fullmatch(digest):
@@ -228,7 +240,7 @@ def inside():
     info = json.loads(run('podman', '--remote=false', 'info', '--format=json'))
     if info['store']['graphDriverName'] != 'overlay':
         raise ValueError('native overlay required')
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + operator_gate_timeout('/work/finalization-request.json')
     gate = Path('/work/operator-ready')
     while not gate.exists():
         if time.monotonic() >= deadline:
