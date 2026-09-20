@@ -269,12 +269,6 @@ impl DirectScanoutState {
         self.front = front;
         true
     }
-
-    /// A lost DRM master kills the queued flip.  The last confirmed front is
-    /// still the only safe buffer to restore with `set_crtc`.
-    fn cancel_pending(&mut self) {
-        self.pending = None;
-    }
 }
 
 fn validate_gbm_scanout_buffer(
@@ -2432,10 +2426,10 @@ mod tests {
         assert_eq!(state.pending, None);
         assert_eq!(state.front, 0);
 
-        assert!(state.submit(slot));
-        state.cancel_pending();
-        assert_eq!(state.front, 0, "cancelled flip never became visible");
-        assert_eq!(state.render_slot(), Some(1));
+        // A page-flip failure does not call `submit`, so it is exactly the
+        // same no-transition state as a renderer failure.
+        assert_eq!(state.render_slot(), Some(slot));
+        assert_eq!(state.front, 0);
     }
 
     #[test]
