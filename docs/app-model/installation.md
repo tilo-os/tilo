@@ -68,8 +68,10 @@ Publishing stable `0.1.1` supersedes its development prereleases in both channel
 `dist/apps/package-apps.sh` enables this derivation only with
 `TILO_APP_DEV_SOURCE=<full main SHA>`. It stages the version inside the signed
 package and collection index. Partial collections retain each unchanged app's
-previous artifact version. Workflow enablement follows publication qualification;
-this prerequisite alone does not turn development publishing on.
+previous artifact version. The app workflow sets this flag for main pushes and explicitly publishing
+manual main runs. Tags keep stable versions; nonpublishing qualification keeps
+its existing manifest versions. Artifacts still upload to Forgejo packages;
+submitting them to the hosted registry catalogue is a separate integration.
 
 These settings govern the signed snapshot catalogue and `tilo-catalogue install`.
 The legacy `tilo-install update` registry resolver uses a separate configuration
@@ -367,3 +369,42 @@ $ tilo-install revoked list
 
 Next: [`trust.md`](./trust.md) — publisher identities, attestation
 registry, revocation.
+
+### Continuous catalogue submission
+
+The `submit-catalogue` job remains disabled until
+`TILO_APP_CATALOGUE_SUBMISSION_ENABLED=true` is explicitly configured. Before
+activation, deploy the public HTTPS registry endpoint and its pinned owner key,
+ARM artifact inspection support, and a trusted canonical verifier bundle whose
+`tilo-pkg` supports `catalogue-entries`. Configure `TILO_APP_CATALOGUE_URL` and
+`TILO_APP_CATALOGUE_OWNER_KEY`. Set `TILO_APP_CATALOGUE_ARTIFACT_BASE_URL` to
+`https://registry.sandbox.example/artifacts/qos/generic` for public app downloads.
+The existing `TILO_PACKAGE_PUBLIC_BASE_URL` remains the collection-publication
+base; its receipt origin policy is unchanged.
+
+Before enabling submission, promote the reviewed source hashes in the existing
+packaging policy, including `release-apps.yml` and `tools/apps/submit_catalogue.py`,
+and the new x86 canonical-bundle descriptor in `TILO_APP_FINAL_RECEIPT_POLICY`
+with its matching digest. Updating the registry URL and owner pin alone does not
+qualify new publication code. The canonical bundle producer checks that its
+`tilo-pkg` includes `catalogue-entries` before retaining the bundle.
+
+The signing job uses the immutable builder image recorded by the bundle because
+the canonical tools are dynamically linked to that userland. A smaller runtime
+image needs separate compatibility qualification. Runner image reuse and image
+transfer performance remain infrastructure requirements for this job.
+
+The job runs only after the existing artifact publication job succeeds. It has
+the existing package-signing identity but no package-upload OIDC grant. It
+verifies the current root-signed catalogue, expiry, publisher authorization and
+all package signatures, then combines all built architectures into one signed
+mutation per app while retaining its published history. Unchanged applications
+are not submitted. Published retries produce no new mutation.
+
+A successful POST means **queued for promotion**, not publicly released. The
+existing `collect-first-party` and `publish-staged-first-party` CronJobs inspect
+and publish queued entries. A conflicting update refreshes the authenticated
+catalogue up to twice; continued conflict fails visibly instead of dropping
+history or overwriting the pending slot. Retry once the pending promotion has
+completed. Catalogue readers remain on the stable channel unless they opt into
+development versions as described above.
