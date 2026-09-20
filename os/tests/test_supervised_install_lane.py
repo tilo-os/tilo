@@ -218,6 +218,7 @@ class LaneAdmission(unittest.TestCase):
             lane.prepare_verifier_devices('ctx',verifier)
         argv=command.call_args.args[0]
         self.assertEqual(argv[-3:-1],['python3','-c'])
+        self.assertIn('sys.path.insert(0,str(p.parent))',argv[-1])
         self.assertIn('m.ensure_loop_devices()',argv[-1])
         self.assertEqual(command.call_args.kwargs,{'timeout':30})
 

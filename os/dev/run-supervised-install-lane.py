@@ -516,8 +516,9 @@ def freeze_raw(context, disk):
 
 
 def prepare_verifier_devices(context, verifier):
-    script = r'''import importlib.util,pathlib
+    script = r'''import importlib.util,pathlib,sys
 p=pathlib.Path('/work/verifier/os/dev/create-development-disk.py')
+sys.path.insert(0,str(p.parent))
 s=importlib.util.spec_from_file_location('tilo_verifier_devices',p)
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 m.ensure_loop_devices()
