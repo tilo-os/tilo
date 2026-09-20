@@ -85,6 +85,27 @@ class PushEventTests(unittest.TestCase):
             event["tool_response"] = response
             self.assertIsNotNone(push_target(event))
 
+    def test_current_output_only_exec_envelope_uses_remote_head_as_success_proof(self):
+        event = self.event(
+            'const r = await tools.exec_command({cmd:"git push",workdir:"C:/repo"}); '
+            'text(r.output);'
+        )
+        event["tool_response"] = {
+            "output": [
+                {"type": "input_text", "text": "Script completed\nWall time 1.2 seconds\nOutput:\n"},
+                {"type": "input_text", "text": "branch updated"},
+            ]
+        }
+        self.assertEqual(str(push_target(event)[0]).replace("\\", "/"), "C:/repo")
+
+        event["tool_response"] = {
+            "output": [
+                {"type": "input_text", "text": "Script completed\nWall time 1.2 seconds\nOutput:\n"},
+                {"type": "input_text", "text": json.dumps({"exit_code": 1, "output": "failed"})},
+            ]
+        }
+        self.assertIsNone(push_target(event))
+
     def test_scp_remote_and_credential_redaction(self):
         with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, "git@code.podesta.ai:qos/qos.git", "")):
             self.assertEqual(watch_ci.forgejo_target(Path.cwd()), ("code.podesta.ai", "qos/qos"))

@@ -9,10 +9,17 @@ from pathlib import Path, PureWindowsPath
 
 
 def completed_successfully(response: object) -> bool:
-    """Only a terminal command result proves success, never wrapper completion."""
+    """Accept a terminal result or Codex's completed output-only exec envelope.
+
+    ``text(result.output)`` deliberately omits the inner exit code.  The outer
+    envelope still proves that the exec cell completed; ``watch_ci.main`` then
+    uses the remote branch's exact SHA as the authoritative push-success check.
+    """
     results = []
+    wrapper_completed = False
 
     def collect(value: object, depth: int = 0) -> bool:
+        nonlocal wrapper_completed
         if depth > 4:
             return False
         if isinstance(value, str):
@@ -21,7 +28,11 @@ def completed_successfully(response: object) -> bool:
             try:
                 return collect(json.loads(value), depth + 1)
             except ValueError:
-                return False
+                if value.startswith("Script completed\n"):
+                    wrapper_completed = True
+                return True
+        if isinstance(value, list):
+            return bool(value) and all(collect(item, depth + 1) for item in value)
         if not isinstance(value, dict):
             return False
         if value.get("isError") or value.get("is_error") or value.get("session_id") or value.get("cell_id"):
@@ -34,13 +45,13 @@ def completed_successfully(response: object) -> bool:
             return True
         if value == {}:  # A literal apply_patch result preceding the command.
             return True
-        content = value.get("content")
-        if not isinstance(content, list) or not content:
-            return False
-        return all(isinstance(item, dict) and item.get("type") == "text"
-                   and collect(item.get("text"), depth + 1) for item in content)
+        if value.get("type") in ("text", "input_text") and isinstance(value.get("text"), str):
+            return collect(value["text"], depth + 1)
+        content = value.get("content", value.get("output"))
+        return isinstance(content, list) and collect(content, depth + 1)
 
-    return collect(response) and len(results) == 1
+    valid = collect(response)
+    return valid and (len(results) == 1 or (not results and wrapper_completed))
 
 
 def literal_call(code: str) -> dict | None:
