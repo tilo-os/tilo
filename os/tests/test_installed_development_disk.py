@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -54,6 +55,25 @@ class Layout(unittest.TestCase):
                 ('registry/tilo:dev', 'sha256:other', sections),
                 ('registry/tilo:dev', 'sha256:abc', sections | {'.initrd': b'changed'})]:
             with self.assertRaises(ValueError): disk.origin_identity(raw, target, manifest, parts)
+
+    def test_copy_receipt_binds_original_receipt_and_destination_identity(self):
+        path=Path('/work/disk-output/disk.raw')
+        source={'device':1,'inode':2,'size':512}
+        destination={'device':3,'inode':4,'size':512}
+        creation={'path':str(path),'file_identity':source,'size_bytes':512,'disk_created':True}
+        raw=(json.dumps(creation,sort_keys=True)+'\n').encode()
+        copied={'schema':1,'purpose':'tilo-supervised-raw-media-copy',
+          'source_creation_sha256':hashlib.sha256(raw).hexdigest(),
+          'source_path':str(path),'source_file_identity':source,
+          'raw_identity':{'size':512,'sha256':'a'*64},'path':str(path),
+          'file_identity':destination}
+        access=disk.copied_disk_receipt(path,raw,creation,copied)
+        self.assertEqual(access['file_identity'],destination)
+        for key,value in [('source_creation_sha256','b'*64),('source_file_identity',destination),
+                          ('path','/other/disk.raw')]:
+            hostile=copy.deepcopy(copied);hostile[key]=value
+            with self.subTest(key=key),self.assertRaisesRegex(ValueError,'does not bind'):
+                disk.copied_disk_receipt(path,raw,creation,hostile)
 
 
 @unittest.skipUnless(sys.platform == 'linux' and os.geteuid() == 0, 'root Linux file ownership checks')

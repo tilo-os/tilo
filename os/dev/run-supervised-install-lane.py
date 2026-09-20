@@ -427,6 +427,7 @@ def verify_disk(context, disk, values, auth):
     for option, key in mapping: argv += ['--'+option,str(values[key])]
     argv += ['--public-bundle','/work/public-trust','--disk','/work/disk-output/disk.raw',
       '--creation-receipt','/work/disk-output/creation.json','--boot-profile','installer-media',
+      '--copy-receipt','/work/disk-output/copy.json',
       '--source-live-uki',values['source_live_uki'],'--offline-key-signature']
     cleanup="umask 077; trap 'rm -f -- /work/registry-auth.json' EXIT HUP INT TERM; cat > /work/registry-auth.json; test -s /work/registry-auth.json; \"$@\""
     output=command(kubectl(context,'-n',disk['namespace'],'exec','-i',disk['pod'],'-c','disk','--',
@@ -473,9 +474,83 @@ def raw_identity(context, disk, container='disk', path='/work/disk-output/disk.r
     return value
 
 
+def remote_file_identity(context, worker, container='disk', path='/work/disk-output/disk.raw'):
+    script = r'''import json,os,stat,sys
+p=sys.argv[1]
+i=os.lstat(p)
+if (not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or stat.S_IMODE(i.st_mode) not in (0o400,0o600)
+        or i.st_nlink!=1 or i.st_size<=0):
+ raise SystemExit(2)
+print(json.dumps({'device':i.st_dev,'inode':i.st_ino,'size':i.st_size}))
+'''
+    value=json.loads(command(kubectl(context,'-n',worker['namespace'],'exec',worker['pod'],
+      '-c',container,'--','python3','-c',script,path),timeout=30))
+    if (set(value)!={'device','inode','size'}
+            or any(type(item) is not int or item<=0 for item in value.values())):
+        raise ValueError('copied raw media file identity is invalid')
+    return value
+
+
+def transfer_receipt(creation_bytes, identity, destination_identity,
+                     path='/work/disk-output/disk.raw'):
+    creation=json.loads(creation_bytes)
+    source_identity=creation.get('file_identity')
+    if (creation.get('path')!=path or creation.get('disk_created') is not True
+            or creation.get('size_bytes')!=identity.get('size')
+            or not isinstance(source_identity,dict)
+            or set(source_identity)!={'device','inode','size'}
+            or source_identity.get('size')!=identity.get('size')
+            or not re.fullmatch(r'[0-9a-f]{64}',identity.get('sha256',''))
+            or set(destination_identity)!={'device','inode','size'}
+            or destination_identity.get('size')!=identity.get('size')):
+        raise ValueError('raw media transfer cannot bind the creation receipt')
+    return {'schema':1,'purpose':'tilo-supervised-raw-media-copy',
+      'source_creation_sha256':hashlib.sha256(creation_bytes).hexdigest(),
+      'source_path':path,'source_file_identity':source_identity,
+      'raw_identity':identity,'path':path,'file_identity':destination_identity}
+
+
 def freeze_raw(context, disk):
     command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--',
                     'chmod','0400','/work/disk-output/disk.raw'),timeout=30)
+
+
+def prepare_verifier_devices(context, verifier):
+    script = r'''import importlib.util,pathlib
+p=pathlib.Path('/work/verifier/os/dev/create-development-disk.py')
+s=importlib.util.spec_from_file_location('tilo_verifier_devices',p)
+m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+m.ensure_loop_devices()
+'''
+    command(kubectl(context,'-n',verifier['namespace'],'exec',verifier['pod'],'-c','disk',
+                    '--','python3','-c',script),timeout=30)
+
+
+def preflight_vm(context, vm):
+    firmware=' '.join(f'{digest}:{path}' for path,digest in FIRMWARE.items())
+    tools=('qemu-img qemu-system-aarch64 tesseract sfdisk mkfs.vfat mkfs.ntfs mkfs.ext4 '
+           'mattrib mcopy mdir mmd mtype ntfscp debugfs socat python3 sha256sum')
+    script=r'''set -euo pipefail
+umask 077
+test "$(uname -m)" = aarch64
+test -c /dev/kvm && test -r /dev/kvm && test -w /dev/kvm
+for tool in $REQUIRED_TOOLS; do command -v "$tool" >/dev/null; done
+for row in $FIRMWARE_IDENTITIES; do
+  digest=${row%%:*}; path=${row#*:}
+  printf '%s  %s\n' "$digest" "$path" | sha256sum -c - >/dev/null
+done
+printf '%s  %s\n' "$PROFILE_SHA256" /usr/local/bin/tilo-imager-profile | sha256sum -c - >/dev/null
+test -x /usr/local/bin/tilo-imager-profile
+bash -n /work/source/os/dev/_common.sh /work/source/os/dev/vm.sh /work/source/os/dev/test-installer-cycle.sh
+test ! -e /work/vm-preflight
+install -d -m 0700 /work/vm-preflight
+truncate -s 1M /work/vm-preflight/sparse
+test "$(stat -c '%u:%g:%a:%s' /work/vm-preflight/sparse)" = '0:0:600:1048576'
+rm -rf /work/vm-preflight
+'''
+    argv=['env','REQUIRED_TOOLS='+tools,'FIRMWARE_IDENTITIES='+firmware,
+          'PROFILE_SHA256='+PROFILE_ENCODER_SHA256,'bash','-ceu',script]
+    command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu','--',*argv),timeout=120)
 
 
 def sparse_transfer(context, source_worker, target_worker, *, target_container, target_directory, target_name):
@@ -531,6 +606,13 @@ def acceptance_evidence(context, vm, cycle):
              'conversion_sha256':'/work/verified/conversion.sha256',
              'verdict':f'/work/{cycle}-evidence/verdict.txt',
              'exit_status':f'/work/{cycle}-evidence/exit-status.txt',
+             'oobe_intro':f'/work/{cycle}-evidence/08-oobe-intro.txt',
+             'oobe_backup':f'/work/{cycle}-evidence/09-oobe-backup.txt',
+             'oobe_ready':f'/work/{cycle}-evidence/10-oobe-ready.txt',
+             'tour_move':f'/work/{cycle}-evidence/11-tour-move.txt',
+             'tour_arrange':f'/work/{cycle}-evidence/12-tour-arrange.txt',
+             'tour_share':f'/work/{cycle}-evidence/13-tour-share.txt',
+             'tour_start':f'/work/{cycle}-evidence/14-tour-start.txt',
              'desktop_ocr':f'/work/{cycle}-evidence/15-desktop-config.txt',
              'browser_ocr':f'/work/{cycle}-evidence/18-browser-offline.txt',
              'browser_fixture':f'/work/{cycle}-evidence/browser-offline-fixture.txt',
@@ -548,6 +630,17 @@ def acceptance_evidence(context, vm, cycle):
 
 
 def validate_gui_evidence(evidence):
+    required_ocr={
+      'oobe_intro':r'create\s+your\s+local',
+      'oobe_backup':r'back\s+up\s+your\s+tilo\s+identity',
+      'oobe_ready':r'your\s+identity\s+is\s+ready',
+      'tour_move':r'everything\s+is\s+close\s+at\s+hand',
+      'tour_arrange':r'a\s+place\s+for\s+each\s+kind\s+of\s+work',
+      'tour_share':r'sharing\s+stays\s+deliberate',
+      'tour_start':r'your\s+first\s+five\s+minutes'}
+    for key,pattern in required_ocr.items():
+        if not re.search(pattern,evidence.get(key,''),re.IGNORECASE):
+            raise ValueError('cycle evidence lacks complete OOBE and tutorial proof')
     if not re.search(r'cycle\W*tilo', evidence.get('desktop_ocr',''), re.IGNORECASE):
         raise ValueError('cycle evidence lacks the installed desktop hostname')
     if not re.search(r'tilo\s+browser\s+offline\s+ready', evidence.get('browser_ocr',''), re.IGNORECASE):
@@ -607,6 +700,9 @@ def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
             required={'verdict.txt','exit-status.txt','boot-timing.txt',
                       'alongside-preservation-before-target-boot.txt',
                       '07-target-greeter.png','15-desktop-config.png',
+                      '08-oobe-intro.png','09-oobe-backup.png','10-oobe-ready.png',
+                      '11-tour-move.png','12-tour-arrange.png','13-tour-share.png',
+                      '14-tour-start.png',
                       '17-browser-open.png','18-browser-offline.png',
                       'browser-offline-fixture.txt','browser-offline-fixture.html'}
             if not required.issubset(names):
@@ -670,12 +766,17 @@ def main():
     require_same_worker(args.context,disk);require_same_worker(args.context,verifier)
     sparse_transfer(args.context,disk,verifier,target_container='disk',
                     target_directory='/work/disk-output',target_name='disk.raw')
-    if raw_identity(args.context,verifier)!=identity:
+    verifier_identity=raw_identity(args.context,verifier)
+    if verifier_identity!=identity:
         raise ValueError('independent verifier received different raw media')
-    delete_worker(args.context,disk)
+    copied=transfer_receipt(creation,identity,remote_file_identity(args.context,verifier))
     stream_tree(args.context,verifier['namespace'],verifier['pod'],'disk','/work/verifier',helpers)
     stream_tree(args.context,verifier['namespace'],verifier['pod'],'disk','/work/public-trust',public)
     stream_file(args.context,verifier['namespace'],verifier['pod'],'disk','/work/disk-output/creation.json',creation)
+    stream_file(args.context,verifier['namespace'],verifier['pod'],'disk','/work/disk-output/copy.json',
+                (json.dumps(copied,sort_keys=True)+'\n').encode())
+    prepare_verifier_devices(args.context,verifier)
+    delete_worker(args.context,disk)
     # One authenticated exec installs its cleanup trap before reading the
     # credential stream, then removes the file on success, error or disconnect.
     verification=verify_disk(args.context,verifier,values,auth_bytes)
@@ -691,6 +792,7 @@ def main():
     finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
     vm=create_worker(args.context,vm_manifest('tilo-vm-'+args.acceptance_id,vm_node))
     stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
+    preflight_vm(args.context,vm)
     write_private(args.operation_dir/'worker-bindings.json',
                   (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
     require_same_worker(args.context,verifier);require_same_worker(args.context,vm)
