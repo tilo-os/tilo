@@ -333,6 +333,23 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
     return command(argv, timeout=7200)
 
 
+def prepare_disk_output(context, disk):
+    script = r'''set -eu
+umask 077
+test ! -e /work/disk-output
+mkdir -m 0700 /work/disk-output
+test "$(stat -c '%u:%g:%a:%F' /work/disk-output)" = '0:0:700:directory'
+'''
+    command(kubectl(context, '-n', disk['namespace'], 'exec', disk['pod'], '-c', 'disk',
+                    '--', 'sh', '-ceu', script), timeout=30)
+
+
+def create_on_worker(root, args, disk, agent, evidence_name='creator-environment.json'):
+    controller(root, args, disk, agent, True, evidence_name)
+    prepare_disk_output(args.context, disk)
+    controller(root, args, disk, agent, False, evidence_name)
+
+
 def verify_disk(context, disk, values, auth):
     argv = ['python3','-B','/work/verifier/os/dev/verify-installed-development-disk.py']
     mapping = [('source','source'),('target','target'),('architecture','architecture'),
@@ -569,8 +586,7 @@ def main():
     agent=host_agent(args.context,disk['node'])
     stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/helpers',helpers)
     stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/public-trust',public)
-    controller(root,args,disk,agent,True)
-    controller(root,args,disk,agent,False)
+    create_on_worker(root,args,disk,agent)
     creation=(args.operation_dir/'creation.json').read_bytes()
     freeze_raw(args.context,disk)
     identity=raw_identity(args.context,disk)
