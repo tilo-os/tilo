@@ -35,7 +35,10 @@ python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
 ```
 
 It runs the deployed merge worker, which rechecks scope, current main, CI, author
-intent and approval before integration. Direct merges do not bypass that worker.
+intent and approval before integration. This command accepts only changes
+classified into the reviewed scope. Optional approval of a routine PR does not
+change its scope: it still follows normal integration and queue priority.
+Direct merges do not bypass that worker.
 The [deployed admission policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json)
 defines the protected paths and bounded dependency exceptions. The OpenH264
 source-order exception additionally requires its pinned provenance and native
