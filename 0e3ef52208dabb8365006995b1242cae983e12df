@@ -1,0 +1,1 @@
+build=failure qemu=skipped upload=skipped detail=stage=install-dependencies status=1 line=155 error: restricting filesystem access failed because Landlock is not supported by the kernel! error: switching to sandbox user 'alpm' failed! error: failed to synchronize all databases (failed to retrieve some files)  run=13654 sha=38e817667b76cbd3ac16490c1c560fb1ca2189ad
