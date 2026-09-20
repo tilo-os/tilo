@@ -91,6 +91,20 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertNotIn('channel_url=$bundle_upload_url', publish)
         self.assertIn("$package_public_api != *'.svc.cluster.local'*", publish)
 
+    def test_published_qpkgs_are_submitted_to_the_signed_registry(self):
+        source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        build, publish = source.split('\n  publish:\n', 1)
+        self.assertIn('install -m 0755 target/release/tilo-pkg dist/app-release/tilo-pkg', build)
+        self.assertIn('dist/app-release/tilo-pkg', build)
+        self.assertIn('TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL }}', publish)
+        self.assertIn('QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}', publish)
+        self.assertIn('"$registry_cli" entry --arch "$arch"', publish)
+        self.assertIn('--action add --url "$qpkg_url"', publish)
+        self.assertIn('--action update --previous-entry "$previous"', publish)
+        self.assertIn('--data-binary "@$request"', publish)
+        self.assertIn('[[ $status == 202 ]]', publish)
+        self.assertIn('$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file', publish)
+
     def test_verifier_package_secret_is_narrow_and_artifact_token_stays_job_scoped(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         binding = '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}'
