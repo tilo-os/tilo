@@ -671,7 +671,7 @@ impl BottomPanel {
                     glyph,
                     13.0 * theme.text_scale,
                     sev_color,
-                    transform * Affine::translate((self.rect.x0 + 14.0 * self.text_scale, y)),
+                    transform * Affine::translate((self.rect.x0 + 14.0 * self.text_scale, glyph_y)),
                     None,
                 );
                 let loc = format!("[Ln {}, Col {}]", d.line, d.col);
