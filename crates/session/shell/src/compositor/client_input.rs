@@ -90,6 +90,10 @@ pub struct ClientInput {
     forwarded_keys: HashSet<u32>,
     /// Accumulator for the Alt+Shift wheel group-jump gesture, so a touchpad's small pixel deltas fire one discrete jump per [`JUMP_PX_PER_DETENT`]. See [`WheelJumpAccum`].
     jump_wheel: WheelJumpAccum,
+    /// Click/touch focus changes awaiting durable session-state persistence.
+    /// Persistence fsyncs both the replacement file and its directory, so it
+    /// must run after latency-sensitive Wayland input has been queued/flushed.
+    focus_persistence_pending: bool,
 }
 
 impl ClientInput {
@@ -242,6 +246,11 @@ impl ClientInput {
     /// Where the pointer is, or `None` if it has never been anywhere — the honest form of [`Self::cursor`], for the one caller that must tell the two apart.
     pub fn pointer_position(&self) -> Option<(f64, f64)> {
         self.cursor
+    }
+
+    /// Take the edge requesting persistence of a click/touch focus change.
+    pub fn take_focus_persistence_pending(&mut self) -> bool {
+        std::mem::take(&mut self.focus_persistence_pending)
     }
 }
 
@@ -727,7 +736,9 @@ pub fn focus_touch_target(state: &mut State, fb: &mut FrameBuilder, surface_id: 
         })
     });
     if let Some((strip, group)) = placement {
-        raise_group(fb, strip, group);
+        if raise_group(fb, strip, group) {
+            state.client_input.focus_persistence_pending = true;
+        }
         sync_keyboard_focus(state, fb);
     }
 }
@@ -1091,7 +1102,9 @@ fn route_mouse_input(
                     && !state.is_floating_toplevel(h.surface_id)
                     && !state.is_transient_surface(h.surface_id)
                 {
-                    raise_group(fb, h.strip, h.group);
+                    if raise_group(fb, h.strip, h.group) {
+                        state.client_input.focus_persistence_pending = true;
+                    }
                     sync_keyboard_focus(state, fb);
                 }
             }
@@ -1514,7 +1527,7 @@ fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
 }
 
 /// Make `group` the active group of `strip` in the chrome's tree so the shell's focus rules agree with what the user just clicked.
-fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
+fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) -> bool {
     let mut changed = false;
     fb.with_chrome(|chrome| {
         {
@@ -1525,19 +1538,13 @@ fn raise_group(fb: &mut FrameBuilder, strip: StripId, group: GroupId) {
             if changed {
                 tree.active_strip.insert(workspace, strip);
                 tree.set_active_group(strip, group);
-                // Click-to-focus is local session state, not a transient
-                // pointer decoration. Commit the complete strip/group
-                // address at the same boundary as
-                // the keyboard-focus hand-off so logging out or crashing
-                // immediately after a click cannot restore the previously
-                // focused window on the next session.
-                tree.flush_to_disk();
             }
         }
         if changed {
             chrome.bump();
         }
     });
+    changed
 }
 
 #[cfg(test)]
@@ -1613,7 +1620,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_window_persists_the_focused_group_across_restart() {
+    fn clicking_a_window_defers_focus_persistence_until_after_input_flush() {
         let state_dir = tempfile::tempdir().expect("temporary state directory");
         let state_path = state_dir.path().join("state.json");
         let mut fb = FrameBuilder::new((1280, 800));
@@ -1632,7 +1639,17 @@ mod tests {
             (strip_id, first_group, second_group)
         };
 
-        raise_group(&mut fb, strip_id, second_group);
+        assert!(raise_group(&mut fb, strip_id, second_group));
+
+        let before_flush = persist::load_tree_from(&state_path).expect("reload old layout");
+        assert_eq!(
+            before_flush.active_group_for(strip_id),
+            Some(first_group),
+            "durable I/O must not run in the pointer-to-focus critical path"
+        );
+
+        // The native loop performs this only after `display.flush_clients()`.
+        fb.chrome().tree().flush_to_disk();
 
         let restarted = persist::load_tree_from(&state_path).expect("reload focused layout");
         assert_eq!(
@@ -1649,6 +1666,19 @@ mod tests {
             restarted.active_group_for(strip_id),
             Some(first_group),
             "restart must not restore the group focused before the click"
+        );
+    }
+
+    #[test]
+    fn focus_persistence_request_is_coalesced_and_edge_triggered() {
+        let mut input = ClientInput::default();
+        input.focus_persistence_pending = true;
+        input.focus_persistence_pending = true;
+
+        assert!(input.take_focus_persistence_pending());
+        assert!(
+            !input.take_focus_persistence_pending(),
+            "an idle tick must not rewrite and fsync the workspace tree again"
         );
     }
 
