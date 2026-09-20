@@ -22,12 +22,13 @@ use app_host::registry::Pinning;
 use app_host::store::Store;
 
 fn main() {
+    const ITERATIONS: u32 = 10;
+
     // Build once: this benchmark measures installation rather than package
     // construction or signing.
     let (bytes, _id) = common::build_qpkg(1024);
     println!("qpkg size: {} bytes", bytes.len());
 
-    const ITERATIONS: u32 = 10;
     let mut samples = Vec::with_capacity(ITERATIONS as usize);
     for _ in 0..ITERATIONS {
         let dir = tempfile::tempdir().expect("create benchmark store");
@@ -38,7 +39,9 @@ fn main() {
     }
 
     let sum: std::time::Duration = samples.iter().sum();
-    let average = sum / ITERATIONS;
+    let average = sum
+        .checked_div(ITERATIONS)
+        .expect("benchmark iteration count is non-zero");
     let minimum = samples.iter().min().expect("at least one sample");
     let maximum = samples.iter().max().expect("at least one sample");
     println!("install(1 MiB) x{ITERATIONS}: avg {average:?}, min {minimum:?}, max {maximum:?}");
