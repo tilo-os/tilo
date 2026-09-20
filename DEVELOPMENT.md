@@ -3,7 +3,91 @@
 Build dependencies, local development and testing. See `AGENTS.md` for repository
 conventions.
 
+## Routine delivery workflow
+
+Routine changes land through pull requests to `main`. Each PR head revision gets
+its own affected-package check and fast-quality lint result; those runs are keyed
+to the exact event and commit and are not cancelled when a newer commit arrives.
+
+Once the required checks pass and the head is stable, the controller posts a PR
+comment explaining the next step. Keep iterating until ready, then the PR author
+comments `/merge <full-head-sha>` to request integration of that exact revision.
+A new push requires fresh checks and a fresh merge request. The controller also
+checks that the branch is up to date and the change is eligible for routine
+integration; a green check alone does not merge a PR.
+
+Review is optional and informational for every change. Review requests,
+approvals and change requests never affect merge admission; exact-head CI and
+author intent are authoritative. Automatic review-agent launches are currently
+disabled, so a native request alone does not start an agent.
+
+CI policy, publication, signing and named security-boundary paths use the
+protected-path operator flow. Changes crossing into those paths or changing an
+existing file's executable mode may require additional CI or provenance checks,
+but never review. After checks pass, post the author's `/merge <full-head-sha>`
+intent. An authorized operator then runs this command from the `PodestaAI/infra`
+checkout:
+
+```sh
+python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
+```
+
+It runs the deployed merge worker, which rechecks scope, current main, CI and
+author intent before integration. This command accepts only changes classified
+into the protected scope. Review state does not change a PR's scope or queue
+priority.
+Direct merges do not bypass that worker.
+The [deployed admission policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json)
+defines the protected paths and bounded dependency exceptions. The OpenH264
+source-order exception additionally requires its pinned provenance and native
+dependency check; it is not ordinary vendored-source admission. Symlinks,
+submodules and malformed changes are rejected rather than treated as routine.
+
+A bounded queue pilot on 2026-09-20 created [integration PR 169](https://code.podesta.ai/qos/qos/pulls/169)
+for [author PR 162](https://code.podesta.ai/qos/qos/pulls/162), tested the generated
+candidate and landed exact commit `12fbe8301ddc9b3d410cefe49d79630b334034d3`
+without changing the author's branch. This verifies one integration through the
+pilot; it does not establish general queue availability or sustained reliability.
+Continue using the controller's current eligibility instructions.
+
+The CI scheduler assigns runners and queue order. Submit normally; do not reserve
+build slots or negotiate them with other agents. The repository's Codex hook sends
+final CI status back to the task after a successful normal `git push` when the
+hook is installed in the running environment. Use `fgj pr checks <number>` or
+`fgj actions` to inspect missing notifications or failures, rather than repeatedly
+polling queued jobs.
+
+After a merge, app packaging selects directly changed apps and apps that depend
+on changed shared crates, then reuses unchanged collection members. PRs run the
+selection plan without release-mode packaging. Shared runtime or toolchain changes
+can still select every app; see [Preview affected applications](#preview-affected-applications)
+for how selection and shared runtime compatibility interact. Use **Release / apps** manual
+dispatch for a development artifact, selecting the smallest applicable app and
+architecture set and leaving `publish` off unless publication is intended.
+
+The app registry is publicly reachable at `https://registry.podesta.ai`, but its
+signed catalogue is still empty. CI catalogue submission is not merged or enabled;
+Forgejo package publication alone does not make an app discoverable there. See the
+[production roadmap](docs/ci-production-roadmap.md) for the remaining acceptance gates.
+
+OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
+run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
+scheduled integration runs do not publish an OS release. macOS setup packaging,
+cask publication and installation tests remain in **Release / imager** but are
+disabled during alpha; tags do not enable those lanes.
+
 ## Fast checks before assembly
+
+For a native integration test without a full workspace dispatch, use
+**Development / focused native test** (`focused-test.yml`). Select a full source
+commit SHA, one Cargo package, integration target and exact Rust test path. For
+example: package `shell`, target `it`, test
+`concept_parity_spec::overview_add_workspace::overview_add_workspace_click_appends_workspace`.
+Use operation `check-tests` with the target/name empty to compile that package's
+test targets. Both modes use `--locked` on one native x86-64 runner and share the
+normal download/compiler caches. Missing or ignored tests fail. The job records
+source SHA, workflow SHA, builder digest and exit status; its diagnostic result
+does not replace required PR checks or trigger publication.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
@@ -48,19 +132,43 @@ For an actual installer VM cycle with an already prepared medium, continue using
 session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
 artifact-backed VM orchestration remain planned work.
 
-For CI timing, use an explicit internal run ID from the Forgejo API:
+For CI timing, use the repository run number from the Forgejo URL or `fgj actions
+run list`, not the Forgejo API's internal database ID:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
+python3 tools/ci/timing_report.py --repo qos/qos --run 11408 --output target/ci-timing.json
+```
+
+For an automatic before/after view of the newest comparable runs, no run IDs or
+manual receipts are needed:
+
+```sh
+python3 tools/ci/timing_report.py --repo qos/qos --recent 30 \
+  --workflow check.yml --compare-latest --output target/ci-experience.json
 ```
 
 This uses your configured `fgj` authentication and reports queue time separately
 from run duration and the observed container pull-to-create interval. It does not
 sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
 credentials are not written to the report; use `--input` for saved local fixtures.
+Forgejo reruns retain the original run creation time, so the report labels the
+attempt and leaves its queue time unknown unless that attempt's creation is present.
+Schema 3 keeps the deprecated run-created-to-runner field for first attempts and
+reports it as unknown for reruns; its replacement is explicitly attempt-scoped.
 Pass two runs in baseline/current order with `--compare` to print queue, wall and
 same-named job deltas directly. Job names appear beside Forgejo's numeric IDs, so
 the report can be read without a second API lookup.
+The recent view is keyed by workflow, event and exact commit. It separates queue,
+runner assignment, image pull/create, checkout, measured compile/test phases and
+total time, and includes sccache hit indicators when the job reports them. Its
+snapshot also flags superseded active runs, terminal runs with active tasks, runs
+which started without a runner, and observed runner time discarded by cancellation. These
+markers identify work to inspect; the runner broker remains authoritative for
+whether a Kubernetes runner resource is actually orphaned.
+An unavailable run or log is retained with a `collection_errors` evidence gap;
+it does not discard the remaining snapshot or become a comparison baseline.
+When too little complete evidence remains, the report records that the optional
+comparison is unavailable and still exits successfully with the snapshot.
 
 ## Preview affected applications
 
@@ -78,9 +186,10 @@ lockfile, toolchain or packaging changes can select the whole app fleet. This
 command needs the pinned Rust toolchain for `cargo metadata --locked --no-deps`.
 It compares committed Git revisions and does not include uncommitted edits.
 
-The selected list describes package output. Native packaging currently builds
-the full default Cargo graph even for a partial package selection, preserving
-the shared Rust runtime ABI; this preview does not promise fewer compile targets.
+The selected list controls which app binaries are compiled and packaged. Cargo
+still resolves the full default collection's dependency features to preserve the
+shared Rust runtime ABI. Shared dependencies may rebuild; unselected app binaries
+are not compiled.
 
 A zero count means no app package is selected; check/lint and relevant tests
 still apply. Packaging automation compares against its last independently

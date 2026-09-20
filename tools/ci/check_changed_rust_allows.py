@@ -126,6 +126,8 @@ def changed_rust_files(root: Path, revision_range: str) -> list[Path]:
             revision_range,
             "--",
             "*.rs",
+            # Preserve imported upstream lint attributes without rewriting dependencies.
+            ":(top,exclude)vendor/**",
         ],
         cwd=root,
     )
