@@ -23,7 +23,7 @@ live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: Camera's `actions` module exports capture/scan metadata
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 tilo-actions = { path = "../../crates/collab/actions" }

@@ -187,13 +187,30 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     ui::launch::run(
-        &LaunchSpec::new("dev.tilo.calendar", calendar::app_root).configure_app(configure_app),
+        &LaunchSpec::new_with_args("dev.tilo.calendar", live_root)
+            .max_positionals(1)
+            .prepare_legacy_with_args(prepare_launch),
     )?;
     Ok(())
 }
 
-fn configure_app(app: &mut ui::App) {
-    calendar::actions::register(app.action_registry_mut());
+fn prepare_launch(
+    args: &ui::launch::LaunchArgs,
+) -> Result<ui::launch::LegacyLaunchInputs, ui::launch::LaunchError> {
+    let (state, autosave) = calendar::store::open_state("dev.tilo.calendar");
+    let root = live_root(args)?;
+    let mut registry = tilo_actions::ActionRegistry::new();
+    calendar::actions::register(&mut registry);
+    Ok(ui::launch::LegacyLaunchInputs::new(state, root, autosave).with_registry(registry))
+}
+
+fn live_root(args: &ui::launch::LaunchArgs) -> Result<Box<dyn Widget>, ui::launch::LaunchError> {
+    let mut app = CalendarApp::new();
+    if let Some(target) = args.positionals().first() {
+        app.queue_launch_ics(target)
+            .map_err(ui::launch::LaunchError::Operation)?;
+    }
+    Ok(Box::new(app))
 }
 
 fn view_from_str(s: &str) -> Option<View> {

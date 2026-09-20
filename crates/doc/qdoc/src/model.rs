@@ -134,6 +134,25 @@ pub struct IdGen {
     order: OrderIndex,
 }
 
+/// Clone for transactional staging against a cloned document, with a fresh
+/// derived ordering cache. On success the candidate document and generator must
+/// replace their originals together; on failure discard both candidates.
+///
+/// The original and clone share an actor and next counter. They must never be
+/// used as two concurrently allocating live generators: that would reuse durable
+/// identifiers. Independent replicas require distinct actor identities.
+impl Clone for IdGen {
+    fn clone(&self) -> Self {
+        Self {
+            actor_hex: self.actor_hex.clone(),
+            // Deleted IDs remain part of durable history. A staged edit must
+            // inherit the counter rather than reseeding from visible objects.
+            next: self.next,
+            order: OrderIndex::default(),
+        }
+    }
+}
+
 /// The finite per-actor block-id namespace has been consumed.
 ///
 /// qdoc identifiers are durable collaboration keys, so reusing the final

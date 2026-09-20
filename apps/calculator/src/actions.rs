@@ -58,11 +58,12 @@ use crate::model::{HistoryEntry, Mode, PlotFn};
 pub const CALCULATOR_ACTION_TYPE: &str = "calculator.action";
 pub const CALCULATOR_OPERATION_TYPE: &str = "calculator.operation";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CalculatorOperation {
     ShowCalculator,
     ShowGraph2d,
     ShowGraph3d,
+    RecallHistory { id: String },
 }
 
 /// # Errors
@@ -544,7 +545,7 @@ fn graph_resources(kind: GraphKind, rows: &[PlotFn], stable_ids: &[String]) -> V
 #[allow(
     clippy::expect_used,
     clippy::missing_panics_doc,
-    reason = "the operation payload is a derived enum with only unit variants; serialization cannot fail"
+    reason = "the operation payload contains only derived enum variants and strings; serialization cannot fail"
 )]
 pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
     let mut root = Resource::new("calculator.workspace", "calculator.workspace", "Calculator");
@@ -621,6 +622,17 @@ pub fn provide_resources(ctx: &CalcResourceCtx, doc: &AutoCommit) -> Vec<Resourc
                 format!("calculator.history_entry:{stable}"),
                 "calculator.history_entry",
                 history_label(e),
+            )
+            .with_action(
+                ActionSpec::operation(
+                    "open",
+                    "Recall calculation",
+                    OperationKind::View,
+                    CALCULATOR_OPERATION_TYPE,
+                    &CalculatorOperation::RecallHistory { id: stable.clone() },
+                )
+                .expect("CalculatorOperation is always serializable")
+                .retry_policy(RetryPolicy::Idempotent),
             )
             .with_action(immediate_spec(
                 "delete",

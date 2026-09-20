@@ -17,7 +17,7 @@
 //! * a **⋯** overflow that opens the labelled "View options" menu (new folder /
 //!   file, show-hidden toggle, terminal).
 //!
-//! There is **no search field** (search is OS-owned, `ui/HIG.md` §5), **no
+//! There is **no search field** (search is OS-owned, `crates/sdk/ui-core/HIG.md` §5), **no
 //! reload button**, and **no unlabelled state-toggle icons** — the two cryptic
 //! symbolic controls and the mystery show-hidden toggle are gone; show-hidden
 //! now lives, clearly labelled with a check, inside the View menu.

@@ -35,7 +35,7 @@ output. `rollback-boot-check.sh` gets this right and is the model.
 
 ## Related, outside this directory
 
-- `plan/security.md` — the earlier workspace-scoped threat model. Still the most detailed account of the remote-input firewall and the per-workspace sandbox; superseded on identity and boot.
+- `docs/architecture/security.md` — the earlier workspace-scoped threat model. Still the most detailed account of the remote-input firewall and the per-workspace sandbox; superseded on identity and boot.
 - `docs/superpowers/specs/2026-06-30-tilo-security-architecture-plan.md` — the earlier plan. Its §6.1 first stated the device-key ≠ account-key invariant this design is built on.
 - `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md` — the role/attestation model behind §7's authorship half.
 - `docs/superpowers/specs/2026-06-30-cryptographic-redaction-design.md` — redaction as a cooperative protocol, and why it is not a security mechanism.

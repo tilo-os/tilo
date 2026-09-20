@@ -8,7 +8,8 @@ arch=$2
 case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
 
 for file in bin/tilo-shell bin/tilo-launcher libexec/tilo-unlock-helper \
-            libexec/tilo-session libexec/tilo-session-runner; do
+            libexec/tilo-session libexec/tilo-session-runner \
+            libexec/tilo-flight-recorder; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }
 done
 for file in etc/pam.d/tilo-unlock share/wayland-sessions/tilo.desktop \
@@ -32,6 +33,7 @@ grep -Fqx "TILO_SHELL=$result/bin/tilo-shell" "$wrapper"
 grep -Fqx "SESSION_RUNNER=$result/libexec/tilo-session-runner" "$wrapper"
 grep -Eq '^SYSTEMD_CAT=/nix/store/.+/bin/systemd-cat$' "$runner"
 grep -Eq '^DBUS_UPDATE=/nix/store/.+/bin/dbus-update-activation-environment$' "$runner"
+grep -Fqx "FLIGHT_RECORDER=$result/libexec/tilo-flight-recorder" "$runner"
 grep -Fq -- '--identifier=tilo-session --level-prefix=false' "$runner"
 grep -q -- '--firstboot' "$runner"
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' \

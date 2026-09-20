@@ -20,7 +20,7 @@ ok() { printf 'ok    %s\n' "$*"; }
 
 fragment_has() {
   case "$1" in
-    CONFIG_X86_*|CONFIG_DEVPORT=*|CONFIG_IA32_EMULATION=*|CONFIG_USELIB=*|CONFIG_LEGACY_VSYSCALL_*|CONFIG_RANDOMIZE_MEMORY=*|CONFIG_SCHED_MC_PRIO=*|CONFIG_SND_SOC_INTEL_AVS_MACH_I2S_TEST=*|CONFIG_USB_GADGET=*)
+    CONFIG_X86_*|CONFIG_DEVPORT=*|CONFIG_IA32_EMULATION=*|CONFIG_USELIB=*|CONFIG_LEGACY_VSYSCALL_*|CONFIG_RANDOMIZE_MEMORY=*|CONFIG_SCHED_MC_PRIO=*|CONFIG_SND_SOC_INTEL_AVS_MACH_I2S_TEST=*|CONFIG_USB_GADGET=*|CONFIG_ACPI_EXTLOG=*)
       grep -Fqx "$1" "$x86_kernel_config" ;;
     *) grep -Fqx "$1" "$kernel_config" ;;
   esac
@@ -127,6 +127,7 @@ for required in \
   CONFIG_X86_IOPL_IOPERM=n \
   CONFIG_X86_MCELOG_LEGACY=n \
   CONFIG_X86_MCE_INJECT=n \
+  CONFIG_ACPI_EXTLOG=n \
   CONFIG_IA32_EMULATION=y \
   CONFIG_X86_X32_ABI=n \
   CONFIG_USELIB=n \
@@ -586,7 +587,7 @@ grep -Fq 'dracut --force --reproducible --compress zstd' "$image_recipe" \
   && ok 'signed initramfs uses low-latency Zstandard decompression'
 grep -Fq 'dracut --force --reproducible --compress zstd' "$image_recipe" \
   || bad 'initramfs compression can regress to a slow distribution default'
-grep -Fq -- '--omit "network network-legacy network-manager nfs iscsi nbde clevis crypt-ssh"' \
+grep -Fq -- '--omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"' \
   "$image_recipe" \
   || bad 'local-root initramfs still carries unused network/NBDE attack surface'
 grep -Fq -- '--omit-drivers "ext4 xfs"' "$image_recipe" \
@@ -785,7 +786,7 @@ for unit_path in $procsubset_units; do
   done < <(sed -n 's/^Exec\(Start\|Stop\|Reload\)=[-+!:]*\([^ ]*\).*/\2/p' "$unit_path")
 done
 if grep -REn '/proc/(cmdline|sys/|cpuinfo|meminfo|modules|filesystems|crypto|version|uptime)' \
-    "$repo/crates/system/windows-vm/src" >/dev/null; then
+    "$repo/crates/windows/windows-vm/src" >/dev/null; then
   bad 'ProcSubset=pid Windows VM controller reads a hidden non-process /proc path'
 fi
 # tilo-rollback-harden sources this library but must not reach its cmdline helper.

@@ -82,6 +82,7 @@ rustPlatform.buildRustPackage rec {
     install -Dm755 "$p/libexec/tilo-unlock-helper" "$out/libexec/tilo-unlock-helper"
     install -Dm755 "$p/libexec/tilo-session" "$out/libexec/tilo-session"
     install -Dm755 "$p/libexec/tilo-session-runner" "$out/libexec/tilo-session-runner"
+    install -Dm755 "$p/libexec/tilo-flight-recorder" "$out/libexec/tilo-flight-recorder"
     install -Dm644 "$p/pam/tilo-unlock" "$out/etc/pam.d/tilo-unlock"
     install -Dm644 "$p/wayland-sessions/tilo.desktop" "$out/share/wayland-sessions/tilo.desktop"
     install -Dm644 "$p/portal/tilo.portal" "$out/share/xdg-desktop-portal/portals/tilo.portal"
@@ -96,7 +97,8 @@ rustPlatform.buildRustPackage rec {
     substituteInPlace "$out/libexec/tilo-session-runner" \
       --replace-fail 'SYSTEMCTL=/usr/bin/systemctl' "SYSTEMCTL=${systemd}/bin/systemctl" \
       --replace-fail 'SYSTEMD_CAT=/usr/bin/systemd-cat' "SYSTEMD_CAT=${systemd}/bin/systemd-cat" \
-      --replace-fail 'DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "DBUS_UPDATE=${dbus}/bin/dbus-update-activation-environment"
+      --replace-fail 'DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "DBUS_UPDATE=${dbus}/bin/dbus-update-activation-environment" \
+      --replace-fail 'FLIGHT_RECORDER=/usr/libexec/tilo-flight-recorder' "FLIGHT_RECORDER=$out/libexec/tilo-flight-recorder"
     substituteInPlace "$out/share/wayland-sessions/tilo.desktop" \
       --replace-fail 'Exec=/usr/libexec/tilo-session' "Exec=$out/libexec/tilo-session" \
       --replace-fail 'TryExec=/usr/bin/tilo-shell' "TryExec=$out/bin/tilo-shell"

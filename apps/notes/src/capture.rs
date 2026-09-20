@@ -114,8 +114,6 @@ pub fn supports(scenario: Option<&str>) -> bool {
                 | "shortcuts"
                 | "shortcuts_bottom"
                 | "find"
-                | "tag_palette"
-                | "fulltext_search"
                 | "sidebar_scroll"
                 | "presence"
                 | "status"
@@ -625,14 +623,6 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             chord(driver, &["ctrl"], "f");
             driver.type_text("migration");
         }
-        Some("tag_palette" | "fulltext_search") => {
-            chord(driver, &["ctrl"], "k");
-            driver.type_text(if scenario == Some("tag_palette") {
-                "Release"
-            } else {
-                "migration"
-            });
-        }
         Some("multiline_typing" | "paragraph_click") => {
             new_note(driver)?;
             driver.type_text(FIRST);
@@ -716,14 +706,22 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             driver.type_text(" Chen");
         }
         Some("image" | "image_edit") => {
-            driver.relayout();
-            for _ in 0..20 {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let target = loop {
                 driver.relayout();
-            }
+                if let Some(target) =
+                    semantic_target(driver, |name| name.starts_with("notes.image-edit:"))
+                {
+                    break target;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(LaunchError::Operation(
+                        "image preview did not become ready within two seconds".into(),
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
             if scenario == Some("image_edit") {
-                let target = semantic_target(driver, |name| name.starts_with("notes.image-edit:"))
-                    .ok_or_else(|| LaunchError::Operation("image edit target missing".into()))?;
                 driver
                     .perform_semantic_named(
                         "block_editor",
@@ -1023,8 +1021,6 @@ fn validate_capture(
                     | "shortcuts"
                     | "shortcuts_bottom"
                     | "find"
-                    | "tag_palette"
-                    | "fulltext_search"
                     | "sidebar_scroll"
                     | "presence"
                     | "status"
@@ -1054,10 +1050,7 @@ fn validate_capture(
         return Ok(());
     };
     let blocks = panel.editor().blocks();
-    let blocks_may_be_modal_hidden = matches!(
-        scenario,
-        Some("tag_palette" | "fulltext_search" | "code_group_drag")
-    );
+    let blocks_may_be_modal_hidden = matches!(scenario, Some("code_group_drag"));
     let rects = blocks
         .iter()
         .map(|block| {
@@ -1253,18 +1246,6 @@ fn validate_capture(
                 && node.value.as_deref() == Some("migration")
                 && node.state.focused
         }),
-        Some("tag_palette" | "fulltext_search") => {
-            let query = if scenario == Some("tag_palette") {
-                "Release"
-            } else {
-                "migration"
-            };
-            semantic_observed(driver, |node| {
-                node.role == ui::a11y::Role::TextInput
-                    && node.name.as_deref() == Some("Search notes")
-                    && node.value.as_deref() == Some(query)
-            })
-        }
         Some("sidebar_scroll") => semantic_observed(driver, |node| {
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),

@@ -91,6 +91,14 @@ mod tests {
             "photos-tools",
             "photos-image",
             "photos-image-help",
+            "photos-shared-details",
+            "photos-no-shared-context",
+            "photos-description",
+            "photos-captured",
+            "photos-place",
+            "photos-people",
+            "photos-tags",
+            "photos-folder",
         ] {
             let got = tr(key);
             assert_ne!(got, key, "`{key}` is not in the bundle");

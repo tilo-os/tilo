@@ -17,7 +17,7 @@ was wrong.
 
 ## P0-1 — The identity ceremony persists a key that cannot sign
 
-`ui/src/widget/identity_flow/mod.rs:180-191`
+`crates/sdk/ui-core/src/widget/identity_flow/mod.rs:180-191`
 
 `SerializableIdentity::from_identity` cannot reach into `frost_ed25519`'s `SigningKey`, so it
 persists `SHA-512("tilo-identity-flow-v1-placeholder-key" ‖ group_public_key)` as `secret_bytes`.
@@ -30,7 +30,7 @@ Compounding: `crates/runtime/runtime-identity/src/lib.rs:270-297` detects the pu
 mismatch and **deliberately does not fail** — the only signal is a
 `#[cfg(debug_assertions)] eprintln!`. In a release build the failure is silent.
 
-`shell/src/firstboot.rs:190-226` correctly bypasses this path and writes the real dalek seed via
+`crates/session/shell/src/firstboot.rs:190-226` correctly bypasses this path and writes the real dalek seed via
 `ThresholdIdentity::bootstrap_single_device_seed`. So firstboot-minted identities are valid and
 ceremony-minted identities are not, with the same on-disk format and no way to tell them apart.
 
@@ -42,7 +42,7 @@ the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` r
 whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
 in every build profile. Firstboot now goes through the same encoder, so there is one writer of
 the format. Held by
-`ui/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
+`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
 and
 `crates/runtime/runtime-identity/src/lib.rs::tests::secret_that_does_not_derive_the_recorded_pubkey_is_refused`.
 
@@ -50,7 +50,7 @@ and
 
 ## P0-2 — The FUSE replication path performs no authentication
 
-`fs/src/sync.rs:159-195`
+`crates/system/fs/src/sync.rs:159-195`
 
 `SyncProtocol::accept` takes any connection on `TILO_FS_SYNC_ALPN` and:
 
@@ -61,9 +61,9 @@ There is no identity check, no ACL consultation, and no signature verification o
 The same applies to `fetch_remote_doc` (`sync.rs:104-113`) and the anti-entropy full-document merge
 (`sync.rs:317`).
 
-The ACL in `fs/src/acl.rs` is well-built — fail-closed, deny-biased, delegating to
+The ACL in `crates/system/fs/src/acl.rs` is well-built — fail-closed, deny-biased, delegating to
 `collab_types::decide_capability`, and it aborts the mount rather than serving unenforced. But it is
-consulted only on the FUSE syscall path (`fs/src/fs.rs:432`, `:456`, `:561`), i.e. against local
+consulted only on the FUSE syscall path (`crates/system/fs/src/fs.rs:432`, `:456`, `:561`), i.e. against local
 processes. **It is not a replication boundary.**
 
 Any peer that can reach the endpoint and speak the ALPN can read and rewrite the whole namespace.
@@ -75,23 +75,23 @@ ACL per-connection. Depends on a real, persistent device identity existing first
 
 ## P0-3 — The iroh node key is ephemeral, so FS attribution and ACL subject rotate every boot
 
-`fs/src/sync.rs:89-96` builds the endpoint without ever passing a `secret_key`, so the iroh NodeId
+`crates/system/fs/src/sync.rs:89-96` builds the endpoint without ever passing a `secret_key`, so the iroh NodeId
 is freshly random on every process start.
 
 Consequences:
 
-- `fs/src/main.rs:221,286` sets `author = endpoint.id().to_string()` — authorship attribution is a
+- `crates/system/fs/src/main.rs:221,286` sets `author = endpoint.id().to_string()` — authorship attribution is a
   new anonymous string each mount.
-- `fs/src/main.rs:219,283` resolves the default ACL subject from the same key, so **any ACL grant
+- `crates/system/fs/src/main.rs:219,283` resolves the default ACL subject from the same key, so **any ACL grant
   written against the default subject is dead on the next boot**.
-- The node-id-reuse guard at `fs/src/namespace.rs:147-152` ("a restart with the same author can't
+- The node-id-reuse guard at `crates/system/fs/src/namespace.rs:147-152` ("a restart with the same author can't
   reuse a node id") never engages, because the author is never the same twice.
 
 **Resolved.** The mount binds under the machine's device key, so the `NodeId` *is* the device's
 Ed25519 public key and is unchanged across a remount; a device key that will not load fails the
 mount rather than falling back to a random one. `bind_endpoint` is split into
 `bind_endpoint_with_key` and `bind_ephemeral_endpoint` so the random-identity path is named at
-every call site. Held by `fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
+every call site. Held by `crates/system/fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
 and `::identity_survives_a_restart`.
 
 ---
@@ -440,15 +440,15 @@ intentionally not that adapter; it must never broadcast Welcome bytes.
 
 The 8-step (extended to 9) validation pipeline in
 `crates/collab/collab-types/src/validator.rs:589` is implemented and thoroughly tested, and the
-broker's default state is correctly fail-closed (`shell/src/shell/collab_broker.rs:797-800`: an
+broker's default state is correctly fail-closed (`crates/session/shell/src/shell/collab_broker.rs:797-800`: an
 empty `authorised_signers` rejects every signed op).
 
 But `register_channel_state` has no non-test caller, and no production path mints a
 `RoleAttestation`. `CollaborationManager::set_identity` / `with_identity` likewise have no callers
-in `shell/`, `ui/`, or `apps/`. Roles are therefore advisory in practice.
+in `crates/session/shell/`, `crates/sdk/ui-core/`, or `apps/`. Roles are therefore advisory in practice.
 
 `Space` (`crates/collab/collab-types/src/space.rs`) has zero consumers outside its own crate and
-tests. `ui/src/widget/channel_browser.rs` is a complete widget with no shell call site.
+tests. `crates/sdk/ui-core/src/widget/channel_browser.rs` is a complete widget with no shell call site.
 
 **Resolved.** Both production ingress paths now call
 `validate_admitted_inbound_op` before recording or fanning out an operation.
@@ -471,14 +471,14 @@ Nothing locks the session before sleep or on resume, so suspend-then-open-lid la
 session. `crates/system/power/src/logind.rs:19-20` documents this as working — *"so the compositor
 can lock before the machine sleeps"* — which is not implemented.
 
-`shell/src/compositor/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
+`crates/session/shell/src/compositor/idle.rs:107-113` defaults `lock_timeout` to `None`; idle auto-lock is
 reachable only via `TILO_IDLE_LOCK_SECS`.
 
 **Resolved.** `PrepareForSleep(true)` is now mapped to the mandatory
 `PowerSignal::Lock` before sleep, while the resume edge resets idle state.
 The compositor defaults both blanking and locking to five minutes; an explicit
 `TILO_IDLE_LOCK_SECS=0` remains the documented opt-out. Unit coverage pins the
-sleep-edge mapping and secure default, and `shell/tests/session_lock_e2e.rs`
+sleep-edge mapping and secure default, and `crates/session/shell/tests/session_lock_e2e.rs`
 drives idle lock plus failed and successful unlock through the live loop.
 
 ---
@@ -596,8 +596,8 @@ Two adjacent holes in the same guarantee were found alongside it:
 
 ## P1-8 — `catch_unwind` soft-fails are inert in release, so the compositor aborts at startup with no GPU adapter
 
-`ui/src/warmup.rs:191`, `shell/src/compositor/native.rs:707`,
-`shell/src/compositor/backend/headless.rs:77` (line numbers as found; now fixed)
+`crates/sdk/ui-core/src/warmup.rs:191`, `crates/session/shell/src/compositor/native.rs:707`,
+`crates/session/shell/src/compositor/backend/headless.rs:77` (line numbers as found; now fixed)
 
 Three call sites wrapped `ui::offscreen::OffscreenRenderer::new` in `std::panic::catch_unwind` to
 degrade gracefully when wgpu finds no adapter. `[profile.release]` sets `panic = "abort"`
@@ -607,7 +607,7 @@ catching, ever begins. All three guards were inert in exactly the configuration 
 `OffscreenRenderer::new`'s own doc comment told callers to use the mechanism that does not work.
 
 The load-bearing one is `ui::warmup::spawn_warmup`, called on the compositor's real startup path
-(`shell/src/main.rs:129`) from a `tilo-startup-warmup` thread. Its comment claimed *"A missing
+(`crates/session/shell/src/main.rs:129`) from a `tilo-startup-warmup` thread. Its comment claimed *"A missing
 adapter isn't fatal to the shell — the compositor's real backend surfaces its own adapter error
 later — so we swallow it here."* In a release build nothing is swallowed: on a machine where
 adapter enumeration fails the shell aborts before it ever reaches the backend that was supposed to
@@ -621,13 +621,13 @@ panic strategy the release profile actually sets.
 **Fix direction (applied):** `OffscreenRenderer::try_new` returns `OffscreenError` instead of
 panicking; `new` is retained for its many test/example callers and panics through it. All three
 sites take the `Result`. `panic = "abort"` is unchanged. Pinned by
-`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`ui/tests/warmup_no_adapter.rs`), which
+`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`crates/sdk/ui-core/tests/warmup_no_adapter.rs`), which
 re-executes itself as a child with an empty wgpu backend set and an aborting panic hook — cargo
 ignores `panic` on the test profile, so the strategy has to be emulated — and fails if the child
 dies by signal rather than exiting. It first asserts no adapter is reachable, so it cannot pass
 vacuously on a GPU host. Against the previous code the child dies with SIGABRT.
 
-**Residual:** `OffscreenRenderer::render` still `expect`s internally (`ui/src/offscreen.rs`, the
+**Residual:** `OffscreenRenderer::render` still `expect`s internally (`crates/sdk/ui-core/src/offscreen.rs`, the
 `render_to_texture` and buffer-map paths). Those were nominally inside the same dead
 `catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
 build. The `catch_unwind` pair in `crates/collab/channel-crypto/src/group.rs:237,379` was checked
@@ -638,9 +638,9 @@ debug builds, which is where `catch_unwind` works.
 
 ## P2-1 — `PeerId` is a 64-bit fold of the public key
 
-`shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
+`crates/session/shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
 public key, and it is used as the `PeerIdentityStore` key. 64 bits is collision-findable. Note the
-newer `PeerOrigin` (`shell/src/shell/state.rs:109-127`) correctly carries the full base58 peer id —
+newer `PeerOrigin` (`crates/session/shell/src/shell/state.rs:109-127`) correctly carries the full base58 peer id —
 the fold is the older path.
 
 **Resolved.** `PeerIdentityStore` keys on `PeerOrigin`. The `u64` that remains on the wire is named
@@ -648,12 +648,12 @@ the fold is the older path.
 actor and the shell instead of two copies of `DefaultHasher` — whose output std does not promise
 across Rust releases, so two peers on different toolchains would have stopped recognising each
 other's publishes. Held by
-`shell/src/network/identity.rs::tests::distinct_peers_never_share_an_entry` and
-`shell/src/network/behaviour.rs::tests::peer_liveness_handle_is_pinned_to_the_peer_id`.
+`crates/session/shell/src/network/identity.rs::tests::distinct_peers_never_share_an_entry` and
+`crates/session/shell/src/network/behaviour.rs::tests::peer_liveness_handle_is_pinned_to_the_peer_id`.
 
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
-`shell/src/network/behaviour.rs:122-127` — if `/var/lib/tilo-fs/peer-key` exists but does not parse,
+`crates/session/shell/src/network/behaviour.rs:122-127` — if `/var/lib/tilo-fs/peer-key` exists but does not parse,
 it is overwritten with a fresh keypair rather than raising. Identity loss becomes indistinguishable
 from first run. The same function documents a known TOCTOU window between write and `chmod 0600`
 (`:142-146`).
@@ -663,13 +663,13 @@ compositor leaves peer sync off rather than syncing an unsalted id space. The ke
 machine's one device key, so the compositor no longer keeps a network identity of its own; an
 an existing installation's transport key is adopted seed-and-all so the machine keeps its Iroh `EndpointId`.
 The write goes through an atomic write-with-mode, closing the TOCTOU window. Held by
-`shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
+`crates/session/shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
 and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 
-`crates/identity/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
-correct before/after-cutoff semantics (tested at `shell/src/network/identity.rs:364-406`), but
+`crates/collab/tilo-user-identity/src/revocation.rs` implements signed revocation entries with
+correct before/after-cutoff semantics (tested at `crates/session/shell/src/network/identity.rs:364-406`), but
 `PeerIdentityStore::set_revocations` has no non-test caller and there is no distribution mechanism.
 
 **Resolved.** Each workspace heartbeat now starts with an `IdentityHello` carrying the sender's
@@ -718,14 +718,14 @@ only; every other image reference is unverified.
 
 These are load-bearing and correct. Changing them requires understanding why they are as they are.
 
-- `shell/src/shell/state.rs:2085-2093` — `apply_room_changes` merges into a **copy** first, because
+- `crates/session/shell/src/shell/state.rs:2085-2093` — `apply_room_changes` merges into a **copy** first, because
   *"a check that runs after the merge has already happened is not a check."* Whole batches are
   refused rather than partially applied.
-- `shell/src/shell/state.rs:109-127` — `PeerOrigin` is *"named as the transport authenticated it —
+- `crates/session/shell/src/shell/state.rs:109-127` — `PeerOrigin` is *"named as the transport authenticated it —
   not as the message claims."*
-- `shell/src/shell/state.rs:1750-1753` — re-pinning room authority is refused, because otherwise
+- `crates/session/shell/src/shell/state.rs:1750-1753` — re-pinning room authority is refused, because otherwise
   *"send the guest another invite"* becomes a way to re-point them at an attacker.
-- `shell/src/shell/state.rs:1078-1084` — a role **is** the verb on the membership capability, not a
+- `crates/session/shell/src/shell/state.rs:1078-1084` — a role **is** the verb on the membership capability, not a
   separately stored field, so the two cannot drift.
 - `crates/packaging/launcher/src/netgate.rs` — egress is fail-closed: if the gate cannot start the
   launch is refused, not downgraded.

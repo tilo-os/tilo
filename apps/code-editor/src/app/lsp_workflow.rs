@@ -7,7 +7,7 @@ impl CodeApp {
     ///
     /// For a disk-backed node this is the real file's URI, which is the whole
     /// point: a server told about `file:///project-name/src/main.rs` when the
-    /// file is at `/home/me/tilo/shell/src/main.rs` has been told about a
+    /// file is at `/home/me/tilo/crates/session/shell/src/main.rs` has been told about a
     /// document that does not exist, and answers accordingly. The synthetic
     /// form survives only for the in-memory demo tree, which has no path.
     pub(super) fn node_uri(&self, node: TreeId) -> String {

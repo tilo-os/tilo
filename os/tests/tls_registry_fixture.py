@@ -8,17 +8,59 @@ import ssl
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import uuid
 
 REGISTRY = 'docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
+DIAGNOSTIC_LIMIT = 4096
+
+
+def bounded_output(data):
+    return data.decode(errors='replace').strip()[-DIAGNOSTIC_LIMIT:]
 
 
 def run(*argv):
     result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
-        raise RuntimeError(f'{Path(argv[0]).name} failed with exit {result.returncode}')
+        detail = bounded_output(result.stderr)
+        suffix = f': {detail}' if detail else ''
+        raise RuntimeError(
+            f'{Path(argv[0]).name} failed with exit {result.returncode}{suffix}')
     return result.stdout
+
+
+def wait_until_ready(authority, context, attempts=60, delay=0.5, opener=None):
+    """Wait a bounded interval for the registry's authenticated v2 endpoint."""
+    open_url = urllib.request.urlopen if opener is None else opener
+    last_error = 'no connection attempt completed'
+    for _ in range(attempts):
+        try:
+            with open_url(f'https://{authority}/v2/', context=context, timeout=0.5) as response:
+                if response.status == 200:
+                    return
+                last_error = f'HTTP status {response.status}'
+        except (OSError, urllib.error.URLError) as error:
+            last_error = f'{type(error).__name__}: {error}'
+        time.sleep(delay)
+    raise RuntimeError(
+        f'disposable TLS registry did not become ready after {attempts * delay:.1f}s; '
+        f'last probe: {last_error}')
+
+
+def registry_diagnostics(name):
+    details = []
+    for label, arguments in (
+            ('state', ('inspect', '--format', '{{json .State}}', name)),
+            ('logs', ('logs', name))):
+        result = subprocess.run(
+            ['podman', '--remote=false', *arguments],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        output = bounded_output(result.stdout)
+        details.append(f'{label} (exit {result.returncode}): {output or "<empty>"}')
+    return '; '.join(details)
 
 
 @contextmanager
@@ -59,15 +101,10 @@ def tls_registry():
                 '--env', 'REGISTRY_HTTP_TLS_CERTIFICATE=/tls/cert.pem',
                 '--env', 'REGISTRY_HTTP_TLS_KEY=/tls/key.pem', REGISTRY)
             context = ssl.create_default_context(cafile=str(ca))
-            for _ in range(60):
-                try:
-                    with urllib.request.urlopen(f'https://{authority}/v2/', context=context, timeout=1) as response:
-                        if response.status == 200:
-                            break
-                except OSError:
-                    time.sleep(0.25)
-            else:
-                raise RuntimeError('disposable TLS registry did not become ready')
+            try:
+                wait_until_ready(authority, context)
+            except RuntimeError as error:
+                raise RuntimeError(f'{error}; {registry_diagnostics(name)}') from error
             yield authority
         finally:
             subprocess.run(['podman', '--remote=false', 'rm', '--force', name],

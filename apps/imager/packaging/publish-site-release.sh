@@ -109,6 +109,14 @@ npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
 npm --prefix "$work/site" run build
 
+# The current enabled release matrix has no macOS artifacts. A separate website
+# deployment must understand that scope before its release pointer can advance.
+# Inspect the rendered download URLs, not only a manifest the UI might ignore.
+if grep -REq 'tilo-imager-macos-[^"<>[:space:]]*\.(dmg|zip)' "$work/site/dist"; then
+  printf 'landing page advertises deferred macOS downloads; update its enabled platform matrix before promotion\n' >&2
+  exit 1
+fi
+
 # The manifest is the release-origin contract. Refuse to publish a manifest a
 # site build ignores: that would turn every attractive download action into an
 # authentication-gated or dead link even though its own tests passed.

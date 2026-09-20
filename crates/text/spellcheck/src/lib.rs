@@ -38,15 +38,15 @@
 )]
 
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 mod dictionary;
 mod distance;
+mod hunspell;
 mod suggest;
 mod token;
+
+use hunspell::{results as hunspell_results, suggestions as hunspell_suggestions};
 
 pub use dictionary::Dictionary;
 pub use distance::damerau_levenshtein_within;
@@ -395,101 +395,6 @@ fn normalize_language(language: &str) -> Option<String> {
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || character == '_'))
     .then_some(normalized)
-}
-
-struct HunspellSession {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
-}
-
-impl HunspellSession {
-    fn start(dictionary: &str) -> Option<Self> {
-        let mut child = Command::new("hunspell")
-            .args(["-a", "-d", dictionary])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let stdin = child.stdin.take()?;
-        let stdout = child.stdout.take()?;
-        let mut session = Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout),
-        };
-        let mut banner = String::new();
-        (session.stdout.read_line(&mut banner).ok()? > 0).then_some(session)
-    }
-
-    fn query(&mut self, words: &[&str]) -> Option<Vec<String>> {
-        for word in words {
-            if word.contains(['\n', '\r']) {
-                return None;
-            }
-            writeln!(self.stdin, "{word}").ok()?;
-        }
-        self.stdin.flush().ok()?;
-
-        let mut responses = Vec::with_capacity(words.len());
-        while responses.len() < words.len() {
-            let mut line = String::new();
-            if self.stdout.read_line(&mut line).ok()? == 0 {
-                return None;
-            }
-            let line = line.trim_end_matches(['\n', '\r']);
-            if !line.is_empty() {
-                responses.push(line.to_string());
-            }
-        }
-        Some(responses)
-    }
-}
-
-impl Drop for HunspellSession {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn hunspell_lines(language: &str, words: &[&str]) -> Option<Vec<String>> {
-    static SESSIONS: OnceLock<Mutex<HashMap<String, Option<HunspellSession>>>> = OnceLock::new();
-    let dictionary = normalize_language(language)?;
-    let sessions = SESSIONS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut sessions = sessions.lock().ok()?;
-    if !sessions.contains_key(&dictionary) {
-        let session = HunspellSession::start(&dictionary);
-        sessions.insert(dictionary.clone(), session);
-    }
-    let result = sessions.get_mut(&dictionary)?.as_mut()?.query(words);
-    if result.is_none() {
-        sessions.insert(dictionary, None);
-    }
-    result
-}
-
-fn hunspell_results(language: &str, words: &[&str]) -> Option<Vec<bool>> {
-    let results: Vec<bool> = hunspell_lines(language, words)?
-        .iter()
-        .map(|line| matches!(line.as_bytes().first(), Some(b'*' | b'+' | b'-')))
-        .collect();
-    (results.len() == words.len()).then_some(results)
-}
-
-fn hunspell_suggestions(language: &str, word: &str) -> Option<Vec<String>> {
-    let output = hunspell_lines(language, &[word])?;
-    let result = output.first()?;
-    let (_, candidates) = result.split_once(':')?;
-    Some(
-        candidates
-            .split(',')
-            .map(str::trim)
-            .filter(|candidate| !candidate.is_empty())
-            .map(str::to_string)
-            .collect(),
-    )
 }
 
 /// Returns `true` if `word` is the kind of token a spell checker should judge.

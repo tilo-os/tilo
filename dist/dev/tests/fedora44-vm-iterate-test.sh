@@ -53,6 +53,14 @@ cat >"$work/bin/sudo" <<'EOF'
 printf 'sudo %s\n' "$*" >>"$FAST_LOOP_LOG"
 exit 0
 EOF
+cat >"$work/bin/readelf" <<'EOF'
+#!/usr/bin/env bash
+printf ' 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n'
+EOF
+cat >"$work/bin/strip" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
 cat >"$work/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf 'ssh %s\n' "$*" >>"$FAST_LOOP_LOG"
@@ -72,7 +80,7 @@ grep -Fqx 'Signature: 8a477f597d28d172789f06886806bc55' "$repo_root/$target_rel/
 grep -Fq -- '--features dev-session' "$log"
 grep -Fq -- '--bin shell' "$log"
 grep -Fq -- '-p launcher --bin tilo-launcher' "$log"
-! grep -Fq -- '--no-default-features' "$log"
+grep -Fq -- '--no-default-features' "$log"
 grep -Fq 'SCCACHE_SERVER_PORT=' "$log"
 grep -Fq 'tilo-fedora44-' "$log"
 ! grep -Fq 'SCCACHE_SERVER_PORT=4226' "$log"
@@ -111,6 +119,9 @@ grep -Fq 'Tilo *developer* session entry point.' "$log"
 grep -Fq 'sudo install -m 0755 "$wrapper" /usr/libexec/tilo-session-dev' "$log"
 grep -Fq 'tilo-session-runner' "$log"
 grep -Fq '/usr/libexec/tilo-session-runner' "$log"
+grep -Fq 'tilo-flight-recorder' "$log"
+grep -Fq '/usr/libexec/tilo-flight-recorder' "$log"
+grep -Fq 'ldconfig -p' "$log"
 
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \

@@ -8,7 +8,7 @@ from pathlib import Path
 
 REPO = Path(__file__).parents[2]
 NEXTEST = REPO / ".config" / "nextest.toml"
-SHELL = REPO / "shell" / "src"
+SHELL = REPO / "crates" / "session" / "shell" / "src"
 
 
 def native_4k_tests() -> set[str]:

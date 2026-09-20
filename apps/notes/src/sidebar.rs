@@ -52,13 +52,13 @@ const ROW_HEIGHT: f64 = 30.0;
 /// the "+" new-page button. Rows start below it.
 const HEADER_HEIGHT: f64 = 42.0;
 /// Side length of the square "+" new-page button in the header.
-const NEW_BTN_SIZE: f64 = 26.0;
+const NEW_BTN_SIZE: f64 = 30.0;
 /// Right/vertical inset of the "+" button inside the header strip.
 const NEW_BTN_MARGIN: f64 = 8.0;
 /// Compact row actions appear only while a note is hovered. Keeping them a
 /// little smaller than the row preserves label space without making the hit
 /// targets fiddly.
-const ROW_ACTION_SIZE: f64 = 22.0;
+const ROW_ACTION_SIZE: f64 = 26.0;
 const ROW_ACTION_GAP: f64 = 2.0;
 /// Left content inset: rows, the header label and the selection pill all
 /// start this far in from the sidebar's left edge so nothing is jammed
@@ -722,24 +722,40 @@ pub(crate) fn note_context_menu() -> ContextMenu {
     let mut menu = ContextMenu::new();
     menu.push(MenuItem::icon_action(
         Icon::FilePlus,
-        "New child note",
+        ui::i18n!("notes-menu-new-child"),
         || {},
     ));
-    menu.push(MenuItem::icon_action(Icon::Pencil, "Rename", || {}));
-    menu.push(MenuItem::icon_action(Icon::Copy, "Duplicate", || {}));
+    menu.push(MenuItem::icon_action(
+        Icon::Pencil,
+        ui::i18n!("notes-menu-rename"),
+        || {},
+    ));
+    menu.push(MenuItem::icon_action(
+        Icon::Copy,
+        ui::i18n!("notes-menu-duplicate"),
+        || {},
+    ));
     menu.push(MenuItem::icon_action(
         Icon::ExternalLink,
-        "Copy note link",
+        ui::i18n!("notes-menu-copy-link"),
         || {},
     ));
     menu.push(MenuItem::icon_action(
         Icon::Download,
-        "Export Markdown",
+        ui::i18n!("notes-menu-export"),
         || {},
     ));
-    menu.push(MenuItem::icon_action(Icon::Image, "Insert image", || {}));
+    menu.push(MenuItem::icon_action(
+        Icon::Image,
+        ui::i18n!("notes-menu-insert-image"),
+        || {},
+    ));
     menu.push(MenuItem::separator());
-    menu.push(MenuItem::icon_action(Icon::Trash2, "Delete", || {}));
+    menu.push(MenuItem::icon_action(
+        Icon::Trash2,
+        ui::i18n!("notes-menu-delete"),
+        || {},
+    ));
     // Keep these row indices aligned with both menu selection dispatchers.
     menu
 }
@@ -1123,7 +1139,7 @@ impl Widget for NoteTreeView {
             if let Some(rename) = self.rename.as_ref().filter(|rename| rename.page == row.id)
                 && let Some(mut input) = Widget::accessibility(&rename.input)
             {
-                input.name = Some("Rename note".into());
+                input.name = Some(ui::i18n!("notes-a11y-rename"));
                 input.action_target = Some(format!("notes:rename:{}", row.id));
                 input.bounds = Some(rename.input.get_rect().into());
                 children.push(input);
@@ -1145,12 +1161,20 @@ impl Widget for NoteTreeView {
                     .with_bounds(rect)
                     .with_children(vec![
                         AccessNode::new(Role::Button)
-                            .with_name(format!("New child note under {}", row.title))
+                            .with_name(format!(
+                                "{} {}",
+                                ui::i18n!("notes-a11y-new-child-under"),
+                                row.title
+                            ))
                             .with_state(AccessState::new().focusable(true))
                             .with_action_target(format!("notes:new-child:{}", row.id))
                             .with_bounds(child_action),
                         AccessNode::new(Role::Button)
-                            .with_name(format!("More actions for {}", row.title))
+                            .with_name(format!(
+                                "{} {}",
+                                ui::i18n!("notes-a11y-more-actions-for"),
+                                row.title
+                            ))
                             .with_state(AccessState::new().focusable(true))
                             .with_action_target(format!("notes:actions:{}", row.id))
                             .with_bounds(more_action),
@@ -1173,7 +1197,7 @@ impl Widget for NoteTreeView {
         }
         Some(
             AccessNode::new(Role::Tree)
-                .with_name("Notes")
+                .with_name(ui::i18n!("notes-title"))
                 .with_state(AccessState::new().focusable(true).focused(self.is_focused))
                 .with_children(children),
         )
@@ -1340,7 +1364,7 @@ impl NoteTreeView {
             + (self.header_height() - f64::from(ROW_TEXT_SIZE) * self.text_scale) / 2.0;
         text_renderer.draw_text(
             scene,
-            "Notes",
+            &ui::i18n!("notes-title"),
             ROW_TEXT_SIZE,
             tokens.colors.text_dim,
             transform * Affine::translate((self.rect.x0 + self.scaled(ROW_INSET_X), header_text_y)),

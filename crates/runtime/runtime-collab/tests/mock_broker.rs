@@ -1,4 +1,4 @@
-//! Integration test: end-to-end RPC round-trip over a Unix socket
+//! Integration tests: end-to-end RPC over a bounded byte stream and Unix socket
 //! against an in-memory `CollabService` server.
 //!
 //! Exercises the `UnixCapnpClient` plumbing through `runtime-portal`, the
@@ -28,19 +28,21 @@
 )]
 
 use std::cell::RefCell;
+#[cfg(unix)]
 use std::os::fd::IntoRawFd;
 use std::rc::Rc;
 
 use capnp::capability::Promise;
 use capnp::message::ReaderOptions;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use runtime_collab::raw::{channel_handle, collab_service, presence_handle, stream};
 use runtime_collab::{CollabClient, CollabServiceClient};
-use runtime_portal::UnixCapnpClient;
+use runtime_portal::CapnpClient;
 
 // server impls
 
@@ -172,14 +174,57 @@ impl collab_service::Server for FakeBroker {
 // the test itself
 
 #[tokio::test(flavor = "current_thread")]
+async fn connected_io_join_send_subscribe_read() {
+    let (server_side, client_side) = tokio::io::duplex(512);
+    let connection = CapnpClient::from_connected_io(client_side, rpc_twoparty_capnp::Side::Client);
+    assert_round_trip(server_side, connection).await;
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "current_thread")]
+async fn named_pipe_join_send_subscribe_read() {
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let name = format!(r"\\.\pipe\tilo-rpc-test-{}-{nonce}", std::process::id());
+    let server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .reject_remote_clients(true)
+        .create(&name)
+        .expect("test-owned named pipe");
+    let client = ClientOptions::new().open(&name).expect("connect test pipe");
+    tokio::time::timeout(std::time::Duration::from_secs(5), server.connect())
+        .await
+        .expect("named pipe connection deadline")
+        .expect("named pipe connected");
+    let connection = CapnpClient::from_connected_io(client, rpc_twoparty_capnp::Side::Client);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        assert_round_trip(server, connection),
+    )
+    .await
+    .expect("named pipe RPC deadline");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
 async fn round_trip_join_send_subscribe_read() {
+    let (server_side, client_side) = UnixStream::pair().unwrap();
+    let fd = client_side.into_std().unwrap().into_raw_fd();
+    let connection = CapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client).unwrap();
+    assert_round_trip(server_side, connection).await;
+}
+
+async fn assert_round_trip<S>(server_side: S, connection: CapnpClient)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+{
     let local = LocalSet::new();
     local
         .run_until(async {
-            // 1. A connected socket pair: one end runs the server RPC system locally,
-            //    the other is handed to the client via UnixCapnpClient.
-            let (server_side, client_side) = UnixStream::pair().unwrap();
-
             // 2. Stand up the server RPC system.
             let captured_joins = Rc::new(RefCell::new(Vec::<(String, Vec<u8>)>::new()));
             let captured_ops = Rc::new(RefCell::new(Vec::<Vec<u8>>::new()));
@@ -192,7 +237,7 @@ async fn round_trip_join_send_subscribe_read() {
             };
             let broker_client: collab_service::Client = capnp_rpc::new_client(broker);
 
-            let (server_read, server_write) = server_side.into_split();
+            let (server_read, server_write) = tokio::io::split(server_side);
             let server_network = Box::new(twoparty::VatNetwork::new(
                 server_read.compat(),
                 server_write.compat_write(),
@@ -204,12 +249,8 @@ async fn round_trip_join_send_subscribe_read() {
                 let _ = server_rpc.await;
             });
 
-            // 3. Stand up the client via UnixCapnpClient — the same path real apps take.
-            let client_fd = client_side.into_std().unwrap().into_raw_fd();
-            let unix =
-                UnixCapnpClient::from_connected_fd(client_fd, rpc_twoparty_capnp::Side::Client)
-                    .expect("connect");
-            let client: CollabServiceClient = unix.bootstrap();
+            // Both transports enter the same production RPC driver and typed SDK.
+            let client: CollabServiceClient = connection.bootstrap();
             let collab = CollabClient::from_raw(client);
 
             // 4. join_channel

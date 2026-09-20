@@ -42,6 +42,11 @@ flushes every change with a
 500 ms debounce; the status bar shows "Saving…" while a write is
 queued and "Saved" once it lands.
 
+Set `TILO_NOTES_ROOT` to an absolute directory to use a different notebook,
+including an isolated notebook for headless testing. Empty or relative values
+are rejected instead of opening the default notebook. The default remains
+`~/notes/` on every platform.
+
 For headless visual review, render one offscreen frame to a PNG:
 
 ```bash

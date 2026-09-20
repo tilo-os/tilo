@@ -1,6 +1,6 @@
 # WorkspaceTree Automerge design
 
-**Status:** Implemented. The live model is in `shell/src/shell/state.rs`.
+**Status:** Implemented. The live model is in `crates/session/shell/src/shell/state.rs`.
 
 ## Decision
 

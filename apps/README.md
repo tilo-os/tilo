@@ -5,9 +5,9 @@ Rust library names and imports use underscores (`code_editor`).
 
 
 Every app here is a native Tilo application built on the public
-[`tilo-app`](../crates/app/tilo-app) SDK (normally renamed to `ui` in Cargo).
+[`tilo-app`](../crates/sdk/tilo-app) SDK (normally renamed to `ui` in Cargo).
 `tilo-app` re-exports the complete retained-widget, layout, canvas,
-custom-painting, native-view and GPU API. The internal [`ui-core`](../ui) package
+custom-painting, native-view and GPU API. The internal [`ui-core`](../crates/sdk/ui-core) package
 is a dependency of the shell and SDK; apps use `tilo-app`.
 
 Apps are retained-mode and CRDT-native: durable state lives in a shared
@@ -75,7 +75,7 @@ the same intent.
 
 The toolkit validates the live surface before publishing it, and the broker
 validates untrusted descriptors again. Presubmit runs
-`tools/check_app_resource_action_contract.py` to reject missing resources and
+`tools/policy/check_app_resource_action_contract.py` to reject missing resources and
 unattached operation handlers. Invoke and inspect actions with:
 
 ```bash
@@ -227,6 +227,6 @@ cargo run -p notes -- --shots out.png        # headless offscreen frame
 ```
 
 Each app depends on the public SDK under the concise source name
-`ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }`. Direct
+`ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }`. Direct
 dependencies on the internal `ui` package are reserved for framework code and
 are rejected at the app boundary.

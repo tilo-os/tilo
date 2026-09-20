@@ -1533,7 +1533,7 @@ impl ChatDoc {
 
     /// Replace the draft body with `text`, diff-spliced so only the changed
     /// span is written (never a whole-text rewrite per keystroke — see
-    /// `ui/HIG.md` §6). The composer calls this on every edit so the draft
+    /// `crates/sdk/ui-core/HIG.md` §6). The composer calls this on every edit so the draft
     /// stays collaborative + persistent.
     pub fn set_draft(doc: &mut AutoCommit, channel: &str, text: &str) {
         let obj = Self::draft_obj(doc, channel);

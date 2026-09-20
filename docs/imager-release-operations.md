@@ -27,10 +27,11 @@ not returned to a warm pool. The practical autoscaling sequence is:
    VM and attached disk in all cases.
 
 Golden Linux and macOS images should install
-`tools/run-imager-ephemeral-runner.sh` as a root-owned, non-writable executable
+`tools/ci/runners/imager-ephemeral-linux.sh` as a root-owned, non-writable executable
 outside the checkout. Invoke that installed copy as
 `/usr/local/sbin/run-imager-ephemeral-runner LABEL UUID_FILE TOKEN_FILE`.
-Windows images should likewise install `tools/Run-ImagerEphemeralRunner.ps1`
+Windows images should likewise install
+`tools/ci/runners/imager-ephemeral-windows.ps1`
 outside the checkout with an ACL writable only by Administrators, then invoke
 it as `powershell.exe -NoLogo -NoProfile -NonInteractive -File
 C:\ProgramData\Tilo\Run-ImagerEphemeralRunner.ps1 -Label imager-windows-x86_64 -UuidFile

@@ -42,6 +42,7 @@ die() {
 HOMEDIR=$(getent passwd "$ME" | cut -d: -f6)
 [ -n "${HOMEDIR:-}" ] || die "no home directory in the passwd database for uid $ME"
 CONF="$HOMEDIR/.config/tilo/dev-session"
+CONF_SHA="$HOMEDIR/.config/tilo/dev-session.sha256"
 APP_ENV_CONF="$HOMEDIR/.config/tilo/dev-app-environment"
 
 # Owned by this user or by root, and writable by neither group nor other.
@@ -150,7 +151,18 @@ TILO_TEST_CONTROL="$ATTEST_DIR/control.sock"
 rm -f -- "$TILO_TEST_CONTROL"
 export TILO_TEST_CONTROL
 ATTEST_TMP="$ATTEST_DIR/active.$$"
-TARGET_SHA256=$(sha256sum -- "$TARGET_REAL" | cut -d' ' -f1)
+TARGET_SHA256=
+if [ -f "$CONF_SHA" ]; then
+    CONF_SHA_REAL=$(realpath -e -- "$CONF_SHA") || die "cannot resolve $CONF_SHA"
+    path_is_trusted "$CONF_SHA_REAL" || die "$CONF_SHA_REAL must be owned by you and not writable by anyone else"
+    chain_is_trusted "$(dirname -- "$CONF_SHA_REAL")" || die "the directories above $CONF_SHA_REAL are writable by others"
+    TARGET_SHA256=$(sed -n '1{s/[[:space:]].*$//;p;}' -- "$CONF_SHA_REAL")
+fi
+case "$TARGET_SHA256" in
+    *[!0-9a-f]*|'') TARGET_SHA256=$(sha256sum -- "$TARGET_REAL" | cut -d' ' -f1) ;;
+    *) ;;
+esac
+[ "${#TARGET_SHA256}" -eq 64 ] || die "developer-session digest is malformed"
 {
     printf 'pid=%s\n' "$$"
     printf 'path=%s\n' "$TARGET_REAL"

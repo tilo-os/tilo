@@ -72,4 +72,52 @@ test -d "$work/data/tilo" || fail 'the host identity root was not prepared'
 test ! -e "$work/data/tilo/user-identity/primary.json" \
     || fail 'startup minted an identity without user consent'
 
-echo 'installed host first-login startup: PASS'
+# Rendering the ceremony is not proof that its central operation works. Run
+# the production provisioning entrypoint as the same throwaway account, using
+# a Fedora Atomic-style /home symlink, then verify and repeat it. This catches
+# filesystem-policy failures after the personal record is written (the former
+# /home -> /var/home ELOOP did exactly that) without bypassing user consent in
+# a real login or depending on screenshot-state injection.
+real_home="$work/var/home/$smoke_user"
+mkdir -p "$work/var/home"
+mv "$work/home" "$real_home"
+ln -s "$work/var/home" "$work/home-link"
+host_home="$work/home-link/$smoke_user"
+install -d -m 0700 -o "$smoke_uid" -g "$smoke_gid" \
+    "$host_home/.config" "$host_home/.local/share"
+
+run_identity() {
+    runuser -u "$smoke_user" -- env -i \
+        HOME="$host_home" \
+        USER="$smoke_user" \
+        LOGNAME="$smoke_user" \
+        PATH=/usr/local/bin:/usr/bin:/bin \
+        XDG_CONFIG_HOME="$host_home/.config" \
+        XDG_DATA_HOME="$host_home/.local/share" \
+        TILO_IDENTITY_ROOT="$host_home/.local/share/tilo" \
+        /usr/bin/tilo-shell "$@"
+}
+
+run_identity --host-desktop-session --provision-identity \
+    >"$work/provision.log" 2>&1 || {
+        cat "$work/provision.log" >&2
+        fail 'the installed binary could not create a host identity'
+    }
+run_identity --host-desktop-session --verify-collaboration-identity \
+    >"$work/verify.log" 2>&1 || {
+        cat "$work/verify.log" >&2
+        fail 'the installed binary could not verify its new host identity'
+    }
+primary="$host_home/.config/tilo/identity/primary.json"
+device_key="$host_home/.local/share/tilo/device-private/keypair.bin"
+device_cert="$host_home/.local/share/tilo/device/cert.bin"
+test -s "$primary" || fail 'host provisioning omitted the personal identity'
+test -s "$device_key" || fail 'host provisioning omitted the device key'
+test -s "$device_cert" || fail 'host provisioning omitted the device certificate'
+before=$(sha256sum "$primary" "$device_key" "$device_cert")
+run_identity --host-desktop-session --provision-identity \
+    >"$work/reprovision.log" 2>&1 || fail 'idempotent host reprovision failed'
+after=$(sha256sum "$primary" "$device_key" "$device_cert")
+[[ $after == "$before" ]] || fail 'reprovision changed the established identity chain'
+
+echo 'installed host first-login startup and identity lifecycle: PASS'

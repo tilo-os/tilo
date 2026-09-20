@@ -31,6 +31,7 @@ manifest_hits="$(find "$repo/os" "$repo/.forgejo" -type f \
     \( -name 'Containerfile*' -o -name '*.yml' -o -name '*.yaml' \) -print0 \
   | xargs -0 -r rg -n -i '\b(openssl(-devel)?|sbsigntools)\b' \
   | grep -Ev '(^|:)[0-9]+:[[:space:]]*#|rpm -q|microdnf remove|dnf remove|libssl|libcrypto' \
+  | grep -Ev '^.*/os/Containerfile:[0-9]+:RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \\$' \
   | grep -Ev ': *&& (! )?printf '"'"'%s\\n'"'"' "\$installed" \| (awk '"'"'/\^\([[:alnum:]_|-]+\)\$/'"'"'|grep -Eq '"'"'\^\([[:alnum:]_|-]+\)\$'"'"') *\\?$' \
   || true)"
 if [ -n "$manifest_hits" ]; then
@@ -38,6 +39,18 @@ if [ -n "$manifest_hits" ]; then
   bad 'a build manifest or workflow actively installs OpenSSL/sbsigntools'
 else
   ok 'all build manifests and workflows avoid OpenSSL/sbsigntools installs'
+fi
+
+trust_tool_bind="$(grep -Fxc \
+  'RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \' \
+  "$repo/os/Containerfile")"
+if [ "$trust_tool_bind" -eq 1 ] \
+  && grep -Fq 'FROM ${BASE_REF} AS public-trust-tools' "$repo/os/Containerfile" \
+  && grep -Fq 'PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py' \
+       "$repo/os/Containerfile"; then
+  ok 'late public trust parsing receives one read-only build mount outside the runtime PATH'
+else
+  bad 'late public trust parser is not confined to its exact read-only build mount'
 fi
 
 crypto_source="$repo/crates/system/tilo-crypto/src/lib.rs"
@@ -160,7 +173,7 @@ else
 fi
 
 runtime_splash="$(sed -n '/# Splash rendering needs Pillow/,/# The install-config drop-in/p' "$repo/os/Containerfile")"
-crypto_packages='systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server'
+crypto_packages='systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server'
 if inventory_cleanup "$runtime_splash" "^($crypto_packages)\$" \
     "xargs -r dnf --disablerepo='*' remove -y" "^(python3-pillow|$crypto_packages)\$"; then
   ok 'early rootfs cleanup removes inherited crypto CLI packages before later feature dependencies'
@@ -205,12 +218,22 @@ else
   ok 'headless relay excludes the OpenSSL-linked VPN plugin and unused hardware daemons'
 fi
 
-if rg -n 'Command::new\("ssh"\)|^[[:space:]]*(exec[[:space:]]+)?ssh[[:space:]]' \
-    "$repo/os/usr" "$repo/apps" "$repo/crates" "$repo/shell" \
-    -g '*.rs' -g '*.sh' -g '!**/tests/**' >/dev/null; then
-  bad 'Tilo-owned runtime source invokes OpenSSH outside the reviewed distro dependency exception'
-else
-  ok 'Tilo-owned Remote transport does not invoke the distro OpenSSH CLI'
+runtime_source_roots=("$repo/os/usr" "$repo/apps" "$repo/crates")
+missing_runtime_source_root=0
+for root in "${runtime_source_roots[@]}"; do
+  if [ ! -d "$root" ]; then
+    bad "runtime source scan root does not exist: ${root#"$repo/"}"
+    missing_runtime_source_root=1
+  fi
+done
+if [ "$missing_runtime_source_root" -eq 0 ]; then
+  if rg -n 'Command::new\("ssh"\)|^[[:space:]]*(exec[[:space:]]+)?ssh[[:space:]]' \
+      "${runtime_source_roots[@]}" \
+      -g '*.rs' -g '*.sh' -g '!**/tests/**' >/dev/null; then
+    bad 'Tilo-owned runtime source invokes OpenSSH outside the reviewed distro dependency exception'
+  else
+    ok 'Tilo-owned Remote transport does not invoke the distro OpenSSH CLI'
+  fi
 fi
 
 runtime_network="$(sed -n '/# System utilities\./,/xdg-desktop-portal/p' "$repo/os/Containerfile")"

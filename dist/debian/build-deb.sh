@@ -26,7 +26,8 @@ dev=$work/tilo-session-devel
 mkdir -p "$main"/{DEBIAN,etc/pam.d,usr/bin,usr/libexec,usr/lib/systemd/user,usr/share/wayland-sessions,usr/share/xdg-desktop-portal/portals,usr/share/doc/tilo-session}
 install -pm 0755 "$stage/bin/tilo-shell" "$stage/bin/tilo-launcher" "$main/usr/bin/"
 install -pm 0755 "$stage/libexec/tilo-unlock-helper" "$stage/libexec/tilo-session" \
-    "$stage/libexec/tilo-session-runner" "$main/usr/libexec/"
+    "$stage/libexec/tilo-session-runner" "$stage/libexec/tilo-flight-recorder" \
+    "$main/usr/libexec/"
 install -pm 0644 "$stage/pam/tilo-unlock" "$main/etc/pam.d/"
 install -pm 0644 "$stage/wayland-sessions/tilo.desktop" "$main/usr/share/wayland-sessions/"
 install -pm 0644 "$stage/portal/tilo.portal" "$main/usr/share/xdg-desktop-portal/portals/"

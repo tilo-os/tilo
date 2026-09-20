@@ -58,7 +58,7 @@ Default socket: `$TILO_TEST_CONTROL` else `/tmp/tilo.sock`. Errors exit non-zero
 The socket accepts newline-delimited JSON. Every command produces exactly one JSON response line.
 
 ```json
-// Commands (excerpt — see shell/src/compositor/test_control.rs::Command):
+// Commands (excerpt — see crates/session/shell/src/compositor/test_control.rs::Command):
 {"op": "list_targets"}
 {"op": "click_at",     "x": 400, "y": 300}
 {"op": "click_named",  "name": "command_palette_input"}
@@ -89,5 +89,5 @@ Error codes that show up in normal use:
 ## Further reading
 
 - `docs/headless-testing.md` — the maintained overview and protocol guide for the three e2e layers (shots / socket / headless backend)
-- `shell/src/compositor/test_control.rs` — `Command` and `Response` protocol definitions
-- `shell/src/bin/shots/scenario.rs` — pre-written scenarios that exercise the same code paths in-process
+- `crates/session/shell/src/compositor/test_control.rs` — `Command` and `Response` protocol definitions
+- `crates/session/shell/src/bin/shots/scenario.rs` — pre-written scenarios that exercise the same code paths in-process

@@ -30,6 +30,7 @@ install -pm 0755 "$bin_dir/tilo-unlock-helper" "$stage/libexec/tilo-unlock-helpe
 install -pm 0755 "$repo_root/dist/session/tilo-session"     "$stage/libexec/tilo-session"
 install -pm 0755 "$repo_root/dist/session/tilo-session-dev" "$stage/libexec/tilo-session-dev"
 install -pm 0755 "$repo_root/dist/session/tilo-session-runner" "$stage/libexec/tilo-session-runner"
+install -pm 0755 "$repo_root/dist/session/tilo-flight-recorder.py" "$stage/libexec/tilo-flight-recorder"
 install -pm 0644 "$repo_root/dist/session/tilo.desktop"     "$stage/wayland-sessions/tilo.desktop"
 install -pm 0644 "$repo_root/dist/session/tilo-dev.desktop" "$stage/wayland-sessions/tilo-dev.desktop"
 install -pm 0644 "$repo_root/os/etc/pam.d/tilo-unlock"      "$stage/pam/tilo-unlock"

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).parents[1] / "check_workflow_actions.py"
+MODULE_PATH = Path(__file__).parents[1] / "policy/check_workflow_actions.py"
 SPEC = importlib.util.spec_from_file_location("check_workflow_actions", MODULE_PATH)
 assert SPEC and SPEC.loader
 workflow_actions = importlib.util.module_from_spec(SPEC)
@@ -24,7 +24,9 @@ class WorkflowActionTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def write(self, name: str, text: str) -> None:
-        (self.workflows / name).write_text(text, encoding="utf-8")
+        path = self.workflows / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
 
     def test_full_commit_remote_action_is_accepted(self) -> None:
         self.write(
@@ -56,6 +58,19 @@ class WorkflowActionTests(unittest.TestCase):
             "  - uses: docker://alpine:3.22\n",
         )
         self.assertEqual(workflow_actions.audit(self.workflows), [])
+
+    def test_nested_composite_action_dependencies_are_audited(self) -> None:
+        self.write(
+            "actions/restore-cache/action.yml",
+            "runs:\n"
+            "  using: composite\n"
+            "  steps:\n"
+            "    - uses: actions/cache/restore@v4\n",
+        )
+        violations = workflow_actions.audit(self.workflows)
+        self.assertEqual(len(violations), 1)
+        self.assertEqual(violations[0].path.name, "action.yml")
+        self.assertEqual(violations[0].reference, "actions/cache/restore@v4")
 
     def test_quotes_and_comments_do_not_hide_a_mutable_reference(self) -> None:
         self.write(

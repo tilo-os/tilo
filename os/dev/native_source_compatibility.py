@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 POLICY_PATHS = ('docs/security/boot-chain.md', 'os/scripts/verify-runtime-crypto-packages.sh',
@@ -39,7 +40,97 @@ def read_approval(path, digest):
     return json.loads(raw, object_pairs_hook=unique)
 
 
+CACHE_BASE = '344257f56275919abc63181d8954e838f9b5303e'
+CACHE_TRUST = 'e5241775387c6afb39d2e6bf8350a59a8aa478b3'
+CACHE_API = 'f6881005fc62dd54cba7dbe7c241149151adfd74'
+CACHE_VIEWER = 'a89fe484328ff4206c35f842c07c3824b9df18ef'
+CACHE_SOURCE = '317eb82f7178b14623350f933088093cd3cdfd23'
+DRACUT_SOURCE = 'ca33fae89a24415584518a0dbbe4db0535935931'
+DRACUT_PATHS = ('os/Containerfile', 'os/tests/boot_chain_invariants.sh',
+                'os/tests/kernel_hardening_invariants.sh', 'os/tests/test_initramfs_module_policy.py')
+
+
 def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_sha256):
+    approval = read_approval(path, digest)
+    if approval.get('purpose') != 'tilo-reviewed-cache-source-compatibility':
+        return _verify_base(repo, revision, path, digest, native_receipt_sha256, reconstruction_sha256)
+    require(set(approval) == {'schema', 'purpose', 'assembly_source_revision',
+        'previous_approval_json', 'previous_approval_sha256', 'wpe_bridge'}, 'cache admission schema differs')
+    require(type(approval['schema']) is int and approval['schema'] == 2
+        and approval['assembly_source_revision'] == revision and revision in (CACHE_SOURCE, DRACUT_SOURCE),
+        'cache admission requires exact reviewed source')
+    require(git(repo, 'show', '-s', '--format=%P', CACHE_SOURCE).decode().strip() == CACHE_VIEWER
+        and git(repo, 'show', '-s', '--format=%P', CACHE_VIEWER).decode().strip() == CACHE_API
+        and git(repo, 'show', '-s', '--format=%P', CACHE_API).decode().strip() == CACHE_TRUST
+        and git(repo, 'show', '-s', '--format=%P', CACHE_TRUST).decode().strip() == CACHE_BASE,
+        'reviewed cache correction ancestry differs')
+    for parent, child, name in ((CACHE_BASE, CACHE_TRUST, 'os/Containerfile'),
+                                 (CACHE_TRUST, CACHE_API, 'os/dev/build-image.sh'),
+                                 (CACHE_API, CACHE_VIEWER, 'os/Containerfile'),
+                                 (CACHE_VIEWER, CACHE_SOURCE, 'os/Containerfile')):
+        require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', parent, child)
+                == name.encode() + b'\0', 'cache correction path differs')
+    dracut_correction = verify_dracut_successor(repo, revision) if revision == DRACUT_SOURCE else None
+    # Exact commit pins bind the reviewed relocation, guarded API, SSH dependency and build-only trust parser bytes;
+    # they are not an extensible allowlist of build-script changes.
+    previous = approval['previous_approval_json'].encode()
+    require(sha(previous) == approval['previous_approval_sha256'], 'previous admission digest differs')
+    with tempfile.TemporaryDirectory(prefix='tilo-cache-admission-') as temporary:
+        prior = Path(temporary) / 'previous.json'
+        prior.write_bytes(previous)
+        result = _verify_base(repo, CACHE_BASE, prior, approval['previous_approval_sha256'],
+                              native_receipt_sha256, reconstruction_sha256, checkout_revision=revision)
+    changes = dict(result['changes'])
+    for name in ('os/Containerfile', 'os/dev/build-image.sh'):
+        blobs = [git(repo, 'rev-parse', commit + ':' + name).decode().strip() for commit in (SOURCE, revision)]
+        changes[name] = dict(old_blob=blobs[0], new_blob=blobs[1],
+            old_sha256=sha(git(repo, 'show', SOURCE + ':' + name)),
+            new_sha256=sha(git(repo, 'show', revision + ':' + name)))
+    verify_cache_recipe(git(repo, 'show', SOURCE + ':os/Containerfile'), git(repo, 'show', revision + ':os/Containerfile'))
+    verify_policy_placement(git(repo, 'show', revision + ':os/Containerfile'))
+    verify_wpe_bridge(approval['wpe_bridge'], changes['os/Containerfile'], sha(git(repo, 'show', SOURCE + ':os/dev/build-wpe.sh')))
+    result.update(approval=approval, approval_sha256=digest, assembly_source_revision=revision,
+        assembly_epoch=int(git(repo, 'show', '-s', '--format=%ct', revision)), changes=changes,
+        layer_epoch_anchor=CACHE_BASE, layer_epoch=int(git(repo, 'show', '-s', '--format=%ct', CACHE_BASE)))
+    if dracut_correction is not None:
+        result['dracut_source_correction'] = dracut_correction
+    return result
+
+
+def verify_dracut_successor(repo, revision):
+    require(revision == DRACUT_SOURCE
+        and git(repo, 'show', '-s', '--format=%P', revision).decode().strip() == CACHE_SOURCE,
+        'dracut correction requires exact reviewed parent and source')
+    require(git(repo, 'diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-r', '-z', CACHE_SOURCE, revision)
+        == b''.join(name.encode() + b'\0' for name in DRACUT_PATHS),
+        'dracut correction paths differ')
+    verify_rootfs(git(repo, 'show', CACHE_SOURCE + ':os/Containerfile'),
+                  git(repo, 'show', revision + ':os/Containerfile'))
+    # The pinned test changes are not producer inputs. Verify the complete
+    # producer prefix has no tests-directory input before retaining native bins.
+    prefix = git(repo, 'show', revision + ':os/Containerfile').split(b'FROM ${BASE_REF} AS rootfs\n')[0]
+    require(all(name.encode() not in prefix for name in DRACUT_PATHS[1:])
+        and not re.search(rb'^COPY[^\n]*[ \t]os/tests/?[ \t]', prefix, re.M),
+        'dracut tests reached a producer stage')
+    return dict(parent_revision=CACHE_SOURCE, revision=revision,
+        sha256={name: sha(git(repo, 'show', revision + ':' + name)) for name in DRACUT_PATHS})
+
+
+TRUST_TOOL_STAGE = (b'# Public trust parsing is a build-only operation. The pinned base supplies the\n'
+                    b'# OpenSSL CLI while its ABI libraries remain part of the runtime package policy.\n'
+                    b'FROM ${BASE_REF} AS public-trust-tools\n\n')
+
+
+def verify_cache_recipe(original, actual):
+    # The exact source pin permits only this inert alias to an already pinned
+    # base. No native compilation instruction, dependency or payload changes.
+    require(actual.count(TRUST_TOOL_STAGE) == 1, 'exact build-only trust stage required')
+    require(actual.index(TRUST_TOOL_STAGE) < actual.index(b'FROM ${BASE_REF} AS rootfs\n'),
+            'trust tools stage must precede rootfs')
+    verify_rootfs(original, actual.replace(TRUST_TOOL_STAGE, b'', 1))
+
+
+def _verify_base(repo, revision, path, digest, native_receipt_sha256, reconstruction_sha256, checkout_revision=None):
     """Compare complete committed trees before any source compatibility adoption."""
     approval = read_approval(path, digest)
     rootfs = approval.get('purpose') == 'tilo-rootfs-native-source-compatibility'
@@ -60,7 +151,7 @@ def verify(repo, revision, path, digest, native_receipt_sha256, reconstruction_s
         and approval['native_receipt_sha256'] == native_receipt_sha256
         and approval['approved_reconstruction_sha256'] == reconstruction_sha256,
         'source admission identity differs')
-    require(git(repo, 'rev-parse', 'HEAD').decode().strip() == revision
+    require(git(repo, 'rev-parse', 'HEAD').decode().strip() == (checkout_revision or revision)
         and not git(repo, 'status', '--porcelain', '--untracked-files=all').strip(),
         'compatible assembly source must be clean and exact')
     # Authenticated checkout includes the explicit two/three/four/five-commit chain.

@@ -64,7 +64,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // production `handle_event` path and times each event + repaint frame,
     // printing per-click the expression length, handle-event µs, frame µs and
     // CRDT document size — so a runaway (freeze) shows up as a climbing number.
-    if args.iter().any(|a| a == "--bench-clicks") {
+    if args
+        .iter()
+        .any(|a| a == "--bench-clicks" || a.starts_with("--bench-clicks="))
+    {
         let n = parse_bench_n(&args).unwrap_or(400);
         return run_clicks_bench(shots_viewport(), n);
     }
@@ -346,8 +349,7 @@ fn bench_run_click_loop(
             continue;
         };
         let Some(pt) = app.bench_calc_key_center(label) else {
-            eprintln!("click {idx}: key {label:?} not found in layout");
-            continue;
+            return Err(format!("click {idx}: key {label:?} not found in layout").into());
         };
         let handle_us = bench_dispatch(app, state, &taffy, child, &synth_cursor(pt.x, pt.y))
             + bench_dispatch(

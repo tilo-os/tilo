@@ -46,7 +46,7 @@ thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 
 cd "$REPO"
 TILO_THIN_BIN_CRATES="$thin_crates" \
-RUSTC_WORKSPACE_WRAPPER="$REPO/tools/rustc-thin-app-wrapper.sh" \
+RUSTC_WORKSPACE_WRAPPER="$REPO/tools/ci/rustc-thin-app-wrapper.sh" \
 cargo build --locked --profile "$PROFILE" --features "$feature_csv" \
     -p runtime-dylib "${packages[@]}"
 

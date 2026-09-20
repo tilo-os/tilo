@@ -76,7 +76,7 @@ def main() -> int:
     )
     if BINARY.stat().st_mtime < newest_src:
         print(
-            f"FAIL: {BINARY} is older than shell/src — rebuild before trusting this run",
+            f"FAIL: {BINARY} is older than crates/session/shell/src — rebuild before trusting this run",
             file=sys.stderr,
         )
         return 1

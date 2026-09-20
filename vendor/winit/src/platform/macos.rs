@@ -180,7 +180,8 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn set_simple_fullscreen(&self, fullscreen: bool) -> bool {
-        self.window.maybe_wait_on_main(move |w| w.set_simple_fullscreen(fullscreen))
+        self.window
+            .maybe_wait_on_main(move |w| w.set_simple_fullscreen(fullscreen))
     }
 
     #[inline]
@@ -190,12 +191,14 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn set_has_shadow(&self, has_shadow: bool) {
-        self.window.maybe_queue_on_main(move |w| w.set_has_shadow(has_shadow))
+        self.window
+            .maybe_queue_on_main(move |w| w.set_has_shadow(has_shadow))
     }
 
     #[inline]
     fn set_tabbing_identifier(&self, identifier: &str) {
-        self.window.maybe_wait_on_main(|w| w.set_tabbing_identifier(identifier))
+        self.window
+            .maybe_wait_on_main(|w| w.set_tabbing_identifier(identifier))
     }
 
     #[inline]
@@ -215,7 +218,8 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn select_tab_at_index(&self, index: usize) {
-        self.window.maybe_queue_on_main(move |w| w.select_tab_at_index(index))
+        self.window
+            .maybe_queue_on_main(move |w| w.select_tab_at_index(index))
     }
 
     #[inline]
@@ -230,12 +234,14 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn set_document_edited(&self, edited: bool) {
-        self.window.maybe_queue_on_main(move |w| w.set_document_edited(edited))
+        self.window
+            .maybe_queue_on_main(move |w| w.set_document_edited(edited))
     }
 
     #[inline]
     fn set_option_as_alt(&self, option_as_alt: OptionAsAlt) {
-        self.window.maybe_queue_on_main(move |w| w.set_option_as_alt(option_as_alt))
+        self.window
+            .maybe_queue_on_main(move |w| w.set_option_as_alt(option_as_alt))
     }
 
     #[inline]
@@ -245,7 +251,8 @@ impl WindowExtMacOS for Window {
 
     #[inline]
     fn set_borderless_game(&self, borderless_game: bool) {
-        self.window.maybe_wait_on_main(|w| w.set_borderless_game(borderless_game))
+        self.window
+            .maybe_wait_on_main(|w| w.set_borderless_game(borderless_game))
     }
 
     #[inline]
@@ -363,7 +370,9 @@ impl WindowAttributesExtMacOS for WindowAttributes {
 
     #[inline]
     fn with_tabbing_identifier(mut self, tabbing_identifier: &str) -> Self {
-        self.platform_specific.tabbing_identifier.replace(tabbing_identifier.to_string());
+        self.platform_specific
+            .tabbing_identifier
+            .replace(tabbing_identifier.to_string());
         self
     }
 
@@ -472,12 +481,29 @@ impl MonitorHandleExtMacOS for MonitorHandle {
     fn ns_screen(&self) -> Option<*mut c_void> {
         // SAFETY: We only use the marker to get a pointer
         let mtm = unsafe { objc2_foundation::MainThreadMarker::new_unchecked() };
-        self.inner.ns_screen(mtm).map(|s| objc2::rc::Retained::as_ptr(&s) as _)
+        self.inner
+            .ns_screen(mtm)
+            .map(|s| objc2::rc::Retained::as_ptr(&s) as _)
     }
 }
 
 /// Additional methods on [`ActiveEventLoop`] that are specific to macOS.
 pub trait ActiveEventLoopExtMacOS {
+    /// Route ordinary application Quit (including Command-Q and the Quit menu)
+    /// to this live window's `CloseRequested` event. AppKit termination is
+    /// cancelled; the application may save, keep editing, or call `exit`.
+    /// Requests are deferred and coalesced until delivery. Only register the
+    /// primary application window, never a popup or presentation window.
+    ///
+    /// `None` preserves normal AppKit termination. Closing the target or exiting
+    /// the event loop clears it and invalidates queued requests. An invalid or
+    /// already closed window returns `ExternalError::Ignored` without changing
+    /// the current registration. Forced process termination is not intercepted.
+    fn set_quit_request_window(
+        &self,
+        target: Option<crate::window::WindowId>,
+    ) -> Result<(), crate::error::ExternalError>;
+
     /// Hide the entire application. In most applications this is typically triggered with
     /// Command-H.
     fn hide_application(&self);
@@ -493,6 +519,13 @@ pub trait ActiveEventLoopExtMacOS {
 }
 
 impl ActiveEventLoopExtMacOS for ActiveEventLoop {
+    fn set_quit_request_window(
+        &self,
+        target: Option<crate::window::WindowId>,
+    ) -> Result<(), crate::error::ExternalError> {
+        self.p.set_quit_request_window(target.map(|id| id.0))
+    }
+
     fn hide_application(&self) {
         self.p.hide_application()
     }

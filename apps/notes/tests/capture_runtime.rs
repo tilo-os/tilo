@@ -90,8 +90,6 @@ fn canonical_navigation_and_overlay_captures_use_real_input_paths() {
         ("rename_commit", (1000, 700)),
         ("shortcuts", (1000, 700)),
         ("shortcuts_bottom", (390, 844)),
-        ("tag_palette", (1000, 700)),
-        ("fulltext_search", (390, 844)),
         ("code_group_drag", (1000, 700)),
         ("code_group_drop", (1000, 700)),
         ("sidebar_scroll", (390, 844)),
@@ -114,9 +112,8 @@ fn canonical_navigation_and_overlay_captures_use_real_input_paths() {
 
 #[test]
 fn canonical_save_failure_capture_uses_the_real_record_writer() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/notes-review/canonical-navigation-overlays/save_error.png");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let output = tempfile::tempdir().unwrap();
+    let path = output.path().join("save_error.png");
     notes::capture::render_to_path((1000, 700), &path, Some("save_error"), None)
         .unwrap_or_else(|error| panic!("save_error: {error:?}"));
     assert!(

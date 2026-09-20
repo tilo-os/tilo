@@ -72,7 +72,7 @@ impl Policy {
     /// Write `policy.json`, creating its directory. Only decisions that
     /// outlive a restart are written — a session-scoped grant surviving into
     /// the next session would be one the user never made (mirrors
-    /// `shell/src/shell/persist.rs`).
+    /// `crates/session/shell/src/shell/persist.rs`).
     ///
     /// # Errors
     ///

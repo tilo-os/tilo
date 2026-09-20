@@ -73,13 +73,13 @@ def tool(name: str) -> pathlib.Path | None:
 # same as not having one. These are the ones where "the binary predates
 # the source" means this run cannot tell you anything.
 UNDER_TEST = (
-    "shell/src/shell/peer_windows.rs",
-    "shell/src/shell/state.rs",
-    "shell/src/shell/mod.rs",
-    "shell/src/compositor/tab_binding.rs",
-    "shell/src/compositor/frame.rs",
-    "shell/src/shell/launcher.rs",
-    "ui/src/widget/tile_host.rs",
+    "crates/session/shell/src/shell/peer_windows.rs",
+    "crates/session/shell/src/shell/state.rs",
+    "crates/session/shell/src/shell/mod.rs",
+    "crates/session/shell/src/compositor/tab_binding.rs",
+    "crates/session/shell/src/compositor/frame.rs",
+    "crates/session/shell/src/shell/launcher.rs",
+    "crates/sdk/ui-core/src/widget/tile_host.rs",
 )
 
 

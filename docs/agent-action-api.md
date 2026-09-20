@@ -80,7 +80,7 @@ resolutions and themes.
 
 ## The visibility gate
 
-`ActionCatalog` (`shell/src/shell/search/action_api.rs`) applies an
+`ActionCatalog` (`crates/session/shell/src/shell/search/action_api.rs`) applies an
 `ActionVisibility` gate when it is built, and keeps the result as an index list
 of the entries that passed. Every public accessor — `enumerate`, `select`,
 `invoke` — reads through that same list.
@@ -93,7 +93,7 @@ exists by trying to run it. Contrast the usual arrangement, where a filtered
 list and an unfiltered dispatcher disagree and the list is merely advisory.
 
 The implementation the socket passes is `CapabilityVisibility`
-(`shell/src/shell/search/visibility.rs`), which resolves the active workspace,
+(`crates/session/shell/src/shell/search/visibility.rs`), which resolves the active workspace,
 builds the actor for the local user, and asks that workspace's own capability
 model. It is fail-closed twice over: `decide_capability` denies unless something
 explicitly permits, and a session that cannot resolve a workspace at all errors
@@ -102,7 +102,7 @@ find its policy is not a gate.
 
 ### What is gated, and what is not
 
-The rule is the one `shell/src/shell/actions.rs` already states, not a new one:
+The rule is the one `crates/session/shell/src/shell/actions.rs` already states, not a new one:
 showing a resource is non-destructive and needs no permission; taking an action
 on one requires permission. So notes, records, files and folders are never
 hidden, and neither are the actions that merely open an overlay —
@@ -180,10 +180,10 @@ the origin of the content mechanically checkable.
 
 | What | Where |
 |---|---|
-| Command + response shapes | `shell/src/compositor/test_control.rs` |
-| Live enumerate / resolve | `shell/src/compositor/native.rs` |
-| Catalogue + visibility seam | `shell/src/shell/search/action_api.rs` |
-| Capability gate + policy | `shell/src/shell/search/visibility.rs` |
+| Command + response shapes | `crates/session/shell/src/compositor/test_control.rs` |
+| Live enumerate / resolve | `crates/session/shell/src/compositor/native.rs` |
+| Catalogue + visibility seam | `crates/session/shell/src/shell/search/action_api.rs` |
+| Capability gate + policy | `crates/session/shell/src/shell/search/visibility.rs` |
 | Live end-to-end proof | `scripts/headless-examples/action-api-demo.py` |
 | Cross-app result hand-off proof | `apps/agent/tests/discovered_operations.rs` |
 | MCP shim | `scripts/tilo-mcp-server.py` |

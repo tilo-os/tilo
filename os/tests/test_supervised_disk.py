@@ -170,11 +170,30 @@ class ControllerAdmission(unittest.TestCase):
                 pod=copy.deepcopy(self.pod)
                 if calls:pod['status']['containerStatuses'][0]['restartCount']=1
                 return json.dumps(pod)
-            argv=['controller','--context','fixture','--namespace','kata-system','--pod','probe','--pod-uid',self.uid,'--node',self.node,'--node-uid','node-uid','--host-agent','agent','--guest-image',self.image,'--pins',str(root/'pins'),'--disk-args',str(root/'args'),'--evidence',str(root/'evidence')]
+            argv=['controller','--context','fixture','--namespace','kata-system','--pod','probe','--pod-uid',self.uid,'--node',self.node,'--node-uid','node-uid','--host-agent','agent','--guest-image',self.image,'--pins',str(root/'pins'),'--disk-args',str(root/'args'),'--evidence',str(root/'evidence'),'--creation-receipt',str(root/'creation.json'),'--helper-revision','a'*40]
             output=io.StringIO()
-            with patch.object(controller,'checked',checked),patch.object(sys,'argv',argv),patch.object(sys,'stdout',output):
+            with patch.object(controller,'checked',checked),patch.object(controller,'helper_bundle',return_value=(b'zip','b'*64)),patch.object(sys,'argv',argv),patch.object(sys,'stdout',output):
                 with self.assertRaisesRegex(ValueError,'continuously ready'):controller.main()
             self.assertEqual(calls,['executed']);self.assertEqual(output.getvalue(),'')
+
+    def test_private_registry_auth_rejects_symlink_and_reads_regular_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); regular=root/'auth.json'; regular.write_text('{"auths":{}}')
+            regular.chmod(0o600)
+            self.assertEqual(controller.private_input(regular,limit=1024),b'{"auths":{}}')
+            link=root/'redirected'; link.symlink_to(regular)
+            with self.assertRaises((ValueError,OSError)):
+                controller.private_input(link,limit=1024)
+
+    def test_creation_receipt_is_private_and_atomic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'evidence'/'creation.json'
+            receipt={'purpose':'tilo-development-unaccepted-test-disk','disk_created':True}
+            self.assertEqual(controller.persist_receipt(path,json.dumps(receipt)),receipt)
+            self.assertEqual(json.loads(path.read_text()),receipt)
+            self.assertEqual(path.stat().st_mode & 0o777,0o600)
+            with self.assertRaisesRegex(ValueError,'completed creation'):
+                controller.persist_receipt(path,'{"disk_created":false}')
 
 
 if __name__ == '__main__':unittest.main()

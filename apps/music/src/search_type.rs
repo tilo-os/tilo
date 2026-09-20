@@ -1,5 +1,4 @@
-//! Search-type seam — registering Music's result types with Tilo's coming
-//! **global-search** framework.
+//! Search-type seam — Music result descriptors and canonical resource actions.
 //!
 //! Music must *not* build a bespoke OS-wide search. Instead it exposes clean
 //! descriptors the global-search framework can register, so a song / album /
@@ -7,22 +6,21 @@
 //! and a subtitle — and activating a hit resolves a canonical resource action
 //! that plays the song or opens the album/artist/playlist page.
 //!
-//! The global-search framework doesn't exist in-tree yet, so this module
-//! defines the *provider side* of the contract Music can already satisfy — the
-//! exact shape [`apps/tube`] pins for its videos/channels:
+//! This module defines Music's provider-side descriptors. The toolkit-facing
+//! library provider below supplies the shared palette with canonical actions:
 //!
 //! * [`SearchableType`] — the static descriptor (stable id, display name,
 //!   whether hits carry a cover). One per app-provided result type.
 //! * [`SearchHit`] — one result row: title, subtitle, a real cover URL (live)
 //!   or a procedural seed (offline), plus the deep link that opens it.
 //! * [`MusicSearchProvider`] — turns a query into [`SearchHit`]s by delegating
-//!   to whichever [`crate::backend::MusicBackend`] the build selected (offline
-//!   sample by default, real `YouTube` Music under `--features live`).
+//!   to an explicitly supplied [`crate::backend::MusicBackend`]. The shipping
+//!   build enables the live backend; tests can supply the offline sample.
 //! * [`library_hits`] — contributes the user's **own library** (synced across
 //!   their devices) to OS search, so a saved album or a personal playlist is
 //!   findable even on the hermetic/offline build.
 //!
-//! When the framework arrives, the integration is a one-liner
+//! Descriptor registration is a one-liner
 //! (`for t in music::searchable_types() { registry.register(t) }` plus a
 //! provider query with no reach into app internals. Search activation itself
 //! goes through the shared operation broker and Music's exported resource tree.

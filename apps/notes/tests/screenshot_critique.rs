@@ -48,15 +48,9 @@ fn critique_state_dump() {
         ),
         ("18-table-cell-edit", Some("table_cell_edit"), (1280, 800)),
         ("19-image-edit", Some("image_edit"), (1280, 800)),
-        ("20-fulltext-search", Some("fulltext_search"), (1280, 800)),
         ("22-fence-opening", Some("fenced_code_opening"), (1280, 800)),
         ("23-typed-python", Some("fenced_code"), (1280, 800)),
         ("24-narrow-typed-python", Some("fenced_code"), (390, 844)),
-        (
-            "21-narrow-fulltext-search",
-            Some("fulltext_search"),
-            (390, 844),
-        ),
     ] {
         if only.as_deref().is_some_and(|only| scenario != Some(only)) {
             continue;

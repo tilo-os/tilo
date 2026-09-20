@@ -14,7 +14,7 @@ and never writes that seed into either output.
 
 ```sh
 cargo run -p local-model-service --bin tilo-model-catalog -- \
-  --source release/local-models.json \
+  --source /secure/build/local-models/local-models.json \
   --signing-key /run/secrets/tilo-model-release-key \
   --catalog-out dist/usr/share/tilo/system-extensions/local-model-catalog.json \
   --trust-out dist/usr/share/tilo/system-extensions/local-model-keys.json
@@ -47,7 +47,7 @@ and are not model weights, a runtime, or approved upstream release pins.
 
 ## SmolVLM2 500M visual analysis release
 
-`release/local-models/smolvlm2-500m/prepare-release.sh` is the production
+`dist/local-models/smolvlm2-500m/prepare-release.sh` is the production
 recipe for the first local visual-analysis delivery. It stages exactly these
 upstream inputs:
 
@@ -69,7 +69,7 @@ archive receipts locally, so no placeholder weight hash or mutable upstream
 download URL can become a signed catalog.
 
 ```sh
-release/local-models/smolvlm2-500m/prepare-release.sh \
+dist/local-models/smolvlm2-500m/prepare-release.sh \
   --output /secure/build/local-models/smolvlm2-500m \
   --publish-base-url "$TILO_RELEASE_ARTIFACT_BASE_URL" \
   --base-image-digest "$TILO_BASE_IMAGE_DIGEST"
@@ -96,7 +96,7 @@ output with the release record:
 
 ```sh
 cargo run -p local-model-service --bin tilo-model-catalog -- --help
-release/local-models/smolvlm2-500m/contract-test.sh
+dist/local-models/smolvlm2-500m/contract-test.sh
 ```
 
 ### Genuine inference acceptance
@@ -117,7 +117,7 @@ scratch=$(mktemp -d)
 target/release/tilo-model-gateway serve --socket "$scratch/model-gateway.sock" &
 gateway_pid=$!
 # Replace this with the profile id Settings created for the ready local model.
-release/local-models/smolvlm2-500m/smoke-gateway.py \
+dist/local-models/smolvlm2-500m/smoke-gateway.py \
   --socket "$scratch/model-gateway.sock" \
   --profile "$TILO_LOCAL_VLLM_PROFILE_ID" \
   --model huggingface/smolvlm2-500m-video-instruct

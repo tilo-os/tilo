@@ -247,7 +247,7 @@ impl HistoryPanel {
     /// Tilo session, falls back to `QUICK_APP_ID`, the same key remote carets
     /// are coloured by).
     pub fn refresh(&mut self, doc: &mut AutoCommit) {
-        let heads = doc.get_heads();
+        let heads = ui::history_source::committed_heads(doc);
         if heads == self.last_heads && !self.scrubber.entries().is_empty() {
             return;
         }
@@ -450,7 +450,7 @@ fn build_preview(
     entries: &[ui::HistoryEntry],
 ) -> Option<PreviewCard> {
     let version = ui::version_index_for_entry(doc, id)?;
-    let snap = qdoc::history::materialize_at(doc, version).ok()?;
+    let snap = ui::history_source::materialize_entry(doc, id).ok()??;
     let mut text = String::new();
     for b in &snap.blocks {
         if !text.is_empty() {
@@ -541,6 +541,7 @@ fn collab_kind() -> ui::widget::ArtifactKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::transaction::{CommitOptions, Transactable};
     use ui::State;
 
     /// Build a document with three versions of a paragraph, committed the way
@@ -603,6 +604,71 @@ mod tests {
             .first()
             .map(|b| b.text.clone())
             .unwrap_or_default()
+    }
+
+    fn append_pending_text(s: &mut State) {
+        let c = qdoc::model::open(&s.doc, &s.root).unwrap();
+        let blocks = qdoc::model::materialize(&s.doc, &c).blocks;
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut {
+            doc: &mut s.doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        dm.splice_text(&blocks[0].id, 12, 0, " typing");
+        assert!(s.doc.pending_ops() > 0);
+    }
+
+    fn commit_pending_text(s: &mut State, changes_before: usize) {
+        s.doc.commit_with(
+            CommitOptions::default()
+                .with_message("Finish typing")
+                .with_time(1_780_000_000),
+        );
+        let changes = s.doc.get_changes(&[]);
+        assert_eq!(changes.len(), changes_before + 1);
+        let last = changes.last().unwrap();
+        assert_eq!(last.message().map(String::as_str), Some("Finish typing"));
+        assert_eq!(last.timestamp(), 1_780_000_000);
+        assert_eq!(body(s), "first second typing");
+    }
+
+    #[test]
+    fn refresh_preserves_pending_edits_and_their_action_boundary() {
+        let mut s = three_version_doc();
+        let changes_before = s.doc.get_changes(&[]).len();
+        append_pending_text(&mut s);
+        let pending = s.doc.pending_ops();
+        let mut panel = HistoryPanel::new();
+
+        // Exercise both the initial population and the unchanged-head fast path.
+        panel.refresh(&mut s.doc);
+        assert_eq!(s.doc.pending_ops(), pending);
+        assert_eq!(panel.entries().len(), 2);
+        panel.refresh(&mut s.doc);
+        assert_eq!(s.doc.pending_ops(), pending);
+        assert_eq!(body(&s), "first second typing");
+
+        commit_pending_text(&mut s, changes_before);
+        panel.refresh(&mut s.doc);
+        assert_eq!(panel.entries().len(), 3);
+    }
+
+    #[test]
+    fn preview_preserves_pending_edits_and_their_action_boundary() {
+        let mut s = three_version_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let target = entry_with(&panel, "+5 -0 chars");
+        let changes_before = s.doc.get_changes(&[]).len();
+        append_pending_text(&mut s);
+        let pending = s.doc.pending_ops();
+
+        panel.preview = build_preview(&mut s.doc, &target, panel.scrubber.entries());
+        assert_eq!(panel.preview_text(), Some("first"));
+        assert_eq!(s.doc.pending_ops(), pending);
+        assert_eq!(body(&s), "first second typing");
+        commit_pending_text(&mut s, changes_before);
     }
 
     /// The pane derives its track from the live document — no seeded demo data.

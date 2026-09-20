@@ -49,7 +49,8 @@ pub fn try_restored_component(
 }
 pub fn renderer() -> ui::TextRenderer {
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/sdk/ui-core/assets/fonts"),
         "en-US",
     );
     ui::TextRenderer::with_font_catalog(&catalog).unwrap()

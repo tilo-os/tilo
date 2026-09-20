@@ -105,6 +105,29 @@ class SigningSpoolTests(unittest.TestCase):
     def service(self, request, policy):
         return spool.service_local_request(request, policy, self.work / 'state', request, self.home / 'signer')
 
+    def interrupted_reservation(self, data=b'x' * 40, nonce='3' * 32,
+                                operation='sign-sha256-rsa-pkcs1', identifier='fixture-recovery'):
+        binding = spool.context(self.context)
+        used = self.work / 'state' / binding
+        used.mkdir(mode=0o700, exist_ok=True)
+        (used / ('request-' + nonce)).mkdir(mode=0o700)
+        reservation = used / ('authorization-' + identifier)
+        reservation.mkdir(mode=0o700)
+        request = {'schema': 1, 'request_id': nonce, 'context_sha256': binding,
+                   'operation': operation, 'input_sha256': spool.digest(data),
+                   'input_bytes': len(data)}
+        (reservation / 'request.json').write_bytes(spool.canonical(request))
+        (reservation / 'input').write_bytes(data)
+        verification = self.home / ('efi-signing.crt' if operation == 'sign-efi' else 'pcr.pub')
+        (reservation / 'verification.pem').write_bytes(verification.read_bytes())
+        (reservation / 'output').write_bytes(b'')
+        return reservation, request, spool.digest(verification.read_bytes())
+
+    def recover(self, reservation, request, verification_sha256):
+        return spool.recover_local_request(
+            reservation, self.work / 'out', self.home / 'signer', request['request_id'],
+            request['operation'], request['input_sha256'], verification_sha256)
+
     def test_real_rsa_remote_adapter_roundtrip_and_replay_rejection(self):
         data = b'x' * 40
         source = self.work / 'policy-message'
@@ -143,6 +166,51 @@ class SigningSpoolTests(unittest.TestCase):
         self.service(request, self.policy(data, 'uki', 'sign-efi'))
         spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-efi',
                           str(self.home / 'efi-signing.crt'), str(request / 'output')])
+
+    def test_interrupted_reservation_recovery_signs_verifies_and_publishes_once(self):
+        reservation, request, verification_sha256 = self.interrupted_reservation()
+        receipt = self.recover(reservation, request, verification_sha256)
+        self.assertTrue(receipt['recovered'])
+        self.assertEqual(spool.document(reservation / 'complete.json'),
+                         spool.document(self.work / 'out' / 'response.json'))
+        self.assertEqual((reservation / 'output').read_bytes(), (self.work / 'out' / 'output').read_bytes())
+        spool.signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256',
+                          str(self.home / 'pcr.pub'), str(reservation / 'input'),
+                          str(self.work / 'out' / 'output')])
+        with self.assertRaisesRegex(ValueError, 'exact incomplete'):
+            self.recover(reservation, request, verification_sha256)
+
+    def test_recovery_rejects_completed_nonzero_and_mismatched_reservations_before_signing(self):
+        cases = ('complete', 'nonzero', 'request-id', 'input-hash', 'verification-hash')
+        for index, case in enumerate(cases):
+            with self.subTest(case=case):
+                nonce = format(index + 4, 'x') * 32
+                reservation, request, verification_sha256 = self.interrupted_reservation(
+                    nonce=nonce, identifier='recovery-' + case)
+                if case == 'complete':
+                    (reservation / 'complete.json').write_bytes(b'{}')
+                elif case == 'nonzero':
+                    (reservation / 'output').write_bytes(b'ambiguous')
+                elif case == 'request-id':
+                    request = request | {'request_id': 'f' * 32}
+                elif case == 'input-hash':
+                    request = request | {'input_sha256': 'f' * 64}
+                else:
+                    verification_sha256 = 'f' * 64
+                with patch.object(spool.signer, 'run') as run, self.assertRaises((OSError, ValueError)):
+                    self.recover(reservation, request, verification_sha256)
+                run.assert_not_called()
+
+    def test_recovery_commits_retry_marker_before_signer_and_never_retries_it(self):
+        reservation, request, verification_sha256 = self.interrupted_reservation()
+        with patch.object(spool.signer, 'run', side_effect=ValueError('simulated interruption')) as run:
+            with self.assertRaisesRegex(ValueError, 'simulated interruption'):
+                self.recover(reservation, request, verification_sha256)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(spool.document(reservation / 'recovery.json')['request_id'], request['request_id'])
+        with patch.object(spool.signer, 'run') as second_run, self.assertRaisesRegex(ValueError, 'exact incomplete'):
+            self.recover(reservation, request, verification_sha256)
+        second_run.assert_not_called()
 
     def test_mismatched_input_and_context_never_reserve_authorization(self):
         data = b'x' * 40

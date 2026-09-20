@@ -1,7 +1,7 @@
 # Tilo product vision — apps & system surface
 
 Everything we ship must be usable for most users. Apps start empty and operate
-on user state. Design is governed by `ui/HIG.md`; per-app open issues are tracked in
+on user state. Design is governed by `crates/sdk/ui-core/HIG.md`; per-app open issues are tracked in
 the current [`ui-ux-overview.md`](ui-ux-overview.md) release ledger; this
 document is the canonical scope + intent.
 

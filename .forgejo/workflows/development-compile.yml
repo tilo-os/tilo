@@ -172,6 +172,7 @@ jobs:
           python3 os/tests/test_compile_retention.py
           python3 os/tests/test_native_builder_artifact.py
           python3 os/tests/test_compile_tools_source.py
+          python3 os/tests/test_compile_tools_cache.py
           if [ "$COMPILE_MODE" != cache-only ]; then
             bash os/tests/app_store.sh
           fi
@@ -381,10 +382,10 @@ jobs:
             --controller "$execution_controller" --controller-revision "$execution_revision" \
             "${tools_source_args[@]}" --output "$context/Containerfile" \
             --receipt "$evidence/tools-source.json"
-          docker build --file "$context/Containerfile" --tag "$name:tools" \
-            --build-arg "BUILDER_REF=$BUILDER_CANDIDATE" "$context"
           expected_platform=linux/amd64
           if [ "$ARCHITECTURE" = aarch64 ]; then expected_platform=linux/arm64; fi
+          python3 os/dev/build-compile-tools.py --context "$context" \
+            --builder "$BUILDER_CANDIDATE" --platform "$expected_platform" --tag "$name:tools"
           test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$name:tools")" = "$expected_platform"
           docker volume create "$name-work"
           docker volume create "$name-storage"

@@ -44,7 +44,8 @@ def command(arguments):
     return result.stdout
 
 
-def verify(original, signed, certificate, certificate_sha256, architecture):
+def verify(original, signed, certificate, certificate_sha256, architecture,
+           maximum_input_bytes=8 * 1024 * 1024):
     if architecture not in MACHINES:
         raise ValueError('unsupported loader architecture')
     if not re.fullmatch('[0-9a-f]{64}', certificate_sha256):
@@ -53,8 +54,10 @@ def verify(original, signed, certificate, certificate_sha256, architecture):
         root = Path(temporary)
         original_copy, signed_copy, certificate_copy = (
             root / 'original.efi', root / 'signed.efi', root / 'certificate.pem')
-        original_bytes = snapshot(original, original_copy, 8 * 1024 * 1024)
-        signed_bytes = snapshot(signed, signed_copy, 8 * 1024 * 1024)
+        if not isinstance(maximum_input_bytes, int) or not 0 < maximum_input_bytes <= 512 * 1024**2:
+            raise ValueError('invalid EFI input bound')
+        original_bytes = snapshot(original, original_copy, maximum_input_bytes)
+        signed_bytes = snapshot(signed, signed_copy, maximum_input_bytes + 65536)
         snapshot(certificate, certificate_copy, 64 * 1024)
         # Parsing first bounds all subsequent PE fields, and verifies signing
         # preserved every byte outside the permitted Authenticode envelope.

@@ -17,7 +17,7 @@ path = "src/main.rs"
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared multi-account store and encrypted secret vault. Settings owns writes;
 # credentials are sealed in the vault rather than the plaintext store.
 accounts = { path = "../../crates/system/accounts" }
@@ -32,6 +32,7 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+url.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 vello.workspace = true

@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import tomllib
 
-AUTHORITATIVE = Path(__file__).resolve().parents[1] / "ui/assets/fonts/manifest.toml"
+AUTHORITATIVE = Path(__file__).resolve().parents[1] / "crates/sdk/ui-core/assets/fonts/manifest.toml"
 
 def manifest(root):
     path = root / "manifest.toml"

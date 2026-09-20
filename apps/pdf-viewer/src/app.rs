@@ -396,6 +396,8 @@ pub struct PdfApp {
     pending_import: Option<ImportRequest>,
     /// False until a file has been loaded — drives the empty state.
     has_document: bool,
+    /// The file has opened, but the host has not admitted its markup record.
+    awaiting_markup_record: bool,
     /// The opened file's display name, shown in the chrome.
     doc_name: String,
     /// A human-readable reason the last open failed, if any.
@@ -885,6 +887,7 @@ impl PdfApp {
             pending_save: None,
             pending_import: None,
             has_document: false,
+            awaiting_markup_record: false,
             markup_record: None,
             doc_name: String::new(),
             load_error: None,
@@ -1019,7 +1022,7 @@ impl PdfApp {
     /// The presentation context Ctrl+K needs to build the document-level action
     /// (add a note at the current page). `None` when no document is open.
     pub(crate) fn pdf_resource_ctx(&self) -> Option<crate::actions::PdfResourceCtx> {
-        if !self.has_document {
+        if !self.has_document || self.awaiting_markup_record {
             return None;
         }
         let doc_id = self.markup_record.as_ref().map_or_else(
@@ -3418,10 +3421,19 @@ impl PdfApp {
                     self.load_error = None;
                     self.status_note = None;
                     self.markup_record = Some(Self::markup_record_for(&request.path));
+                    self.awaiting_markup_record = true;
                     self.annotations.clear();
                     self.comments.clear();
                     self.signatures.clear();
-                    self.reload(state);
+                    // Existing provider handles share this catalogue. Remove
+                    // entries in place so none retain the outgoing PDF's text.
+                    for id in self.search_catalog_ids.drain() {
+                        self.search_catalog.remove(&id);
+                    }
+                    self.search_projection_revision = None;
+                    // The host checked out the outgoing record before this
+                    // sync began. Wait for its next record_tick before reading
+                    // the newly opened PDF's markup.
                     self.commit_pending = true;
                     self.fit = FitMode::Page;
                     self.viewport.set_scroll(0.0, 0.0);
@@ -3920,7 +3932,7 @@ impl Widget for PdfApp {
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        self.has_document
+        (self.has_document && !self.awaiting_markup_record)
             .then(|| {
                 Box::new(crate::search_provider::PdfSearchProvider::from_catalog(
                     self.search_catalog.clone(),
@@ -3975,6 +3987,16 @@ impl Widget for PdfApp {
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
         self.drain_raster_events(state);
+        if let Some(wanted) = self.markup_record.as_ref()
+            && ui::record::identity(state).is_none_or(|active| wanted.id != active.id)
+        {
+            // Async open changes record_intent during sync. Do not reconcile
+            // the new PDF's pages or read markup against the outgoing record.
+            self.dirty = true;
+            self.awaiting_markup_record = true;
+            return;
+        }
+        self.awaiting_markup_record = false;
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal(state);
@@ -4078,6 +4100,9 @@ impl Widget for PdfApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.awaiting_markup_record {
+            return;
+        }
         if self.context_menu.is_some() {
             let (selected_target, still_open) = {
                 match self.context_menu.as_mut() {
@@ -4507,6 +4532,9 @@ impl Widget for PdfApp {
     ) -> bool {
         use crate::actions::PdfOperation;
         use ui::a11y::Action as A11yAction;
+        if self.awaiting_markup_record {
+            return false;
+        }
         if target.starts_with("context-menu:item:") {
             let Some(menu) = self.context_menu.as_mut() else {
                 return false;
@@ -4805,7 +4833,10 @@ impl Widget for PdfApp {
     }
 
     fn has_pending_visual_work(&self) -> bool {
-        self.pending_open.is_some() || self.pending_visuals || self.pending_raster
+        self.pending_open.is_some()
+            || self.awaiting_markup_record
+            || self.pending_visuals
+            || self.pending_raster
     }
 
     fn needs_redraw(&self) -> bool {
@@ -4898,6 +4929,18 @@ mod tests {
         app.sync(&mut st.doc, &st.root);
     }
 
+    /// Standalone fixture frames explicitly admit a file's record, just like
+    /// the live host. Multi-document tests retain their RecordSet separately.
+    fn sync_fixture(app: &mut PdfApp, st: &mut ui::State) {
+        if let Some(want) = app.record_intent() {
+            if ui::record::identity(&st.doc).is_none() {
+                ui::RecordSet::in_memory().checkout(st, None, &want);
+            }
+            assert_eq!(ui::record::identity(&st.doc).unwrap().id, want.id);
+        }
+        app.sync(&mut st.doc, &st.root);
+    }
+
     /// Place a highlight on page 1 through the drag path a user takes.
     fn annotate(app: &mut PdfApp, st: &mut ui::State) {
         app.tool = Tool::Highlight;
@@ -4960,7 +5003,7 @@ mod tests {
         let (dir, a, _b) = two_documents();
         let mut app = PdfApp::open(&a);
         let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+        sync_fixture(&mut app, &mut st);
         annotate(&mut app, &mut st);
         assert!(app.markup_record.is_some());
         assert!(!app.annotations.is_empty());
@@ -4980,31 +5023,132 @@ mod tests {
     }
 
     #[test]
-    fn owner_worker_failure_settles_the_matching_open_without_blocking() {
-        let mut app = PdfApp::empty();
-        let mut state = AutoCommit::new();
-        app.queue_worker_open(std::path::Path::new("/definitely/not/a/tilo-pdf.pdf"));
-        assert!(
-            app.pending_open.is_some(),
-            "the accepted request is loading"
-        );
-        for _ in 0..100 {
+    #[serial(pdfium)]
+    fn owner_worker_open_waits_for_the_new_markup_record() {
+        let (_dir, a, b) = two_documents();
+        let mut app = PdfApp::sample();
+        app.seed_sample = false;
+        let mut st = ui::State::new();
+        let mut set = ui::RecordSet::in_memory();
+        let mut room = AutoCommit::new();
+        let a_record = PdfApp::markup_record_for(&a);
+        app.markup_record = Some(a_record.clone());
+        set.checkout(&mut st, Some(&mut room), &a_record);
+        PdfDoc::ensure_page_plan(&mut st.doc, 1);
+        annotate(&mut app, &mut st);
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
+        let provider = app.search_providers().remove(0);
+        assert!(!provider.search("").is_empty());
+        let original = st.doc.get_heads();
+
+        // Exercise the production worker, not load_path's synchronous test
+        // substitute. The host checks out records before calling sync.
+        app.queue_worker_open(&b);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+            record_frame(&mut app, &mut st, &mut set, &mut room);
             std::thread::sleep(Duration::from_millis(5));
-            app.drain_raster_events(&mut state);
-            if app.pending_open.is_none() {
-                break;
-            }
         }
-        assert!(
-            app.pending_open.is_none(),
-            "a worker failure settles loading"
+        assert!(app.pending_open.is_none(), "worker open must settle");
+        assert!(app.has_document, "fixture must open: {:?}", app.load_error);
+        assert_eq!(
+            app.markup_record.as_ref().unwrap().id,
+            PdfApp::markup_record_for(&b).id
         );
-        assert!(!app.has_document);
+        assert_eq!(ui::record::identity(&st.doc).unwrap().id, a_record.id);
+        assert_eq!(st.doc.get_heads(), original, "opening b must not edit a");
         assert!(
-            app.load_error
-                .as_deref()
-                .is_some_and(|error| error.contains("Could not open"))
+            app.annotations.is_empty(),
+            "a's markup must not appear on b"
         );
+        assert!(
+            provider.search("").is_empty(),
+            "retained providers drop a's text"
+        );
+        assert!(app.search_providers().is_empty());
+        assert!(Widget::resources(&app, &st.doc).is_empty());
+
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        assert!(PdfDoc::list_annotations(&st.doc).is_empty());
+        assert!(app.annotations.is_empty());
+        assert_eq!(
+            PdfDoc::list_page_plan(&st.doc).len(),
+            app.source_pages.len()
+        );
+        set.checkout(&mut st, Some(&mut room), &a_record);
+        assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
+        assert_eq!(PdfDoc::list_page_plan(&st.doc).len(), 1);
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn owner_worker_first_open_waits_for_explicit_record_admission() {
+        let (_dir, path, _) = two_documents();
+        let mut app = PdfApp::empty();
+        let mut st = ui::State::new();
+        let original = st.doc.get_heads();
+        app.queue_worker_open(&path);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+            app.sync(&mut st.doc, &st.root);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.pending_open.is_none());
+        assert!(app.has_document, "fixture must open: {:?}", app.load_error);
+        // More frames are not evidence that the host admitted this record.
+        for _ in 0..3 {
+            app.sync(&mut st.doc, &st.root);
+            assert_eq!(st.doc.get_heads(), original);
+            assert!(app.awaiting_markup_record);
+            assert!(app.has_pending_visual_work());
+            assert!(Widget::resources(&app, &st.doc).is_empty());
+            assert!(!app.perform_semantic_action(
+                "pdf.tool:2",
+                &ui::a11y::Action::Activate,
+                &mut st.doc,
+                &st.root,
+            ));
+            assert_eq!(st.doc.get_heads(), original);
+        }
+        let mut set = ui::RecordSet::in_memory();
+        let mut room = AutoCommit::new();
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        assert!(!app.awaiting_markup_record);
+        assert!(!Widget::resources(&app, &st.doc).is_empty());
+        assert!(app.perform_semantic_action(
+            "pdf.tool:2",
+            &ui::a11y::Action::Activate,
+            &mut st.doc,
+            &st.root,
+        ));
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn owner_worker_failure_settles_the_matching_open_without_blocking() {
+        let dir = tempfile::tempdir().expect("temporary PDFs");
+        let corrupt = dir.path().join("corrupt.pdf");
+        std::fs::write(&corrupt, b"%PDF-1.7\nnot a readable document")
+            .expect("write corrupt fixture");
+        for path in [dir.path().join("missing.pdf"), corrupt] {
+            let mut app = PdfApp::empty();
+            let mut state = AutoCommit::new();
+            app.queue_worker_open(&path);
+            assert!(app.pending_open.is_some(), "accepted request is loading");
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+                app.drain_raster_events(&mut state);
+            }
+            assert!(app.pending_open.is_none(), "worker failure settles loading");
+            assert!(!app.has_document);
+            assert!(app.load_error.as_deref().is_some_and(|error| {
+                error.contains("Could not open") && error.contains(&path.display().to_string())
+            }));
+            let tree = app.accessibility().expect("failed-open accessibility");
+            assert!(any_access_node(&tree, &|node| node.name == app.load_error));
+        }
     }
 
     #[test]
@@ -5122,7 +5266,7 @@ mod tests {
     fn app_with_state() -> (PdfApp, ui::State) {
         let mut app = PdfApp::sample();
         let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+        sync_fixture(&mut app, &mut st);
         // Give it a viewport so geometry is meaningful.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
@@ -5627,7 +5771,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        app.sync(&mut st.doc, &st.root);
+        sync_fixture(app, st);
         let child = app.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy
             .new_with_children(
@@ -6027,7 +6171,7 @@ mod tests {
     fn second_sync_does_not_duplicate() {
         let (mut app, mut st) = app_with_state();
         let n = app.annotations.len();
-        app.sync(&mut st.doc, &st.root);
+        sync_fixture(&mut app, &mut st);
         assert_eq!(app.annotations.len(), n, "re-sync must not re-seed");
     }
 
@@ -7226,7 +7370,7 @@ mod tests {
         let frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            app.sync(&mut st.doc, &st.root);
+            sync_fixture(app, st);
             let child = app.build_layout(&mut taffy, &theme, &mut node_map);
             let root = taffy
                 .new_with_children(
@@ -7320,7 +7464,7 @@ mod tests {
         let frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            app.sync(&mut st.doc, &st.root);
+            sync_fixture(app, st);
             let child = app.build_layout(&mut taffy, &theme, &mut node_map);
             let root = taffy
                 .new_with_children(
@@ -7536,7 +7680,7 @@ mod tests {
             return;
         };
         let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+        sync_fixture(&mut app, &mut st);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -7620,7 +7764,7 @@ mod tests {
     fn open_laid_out_sample() -> Option<(PdfApp, ui::State)> {
         let mut app = open_raster_sample()?;
         let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+        sync_fixture(&mut app, &mut st);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();

@@ -3,11 +3,11 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-projection="$root/shell/src/shell/projection.rs"
-capture="$root/shell/src/compositor/audio_capture.rs"
-catalogue="$root/shell/src/shell/catalogue.rs"
-history="$root/shell/src/shell/history_narrative.rs"
-firstboot="$root/shell/src/firstboot.rs"
+projection="$root/crates/session/shell/src/shell/projection.rs"
+capture="$root/crates/session/shell/src/compositor/audio_capture.rs"
+catalogue="$root/crates/session/shell/src/shell/catalogue.rs"
+history="$root/crates/session/shell/src/shell/history_narrative.rs"
+firstboot="$root/crates/session/shell/src/firstboot.rs"
 
 grep -Fq 'bounded_command::run_prepared(' "$projection"
 grep -Fq 'PROJECTOR_OUTPUT_LIMIT' "$projection"

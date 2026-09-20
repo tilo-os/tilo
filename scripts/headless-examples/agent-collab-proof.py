@@ -11,7 +11,7 @@ document.
 
 The read-back goes through the production search path rather than a
 back door: the text providers match a query against each tab's document
-body (`shell/src/shell/search/providers/text_app.rs`), so a session that
+body (`crates/session/shell/src/shell/search/providers/text_app.rs`), so a session that
 returns a hit for a token it never typed has that token in its document.
 
 Usage:

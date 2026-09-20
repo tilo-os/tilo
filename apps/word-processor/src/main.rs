@@ -65,7 +65,7 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;
 use ui::text_render::TextRenderer;
-use ui::{App, PresenceCtx, State, Theme, Widget};
+use ui::{PresenceCtx, State, Theme, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -128,7 +128,7 @@ fn main() {
                 "--image-object",
             ])
             .shot_handler(run_shot)
-            .live_handler(run_live),
+            .prepare_legacy_with_args(prepare_launch),
     );
 }
 
@@ -340,13 +340,13 @@ fn seed_comment_thread(
     Ok(())
 }
 
-fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
-    start_live(args).map_err(|error| LaunchError::Operation(error.to_string()))
+fn prepare_launch(args: &LaunchArgs) -> Result<ui::launch::LegacyLaunchInputs, LaunchError> {
+    prepare_launch_inputs(args).map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
-    let wake_scope = ui::wake::WakeScope::new();
-    let _wake_entry = wake_scope.enter();
+fn prepare_launch_inputs(
+    args: &LaunchArgs,
+) -> Result<ui::launch::LegacyLaunchInputs, Box<dyn Error>> {
     let (mut state, widget) = build(file_arg(args))?;
     {
         // Give this instance a distinct CRDT actor so two editors are
@@ -378,15 +378,16 @@ fn start_live(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
             .unwrap_or_else(|_| "00000000-0000-0000-0000-000000000000".into());
         let (room, room_autosave) = ui::persist::open_room("dev.tilo.word-processor", &room_id);
         let records = ui::RecordSet::in_memory().with_home(room_id);
-        let mut app = App::from_scoped_parts(wake_scope, state, widget)
-            .with_autosave(room_autosave)
-            .with_records(records, room.doc);
+        let mut registry = tilo_actions::ActionRegistry::new();
         // Register the word processor's action decoder so the Ctrl+K palette and
         // remote replay can reconstruct every document-mutating operation.
-        word_processor::actions::register(app.action_registry_mut());
-        app.run();
+        word_processor::actions::register(&mut registry);
+        Ok(
+            ui::launch::LegacyLaunchInputs::new(state, widget, room_autosave)
+                .with_records(records, room.doc)
+                .with_registry(registry),
+        )
     }
-    Ok(())
 }
 
 /// Give `widget`'s document a real authored history, so `--shots --history` has

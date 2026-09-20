@@ -20,7 +20,7 @@ path = "src/bin/flatpak-share-demo.rs"
 tracing.workspace = true
 
 # Demo-only dependencies. The demo and library share this workspace crate.
-shell = { path = "../../../shell", default-features = false }
+shell = { path = "../../session/shell", default-features = false }
 ab_glyph = "0.2"
 tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-filter"] }
 

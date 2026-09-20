@@ -15,7 +15,7 @@
 //! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
 //!   feature).
 //! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-gated
-//!   async lrclib fetch worker (`lyrics` feature).
+//!   async lrclib fetch worker (`live` or `lyrics` feature).
 //! - the platform app document + action host — canonical shared library state,
 //!   collaboration, history, and peer replication. Audio transport/cache stay
 //!   device-local.
@@ -23,8 +23,8 @@
 //! - [`art`] / [`icon`] — procedural cover art + vector chrome glyphs.
 //! - [`app`] — the root [`MusicApp`] widget that draws the whole UI.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! Live launches use `app_root_with_args()`; hermetic screenshots use
+//! `app_root_for_shot()` without loading a personal profile.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -57,6 +57,7 @@ pub mod audio;
 pub mod backend;
 pub mod doc;
 pub mod icon;
+pub mod local_file;
 pub mod lyrics;
 pub mod model;
 pub mod mpris;
@@ -87,7 +88,8 @@ pub fn searchable_types() -> Vec<SearchableType> {
 ///
 /// This is the live-binary entry (not `--shots`/tests), so it also brings up
 /// the MPRIS D-Bus service (media keys + the desktop media controls). MPRIS
-/// degrades to a no-op stub without the `audio` feature or a session bus, so
+/// degrades to a no-op stub on unsupported hosts, without the `audio` feature,
+/// or without a session bus, so
 /// this never fails.
 pub fn app_root() -> Box<dyn Widget> {
     let mut app = MusicApp::new();
@@ -101,24 +103,49 @@ pub fn app_root() -> Box<dyn Widget> {
 ///
 /// # Errors
 ///
-/// Reserved for future fallible app-resource initialization; the current
-/// implementation accepts the launch after the shared lifecycle validates
-/// its bounded positional argument.
+/// Returns an error for unsupported resource URLs, unreadable local files,
+/// unavailable audio support, or failure to persist the private playback profile.
+/// Positional local paths and file URLs open for playback; decoder errors arrive
+/// asynchronously through the normal playback status.
 pub fn app_root_with_args(
     args: &ui::launch::LaunchArgs,
 ) -> Result<Box<dyn Widget>, ui::launch::LaunchError> {
+    Ok(Box::new(app_with_args(args)?))
+}
+
+pub(crate) fn app_with_args(
+    args: &ui::launch::LaunchArgs,
+) -> Result<MusicApp, ui::launch::LaunchError> {
+    let position_ms = std::env::var("TILO_MEDIA_HANDOFF_POSITION_MS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let resume = std::env::var("TILO_MEDIA_HANDOFF_RESUME_PLAYING").is_ok_and(|value| value == "1");
+    app_for_launch_source(
+        args.positionals().first().map(String::as_str),
+        position_ms,
+        resume,
+    )
+}
+
+pub(crate) fn app_for_launch_source(
+    source: Option<&str>,
+    position_ms: u64,
+    resume: bool,
+) -> Result<MusicApp, ui::launch::LaunchError> {
     let mut app = MusicApp::new();
     app.enable_mpris();
-    if let Some(uri) = args.positionals().first() {
-        let position_ms = std::env::var("TILO_MEDIA_HANDOFF_POSITION_MS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0);
-        let resume_playing =
-            std::env::var("TILO_MEDIA_HANDOFF_RESUME_PLAYING").is_ok_and(|value| value == "1");
-        app = app.with_media_handoff(uri.clone(), position_ms, resume_playing);
+    if let Some(source) = source {
+        if source.starts_with("music://track/")
+            && crate::search_type::DeepLink::parse(source).is_some()
+        {
+            app = app.with_media_handoff(source.to_owned(), position_ms, resume);
+        } else {
+            app.open_local_file(source)
+                .map_err(ui::launch::LaunchError::Operation)?;
+        }
     }
-    Ok(Box::new(app))
+    Ok(app)
 }
 
 /// Like [`app_root`] but staged for a named `--shots` scenario. `--shots`

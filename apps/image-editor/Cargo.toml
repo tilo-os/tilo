@@ -11,7 +11,7 @@ path = "src/lib.rs"
 name = "image-editor"
 path = "src/main.rs"
 [dependencies]
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 automerge.workspace = true
 tilo-actions = { path = "../../crates/collab/actions" }

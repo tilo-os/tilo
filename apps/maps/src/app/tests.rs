@@ -1579,7 +1579,7 @@ fn transit_time_controls_adjust_the_anchor() {
 
 /// `DeviceId` has no public constructor; a zeroed value is the sentinel
 /// winit itself uses and the convention across this workspace's widget
-/// tests (see `ui/src/widget/image_viewer.rs`).
+/// tests (see `crates/sdk/ui-core/src/widget/image_viewer.rs`).
 fn dummy_device_id() -> winit::event::DeviceId {
     // SAFETY: `DeviceId` is an opaque platform handle; the dispatch path
     // under test never dereferences it.
@@ -2171,7 +2171,7 @@ fn wheel_over_panel_scrolls_not_zoom() {
 // These drive the actual `WindowEvent::KeyboardInput` → `handle_key`
 // dispatch. `KeyEvent` has a `pub(crate)` field in winit 0.30, so it is
 // built via the workspace-standard zeroed-struct workaround (see
-// `ui/src/widget/slash_menu.rs`); `handle_key` only reads `logical_key`.
+// `crates/sdk/ui-core/src/widget/slash_menu.rs`); `handle_key` only reads `logical_key`.
 
 fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};

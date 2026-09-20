@@ -89,13 +89,19 @@ FROM quay.io/fedora/fedora-minimal:44
 # endpoints. Iroh does not use the system OpenSSL ABI. BusyBox is statically
 # linked, so it remains usable after removing the package manager, coreutils,
 # and their otherwise inherited OpenSSL dependency closure.
+# Minimal bases can contain the CA package without its generated bundle; an
+# already-installed package will not rerun its installation scriptlet. Extract
+# the same server-auth anchors as update-ca-trust before removing its tools.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     microdnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
         ca-certificates busybox \
-    && /usr/bin/busybox cp /etc/pki/tls/certs/ca-bundle.crt /ca-bundle.crt \
+    && P11_KIT_NO_USER_CONFIG=1 /usr/bin/trust extract --format=pem-bundle \
+        --filter=ca-anchors --overwrite --comment --purpose server-auth /ca-bundle.crt \
+    && /usr/bin/busybox grep -q '^-----BEGIN CERTIFICATE-----$' /ca-bundle.crt \
     && microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5 \
     && /usr/bin/busybox mkdir -p /etc/pki/tls/certs \
     && /usr/bin/busybox mv /ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt \
+    && /usr/bin/busybox test -s /etc/pki/tls/certs/ca-bundle.crt \
     && ! /usr/bin/busybox find / -xdev \
         \( -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl \) \
         -print -quit | /usr/bin/busybox grep -q .

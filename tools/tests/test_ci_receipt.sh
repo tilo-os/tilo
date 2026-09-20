@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-tool=$repo_root/tools/ci-receipt.sh
+tool=$repo_root/tools/ci/receipt.sh
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -35,6 +35,16 @@ fi
 (cd "$work/source" && "$tool" record "$sha" 44 success failure success origin >/dev/null)
 if (cd "$work/source" && "$tool" verify "$sha" origin 2>/dev/null); then
   echo 'receipt tool accepted a failed check result' >&2
+  exit 1
+fi
+
+# The inline receipt reports aggregate outcome, including failures after
+# successful selector/security results (for example, an unexpected Rust skip).
+(cd "$work/source" && "$tool" record "$sha" 45 success success failure origin >/dev/null)
+receipt=$(git -C "$work/source" notes --ref=tilo-check-ci show "$sha")
+[[ $receipt == "select=success security=success affected=failure run=45 sha=$sha" ]]
+if (cd "$work/source" && "$tool" verify "$sha" origin 2>/dev/null); then
+  echo 'receipt tool accepted a failed aggregate outcome' >&2
   exit 1
 fi
 

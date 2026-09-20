@@ -340,7 +340,7 @@ impl MainPanel {
         // opening words before the person has interacted with it.
         self.editor
             .focus_block(0, ui::widget::CursorPlacement::Start);
-        self.body = body;
+        self.take_body_snapshot();
         // Brand-new page → reset scroll to top (the previous page's
         // scroll position is meaningless for the new content).
         self.scroll_y = 0.0;
@@ -371,7 +371,7 @@ impl MainPanel {
         self.editor.set_focus(true);
         self.editor
             .focus_block(0, ui::widget::CursorPlacement::Start);
-        self.body = body;
+        self.take_body_snapshot();
         self.scroll_y = 0.0;
         self.dirty = true;
     }
@@ -418,7 +418,7 @@ impl MainPanel {
         self.editor.set_focus(true);
         self.editor
             .focus_block(0, ui::widget::CursorPlacement::Start);
-        self.body = body.to_string();
+        self.take_body_snapshot();
         self.scroll_y = 0.0;
         self.dirty = true;
     }
@@ -1106,6 +1106,13 @@ impl MainPanel {
         let md = crate::markdown::serialize(&specs);
         self.body.clone_from(&md);
         md
+    }
+
+    /// Compare content rather than paint dirtiness, which also changes on load
+    /// and focus. Used only when recovering a failed legacy disk read.
+    pub(crate) fn has_unsaved_body(&self) -> bool {
+        let specs = crate::markdown::blocks_to_specs(self.editor.blocks());
+        crate::markdown::serialize(&specs) != self.body
     }
 
     /// Currently displayed title, if any. `None` when no page is open.

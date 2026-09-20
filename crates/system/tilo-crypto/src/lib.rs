@@ -437,6 +437,9 @@ pub fn generate_tls_fixture(server_ip: std::net::IpAddr) -> Result<TlsFixture, S
     server_params.not_before = not_before;
     server_params.not_after = not_after;
     server_params.is_ca = IsCa::NoCa;
+    // Strict RFC 5280 verification requires non-self-signed certificates to
+    // identify their issuer's key. Python's default TLS context enforces this.
+    server_params.use_authority_key_identifier_extension = true;
     server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     server_params.distinguished_name = DistinguishedName::new();
@@ -907,7 +910,10 @@ fn pe_checksum(image: &[u8], checksum_offset: usize) -> Result<u32, String> {
     Ok(folded.wrapping_add(image_len))
 }
 
-#[allow(clippy::too_many_lines)] // The DER field order is clearest beside its signed bytes.
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keep Authenticode DER field construction beside the exact attributes signed by ring"
+)]
 fn efi_authenticode_entry(
     private_key_pem: &str,
     certificate_pem: &str,
@@ -1364,7 +1370,10 @@ mod tests {
 
     #[test]
     fn generated_tls_fixture_has_constrained_ca_and_loopback_san() {
-        use x509_parser::{extensions::GeneralName, pem::parse_x509_pem};
+        use x509_parser::{
+            extensions::{GeneralName, ParsedExtension},
+            pem::parse_x509_pem,
+        };
 
         let fixture = generate_tls_fixture("127.0.0.1".parse().unwrap()).expect("TLS fixture");
         assert!(fixture.server_private_key_pem.contains("PRIVATE KEY"));
@@ -1375,6 +1384,36 @@ mod tests {
 
         let (_, server_pem) = parse_x509_pem(fixture.server_certificate_pem.as_bytes()).unwrap();
         let server = server_pem.parse_x509().unwrap();
+        let ca_key_id = ca
+            .extensions()
+            .iter()
+            .find_map(|extension| {
+                if let ParsedExtension::SubjectKeyIdentifier(identifier) =
+                    extension.parsed_extension()
+                {
+                    Some(identifier.0)
+                } else {
+                    None
+                }
+            })
+            .expect("CA subject key identifier");
+        let issuer_key_id = server
+            .extensions()
+            .iter()
+            .find_map(|extension| {
+                if let ParsedExtension::AuthorityKeyIdentifier(identifier) =
+                    extension.parsed_extension()
+                {
+                    identifier.key_identifier.as_ref().map(|key| key.0)
+                } else {
+                    None
+                }
+            })
+            .expect("server authority key identifier");
+        assert_eq!(
+            issuer_key_id, ca_key_id,
+            "server identifies the signing CA key"
+        );
         assert!(
             !server
                 .basic_constraints()

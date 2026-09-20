@@ -6,14 +6,16 @@
 //!
 //! # The pipeline, and why the order is fixed
 //!
-//! A rendered frame is always `decode → crop → rotate`:
+//! A rendered frame is always `decode + EXIF-normalise → crop → rotate`:
 //!
 //! ```text
-//!   original RGBA  ──crop(Rect01 in ORIGINAL coords)──▶  cropped  ──rotate(N×90° CW)──▶  shown
+//!   upright RGBA  ──crop(Rect01 in UPRIGHT coords)──▶  cropped  ──rotate(N×90° CW)──▶  shown
 //! ```
 //!
-//! Crop lives in the *original* image's normalized coordinates, never in the
-//! rotated frame. That is the whole reason rotation stays a free operation: a
+//! EXIF orientation is a container concern, so decode first turns encoded
+//! pixels into their canonical upright form. Crop then lives in those
+//! *upright source* normalized coordinates, never in the user-rotated frame.
+//! That is the whole reason rotation stays a free operation: a
 //! stored crop keeps meaning exactly the same region of the photograph no
 //! matter how many times the image is subsequently turned. Store the crop in
 //! rotated space instead and every rotation has to rewrite it, which is a
@@ -105,10 +107,69 @@ pub fn decode(bytes: &[u8]) -> Option<Rgba> {
     if !within_decode_limits(w, h) {
         return None;
     }
+    let orientation = encoded_exif_orientation(bytes);
     let img = image::load_from_memory(bytes).ok()?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
-    Rgba::new(w, h, rgba.into_raw())
+    let decoded = Rgba::new(w, h, rgba.into_raw())?;
+    Some(normalize_exif_orientation(decoded, orientation))
+}
+
+/// Read the standard EXIF orientation without making metadata availability a
+/// precondition for decoding. Containers without EXIF, malformed metadata and
+/// values outside the specified 1–8 range all mean the stored pixels are
+/// already upright.
+fn encoded_exif_orientation(bytes: &[u8]) -> Option<u16> {
+    let mut cursor = Cursor::new(bytes);
+    let exif = exif::Reader::new().read_from_container(&mut cursor).ok()?;
+    let value = exif
+        .get_field(exif::Tag::Orientation, exif::In::PRIMARY)?
+        .value
+        .get_uint(0)?;
+    u16::try_from(value)
+        .ok()
+        .filter(|orientation| (1..=8).contains(orientation))
+}
+
+/// Apply the eight TIFF/EXIF orientation transforms and return canonical,
+/// upright pixels. Doing this at decode time makes thumbnails, OCR, vision,
+/// the editor and export share exactly one interpretation of the source.
+fn normalize_exif_orientation(src: Rgba, orientation: Option<u16>) -> Rgba {
+    let orientation = orientation.unwrap_or(1);
+    if orientation == 1 || !(1..=8).contains(&orientation) {
+        return src;
+    }
+
+    let swaps_axes = orientation >= 5;
+    let (w, h) = if swaps_axes {
+        (src.h, src.w)
+    } else {
+        (src.w, src.h)
+    };
+    let mut bytes = vec![0_u8; src.bytes.len()];
+    for y in 0..h {
+        for x in 0..w {
+            let (source_x, source_y) = match orientation {
+                2 => (src.w - 1 - x, y),
+                3 => (src.w - 1 - x, src.h - 1 - y),
+                4 => (x, src.h - 1 - y),
+                5 => (y, x),
+                6 => (y, src.h - 1 - x),
+                7 => (src.w - 1 - y, src.h - 1 - x),
+                8 => (src.w - 1 - y, x),
+                _ => unreachable!("orientation was validated above"),
+            };
+            let source = (u64::from(source_y) * u64::from(src.w) + u64::from(source_x)) * 4;
+            let destination = (u64::from(y) * u64::from(w) + u64::from(x)) * 4;
+            let source = usize::try_from(source).expect("validated image dimensions fit usize");
+            let destination =
+                usize::try_from(destination).expect("validated image dimensions fit usize");
+            bytes[destination..destination + 4].copy_from_slice(&src.bytes[source..source + 4]);
+        }
+    }
+    // Orientation preserves pixel count and only swaps the axes, so the
+    // validated source guarantees this constructor succeeds.
+    Rgba::new(w, h, bytes).expect("EXIF orientation preserves a valid RGBA buffer")
 }
 
 fn within_decode_limits(w: u32, h: u32) -> bool {
@@ -330,6 +391,145 @@ mod tests {
             }
         }
         Rgba::new(w, h, bytes).unwrap()
+    }
+
+    fn coordinates(image: &Rgba) -> Vec<(u8, u8)> {
+        (0..image.h)
+            .flat_map(|y| {
+                (0..image.w).map(move |x| {
+                    let pixel = image.pixel(x, y).expect("coordinate is in bounds");
+                    (pixel[0], pixel[1])
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_exif_orientation_produces_the_specified_upright_pixel_grid() {
+        let source = ramp(3, 2);
+        let cases = [
+            (
+                1,
+                (3, 2),
+                vec![(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)],
+            ),
+            (
+                2,
+                (3, 2),
+                vec![(2, 0), (1, 0), (0, 0), (2, 1), (1, 1), (0, 1)],
+            ),
+            (
+                3,
+                (3, 2),
+                vec![(2, 1), (1, 1), (0, 1), (2, 0), (1, 0), (0, 0)],
+            ),
+            (
+                4,
+                (3, 2),
+                vec![(0, 1), (1, 1), (2, 1), (0, 0), (1, 0), (2, 0)],
+            ),
+            (
+                5,
+                (2, 3),
+                vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)],
+            ),
+            (
+                6,
+                (2, 3),
+                vec![(0, 1), (0, 0), (1, 1), (1, 0), (2, 1), (2, 0)],
+            ),
+            (
+                7,
+                (2, 3),
+                vec![(2, 1), (2, 0), (1, 1), (1, 0), (0, 1), (0, 0)],
+            ),
+            (
+                8,
+                (2, 3),
+                vec![(2, 0), (2, 1), (1, 0), (1, 1), (0, 0), (0, 1)],
+            ),
+        ];
+
+        for (orientation, dimensions, expected) in cases {
+            let upright = normalize_exif_orientation(source.clone(), Some(orientation));
+            assert_eq!(
+                (upright.w, upright.h),
+                dimensions,
+                "orientation {orientation}"
+            );
+            assert_eq!(coordinates(&upright), expected, "orientation {orientation}");
+        }
+        assert_eq!(normalize_exif_orientation(source.clone(), None), source);
+        assert_eq!(normalize_exif_orientation(source.clone(), Some(0)), source);
+        assert_eq!(normalize_exif_orientation(source.clone(), Some(9)), source);
+    }
+
+    fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
+        use image::ImageEncoder as _;
+
+        let rgb = vec![
+            255, 0, 0, 0, 255, 0, 0, 0, 255, // first row
+            255, 255, 0, 0, 255, 255, 255, 0, 255, // second row
+        ];
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95)
+            .write_image(&rgb, 3, 2, image::ExtendedColorType::Rgb8)
+            .expect("encode test JPEG");
+        assert_eq!(&jpeg[..2], &[0xff, 0xd8]);
+
+        // Minimal little-endian TIFF IFD carried by a JPEG APP1 Exif segment.
+        let mut payload = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0".to_vec();
+        payload.extend_from_slice(&[
+            0x12,
+            0x01, // Orientation tag
+            0x03,
+            0x00, // SHORT
+            0x01,
+            0x00,
+            0x00,
+            0x00, // one value
+            orientation as u8,
+            (orientation >> 8) as u8,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00, // no next IFD
+        ]);
+        let segment_length = u16::try_from(payload.len() + 2).expect("small APP1 segment");
+        let mut tagged = Vec::with_capacity(jpeg.len() + payload.len() + 4);
+        tagged.extend_from_slice(&jpeg[..2]);
+        tagged.extend_from_slice(&[0xff, 0xe1]);
+        tagged.extend_from_slice(&segment_length.to_be_bytes());
+        tagged.extend_from_slice(&payload);
+        tagged.extend_from_slice(&jpeg[2..]);
+        tagged
+    }
+
+    #[test]
+    fn decoder_reads_every_valid_exif_orientation_from_real_jpeg_bytes() {
+        for orientation in 1..=8 {
+            let jpeg = jpeg_with_orientation(orientation);
+            assert_eq!(encoded_exif_orientation(&jpeg), Some(orientation));
+            let upright = decode(&jpeg).expect("decode tagged JPEG");
+            let expected_dimensions = if orientation >= 5 { (2, 3) } else { (3, 2) };
+            assert_eq!(
+                (upright.w, upright.h),
+                expected_dimensions,
+                "orientation {orientation}"
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_ignores_invalid_exif_orientation_without_rejecting_the_photo() {
+        for orientation in [0, 9, u16::MAX] {
+            let jpeg = jpeg_with_orientation(orientation);
+            assert_eq!(encoded_exif_orientation(&jpeg), None);
+            let upright = decode(&jpeg).expect("decode JPEG despite invalid metadata");
+            assert_eq!((upright.w, upright.h), (3, 2));
+        }
     }
 
     #[test]

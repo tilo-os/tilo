@@ -124,7 +124,7 @@ fn accessible_track(
     use ui::a11y::{AccessNode, AccessState, Role};
 
     let liked = lib.is_liked(&track.id);
-    AccessNode::new(Role::ListItem)
+    let mut node = AccessNode::new(Role::ListItem)
         .with_hashed_key(format!("track:{}", track.id))
         .with_name(&track.title)
         .with_description(format!(
@@ -142,7 +142,11 @@ fn accessible_track(
                 .with_name(format!("Like {}", track.title))
                 .with_state(AccessState::new().checked(liked))
                 .with_action_target(format!("music.toggle-like.{}", track.id)),
-        ])
+        ]);
+    if !lib.tracks.contains_key(&track.id) {
+        node.children.truncate(1);
+    }
+    node
 }
 
 fn accessible_download(
@@ -510,12 +514,39 @@ fn draw_skeleton_block(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: &P
 }
 
 impl Widget for MusicApp {
+    fn take_structure_dirty(&mut self) -> bool {
+        self.open_file_layout_visible != Some(matches!(self.view, View::Home))
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if matches!(self.view, View::Home) {
+            vec![&self.open_file_button]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if matches!(self.view, View::Home) {
+            vec![&mut self.open_file_button]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn continuation_metadata(
         &self,
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<ui::collaboration::ContinuationMetadata> {
         let track_id = self.pb.current.as_ref()?;
+        if self
+            .local_file
+            .as_ref()
+            .is_some_and(|file| &file.track.id == track_id)
+        {
+            return None;
+        }
         if track_id.is_empty() || track_id.len() > 256 || track_id.contains(['/', '\\']) {
             return None;
         }
@@ -552,7 +583,12 @@ impl Widget for MusicApp {
         if !self.lib.tracks.contains_key(track_id) {
             return false;
         }
+        self.retire_replaced_playback();
         self.pb.current = Some(track_id.to_owned());
+        self.pb.queue = vec![track_id.to_owned()];
+        self.pb.queue_index = 0;
+        self.bound_track.clone_from(&self.pb.current);
+        self.shuffle_order.clear();
         let requested_position = value
             .get("position_ms")
             .and_then(serde_json::Value::as_u64)
@@ -587,6 +623,7 @@ impl Widget for MusicApp {
         // follows the pick; decode/resize work itself runs off-thread.
         self.drain_mpris(state);
         self.drain_cover_pick(state);
+        self.drain_local_file_pick();
         self.drain_cover_embed(state);
         self.apply_pending_media_handoff(state);
         self.publish_mpris();
@@ -671,7 +708,9 @@ impl Widget for MusicApp {
                 tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetPlayback { playback },
             ) => {
-                if playback.playing && self.pb.current != playback.current {
+                if playback.playing
+                    && (self.pb.current != playback.current || !self.audio.has_stream())
+                {
                     return Err(
                         "streaming playback requires the lifecycle-capable operation host".into(),
                     );
@@ -788,6 +827,13 @@ impl Widget for MusicApp {
         match (kind, operation) {
             (
                 tilo_actions::OperationKind::Effect,
+                crate::actions::MusicOperation::ChooseAudioFile,
+            ) => {
+                self.begin_local_file_pick(invocation)?;
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            (
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetOffline { tracks, keep: true },
             ) => {
                 if self.offline_invocation.is_some() {
@@ -813,18 +859,8 @@ impl Widget for MusicApp {
                 if self.resource_stream_invocation.is_some() {
                     return Err("another Music stream-start operation is still resolving".into());
                 }
-                match self.apply_resource_play_track(&id)? {
-                    Some(request_id) => {
-                        self.begin_resource_stream_invocation(invocation, request_id);
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({ "state": "playing" })),
-                            resources: Vec::new(),
-                        },
-                    ))),
-                }
+                let request = self.apply_resource_play_track(&id)?;
+                self.register_playback_start(invocation, request, 0, false)
             }
             (
                 tilo_actions::OperationKind::Effect,
@@ -833,38 +869,18 @@ impl Widget for MusicApp {
                 if self.resource_stream_invocation.is_some() {
                     return Err("another Music stream-start operation is still resolving".into());
                 }
-                match self.apply_resource_play_queue_item(index, &track)? {
-                    Some(request_id) => {
-                        self.begin_resource_stream_invocation(invocation, request_id);
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({ "state": "playing" })),
-                            resources: Vec::new(),
-                        },
-                    ))),
-                }
+                let request = self.apply_resource_play_queue_item(index, &track)?;
+                self.register_playback_start(invocation, request, 0, false)
             }
             (
                 tilo_actions::OperationKind::Effect,
                 crate::actions::MusicOperation::SetPlayback { playback },
-            ) if playback.playing && self.pb.current != playback.current => {
-                if self.resource_stream_invocation.is_some() {
-                    return Err("another Music stream-start operation is still resolving".into());
-                }
-                match self.apply_resource_playback(playback)? {
-                    Some(request_id) => {
-                        self.begin_resource_stream_invocation(invocation, request_id);
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    None => Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput {
-                            value: Some(serde_json::json!({ "state": "playing" })),
-                            resources: Vec::new(),
-                        },
-                    ))),
-                }
+            ) if playback.playing
+                && (self.pb.current != playback.current
+                    || !self.pb.playing
+                    || !self.audio.has_stream()) =>
+            {
+                self.begin_resource_playback(invocation, playback)
             }
             _ => self
                 .invoke_resource_operation(kind, type_id, payload, doc, path)
@@ -901,26 +917,36 @@ impl Widget for MusicApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // `Widget::build_layout` returns a bare `NodeId`, not a `Result` — a
         // framework-wide contract this one widget can't change — so a
         // `new_leaf` failure (which a freshly-created tree with one valid
         // leaf style cannot produce) has no propagation path here.
+        let visible = matches!(self.view, View::Home);
+        self.open_file_layout_visible = Some(visible);
+        let children = if visible {
+            vec![self.open_file_button.build_layout(taffy, theme, node_map)]
+        } else {
+            Vec::new()
+        };
         #[allow(
             clippy::expect_used,
-            reason = "new_leaf on a fresh tree with a valid Style cannot fail; Widget::build_layout's Result-free signature is shared by every implementor and out of this crate's scope to change"
+            reason = "the child belongs to this same tree; Widget::build_layout has no error return"
         )]
         let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
                 },
-                ..Default::default()
-            })
-            .expect("a leaf on a fresh taffy tree");
+                &children,
+            )
+            .expect("a parent and child in the same taffy tree");
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -978,7 +1004,7 @@ impl Widget for MusicApp {
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
+        focus_target: &mut Option<NodeId>,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
@@ -999,6 +1025,26 @@ impl Widget for MusicApp {
             return;
         }
 
+        if matches!(self.view, View::Home)
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(button_node) = children.first()
+        {
+            self.open_file_button.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                *button_node,
+                taffy,
+            );
+        }
+        if *handled {
+            self.dirty = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { .. } => {
                 self.on_cursor_moved(event, scale_factor, *modifiers, state, handled);
@@ -1070,7 +1116,7 @@ impl Widget for MusicApp {
             .pb
             .current
             .as_ref()
-            .and_then(|id| self.lib.tracks.get(id))
+            .and_then(|id| self.playback_track(id))
             .map_or_else(
                 || "Nothing playing".to_string(),
                 |track| track.title.clone(),
@@ -1313,7 +1359,7 @@ impl Widget for MusicApp {
                     .pb
                     .queue
                     .iter()
-                    .filter_map(|id| self.lib.track(id))
+                    .filter_map(|id| self.playback_track(id))
                     .collect::<Vec<_>>();
                 let total = items.len();
                 list_items.extend(
@@ -1603,7 +1649,7 @@ impl Widget for MusicApp {
                     };
                     Action::Nav(view)
                 } else if let Some(id) = target.strip_prefix("music.play-track.") {
-                    if self.lib.track(id).is_none() {
+                    if self.playback_track(id).is_none() {
                         return false;
                     }
                     Action::Play {
@@ -1719,6 +1765,8 @@ impl Widget for MusicApp {
         // resolution, so its result is drained (and applied to the audio
         // engine) promptly without waiting for the next input event.
         self.pb.playing
+            || self.audio.needs_poll()
+            || self.local_file_pick.is_some()
             || self.toast.is_some()
             || self.live_search_pending.is_some()
             || self.resolve_in_flight > 0
@@ -2326,6 +2374,7 @@ impl MusicApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.open_file_button.apply_layout_external(Rect::ZERO);
         self.hits.clear();
         self.row_menu_hits.clear();
         self.sync_context_menu_geometry(theme);
@@ -2369,6 +2418,27 @@ impl MusicApp {
             280.0
         });
         let content_rect = self.drawer.resolve(self.rect);
+        self.open_file_gap = f64::from(theme.padding_standard);
+        if matches!(self.view, View::Home) {
+            let measured = self.open_file_button.measure(
+                Size {
+                    width: None,
+                    height: None,
+                },
+                Size {
+                    width: taffy::AvailableSpace::Definite(
+                        (content_rect.width() - self.open_file_gap * 4.0).max(0.0) as f32,
+                    ),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                tr,
+            );
+            self.open_file_button
+                .apply_layout_external(Rect::from_origin_size(
+                    Point::ORIGIN,
+                    (f64::from(measured.width), f64::from(measured.height)),
+                ));
+        }
 
         // This app is deliberately custom-canvas rather than a stack of stock
         // widgets.  At 200% text the ordinary multi-column desktop geometry
@@ -2425,6 +2495,10 @@ impl MusicApp {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
         let start_y = body.y0 - self.scroll;
         let end_y = self.draw_body(scene, t, tr, &c, body, start_y);
+        if self.open_file_button.get_rect().width() > 0.0 {
+            self.open_file_button
+                .draw(scene, t, tr, theme, &PresenceCtx::empty());
+        }
         scene.pop_layer();
         self.content_height = (end_y + self.scroll) - body.y0 + 24.0;
         let max = (self.content_height - body.height()).max(0.0);
@@ -2671,7 +2745,7 @@ impl MusicApp {
             .iter()
             .enumerate()
             .filter_map(|(index, id)| {
-                let track = self.lib.track(id)?;
+                let track = self.playback_track(id)?;
                 let retry_download =
                     self.view == View::Downloads && self.offline_errors.contains_key(id);
                 Some((
@@ -2823,6 +2897,11 @@ impl MusicApp {
         }
         let row_h = 88.0;
         let mut y = body.y0 - self.scroll;
+        if matches!(self.view, View::Home) && !rows.is_empty() {
+            y = self.position_open_file_button(body.x0, y);
+            self.open_file_button
+                .draw(scene, t, tr, theme, &PresenceCtx::empty());
+        }
         for (title, subtitle, trailing, action, active) in &rows {
             let row = Rect::new(body.x0 + 16.0, y, body.x1 - 16.0, y + row_h);
             let hover = self.body_hit(row, action.clone());
@@ -2939,6 +3018,11 @@ impl MusicApp {
                 None,
             );
             y = body.y0 + 160.0;
+            if matches!(self.view, View::Home) {
+                y = self.position_open_file_button(body.x0, y);
+                self.open_file_button
+                    .draw(scene, t, tr, theme, &PresenceCtx::empty());
+            }
         }
         self.content_height = (y + self.scroll) - body.y0 + 20.0;
         self.scroll = self
@@ -2954,7 +3038,12 @@ impl MusicApp {
             None,
             &Rect::new(player.x0, player.y0, player.x1, player.y0 + 1.0),
         );
-        if let Some(current) = self.pb.current.as_ref().and_then(|id| self.lib.track(id)) {
+        if let Some(current) = self
+            .pb
+            .current
+            .as_ref()
+            .and_then(|id| self.playback_track(id))
+        {
             let art = Rect::new(
                 player.x0 + 20.0,
                 player.y0 + 18.0,
@@ -3463,6 +3552,7 @@ impl MusicApp {
             None,
         );
         y += 46.0;
+        y = self.position_open_file_button(body.x0, y);
 
         // Real YouTube-Music content when it has landed.
         if let Some(home) = self.home.take() {
@@ -3601,6 +3691,16 @@ impl MusicApp {
             None,
         );
         y + 36.0
+    }
+
+    fn position_open_file_button(&mut self, left: f64, top: f64) -> f64 {
+        let size = self.open_file_button.get_rect().size();
+        self.open_file_button
+            .apply_layout_external(Rect::from_origin_size(
+                Point::new(left + self.open_file_gap * 2.0, top),
+                size,
+            ));
+        top + size.height + self.open_file_gap
     }
 
     /// A composed, inviting zero-state for an empty Home (the default build
@@ -4676,6 +4776,9 @@ impl MusicApp {
         hovered: bool,
         like_x: f64,
     ) {
+        if self.is_local_file(&tk.id) {
+            return;
+        }
         let liked = self.lib.is_liked(&tk.id);
         let like_rect = Rect::new(
             like_x - 14.0,
@@ -4720,6 +4823,9 @@ impl MusicApp {
         dl_x: f64,
         dur_x: f64,
     ) {
+        if self.is_local_file(&tk.id) {
+            return;
+        }
         let state = self.lib.cache_state(&tk.id);
         let downloading = matches!(state, CacheState::Downloading(_));
         let failed = self.offline_errors.get(&tk.id).cloned();
@@ -7902,7 +8008,9 @@ impl MusicApp {
             let cover = self.best_cover_id(&tk.id, &tk.album_id);
             self.draw_cover(scene, t, art, &cover, &tk.title, tr, 8.0);
             // Clicking the art jumps to its album.
-            self.push_hit(art, Action::Nav(View::Album(tk.album_id.clone())));
+            if !tk.album_id.is_empty() {
+                self.push_hit(art, Action::Nav(View::Album(tk.album_id.clone())));
+            }
             let tx = art.x1 + 14.0;
             // Reserve room on the right of the title block for the heart +
             // lyrics buttons so they never overlap the title text.
@@ -7968,6 +8076,13 @@ impl MusicApp {
         heart_c: Point,
         lyr_c: Point,
     ) {
+        if self
+            .local_file
+            .as_ref()
+            .is_some_and(|file| file.track.id == track_id)
+        {
+            return;
+        }
         let liked = self.lib.is_liked(track_id);
         let hh = self.push_hit(
             square_around(heart_c, 28.0),
@@ -8654,7 +8769,7 @@ impl MusicApp {
 
     fn gather_tracks(&self, ids: &[String]) -> Vec<TrackDisp> {
         ids.iter()
-            .filter_map(|id| self.lib.track(id))
+            .filter_map(|id| self.playback_track(id))
             .map(|tk| TrackDisp {
                 id: tk.id.clone(),
                 title: tk.title.clone(),

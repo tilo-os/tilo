@@ -5,7 +5,7 @@ interactive UI primitive instead of using the shared `ui` toolkit widget. These
 are the things that MUST be unified: a painted rect with a manual hit-test, or a
 `String` field you `push`/`pop` on raw key events, silently drops text selection,
 clipboard (Ctrl+C/V/X), keyboard activation and caret nav, the focus ring, the
-a11y tree, and `Theme`-driven colors. The rule is codified in `ui/HIG.md` §8.
+a11y tree, and `Theme`-driven colors. The rule is codified in `crates/sdk/ui-core/HIG.md` §8.
 
 **Scope.** All UI apps under `apps/`. This is now a living migration ledger,
 not the original read-only snapshot. A row is marked done only after the app
@@ -68,7 +68,7 @@ reuses ContextMenu), `video-player` (thin `VideoPlayer` shell).
 The worst class: a per-app `String` (or `chars`/`caret`) that receives characters
 directly from `Key::Character`/`Backspace`. No real selection, no clipboard, no
 IME, no a11y, no caret-by-click. Several offenders also rewrite the whole CRDT
-field every keystroke (O(n²) tombstone churn — see `ui/HIG.md` §6).
+field every keystroke (O(n²) tombstone churn — see `crates/sdk/ui-core/HIG.md` §6).
 
 **Status (search-field wave):** **feeds** and **weather** were already migrated
 to shared `TextInput` / `Autocomplete` widgets (their audit entries were stale).
@@ -597,5 +597,5 @@ ink, shadows/scrims, picker seeds, and test literals remain intentional.
 
 ---
 
-*Grade every migration on `shots`, not a green build (`ui/HIG.md` §7). When a
+*Grade every migration on `shots`, not a green build (`crates/sdk/ui-core/HIG.md` §7). When a
 migration reveals a missing capability, extend the widget — never re-fork it.*

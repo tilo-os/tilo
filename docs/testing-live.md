@@ -23,9 +23,9 @@ its unit tests, both of:
    placeholder and not a uniform fill, and that it *changed* vs. the pre-load
    frame.
 
-Both must be **runnable, not `#[ignore]`d into oblivion.** Gate them behind an
-env var so hermetic CI self-skips (green) offline, and give them a clear name +
-documented run command.
+Both must remain runnable through a named, documented opt-in lane. Network tests
+must use `#[ignore]` rather than returning early: ordinary CI should report that
+it did not execute them, never count a no-assertion branch as a passing test.
 
 ## The reusable harness
 
@@ -49,14 +49,14 @@ documented run command.
 ```bash
 # Full plumbing + live-render pixel inspection (needs real network + a GPU).
 # Writes maps-live-{before,after}.png to $MAPS_LIVE_OUT (default apps/maps/live-out/).
-MAPS_LIVE=1 MAPS_LIVE_OUT=apps/maps/live-out \
-  tilo-build test -p maps --test live_maps -- --nocapture --test-threads 1
+MAPS_LIVE_OUT=apps/maps/live-out \
+  tilo-build test -p maps --test live_maps -- \
+  --ignored --nocapture --test-threads 1
 ```
 
-Without `MAPS_LIVE`, the lane self-skips and `tilo-build test -p maps` stays green
-offline. The pre-existing `tiles::tests::live_tile_fetch_real_network` (an
-`#[ignore]`d raw-fetch smoke test) still exists; the `live_maps` lane supersedes
-it by driving the whole app, not just `load_tile`.
+Ordinary `tilo-build test -p maps` compiles these cases but reports them as
+ignored. The lane drives the whole app rather than duplicating a weaker raw
+`load_tile` network smoke test.
 
 ## Display configuration live lane
 

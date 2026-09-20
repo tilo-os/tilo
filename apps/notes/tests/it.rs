@@ -12,12 +12,12 @@
 
 #[path = "click_link_navigates.rs"]
 mod click_link_navigates;
-#[path = "cmd_k_palette.rs"]
-mod cmd_k_palette;
 #[path = "e2e_smoke.rs"]
 mod e2e_smoke;
 #[path = "interaction_event_path.rs"]
 mod interaction_event_path;
+#[path = "launch_cli.rs"]
+mod launch_cli;
 #[path = "main_panel_scroll.rs"]
 mod main_panel_scroll;
 #[path = "markdown_marks_roundtrip.rs"]

@@ -1,51 +1,68 @@
 name: CI / filesystem contract
 
 on:
-  push:
-    branches: ["main"]
-    paths:
-      - ".cargo/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "fs/**"
-      - "apps/file-explorer/**"
-      - "apps/settings/src/panes/device_mesh.rs"
-      - "crates/hosting/tilo-relay/**"
-      - "crates/collab/**"
-      - "crates/identity/tilo-user-identity/**"
-      - "crates/packaging/launcher/**"
-      - "crates/thumbnail/**"
-      - "shell/**"
-      - "ui/**"
-      - "scripts/ci-run.sh"
-      - "os/usr/libexec/tilo-session"
-      - "os/usr/lib/systemd/user/tilo-graphical-session.target"
-      - "os/usr/lib/systemd/user/tilo-identity.service"
-      - "os/usr/lib/systemd/user/tilo-fs-recipient.service"
-      - "os/usr/share/wayland-sessions/shell*.desktop"
-      - "os/tests/tilo-session-lifecycle.sh"
-      - "os/usr/libexec/tilo-relay-firstboot"
-      - "os/usr/lib/systemd/system/tilo-relay.service"
-      - "os/usr/lib/systemd/system/tilo-fs-replica.service"
-      - "os/containers/tilo-relay/**"
-      - ".forgejo/workflows/build-image.yml"
-      - ".forgejo/workflows/fs-fuse.yml"
+  # Capacity relief: main-push validation is covered by nightly/manual runs.
+  # push:
+  #   branches: ["main"]
+  #   paths:
+  #     - ".cargo/**"
+  #     - "Cargo.toml"
+  #     - "Cargo.lock"
+  #     - "crates/system/fs/**"
+  #     - "crates/doc/qdoc/**"
+  #     - "crates/media/thumbnail/**"
+  #     - "crates/runtime/runtime-fs/**"
+  #     - "crates/runtime/runtime-portal/**"
+  #     - "crates/system/atomic-file/**"
+  #     - "crates/system/bounded-command/**"
+  #     - "crates/system/power/**"
+  #     - "crates/system/private-fs/**"
+  #     - "crates/system/settings-store/**"
+  #     - "apps/file-explorer/**"
+  #     - "apps/settings/src/panes/device_mesh.rs"
+  #     - "crates/hosting/tilo-relay/**"
+  #     - "crates/collab/**"
+  #     - "crates/collab/tilo-user-identity/**"
+  #     - "crates/packaging/launcher/**"
+  #     - "crates/session/shell/**"
+  #     - "crates/sdk/ui-core/**"
+  #     - "scripts/ci-run.sh"
+  #     - "os/usr/libexec/tilo-session"
+  #     - "os/usr/lib/systemd/user/tilo-graphical-session.target"
+  #     - "os/usr/lib/systemd/user/tilo-identity.service"
+  #     - "os/usr/lib/systemd/user/tilo-fs-recipient.service"
+  #     - "os/usr/share/wayland-sessions/shell*.desktop"
+  #     - "os/tests/tilo-session-lifecycle.sh"
+  #     - "os/usr/libexec/tilo-relay-firstboot"
+  #     - "os/usr/lib/systemd/system/tilo-relay.service"
+  #     - "os/usr/lib/systemd/system/tilo-fs-replica.service"
+  #     - "os/containers/tilo-relay/**"
+  #     - ".forgejo/workflows/build-image.yml"
+  #     - ".forgejo/workflows/fs-fuse.yml"
   pull_request:
     branches: ["main"]
     paths:
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "fs/**"
+      - "crates/system/fs/**"
+      - "crates/doc/qdoc/**"
+      - "crates/media/thumbnail/**"
+      - "crates/runtime/runtime-fs/**"
+      - "crates/runtime/runtime-portal/**"
+      - "crates/system/atomic-file/**"
+      - "crates/system/bounded-command/**"
+      - "crates/system/power/**"
+      - "crates/system/private-fs/**"
+      - "crates/system/settings-store/**"
       - "apps/file-explorer/**"
       - "apps/settings/src/panes/device_mesh.rs"
       - "crates/hosting/tilo-relay/**"
       - "crates/collab/**"
-      - "crates/identity/tilo-user-identity/**"
+      - "crates/collab/tilo-user-identity/**"
       - "crates/packaging/launcher/**"
-      - "crates/thumbnail/**"
-      - "shell/**"
-      - "ui/**"
+      - "crates/session/shell/**"
+      - "crates/sdk/ui-core/**"
       - "scripts/ci-run.sh"
       - "os/usr/libexec/tilo-session"
       - "os/usr/lib/systemd/user/tilo-graphical-session.target"
@@ -59,6 +76,10 @@ on:
       - "os/containers/tilo-relay/**"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/fs-fuse.yml"
+      - "tools/ci/workflow_applicability.py"
+      - "tools/ci/prepare_pr_history.py"
+  schedule:
+    - cron: "30 4 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -77,7 +98,43 @@ env:
   TILO_FS_FUSE_REQUIRED: "1"
 
 jobs:
+  applicability:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+          sparse-checkout: |
+            tools/ci/prepare_pr_history.py
+            tools/ci/workflow_applicability.py
+            .forgejo/workflows/fs-fuse.yml
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Prepare targeted PR history
+        run: python3 -I tools/ci/prepare_pr_history.py
+      - name: Require an exact relevant PR diff before FUSE work
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/fs-fuse.yml
+
   real-fuse:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 60
     container:
@@ -172,6 +229,14 @@ jobs:
   # ENOSPC at test 213/213. Give this non-FUSE suite a fresh container instead
   # of deleting an incomplete subset of Cargo artifacts in the live mount job.
   files-ux:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 30
     env:

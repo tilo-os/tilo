@@ -1,4 +1,4 @@
-//! `runtime-portal` — service discovery and connected-fd → RPC plumbing for
+//! `runtime-portal` — service discovery and connected transport → RPC plumbing for
 //! Tilo apps.
 //!
 //! Tilo apps run inside a launcher-managed sandbox. The launcher opens a Unix
@@ -8,7 +8,7 @@
 //! - [`service_fd`] — pull the raw fd out of the environment.
 //! - [`is_tilo_native`] — heuristic: running under a Tilo compositor, or as a
 //!   stock Flatpak on a vanilla desktop?
-//! - [`UnixCapnpClient`] — lift a connected `RawFd` into a tokio Cap'n Proto
+//! - [`CapnpClient`] — lift an owned connected transport into a tokio Cap'n Proto
 //!   two-party RPC client; higher-level service crates build typed clients
 //!   on top of the bootstrap returned here.
 //! - [`NotAvailable`] — the single error type service clients surface when
@@ -45,14 +45,12 @@ use std::os::fd::{BorrowedFd, FromRawFd, OwnedFd};
 pub type RawFd = i32;
 
 use capnp::capability::Promise;
-#[cfg(unix)]
 use capnp_rpc::twoparty;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
 #[cfg(unix)]
 use nix::fcntl::{F_GETFD, fcntl};
 #[cfg(unix)]
 use tokio::net::UnixStream;
-#[cfg(unix)]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// All ways a system service can be unavailable to an app.
@@ -104,15 +102,45 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
     }
 }
 
-/// A tokio Cap'n Proto two-party RPC client wrapped around an
-/// already-connected Unix socket fd. Typed service crates call
+/// A tokio Cap'n Proto two-party RPC client wrapped around an owned,
+/// already-connected transport. Typed service crates call
 /// [`Self::bootstrap`] for the root capability; this owns the driver task.
-pub struct UnixCapnpClient {
+pub struct CapnpClient {
     rpc_system: RpcSystem<rpc_twoparty_capnp::Side>,
     bootstrap_side: rpc_twoparty_capnp::Side,
 }
 
-impl UnixCapnpClient {
+/// Compatibility name for clients using launcher-provided Unix descriptors.
+pub type UnixCapnpClient = CapnpClient;
+
+impl CapnpClient {
+    /// Take ownership of a connected asynchronous byte stream. Platform launch
+    /// adapters supply the connection; this constructor does not discover a
+    /// service, authenticate either peer, or grant app/workspace authority.
+    ///
+    /// Uses the same protocol and local driver as the Unix descriptor adapter.
+    /// Windows adapters can supply an owned named pipe without casting handles
+    /// to Unix descriptors. Call [`Self::bootstrap`] inside a tokio `LocalSet`.
+    pub fn from_connected_io<S>(stream: S, side: rpc_twoparty_capnp::Side) -> Self
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+    {
+        let (read_half, write_half) = tokio::io::split(stream);
+        let network = Box::new(twoparty::VatNetwork::new(
+            read_half.compat(),
+            write_half.compat_write(),
+            side,
+            capnp::message::ReaderOptions::default(),
+        ));
+        Self {
+            rpc_system: RpcSystem::new(network, None),
+            bootstrap_side: match side {
+                rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
+                rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
+            },
+        }
+    }
+
     /// Wrap an owned `RawFd` for a connected Unix stream socket; takes
     /// ownership, so the caller must not close it afterwards. `side` is which
     /// end of the two-party protocol we are — SDK clients are `Client`, services are `Server`.
@@ -143,29 +171,15 @@ impl UnixCapnpClient {
                 .map_err(NotAvailable::ConnectionFailed)?;
             let stream =
                 UnixStream::from_std(std_stream).map_err(NotAvailable::ConnectionFailed)?;
-            let (read_half, write_half) = stream.into_split();
-            let read_compat = read_half.compat();
-            let write_compat = write_half.compat_write();
-            let network = Box::new(twoparty::VatNetwork::new(
-                read_compat,
-                write_compat,
-                side,
-                capnp::message::ReaderOptions::default(),
-            ));
-            let rpc_system = RpcSystem::new(network, None);
-            Ok(Self {
-                rpc_system,
-                bootstrap_side: match side {
-                    rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
-                    rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
-                },
-            })
+            Ok(Self::from_connected_io(stream, side))
         }
     }
 
     /// Take the remote bootstrap capability as a typed client, spawning the RPC
     /// driver task on the current tokio `LocalSet` (capnp-rpc needs `!Send`
     /// futures, so callers must run this from a `LocalSet`-aware context).
+    /// Service availability must be established by a service call: capability
+    /// resolution alone is not a health or admission check.
     pub fn bootstrap<C>(mut self) -> C
     where
         C: capnp::capability::FromClientHook,
@@ -173,8 +187,8 @@ impl UnixCapnpClient {
         let client: C = self.rpc_system.bootstrap(self.bootstrap_side);
         // capnp-rpc futures are !Send, so the driver is spawned via `spawn_local`.
         tokio::task::spawn_local(async move {
-            // Resolves when the connection closes; the result is dropped since the
-            // higher layer sees the drop via a Disconnected capnp error on its next call.
+            // Resolves when the connection closes; higher layers observe a
+            // Disconnected error on outstanding or subsequent service calls.
             let _ = self.rpc_system.await;
         });
         client
@@ -223,6 +237,30 @@ pub type RpcPromise<T> = Promise<T, capnp::Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn connected_io_reports_peer_close() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (connection, peer) = tokio::io::duplex(512);
+                let client: capnp::capability::Client =
+                    CapnpClient::from_connected_io(connection, rpc_twoparty_capnp::Side::Client)
+                        .bootstrap();
+                drop(peer);
+                // Service clients await RPC responses. Exercise that public
+                // failure path, including a call queued before the driver polls.
+                let request = client
+                    .new_call::<capnp::any_pointer::Owned, capnp::any_pointer::Owned>(0, 0, None);
+                let error =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), request.send().promise)
+                        .await
+                        .expect("closed peer must resolve the outstanding RPC")
+                        .err()
+                        .expect("closed transport cannot complete a service call");
+                assert_eq!(error.kind, capnp::ErrorKind::Disconnected);
+            })
+            .await;
+    }
 
     fn clear_tilo_env() {
         // SAFETY: tests are not parallel for this function — the

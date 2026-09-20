@@ -344,7 +344,7 @@ recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 grep -Fqx 'ListenStream=%t/tilo/services/tilo-fs.sock' "$recipient_socket"
 grep -Fqx 'SocketMode=0600' "$recipient_socket"
 grep -Fqx 'Backlog=16' "$recipient_socket"
-grep -Fq 'listener.local_addr()?.as_pathname() == Some(socket)' "$repo/fs/src/main.rs"
+grep -Fq 'listener.local_addr()?.as_pathname() == Some(socket)' "$repo/crates/system/fs/src/main.rs"
 app_host_gc_line="$(grep -n 'let _gc = tokio::task::spawn_blocking' "$app_host_source" | cut -d: -f1)"
 app_host_serve_line="$(grep -n 'transport::serve(listener, store' "$app_host_source" | cut -d: -f1)"
 if [ -z "$app_host_gc_line" ] || [ -z "$app_host_serve_line" ] \

@@ -18,7 +18,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: Snippets' `actions` module exports every library
 # mutation as a replayable action the host's Ctrl+K palette dispatches, so a
 # toolbar button and a palette row build the identical action and share one

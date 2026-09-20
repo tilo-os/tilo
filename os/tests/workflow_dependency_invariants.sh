@@ -5,6 +5,7 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflows="$repo/.forgejo/workflows"
+cosign_action="$repo/.forgejo/actions/install-cosign/action.yml"
 fail=0
 
 if grep -Rqs --include='*.yml' --include='*.yaml' --include='*.env' \
@@ -47,7 +48,7 @@ release_signed_workflows=(
   "$workflows/snapshot-rpms.yml"
 )
 
-if python3 "$repo/tools/check_workflow_actions.py"; then
+if python3 "$repo/tools/policy/check_workflow_actions.py"; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
 else
   fail=1
@@ -60,11 +61,21 @@ else
   fail=1
 fi
 
-if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.ref }}" "$rpm_snapshot_workflow" \
-   && grep -Fq "cancel-in-progress: \${{ github.event_name != 'workflow_dispatch' }}" "$rpm_snapshot_workflow" \
-   && grep -Fq 'git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"' \
+if grep -Fq 'group: check-${{ github.event_name }}-${{ github.sha }}' "$check_workflow" \
+   && grep -Fq 'cancel-in-progress: false' "$check_workflow" \
+   && grep -Fq 'group: lint-${{ github.event_name }}-${{ github.sha }}' "$workflows/lint.yml" \
+   && grep -Fq 'cancel-in-progress: false' "$workflows/lint.yml"; then
+  printf 'ok    every check and lint event retains an independent result\n'
+else
+  printf 'check or lint events may replace required results\n' >&2
+  fail=1
+fi
+
+if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.sha }}" "$rpm_snapshot_workflow" \
+   && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
      "$rpm_snapshot_workflow" \
-   && grep -Fq 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' \
      "$rpm_snapshot_workflow" \
    && grep -Fq 'git checkout --detach FETCH_HEAD' "$rpm_snapshot_workflow"; then
   printf 'ok    RPM snapshot refreshes cannot starve and stale runs cannot publish\n'
@@ -82,7 +93,7 @@ fi
 
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$kernel_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$kernel_workflow" \
-   && grep -Fq 'needs: signing-preflight' "$kernel_workflow"; then
+   && grep -Fq 'needs: [signing-preflight, applicability]' "$kernel_workflow"; then
   printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
 else
   printf 'release kernel compilation can start before its signing authority is identity-bound\n' >&2
@@ -92,7 +103,7 @@ fi
 relay_workflow="$workflows/tilo-relay.yaml"
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$relay_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$relay_workflow" \
-   && grep -Fq 'needs: signing-preflight' "$relay_workflow"; then
+   && grep -Fq 'needs: [signing-preflight, applicability]' "$relay_workflow"; then
   printf 'ok    release relay build starts only after KMS identity preflight\n'
 else
   printf 'release relay build can start before its signing authority is identity-bound\n' >&2
@@ -185,14 +196,20 @@ for arch in amd64 arm64; do
     fail=1
   fi
 done
+if ! grep -Fq './os/dev/install-cached-cosign.sh' "$cosign_action" \
+  || ! grep -Fq 'key: cosign-v2.5.2-${{ inputs.cache-architecture }}-' "$cosign_action" \
+  || ! grep -Fq 'uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684' "$cosign_action" \
+  || ! grep -Fq 'uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684' "$cosign_action"; then
+  printf 'shared Cosign action bypasses verified installation or persistent caching\n' >&2
+  fail=1
+fi
 for workflow in "${cosign_workflows[@]}"; do
-  if ! grep -Fq './os/dev/install-cached-cosign.sh' "$workflow"; then
-    printf 'workflow bypasses the checksum-verified Cosign cache: %s\n' \
-      "${workflow#$repo/}" >&2
-    fail=1
+  if grep -Fq 'uses: ./.forgejo/actions/install-cosign' "$workflow"; then
+    continue
   fi
-  if ! grep -Eq 'github-assets-all-v1-|cosign-v2\.5\.2-' "$workflow"; then
-    printf 'Cosign workflow has no persistent binary cache: %s\n' \
+  if ! grep -Fq './os/dev/install-cached-cosign.sh' "$workflow" \
+    || ! grep -Fq 'github-assets-all-v1-' "$workflow"; then
+    printf 'workflow bypasses cached, checksum-verified Cosign installation: %s\n' \
       "${workflow#$repo/}" >&2
     fail=1
   fi
@@ -217,7 +234,7 @@ fi
 builder_workflow="$workflows/build-builder-image.yml"
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$builder_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$builder_workflow" \
-   && grep -Fq 'needs: signing-preflight' "$builder_workflow"; then
+   && grep -Fq 'needs: [plan, signing-preflight]' "$builder_workflow"; then
   printf 'ok    native builder work starts only after KMS authority matches the pinned public key\n'
 else
   printf 'native builder can start before its signing authority is identity-bound\n' >&2

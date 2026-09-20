@@ -23,7 +23,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 settings-store = { path = "../../crates/system/settings-store" }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

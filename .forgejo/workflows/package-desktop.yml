@@ -1,7 +1,8 @@
 name: Release / desktop
 
 # Native builds cover the compositor's distribution graphics/input stack.
-# Pull requests install-test the payload; release tags publish verified artifacts.
+# Pull requests run cheap preflight only. Full distro builds run weekly, on
+# release tags, or by explicit dispatch while CI capacity is constrained.
 on:
   pull_request:
     branches: [main]
@@ -13,29 +14,19 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
-      - "shell/**"
+      - "crates/session/shell/**"
       - "crates/packaging/launcher/**"
       - "crates/session/tilo-unlock-helper/**"
       - ".forgejo/workflows/package-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
+      - "tools/ci/workflow_applicability.py"
+      - "tools/ci/prepare_pr_history.py"
+  schedule:
+    # One weekly candidate, separated from Saturday's OS image build.
+    - cron: "0 4 * * 5"
   push:
-    branches: ["main", "codex/package-desktop-release"]
     tags: ["desktop-v*"]
-    paths:
-      - "dist/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".cargo/config.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "rust-toolchain.toml"
-      - "shell/**"
-      - "crates/packaging/launcher/**"
-      - "crates/session/tilo-unlock-helper/**"
-      - ".forgejo/workflows/package-desktop.yml"
-      - "docs/install-contract.json"
-      - "scripts/check-install-contract.py"
   workflow_dispatch:
     inputs:
       full_native:
@@ -56,7 +47,43 @@ env:
   TILO_DESKTOP_ARM64_RELEASES: "1"
 
 jobs:
+  applicability:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+          sparse-checkout: |
+            tools/ci/prepare_pr_history.py
+            tools/ci/workflow_applicability.py
+            .forgejo/workflows/package-desktop.yml
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Prepare targeted PR history
+        run: python3 -I tools/ci/prepare_pr_history.py
+      - name: Require an exact relevant PR diff before desktop validation
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/package-desktop.yml
+
   validate:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 30
     outputs:
@@ -138,6 +165,8 @@ jobs:
           echo "release_arches=$release_arches" >> "$GITHUB_OUTPUT"
 
   package:
+    # Full five-distro compilation is opt-in for branch/PR changes.
+    if: github.event_name != 'pull_request'
     needs: validate
     name: package lane / ${{ matrix.arch }}
     # Desktop packaging uses the larger native runner class.
@@ -239,7 +268,7 @@ jobs:
           if-no-files-found: error
 
   publish-os-payload:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: package
     runs-on: runner
     timeout-minutes: 120
@@ -251,7 +280,8 @@ jobs:
       - name: Publish immutable desktop payloads and advance their channels
         env:
           DESKTOP_AUDIENCE: ${{ vars.TILO_DESKTOP_RELEASE_AUDIENCE }}
-          CONTINUOUS_OS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}
+          # Keep future chaining available, but never publish OS versions automatically.
+          CONTINUOUS_OS_RELEASE: "0"
         shell: bash
         run: |
           set -euo pipefail
@@ -340,7 +370,7 @@ jobs:
           fetch-depth: 0
       - name: Require this exact commit to be checked on main
         shell: bash
-        run: tools/ci-receipt.sh verify "$GITHUB_SHA" origin
+        run: tools/ci/receipt.sh verify "$GITHUB_SHA" origin
 
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')

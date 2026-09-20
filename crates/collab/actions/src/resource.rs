@@ -1112,5 +1112,27 @@ mod tests {
             }
             .is_valid()
         );
+        for preview in [
+            "x".repeat(ResourcePresentation::MAX_PREVIEW_BYTES + 1),
+            "unsafe\rpreview".into(),
+            "unsafe\0preview".into(),
+        ] {
+            assert!(
+                !ResourcePresentation {
+                    detail: None,
+                    badge: None,
+                    preview: Some(preview),
+                }
+                .is_valid()
+            );
+        }
+        assert!(
+            ResourcePresentation {
+                detail: None,
+                badge: None,
+                preview: Some("x".repeat(ResourcePresentation::MAX_PREVIEW_BYTES)),
+            }
+            .is_valid()
+        );
     }
 }

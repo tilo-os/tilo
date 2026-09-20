@@ -59,7 +59,9 @@ class StagingTests(unittest.TestCase):
         receipt = s.receive(self.packet, self.work, self.bridge)
         self.assertFalse((self.work / 'operator-ready').exists())
         self.assertEqual((self.bridge / 'requests').stat().st_mode & 0o777, 0o700)
-        self.assertEqual(s.spool.document(self.bridge / 'bridge.json')['context'], self.context)
+        config = s.spool.document(self.bridge / 'bridge.json')
+        self.assertEqual(config['context'], self.context)
+        self.assertEqual(config['timeout_seconds'], self.request['signing_response_timeout_seconds'])
         with self.assertRaises(FileExistsError):
             s.receive(self.packet, self.work, self.bridge)
         self.assertTrue(s.release(receipt, self.work)['ready'])
@@ -67,6 +69,27 @@ class StagingTests(unittest.TestCase):
         self.assertEqual((self.work / 'operator-ready').stat().st_nlink, 1)
         with self.assertRaises(OSError):
             s.release(receipt, self.work)
+
+    def test_checked_bundle_materializes_verified_bytes_for_native_crypto(self):
+        files = {name: base64.b64decode(self.packet['files'][f'new-public/{name}'])
+                 for name in s.PUBLIC}
+        observed = {}
+
+        def identities(inputs, paths):
+            self.assertEqual(set(inputs), set(s.trust.FILES))
+            self.assertEqual(set(paths), set(s.trust.FILES))
+            for name in s.trust.FILES:
+                self.assertEqual(Path(paths[name]).read_bytes(), inputs[name])
+                observed[name] = Path(paths[name])
+            return {'registry-owner.pub': self.request['new_owner']}
+
+        with patch.object(s.trust, 'identities', side_effect=identities) as native:
+            self.assertEqual(
+                s.checked_bundle(files, self.request['new_manifest_sha256']),
+                {'registry-owner.pub': self.request['new_owner']})
+            native.assert_called_once()
+        self.assertTrue(observed)
+        self.assertTrue(all(not path.exists() for path in observed.values()))
 
     def test_changed_request_receipt_manifest_context_and_extra_files_rejected_before_writes(self):
         for mutation in ('request', 'receipt', 'manifest', 'context', 'extra'):

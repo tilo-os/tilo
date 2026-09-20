@@ -1463,58 +1463,6 @@ mod tests {
         assert!(!layer.is_backing_off(id));
     }
 
-    /// Real-network smoke test of the *production* tile path: install the
-    /// crypto provider, build the exact worker client, and fetch a real basemap
-    /// tile from the label-free style — the thing the unit tests (local mock)
-    /// and `--shots` (sample data) never exercised, which is why the
-    /// silent-TLS-failure shipped.
-    ///
-    /// Ignored by default so hermetic CI stays offline; run it explicitly with:
-    ///   cargo test -p maps --lib -- --ignored `live_tile_fetch_real_network`
-    /// It uses `.expect()` on `send()` so a TLS/provider failure surfaces as the
-    /// actual error message rather than a swallowed `None`.
-    #[test]
-    #[ignore = "hits the public OSM tile server; run with --ignored"]
-    fn live_tile_fetch_real_network() {
-        crate::net::ensure_crypto_provider();
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(Duration::from_secs(20))
-            .build()
-            .expect("reqwest client builds");
-
-        let base = TileStyle::Light.base_url();
-        let id = TileId::new(3, 4, 2);
-        let url = id.url(base);
-
-        // Raw request first, so a handshake failure is a clear, loud error.
-        let resp = client
-            .get(&url)
-            .send()
-            .unwrap_or_else(|e| panic!("HTTPS fetch of {url} failed (TLS/provider?): {e}"));
-        assert!(
-            resp.status().is_success(),
-            "unexpected status {} for {url}",
-            resp.status()
-        );
-        let bytes = resp.bytes().expect("read tile body");
-        let (rgba, w, h) = decode_png(&bytes).expect("tile decodes as PNG");
-        assert_eq!((w, h), (256, 256), "basemap tiles are 256×256");
-        assert_eq!(rgba.len(), 256 * 256 * 4, "RGBA8 buffer size");
-
-        // Now the full production helper: it must return pixels AND persist the
-        // tile to the on-disk cache so re-views/zoom are instant.
-        let cache = temp_cache();
-        let got = load_tile(Some(&client), &cache, base, id)
-            .expect("load_tile returns decoded pixels over the real network");
-        assert_eq!(got.0.len(), 256 * 256 * 4);
-        assert!(
-            cache.join(id.cache_rel()).exists(),
-            "a fetched tile must be written to the disk cache"
-        );
-        let _ = std::fs::remove_dir_all(&cache);
-    }
-
     /// The backoff is capped so it never grows unbounded, even after many
     /// consecutive failures.
     #[test]

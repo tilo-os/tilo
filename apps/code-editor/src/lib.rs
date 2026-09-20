@@ -135,8 +135,8 @@ mod tests {
             Some(PathBuf::from("/home/me/tilo"))
         );
         assert_eq!(
-            parse_path_arg(&args(&["shell/src/main.rs"])),
-            Some(PathBuf::from("shell/src/main.rs"))
+            parse_path_arg(&args(&["crates/session/shell/src/main.rs"])),
+            Some(PathBuf::from("crates/session/shell/src/main.rs"))
         );
     }
 

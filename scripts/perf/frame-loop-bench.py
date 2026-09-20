@@ -3,7 +3,7 @@
 
 Spawns `shell --mode native` with the frame-loop instrumentation enabled
 (`TILO_FRAME_TRACE` / `TILO_FRAME_SUMMARY`, see
-`shell/src/compositor/metrics.rs`), optionally drives input through the
+`crates/session/shell/src/compositor/metrics.rs`), optionally drives input through the
 `TILO_TEST_CONTROL` socket and/or runs a continuously-painting Wayland
 client against it, then reports the frame-time distribution.
 

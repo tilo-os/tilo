@@ -4,6 +4,12 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+native_arch=$(uname -m)
+# Use the same audited flags for compilation and the subsequently signed ISA
+# declaration. ELF machine checks below independently reject a wrong-arch payload.
+CARGO_ENCODED_RUSTFLAGS=$(python3 "$repo_root/tools/apps/app_package_isa.py" flags \
+    --root "$repo_root" --arch "$native_arch")
+export CARGO_ENCODED_RUSTFLAGS
 apps=${TILO_RELEASE_APPS:?space-separated app directory names are required}
 out=${TILO_APP_RELEASE_OUT:-$repo_root/dist/app-release}
 identity=${QPKG_PUBLISHER_IDENTITY_FILE:-}
@@ -41,10 +47,10 @@ find "$out" -mindepth 1 -depth -delete
 mkdir -p "$out/qpkg" "$out/work"
 
 plan="$out/plan.json"
-python3 "$repo_root/tools/app_release.py" --apps "$apps" > "$plan"
+python3 "$repo_root/tools/apps/app_release.py" --apps "$apps" > "$plan"
 mapfile -t packages < <(jq -r '.packages[]' "$plan")
 runtime_plan="$out/runtime-plan.json"
-python3 "$repo_root/tools/app_release.py" --collection default > "$runtime_plan"
+python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
 features=$(jq -r '.features | join(",")' "$runtime_plan")
 (cd "$repo_root" && cargo build --release --locked -p pkg-cli -p runtime-bundle)
@@ -70,7 +76,10 @@ fi
 runtime_dylib="$thin_app_dir/libruntime_dylib.so"
 rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
 [[ -f $runtime_dylib && -f $rust_libstd ]]
-OUT_DIR="$out" RUNTIME_VERSION="$runtime_version" FROM=/ \
+# Keep the public runtime and publisher key under the root transported by
+# release-apps.yml and consumed by assemble-collection.sh. Private identities
+# stay in work/ (or the caller's external identity files), outside that root.
+OUT_DIR="$out/runtime" RUNTIME_VERSION="$runtime_version" FROM=/ \
     SOURCE_DATE_EPOCH="$source_epoch" \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
@@ -83,6 +92,16 @@ if [[ -z $identity ]]; then
 fi
 pubkey=$("$release_dir/tilo-runtime-bundle" key pubkey --identity "$identity")
 [[ $pubkey =~ ^[0-9a-fA-F]{64}$ ]]
+# Capture the public trust inputs from this signing invocation. These are not
+# inferred later from a downloaded package, and private identities stay in work/.
+runtime_pubkey=$("$release_dir/tilo-runtime-bundle" key pubkey --identity "$runtime_identity")
+[[ $runtime_pubkey =~ ^[0-9a-fA-F]{64}$ ]]
+python3 - "$out/work/receipt-signers.json" "$pubkey" "$runtime_pubkey" <<'PY'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps({
+    "app_publisher": sys.argv[2].lower(), "runtime_publisher": sys.argv[3].lower(),
+}) + "\n")
+PY
 
 while IFS=$'\t' read -r name package binary id version manifest; do
     built="$thin_app_dir/$binary"
@@ -93,12 +112,26 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     install -pm 0755 "$built" "$payload/bin/$binary"
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
+    python3 "$repo_root/tools/apps/app_package_isa.py" stage --arch "$native_arch" \
+        --manifest "$staged_manifest" --binary "$payload/bin/$binary" --output "$staged_manifest"
     qpkg="$out/qpkg/$name-$version-$(uname -m).qpkg"
-    "$release_dir/tilo-pkg" pack \
+    binary_bytes=$(stat -c %s "$built")
+    printf 'packing app=%s binary=%s binary_bytes=%s output=%s\n' \
+        "$name" "$built" "$binary_bytes" "$qpkg"
+    if "$release_dir/tilo-pkg" pack \
         --manifest "$staged_manifest" --payload "$payload" \
-        --identity "$identity" --output "$qpkg"
-    "$release_dir/tilo-pkg" verify --trusted-key "$pubkey" "$qpkg"
+        --identity "$identity" --output "$qpkg"; then
+        :
+    else
+        pack_status=$?
+        printf 'pack failed: app=%s output=%s exit_status=%s binary_bytes=%s limit=%s\n' \
+            "$name" "$qpkg" "$pack_status" "$binary_bytes" "$max_qpkg_bytes" >&2
+        exit "$pack_status"
+    fi
     qpkg_bytes=$(stat -c %s "$qpkg")
+    printf 'packed app=%s output=%s qpkg_bytes=%s limit=%s\n' \
+        "$name" "$qpkg" "$qpkg_bytes" "$max_qpkg_bytes"
+    "$release_dir/tilo-pkg" verify --trusted-key "$pubkey" "$qpkg"
     (( qpkg_bytes <= max_qpkg_bytes )) || {
         printf '%s is %s bytes (limit %s); shared-runtime packaging regressed\n' \
             "$qpkg" "$qpkg_bytes" "$max_qpkg_bytes" >&2
@@ -117,10 +150,10 @@ for app in plan["catalog"]:
 json.dump({"format": 1, "architecture": sys.argv[4], "source": sys.argv[5], "apps": entries},
           open(sys.argv[3], "w", encoding="utf-8"), indent=2, sort_keys=True)
 PY
-(cd "$out" && find qpkg tilo-runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
+(cd "$out" && find qpkg runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
     && sha256sum index.json >> SHA256SUMS)
 tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner \
-    -C "$out" -czf "$out/tilo-apps-$(uname -m).tar.gz" qpkg tilo-runtime index.json SHA256SUMS
+    -C "$out" -czf "$out/tilo-apps-$(uname -m).tar.gz" qpkg runtime index.json SHA256SUMS
 (
   cd "$out"
   sha256sum "tilo-apps-$(uname -m).tar.gz" > "tilo-apps-$(uname -m).tar.gz.sha256"

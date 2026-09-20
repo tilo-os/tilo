@@ -1,8 +1,8 @@
-//! Pure-Rust full-track resolver using YouTube's keyless `ANDROID_VR` client.
+//! Pure-Rust full-track resolver using `YouTube`'s keyless `ANDROID_VR` client.
 //!
 //! Rustypipe's ordinary iOS/TV media URLs can be SABR/range-gated after their
 //! first segment. `ANDROID_VR` returns ordinary adaptive audio URLs and does
-//! not require a JavaScript player. Querying that public InnerTube client
+//! not require a JavaScript player. Querying that public `InnerTube` client
 //! directly removes the `yt-dlp`/Python subprocess from the trusted OS while
 //! retaining the full-track path.
 
@@ -83,7 +83,7 @@ fn parse_player_response(video_id: &str, bytes: &[u8]) -> Option<ResolvedStream>
 /// Resolve a full-track audio URL without invoking an external interpreter.
 ///
 /// The request and response are time/size bounded and accept media URLs only
-/// from YouTube's exact HTTPS `googlevideo.com` origin. `None` lets the caller
+/// from `YouTube`'s exact HTTPS `googlevideo.com` origin. `None` lets the caller
 /// fall back to the independently resolved Rustypipe/proxy paths.
 #[cfg(feature = "live")]
 pub fn resolve_full_audio(video_id: &str) -> Option<ResolvedStream> {

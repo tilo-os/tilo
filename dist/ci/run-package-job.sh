@@ -146,8 +146,16 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     # bind path inside the runner is not a real path from the daemon's view.
     copy_in_log=$log_dir/copy-in.log
     set +e
-    docker cp "$repo_root/." "$container:/workspace" 2>&1 | tee "$copy_in_log"
-    container_status=${PIPESTATUS[0]}
+    # Each architecture runs five distros serially. Do not copy earlier distro
+    # artifacts (or a local Cargo target) into every subsequent build container.
+    bash "$repo_root/dist/ci/archive-package-source.sh" "$repo_root" \
+        2> "$copy_in_log" | docker cp - "$container:/" \
+        2> >(tee -a "$copy_in_log" >&2)
+    copy_pipeline_status=("${PIPESTATUS[@]}")
+    container_status=${copy_pipeline_status[0]}
+    if (( container_status == 0 )); then
+        container_status=${copy_pipeline_status[1]}
+    fi
     set -e
     if (( container_status != 0 )); then
         {
@@ -321,7 +329,7 @@ ubuntu-24.04|debian-13)
     dist/ci/install-build-deps.sh debian
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
-    source tools/ci-sccache.sh prepare-shell
+    source tools/ci/sccache.sh prepare-shell
     stage=build-deb
     dist/debian/build-deb.sh
     stage=inspect-deb
@@ -345,7 +353,7 @@ fedora-44)
     dist/ci/install-build-deps.sh fedora
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
-    source tools/ci-sccache.sh prepare-shell
+    source tools/ci/sccache.sh prepare-shell
     stage=build-rpm
     dist/rpm/build-rpm.sh
     stage=inspect-rpm
@@ -405,7 +413,7 @@ arch)
     dist/ci/install-build-deps.sh arch
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
-    source tools/ci-sccache.sh prepare-shell
+    source tools/ci/sccache.sh prepare-shell
     # Arch's rolling binutils has regressed in `ar` while BLAKE3 archives both
     # its hand-written assembly and its AVX-512 C object. `prefer_intrinsics`
     # covers SSE/AVX2 but still builds AVX-512 through `cc`, so it does not avoid

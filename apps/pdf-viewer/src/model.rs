@@ -498,61 +498,115 @@ pub struct SearchOptions {
 /// match at every character; users can refine the query to narrow it.
 pub const MAX_SEARCH_RESULTS: usize = 500;
 
-/// True when the byte at `idx` (or just before it) is part of a "word":
-/// ASCII letters, digits and underscore. Used for whole-word boundaries.
-fn is_word_byte(bytes: &[u8], idx: usize) -> bool {
-    bytes
-        .get(idx)
-        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
-}
+/// Find bounded, non-overlapping spans in the original UTF-8 text. Both PDF
+/// backends share the system search normalization and Unicode word boundaries.
+/// Lowercase expansion/contraction (for example İ and K) must never turn an
+/// index into normalized text into an index into the source document.
+pub(crate) fn search_text(
+    text: &str,
+    query: &str,
+    opts: SearchOptions,
+    limit: usize,
+) -> Vec<std::ops::Range<usize>> {
+    use std::borrow::Cow;
 
-/// Substring search across all renderable text, honouring the find-bar
-/// [`SearchOptions`]. The content is ASCII, so lower-casing preserves byte
-/// offsets and `start` indexes directly into the original block text.
-pub fn search(doc: &Document, query: &str, opts: SearchOptions) -> Vec<Match> {
-    let mut out = Vec::new();
+    let limit = limit.min(MAX_SEARCH_RESULTS);
     let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return out;
+    if trimmed.is_empty() || limit == 0 {
+        return Vec::new();
     }
     let needle = if opts.case_sensitive {
-        trimmed.to_string()
+        Cow::Borrowed(trimmed)
     } else {
-        trimmed.to_lowercase()
+        Cow::Owned(ui::search::normalize_search_text(trimmed))
     };
+    let hay = if opts.case_sensitive {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(ui::search::normalize_search_text(text))
+    };
+    // Each pair marks one original scalar boundary in normalized/source byte
+    // space. ASCII and case-sensitive searches need no offset allocation.
+    let boundaries = if !opts.case_sensitive && !text.is_ascii() {
+        let mut pairs = vec![(0, 0)];
+        let mut normalized_end = 0;
+        for (source_start, scalar) in text.char_indices() {
+            normalized_end += scalar.to_lowercase().map(char::len_utf8).sum::<usize>();
+            pairs.push((normalized_end, source_start + scalar.len_utf8()));
+        }
+        pairs
+    } else {
+        Vec::new()
+    };
+    let words: Vec<_> = if opts.whole_word {
+        ui::text_break::unicode_word_ranges(text).collect()
+    } else {
+        Vec::new()
+    };
+    let inside_word = |byte| {
+        words
+            .get(words.partition_point(|word| word.end <= byte))
+            .is_some_and(|word| word.start < byte && byte < word.end)
+    };
+    let mut out = Vec::new();
+    let mut source_end = 0;
+    for (start, matched) in hay.match_indices(needle.as_ref()) {
+        let end = start + matched.len();
+        let (range, complete_scalars) = if boundaries.is_empty() {
+            (start..end, true)
+        } else {
+            let first = boundaries
+                .partition_point(|pair| pair.0 <= start)
+                .saturating_sub(1);
+            let last = boundaries.partition_point(|pair| pair.0 < end);
+            let (Some(&(fold_start, original_start)), Some(&(fold_end, original_end))) =
+                (boundaries.get(first), boundaries.get(last))
+            else {
+                continue;
+            };
+            (
+                original_start..original_end,
+                fold_start == start && fold_end == end,
+            )
+        };
+        // A substring can cover one expanded scalar, but a whole-word match
+        // cannot end halfway through that scalar's normalized spelling.
+        if range.start < source_end
+            || (opts.whole_word
+                && (!complete_scalars || inside_word(range.start) || inside_word(range.end)))
+        {
+            continue;
+        }
+        source_end = range.end;
+        out.push(range);
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+/// Substring search across renderable text, with source UTF-8 byte spans.
+pub fn search(doc: &Document, query: &str, opts: SearchOptions) -> Vec<Match> {
+    let mut out = Vec::new();
+    if query.trim().is_empty() {
+        return out;
+    }
     for page in &doc.pages {
         for (bi, block) in page.blocks.iter().enumerate() {
             let Some(text) = block.search_text() else {
                 continue;
             };
-            let hay = if opts.case_sensitive {
-                text.to_string()
-            } else {
-                text.to_lowercase()
-            };
-            let hay_bytes = hay.as_bytes();
-            let mut from = 0usize;
-            while from <= hay.len() {
-                let Some(rel) = hay.get(from..).and_then(|rest| rest.find(&needle)) else {
-                    break;
-                };
-                let start = from + rel;
-                let end = start + needle.len();
-                let boundary_ok = !opts.whole_word
-                    || (!is_word_byte(hay_bytes, start.wrapping_sub(1))
-                        && !is_word_byte(hay_bytes, end));
-                if boundary_ok {
-                    out.push(Match {
-                        page: page.number,
-                        block: bi,
-                        start,
-                        len: needle.len(),
-                    });
-                    if out.len() >= MAX_SEARCH_RESULTS {
-                        return out;
-                    }
-                }
-                from = start + needle.len().max(1);
+            for range in search_text(text, query, opts, MAX_SEARCH_RESULTS - out.len()) {
+                out.push(Match {
+                    page: page.number,
+                    block: bi,
+                    start: range.start,
+                    len: range.len(),
+                });
+            }
+            if out.len() >= MAX_SEARCH_RESULTS {
+                return out;
             }
         }
     }
@@ -928,6 +982,66 @@ mod tests {
         let d = sample_document();
         assert!(search(&d, "   ", SearchOptions::default()).is_empty());
         assert!(search(&d, "", SearchOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn unicode_search_preserves_source_byte_spans_after_case_expansion_and_contraction() {
+        let text = "İ test K TEST";
+        let mut doc = Document::blank_pages("", "", 1, PAGE_W, PAGE_H);
+        doc.pages[0].blocks = vec![Block::Body(text.into())];
+        let hits = search(&doc, "test", SearchOptions::default());
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].start, text.find("test").unwrap());
+        assert_eq!(hits[1].start, text.find("TEST").unwrap());
+        assert_eq!(&text[hits[0].start..hits[0].start + hits[0].len], "test");
+        assert_eq!(&text[hits[1].start..hits[1].start + hits[1].len], "TEST");
+
+        let kelvin = search(&doc, "k", SearchOptions::default());
+        assert_eq!(kelvin.len(), 1);
+        assert_eq!(kelvin[0].start, text.find('K').unwrap());
+        assert_eq!(kelvin[0].len, 'K'.len_utf8());
+        let dotted = search(&doc, "i\u{307}", SearchOptions::default());
+        assert_eq!(dotted.len(), 1);
+        assert_eq!((dotted[0].start, dotted[0].len), (0, 'İ'.len_utf8()));
+        assert!(
+            search(
+                &doc,
+                "k",
+                SearchOptions {
+                    case_sensitive: true,
+                    whole_word: false
+                }
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn unicode_whole_word_search_uses_complete_source_words() {
+        let text = "étest testé e\u{301}test test\u{301} test test_2 (test) İ";
+        let mut doc = Document::blank_pages("", "", 1, PAGE_W, PAGE_H);
+        doc.pages[0].blocks = vec![Block::Body(text.into())];
+        let options = SearchOptions {
+            whole_word: true,
+            case_sensitive: false,
+        };
+        let hits = search(&doc, "test", options);
+        assert_eq!(
+            hits.len(),
+            2,
+            "accents, combining marks and underscores belong to words"
+        );
+        assert_eq!(hits[0].start, text.find(" test test_2").unwrap() + 1);
+        assert_eq!(hits[1].start, text.find("(test)").unwrap() + 1);
+        assert_eq!(search(&doc, "étest", options).len(), 1);
+        assert!(
+            search(&doc, "i", options).is_empty(),
+            "a partial lowercase expansion is not a whole word"
+        );
+        let dotted = search(&doc, "i\u{307}", options);
+        assert_eq!(dotted.len(), 1);
+        assert_eq!(dotted[0].start, text.find('İ').unwrap());
+        assert_eq!(dotted[0].len, 'İ'.len_utf8());
     }
 
     #[test]

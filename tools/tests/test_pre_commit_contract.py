@@ -5,7 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HOOK = ROOT / ".githooks" / "pre-commit"
 CHECK_WORKFLOW = ROOT / ".forgejo" / "workflows" / "check.yml"
-CLIPPY_DIFF = ROOT / "tools" / "clippy-diff.sh"
+CLIPPY_DIFF = ROOT / "tools/ci/clippy-diff.sh"
 
 
 class PreCommitContractTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class PreCommitContractTests(unittest.TestCase):
     def test_ci_owns_the_differential_clippy_gate(self) -> None:
         workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertIn("tools/clippy-diff.sh", workflow)
+        self.assertIn("tools/ci/clippy-diff.sh", workflow)
         self.assertIn("Clippy diagnostic diff", workflow)
 
     def test_differential_clippy_does_not_require_os_only_native_sdks(self) -> None:
@@ -27,7 +27,7 @@ class PreCommitContractTests(unittest.TestCase):
         invocation = next(
             line
             for line in workflow.splitlines()
-            if "tools/clippy-diff.sh" in line
+            if "tools/ci/clippy-diff.sh" in line
         )
         self.assertNotIn("--all-features", invocation)
         self.assertIn("ui/webview-wpe", workflow)

@@ -80,7 +80,7 @@ def main() -> int:
     #
     # `TILO_STATE_PATH` alone is not enough. It moves the workspace tree;
     # record documents live under `XDG_DATA_HOME` (see
-    # `shell/src/shell/room_records.rs`), so isolating only the former
+    # `crates/session/shell/src/shell/room_records.rs`), so isolating only the former
     # leaves every run sharing one set of documents.
     state_dir = tempfile.mkdtemp(prefix="tilo-action-proof-")
     env = {

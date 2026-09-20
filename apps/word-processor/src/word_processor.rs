@@ -427,52 +427,13 @@ impl WordProcessor {
     /// (re-import over the open document) without discarding the host `ui::State`'s
     /// undo history / collaboration session. Caret moves to the first imported
     /// block; returns `false` (document untouched) if unbound or import fails.
-    /// uncommitted transaction window, so the host can still undo cleanly).
     pub fn replace_with_markdown(&mut self, state: &mut AutoCommit, markdown: &[u8]) -> bool {
-        use qdoc::FormatProvider;
-        let Some(containers) = self.containers.clone() else {
-            return false;
-        };
-        // Snapshot the existing body block ids before mutating.
-        let existing = qdoc::model::blocks_in_order(state, &containers);
-        let Some(ids) = self.ids.as_mut() else {
-            return false;
-        };
-        let mut dm = DocMut {
-            doc: state,
-            c: &containers,
-            ids,
-        };
-        // Import the template into a clearly-empty body: drop every existing
-        // block first, then import (the codec appends fresh blocks). If the import
-        // fails we've only removed blocks within the still-open transaction, which
-        // the host's per-action undo will revert — so report failure and let the
-        // caller decide.
-        for id in &existing {
-            dm.remove_block(id);
-        }
-        if qdoc::MarkdownCodec.import(markdown, &mut dm).is_err() {
-            return false;
-        }
-        // Re-seat the caret on the first newly-imported block (the body is fresh).
-        let blocks = qdoc::model::blocks_in_order(state, &containers);
-        match blocks.first() {
-            Some(first) => {
-                self.caret = Caret {
-                    block: first.clone(),
-                    offset: 0,
-                }
-            }
-            None => self.caret = Caret::default(),
-        }
-        self.clear_anchor();
-        true
+        self.replace_with_format(state, markdown, crate::WpFormat::Markdown)
     }
 
     /// Replace the whole body with `bytes` decoded as `format` — the in-place
     /// **Open** path, mirroring [`Self::replace_with_markdown`] but through the
-    /// format-aware codec. Returns whether it replaced (a decode failure leaves
-    /// removed blocks in the still-open transaction for the host's undo to revert).
+    /// format-aware codec. A decode failure leaves the document and caret intact.
     pub fn replace_with_format(
         &mut self,
         state: &mut AutoCommit,
@@ -482,14 +443,18 @@ impl WordProcessor {
         let Some(containers) = self.containers.clone() else {
             return false;
         };
-        let existing = qdoc::model::blocks_in_order(state, &containers);
-        let Some(ids) = self.ids.as_mut() else {
+        let Some(mut ids) = self.ids.clone() else {
             return false;
         };
+        // Codecs can reject malformed input after writing partial content. Stage
+        // the entire replacement so a failed Open cannot delete the live body,
+        // annotations, or other document state (including pending local edits).
+        let mut staged = state.clone();
+        let existing = qdoc::model::blocks_in_order(&staged, &containers);
         let mut dm = DocMut {
-            doc: state,
+            doc: &mut staged,
             c: &containers,
-            ids,
+            ids: &mut ids,
         };
         for id in &existing {
             dm.remove_block(id);
@@ -497,6 +462,8 @@ impl WordProcessor {
         if format.import(bytes, &mut dm).is_err() {
             return false;
         }
+        *state = staged;
+        self.ids = Some(ids);
         let blocks = qdoc::model::blocks_in_order(state, &containers);
         match blocks.first() {
             Some(first) => {
@@ -3033,20 +3000,16 @@ impl WordProcessor {
     // ---- caret motion ------------------------------------------------------
 
     pub fn move_left(&mut self, state: &AutoCommit) {
-        if self
+        let extends_selection = self
             .selection_anchor
             .as_ref()
-            .is_none_or(|a| a.block == self.caret.block)
-        {
+            .is_some_and(|anchor| anchor.block == self.caret.block);
+        if extends_selection || self.caret.offset > 0 {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             self.edit_core
-                .motion(&text, ui::text_edit::Motion::Left, false);
+                .motion(&text, ui::text_edit::Motion::Left, extends_selection);
             self.sync_state_from_edit_core(&text);
-            return;
-        }
-        if self.caret.offset > 0 {
-            self.caret.offset -= 1;
             return;
         }
         let blocks = self.ordered_blocks(state);
@@ -3063,21 +3026,17 @@ impl WordProcessor {
     }
 
     pub fn move_right(&mut self, state: &AutoCommit) {
-        if self
+        let extends_selection = self
             .selection_anchor
             .as_ref()
-            .is_none_or(|a| a.block == self.caret.block)
-        {
+            .is_some_and(|anchor| anchor.block == self.caret.block);
+        let len = self.block_len(state, &self.caret.block);
+        if extends_selection || self.caret.offset < len {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             self.edit_core
-                .motion(&text, ui::text_edit::Motion::Right, false);
+                .motion(&text, ui::text_edit::Motion::Right, extends_selection);
             self.sync_state_from_edit_core(&text);
-            return;
-        }
-        let len = self.block_len(state, &self.caret.block);
-        if self.caret.offset < len {
-            self.caret.offset += 1;
             return;
         }
         let blocks = self.ordered_blocks(state);
@@ -3093,22 +3052,6 @@ impl WordProcessor {
     }
 
     pub fn move_home(&mut self) {
-        if self
-            .selection_anchor
-            .as_ref()
-            .is_none_or(|a| a.block == self.caret.block)
-        {
-            // The widget calls this only for the active block; the text is
-            // synchronized by the next stateful motion/edit if no document
-            // snapshot is available here.
-            if self.selection_anchor.is_none() {
-                self.caret.offset = 0;
-            } else {
-                self.selection_anchor = None;
-                self.caret.offset = 0;
-            }
-            return;
-        }
         self.caret.offset = 0;
     }
 
@@ -3121,15 +3064,15 @@ impl WordProcessor {
     }
 
     pub fn move_end(&mut self, state: &AutoCommit) {
-        if self
+        let extends_selection = self
             .selection_anchor
             .as_ref()
-            .is_none_or(|a| a.block == self.caret.block)
-        {
+            .is_some_and(|anchor| anchor.block == self.caret.block);
+        if self.selection_anchor.is_none() || extends_selection {
             let text = self.current_text(state);
             self.sync_edit_core_from_state(&text);
             self.edit_core
-                .motion(&text, ui::text_edit::Motion::LineEnd, false);
+                .motion(&text, ui::text_edit::Motion::LineEnd, extends_selection);
             self.sync_state_from_edit_core(&text);
             return;
         }
@@ -3366,6 +3309,29 @@ mod tests {
         wp.move_left(&state);
         assert_eq!(wp.current_text(&state), "ab");
         assert_eq!(wp.caret.offset, 2);
+    }
+
+    #[test]
+    fn caret_motion_extends_an_active_selection() {
+        let (mut wp, mut state) = bound();
+        wp.insert_str(&mut state, "abcd");
+
+        wp.move_home();
+        wp.set_anchor();
+        wp.move_right(&state);
+        assert_eq!(
+            wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
+            0..1
+        );
+
+        wp.clear_anchor();
+        wp.move_end(&state);
+        wp.set_anchor();
+        wp.move_home();
+        assert_eq!(
+            wp.selection_blocks(&state)[0].1..wp.selection_blocks(&state)[0].2,
+            0..4
+        );
     }
 
     #[test]

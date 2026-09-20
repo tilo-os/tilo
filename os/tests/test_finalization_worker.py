@@ -4,9 +4,12 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import tarfile
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -17,6 +20,58 @@ spec.loader.exec_module(worker)
 
 
 class WorkerContract(unittest.TestCase):
+    def test_real_git_archives_keep_exported_code_and_parents_non_writable(self):
+        with tempfile.TemporaryDirectory(prefix='tilo-finalizer-archive-') as temporary:
+            root = Path(temporary)
+            tree = root / 'repo'
+            tree.mkdir()
+            def git(*arguments):
+                return subprocess.check_output(['git', '-C', str(tree), *arguments], stderr=subprocess.PIPE)
+            git('init', '-q')
+            git('config', 'user.name', 'Archive fixture')
+            git('config', 'user.email', 'fixture@example.invalid')
+            # An explicit ambient override must not weaken the export policy.
+            git('config', 'tar.umask', '0000')
+            files = {'os/dev/signer.py': b'#!/usr/bin/python3\nprint("fixture")\n',
+                     'os/dev/module.py': b'fixture = b"public\\0bytes"\n',
+                     'README': b'full source only\n'}
+            for name, content in files.items():
+                path = tree / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            git('add', '.')
+            git('update-index', '--chmod=+x', 'os/dev/signer.py')
+            git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fixture')
+            for label in ('controller', 'source', 'helpers'):
+                with self.subTest(label=label):
+                    exported = root / (label + '.tar')
+                    worker.archive_tree(tree, label, exported)
+                    selected = files if label == 'source' else {name: content for name, content in files.items()
+                                                               if name.startswith('os/')}
+                    with tarfile.open(exported) as archive:
+                        members = archive.getmembers()
+                        actual = {}
+                        for entry in members:
+                            self.assertEqual((entry.uid, entry.gid), (0, 0))
+                            self.assertEqual(entry.mode, 0o755 if entry.isdir() or entry.name.endswith('/signer.py') else 0o644)
+                            self.assertFalse(entry.mode & 0o022)
+                            if entry.isfile():
+                                name = entry.name.removeprefix(label + '/')
+                                actual[name] = archive.extractfile(entry).read()
+                                self.assertEqual(actual[name], git('show', 'HEAD:' + name))
+                            else:
+                                self.assertTrue(entry.isdir())
+                        self.assertEqual(actual, selected)
+                        self.assertTrue({label, label + '/os', label + '/os/dev'}.issubset(
+                            {entry.name.rstrip('/') for entry in members if entry.isdir()}))
+                        destination = root / (label + '-extracted')
+                        destination.mkdir()
+                        archive.extractall(destination, filter='data')
+                    for entry in members:
+                        path = destination / entry.name
+                        self.assertEqual(stat.S_IMODE(path.stat().st_mode), entry.mode)
+                        self.assertEqual(path.stat().st_uid, os.geteuid())
+
     def request(self):
         return {'schema': 1, 'source_revision': worker.SOURCE, 'helpers_revision': 'a' * 40,
                 'source_dir': '/work/source', 'architecture': 'aarch64',
@@ -31,6 +86,7 @@ class WorkerContract(unittest.TestCase):
                 'publish_repository': 'code.podesta.ai/qos/tilo-development',
                 'generation': 1, 'source_date_epoch': 1789690573, 'systemd_version': '259.1',
                 'minimum_free_bytes': 8 * 1024**3, 'stage_timeout_seconds': 1800,
+                'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 5400,
                 **{key: 'registry.invalid/input@sha256:' + 'f' * 64
                    for key in ('base_ref', 'rpms_ref', 'kernel_ref', 'wpe_ref')}}
 
@@ -40,12 +96,33 @@ class WorkerContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'fields differ'):
             self.check(request)
 
+    def test_misplaced_native_suffix_fails_at_worker_admission(self):
+        for field in ('target', 'new_target'):
+            request = self.request()
+            request[field] = 'code.podesta.ai/qos/tilo-development:installed-ca33fae89a24-aarch64-9787'
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'matching native architecture'):
+                self.check(request)
+
     def check(self, request, helpers='a' * 40):
         raw = json.dumps(request)
         return worker.request_bytes(raw, hashlib.sha256(raw.encode()).hexdigest(), helpers)
 
     def test_exact_public_contract(self):
         self.assertEqual(json.loads(self.check(self.request())), self.request())
+
+    def test_initial_operator_gate_is_independent_of_execution_deadlines(self):
+        self.assertEqual(worker.OPERATOR_READY_TIMEOUT_SECONDS, 7200)
+        self.assertEqual(worker.POST_GATE_OBSERVATION_SECONDS, 8700)
+        self.assertEqual(worker.WORKER_WAIT_TIMEOUT_SECONDS, 15900)
+        # The request still carries the narrower build/signing budgets checked
+        # by the finalizer; the human staging window does not rewrite them.
+        self.assertEqual(self.request()['signing_response_timeout_seconds'], 1800)
+
+    def test_workflow_encloses_gate_supervision_and_receipt_cleanup(self):
+        workflow = (Path(__file__).resolve().parents[2]
+                    / '.forgejo/workflows/development-finalize.yml').read_text()
+        self.assertIn('timeout-minutes: 280', workflow)
+        self.assertIn('timeout-minutes: 270', workflow)
 
     def test_reviewed_assembly_source_and_epoch_bound_together(self):
         request = self.request()
@@ -79,6 +156,31 @@ class WorkerContract(unittest.TestCase):
         request.update(source_revision='344257f56275919abc63181d8954e838f9b5303e', source_date_epoch=1789753377)
         self.assertEqual(json.loads(self.check(request)), request)
         request['source_date_epoch'] = 1789749860
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+
+    def test_reviewed_ssh_runtime_source_requires_its_epoch(self):
+        request = self.request()
+        request.update(source_revision='a89fe484328ff4206c35f842c07c3824b9df18ef', source_date_epoch=1789761500)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789753377
+        with self.assertRaisesRegex(ValueError, 'source/epoch'):
+            self.check(request)
+
+    def test_reviewed_late_trust_source_requires_its_epoch(self):
+        request = self.request()
+        request.update(source_revision='317eb82f7178b14623350f933088093cd3cdfd23', source_date_epoch=1789765461)
+        self.assertEqual(json.loads(self.check(request)), request)
+        for wrong_epoch in (1789761500, 1789753377):
+            request['source_date_epoch'] = wrong_epoch
+            with self.subTest(epoch=wrong_epoch), self.assertRaisesRegex(ValueError, 'source/epoch'):
+                self.check(request)
+
+    def test_reviewed_dracut_source_requires_its_epoch(self):
+        request = self.request()
+        request.update(source_revision='ca33fae89a24415584518a0dbbe4db0535935931', source_date_epoch=1789781336)
+        self.assertEqual(json.loads(self.check(request)), request)
+        request['source_date_epoch'] = 1789765461
         with self.assertRaisesRegex(ValueError, 'source/epoch'):
             self.check(request)
 
@@ -120,6 +222,20 @@ class WorkerContract(unittest.TestCase):
         self.assertIn('signing-pending.json', worker.EVIDENCE)
         self.assertTrue(all('/' not in name and name.endswith('.json') for name in worker.EVIDENCE))
         self.assertFalse(any(word in name for name in worker.EVIDENCE for word in ('key', 'auth', 'log')))
+
+    def test_stage5_restore_requires_an_explicit_complete_bounded_receipt_chain(self):
+        with tempfile.TemporaryDirectory(prefix='tilo-stage5-checkpoint-') as temporary:
+            root = Path(temporary)
+            for number, name in enumerate(worker.STAGE5_EVIDENCE, 1):
+                (root / name).write_text(json.dumps({'schema': 1, 'stage': number}))
+            result = worker.stage5_checkpoint(root)
+            self.assertEqual(tuple(result), worker.STAGE5_EVIDENCE)
+            (root / worker.STAGE5_EVIDENCE[-1]).unlink()
+            with self.assertRaisesRegex(ValueError, 'complete bounded'):
+                worker.stage5_checkpoint(root)
+            (root / worker.STAGE5_EVIDENCE[-1]).symlink_to(root / worker.STAGE5_EVIDENCE[0])
+            with self.assertRaisesRegex(ValueError, 'complete bounded'):
+                worker.stage5_checkpoint(root)
 
     def archive(self, kind=tarfile.REGTYPE, size=2, count=1):
         buffer = io.BytesIO()

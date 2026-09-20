@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).parents[1] / "check-changed-rustfmt.sh"
+SCRIPT = Path(__file__).parents[1] / "ci/check-changed-rustfmt.sh"
 
 
 class ChangedRustfmtTests(unittest.TestCase):

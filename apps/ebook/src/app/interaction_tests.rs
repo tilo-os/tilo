@@ -564,7 +564,8 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     let presence = PresenceCtx::empty();
     #[cfg(windows)]
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/sdk/ui-core/assets/fonts"),
         "en-US",
     );
     #[cfg(windows)]

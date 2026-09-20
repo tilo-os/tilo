@@ -44,7 +44,7 @@ enum FollowState { Following, BrokenAway }   // per-follower, local
 
 `FocusPointer` rides the **existing presence channel** — the same
 `CollabEvent::Context` / `PresenceCtx` path that already carries remote cursors and
-per-object presence (see `plan/collaboration.md` and the app↔chrome boundary). It is
+per-object presence (see `docs/architecture/collaboration.md` and the app↔chrome boundary). It is
 small (an id + an epoch), gossiped like any other presence datum; no media path is
 involved.
 

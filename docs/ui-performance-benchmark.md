@@ -107,7 +107,7 @@ reused CPU allocation, not a real KMS dumb-buffer mapping; physical page flip
 and display scanout are not timed.
 These current gates do not establish constant 60 fps; older 8,000 us mean and
 30,000 us p99 targets are not the executable's present thresholds. The older
-`shell/examples/draw_bench.rs` measures CPU scene painting only and cannot
+`crates/session/shell/examples/draw_bench.rs` measures CPU scene painting only and cannot
 establish this target. The UI harness also accepts
 `QUICK_UI_DASH_MEAN_FRAME_BUDGET_US` as an optional exact-mean gate; that is a
 different workload, not a replacement for the shell measurement.

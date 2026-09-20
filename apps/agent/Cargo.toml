@@ -23,7 +23,7 @@ runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
 # `TILO_SVC_COLLAB_FD` client and consumes the same request/event model as a
 # windowed app.
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The word processor's exported actions, shared with the toolbar.
 word-processor = { path = "../word-processor" }
 # Chat conversation types and actions. Live media features remain disabled for
@@ -53,9 +53,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
-shell = { path = "../../shell", default-features = false }
+shell = { path = "../../crates/session/shell", default-features = false }
 collab-types = { path = "../../crates/collab/collab-types" }
-tilo-user-identity = { path = "../../crates/identity/tilo-user-identity" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 

@@ -19,7 +19,7 @@ path = "src/main.rs"
 # `gpu-video` brings in the planar upload + YUV shader the compositor
 # paints hardware-decoded frames with. Without it every decoded frame
 # would have to be converted to RGBA on the CPU first.
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal", "gpu-video"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal", "gpu-video"] }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true

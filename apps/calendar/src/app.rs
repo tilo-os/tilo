@@ -493,6 +493,9 @@ pub struct CalendarApp {
     /// immutable snapshot, so this bridge prevents a false successful import
     /// against a throwaway clone.
     pending_resource_import: Option<crate::actions::CalendarAction>,
+    /// Device-private launch input, never published in resource metadata.
+    pending_launch_ics: Option<String>,
+    launch_import_emitted: bool,
     resource_import_invocation: Option<tilo_actions::InvocationId>,
     resource_import_result: Option<tilo_actions::InvocationUpdate>,
 
@@ -522,7 +525,82 @@ impl CalendarApp {
     /// The live app: persisted to disk, no sample content, accounts sourced
     /// from OS Settings (none on a fresh machine).
     pub fn new() -> Self {
-        Self::build(false, crate::store::default_path())
+        // The launcher's shared store owns loading, autosave and the exit flush.
+        // A second widget-owned writer would keep importing stale legacy data
+        // and bypass the host's persistence policy.
+        Self::build(false, None)
+    }
+
+    /// Stage a local ICS launch target without changing the calendar. The host
+    /// admits a zero-argument effect after loading the current document.
+    ///
+    /// # Errors
+    /// Rejects non-local URLs, duplicate pending imports, unreadable/non-UTF-8
+    /// input, and files exceeding 8 MiB.
+    pub fn queue_launch_ics(&mut self, target: &str) -> Result<(), String> {
+        use std::io::Read as _;
+        if self.pending_launch_ics.is_some() {
+            return Err("A calendar launch import is already pending".into());
+        }
+        let path = if target.to_ascii_lowercase().starts_with("file:") {
+            url::Url::parse(target)
+                .map_err(|error| format!("Invalid file URL: {error}"))?
+                .to_file_path()
+                .map_err(|()| "Calendar launch requires a local file URL".to_string())?
+        } else if target.contains("://") {
+            return Err("Calendar launch requires a local file".into());
+        } else {
+            PathBuf::from(target)
+        };
+        const LIMIT: u64 = 8 * 1024 * 1024;
+        let file = std::fs::File::open(path).map_err(|error| format!("Import failed: {error}"))?;
+        if !file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
+            return Err("Calendar launch requires a regular file".into());
+        }
+        let mut bytes = Vec::new();
+        file.take(LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > LIMIT {
+            return Err("Calendar import exceeds 8 MiB".into());
+        }
+        let payload =
+            String::from_utf8(bytes).map_err(|_| "Calendar import must be UTF-8".to_string())?;
+        let (events, tasks) = ics::parse(&payload);
+        if events.is_empty() && tasks.is_empty() {
+            return Err("The file contains no supported calendar items".into());
+        }
+        self.pending_launch_ics = Some(payload);
+        self.launch_import_emitted = false;
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn pending_launch_resource(&self) -> Option<tilo_actions::Resource> {
+        if !self.seeded || self.pending_launch_ics.is_none() {
+            return None;
+        }
+        let action = tilo_actions::ActionSpec::operation(
+            "finalize",
+            "Import calendar file",
+            tilo_actions::OperationKind::Effect,
+            crate::actions::CALENDAR_OPERATION_TYPE,
+            &crate::actions::CalendarOperation::FinalizeLaunchImport,
+        )
+        .ok()?
+        .retry_policy(tilo_actions::RetryPolicy::AtMostOnce);
+        Some(
+            tilo_actions::Resource::new(
+                "calendar.pending-import",
+                "calendar.import",
+                "Import calendar file",
+            )
+            .with_action(action),
+        )
     }
 
     /// The hermetic demo used by `--shots` and tests: seeded with sample
@@ -664,6 +742,8 @@ impl CalendarApp {
             resource_sync_invocation: None,
             resource_sync_result: None,
             pending_resource_import: None,
+            pending_launch_ics: None,
+            launch_import_emitted: false,
             resource_import_invocation: None,
             resource_import_result: None,
             actions: ui::ActionHost::new(),
@@ -6398,14 +6478,34 @@ impl CalendarApp {
         let Some(action) = self.pending_resource_import.take() else {
             return;
         };
-        self.perform_action(state, &action);
-        self.force_persist = true;
-        self.status = Some("Imported calendar items from the latest ICS file".to_string());
+        let result = self.actions.try_dispatch_with_context(
+            state,
+            crate::actions::CALENDAR_ACTION_TYPE,
+            &action,
+            crate::actions::history_context(&action),
+        );
+        if result.is_ok() {
+            self.force_persist = true;
+            self.status = Some("Imported calendar items from the latest ICS file".to_string());
+        } else if let Err(error) = &result {
+            self.status = Some(format!("Import failed: {error}"));
+        }
         self.dirty = true;
         if let Some(invocation) = self.resource_import_invocation.take() {
-            self.resource_import_result = Some(tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
+            self.resource_import_result = Some(match result {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                Err(error) => tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "calendar.import_failed".into(),
+                        message: error.to_string(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
             });
         }
     }
@@ -6418,12 +6518,93 @@ impl Default for CalendarApp {
 }
 
 impl Widget for CalendarApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if !self.launch_import_emitted
+            && let Some(resource) = self.pending_launch_resource()
+            && let Some(spec) = resource.actions.first()
+            && let Ok(binding) =
+                tilo_actions::ActionBinding::new(&resource, spec, |()| serde_json::Map::new())
+            && let Ok(intent) = binding.invoke(())
+        {
+            self.launch_import_emitted = true;
+            return Some(intent);
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_control_invocation)
+    }
+
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<ui::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        if address.resource == "calendar.pending-import"
+            && address.action == "finalize"
+            && let Err(error) = result
+        {
+            self.pending_launch_ics = None;
+            self.launch_import_emitted = false;
+            self.status = Some(format!("Import failed: {error}"));
+            self.dirty = true;
+        }
+        for child in self.children_mut() {
+            child.on_control_invocation_result(address, result);
+        }
+    }
+
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id == crate::actions::CALENDAR_OPERATION_TYPE
+            && serde_json::from_slice::<crate::actions::CalendarOperation>(payload)
+                .map_err(|error| error.to_string())?
+                == crate::actions::CalendarOperation::FinalizeLaunchImport
+        {
+            if kind != tilo_actions::OperationKind::Effect {
+                return Err("Calendar import completion requires an Effect invocation".into());
+            }
+            let source = self
+                .pending_launch_ics
+                .take()
+                .ok_or("No calendar launch import is pending")?;
+            self.launch_import_emitted = false;
+            // Admission is fresh and the mutable host document is authoritative,
+            // including edits received since the last widget sync.
+            self.model = CalDoc::read_model(doc);
+            if let Some(action) = self.import_action_from_payload(&source) {
+                self.actions
+                    .try_dispatch_with_context(
+                        doc,
+                        crate::actions::CALENDAR_ACTION_TYPE,
+                        &action,
+                        crate::actions::history_context(&action),
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            self.status = Some("Imported calendar file".into());
+            self.dirty = true;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        self.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CALENDAR_OPERATION_TYPE]
     }
 
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        resources.extend(self.pending_launch_resource());
+        resources
     }
 
     fn action_directory_resource_page(
@@ -6443,6 +6624,9 @@ impl Widget for CalendarApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "calendar.pending-import" {
+            return self.pending_launch_resource();
+        }
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
@@ -7202,7 +7386,10 @@ impl Widget for CalendarApp {
     // every widget; every parameter is independently meaningful (the raw
     // event, scaling, modifiers, CRDT handle+path, two out-params, and the
     // node's own identity/layout).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "implements the shared Widget event contract with input, document, focus and layout parameters"
+    )]
     #[allow(
         clippy::too_many_lines,
         reason = "the widget-system dispatcher deliberately keeps input precedence visible: modal popovers, shared task controls, timeline, keyboard, hit map, fields, then notes"
@@ -7487,7 +7674,10 @@ impl Widget for CalendarApp {
         // so its result is drained in `sync` the moment it arrives, without
         // waiting for an unrelated input event — and while a scroll container is
         // still settling momentum / fading its bar.
-        self.syncing || self.timeline.needs_animation_frame() || self.agenda.needs_animation_frame()
+        self.syncing
+            || (self.pending_launch_ics.is_some() && !self.launch_import_emitted)
+            || self.timeline.needs_animation_frame()
+            || self.agenda.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {

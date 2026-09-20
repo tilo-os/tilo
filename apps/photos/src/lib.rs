@@ -66,6 +66,7 @@ pub mod app;
 pub mod doc;
 /// Bounded, cancellation-aware real-file discovery and metadata ingestion.
 pub mod import;
+pub mod library_analysis;
 pub mod model;
 pub mod people;
 pub mod pixels;
@@ -76,6 +77,7 @@ pub mod places;
 pub mod reference;
 pub mod search;
 pub mod strings;
+mod timeline_projection;
 
 pub use app::PhotosApp;
 pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
@@ -151,7 +153,7 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     strings::install();
-    Box::new(PhotosApp::new())
+    Box::new(PhotosApp::new_persistent())
 }
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
@@ -162,12 +164,18 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "error",
     "opened",
     "library",
+    "albums",
     "people",
+    "people-detail",
     "places",
+    "analysis",
+    "import-progress",
+    "import-errors",
     "selection",
     "selection-many-albums",
     "album-manage",
     "metadata-edit",
+    "metadata-batch",
     "cropping",
     "edited",
 ];
@@ -344,12 +352,18 @@ pub fn seed_scenario(
         // hierarchy legible in the gallery instead of simulating a library
         // with repeated placeholder art.
         "library"
+        | "albums"
         | "people"
+        | "people-detail"
         | "places"
+        | "analysis"
+        | "import-progress"
+        | "import-errors"
         | "selection"
         | "selection-many-albums"
         | "album-manage"
-        | "metadata-edit" => {
+        | "metadata-edit"
+        | "metadata-batch" => {
             let mut library = PhotosDoc::library(doc);
             let mut travel = Vec::new();
             for (variant, (name, captured_at)) in [
@@ -370,11 +384,22 @@ pub fn seed_scenario(
             .enumerate()
             {
                 let sample_path = dir.join(format!("{name}.png"));
-                let fixture = shots_pattern_variant(1200, 800, variant as u8);
+                // Exercise the real justified chronology with the landscape,
+                // portrait, square and panoramic shapes a photo library
+                // actually contains. Keeping acceptance fixtures all 3:2
+                // made serious row-packing regressions visually invisible.
+                let (width, height) = match variant % 5 {
+                    0 => (900, 600),
+                    1 => (600, 900),
+                    2 => (800, 800),
+                    3 => (1_200, 675),
+                    _ => (720, 960),
+                };
+                let fixture = shots_pattern_variant(width, height, variant as u8);
                 if let Some(bytes) = pixels::encode_png(&fixture) {
                     let _ = std::fs::write(&sample_path, bytes);
                 }
-                let image = OpenImage::from_path(&sample_path.to_string_lossy(), 1200, 800);
+                let image = OpenImage::from_path(&sample_path.to_string_lossy(), width, height);
                 let mut photo = crate::model::LibraryPhoto::from_image(image);
                 photo.favorite =
                     matches!(name, "Summer trail" | "Dog at the lake" | "Sunset ferry");
@@ -421,8 +446,32 @@ pub fn seed_scenario(
             library.albums.push(crate::model::Album {
                 id: "photos.album:travel".into(),
                 name: "Travel".into(),
-                photo_ids: travel,
+                photo_ids: travel.clone(),
             });
+            if scenario == "albums" {
+                library.albums.extend([
+                    crate::model::Album {
+                        id: "photos.album:summer-weekends".into(),
+                        name: "Summer weekends".into(),
+                        photo_ids: travel.iter().skip(1).take(6).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:family-favourites".into(),
+                        name: "Family favourites".into(),
+                        photo_ids: travel.iter().step_by(2).take(5).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:ideas".into(),
+                        name: "Ideas for next time".into(),
+                        photo_ids: travel.iter().rev().take(3).cloned().collect(),
+                    },
+                    crate::model::Album {
+                        id: "photos.album:new-home".into(),
+                        name: "New home".into(),
+                        photo_ids: Vec::new(),
+                    },
+                ]);
+            }
             if scenario == "selection-many-albums" {
                 for number in 1..=17 {
                     library.albums.push(crate::model::Album {
@@ -433,7 +482,9 @@ pub fn seed_scenario(
                 }
             }
             PhotosDoc::set_library(doc, &library);
-            if matches!(scenario, "selection" | "selection-many-albums") {
+            if scenario == "albums" {
+                app.show_albums_for_shot();
+            } else if matches!(scenario, "selection" | "selection-many-albums") {
                 app.show_selection_for_shot(doc);
                 if scenario == "selection-many-albums" {
                     app.show_selection_destination_chooser_for_shot(doc);
@@ -442,10 +493,30 @@ pub fn seed_scenario(
                 app.show_album_editor_for_shot(doc);
             } else if scenario == "metadata-edit" {
                 app.show_metadata_editor_for_shot(doc);
-            } else if scenario == "people" {
-                app.show_people();
+            } else if scenario == "metadata-batch" {
+                app.show_batch_metadata_editor_for_shot(doc);
+            } else if matches!(scenario, "people" | "people-detail") {
+                // A manual, explicitly labelled fixture exercises the review
+                // layout without pretending that a face model recognized
+                // anyone. Live launches never seed People data.
+                let _ = app.people_controller_mut().add_cluster(
+                    "shots-imported-suggestion",
+                    travel.into_iter().take(4),
+                    crate::people::ProposalOrigin::ImportedOrManual,
+                );
+                if scenario == "people-detail" {
+                    app.show_people_suggestion_for_shot("shots-imported-suggestion");
+                } else {
+                    app.show_people();
+                }
             } else if scenario == "places" {
                 app.show_places_for_shot();
+            } else if scenario == "analysis" {
+                app.show_library_analysis();
+            } else if scenario == "import-progress" {
+                app.show_directory_import_progress_for_shot();
+            } else if scenario == "import-errors" {
+                app.show_directory_import_errors_for_shot();
             } else {
                 app.show_library();
             }
