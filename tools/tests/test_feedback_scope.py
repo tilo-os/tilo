@@ -9,7 +9,7 @@ ROOT = Path(__file__).parents[2]
 class FeedbackScopeTests(unittest.TestCase):
     def test_feedback_checks_closure_but_tests_explicit_test_scope(self):
         workflow = (ROOT / '.forgejo/workflows/check.yml').read_text(encoding='utf-8')
-        self.assertIn('cargo check --locked --all-targets ${{ matrix.packages }}', workflow)
+        self.assertRegex(workflow, r'python3 tools/ci/compiler_inputs\.py --output target/ci/compiler-inputs\.json --\s+check --locked --all-targets \$\{\{ matrix\.packages \}\}')
         self.assertIn('cargo nextest run --locked --profile ci ${{ matrix.test_packages }}', workflow)
         self.assertIn("if: matrix.test_packages != ''", workflow)
         self.assertIn("if: contains(matrix.test_packages, '-p app-catalogue')", workflow)
