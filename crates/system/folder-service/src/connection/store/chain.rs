@@ -239,6 +239,7 @@ pub(super) fn change_connection(change: &Change) -> Result<[u8; 16], StoreError>
         | Change::DirectoryChainControl { connection, .. }
         | Change::SelectedUntouched { connection, .. }
         | Change::SelectedApplied { connection, .. }
+        | Change::SelectedAppliedCarryV1 { connection, .. }
         | Change::NativeConflictComplete { connection, .. }
         | Change::SelectedCollisionComplete { connection, .. }
         | Change::DirectoryBoundary { connection, .. }

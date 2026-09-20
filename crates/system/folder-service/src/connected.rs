@@ -14,7 +14,9 @@ pub use crate::connection::model::{Conflict, ConnectionId, EntryState, RelativeP
 use crate::connection::worker::{self, Command};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
-pub use worker::{ConflictCursor, ConnectionCursor, SelectedFolders};
+pub use worker::{
+    ConflictCursor, ConnectionCursor, RecoveryCursor, SelectedFolders, TombstoneVersion,
+};
 
 /// Every returned page has at most this many entries.
 pub const PAGE_LIMIT: usize = 64;
@@ -120,6 +122,83 @@ pub struct ConflictInfo {
     pub destination: Option<EntryState>,
     pub preserved_versions: usize,
     pub resolved: bool,
+    /// Bounded metadata choices; every application requires a fresh native review.
+    pub choices: Vec<ConflictChoice>,
+}
+
+/// Stable correlation only; never a native object or write capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryId {
+    pub connection: ConnectionId,
+    pub operation: u64,
+    pub slot: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryReason {
+    Deletion,
+    DisplacedVersion,
+    Conflict { serial: u64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryAvailability {
+    /// Durable candidate metadata. Preview and apply must check current bytes.
+    RequiresNativeReview,
+    Incomplete,
+    Purged,
+    Structural,
+    Disconnected,
+    UnsupportedHost,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetentionEligibility {
+    Protected,
+    Retaining,
+    /// Recorded age is sufficient; native pins must still be evaluated. No purge is implied.
+    RequiresEvaluation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveryInfo {
+    pub id: RecoveryId,
+    pub original_side: Side,
+    pub original_path: RelativePath,
+    pub content: Option<EntryState>,
+    pub reason: RecoveryReason,
+    pub availability: RecoveryAvailability,
+    pub retained_seconds: u64,
+    pub retention: RetentionEligibility,
+}
+
+pub struct RecoveryPage {
+    pub entries: Vec<RecoveryInfo>,
+    pub next: Option<RecoveryCursor>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConflictChoice {
+    Recovery(RecoveryInfo),
+    Tombstone(TombstoneVersion),
+}
+
+/// Opaque process/worker/session-bound review correlation; consumed once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectionReviewId(pub(crate) ReviewId);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectionPreview {
+    pub review: SelectionReviewId,
+    pub connection: ConnectionId,
+    pub conflict: Option<(u64, u64)>,
+    pub path: RelativePath,
+    pub target: Side,
+    pub source: Option<EntryState>,
+    pub destination: Option<EntryState>,
+    pub candidate: Option<EntryState>,
+    pub original_side: Side,
+    pub expires_in_seconds: u64,
 }
 
 pub struct ConflictPage {
@@ -302,5 +381,55 @@ impl ConnectedService {
         cursor: Option<ConflictCursor>,
     ) -> Result<Request<ConflictPage>, ConnectionError> {
         self.submit(|reply| Command::Conflicts(id, cursor, reply))
+    }
+    /// Discover retained versions, including after pause or disconnection.
+    /// # Errors
+    /// Refuses limits outside 1..=64, a full queue, invalid records or stale cursors.
+    pub fn recovery(
+        &self,
+        id: ConnectionId,
+        cursor: Option<RecoveryCursor>,
+        limit: usize,
+    ) -> Result<Request<RecoveryPage>, ConnectionError> {
+        if !(1..=PAGE_LIMIT).contains(&limit) {
+            return Err(ConnectionError::LimitExceeded);
+        }
+        self.submit(|reply| Command::Recovery(id, cursor, limit, reply))
+    }
+    /// Review a retained candidate at its original path on the selected side.
+    /// # Errors
+    /// Refuses unavailable sessions, candidates or fresh endpoint observations.
+    pub fn preview_recovery(
+        &self,
+        id: RecoveryId,
+        target: Side,
+    ) -> Result<Request<SelectionPreview>, ConnectionError> {
+        self.submit(|reply| Command::PreviewRecovery(id, target, reply))
+    }
+    /// Review one preserved version or recorded absence of an explicit conflict revision.
+    /// # Errors
+    /// Refuses stale/foreign choices, unavailable sessions and unsupported structures.
+    pub fn preview_conflict(
+        &self,
+        id: ConnectionId,
+        serial: u64,
+        revision: u64,
+        choice: ConflictChoice,
+        target: Side,
+    ) -> Result<Request<SelectionPreview>, ConnectionError> {
+        self.submit(|reply| Command::PreviewConflict(id, serial, revision, choice, target, reply))
+    }
+    /// Apply the displayed selection. An occupied target is preserved as a conflict.
+    /// # Errors
+    /// Refuses stale, expired or consumed reviews and failed current native proofs.
+    pub fn restore(&self, review: SelectionReviewId) -> Result<Request<()>, ConnectionError> {
+        self.submit(|reply| Command::Restore(review, false, reply))
+    }
+    /// Affirmatively replace the target shown by a fresh selection review,
+    /// preserving displaced bytes through the existing native transaction.
+    /// # Errors
+    /// Refuses stale, expired or consumed reviews and failed current native proofs.
+    pub fn replace(&self, review: SelectionReviewId) -> Result<Request<()>, ConnectionError> {
+        self.submit(|reply| Command::Restore(review, true, reply))
     }
 }

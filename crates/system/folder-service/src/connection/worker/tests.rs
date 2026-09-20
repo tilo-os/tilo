@@ -1042,3 +1042,6 @@ fn native_empty_baseline_review_restart_and_later_real_operations() {
         super::super::store::ReceiptStage::BaselineCommitted
     );
 }
+
+#[path = "recovery_tests.rs"]
+mod recovery_tests;

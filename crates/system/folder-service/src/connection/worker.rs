@@ -1,17 +1,19 @@
 //! Serialized service owner. No path-based copy engine or reconstructed authority.
+mod recovery;
 use super::{
     endpoint::{self, Access, EndpointContext, PinnedEndpoint},
     store::{
-        ConflictRecord, ConnectionPolicy, ConnectionRecord, ConnectionStore, EndpointBinding,
-        Lifecycle, PageCursor, StoreError,
+        ConnectionPolicy, ConnectionRecord, ConnectionStore, EndpointBinding, Lifecycle,
+        PageCursor, StoreError,
     },
     transaction::{InitialPreview, TransactionSession, WorkerReviewed},
 };
 use crate::connected::{
-    ConflictInfo, ConflictPage, ConnectedService, ConnectionError, ConnectionId, ConnectionInfo,
+    ConflictPage, ConnectedService, ConnectionError, ConnectionId, ConnectionInfo,
     ConnectionLifecycle, ConnectionPage, DELETION_RETENTION_SECONDS, EndpointIssue, InitialPage,
     Observer, PAGE_LIMIT, Pending, Phase, ReviewId, Side, Snapshot,
 };
+pub use recovery::TombstoneVersion;
 use std::{
     path::Path,
     sync::{
@@ -69,6 +71,7 @@ impl SelectedFolders {
 
 pub struct ConnectionCursor(PageCursor);
 pub struct ConflictCursor(PageCursor);
+pub struct RecoveryCursor(PageCursor);
 pub(crate) enum Command {
     Create(SelectedFolders, Reply<ConnectionInfo>),
     List(Option<ConnectionCursor>, usize, Reply<ConnectionPage>),
@@ -78,6 +81,26 @@ pub(crate) enum Command {
     Pause(ConnectionId, Reply<()>),
     Disconnect(ConnectionId, Reply<ConnectionInfo>),
     Conflicts(ConnectionId, Option<ConflictCursor>, Reply<ConflictPage>),
+    Recovery(
+        ConnectionId,
+        Option<RecoveryCursor>,
+        usize,
+        Reply<crate::connected::RecoveryPage>,
+    ),
+    PreviewRecovery(
+        crate::connected::RecoveryId,
+        Side,
+        Reply<crate::connected::SelectionPreview>,
+    ),
+    PreviewConflict(
+        ConnectionId,
+        u64,
+        u64,
+        crate::connected::ConflictChoice,
+        Side,
+        Reply<crate::connected::SelectionPreview>,
+    ),
+    Restore(crate::connected::SelectionReviewId, bool, Reply<()>),
 }
 
 fn supported() -> Result<(), ConnectionError> {
@@ -124,6 +147,7 @@ struct Active {
     pins: Option<Pins>,
     preview: Option<(ReviewId, InitialPreview)>,
     reviewed: Option<WorkerReviewed>,
+    selection: Option<recovery::SelectionReview>,
     running: bool,
     attempts: u32,
     last_revision: Option<u64>,
@@ -185,6 +209,22 @@ impl Worker {
     }
     fn command(&mut self, command: Command) {
         match command {
+            Command::Recovery(id, cursor, limit, reply) => {
+                let result = self.recovery_page(id, cursor, limit);
+                let _ = reply.send(result);
+            }
+            Command::PreviewRecovery(id, target, reply) => {
+                let result = self.preview_recovery(id, target);
+                let _ = reply.send(result);
+            }
+            Command::PreviewConflict(id, serial, revision, choice, target, reply) => {
+                let result = self.preview_conflict(id, serial, revision, choice, target);
+                let _ = reply.send(result);
+            }
+            Command::Restore(review, replace, reply) => {
+                let result = self.restore_selection(review, replace);
+                let _ = reply.send(result);
+            }
             Command::Create(selection, reply) => {
                 let result = self.create(selection);
                 let _ = reply.send(result);
@@ -225,14 +265,7 @@ impl Worker {
                 let _ = reply.send(result);
             }
             Command::Conflicts(id, cursor, reply) => {
-                let result = self
-                    .store
-                    .worker_conflicts(id, cursor.map(|cursor| cursor.0), PAGE_LIMIT)
-                    .map(|page| ConflictPage {
-                        entries: page.entries.into_iter().map(conflict_info).collect(),
-                        next: page.next.map(ConflictCursor),
-                    })
-                    .map_err(store_error);
+                let result = self.conflict_page(id, cursor);
                 let _ = reply.send(result);
             }
         }
@@ -325,6 +358,7 @@ impl Worker {
             pins: None,
             preview: None,
             reviewed: None,
+            selection: None,
             running: false,
             attempts: 0,
             last_revision: None,
@@ -359,6 +393,7 @@ impl Worker {
             return Err(ConnectionError::Disconnected);
         }
         active.running = false;
+        active.selection = None;
         active.preview = None;
         active.reviewed = None;
         active.pins = None;
@@ -395,6 +430,7 @@ impl Worker {
             .filter(|active| active.observer.snapshot().connection.id == id)
         {
             active.running = false;
+            active.selection = None;
             active.preview = None;
             active.reviewed = None;
             active.pins = None;
@@ -640,13 +676,18 @@ impl Worker {
                 );
             }
             transaction::TransactionOutcome::Conflict(conflict) => {
-                active
-                    .observer
-                    .0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .latest_conflict = Some(conflict_info(conflict));
-                set_phase(active, Phase::Conflict);
+                match recovery::conflict_info(&self.store, conflict) {
+                    Ok(conflict) => {
+                        active
+                            .observer
+                            .0
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .latest_conflict = Some(conflict);
+                        set_phase(active, Phase::Conflict);
+                    }
+                    Err(error) => set_phase(active, Phase::RecoveryRequired(error)),
+                }
             }
             transaction::TransactionOutcome::StructuralPending(_) => {
                 set_phase(active, Phase::Pending(Pending::Structural));
@@ -755,18 +796,6 @@ fn info(record: &ConnectionRecord) -> ConnectionInfo {
             Lifecycle::Disconnected => ConnectionLifecycle::Disconnected,
         },
         deletion_retention_seconds: record.policy.deletion_retention_seconds,
-    }
-}
-fn conflict_info(record: ConflictRecord) -> ConflictInfo {
-    ConflictInfo {
-        serial: record.id.serial,
-        revision: record.revision,
-        kind: record.kind,
-        path: record.path,
-        source: record.source,
-        destination: record.destination,
-        preserved_versions: record.preserved.len(),
-        resolved: record.resolved,
     }
 }
 fn store_error(error: StoreError) -> ConnectionError {

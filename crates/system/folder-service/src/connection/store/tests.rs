@@ -10959,3 +10959,994 @@ fn native_created_profile_registration_is_distinct_from_legacy_pending() {
 
 #[path = "directory_tests.rs"]
 mod directory_registration_wire_tests;
+
+// The version boundary must preserve old durable bytes while recognizing only a
+// well-formed explicit carry event; this supplies metadata, never native proof.
+#[test]
+fn selected_attention_wire_preserves_legacy_and_accepts_versioned_event() {
+    let legacy = r#"{"event":"SelectedApplied","connection":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],"serial":4,"expected":20,"fence":0,"attempt":1,"outcome":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]}"#;
+    let old: Change = serde_json::from_str(legacy).unwrap();
+    assert_eq!(format::encode(&old).unwrap(), legacy.as_bytes());
+    let mut next: serde_json::Value = serde_json::from_str(legacy).unwrap();
+    next["event"] = "SelectedAppliedCarryV1".into();
+    next["carry"] = serde_json::json!({"version":1,"prior":[{
+        "operation":2,"operation_revision":12,"applied_revision":11,
+        "fence":0,"outcome":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],
+        "conflict":1,"conflict_revision":4
+    }]});
+    let event: Change = serde_json::from_value(next.clone())
+        .expect("a separate versioned carry event must decode without reinterpreting legacy SelectedApplied");
+    assert_eq!(serde_json::to_value(&event).unwrap(), next);
+    for invalid in 0..8 {
+        let mut value = next.clone();
+        match invalid {
+            0 => value["carry"]["version"] = 2.into(),
+            1 => value["carry"] = serde_json::Value::Null,
+            2 => value["carry"]["prior"] = serde_json::json!([]),
+            3 => value["carry"]["unexpected"] = true.into(),
+            4 => value["carry"]["prior"][0]["operation"] = 0.into(),
+            5 => value["carry"]["prior"][0]["outcome"] = serde_json::json!(([0u8; 32])),
+            6 => {
+                let first = value["carry"]["prior"][0].clone();
+                value["carry"]["prior"] = serde_json::json!([first.clone(), first]);
+            }
+            _ => {
+                value.as_object_mut().unwrap().remove("carry");
+            }
+        }
+        assert!(
+            serde_json::from_value::<Change>(value).is_err(),
+            "malformed carry case {invalid}"
+        );
+    }
+}
+
+// Individually decodable historical metadata is not sufficient when the conflict
+// and its originating operation disagree; executor admission must join them.
+#[test]
+fn selected_attention_executor_refuses_cross_row_conflict_after_checkpoint() {
+    let (_temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 977);
+    let mut connection = store.connection(record.id).unwrap();
+    let mut origin = format::Operation::new(intent(&record), 1, &connection).unwrap();
+    origin.decision = 10;
+    origin.path = format::NativePath::Unix(b"different-origin-path".to_vec());
+    let mut applied = format::Operation::new(intent(&record), 2, &connection).unwrap();
+    applied.native_budget = Some(format::NativeBudget::initial());
+    let content = applied.source.clone().unwrap();
+    applied.action = Some(format::SelectedAction::Restore {
+        version: 1,
+        target: 1,
+        replace: true,
+        revision: applied.expected,
+        fence: connection.fence,
+        selected: format::SelectedVersion::Recovery {
+            operation: 1,
+            slot: 0,
+            content: content.clone(),
+        },
+        conflict: Some(format::SelectedConflict {
+            serial: 1,
+            revision: 2,
+        }),
+    });
+    applied.stage = 9;
+    applied.revision = 3;
+    applied.selected_applied = Some(format::SelectedAppliedFact {
+        revision: 3,
+        fence: connection.fence,
+        outcome: [1; 32],
+        attention: true,
+    });
+    let conflict = format::ConflictData {
+        connection: record.id.0,
+        serial: 1,
+        revision: 2,
+        kind: 0,
+        path: applied.path.clone(),
+        source: applied.source.clone(),
+        destination: applied.destination.clone(),
+        native_capture: None,
+        preserved: vec![],
+        resolved: false,
+    };
+    origin.decode().unwrap();
+    applied.decode().unwrap();
+    conflict.decode().unwrap();
+    connection.serial = 2;
+    connection.revision = 3;
+    let rows = store
+        .prepare_rows(vec![
+            Row::Connection(connection),
+            Row::Operation(origin),
+            Row::Operation(applied),
+            Row::Conflict(conflict),
+        ])
+        .unwrap();
+    store.commit_rows(rows);
+    store.checkpoint().unwrap();
+    drop(store);
+    let store = ConnectionStore::open_at(&path).unwrap();
+    let current = store.load_connection(record.id).unwrap();
+    let mut equality = intent(&current);
+    equality.source_before = Some(content.clone().into());
+    equality.destination_before = Some(content.into());
+    equality.decision = Decision::VerifyEqual;
+    assert!(
+        matches!(
+            store.executor_candidate_allowed(&equality),
+            Err(StoreError::Corrupt)
+        ),
+        "cross-row path mismatch must refuse after checkpoint, not satisfy explicit consent"
+    );
+}
+
+// Portable historical metadata only. No fixture row is ever submitted as a
+// native receipt or used to claim actual bytes or current endpoint authority.
+#[cfg(unix)]
+fn selected_attention_metadata_fixture() -> (tempfile::TempDir, ConnectionStore, format::Operation)
+{
+    let (temp, path) = fixture();
+    let mut store = ConnectionStore::open_at(&path).unwrap();
+    let record = create(&mut store, 978);
+    let connection = store.connection(record.id).unwrap();
+    let mut rows = Vec::new();
+    for serial in [1, 2] {
+        let mut origin = format::Operation::new(intent(&record), serial, &connection).unwrap();
+        origin.decision = 10;
+        origin.recovery = vec![0];
+        origin.stage = 1;
+        rows.push(Row::Conflict(format::ConflictData {
+            connection: record.id.0,
+            serial,
+            revision: 2,
+            kind: 0,
+            path: origin.path.clone(),
+            source: origin.source.clone(),
+            destination: origin.destination.clone(),
+            native_capture: None,
+            preserved: vec![0],
+            resolved: false,
+        }));
+        rows.push(Row::Recovery(format::Recovery {
+            captured: None,
+            connection: record.id.0,
+            serial,
+            slot: 0,
+            side: 0,
+            path: origin.path.clone(),
+            reason: 2,
+            state: 1,
+            content: origin.source.clone(),
+            object: Some(format::ObjectIdentity {
+                root: store.storage.identity.clone(),
+                file_id: format::FileIdentity::Unix(7),
+            }),
+            retained: 0,
+        }));
+        rows.push(Row::Operation(origin));
+    }
+    let mut new = None;
+    for (serial, conflict, revision) in [(3, 1, 6), (4, 2, 8), (5, 2, 11)] {
+        let mut applied = format::Operation::new(intent(&record), serial, &connection).unwrap();
+        applied.native_budget = Some(format::NativeBudget::initial());
+        applied.action = Some(format::SelectedAction::Restore {
+            version: 1,
+            target: 1,
+            replace: true,
+            revision: applied.expected,
+            fence: connection.fence,
+            selected: format::SelectedVersion::Recovery {
+                operation: conflict,
+                slot: 0,
+                content: applied.source.clone().unwrap(),
+            },
+            conflict: Some(format::SelectedConflict {
+                serial: conflict,
+                revision: 2,
+            }),
+        });
+        applied.revision = revision;
+        if serial == 5 {
+            applied.stage = 3;
+            new = Some(applied);
+        } else {
+            applied.stage = 9;
+            applied.selected_applied = Some(format::SelectedAppliedFact {
+                revision,
+                fence: connection.fence,
+                outcome: [serial as u8; 32],
+                attention: true,
+            });
+            rows.push(Row::Operation(applied));
+        }
+    }
+    let prepared = store.prepare_rows(rows).unwrap();
+    store.commit_rows(prepared);
+    (temp, store, new.unwrap())
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_attention_carry_keeps_only_current_distinct_compatible_consent() {
+    let (_temp, mut store, next) = selected_attention_metadata_fixture();
+    let connection = ConnectionId(next.connection);
+    let expected = vec![format::SelectedAttentionRefV1 {
+        operation: 3,
+        operation_revision: 6,
+        applied_revision: 6,
+        fence: 0,
+        outcome: [3; 32],
+        conflict: 1,
+        conflict_revision: 2,
+    }];
+    assert_eq!(store.selected_attention_carry(&next, 10).unwrap(), expected);
+    let old = store
+        .operation(OperationId {
+            connection,
+            serial: 3,
+        })
+        .unwrap();
+    let conflict_key = format::key(3, next.connection, 1);
+    let Some(Row::Conflict(original)) = store.row(&conflict_key).unwrap() else {
+        panic!("conflict");
+    };
+    // Legitimate revised/resolved history supersedes; corruption still refuses.
+    for resolved in [false, true] {
+        let mut revised = original.clone();
+        revised.revision += 1;
+        revised.resolved = resolved;
+        store
+            .overlay
+            .insert(conflict_key.clone(), Row::Conflict(revised));
+        assert!(
+            store
+                .selected_attention_carry(&next, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    store
+        .overlay
+        .insert(conflict_key.clone(), Row::Conflict(original.clone()));
+    for altered in 0..4 {
+        let mut previous = old.clone();
+        match altered {
+            0 => previous.selected_applied.as_mut().unwrap().attention = false,
+            1 => previous.revision = 12,
+            2 => previous.selected_applied.as_mut().unwrap().fence += 1,
+            _ => {
+                let Some(format::SelectedAction::Restore {
+                    selected: format::SelectedVersion::Recovery { content, .. },
+                    ..
+                }) = &mut previous.action
+                else {
+                    panic!("selected");
+                };
+                *content = format::State::File {
+                    sha256: [8; 32],
+                    bytes: 3,
+                    executable: false,
+                };
+            }
+        }
+        store
+            .overlay
+            .insert(format::key(1, next.connection, 3), Row::Operation(previous));
+        let result = store.selected_attention_carry(&next, 10);
+        if altered == 0 {
+            assert!(result.unwrap().is_empty());
+        } else {
+            assert!(result.is_err(), "invalid recorded selection {altered}");
+        }
+    }
+    store
+        .overlay
+        .insert(format::key(1, next.connection, 3), Row::Operation(old));
+    let origin = store
+        .operation(OperationId {
+            connection,
+            serial: 1,
+        })
+        .unwrap();
+    for altered in 0..4 {
+        let mut broken = original.clone();
+        let mut operation = origin.clone();
+        match altered {
+            0 => operation.path = format::NativePath::Unix(b"wrong-path".to_vec()),
+            1 => broken.source = None,
+            2 => operation.destination_binding.root[0] ^= 1,
+            _ => broken.preserved = vec![1],
+        }
+        broken.resolved = true; // Cannot hide structural corruption behind supersession.
+        broken.revision += 1;
+        operation.decode().unwrap();
+        broken.decode().unwrap();
+        store.overlay.insert(
+            format::key(1, next.connection, 1),
+            Row::Operation(operation),
+        );
+        store
+            .overlay
+            .insert(conflict_key.clone(), Row::Conflict(broken));
+        assert!(
+            store.selected_attention_carry(&next, 10).is_err(),
+            "broken cross-row pair {altered}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_attention_ordinary_join_keeps_earlier_capture_and_revision_history() {
+    use super::super::transaction::native::descriptor as d;
+    let (_temp, mut store, next) = selected_attention_metadata_fixture();
+    let id = OperationId {
+        connection: ConnectionId(next.connection),
+        serial: 1,
+    };
+    let mut operation = store.operation(id).unwrap();
+    operation.native_budget = Some(format::NativeBudget::initial());
+    operation.decision = 1; // Captured propagation may have an independently supplied conflict kind.
+    operation.stage = 8;
+    operation.revision = 7; // Completion followed by paid inspection.
+    let metadata = native_admission_facts(&operation, 0);
+    let mut snapshot = d::ConflictSnapshot {
+        connection: next.connection,
+        operation: 1,
+        admission: 2,
+        revision: 2,
+        fence: 0,
+        baseline: None,
+        endpoints: metadata.endpoints,
+        path: metadata.path,
+        chains: metadata.chains,
+        versions: vec![
+            d::CapturedVersion {
+                side: 0,
+                role: 0,
+                state: metadata.states[0].clone(),
+                displaced: None,
+            },
+            d::CapturedVersion {
+                side: 1,
+                role: 0,
+                state: metadata.states[0].clone(),
+                displaced: None,
+            },
+        ],
+    };
+    let earlier = snapshot.encode().unwrap();
+    snapshot.revision = 3;
+    let latest = snapshot.encode().unwrap();
+    operation.native_capture = Some(latest.clone());
+    let key = format::key(3, next.connection, 1);
+    let Some(Row::Conflict(mut conflict)) = store.row(&key).unwrap() else {
+        panic!("conflict");
+    };
+    conflict.kind = 3;
+    conflict.revision = 5;
+    conflict.native_capture = Some(latest);
+    let recovery_id = RecoveryId {
+        operation: id,
+        slot: 0,
+    };
+    let Some(Row::Recovery(mut entry)) = store.row(&recovery::recovery_key(recovery_id)).unwrap()
+    else {
+        panic!("recovery");
+    };
+    entry.captured = Some(format::CapturedSlot {
+        snapshot: earlier,
+        version: 0,
+    });
+    store.overlay.insert(
+        recovery::recovery_key(recovery_id),
+        Row::Recovery(entry.clone()),
+    );
+    store.overlay.insert(
+        format::key(1, next.connection, 1),
+        Row::Operation(operation.clone()),
+    );
+    assert!(
+        store.ordinary_conflict_join(&conflict).is_ok(),
+        "older preserved capture, changed capture kind and actual occupied destination are valid history"
+    );
+    // The earlier snapshot must still belong to this origin and its endpoints.
+    snapshot.revision = 2;
+    snapshot.endpoints[0][0] ^= 1;
+    entry.captured.as_mut().unwrap().snapshot = snapshot.encode().unwrap();
+    store
+        .overlay
+        .insert(recovery::recovery_key(recovery_id), Row::Recovery(entry));
+    assert!(store.ordinary_conflict_join(&conflict).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_attention_metadata_helper_requires_exact_complete_refs() {
+    let (_temp, mut store, mut next) = selected_attention_metadata_fixture();
+    // Bind a new third conflict so both older independently accepted consents
+    // must be carried, in deterministic operation order.
+    let original_key = format::key(3, next.connection, 2);
+    let Some(Row::Conflict(mut third)) = store.row(&original_key).unwrap() else {
+        panic!("conflict");
+    };
+    let mut origin = store
+        .operation(OperationId {
+            connection: ConnectionId(next.connection),
+            serial: 2,
+        })
+        .unwrap();
+    let Some(Row::Recovery(mut entry)) = store
+        .row(&recovery::recovery_key(RecoveryId {
+            operation: OperationId {
+                connection: ConnectionId(next.connection),
+                serial: 2,
+            },
+            slot: 0,
+        }))
+        .unwrap()
+    else {
+        panic!("recovery");
+    };
+    third.serial = 5;
+    origin.serial = 5;
+    entry.serial = 5;
+    let rows = store
+        .prepare_rows(vec![
+            Row::Conflict(third),
+            Row::Operation(origin),
+            Row::Recovery(entry),
+        ])
+        .unwrap();
+    store.commit_rows(rows);
+    next.serial = 6;
+    let Some(format::SelectedAction::Restore {
+        selected: format::SelectedVersion::Recovery { operation, .. },
+        conflict: Some(bound),
+        ..
+    }) = &mut next.action
+    else {
+        panic!("selection");
+    };
+    *operation = 5;
+    bound.serial = 5;
+    let valid = format::SelectedAttentionCarryV1 {
+        version: 1,
+        prior: vec![
+            format::SelectedAttentionRefV1 {
+                operation: 3,
+                operation_revision: 6,
+                applied_revision: 6,
+                fence: 0,
+                outcome: [3; 32],
+                conflict: 1,
+                conflict_revision: 2,
+            },
+            format::SelectedAttentionRefV1 {
+                operation: 4,
+                operation_revision: 8,
+                applied_revision: 8,
+                fence: 0,
+                outcome: [4; 32],
+                conflict: 2,
+                conflict_revision: 2,
+            },
+        ],
+    };
+    store
+        .validate_selected_attention_carry(&next, 10, &valid)
+        .unwrap();
+    let before = (
+        store.sequence,
+        store.digest,
+        store.overlay.clone(),
+        std::fs::read(
+            store
+                .storage
+                .path
+                .join(format!("log-{}", store.current.log)),
+        )
+        .unwrap(),
+    );
+    for changed in 0..11 {
+        let mut wrong = valid.clone();
+        match changed {
+            0 => {
+                wrong.prior.pop();
+            }
+            1 => wrong.prior.swap(0, 1),
+            2 => wrong.prior[0].operation = 2,
+            3 => wrong.prior[0].operation_revision += 1,
+            4 => wrong.prior[0].applied_revision += 1,
+            5 => wrong.prior[0].fence += 1,
+            6 => wrong.prior[0].outcome[0] ^= 1,
+            7 => wrong.prior[0].conflict_revision += 1,
+            8 => wrong.prior[0].conflict = 2,
+            9 => wrong.version = 2,
+            _ => wrong.prior = vec![valid.prior[0].clone(); 128],
+        }
+        assert!(
+            store
+                .validate_selected_attention_carry(&next, 10, &wrong)
+                .is_err(),
+            "substituted carry {changed}"
+        );
+    }
+    assert_eq!(
+        (
+            store.sequence,
+            store.digest,
+            store.overlay.clone(),
+            std::fs::read(
+                store
+                    .storage
+                    .path
+                    .join(format!("log-{}", store.current.log))
+            )
+            .unwrap()
+        ),
+        before
+    );
+    // Different content is valid history but incompatible consent, not corruption.
+    let different = format::State::File {
+        sha256: [9; 32],
+        bytes: 7,
+        executable: true,
+    };
+    let id = OperationId {
+        connection: ConnectionId(next.connection),
+        serial: 1,
+    };
+    let mut origin = store.operation(id).unwrap();
+    let mut applied = store
+        .operation(OperationId {
+            connection: id.connection,
+            serial: 3,
+        })
+        .unwrap();
+    let Some(Row::Conflict(mut conflict)) = store.row(&format::key(3, next.connection, 1)).unwrap()
+    else {
+        panic!("conflict");
+    };
+    let Some(Row::Recovery(mut entry)) = store
+        .row(&recovery::recovery_key(RecoveryId {
+            operation: id,
+            slot: 0,
+        }))
+        .unwrap()
+    else {
+        panic!("entry");
+    };
+    origin.source = Some(different.clone());
+    conflict.source = Some(different.clone());
+    entry.content = Some(different.clone());
+    let Some(format::SelectedAction::Restore {
+        selected: format::SelectedVersion::Recovery { content, .. },
+        ..
+    }) = &mut applied.action
+    else {
+        panic!("selection");
+    };
+    *content = different;
+    let rows = store
+        .prepare_rows(vec![
+            Row::Operation(origin),
+            Row::Operation(applied.clone()),
+            Row::Conflict(conflict),
+            Row::Recovery(entry),
+        ])
+        .unwrap();
+    store.commit_rows(rows);
+    assert_eq!(
+        store.selected_attention_carry(&next, 10).unwrap(),
+        vec![valid.prior[1].clone()]
+    );
+    // A cleared fact stays cleared even if the new choice returns to its content.
+    applied.selected_applied.as_mut().unwrap().attention = false;
+    store.overlay.insert(
+        format::key(1, next.connection, 3),
+        Row::Operation(applied.clone()),
+    );
+    let Some(format::SelectedAction::Restore { selected, .. }) = applied.action else {
+        panic!("selection");
+    };
+    let Some(format::SelectedAction::Restore {
+        selected: current,
+        conflict,
+        ..
+    }) = &mut next.action
+    else {
+        panic!("selection");
+    };
+    *current = selected;
+    *conflict = Some(format::SelectedConflict {
+        serial: 1,
+        revision: 2,
+    });
+    assert!(
+        store
+            .selected_attention_carry(&next, 10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+// Unit coverage of row projection only: this does not dispatch a completion
+// event or prove native history. The native event-history test covers that seam.
+#[cfg(unix)]
+#[test]
+fn selected_attention_supersession_helper_projects_rows_across_checkpoint() {
+    for carry in [false, true] {
+        let (_temp, mut store, next) = selected_attention_metadata_fixture();
+        let path = store.storage.path.clone();
+        let id = ConnectionId(next.connection);
+        let selected = format::SelectedAttentionCarryV1 {
+            version: 1,
+            prior: vec![format::SelectedAttentionRefV1 {
+                operation: 3,
+                operation_revision: 6,
+                applied_revision: 6,
+                fence: 0,
+                outcome: [3; 32],
+                conflict: 1,
+                conflict_revision: 2,
+            }],
+        };
+        if carry {
+            store
+                .validate_selected_attention_carry(&next, 10, &selected)
+                .unwrap();
+        }
+        let changes = store
+            .superseded_attention_rows(id, &next.path, carry.then_some(&selected))
+            .unwrap();
+        assert_eq!(changes.len(), if carry { 1 } else { 2 });
+        let prepared = store.prepare_rows(changes).unwrap();
+        store.commit_rows(prepared);
+        let expected = if carry { vec![3] } else { vec![] };
+        assert_eq!(
+            store
+                .selected_attention(id, &next.path)
+                .unwrap()
+                .iter()
+                .map(|op| op.serial)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        store.checkpoint().unwrap();
+        drop(store);
+        let store = ConnectionStore::open_at(&path).unwrap();
+        assert_eq!(
+            store
+                .selected_attention(id, &next.path)
+                .unwrap()
+                .iter()
+                .map(|op| op.serial)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn selected_attention_equality_requires_every_conflict_after_checkpoint() {
+    let (_temp, mut store, next) = selected_attention_metadata_fixture();
+    let id = ConnectionId(next.connection);
+    let mut connection = store.connection(id).unwrap();
+    connection.serial = 4;
+    connection.revision = 10;
+    store.overlay.insert(
+        format::key(0, next.connection, 0),
+        Row::Connection(connection.clone()),
+    );
+    let mut equality = intent(&store.load_connection(id).unwrap());
+    equality.destination_before = equality.source_before.clone();
+    equality.decision = Decision::VerifyEqual;
+    assert!(
+        store.executor_candidate_allowed(&equality).unwrap(),
+        "both explicitly bound metadata consents can propose comparison, never commit it"
+    );
+    let mut origin = store
+        .operation(OperationId {
+            connection: id,
+            serial: 1,
+        })
+        .unwrap();
+    origin.serial = 5;
+    origin.recovery.clear();
+    origin.stage = 0;
+    let Some(Row::Conflict(mut unaccepted)) =
+        store.row(&format::key(3, next.connection, 1)).unwrap()
+    else {
+        panic!("conflict");
+    };
+    unaccepted.serial = 5;
+    unaccepted.preserved.clear();
+    connection.serial = 5;
+    let prepared = store
+        .prepare_rows(vec![
+            Row::Connection(connection),
+            Row::Operation(origin),
+            Row::Conflict(unaccepted),
+        ])
+        .unwrap();
+    store.commit_rows(prepared);
+    store.checkpoint().unwrap();
+    let path = store.storage.path.clone();
+    drop(store);
+    let store = ConnectionStore::open_at(&path).unwrap();
+    assert!(
+        !store.executor_candidate_allowed(&equality).unwrap(),
+        "a third unaccepted conflict still blocks equality"
+    );
+}
+
+// This test utility consumes genuine completed native history from the worker
+// fixture. It never returns a proof/context or makes replay available to a live
+// caller. Compile it on Unix hosts as well; execution belongs to the Linux test.
+#[cfg(unix)]
+impl ConnectionStore {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "The genuine fixture runs only on Linux; host compilation still checks this historical test utility."
+        )
+    )]
+    pub(in crate::connection) fn assert_selected_attention_event_history(self, id: ConnectionId) {
+        let path = self.storage.path.clone();
+        let log_path = path.join(format!("log-{}", self.current.log));
+        let original_log = std::fs::read(&log_path).unwrap();
+        let original_rows = self.rows().unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        let original_sequence = self.sequence;
+        let original_digest = self.digest;
+        let mut log = File::open(&log_path).unwrap();
+        log.seek(SeekFrom::Start(8)).unwrap();
+        let header: format::LogHeader = framing::read_record(&mut log, 0).unwrap().unwrap();
+        let mut sequence = header.first_sequence;
+        let mut last = None;
+        loop {
+            let offset = log.stream_position().unwrap();
+            let event: Option<Event> = framing::read_record(&mut log, sequence).unwrap();
+            let Some(event) = event else {
+                break;
+            };
+            last = Some((offset, sequence, event));
+            sequence += 1;
+        }
+        let (offset, sequence, event) = last.expect("genuine final completion event");
+        assert_eq!(sequence, original_sequence);
+        let Change::SelectedAppliedCarryV1 {
+            connection,
+            serial,
+            expected,
+            fence,
+            attempt,
+            outcome,
+            carry,
+        } = &event.change
+        else {
+            panic!("genuine final event must carry two earlier consents");
+        };
+        assert_eq!(*connection, id.0);
+        assert_eq!(carry.prior.len(), 2);
+        let serial = *serial;
+        let legacy = Change::SelectedApplied {
+            connection: *connection,
+            serial,
+            expected: *expected,
+            fence: *fence,
+            attempt: *attempt,
+            outcome: *outcome,
+        };
+        let prefix = original_log[..usize::try_from(offset).unwrap()].to_vec();
+        let cut = || {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&log_path)
+                .unwrap();
+            file.set_len(offset).unwrap();
+            file.sync_all().unwrap();
+            assert_eq!(std::fs::read(&log_path).unwrap(), prefix);
+        };
+        drop(log);
+        drop(self);
+        cut();
+        let mut store = ConnectionStore::open_at(&path).unwrap();
+        let snapshot = |store: &ConnectionStore| {
+            (
+                store.sequence,
+                store.digest,
+                store.load_connection(id).unwrap(),
+                store.overlay.clone(),
+                store.overlay_bytes,
+                std::fs::read(&log_path).unwrap(),
+                std::fs::read(path.join("CURRENT")).unwrap(),
+            )
+        };
+        let before = snapshot(&store);
+        let historical_append = |store: &mut ConnectionStore, change: Change| {
+            let checks = store.replay_checks(&change)?;
+            let probe = super::chain_tests::HistoricalAppendProbe::default();
+            store.append_checked_with_baseline(
+                change,
+                checks,
+                BaselineAppendCheck::Historical(&probe),
+            )
+        };
+        // Identical production-event control proves the real registration,
+        // outcome, revision, fence and replay mode are otherwise admissible.
+        historical_append(&mut store, event.change.clone()).unwrap();
+        assert_eq!(store.sequence, original_sequence);
+        assert_eq!(store.digest, original_digest);
+        assert_eq!(
+            store
+                .rows()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            original_rows
+        );
+        assert_eq!(std::fs::read(&log_path).unwrap(), original_log);
+        drop(store);
+        let store = ConnectionStore::open_at(&path).unwrap();
+        assert_eq!(
+            store
+                .rows()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            original_rows
+        );
+        drop(store);
+        cut();
+        let mut store = ConnectionStore::open_at(&path).unwrap();
+        assert_eq!(snapshot(&store), before);
+        for changed in 0..14 {
+            let mut wrong = event.change.clone();
+            let Change::SelectedAppliedCarryV1 { carry, .. } = &mut wrong else {
+                unreachable!()
+            };
+            match changed {
+                0 => {
+                    carry.prior.pop();
+                } // Nonempty but incomplete list.
+                1 => carry.prior.swap(0, 1),
+                2 => carry.prior[0].operation += 1,
+                3 => carry.prior[0].operation_revision += 1,
+                4 => carry.prior[0].applied_revision += 1,
+                5 => carry.prior[0].fence += 1,
+                6 => carry.prior[0].outcome[0] ^= 1,
+                7 => carry.prior[0].conflict_revision += 1,
+                8 => carry.prior[0].conflict = carry.prior[1].conflict,
+                9 => carry.version = 2,
+                10 => carry.prior = vec![carry.prior[0].clone(); 128],
+                11 => carry.prior.clear(),
+                12 => carry.prior.push(carry.prior[1].clone()),
+                _ => carry.prior[0].conflict_revision -= 1,
+            }
+            assert!(
+                historical_append(&mut store, wrong).is_err(),
+                "carry substitution {changed} reached completion"
+            );
+            assert_eq!(
+                snapshot(&store),
+                before,
+                "carry substitution {changed} mutated admission"
+            );
+        }
+        // Historical acceptance never grants live append permission.
+        assert!(matches!(
+            store.append(event.change.clone()),
+            Err(StoreError::RecoveryRequired)
+        ));
+        assert_eq!(snapshot(&store), before);
+        let checks = store.replay_checks(&event.change).unwrap();
+        assert!(matches!(
+            store.append_checked(event.change.clone(), checks),
+            Err(StoreError::RecoveryRequired)
+        ));
+        assert_eq!(snapshot(&store), before);
+        // Removing the native mark is deliberately invalid metadata, not a
+        // fixture that claims native authority. Actual event admission refuses.
+        let key = format::key(1, id.0, serial);
+        let prior_overlay = store.overlay.get(&key).cloned();
+        let mut unmarked = store
+            .operation(OperationId {
+                connection: id,
+                serial,
+            })
+            .unwrap();
+        unmarked.native_budget = None;
+        store.overlay.insert(key.clone(), Row::Operation(unmarked));
+        let unmarked_before = snapshot(&store);
+        assert!(matches!(
+            store.append(event.change.clone()),
+            Err(StoreError::RecoveryRequired)
+        ));
+        assert_eq!(snapshot(&store), unmarked_before);
+        match prior_overlay {
+            Some(row) => {
+                store.overlay.insert(key, row);
+            }
+            None => {
+                store.overlay.remove(&key);
+            }
+        }
+        assert_eq!(snapshot(&store), before);
+        // Keep every genuine completion field; only the historical event type
+        // changes. Legacy must clear both old markers even though their content
+        // matches and each conflict remains independently unresolved.
+        let mut legacy_rows = original_rows;
+        for row in &mut legacy_rows {
+            if let Row::Operation(operation) = row
+                && carry.prior.iter().any(|prior| {
+                    prior.operation == operation.serial && operation.connection == id.0
+                })
+            {
+                let fact = operation.selected_applied.as_mut().unwrap();
+                assert!(fact.attention);
+                fact.attention = false;
+            }
+        }
+        historical_append(&mut store, legacy).unwrap();
+        assert_eq!(
+            store
+                .rows()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            legacy_rows
+        );
+        let applied = store
+            .operation(OperationId {
+                connection: id,
+                serial,
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .selected_attention(id, &applied.path)
+                .unwrap()
+                .iter()
+                .map(|operation| operation.serial)
+                .collect::<Vec<_>>(),
+            vec![serial]
+        );
+        let legacy_log = std::fs::read(&log_path).unwrap();
+        drop(store);
+        let mut store = ConnectionStore::open_at(&path).unwrap();
+        assert_eq!(
+            store
+                .rows()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            legacy_rows
+        );
+        assert_eq!(std::fs::read(&log_path).unwrap(), legacy_log);
+        store.checkpoint().unwrap();
+        drop(store);
+        let store = ConnectionStore::open_at(&path).unwrap();
+        assert_eq!(
+            store
+                .rows()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            legacy_rows
+        );
+        assert_eq!(
+            store
+                .selected_attention(id, &applied.path)
+                .unwrap()
+                .iter()
+                .map(|operation| operation.serial)
+                .collect::<Vec<_>>(),
+            vec![serial]
+        );
+    }
+}
