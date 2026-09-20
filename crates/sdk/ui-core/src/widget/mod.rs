@@ -530,6 +530,8 @@ pub trait Widget {
     /// One-shot approval after an earlier deferred ordinary window close.
     fn take_window_close_intent(&mut self) -> bool {
         false
+    }
+
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
