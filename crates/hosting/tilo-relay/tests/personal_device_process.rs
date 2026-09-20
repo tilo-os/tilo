@@ -11,7 +11,7 @@
     clippy::indexing_slicing,
     clippy::panic,
     clippy::unreachable,
-    reason = "test assertions and deterministic fixture keys"
+    reason = "test assertions and isolated fixture keys"
 )]
 
 use std::process::{Command, Stdio};
@@ -135,9 +135,11 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     std::fs::create_dir_all(&approver_identities).unwrap();
     std::fs::create_dir_all(&recipient_identities).unwrap();
 
-    let root = SigningKey::from_bytes(&[0x11; 32]);
-    let approver = SigningKey::from_bytes(&[0x12; 32]);
-    let home = SigningKey::from_bytes(&[0x13; 32]);
+    // Production Iroh endpoints publish these identities outside the guest.
+    // Concurrent CI jobs must not register the same transport identity.
+    let root = SigningKey::generate(&mut rand::rngs::OsRng);
+    let approver = SigningKey::generate(&mut rand::rngs::OsRng);
+    let home = SigningKey::generate(&mut rand::rngs::OsRng);
     let state = tempfile::tempdir().unwrap();
     let home_cert = signed_cert(&root, &home, "Home peer", DeviceCapabilities::host());
     let relay = Relay::start(
@@ -165,7 +167,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 
     // Seed the recipient key before starting either process so approval pins
     // the exact device and domain-separated relay service identities.
-    let recipient = SigningKey::from_bytes(&[0x14; 32]);
+    let recipient = SigningKey::generate(&mut rand::rngs::OsRng);
     let recipient_paths = IdentityPaths::under(&recipient_root);
     recipient_paths.ensure_directories().unwrap();
     tilo_user_identity::persist::write_device_key(&recipient_paths.device_privkey, &recipient)
@@ -373,9 +375,9 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
 
-        let root = SigningKey::from_bytes(&[0x21; 32]);
-        let approver = SigningKey::from_bytes(&[0x22; 32]);
-        let home = SigningKey::from_bytes(&[0x23; 32]);
+        let root = SigningKey::generate(&mut rand::rngs::OsRng);
+        let approver = SigningKey::generate(&mut rand::rngs::OsRng);
+        let home = SigningKey::generate(&mut rand::rngs::OsRng);
         let registration = write_approver_fixture(
             &approver_root,
             &approver_identities,
@@ -386,7 +388,7 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
         );
         std::fs::set_permissions(&approver_root, std::fs::Permissions::from_mode(0o700)).unwrap();
 
-        let recipient = SigningKey::from_bytes(&[0x24; 32]);
+        let recipient = SigningKey::generate(&mut rand::rngs::OsRng);
         let recipient_paths = IdentityPaths::under(&recipient_root);
         recipient_paths.ensure_directories().unwrap();
         std::fs::set_permissions(&recipient_root, std::fs::Permissions::from_mode(0o700)).unwrap();
