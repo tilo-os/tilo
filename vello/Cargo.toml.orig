@@ -50,6 +50,7 @@ vello_shaders = { workspace = true, optional = true }
 bytemuck = { workspace = true }
 skrifa = { workspace = true, features = ["std"] }
 peniko = { workspace = true, default-features = true }
+smallvec = { workspace = true }
 wgpu = { workspace = true, default-features = false, optional = true }
 log = { workspace = true }
 static_assertions = { workspace = true }

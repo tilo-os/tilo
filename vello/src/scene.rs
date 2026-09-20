@@ -75,6 +75,70 @@ impl Scene {
         &self.encoding
     }
 
+    /// Returns whether both scenes have the same encoded rendering inputs.
+    ///
+    /// This is a representation-level comparison intended for retained scene
+    /// invalidation. It compares scalar streams bit-for-bit and every late
+    /// resource structurally. Font and image blobs compare by their immutable
+    /// [`Blob::id`] identity, so separately allocated but byte-identical
+    /// resources compare unequal. That intentional conservatism is safe for
+    /// invalidation. Raw encoded floating-point streams compare by IEEE bits;
+    /// resource types that use `PartialEq` (such as color stops and glyph
+    /// styles) conservatively compare unequal when they contain NaNs.
+    ///
+    /// Image sampler state is already packed into the draw-data stream, so it
+    /// is covered by the bit-exact draw comparison rather than by a second
+    /// source-level comparison.
+    #[doc(hidden)]
+    pub fn encoding_eq(&self, other: &Self) -> bool {
+        let lhs = &self.encoding;
+        let rhs = &other.encoding;
+        lhs.path_tags == rhs.path_tags
+            && lhs.path_data == rhs.path_data
+            && lhs.draw_tags == rhs.draw_tags
+            && lhs.draw_data == rhs.draw_data
+            && lhs.n_paths == rhs.n_paths
+            && lhs.n_path_segments == rhs.n_path_segments
+            && lhs.n_clips == rhs.n_clips
+            && lhs.n_open_clips == rhs.n_open_clips
+            && lhs.flags == rhs.flags
+            && lhs.transforms.len() == rhs.transforms.len()
+            && lhs
+                .transforms
+                .iter()
+                .zip(&rhs.transforms)
+                .all(|(left, right)| transform_encoding_eq(left, right))
+            && lhs.styles.len() == rhs.styles.len()
+            && lhs
+                .styles
+                .iter()
+                .zip(&rhs.styles)
+                .all(|(left, right)| style_encoding_eq(left, right))
+            && lhs.resources.color_stops == rhs.resources.color_stops
+            && lhs.resources.normalized_coords == rhs.resources.normalized_coords
+            && lhs.resources.glyphs.len() == rhs.resources.glyphs.len()
+            && lhs
+                .resources
+                .glyphs
+                .iter()
+                .zip(&rhs.resources.glyphs)
+                .all(|(left, right)| glyph_encoding_eq(left, right))
+            && lhs.resources.glyph_runs.len() == rhs.resources.glyph_runs.len()
+            && lhs
+                .resources
+                .glyph_runs
+                .iter()
+                .zip(&rhs.resources.glyph_runs)
+                .all(|(left, right)| glyph_run_encoding_eq(left, right))
+            && lhs.resources.patches.len() == rhs.resources.patches.len()
+            && lhs
+                .resources
+                .patches
+                .iter()
+                .zip(&rhs.resources.patches)
+                .all(|(left, right)| patch_encoding_eq(left, right))
+    }
+
     /// Returns a mutable reference to the underlying raw encoding.
     ///
     /// This can be used to more easily create invalid scenes, and so should be used with care.
@@ -466,6 +530,104 @@ impl Scene {
         self.encoding.append(&other.encoding, &t);
         #[cfg(feature = "bump_estimate")]
         self.estimator.append(&other.estimator, t.as_ref());
+    }
+}
+
+fn transform_encoding_eq(left: &Transform, right: &Transform) -> bool {
+    left.matrix
+        .iter()
+        .zip(right.matrix)
+        .all(|(left, right)| left.to_bits() == right.to_bits())
+        && left
+            .translation
+            .iter()
+            .zip(right.translation)
+            .all(|(left, right)| left.to_bits() == right.to_bits())
+}
+
+fn style_encoding_eq(left: &vello_encoding::Style, right: &vello_encoding::Style) -> bool {
+    left.flags_and_miter_limit == right.flags_and_miter_limit
+        && left.line_width.to_bits() == right.line_width.to_bits()
+}
+
+fn glyph_encoding_eq(left: &Glyph, right: &Glyph) -> bool {
+    left.id == right.id
+        && left.x.to_bits() == right.x.to_bits()
+        && left.y.to_bits() == right.y.to_bits()
+}
+
+fn option_transform_encoding_eq(left: Option<Transform>, right: Option<Transform>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => transform_encoding_eq(&left, &right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn glyph_run_encoding_eq(left: &GlyphRun, right: &GlyphRun) -> bool {
+    left.font.data.id() == right.font.data.id()
+        && left.font.index == right.font.index
+        && transform_encoding_eq(&left.transform, &right.transform)
+        && option_transform_encoding_eq(left.glyph_transform, right.glyph_transform)
+        && option_transform_encoding_eq(left.brush_transform, right.brush_transform)
+        && left.font_size.to_bits() == right.font_size.to_bits()
+        && left.font_embolden.amount.xx.to_bits() == right.font_embolden.amount.xx.to_bits()
+        && left.font_embolden.amount.yy.to_bits() == right.font_embolden.amount.yy.to_bits()
+        && left.font_embolden.join == right.font_embolden.join
+        && left.font_embolden.miter_limit.to_bits() == right.font_embolden.miter_limit.to_bits()
+        && left.font_embolden.tolerance.to_bits() == right.font_embolden.tolerance.to_bits()
+        && left.hint == right.hint
+        && left.normalized_coords == right.normalized_coords
+        && glyph_style_encoding_eq(&left.style, &right.style)
+        && left.glyphs == right.glyphs
+        && left.stream_offsets.path_tags == right.stream_offsets.path_tags
+        && left.stream_offsets.path_data == right.stream_offsets.path_data
+        && left.stream_offsets.draw_tags == right.stream_offsets.draw_tags
+        && left.stream_offsets.draw_data == right.stream_offsets.draw_data
+        && left.stream_offsets.transforms == right.stream_offsets.transforms
+        && left.stream_offsets.styles == right.stream_offsets.styles
+}
+
+fn glyph_style_encoding_eq(left: &peniko::Style, right: &peniko::Style) -> bool {
+    left == right
+}
+
+fn image_encoding_eq(left: &ImageData, right: &ImageData) -> bool {
+    left.data.id() == right.data.id()
+        && left.format == right.format
+        && left.alpha_type == right.alpha_type
+        && left.width == right.width
+        && left.height == right.height
+}
+
+fn patch_encoding_eq(left: &Patch, right: &Patch) -> bool {
+    match (left, right) {
+        (
+            Patch::Ramp {
+                draw_data_offset: left_offset,
+                stops: left_stops,
+                extend: left_extend,
+            },
+            Patch::Ramp {
+                draw_data_offset: right_offset,
+                stops: right_stops,
+                extend: right_extend,
+            },
+        ) => {
+            left_offset == right_offset && left_stops == right_stops && left_extend == right_extend
+        }
+        (Patch::GlyphRun { index: left }, Patch::GlyphRun { index: right }) => left == right,
+        (
+            Patch::Image {
+                image: left_image,
+                draw_data_offset: left_offset,
+            },
+            Patch::Image {
+                image: right_image,
+                draw_data_offset: right_offset,
+            },
+        ) => left_offset == right_offset && image_encoding_eq(left_image, right_image),
+        _ => false,
     }
 }
 
@@ -1254,5 +1416,249 @@ impl ColorStopsSource for ColorStopsConverter<'_> {
                 offset: item.offset,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use peniko::{ImageAlphaType, ImageFormat, ImageQuality};
+    use vello_encoding::{DrawTag, PathTag, StreamOffsets, Style as EncodedStyle};
+
+    fn encoded_scene() -> Scene {
+        let font = FontData::new(Blob::from(vec![0_u8, 1, 2]), 0);
+        let image = ImageData {
+            data: Blob::from(vec![0_u8, 0, 0, 0]),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: 1,
+            height: 1,
+        };
+        let mut encoding = Encoding::new();
+        encoding.path_tags = vec![PathTag::PATH];
+        encoding.path_data = vec![1];
+        encoding.draw_tags = vec![DrawTag::COLOR];
+        encoding.draw_data = vec![2];
+        encoding.transforms = vec![Transform::IDENTITY];
+        encoding.styles = vec![EncodedStyle::from_fill(Fill::NonZero)];
+        encoding.n_paths = 1;
+        encoding.n_path_segments = 1;
+        encoding.n_clips = 1;
+        encoding.n_open_clips = 1;
+        encoding.flags = Encoding::FORCE_NEXT_STYLE;
+        encoding.resources.color_stops.push(ColorStop {
+            offset: 0.5,
+            color: Color::WHITE.into(),
+        });
+        encoding.resources.glyphs.push(Glyph {
+            id: 1,
+            x: 2.0,
+            y: 3.0,
+        });
+        encoding.resources.normalized_coords.push(4);
+        encoding.resources.glyph_runs.push(GlyphRun {
+            font,
+            transform: Transform::IDENTITY,
+            glyph_transform: Some(Transform::IDENTITY),
+            brush_transform: Some(Transform::IDENTITY),
+            font_size: 12.0,
+            font_embolden: FontEmbolden::new(peniko::kurbo::Diagonal2::new(1.0, 2.0)),
+            hint: true,
+            normalized_coords: 0..1,
+            style: peniko::Style::Fill(Fill::NonZero),
+            glyphs: 0..1,
+            stream_offsets: StreamOffsets {
+                path_tags: 1,
+                path_data: 2,
+                draw_tags: 3,
+                draw_data: 4,
+                transforms: 5,
+                styles: 6,
+            },
+        });
+        encoding.resources.patches = vec![
+            Patch::Ramp {
+                draw_data_offset: 0,
+                stops: 0..1,
+                extend: Extend::Pad,
+            },
+            Patch::GlyphRun { index: 0 },
+            Patch::Image {
+                image,
+                draw_data_offset: 0,
+            },
+        ];
+        Scene::from(encoding)
+    }
+
+    fn assert_mutation_is_unequal(mutate: impl FnOnce(&mut Scene)) {
+        let scene = encoded_scene();
+        let mut changed = scene.clone();
+        mutate(&mut changed);
+        assert!(!scene.encoding_eq(&changed));
+    }
+
+    #[test]
+    fn encoding_eq_compares_all_encoded_streams_and_scalars() {
+        let scene = encoded_scene();
+        assert!(scene.encoding_eq(&scene.clone()));
+
+        assert_mutation_is_unequal(|scene| scene.encoding.path_tags[0] = PathTag::STYLE);
+        assert_mutation_is_unequal(|scene| scene.encoding.path_data[0] = 9);
+        assert_mutation_is_unequal(|scene| scene.encoding.draw_tags[0] = DrawTag::IMAGE);
+        assert_mutation_is_unequal(|scene| scene.encoding.draw_data[0] = 9);
+        assert_mutation_is_unequal(|scene| scene.encoding.transforms[0].matrix[0] = 2.0);
+        assert_mutation_is_unequal(|scene| scene.encoding.styles[0].line_width = 2.0);
+        assert_mutation_is_unequal(|scene| scene.encoding.n_paths = 2);
+        assert_mutation_is_unequal(|scene| scene.encoding.n_path_segments = 2);
+        assert_mutation_is_unequal(|scene| scene.encoding.n_clips = 2);
+        assert_mutation_is_unequal(|scene| scene.encoding.n_open_clips = 2);
+        assert_mutation_is_unequal(|scene| scene.encoding.flags = 0);
+    }
+
+    #[test]
+    fn encoding_eq_compares_late_gradient_glyph_and_image_resources() {
+        assert_mutation_is_unequal(|scene| scene.encoding.resources.color_stops[0].offset = 0.25);
+        assert_mutation_is_unequal(|scene| scene.encoding.resources.glyphs[0].x = 7.0);
+        assert_mutation_is_unequal(|scene| scene.encoding.resources.normalized_coords[0] = 5);
+        assert_mutation_is_unequal(|scene| scene.encoding.resources.glyph_runs[0].font.index = 1);
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0].font.data = Blob::from(vec![0_u8, 1, 2])
+        });
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0].transform.matrix[0] = 2.0
+        });
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0].glyph_transform = None
+        });
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0].brush_transform = None
+        });
+        assert_mutation_is_unequal(|scene| scene.encoding.resources.glyph_runs[0].font_size = 13.0);
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0]
+                .font_embolden
+                .amount
+                .xx = 3.0
+        });
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0]
+                .font_embolden
+                .amount
+                .yy = 3.0
+        });
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0].font_embolden.join = peniko::kurbo::Join::Round
+        });
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0]
+                .font_embolden
+                .miter_limit = 3.0
+        });
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0]
+                .font_embolden
+                .tolerance = 0.2
+        });
+        assert_mutation_is_unequal(|scene| scene.encoding.resources.glyph_runs[0].hint = false);
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0].normalized_coords = 0..0
+        });
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0].style = peniko::Style::Fill(Fill::EvenOdd)
+        });
+        assert_mutation_is_unequal(|scene| scene.encoding.resources.glyph_runs[0].glyphs = 0..0);
+        assert_mutation_is_unequal(|scene| {
+            scene.encoding.resources.glyph_runs[0]
+                .stream_offsets
+                .draw_data = 9
+        });
+        assert_mutation_is_unequal(|scene| {
+            let Patch::Ramp { extend, .. } = &mut scene.encoding.resources.patches[0] else {
+                unreachable!();
+            };
+            *extend = Extend::Repeat;
+        });
+        assert_mutation_is_unequal(|scene| {
+            let Patch::Ramp {
+                draw_data_offset, ..
+            } = &mut scene.encoding.resources.patches[0]
+            else {
+                unreachable!();
+            };
+            *draw_data_offset = 1;
+        });
+        assert_mutation_is_unequal(|scene| {
+            let Patch::Ramp { stops, .. } = &mut scene.encoding.resources.patches[0] else {
+                unreachable!();
+            };
+            *stops = 0..0;
+        });
+        assert_mutation_is_unequal(|scene| {
+            let Patch::GlyphRun { index } = &mut scene.encoding.resources.patches[1] else {
+                unreachable!();
+            };
+            *index = 1;
+        });
+        assert_mutation_is_unequal(|scene| {
+            let Patch::Image { image, .. } = &mut scene.encoding.resources.patches[2] else {
+                unreachable!();
+            };
+            image.data = Blob::from(vec![0_u8, 0, 0, 0]);
+        });
+        assert_mutation_is_unequal(|scene| {
+            let Patch::Image { image, .. } = &mut scene.encoding.resources.patches[2] else {
+                unreachable!();
+            };
+            image.width = 2;
+        });
+    }
+
+    #[test]
+    fn encoding_eq_compares_full_glyph_stroke_style() {
+        let stroke = |mutate: fn(&mut Stroke)| {
+            assert_mutation_is_unequal(|scene| {
+                let mut style = Stroke::new(1.0);
+                mutate(&mut style);
+                scene.encoding.resources.glyph_runs[0].style = peniko::Style::Stroke(style);
+            });
+        };
+        stroke(|style| style.width = 2.0);
+        stroke(|style| style.join = peniko::kurbo::Join::Bevel);
+        stroke(|style| style.miter_limit = 2.0);
+        stroke(|style| style.start_cap = peniko::kurbo::Cap::Butt);
+        stroke(|style| style.end_cap = peniko::kurbo::Cap::Butt);
+        stroke(|style| {
+            style.dash_pattern.push(2.0);
+        });
+        stroke(|style| style.dash_offset = 2.0);
+    }
+
+    #[test]
+    fn encoding_eq_captures_image_sampler_state_in_draw_data() {
+        let image = ImageData {
+            data: Blob::from(vec![255_u8, 255, 255, 255]),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::AlphaPremultiplied,
+            width: 1,
+            height: 1,
+        };
+        let mut first = Scene::new();
+        first.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &ImageBrush::new(image.clone()).with_quality(ImageQuality::Low),
+            None,
+            &Rect::new(0.0, 0.0, 1.0, 1.0),
+        );
+        let mut second = Scene::new();
+        second.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &ImageBrush::new(image).with_quality(ImageQuality::High),
+            None,
+            &Rect::new(0.0, 0.0, 1.0, 1.0),
+        );
+        assert!(!first.encoding_eq(&second));
     }
 }

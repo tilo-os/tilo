@@ -26,22 +26,56 @@ pub struct FullShaders {
     pub flatten: ShaderId,
     pub draw_reduce: ShaderId,
     pub draw_leaf: ShaderId,
+    pub draw_prefix: ShaderId,
+    pub draw_leaf_prefix: ShaderId,
     pub clip_reduce: ShaderId,
     pub clip_leaf: ShaderId,
+    /// Single-workgroup GPU clip leaf that omits only the empty cross-group prefix.
+    pub clip_leaf_single_group: Option<ShaderId>,
     pub binning: ShaderId,
     pub tile_alloc: ShaderId,
+    pub tile_alloc_sparse: Option<ShaderId>,
     pub backdrop: ShaderId,
     pub path_count_setup: ShaderId,
     pub path_count: ShaderId,
+    pub path_count_direct: ShaderId,
     pub coarse: ShaderId,
+    pub coarse_sparse: Option<ShaderId>,
+    pub coarse_sparse_active: Option<ShaderId>,
+    pub coarse_opaque_prune: Option<ShaderId>,
+    pub coarse_sparse_opaque_prune: Option<ShaderId>,
+    pub coarse_sparse_active_opaque_prune: Option<ShaderId>,
+    pub coarse_solid_fuse: Option<ShaderId>,
+    pub coarse_sparse_solid_fuse: Option<ShaderId>,
+    pub coarse_sparse_active_solid_fuse: Option<ShaderId>,
     pub path_tiling_setup: ShaderId,
     pub path_tiling: ShaderId,
+    pub path_tiling_direct: ShaderId,
+    pub path_tiling_segment_row_mask: Option<ShaderId>,
+    pub path_tiling_direct_segment_row_mask: Option<ShaderId>,
     pub fine_area: Option<ShaderId>,
+    pub fine_area_ppt8: Option<ShaderId>,
     pub fine_msaa8: Option<ShaderId>,
     pub fine_msaa16: Option<ShaderId>,
+    pub fine_sparse_area: Option<ShaderId>,
+    pub fine_sparse_area_ppt8: Option<ShaderId>,
+    pub fine_sparse_area_quad_skip: Option<ShaderId>,
+    pub fine_sparse_area_solid_fuse: Option<ShaderId>,
+    pub fine_sparse_area_segment_row_mask: Option<ShaderId>,
+    pub canonical_segment_order_full: Option<ShaderId>,
+    pub canonical_segment_order_sparse: Option<ShaderId>,
+    pub canonical_segment_order_sparse_solid_fuse: Option<ShaderId>,
     // 2-level dispatch works for CPU pathtag scan even for large
     // inputs, 3-level is not yet implemented.
     pub pathtag_is_cpu: bool,
+    /// Selective CPU bbox/draw metadata must run before GPU flatten.
+    pub cpu_metadata_enabled: bool,
+    /// Bounded selective CPU draw-prefix with a GPU leaf permutation.
+    pub cpu_draw_prefix_enabled: bool,
+    /// Fixed-grid GPU path-count/tiling replaces indirect setup when enabled.
+    pub direct_path_dispatch_enabled: bool,
+    /// Initialization-time fixed grid shared by both direct path stages.
+    pub direct_path_workgroups: u32,
 }
 
 #[cfg(feature = "wgpu")]
@@ -138,6 +172,12 @@ pub(crate) fn full_shaders(
             Buffer,
         ]
     );
+    let draw_prefix = engine.add_cpu_shader("vello.draw_prefix", vello_shaders::cpu::draw_prefix);
+    let draw_leaf_prefix = add_shader!(
+        draw_leaf_prefix,
+        [Uniform, BufReadOnly, BufReadOnly, Buffer, Buffer, Buffer,],
+        CpuShaderType::Missing
+    );
     let clip_reduce = add_shader!(clip_reduce, [BufReadOnly, BufReadOnly, Buffer, Buffer]);
     let clip_leaf = add_shader!(
         clip_leaf,
@@ -151,6 +191,22 @@ pub(crate) fn full_shaders(
             Buffer,
         ]
     );
+    let clip_leaf_single_group =
+        (engine.clip_single_group_enabled() && !options.use_cpu).then(|| {
+            add_shader!(
+                clip_leaf_single_group,
+                [
+                    Uniform,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    Buffer,
+                    Buffer,
+                ],
+                CpuShaderType::Missing
+            )
+        });
     let binning = add_shader!(
         binning,
         [
@@ -168,10 +224,35 @@ pub(crate) fn full_shaders(
         tile_alloc,
         [Uniform, BufReadOnly, BufReadOnly, Buffer, Buffer, Buffer]
     );
+    let tile_alloc_sparse = if engine.sparse_tile_bounds_enabled()
+        && !options.use_cpu
+        && options.antialiasing_support.area
+    {
+        Some(add_shader!(
+            tile_alloc_sparse,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Buffer,
+                Buffer,
+                Uniform
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
     let path_count_setup = add_shader!(path_count_setup, [Buffer, Buffer]);
     let path_count = add_shader!(
         path_count,
         [Uniform, Buffer, BufReadOnly, BufReadOnly, Buffer, Buffer]
+    );
+    let path_count_direct = add_shader!(
+        path_count_direct,
+        [Uniform, Buffer, BufReadOnly, BufReadOnly, Buffer, Buffer],
+        CpuShaderType::Missing
     );
     let backdrop = add_shader!(
         backdrop_dyn,
@@ -192,6 +273,172 @@ pub(crate) fn full_shaders(
             Buffer,
         ]
     );
+    let coarse_sparse = if engine.sparse_fine_enabled()
+        && engine.sparse_coarse_enabled()
+        && !options.use_cpu
+        && options.antialiasing_support.area
+    {
+        Some(add_shader!(
+            coarse_sparse,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Buffer,
+                Buffer,
+                Uniform,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
+    let coarse_sparse_active = if engine.sparse_fine_enabled()
+        && engine.sparse_coarse_active_bins_enabled()
+        && !options.use_cpu
+        && options.antialiasing_support.area
+    {
+        Some(add_shader!(
+            coarse_sparse_active,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Buffer,
+                Buffer,
+                Uniform,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
+    let sparse_opaque_prune = engine.sparse_opaque_prune_enabled()
+        && engine.sparse_fine_enabled()
+        && !options.use_cpu
+        && options.antialiasing_support.area;
+    let coarse_opaque_prune = sparse_opaque_prune.then(|| {
+        add_shader!(
+            coarse_opaque_prune,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Buffer,
+                Buffer,
+            ],
+            CpuShaderType::Missing
+        )
+    });
+    let coarse_sparse_opaque_prune =
+        (sparse_opaque_prune && engine.sparse_coarse_enabled()).then(|| {
+            add_shader!(
+                coarse_sparse_opaque_prune,
+                [
+                    Uniform,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    Buffer,
+                    Buffer,
+                    Buffer,
+                    Uniform,
+                ],
+                CpuShaderType::Missing
+            )
+        });
+    let coarse_sparse_active_opaque_prune =
+        (sparse_opaque_prune && engine.sparse_coarse_active_bins_enabled()).then(|| {
+            add_shader!(
+                coarse_sparse_active_opaque_prune,
+                [
+                    Uniform,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    Buffer,
+                    Buffer,
+                    Buffer,
+                    Uniform,
+                ],
+                CpuShaderType::Missing
+            )
+        });
+    let sparse_solid_fuse = engine.sparse_solid_fuse_enabled()
+        && engine.sparse_fine_enabled()
+        && !options.use_cpu
+        && options.antialiasing_support.area;
+    let coarse_solid_fuse = sparse_solid_fuse.then(|| {
+        add_shader!(
+            coarse_solid_fuse,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Buffer,
+                Buffer,
+            ],
+            CpuShaderType::Missing
+        )
+    });
+    let coarse_sparse_solid_fuse =
+        (sparse_solid_fuse && engine.sparse_coarse_enabled()).then(|| {
+            add_shader!(
+                coarse_sparse_solid_fuse,
+                [
+                    Uniform,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    Buffer,
+                    Buffer,
+                    Buffer,
+                    Uniform,
+                ],
+                CpuShaderType::Missing
+            )
+        });
+    let coarse_sparse_active_solid_fuse =
+        (sparse_solid_fuse && engine.sparse_coarse_active_bins_enabled()).then(|| {
+            add_shader!(
+                coarse_sparse_active_solid_fuse,
+                [
+                    Uniform,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    Buffer,
+                    Buffer,
+                    Buffer,
+                    Uniform,
+                ],
+                CpuShaderType::Missing
+            )
+        });
     let path_tiling_setup = add_shader!(path_tiling_setup, [Buffer, Buffer, Buffer]);
     let path_tiling = add_shader!(
         path_tiling,
@@ -204,6 +451,54 @@ pub(crate) fn full_shaders(
             Buffer,
         ]
     );
+    let path_tiling_direct = add_shader!(
+        path_tiling_direct,
+        [
+            Buffer,
+            BufReadOnly,
+            BufReadOnly,
+            BufReadOnly,
+            BufReadOnly,
+            Buffer,
+            Buffer
+        ],
+        CpuShaderType::Missing
+    );
+    let sparse_segment_row_mask = engine.sparse_segment_row_mask_enabled()
+        && engine.sparse_fine_enabled()
+        && !options.use_cpu
+        && options.antialiasing_support.area;
+    let path_tiling_segment_row_mask =
+        (!engine.direct_path_dispatch_enabled() && sparse_segment_row_mask).then(|| {
+            add_shader!(
+                path_tiling_segment_row_mask,
+                [
+                    Buffer,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    Buffer,
+                ],
+                CpuShaderType::Missing
+            )
+        });
+    let path_tiling_direct_segment_row_mask =
+        (engine.direct_path_dispatch_enabled() && sparse_segment_row_mask).then(|| {
+            add_shader!(
+                path_tiling_direct_segment_row_mask,
+                [
+                    Buffer,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    BufReadOnly,
+                    Buffer,
+                    Buffer,
+                ],
+                CpuShaderType::Missing
+            )
+        });
     let fine_resources = [
         Uniform,
         BufReadOnly,
@@ -227,6 +522,14 @@ pub(crate) fn full_shaders(
     } else {
         None
     };
+    let area_ppt8 = engine.area_ppt8_enabled() && !options.use_cpu && aa_support.area;
+    let fine_area_ppt8 = area_ppt8.then(|| {
+        add_shader!(
+            fine_area_ppt8,
+            fine_resources[..fine_resources.len() - 1],
+            CpuShaderType::Missing
+        )
+    });
     let fine_msaa8 = if aa_support.msaa8 {
         Some(add_shader!(
             fine_msaa8,
@@ -245,6 +548,127 @@ pub(crate) fn full_shaders(
     } else {
         None
     };
+    let fine_sparse_area = if engine.sparse_fine_enabled() && !options.use_cpu && aa_support.area {
+        Some(add_shader!(
+            fine_sparse_area,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Image(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                BufReadOnly,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
+    let fine_sparse_area_ppt8 = (area_ppt8 && engine.sparse_fine_enabled()).then(|| {
+        add_shader!(
+            fine_sparse_area_ppt8,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Image(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                BufReadOnly,
+            ],
+            CpuShaderType::Missing
+        )
+    });
+    let fine_sparse_area_quad_skip = if engine.sparse_fine_quad_skip_enabled()
+        && engine.sparse_fine_enabled()
+        && !options.use_cpu
+        && aa_support.area
+    {
+        Some(add_shader!(
+            fine_sparse_area_quad_skip,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Image(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                BufReadOnly,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
+    let fine_sparse_area_solid_fuse = if sparse_solid_fuse {
+        Some(add_shader!(
+            fine_sparse_area_solid_fuse,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Image(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                BufReadOnly,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
+    let fine_sparse_area_segment_row_mask = if sparse_segment_row_mask {
+        Some(add_shader!(
+            fine_sparse_area_segment_row_mask,
+            [
+                Uniform,
+                BufReadOnly,
+                BufReadOnly,
+                BufReadOnly,
+                Buffer,
+                Image(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                ImageRead(ImageFormat::Rgba8),
+                BufReadOnly,
+            ],
+            CpuShaderType::Missing
+        ))
+    } else {
+        None
+    };
+    let canonical_segment_order =
+        engine.canonical_segment_order_enabled() && !options.use_cpu && aa_support.area;
+    let canonical_segment_order_full = canonical_segment_order.then(|| {
+        add_shader!(
+            canonical_segment_order_full,
+            [Uniform, Buffer, Buffer, Buffer],
+            CpuShaderType::Missing
+        )
+    });
+    let canonical_segment_order_sparse = canonical_segment_order.then(|| {
+        add_shader!(
+            canonical_segment_order_sparse,
+            [Uniform, Buffer, Buffer, Buffer, BufReadOnly],
+            CpuShaderType::Missing
+        )
+    });
+    let canonical_segment_order_sparse_solid_fuse = (canonical_segment_order && sparse_solid_fuse)
+        .then(|| {
+            add_shader!(
+                canonical_segment_order_sparse_solid_fuse,
+                [Uniform, Buffer, Buffer, Buffer, BufReadOnly],
+                CpuShaderType::Missing
+            )
+        });
 
     Ok(FullShaders {
         pathtag_reduce,
@@ -256,19 +680,48 @@ pub(crate) fn full_shaders(
         flatten,
         draw_reduce,
         draw_leaf,
+        draw_prefix,
+        draw_leaf_prefix,
         clip_reduce,
         clip_leaf,
+        clip_leaf_single_group,
         binning,
         tile_alloc,
+        tile_alloc_sparse,
         path_count_setup,
         path_count,
+        path_count_direct,
         backdrop,
         coarse,
+        coarse_sparse,
+        coarse_sparse_active,
+        coarse_opaque_prune,
+        coarse_sparse_opaque_prune,
+        coarse_sparse_active_opaque_prune,
+        coarse_solid_fuse,
+        coarse_sparse_solid_fuse,
+        coarse_sparse_active_solid_fuse,
         path_tiling_setup,
         path_tiling,
+        path_tiling_direct,
+        path_tiling_segment_row_mask,
+        path_tiling_direct_segment_row_mask,
         fine_area,
+        fine_area_ppt8,
         fine_msaa8,
         fine_msaa16,
-        pathtag_is_cpu: options.use_cpu,
+        fine_sparse_area,
+        fine_sparse_area_ppt8,
+        fine_sparse_area_quad_skip,
+        fine_sparse_area_solid_fuse,
+        fine_sparse_area_segment_row_mask,
+        canonical_segment_order_full,
+        canonical_segment_order_sparse,
+        canonical_segment_order_sparse_solid_fuse,
+        pathtag_is_cpu: options.use_cpu || engine.cpu_pathtag_enabled(),
+        cpu_metadata_enabled: !options.use_cpu && engine.cpu_metadata_enabled(),
+        cpu_draw_prefix_enabled: !options.use_cpu && engine.cpu_draw_prefix_enabled(),
+        direct_path_dispatch_enabled: !options.use_cpu && engine.direct_path_dispatch_enabled(),
+        direct_path_workgroups: engine.direct_path_workgroups(),
     })
 }
