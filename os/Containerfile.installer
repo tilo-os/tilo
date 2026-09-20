@@ -62,8 +62,10 @@ RUN test -x /usr/bin/tilo-installer \
     # Keep a deterministic installed-target UKI outside bootc's EFI scan path.
     # It seals the same composefs tree but contains no live marker or device UUID.
     && install -d -m 0755 /boot/tilo-target/predictions \
-    && target_uki="$(find /boot/EFI/Linux -type f -name '*.efi' -print -quit)" \
-    && cp "$target_uki" /boot/tilo-target/tilo-target.efi \
+    # Reject ambiguous live UKI trees instead of depending on traversal order.
+    && set -- /boot/EFI/Linux/*.efi \
+    && [ "$#" -eq 1 ] && [ -f "$1" ] \
+    && cp "$1" /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline remove tilo.root /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline remove tilo.luks /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline remove tilo.unlock /boot/tilo-target/tilo-target.efi \

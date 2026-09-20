@@ -362,6 +362,8 @@ grep -Fq 'tilo-installer-medium-${{ matrix.arch }}' "$workflow" \
   && grep -Fq 'tilo-installer-catalog-v1.json' "$workflow" \
   && grep -Fq 'image_sha256' "$repo/apps/imager/src/release.rs" \
   && grep -Fq 'archive_sha256' "$repo/apps/imager/src/release.rs" \
+  && grep -Fq 'expanded_sha256=' "$repo/apps/imager/packaging/package-install-medium.sh" \
+  && grep -Fq 'expanded installer bytes do not match' "$repo/apps/imager/packaging/package-install-medium.sh" \
   && ok 'native live media is catalogued and verified before writing' \
   || bad 'end-user install medium publication or verification is missing'
 

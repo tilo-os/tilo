@@ -98,6 +98,14 @@ else
   bad "installer UKI cmdline headroom or required boot markers are incomplete"
 fi
 
+if grep -Fq 'set -- /boot/EFI/Linux/*.efi' "$containerfile" \
+   && grep -Fq '[ "$#" -eq 1 ] && [ -f "$1" ]' "$containerfile" \
+   && ! grep -Fq 'find /boot/EFI/Linux -type f -name '\''*.efi'\'' -print -quit' "$containerfile"; then
+  ok "installer copies the sole live UKI only after rejecting ambiguous boot trees"
+else
+  bad "installer target UKI selection is traversal-order dependent"
+fi
+
 if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/tilo/greetd-config.toml"' "$builder" \
    && grep -Fq 'COPY rootfs/ /' "$containerfile" \
    && grep -Fq 'install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"' "$backend" \
