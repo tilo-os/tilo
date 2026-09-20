@@ -616,10 +616,12 @@ fn cmd_publish_staged_first_party(
     let staged = storage
         .load_staged_promotion()?
         .ok_or_else(|| anyhow::anyhow!("no collected first-party batch"))?;
-    if authorization.publishers.len() != 1
-        || !authorization.publishers[0]
-            .pubkey_hex
-            .eq_ignore_ascii_case(&staged.publisher_pubkey_hex)
+    let [delegated_publisher] = authorization.publishers.as_slice() else {
+        anyhow::bail!("delegated authorization must contain exactly one publisher");
+    };
+    if !delegated_publisher
+        .pubkey_hex
+        .eq_ignore_ascii_case(&staged.publisher_pubkey_hex)
     {
         anyhow::bail!("staged publisher is outside the delegated scope");
     }
@@ -628,7 +630,7 @@ fn cmd_publish_staged_first_party(
     let row = allowlist
         .get(&publisher)
         .ok_or_else(|| anyhow::anyhow!("delegated publisher is no longer allowlisted"))?;
-    if row.can_add_new != authorization.publishers[0].can_add_new {
+    if row.can_add_new != delegated_publisher.can_add_new {
         anyhow::bail!("live publisher policy differs from the root-signed delegation");
     }
     let moderation = ModerationService::new(storage.clone());
@@ -752,7 +754,10 @@ fn apply_staged_changes(
             EntryAction::Add if existing.is_none() => entries.push(pending.change.entry.clone()),
             EntryAction::Update => {
                 let index = existing.ok_or_else(|| anyhow::anyhow!("{id} is not published"))?;
-                entries[index] = pending.change.entry.clone();
+                let entry = entries
+                    .get_mut(index)
+                    .ok_or_else(|| anyhow::anyhow!("{id} disappeared during promotion"))?;
+                *entry = pending.change.entry.clone();
             }
             EntryAction::Delete => {
                 let index = existing.ok_or_else(|| anyhow::anyhow!("{id} is not published"))?;
