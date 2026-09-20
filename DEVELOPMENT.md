@@ -92,10 +92,13 @@ For example, write `["tests::first_case", "tests::second_case"]` to `cases.json`
 and submit directly through the scheduler (replace the example package and SHA):
 
 ```sh
-fgj workflow run focused-test.yml --ref main \
-  -f source_sha=FULL_SOURCE_SHA -f package=PACKAGE -f operation=test \
-  -f target_kind=lib -F test_names=@cases.json
+jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
+  '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
+  | fgj api -X POST repos/qos/qos/actions/workflows/focused-test.yml/dispatches --hostname code.podesta.ai
 ```
+
+Use this structured request for lists: the installed `fgj workflow run` does not
+expand `-F` files and parses `-f` values as CSV, which breaks JSON arrays.
 
 Do not reserve runners or ask another agent to allocate a slot. Each case's
 result and the exact source/workflow/builder identities appear in the run summary.
