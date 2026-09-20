@@ -17,11 +17,17 @@ def request(env):
         raise ValueError('source must be a full lowercase commit SHA')
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['PACKAGE']):
         raise ValueError('package must be a Cargo package name')
-    if values['OPERATION'] not in ('test', 'check-tests'):
-        raise ValueError('operation must be test or check-tests')
+    if values['OPERATION'] not in ('test', 'test-lib', 'check-tests'):
+        raise ValueError('operation must be test, test-lib or check-tests')
+    if values['OPERATION'] == 'test-lib':
+        if values['TEST_TARGET']:
+            raise ValueError('test-lib does not accept an integration target')
+        if env.get('TARGET_KIND', '') not in ('', 'lib'):
+            raise ValueError('test-lib requires the lib target kind')
+        values['TARGET_KIND'] = 'lib'
     if values['TARGET_KIND'] not in ('integration', 'lib'):
         raise ValueError('target kind must be integration or lib')
-    if values['OPERATION'] == 'test':
+    if values['OPERATION'] in ('test', 'test-lib'):
         if values['TARGET_KIND'] == 'integration' and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', values['TEST_TARGET']):
             raise ValueError('an integration test target is required')
         if values['TARGET_KIND'] == 'lib' and values['TEST_TARGET']:
@@ -66,7 +72,7 @@ def execute(root, values, outcomes=None):
         command = ['cargo', 'check', '--locked', '-p', values['PACKAGE'], '--tests']
         print(json.dumps({'source_sha': actual, 'command': command}), flush=True)
         return subprocess.run(command, cwd=root).returncode
-    if values.get('TARGET_KIND', 'integration') == 'lib':
+    if values['OPERATION'] == 'test-lib' or values.get('TARGET_KIND', 'integration') == 'lib':
         library_kinds = {'lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'}
         if not any(library_kinds.intersection(t['kind']) for t in packages[0]['targets']):
             raise ValueError('package has no library test target')
