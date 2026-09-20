@@ -173,7 +173,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
     // untouched until the compatibility environment is published instead of
     // starting the app without DISPLAY and permanently replacing the retryable
     // state with an "Opening here…" card.
-    if item.local && crate::shell::host_apps::app_for_window_id(&item.app_id).is_some() {
+    if item.local && crate::shell::host_apps::resolve(&item.app_id).is_some() {
         let availability = crate::shell::host_apps::x11_availability();
         if availability == crate::shell::host_apps::X11Availability::Starting
             || (item.retry_x11 && availability != crate::shell::host_apps::X11Availability::Ready)
@@ -224,7 +224,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, Stri
         .or_else(|err| {
             if item.local
                 && matches!(err, launcher::LaunchError::NotInstalled { .. })
-                && let Some(app) = crate::shell::host_apps::app_for_window_id(&item.app_id)
+                && let Some(app) = crate::shell::host_apps::resolve(&item.app_id)
             {
                 crate::shell::host_apps::note_placement(&app, Placement::IntoTab(item.tab));
                 return crate::shell::host_apps::launch(&app.desktop_id, None).map(|_| ());
