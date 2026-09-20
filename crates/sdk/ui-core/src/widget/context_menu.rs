@@ -1410,6 +1410,34 @@ mod tests {
     }
 
     #[test]
+    fn disabled_rows_reject_pointer_activation() {
+        let (mut menu, fired) = open_menu();
+        menu.set_item_enabled(0, false);
+        let rect = menu.item_rect(0).expect("first action row");
+        let point = rect.center();
+
+        dispatch(&mut menu, &cursor_at(point));
+        assert_eq!(menu.hovered(), None, "disabled rows are not hover targets");
+        assert!(dispatch(&mut menu, &left_press()));
+        assert_eq!(fired.load(Ordering::SeqCst), 0);
+        assert_eq!(menu.take_selection(), None);
+        assert!(menu.is_open(), "a rejected activation keeps the menu open");
+    }
+
+    #[test]
+    fn keyboard_navigation_skips_disabled_rows() {
+        let (mut menu, fired) = open_menu();
+        menu.set_item_enabled(0, false);
+
+        dispatch(&mut menu, &key(NamedKey::ArrowDown));
+        assert_eq!(menu.hovered(), Some(2));
+        dispatch(&mut menu, &key(NamedKey::Enter));
+
+        assert_eq!(fired.load(Ordering::SeqCst), 100);
+        assert_eq!(menu.take_selection(), Some(2));
+    }
+
+    #[test]
     fn destructive_first_row_is_not_the_implicit_keyboard_target() {
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::destructive_selection("Delete"));
@@ -1448,6 +1476,24 @@ mod tests {
         assert_eq!(fired.load(Ordering::SeqCst), 100);
         assert_eq!(menu.take_selection(), Some(2));
         assert!(!menu.is_open());
+    }
+
+    #[test]
+    fn semantic_activation_rejects_disabled_rows() {
+        let (mut menu, fired) = open_menu();
+        menu.set_item_enabled(2, false);
+        let mut doc = AutoCommit::new();
+
+        assert!(!Widget::perform_semantic_action(
+            &mut menu,
+            "context-menu:item:2",
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(fired.load(Ordering::SeqCst), 0);
+        assert_eq!(menu.take_selection(), None);
+        assert!(menu.is_open());
     }
 
     #[test]

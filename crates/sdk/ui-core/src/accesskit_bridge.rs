@@ -668,6 +668,16 @@ pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
 ) -> TreeUpdate {
     build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, resources)
 }
+
+pub(crate) fn build_tree_update_bound<S: BuildHasher>(
+    root: &dyn Widget,
+    node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
+    focused: Option<TaffyNodeId>,
+    scale: f64,
+) -> TreeUpdate {
+    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, &[])
+}
+
 pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
     roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
