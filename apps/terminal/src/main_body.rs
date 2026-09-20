@@ -972,6 +972,7 @@ impl TerminalWidget {
     /// A compact visual lifecycle state. The detailed transport cause stays in
     /// the accessible description/live region, where it is neither clipped at
     /// 200% text scale nor mistaken for a recoverable command prompt.
+    #[cfg(test)]
     pub(crate) const fn disconnected_badge_label() -> &'static str {
         "Session ended"
     }
