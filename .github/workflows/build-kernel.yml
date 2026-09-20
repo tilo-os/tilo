@@ -187,6 +187,22 @@ jobs:
           path: os/external-assets/kernel-cache
           key: kernel-assets-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
 
+      # The native kernel build keeps the complete source/object tree alongside
+      # BuildKit's export and a locally loaded acceptance image. Reclaim SDKs
+      # unrelated to this workflow before allocating any of those copies.
+      - name: Reclaim unused runner disk for the native kernel build
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf -- \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          docker system prune --all --force --volumes
+          df -h /
+
       - name: Set up buildx for registry cache export
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
