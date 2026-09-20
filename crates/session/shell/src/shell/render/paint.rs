@@ -102,6 +102,9 @@ pub struct BridgeAdapterInfo {
     pub backend: String,
     pub device_type: String,
     pub driver: String,
+    pub vendor: u32,
+    pub device: u32,
+    pub pci_bus_id: String,
 }
 
 /// Per-paint wall-clock breakdown, available only when explicit profiling is enabled.
@@ -1109,6 +1112,9 @@ impl RetainedGpuTarget {
             backend: format!("{:?}", info.backend),
             device_type: format!("{:?}", info.device_type),
             driver: info.driver,
+            vendor: info.vendor,
+            device: info.device,
+            pci_bus_id: info.device_pci_bus_id,
         }
     }
     /// Existing Vello resource accounting; framebuffer staging is owned by the bridge.
@@ -1235,6 +1241,9 @@ impl VelloDrmBridge {
             backend = ?adapter_info.backend,
             device_type = ?adapter_info.device_type,
             driver = %adapter_info.driver,
+            vendor = format_args!("{:#06x}", adapter_info.vendor),
+            device = format_args!("{:#06x}", adapter_info.device),
+            pci_bus_id = %adapter_info.device_pci_bus_id,
             "DRM CPU-fallback wgpu adapter selected"
         );
 
@@ -1399,6 +1408,9 @@ impl VelloDrmBridge {
             backend: format!("{:?}", info.backend),
             device_type: format!("{:?}", info.device_type),
             driver: info.driver,
+            vendor: info.vendor,
+            device: info.device,
+            pci_bus_id: info.device_pci_bus_id,
         })
     }
 
@@ -3597,10 +3609,11 @@ mod tests {
 
     fn required_bridge(w: u32, h: u32) -> VelloDrmBridge {
         let bridge = VelloDrmBridge::new(w, h).expect("renderer gate requires a real wgpu adapter");
-        eprintln!(
-            "renderer gate adapter: {:?}",
-            bridge.adapter_info().expect("bridge adapter identity")
-        );
+        let adapter = bridge.adapter_info().expect("bridge adapter identity");
+        assert!(!adapter.name.is_empty());
+        assert!(!adapter.backend.is_empty());
+        assert!(!adapter.device_type.is_empty());
+        eprintln!("renderer gate adapter: {:?}", adapter);
         bridge
     }
 
