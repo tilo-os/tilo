@@ -57,6 +57,9 @@ use vello::kurbo::{Affine, Point};
 /// toolbar row + a sizeable page area.
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 
+/// A self-contained WPE acceptance page with no external resources.
+const WPE_READINESS_URL: &str = "data:text/html;base64,PCFkb2N0eXBlIGh0bWw+PG1ldGEgY2hhcnNldD0idXRmLTgiPjx0aXRsZT5UaWxvIFdQRSBvZmZsaW5lIHJlYWRpbmVzczwvdGl0bGU+PHN0eWxlPmJvZHl7YmFja2dyb3VuZDojMTgzMjQ1O2NvbG9yOiNmZmY7Zm9udDozMnB4IHNhbnMtc2VyaWY7bWFyZ2luOjQ4cHh9I3JlYWR5e2NvbG9yOiM4NmVmYWN9PC9zdHlsZT48aDEgaWQ9InJlYWR5Ij5USUxPIFdQRSBPRkZMSU5FIFJFQURZPC9oMT48cD5Mb2NhbCBkZXRlcm1pbmlzdGljIHBhZ2U7IG5vIGV4dGVybmFsIHJlc291cmNlcy48L3A+PGNhbnZhcyBpZD0icHJvYmUiIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiI+PC9jYW52YXM+PHNjcmlwdD5jb25zdCBjPWRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCJwcm9iZSIpLHg9Yy5nZXRDb250ZXh0KCIyZCIpO3guZmlsbFN0eWxlPSIjZmYwMDAwIjt4LmZpbGxSZWN0KDAsMCwzMiwzMik7PC9zY3JpcHQ+";
+
 /// # Errors
 ///
 /// Returns an error if a `--shots*` render mode fails to produce its PNG
@@ -84,6 +87,7 @@ pub fn main() {
             .shot_handler(render_shot)
             .allowed_live_options(&[
                 "--shots-live",
+                "--wpe-ready",
                 "--shots-suggestions",
                 "--shots-overlay",
                 "--shots-pip-empty",
@@ -187,6 +191,16 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             std::path::Path::new(out),
             args.has("--probe-pip"),
             args.text_scale,
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--wpe-ready") {
+        render_wpe_readiness_to_png(
+            std::path::Path::new(out),
+            args.value("--size")
+                .and_then(parse_size)
+                .unwrap_or(DEFAULT_SHOTS_VIEWPORT),
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         return Ok(true);
@@ -471,12 +485,32 @@ fn render_live_shot_to_png(
     probe_pip: bool,
     text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    render_wpe_shot_to_png(url, viewport, out, probe_pip, text_scale, true)
+}
+
+/// Render a real WPE page through the BrowserWidget pipeline. The existing
+/// network shot mode disables WebKit's nested sandbox for development
+/// containers; the offline readiness mode passes `false` and keeps it on.
+#[cfg(feature = "wpe")]
+fn render_wpe_shot_to_png(
+    url: &str,
+    viewport: (u32, u32),
+    out: &std::path::Path,
+    probe_pip: bool,
+    text_scale: Option<f32>,
+    disable_webkit_sandbox: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::{Duration, Instant};
     use ui::webview::{SharedEngine, WebViewCommand};
 
-    // Dev environments (containers) can't nest WebKit's bubblewrap
-    // sandbox; on Tilo the cluster sandbox is the outer boundary anyway.
-    unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
+    if disable_webkit_sandbox {
+        // Dev environments (containers) can't nest WebKit's bubblewrap
+        // sandbox; this remains restricted to the network shot mode.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
+    } else {
+        // Do not let a caller-provided development override weaken readiness.
+        unsafe { std::env::remove_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS") };
+    }
 
     let engine: SharedEngine = ui::webview::wpe::WpeEngine::new()
         .map_err(|e| format!("WPE engine failed to boot: {e}"))?;
@@ -619,6 +653,34 @@ fn render_live_shot_to_png(
     }
 }
 
+#[cfg(feature = "wpe")]
+fn render_wpe_readiness_to_png(
+    out: &std::path::Path,
+    viewport: (u32, u32),
+) -> Result<(), Box<dyn std::error::Error>> {
+    render_wpe_shot_to_png(WPE_READINESS_URL, viewport, out, false, None, false)?;
+    let sidecar = std::path::PathBuf::from(format!("{}.wpe.json", out.display()));
+    let evidence = serde_json::json!({
+        "schema": 1,
+        "engine": "WPE WebKit",
+        "engine_type": "ui::webview::wpe::WpeEngine",
+        "test_engine": false,
+        "webview_backend": "wpebackend-fdo",
+        "navigation": "data-url",
+        "external_resources": false,
+        "webkit_sandbox_disable_requested": false,
+        "painted_frame": true,
+        "viewport": [viewport.0, viewport.1],
+        "screenshot": out.display().to_string(),
+    });
+    std::fs::write(&sidecar, serde_json::to_vec_pretty(&evidence)?)?;
+    println!(
+        "browser: wrote WPE offline readiness evidence to {}",
+        sidecar.display()
+    );
+    Ok(())
+}
+
 #[cfg(not(feature = "wpe"))]
 fn render_live_shot_to_png(
     _url: &str,
@@ -628,6 +690,14 @@ fn render_live_shot_to_png(
     _text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     Err("--shots-live needs the real engine: rebuild with --features wpe".into())
+}
+
+#[cfg(not(feature = "wpe"))]
+fn render_wpe_readiness_to_png(
+    _out: &std::path::Path,
+    _viewport: (u32, u32),
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err("--wpe-ready needs the real engine: rebuild with --features wpe".into())
 }
 
 /// Render one offscreen frame against `widget` at `viewport` and write
