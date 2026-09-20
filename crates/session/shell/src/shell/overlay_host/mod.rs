@@ -27667,6 +27667,9 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
 
         let mut h = build_harness();
+        h.host.search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::ApplicationsProvider::new(),
+        ));
         h.host
             .set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .unwrap();
