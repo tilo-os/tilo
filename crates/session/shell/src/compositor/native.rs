@@ -4686,6 +4686,17 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
     registration < dispatch && dispatch < start
 }
 
+#[cfg(test)]
+fn xwayland_starting_precedes_frame_pump(source: &str) -> bool {
+    let Some(starting) = source.find("crate::shell::host_apps::set_x11_starting();") else {
+        return false;
+    };
+    let Some(pump) = source.find("frame_builder.pump_apps") else {
+        return false;
+    };
+    starting < pump
+}
+
 /// Entry point for the smithay-on-Wayland compositor. Fatal setup errors are
 /// logged and end the process immediately, but an ordinary logout returns so
 /// backend/libseat/KMS resources unwind through RAII before the display manager
@@ -5133,6 +5144,14 @@ pub fn run() {
     // healthy satellite/Xwayland pair on every host login.
     let xwayland_enabled =
         super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args());
+    // Persisted host windows are examined by the first widget pump, before
+    // the event loop's initial socket-dispatch pass below. Publish the
+    // compatibility lifecycle now so those restores defer instead of being
+    // launched without DISPLAY/XAUTHORITY. The actual satellite process still
+    // starts only after calloop has accepted one dispatch cycle.
+    if xwayland_enabled {
+        crate::shell::host_apps::set_x11_starting();
+    }
     // Do not launch satellite until calloop has had one chance to dispatch the
     // public socket. Satellite is itself a Wayland client, and merely
     // registering the listener does not accept its connection; the remaining
@@ -9521,6 +9540,7 @@ mod vt_chord_tests {
 mod gesture_wireup_tests {
     use super::{
         apply_shell_gesture, refresh_mhz_of, xwayland_start_follows_public_socket_registration,
+        xwayland_starting_precedes_frame_pump,
     };
     use crate::compositor::backend::drm::gestures::GestureAction;
     use crate::compositor::backend::{Backend, BackendEvent, HeadlessBackend, Output, OutputId};
@@ -9603,6 +9623,15 @@ mod gesture_wireup_tests {
         assert!(
             xwayland_start_follows_public_socket_registration(source),
             "satellite is itself a Wayland client; start it only after the public socket is registered and calloop has dispatched once"
+        );
+    }
+
+    #[test]
+    fn xwayland_lifecycle_is_starting_before_restored_apps_are_examined() {
+        let source = include_str!("native.rs");
+        assert!(
+            xwayland_starting_precedes_frame_pump(source),
+            "the first frame pump must see Xwayland Starting and defer persisted host apps until DISPLAY is published"
         );
     }
 
