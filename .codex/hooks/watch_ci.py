@@ -28,7 +28,10 @@ TERMINAL_STATUSES = {
     "blocked",
 }
 GREEN_STATUSES = {"success", "skipped", "neutral"}
-PUSH_COMMAND = re.compile(r"(?:^|[;&|]\s*)git(?:\s+-\S+)*\s+push(?:\s|$)", re.MULTILINE)
+PUSH_COMMAND = re.compile(
+    r"(?:^|[;&|]\s*|[\"'`]\s*)git(?:\s+-\S+)*\s+push(?:\s|$)",
+    re.MULTILINE,
+)
 
 
 def run(
@@ -45,18 +48,31 @@ def run(
 
 
 def pushed_successfully(event: dict[str, Any]) -> bool:
-    if event.get("tool_name") != "Bash":
-        return False
+    tool_name = event.get("tool_name")
     tool_input = event.get("tool_input")
-    command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+    if not isinstance(tool_input, dict):
+        return False
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+    elif tool_name == "exec":
+        command = tool_input.get("code", "")
+        if "tools.exec_command" not in command:
+            return False
+    else:
+        return False
     if not isinstance(command, str) or not PUSH_COMMAND.search(command):
         return False
 
     response = event.get("tool_response")
     if isinstance(response, dict):
         exit_code = response.get("exit_code", response.get("exitCode"))
-        return exit_code == 0
-    # Native Codex serializes completed Bash output as a string and does not
+        if exit_code is not None:
+            return exit_code == 0
+        return (
+            response.get("isError") is not True
+            and response.get("is_error") is not True
+        )
+    # Native Codex serializes completed tool output as a string and does not
     # include the process exit code. The remote-ref check in main() is the
     # authoritative success test for that event shape.
     return isinstance(response, str)
