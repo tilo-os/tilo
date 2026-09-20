@@ -98,6 +98,13 @@ impl Capabilities {
         self.observed_download_version = version;
         changed
     }
+    pub fn owns_download_presentation(&self) -> bool {
+        let downloads = self.downloads.borrow();
+        downloads.runtime_known
+            || !downloads.records.is_empty()
+            || !downloads.prompts.is_empty()
+            || !downloads.terminal_notice.is_empty()
+    }
     pub fn toolbar_status(&self) -> Option<String> {
         let downloads = self.downloads.borrow();
         let active: Vec<_> = downloads
@@ -363,7 +370,7 @@ impl Capabilities {
                 row = row.push(Box::new(
                     Button::new(&format!("browser.download.cancel.{id}"), "Cancel", None)
                         .on_effect(move || {
-                            engine.send(WebViewCommand::CancelNativeDownload { id })
+                            engine.send(WebViewCommand::CancelNativeDownload { id });
                         }),
                 ));
             }
