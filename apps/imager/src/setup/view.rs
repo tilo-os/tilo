@@ -2205,6 +2205,7 @@ impl Widget for SetupApp {
         &[
             super::actions::SETUP_OPERATION_TYPE,
             super::import_actions::IMPORT_OPERATION_TYPE,
+            super::connection_actions::CONNECTION_OPERATION_TYPE,
         ]
     }
 
@@ -3852,6 +3853,10 @@ mod tests {
     #[test]
     fn embedded_import_routes_the_live_child_without_publishing_stale_setup_resources() {
         let mut app = supported_fixture();
+        assert!(
+            app.local_resource_operation_handlers()
+                .contains(&super::super::connection_actions::CONNECTION_OPERATION_TYPE)
+        );
         app.import_launcher = || ImportApp::for_shot("import-first-login-later");
         let doc = AutoCommit::new();
         let setup = Widget::resources(&app, &doc).pop().unwrap();
@@ -3931,6 +3936,74 @@ mod tests {
                 .as_ref()
                 .and_then(|presentation| presentation.detail.as_deref())
                 .is_some_and(|detail| detail.contains("copy"))
+        );
+    }
+
+    #[test]
+    fn embedded_import_delegates_connected_hidden_completion_before_layout() {
+        let mut app = supported_fixture();
+        app.import_launcher = super::super::import_view::connected_catalog_test_app;
+        let mut document = AutoCommit::new();
+        let setup = Widget::resources(&app, &document).pop().unwrap();
+        let open_imports = setup
+            .actions
+            .iter()
+            .find(|action| action.id == "open-imports")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &open_imports).unwrap();
+
+        let imports = Widget::resources(&app, &document).pop().unwrap();
+        let entry = imports
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.connections.entry")
+            .unwrap();
+        let open = entry
+            .actions
+            .iter()
+            .find(|action| action.id == "open-management")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &open).unwrap();
+        let connected = Widget::resources(&app, &document).pop().unwrap();
+        let first = connected
+            .actions
+            .iter()
+            .find(|action| action.id == "first-connections")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &first).unwrap();
+        let back = connected
+            .actions
+            .iter()
+            .find(|action| action.id == "back")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &back).unwrap();
+        assert!(Widget::update(&mut app, &mut document, &automerge::ROOT));
+
+        let imports = Widget::resources(&app, &document).pop().unwrap();
+        let entry = imports
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.connections.entry")
+            .unwrap();
+        let open = entry
+            .actions
+            .iter()
+            .find(|action| action.id == "open-management")
+            .unwrap()
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        invoke_encoded_setup(&mut app, &open).unwrap();
+        assert_eq!(
+            Widget::resources(&app, &document)[0].kind,
+            "imager.connections"
         );
     }
 

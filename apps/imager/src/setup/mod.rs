@@ -1,4 +1,7 @@
 pub mod actions;
+pub mod connection_actions;
+pub mod connection_controller;
+pub mod connection_view;
 pub mod controller;
 pub mod desktop_catalog;
 mod desktop_continuation;

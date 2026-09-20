@@ -144,6 +144,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// Build the same widget as [`app_root`], with only peer-local shot state
 /// staged outside the collaborative document.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    if scenario.starts_with("connected-") {
+        return Box::new(setup::connection_view::ConnectionView::for_shot(scenario));
+    }
     if scenario.starts_with("import-") {
         return Box::new(setup::import_view::ImportApp::for_shot(scenario));
     }
@@ -194,6 +197,11 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "import-conflict",
     "import-complete",
     "import-issue-pages",
+    "connected-unavailable",
+    "connected-loading",
+    "connected-empty",
+    "connected-catalog",
+    "connected-status",
 ];
 
 /// Pose the document for one named `--shots` scenario. Sample content is seeded
@@ -202,6 +210,10 @@ pub const SHOT_SCENARIOS: &[&str] = &[
 /// step.
 pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
     use crate::doc::ImagerDoc;
+
+    if scenario.starts_with("connected-") {
+        return;
+    }
 
     // The empty-drive scenario is the one case with no sample inventory: seed an
     // empty document so the honest "insert a drive" state renders.
@@ -269,5 +281,27 @@ fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
     use crate::doc::ImagerDoc;
     if scenario == "drive" {
         ImagerDoc::set_source(doc, Some(&demo_iso_source()));
+    }
+}
+
+#[cfg(test)]
+mod connected_shot_tests {
+    use super::*;
+
+    #[test]
+    fn connected_management_shots_use_the_retained_view_and_empty_document() {
+        for scenario in [
+            "connected-unavailable",
+            "connected-loading",
+            "connected-empty",
+            "connected-catalog",
+            "connected-status",
+        ] {
+            assert!(SHOT_SCENARIOS.contains(&scenario));
+            assert_eq!(app_root_for_shot(scenario).name(), "ConnectionView");
+            let mut doc = automerge::AutoCommit::new();
+            seed_scenario(&mut doc, scenario);
+            assert!(crate::doc::ImagerDoc::is_empty(&doc));
+        }
     }
 }
