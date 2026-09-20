@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 DEV=Path(__file__).resolve().parents[1]/'dev'
 spec=importlib.util.spec_from_file_location('lane',DEV/'run-supervised-install-lane.py')
@@ -115,6 +116,26 @@ class LaneAdmission(unittest.TestCase):
                 changed['spec']['tolerations'].append({'operator':'Exists'})
             with self.subTest(change=change),self.assertRaisesRegex(ValueError,'requested isolation'):
                 lane.binding(changed,n,manifest)
+
+    def test_creator_prepares_fresh_private_output_before_creation(self):
+        disk = {'namespace': 'kata-system', 'pod': 'tilo-disk-run1'}
+        with patch.object(lane, 'command') as command:
+            lane.prepare_disk_output('ctx', disk)
+        argv = command.call_args.args[0]
+        script = argv[-1]
+        self.assertIn('umask 077', script)
+        self.assertLess(script.index('test ! -e /work/disk-output'),
+                        script.index('mkdir -m 0700 /work/disk-output'))
+        self.assertIn("0:0:700:directory", script)
+        self.assertEqual(command.call_args.kwargs, {'timeout': 30})
+
+    def test_creator_inspects_then_prepares_then_executes(self):
+        events = []
+        args = type('Args', (), {'context': 'ctx'})()
+        with patch.object(lane, 'controller', side_effect=lambda *a: events.append(('controller', a[4]))), \
+                patch.object(lane, 'prepare_disk_output', side_effect=lambda *a: events.append(('prepare', None))):
+            lane.create_on_worker(Path('/root'), args, {'pod': 'disk'}, {'pod': 'agent'})
+        self.assertEqual(events, [('controller', True), ('prepare', None), ('controller', False)])
 
     def test_finalized_layer_audit_must_bind_creation(self):
         creation={'source':{'image_id':'sha256:'+'a'*64,'hardware_profile':'generic-arm64'},
