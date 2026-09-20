@@ -745,5 +745,4 @@ mod tests {
         assert_eq!(parse_wxh("390X844"), Some((390, 844)));
         assert_eq!(parse_wxh("wide"), None);
     }
-
 }
