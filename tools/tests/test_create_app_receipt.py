@@ -150,12 +150,13 @@ class ReceiptProductionPathTests(unittest.TestCase):
         self.assertIn('dist/app-release/publication-receipt.json', workflow)
         self.assertIn('dist/app-release/verification-policy.json', workflow)
         self.assertNotIn('dist/app-release/work/**', workflow)
-        self.assertIn('# branches: [main]', workflow)
+        self.assertIn('    branches: [main]', workflow)
         publish = workflow.split('\n  publish:\n', 1)[1]
         self.assertIn('fromJSON(needs.plan.outputs.matrix).include[0].runner', publish)
         self.assertIn('image: ${{ needs.plan.outputs.builder_image }}', publish)
         self.assertIn('vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256', publish)
-        self.assertLess(publish.index('tools/apps/final_app_receipt.py'), publish.index('put_immutable "$bundle"'))
+        self.assertLess(publish.index('tools/apps/final_app_receipt.py'), publish.index('bundle_upload='))
+        self.assertIn('tools/upload_immutable_packages.sh "$bundle_upload"', publish)
         self.assertIn('bind-readback', publish)
         self.assertIn('tilo-apps-$arch.receipt.json', publish)
 

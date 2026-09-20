@@ -1,0 +1,538 @@
+//! Transport-independent client for the workspace identity service.
+
+use std::io::{self, Read, Write};
+use std::sync::Mutex;
+
+use crate::{NotAvailable, wire};
+
+trait BrokerIo: Read + Write + Send {}
+impl<T: Read + Write + Send> BrokerIo for T {}
+
+/// Public identity metadata plus a live capability to request host signatures.
+///
+/// This owns no private key and has no app-local key-store fallback. A successful
+/// metadata exchange does not authenticate the stream's peer or validate its
+/// certificate. Host handoff authentication and downstream certificate/route
+/// admission remain mandatory. `Debug` never prints the stream or certificate.
+pub struct BrokerSigningIdentity {
+    display_name: String,
+    avatar_color: [u8; 3],
+    group_public_key: [u8; 32],
+    signing_public_key: [u8; 32],
+    device_certificate: Option<Vec<u8>>,
+    threshold: u16,
+    total_shares: u16,
+    share_index: u16,
+    stream: Mutex<Box<dyn BrokerIo>>,
+}
+
+impl std::fmt::Debug for BrokerSigningIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BrokerSigningIdentity")
+            .finish_non_exhaustive()
+    }
+}
+
+impl BrokerSigningIdentity {
+    /// Exchange metadata over a caller-owned, connected broker stream.
+    ///
+    /// Works with synchronous Windows pipe/file adapters as well as Unix
+    /// sockets. The stream must implement blocking `Read`/`Write` semantics;
+    /// the caller configures any I/O deadlines before transferring ownership.
+    /// Use on the SDK signing worker, not the UI thread.
+    ///
+    /// This performs no discovery, authentication, enrollment or authorization
+    /// handshake. The host must already have authenticated and bound this
+    /// connection to the app/workspace. The caller must authenticate the host.
+    /// A raw endpoint name or same-account connection is not such evidence.
+    ///
+    /// # Errors
+    /// Returns [`NotAvailable::ConnectionFailed`] for I/O, malformed metadata,
+    /// or a broker refusal, preserving the existing service protocol errors.
+    pub fn from_connected_io<S>(mut stream: S) -> Result<Self, NotAvailable>
+    where
+        S: Read + Write + Send + 'static,
+    {
+        write_frame(&mut stream, &wire::Request::Metadata)?;
+        match read_frame::<wire::Response>(&mut stream)? {
+            wire::Response::Metadata {
+                display_name,
+                avatar_color,
+                group_public_key,
+                signing_public_key,
+                device_certificate,
+                threshold,
+                total_shares,
+                share_index,
+            } => Ok(Self {
+                display_name,
+                avatar_color,
+                group_public_key,
+                signing_public_key,
+                device_certificate,
+                threshold,
+                total_shares,
+                share_index,
+                stream: Mutex::new(Box::new(stream)),
+            }),
+            wire::Response::Denied(reason) | wire::Response::Error(reason) => {
+                Err(NotAvailable::ConnectionFailed(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    reason,
+                )))
+            }
+            wire::Response::Signature(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "identity broker returned an invalid metadata response",
+            ))),
+        }
+    }
+
+    /// Human-picked name supplied by the host.
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    /// Avatar RGB supplied by the host.
+    pub fn avatar_color(&self) -> [u8; 3] {
+        self.avatar_color
+    }
+    /// Root/group public key supplied by the host.
+    pub fn group_public_key(&self) -> [u8; 32] {
+        self.group_public_key
+    }
+    /// Device public key supplied by the host.
+    pub fn signing_public_key(&self) -> [u8; 32] {
+        self.signing_public_key
+    }
+    /// Opaque certificate bytes; receiving them does not validate the chain.
+    pub fn device_certificate(&self) -> Option<&[u8]> {
+        self.device_certificate.as_deref()
+    }
+    /// Threshold in the host's t-of-n metadata.
+    pub fn threshold(&self) -> u16 {
+        self.threshold
+    }
+    /// Total shares in the host's t-of-n metadata.
+    pub fn total_shares(&self) -> u16 {
+        self.total_shares
+    }
+    /// Share index supplied by the host.
+    pub fn share_index(&self) -> u16 {
+        self.share_index
+    }
+    /// Whether the host reports a 1-of-1 identity.
+    pub fn is_single_device(&self) -> bool {
+        self.threshold == 1 && self.total_shares == 1
+    }
+
+    /// Request the existing generic action grant; no local signing fallback.
+    ///
+    /// # Errors
+    /// Returns the same transport, response or authorization errors as `sign_for`.
+    pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
+        self.sign_for("generic", message)
+    }
+
+    /// Request a signature under the host's live, exact action capability.
+    ///
+    /// # Errors
+    /// Returns transport/framing errors or the broker's authorization refusal.
+    pub fn sign_for(&self, action: &str, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
+        self.signature(&wire::Request::Sign {
+            action: action.to_owned(),
+            message: message.to_vec(),
+        })
+    }
+
+    /// Ask the host to sign its fixed collaboration-join domain for this route.
+    ///
+    /// The host checks the workspace against the connection's launch binding.
+    /// # Errors
+    /// Returns transport/framing errors or the broker's authorization refusal.
+    pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
+        self.signature(&wire::Request::CollaborationJoin {
+            workspace_id: workspace_id.to_owned(),
+        })
+    }
+
+    /// Request signing of a typed operation, retaining every route field.
+    ///
+    /// The host validates the envelope and live role; this client cannot grant it.
+    /// # Errors
+    /// Returns transport/framing errors or the broker's authorization refusal.
+    pub fn sign_collaboration_op(
+        &self,
+        workspace_id: &str,
+        app_id: &str,
+        record_id: &str,
+        unsigned_op: &[u8],
+    ) -> Result<[u8; 64], NotAvailable> {
+        self.signature(&wire::Request::CollaborationOp {
+            workspace_id: workspace_id.to_owned(),
+            app_id: app_id.to_owned(),
+            record_id: record_id.to_owned(),
+            unsigned_op: unsigned_op.to_vec(),
+        })
+    }
+
+    fn signature(&self, request: &wire::Request) -> Result<[u8; 64], NotAvailable> {
+        let mut stream = self.stream.lock().map_err(|_| {
+            NotAvailable::ConnectionFailed(io::Error::other("identity broker lock poisoned"))
+        })?;
+        write_frame(&mut **stream, request)?;
+        read_signature_response(&mut **stream)
+    }
+}
+
+fn read_signature_response(
+    stream: &mut (impl Read + Write + ?Sized),
+) -> Result<[u8; 64], NotAvailable> {
+    match read_frame::<wire::Response>(stream)? {
+        wire::Response::Signature(bytes) if bytes.len() == 64 => {
+            let mut signature = [0_u8; 64];
+            signature.copy_from_slice(&bytes);
+            Ok(signature)
+        }
+        wire::Response::Denied(reason) => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            reason,
+        ))),
+        wire::Response::Error(reason) => {
+            Err(NotAvailable::ConnectionFailed(io::Error::other(reason)))
+        }
+        _ => Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity broker returned an invalid signature response",
+        ))),
+    }
+}
+
+pub(super) fn write_frame<T: serde::Serialize>(
+    stream: &mut (impl Read + Write + ?Sized),
+    value: &T,
+) -> Result<(), NotAvailable> {
+    let bytes = postcard::to_allocvec(value).map_err(|error| {
+        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
+    })?;
+    if bytes.len() > MAX_IDENTITY_FRAME_BYTES {
+        return Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity frame exceeds 64 MiB",
+        )));
+    }
+    let len = u32::try_from(bytes.len()).map_err(|_| {
+        NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "frame too large",
+        ))
+    })?;
+    stream.write_all(&len.to_le_bytes())?;
+    stream.write_all(&bytes)?;
+    stream.flush()?;
+    Ok(())
+}
+
+pub(super) fn read_frame<T: serde::de::DeserializeOwned>(
+    stream: &mut (impl Read + Write + ?Sized),
+) -> Result<T, NotAvailable> {
+    let mut len = [0_u8; 4];
+    stream.read_exact(&mut len)?;
+    let len = u32::from_le_bytes(len) as usize;
+    if len > MAX_IDENTITY_FRAME_BYTES {
+        return Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity frame exceeds 64 MiB",
+        )));
+    }
+    let mut bytes = vec![0_u8; len];
+    stream.read_exact(&mut bytes)?;
+    postcard::from_bytes(&bytes).map_err(|error| {
+        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
+    })
+}
+
+/// Bound app-controlled broker traffic while allowing real document
+/// snapshots. Postcard keeps byte vectors compact; the preceding JSON wire
+/// represented every byte as a decimal number and hit its 1 MiB cap much
+/// earlier than the underlying document did.
+pub(super) const MAX_IDENTITY_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    // Intentionally not a Unix socket: exercises the public constructor with
+    // the same short-read/write contract as a synchronous Windows pipe adapter.
+    struct FragmentedIo {
+        input: Cursor<Vec<u8>>,
+        output: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Read for FragmentedIo {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = bytes.len().min(3);
+            self.input.read(&mut bytes[..count])
+        }
+    }
+
+    impl Write for FragmentedIo {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let count = bytes.len().min(2);
+            self.output
+                .lock()
+                .expect("output")
+                .extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn metadata() -> wire::Response {
+        wire::Response::Metadata {
+            display_name: "Fixture".into(),
+            avatar_color: [1, 2, 3],
+            group_public_key: [4; 32],
+            signing_public_key: [5; 32],
+            device_certificate: Some(b"opaque fixture certificate".to_vec()),
+            threshold: 1,
+            total_shares: 1,
+            share_index: 1,
+        }
+    }
+
+    fn channel(responses: &[wire::Response]) -> (FragmentedIo, Arc<Mutex<Vec<u8>>>) {
+        let mut input = Cursor::new(Vec::new());
+        for response in responses {
+            write_frame(&mut input, response).expect("fixture frame");
+        }
+        let output = Arc::new(Mutex::new(Vec::new()));
+        (
+            FragmentedIo {
+                input: Cursor::new(input.into_inner()),
+                output: output.clone(),
+            },
+            output,
+        )
+    }
+
+    fn error_kind<T>(result: Result<T, NotAvailable>) -> io::ErrorKind {
+        match result {
+            Err(NotAvailable::ConnectionFailed(error)) => error.kind(),
+            _ => panic!("expected connection failure"),
+        }
+    }
+
+    #[test]
+    fn connected_io_metadata_and_signatures_preserve_all_route_fields() {
+        let (stream, output) = channel(&[
+            metadata(),
+            wire::Response::Signature(vec![11; 64]),
+            wire::Response::Signature(vec![12; 64]),
+            wire::Response::Signature(vec![13; 64]),
+        ]);
+        let identity = BrokerSigningIdentity::from_connected_io(stream).expect("metadata");
+        assert_eq!(identity.display_name(), "Fixture");
+        assert_eq!(identity.avatar_color(), [1, 2, 3]);
+        assert_eq!(identity.group_public_key(), [4; 32]);
+        assert_eq!(identity.signing_public_key(), [5; 32]);
+        assert_eq!(
+            identity.device_certificate(),
+            Some(b"opaque fixture certificate".as_slice())
+        );
+        assert_eq!(
+            (
+                identity.threshold(),
+                identity.total_shares(),
+                identity.share_index()
+            ),
+            (1, 1, 1)
+        );
+        assert!(identity.is_single_device());
+        assert_eq!(
+            identity
+                .sign_for("document.save", b"message")
+                .expect("action"),
+            [11; 64]
+        );
+        assert_eq!(
+            identity.sign_collaboration_join("workspace").expect("join"),
+            [12; 64]
+        );
+        assert_eq!(
+            identity
+                .sign_collaboration_op("workspace", "dev.tilo.notes", "record", b"op")
+                .expect("op"),
+            [13; 64]
+        );
+        let captured = output.lock().expect("output").clone();
+        let mut requests = Cursor::new(captured);
+        assert!(matches!(
+            read_frame::<wire::Request>(&mut requests).expect("metadata request"),
+            wire::Request::Metadata
+        ));
+        match read_frame::<wire::Request>(&mut requests).expect("sign request") {
+            wire::Request::Sign { action, message } => {
+                assert_eq!(action, "document.save");
+                assert_eq!(message, b"message");
+            }
+            _ => panic!("wrong action request"),
+        }
+        match read_frame::<wire::Request>(&mut requests).expect("join request") {
+            wire::Request::CollaborationJoin { workspace_id } => {
+                assert_eq!(workspace_id, "workspace")
+            }
+            _ => panic!("wrong join request"),
+        }
+        match read_frame::<wire::Request>(&mut requests).expect("operation request") {
+            wire::Request::CollaborationOp {
+                workspace_id,
+                app_id,
+                record_id,
+                unsigned_op,
+            } => {
+                assert_eq!(workspace_id, "workspace");
+                assert_eq!(app_id, "dev.tilo.notes");
+                assert_eq!(record_id, "record");
+                assert_eq!(unsigned_op, b"op");
+            }
+            _ => panic!("wrong operation request"),
+        }
+        assert_eq!(requests.position(), requests.get_ref().len() as u64);
+        assert!(!format!("{identity:?}").contains("opaque fixture certificate"));
+    }
+
+    #[test]
+    fn metadata_errors_keep_existing_permission_denied_mapping() {
+        for response in [
+            wire::Response::Denied("denied".into()),
+            wire::Response::Error("error".into()),
+        ] {
+            let (stream, _) = channel(&[response]);
+            assert_eq!(
+                error_kind(BrokerSigningIdentity::from_connected_io(stream)),
+                io::ErrorKind::PermissionDenied
+            );
+        }
+        let (stream, _) = channel(&[wire::Response::Signature(vec![0; 64])]);
+        assert_eq!(
+            error_kind(BrokerSigningIdentity::from_connected_io(stream)),
+            io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn signing_errors_remain_distinct_and_never_fall_back_to_local_keys() {
+        for (response, expected) in [
+            (
+                wire::Response::Denied("role revoked".into()),
+                io::ErrorKind::PermissionDenied,
+            ),
+            (
+                wire::Response::Error("host unavailable".into()),
+                io::ErrorKind::Other,
+            ),
+            (
+                wire::Response::Signature(vec![1; 63]),
+                io::ErrorKind::InvalidData,
+            ),
+            (
+                wire::Response::Signature(vec![1; 65]),
+                io::ErrorKind::InvalidData,
+            ),
+            (metadata(), io::ErrorKind::InvalidData),
+        ] {
+            let (stream, _) = channel(&[metadata(), response]);
+            let identity = BrokerSigningIdentity::from_connected_io(stream).expect("metadata");
+            assert_eq!(error_kind(identity.sign(b"generic")), expected);
+        }
+    }
+
+    #[test]
+    fn peer_close_is_an_error_at_bootstrap_and_after_metadata() {
+        let (stream, _) = channel(&[]);
+        assert_eq!(
+            error_kind(BrokerSigningIdentity::from_connected_io(stream)),
+            io::ErrorKind::UnexpectedEof
+        );
+        let (stream, _) = channel(&[metadata()]);
+        let identity = BrokerSigningIdentity::from_connected_io(stream).expect("metadata");
+        assert_eq!(
+            error_kind(identity.sign_collaboration_join("workspace")),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn oversized_frame_is_rejected_before_reading_its_body() {
+        let len = u32::try_from(MAX_IDENTITY_FRAME_BYTES + 1).expect("length");
+        let mut bytes = Cursor::new(len.to_le_bytes().to_vec());
+        assert_eq!(
+            error_kind(read_frame::<wire::Response>(&mut bytes)),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(bytes.position(), 4);
+    }
+
+    #[test]
+    fn malformed_and_truncated_frames_preserve_error_kinds() {
+        let mut malformed = Cursor::new(vec![1, 0, 0, 0, 255]);
+        assert_eq!(
+            error_kind(read_frame::<wire::Response>(&mut malformed)),
+            io::ErrorKind::InvalidData
+        );
+        let mut truncated = Cursor::new(vec![2, 0, 0, 0, 1]);
+        assert_eq!(
+            error_kind(read_frame::<wire::Response>(&mut truncated)),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn outbound_limit_rejects_without_writing_partial_frame() {
+        let request = wire::Request::Sign {
+            action: "oversized".into(),
+            message: vec![0; MAX_IDENTITY_FRAME_BYTES],
+        };
+        let mut output = Cursor::new(Vec::new());
+        assert_eq!(
+            error_kind(write_frame(&mut output, &request)),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(output.into_inner().is_empty());
+    }
+
+    #[test]
+    fn poisoned_stream_mutex_fails_closed() {
+        let (stream, _) = channel(&[metadata()]);
+        let identity =
+            Arc::new(BrokerSigningIdentity::from_connected_io(stream).expect("metadata"));
+        let child = identity.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = child.stream.lock().expect("lock");
+                panic!("fixture poison");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(error_kind(identity.sign(b"message")), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn join_signing_domain_is_unchanged() {
+        assert_eq!(
+            crate::collaboration_join_signing_bytes("workspace"),
+            b"tilo-collaboration-join-v1\0workspace"
+        );
+    }
+
+    #[test]
+    fn client_can_cross_the_sdk_worker_boundary() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<BrokerSigningIdentity>();
+    }
+}

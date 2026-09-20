@@ -243,6 +243,7 @@ pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWi
     }
     let mut widget = WordProcessorWidget::new();
     widget.set_file(path.to_path_buf(), format);
+    widget.remember_open_document(&state.doc);
     // If a previous session crashed before saving this document, a recovery copy
     // is still on disk — surface the crash-recovery banner (Restore / Discard).
     widget.check_for_recovery();

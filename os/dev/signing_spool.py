@@ -173,6 +173,38 @@ def remote_sign(config_path, operation, source, destination):
     publish(directory / 'consumed.json', canonical({'request_id': nonce, 'output_sha256': digest(result)}))
 
 
+def verify_local_result(request, local_input, local_output, public_path):
+    """Apply the operation-specific checks shared by normal and recovery paths."""
+    result = snapshot(local_output, MAX_INPUT + 65536)
+    if request['operation'] == 'sign-efi':
+        import development_boot as boot
+        boot.pe.verify(str(local_input), str(local_output))
+        count = signer.run(['/usr/local/bin/tilo-crypto', 'efi-signature-count',
+                            str(local_output)]).strip()
+        if not count.isdigit() or int(count) < 1:
+            raise ValueError('signed EFI lacks a recognized signature')
+        signer.run(['/usr/local/bin/tilo-crypto', 'verify-efi', str(public_path),
+                    str(local_output)])
+    else:
+        if not 256 <= len(result) <= 1024:
+            raise ValueError('RSA response size invalid')
+        signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256', str(public_path),
+                    str(local_input), str(local_output)])
+    return result
+
+
+def local_response(request, result):
+    response = {k: request[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
+    response.update(output_sha256=digest(result), output_bytes=len(result))
+    return response
+
+
+def publish_local_response(response_directory, reservation, response, result):
+    write_new(response_directory / 'output', result)
+    publish(response_directory / 'response.json', canonical(response))
+    publish(reservation / 'complete.json', canonical(response))
+
+
 def service_local_request(request_directory, policy_path, state_directory, response_directory, signer_path):
     """Sign one exact locally authorized input. Authentication/transport is external.
 
@@ -246,30 +278,73 @@ def service_local_request(request_directory, policy_path, state_directory, respo
     write_new(reservation / 'request.json', canonical(request))
     local_input = reservation / 'input'
     local_output = reservation / 'output'
-    write_new(local_input, data)
-    signer.run([str(trusted_signer), request['operation'], str(local_input), str(local_output)])
-    result = snapshot(local_output, MAX_INPUT + 65536)
     public_path = reservation / 'verification.pem'
+    write_new(local_input, data)
     write_new(public_path, public['efi_certificate' if request['operation'] == 'sign-efi' else 'pcr_public_key'])
-    if request['operation'] == 'sign-efi':
-        import development_boot as boot
-        boot.pe.verify(str(local_input), str(local_output))
-        count = signer.run(['/usr/local/bin/tilo-crypto', 'efi-signature-count',
-                            str(local_output)]).strip()
-        if not count.isdigit() or int(count) < 1:
-            raise ValueError('signed EFI lacks a recognized signature')
-        signer.run(['/usr/local/bin/tilo-crypto', 'verify-efi', str(public_path),
-                    str(local_output)])
-    else:
-        if not 256 <= len(result) <= 1024:
-            raise ValueError('RSA response size invalid')
-        signer.run(['/usr/local/bin/tilo-crypto', 'verify-rsa-sha256', str(public_path),
-                    str(local_input), str(local_output)])
-    response = {k: request[k] for k in ('schema', 'request_id', 'context_sha256', 'operation', 'input_sha256')}
-    response.update(output_sha256=digest(result), output_bytes=len(result))
-    write_new(response_directory / 'output', result)
-    publish(response_directory / 'response.json', canonical(response))
-    publish(reservation / 'complete.json', canonical(response))
+    signer.run([str(trusted_signer), request['operation'], str(local_input), str(local_output)])
+    result = verify_local_result(request, local_input, local_output, public_path)
+    response = local_response(request, result)
+    publish_local_response(response_directory, reservation, response, result)
     return {'request_id': request['request_id'], 'authorization_id': selected['id'],
             'operation': request['operation'], 'input_sha256': request['input_sha256'],
             'output_sha256': digest(result), 'private_keys_transferred': False}
+
+
+def recover_local_request(reservation_directory, response_directory, signer_path, request_id,
+                          operation, input_sha256, verification_sha256):
+    """Retry one precisely identified reservation whose signer left an empty output.
+
+    A durable recovery marker is committed before the sole retry. Any later
+    interruption therefore fails closed and needs a different operator action.
+    """
+    reservation = private_directory(reservation_directory)
+    response_directory = private_directory(response_directory)
+    expected_names = {'request.json', 'input', 'output', 'verification.pem'}
+    if {entry.name for entry in reservation.iterdir()} != expected_names:
+        raise ValueError('reservation is not an exact incomplete signing attempt')
+    if any(response_directory.iterdir()):
+        raise ValueError('recovery response directory must be empty')
+    if (not re.fullmatch(r'authorization-[a-z0-9-]{1,64}', reservation.name)
+            or not HEX.fullmatch(reservation.parent.name)):
+        raise ValueError('invalid signing reservation identity')
+    authorization_id = reservation.name.removeprefix('authorization-')
+    request_bytes = snapshot(reservation / 'request.json', MAX_JSON)
+    request = request_metadata(document(reservation / 'request.json'))
+    if request_bytes != canonical(request):
+        raise ValueError('reservation request is not canonical')
+    expected = (request_id, operation, input_sha256)
+    actual = (request['request_id'], request['operation'], request['input_sha256'])
+    if actual != expected or request['context_sha256'] != reservation.parent.name:
+        raise ValueError('recovery identity does not match exact reservation')
+    data = snapshot(reservation / 'input', MAX_INPUT)
+    if len(data) != request['input_bytes'] or digest(data) != request['input_sha256']:
+        raise ValueError('reserved signing input changed')
+    public_path = reservation / 'verification.pem'
+    public = snapshot(public_path, 65536)
+    if not HEX.fullmatch(verification_sha256) or digest(public) != verification_sha256:
+        raise ValueError('reserved verification key differs from operator pin')
+    nonce = private_directory(reservation.parent / ('request-' + request['request_id']))
+    if any(nonce.iterdir()):
+        raise ValueError('request reservation marker is not empty')
+    trusted_signer = signer.trusted(Path(signer_path))
+    if not os.access(trusted_signer, os.X_OK):
+        raise ValueError('local signer is not executable')
+    output_path = signer.trusted(reservation / 'output')
+    output_stat = output_path.stat()
+    if not stat.S_ISREG(output_stat.st_mode) or output_stat.st_nlink != 1 or output_stat.st_size != 0:
+        raise ValueError('recovery requires the original zero-byte signer output')
+    marker = {'schema': 1, 'request_id': request_id, 'operation': operation,
+              'input_sha256': input_sha256, 'verification_sha256': verification_sha256}
+    publish(reservation / 'recovery.json', canonical(marker))
+    output_path.unlink()
+    sync_directory(reservation)
+    signer.run([str(trusted_signer), operation, str(reservation / 'input'), str(output_path)])
+    result = verify_local_result(request, reservation / 'input', output_path, public_path)
+    if any(response_directory.iterdir()):
+        raise ValueError('recovery response directory changed during signing')
+    response = local_response(request, result)
+    publish_local_response(response_directory, reservation, response, result)
+    return {'request_id': request_id, 'authorization_id': authorization_id,
+            'operation': operation, 'input_sha256': input_sha256,
+            'output_sha256': digest(result), 'private_keys_transferred': False,
+            'recovered': True}

@@ -10,6 +10,7 @@ on:
     branches: ["main"]
     tags: ["v*"]
     paths:
+      - "tools/ci/workflow_applicability.py"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -39,7 +40,6 @@ on:
       - "crates/system/settings-store/**"
       - "crates/media/thumbnail/**"
       - "crates/system/fs/**"
-      - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
       - ".forgejo/actions/install-cosign/**"
@@ -76,11 +76,12 @@ on:
       - "crates/system/settings-store/**"
       - "crates/media/thumbnail/**"
       - "crates/system/fs/**"
-      - "os/external-assets/github-assets.tsv"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/tilo-relay.yaml"
+      - "tools/ci/workflow_applicability.py"
+      - "tools/ci/prepare_pr_history.py"
   workflow_dispatch:
 
 concurrency:
@@ -88,6 +89,34 @@ concurrency:
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
 jobs:
+  applicability:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+          sparse-checkout: |
+            tools/ci/prepare_pr_history.py
+            tools/ci/workflow_applicability.py
+            .forgejo/workflows/tilo-relay.yaml
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Prepare targeted PR history
+        run: python3 -I tools/ci/prepare_pr_history.py
+      - name: Require an exact relevant PR diff before native work
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/tilo-relay.yaml
+
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
     runs-on: runner
@@ -122,8 +151,14 @@ jobs:
           }
 
   build-and-push:
-    needs: signing-preflight
-    if: ${{ always() && (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped') }}
+    needs: [signing-preflight, applicability]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        (needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')
+      }}
     runs-on: runner
     timeout-minutes: 120
     enable-openid-connect: true
