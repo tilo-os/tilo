@@ -5,15 +5,15 @@ does not fan out into unrelated builds:
 
 | Component | Publication trigger | Expensive work | Published output |
 |---|---|---|---|
-| Apps | `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Selected apps once per enabled native architecture | Independently versioned qpkgs and immutable collection bundles |
+| Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned qpkgs and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `vX.Y.Z`, or a manual **Release / OS** run from `main` with `publish` | Bootc image, sealed-image reproducibility and VM gates | Signed generation image, SBOM and provenance |
 | Imager | `imager-vX.Y.Z` | Native host packages and signed installer media | Linux and Windows downloads; macOS definitions retained but disabled |
 
-Continuous app packaging is the staged target, not an enabled default. Ordinary
-`main` pushes do not trigger **Release / apps**, and the guarded packaging
-coordinator is not active. Its first collection qualification is non-publishing;
-it does not itself enable continuous publication. The
+Continuous app packaging runs on relevant `main` pushes. It selects affected
+qpkgs, reuses unchanged members from the prior immutable collection, and advances
+the verified x86-64 channel only after publication succeeds. The guarded
+packaging coordinator remains inactive; its qualification path is separate. The
 [product matrix](ci-product-matrix.md) distinguishes available definitions from
 qualified targets, including Windows apps still awaiting release qualification.
 OS publication remains deliberate through tags or explicit dispatches.
@@ -92,6 +92,12 @@ digest variables automatically. Architecture-specific
 `TILO_APP_COLLECTION_{URL,SHA256}_{X86_64,AARCH64}` variables are maintained as
 both native lanes publish; the unsuffixed pair remains the x86_64
 compatibility channel.
+
+App publication requires `TILO_PACKAGE_PUBLIC_BASE_URL`, set to the public
+HTTPS generic-package base (currently
+`https://code.sandbox.example/api/packages/qos/generic`). Registry traffic may use
+the runner's internal endpoint, but receipts and persisted collection-channel
+URLs always derive from this public base.
 
 Manual app packaging defaults to both native architectures; PRs only plan
 which apps are affected. During bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture

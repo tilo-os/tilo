@@ -21,6 +21,17 @@ SPEC = importlib.util.spec_from_file_location('spool_endpoint', Path(__file__).w
 endpoint = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(endpoint)
 
+PAYLOAD_SETUP_SECONDS = 120
+PAYLOAD_MIN_BYTES_PER_SECOND = 1024 * 1024
+
+
+def payload_timeout(byte_count):
+    """Keep the fixed setup budget and admit one second per MiB streamed."""
+    if type(byte_count) is not int or not 0 < byte_count <= spool.MAX_INPUT + 65536:
+        raise ValueError('invalid signing payload size')
+    stream_seconds = (byte_count + PAYLOAD_MIN_BYTES_PER_SECOND - 1) // PAYLOAD_MIN_BYTES_PER_SECOND
+    return PAYLOAD_SETUP_SECONDS + stream_seconds
+
 
 def bounded_process(argv, sink, limit, *, source=None, timeout=120):
     process = subprocess.Popen(argv, stdin=source if source is not None else subprocess.DEVNULL,
@@ -135,7 +146,8 @@ class Transport:
                     or state.get('Running') is not True or any(state.get(k) is not False for k in ('Paused', 'Restarting', 'Dead'))):
                 raise ValueError('nested Docker container identity or state changed')
 
-    def transfer(self, operation, nonce=None, response=None, source=None, sink=None, limit=spool.MAX_JSON):
+    def transfer(self, operation, nonce=None, response=None, source=None, sink=None,
+                 limit=spool.MAX_JSON, timeout=120):
         self.check()
         command = self.exec_prefix()
         if 'docker' in self.binding:
@@ -146,7 +158,7 @@ class Transport:
         if response is not None:
             command += ['--response', spool.canonical(response).decode()]
         target = sink if sink is not None else io.BytesIO()
-        self.runner(command, target, limit, source=source)
+        self.runner(command, target, limit, source=source, timeout=timeout)
         self.check()
         return target.getvalue() if sink is None else None
 
@@ -163,7 +175,8 @@ class Transport:
         # Keep incomplete input quarantined: local signer requires request.json,
         # which appears only after all bytes and post-transfer identity pass.
         with spool.signer.exclusive_output(destination / 'input') as output:
-            self.transfer('input', nonce, sink=output, limit=request['input_bytes'])
+            self.transfer('input', nonce, sink=output, limit=request['input_bytes'],
+                          timeout=payload_timeout(request['input_bytes']))
             output.flush()
             os.fsync(output.fileno())
         data = spool.snapshot(destination / 'input', spool.MAX_INPUT)
@@ -191,7 +204,8 @@ class Transport:
         with tempfile.TemporaryFile() as stream:
             stream.write(data)
             stream.seek(0)
-            self.transfer('put-output', nonce, response, source=stream)
+            self.transfer('put-output', nonce, response, source=stream,
+                          timeout=payload_timeout(response['output_bytes']))
         self.transfer('publish-response', nonce, response)
         return {'request_id': nonce, 'output_sha256': response['output_sha256'], 'delivered': True}
 
