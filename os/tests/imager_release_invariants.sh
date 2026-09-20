@@ -474,8 +474,11 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq "wait_screen 14-tour-share" "$cycle" \
   && grep -Fq "wait_screen 15-tour-start" "$cycle" \
   && grep -Fq "wait_screen 16-desktop-config" "$cycle" \
-  && grep -Fq "wait_screen 17-reboot-greeter" "$cycle" \
-  && grep -Fq "wait_screen 18-reboot-login" "$cycle" \
+  && grep -Fq "wait_screen 16-browser-picker" "$cycle" \
+  && grep -Fq "wait_screen 17-browser-open" "$cycle" \
+  && grep -Fq "wait_screen 18-browser-offline" "$cycle" \
+  && grep -Fq "wait_screen 19-reboot-greeter" "$cycle" \
+  && grep -Fq "wait_screen 20-reboot-login" "$cycle" \
   && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
   ok 'trusted main and tagged media must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
 else
