@@ -83,8 +83,9 @@ not hidden dependency drift.
 | Worker-local | Preloaded runner images, OCI layers, Cargo downloads and the current job's target tree | Prefer local reuse and measure misses. Never share a writable Cargo target directory between worktrees. |
 | Compiler | S3-backed sccache, separated by compiler, target and trust domain | Aim for unchanged dependency hits. Release verification that needs stronger producer trust uses a restricted namespace or rebuilds cold. |
 | Regional OCI/ECR | CI images, builder images, frozen inputs and BuildKit caches close to runners | Replicate by digest before rollout. Runner startup must not depend on repeatedly pulling large images through the Forgejo control-plane node. |
+| Shared Actions cache | Workflow caches restored across disposable runners | Save/restore is qualified by the small cross-runner smoke below; measure real dependency archives separately. This is distinct from sccache and immutable release artifacts. |
 | Forgejo packages | Immutable qpkgs, collections, desktop packages, receipts and workflow-local handoffs | Use immutable versions and digests. Mutable names only point to accepted artifacts. |
-| Tilo registry | Signed app catalogue, channel metadata and public app downloads | The server and image build exist in [`registry.md`](registry.md). GitOps targets `registry.tilo.dev`; its DNS credential, live endpoint and end-to-end CI publication still need evidence before this tier is called available. |
+| Tilo registry | Signed app catalogue, channel metadata and public app downloads | Internally deployed and probed, with an empty signed catalogue. Public ingress and ExternalDNS remain disabled pending the `tilo.dev` DNS credential. CI catalogue submission is not implemented; existing app publication goes to Forgejo packages. |
 
 Eviction starts with reconstructible local data. Accepted artifacts, receipts,
 signatures and the inputs required for cross-time reproduction follow a defined
@@ -95,7 +96,7 @@ is released.
 
 | Boundary | Required work |
 | --- | --- |
-| Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. The narrow routine app-source pilot permits an explicit `/merge <full-head-sha>` without review; requesting official review holds that head for approval or cancellation. Documentation, CI tooling and supported scripts use the reviewed operator path; other paths await admission policy. See [delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow). |
+| Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. Ordinary product changes use explicit `/merge <full-head-sha>` intent with optional review; requesting official review holds that head for approval or cancellation. CI policy, publication, signing and named security boundaries require the reviewed operator path. Broader admission is deployed; ordinary automatic landing still needs observed evidence. See [delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow). |
 | `main` | Preserve check/lint for every commit. Package the affected qOS/Linux apps and update immutable collection inputs. Advance a public development channel only after registry publication is enabled. Coalesce superseded expensive work without discarding fast results. |
 | Scheduled integration | Rebuild full app baselines, Linux desktop packages and a generic x86-64 OS candidate. Rotate ARM64 and other costly coverage according to measured drift and capacity. |
 | App/desktop release | Reuse accepted build nodes, install-test the release set, sign artifacts and provenance, then atomically move a channel manifest. |
@@ -117,6 +118,21 @@ in 344 ms and completed in 127.9 s, while a generic full-builder cold pull took
 nightly workspace run fell from 573.0 s at a 20.61% sccache hit rate to 436.71 s
 at 93.35%; [`ci-performance.md`](ci-performance.md) records the counters and CPU
 cost. These are comparison points, not current guarantees.
+
+On 2026-09-20, [agent-platform smoke 834](https://code.sandbox.example/PodestaAI/agent-platform/actions/runs/834)
+passed all four jobs after the shared Actions cache route was deployed. One runner
+saved a 274-byte cache at 12:41:45.755 UTC; another restored it at 12:41:52.949 UTC.
+The same smoke recorded a Rust sccache hit. This proves cross-runner connectivity
+and reuse, not large-cache throughput, sustained hit rates or the image-pull SLO.
+
+The registry's internal acceptance at 12:43 UTC on 2026-09-20 used GitOps revision
+`85c68534d7a98a0e4c92063256aa77bb1fff6c7c`: registry and monitoring were Synced/Healthy,
+protocol 3 served signed sequence 2 with **zero entries**, and all three internal
+probes passed. The artifact proxy returned the expected 894,976-byte package with
+matching SHA-256; invalid paths and methods returned 404. The CSI snapshot was
+ready, but the qualification backup failed because the Backblaze storage cap was
+exceeded. Offsite upload and restore remain unverified. Internal service health
+does not establish public access, CI catalogue publication or disaster recovery.
 
 The targets below are operating goals. Report p50 and p95 over seven and 30
 days, split by workflow and architecture; do not declare them met from one run.
@@ -144,7 +160,8 @@ rollout.
 
 ## Delivery phases
 
-1. **Make continuous apps boring.** Complete the `registry.tilo.dev` deployment,
+1. **Make continuous apps boring.** Enable public DNS/TLS for the internally
+   deployed registry, recover the failed offsite backup and verify restore,
    publish the verified x86-64 qpkgs already produced from `main` into its signed
    development catalogue, retain the last-known-good channel on failure, and show
    timing and selection in every run. Exit when 30 consecutive relevant changes
