@@ -91,6 +91,7 @@ impl TimelineViewport {
 
     /// Geometry at 1× with the default spacing — the authored design, used
     /// by tests and by callers that have no scale of their own.
+    #[cfg(test)]
     pub fn geometry(area: Rect) -> TimelineGeom {
         Self::geometry_for(area, 1.0, &Spacing::default())
     }

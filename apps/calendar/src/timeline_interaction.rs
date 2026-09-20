@@ -5,13 +5,12 @@
 //! effects; [`CalendarApp`](crate::app::CalendarApp) remains responsible for
 //! applying those effects to the calendar model and CRDT.
 
-use crate::draw_util::PaintContext;
 use crate::input_context::InputContext;
 use chrono::{Datelike, NaiveDate};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::Fill;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::dnd::DRAG_START_THRESHOLD_PX;
 use ui::text_render::TextRenderer;
