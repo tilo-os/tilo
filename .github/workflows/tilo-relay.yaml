@@ -220,6 +220,22 @@ jobs:
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
+      # The release build keeps a complete Rust target tree alongside
+      # BuildKit's layers and registry-cache export. GitHub's standard image
+      # starts with most of its 72 GiB disk occupied by unrelated SDKs.
+      - name: Reclaim unused runner disk for the relay build
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf -- \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          docker system prune --all --force --volumes
+          df -h /
+
       - name: Set up buildx for registry cache export
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
