@@ -8,6 +8,9 @@ Before=shell-firstboot.service greetd.service fs.service
 # key is absent OR when the legacy writable name still needs migration.
 ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin
 ConditionPathExists=|/var/lib/tilo/device/keypair.bin
+# Retry a partial rename adoption; the legacy tree remains read-only.
+ConditionPathExists=|/var/lib/qos/device/keypair.bin
+ConditionPathExists=|/var/lib/qos/device-private/keypair.bin
 
 [Service]
 Type=oneshot
@@ -25,6 +28,8 @@ ReadWritePaths=/var/lib/tilo/device-private
 # Upgrade-only: permit unlinking the former group-writable key name after its
 # bytes and signed certificate have been validated and durably adopted.
 ReadWritePaths=/var/lib/tilo/device
+# Copy validated pre-rename roots into the canonical tree without deleting them.
+ReadWritePaths=/var/lib/tilo/user-identity
 ProtectHome=yes
 ProtectProc=invisible
 ProcSubset=pid
