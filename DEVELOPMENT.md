@@ -16,15 +16,17 @@ A new push requires fresh checks and a fresh merge request. The controller also
 checks that the branch is up to date and the change is eligible for routine
 integration; a green check alone does not merge a PR.
 
-Review is optional only for Rust source changes under an existing app's
-`apps/<app>/src/` directory. After checks pass, the author can request **claude**
+Review is optional for ordinary product changes, including core SDK, shell,
+filesystem, new apps, assets, documentation, manifests, lockfiles and ordinary
+vendored sources. After checks pass, the author can request **claude**
 through Forgejo's reviewer control. This holds merging until the request is
 cancelled or receives an allowed approval for that head; change requests block.
 Automatic review-agent launches are currently disabled, so a native request alone
 does not start an agent. The eligibility comment reports review availability.
 
-Documentation, tools, workflow YAML and Python/shell/PowerShell scripts under
-`dist/` or `os/` use the reviewed operator path. After checks pass, obtain an
+CI policy, publication, signing and named security-boundary paths use the
+reviewed operator path. Changes crossing into those paths or changing an existing
+file's executable mode also require review. After checks pass, obtain an
 official **claude** approval and post the author's `/merge <full-head-sha>` intent.
 An authorized operator then runs this command from the `PodestaAI/infra` checkout:
 
@@ -34,9 +36,16 @@ python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
 
 It runs the deployed merge worker, which rechecks scope, current main, CI, author
 intent and approval before integration. Direct merges do not bypass that worker.
-Other paths, including Cargo manifests, `Cargo.lock`, vendored code and non-app
-Rust crates, currently have no supported admission path; they need a reviewed
-policy extension and appropriate validation first.
+The [deployed admission policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json)
+defines the protected paths and bounded dependency exceptions. The OpenH264
+source-order exception additionally requires its pinned provenance and native
+dependency check; it is not ordinary vendored-source admission. Symlinks,
+submodules and malformed changes are rejected rather than treated as routine.
+
+The broader admission code was verified in the live controller on 2026-09-20
+after [infra PR 201](https://code.podesta.ai/PodestaAI/infra/pulls/201). Ordinary
+automatic landing under that revision has not yet been demonstrated; deployment
+alone is not evidence that the queue is advancing.
 
 The CI scheduler assigns runners and queue order. Submit normally; do not reserve
 build slots or negotiate them with other agents. The repository's Codex hook sends
