@@ -3,10 +3,21 @@
 The registry is Tilo's semi-federated marketplace for `.qpkg`
 bundles. It advertises signed metadata so users can browse,
 install, and update packages from the shell. Anyone can host
-their own registry; the Tilo org runs one at
-`apps.tilo.dev` (source under `crates/packaging/registry-server`)
-and ships **the registry client itself as a `.qpkg` app** so it
-can be swapped out or forked like any other Tilo app.
+their own registry. The intended Tilo service is `apps.tilo.dev`, using the
+server under `crates/packaging/registry-server`, but that public service is not
+yet an available update source. Do not treat the hostname or the deployment
+manifests as proof that it is live.
+
+Continuous app packaging currently publishes immutable qpkgs and collection
+bundles to Forgejo's generic package registry. That is the cross-workflow
+artifact channel used by app, desktop and OS jobs; it is distinct from the
+signed catalogue and moderation service described here. The rollout is complete
+only after the server is deployed, its owner/publisher trust and backup path are
+verified, the public endpoint passes client tests, and CI advances a signed
+catalogue entry after publishing a qpkg.
+
+The registry client is itself intended to ship as a `.qpkg` app so it can be
+swapped out or forked like any other Tilo app.
 
 The registry architecture covers self-hosted bootstrap, publisher-allowlist
 workflow, TLS setup, backup/restore, and moderation hooks.

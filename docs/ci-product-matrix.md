@@ -1,6 +1,6 @@
 # Product packaging coverage and next Windows qualification
 
-Source audit: main `97fde6687`, 2026-09-19. A defined workflow is not evidence
+Source audit: main `157271e5c`, 2026-09-20. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
 artifact.
 
@@ -20,6 +20,20 @@ out of date, author/reviewer/integrator identities overlap, branch protection
 drifts, or exact-head check, lint or independent approval is missing. Other PRs
 still need an explicit merge. See [Release pipeline](release-pipeline.md) for the
 enabled heavy-build and publication triggers.
+
+## What runs for each event
+
+| Event | Routine feedback | Packaging and release behavior |
+| --- | --- | --- |
+| Task-branch push | Fast quality for that commit: changed-file formatting, lint-exception policy, repository policy, `cargo deny`, and `cargo machete` | No app publication or OS build |
+| Pull request to `main` | Fast quality plus affected reverse-dependency checks and applicable security contracts; the app workflow reports its dependency-selected plan | No qpkg publication and no full OS build |
+| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set and reuse unchanged collection members; OS publication remains off |
+| Nightly, tag, or explicit dispatch | Full-workspace and product-specific qualification according to the workflow | App and desktop release matrices expand only on their documented triggers; an OS version is published only by an OS tag or a `main` dispatch with `publish=true` |
+
+Do not interpret a skipped Rust row as missing CI. The aggregate accepts it only
+for the audited documentation/helper allowlist; quality remains required. Use the
+selector summary to see which packages and security contracts applied to the
+exact head.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |
