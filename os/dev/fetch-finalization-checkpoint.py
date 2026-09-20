@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch one explicitly pinned prior stage-5 artifact from this repository."""
+"""Fetch one explicitly pinned registry-backed finalization checkpoint."""
 import argparse
 import hashlib
 import io
@@ -15,8 +15,9 @@ MAX_METADATA = 256 * 1024
 MAX_ARCHIVE = 16 * 1024 * 1024
 MAX_RECEIPT = 1024 * 1024
 STAGES = ('rebind', 'loader', 'provisional', 'composefs', 'reseal')
-REQUIRED = tuple(f'{number:02d}-{name}.json' for number, name in enumerate(STAGES, 1))
-ALLOWED = set(REQUIRED) | {'06-prediction.json', '07-verified.json', '08-published.json',
+ALL_RECEIPTS = tuple(f'{number:02d}-{name}.json' for number, name in enumerate(STAGES, 1))
+CHECKPOINT_STAGES = (2, 5)
+ALLOWED = set(ALL_RECEIPTS) | {'06-prediction.json', '07-verified.json', '08-published.json',
     'result.json', 'status.json', 'signing-pending.json', 'worker-identity.json', 'cleanup.json'}
 HEX = re.compile(r'[0-9a-f]{64}')
 IMAGE = re.compile(r'sha256:[0-9a-f]{64}')
@@ -47,7 +48,9 @@ def get_url(url, token, limit):
     return raw
 
 
-def validate_receipts(files, request_raw, request_sha256):
+def validate_receipts(files, request_raw, request_sha256, stage):
+    if stage not in CHECKPOINT_STAGES:
+        raise ValueError('unsupported registry checkpoint stage')
     if hashlib.sha256(request_raw).hexdigest() != request_sha256 or not HEX.fullmatch(request_sha256):
         raise ValueError('current request digest differs')
     request = json.loads(request_raw, object_pairs_hook=unique)
@@ -56,16 +59,16 @@ def validate_receipts(files, request_raw, request_sha256):
         'new_target': request['new_target'], 'new_manifest_sha256': request['new_manifest_sha256']}
     parent = None
     receipts = []
-    for number, name in enumerate(REQUIRED, 1):
+    for number, name in enumerate(ALL_RECEIPTS[:stage], 1):
         raw = files[name]
         if not 0 < len(raw) <= MAX_RECEIPT:
-            raise ValueError('stage-5 receipt exceeds bound')
+            raise ValueError('checkpoint receipt exceeds bound')
         receipt = json.loads(raw, object_pairs_hook=unique)
         if (not isinstance(receipt, dict) or receipt.get('schema') != 1
                 or receipt.get('stage') != STAGES[number - 1]
                 or receipt.get('request_sha256') != request_sha256
                 or receipt.get('parent_receipt_sha256') != parent):
-            raise ValueError('stage-5 receipt chain differs from current request')
+            raise ValueError('checkpoint receipt chain differs from current request')
         receipts.append(receipt)
         parent = hashlib.sha256(canonical(receipt)).hexdigest()
     checkpoint = receipts[-1]
@@ -76,12 +79,15 @@ def validate_receipts(files, request_raw, request_sha256):
             or checkpoint.get('image_id') != config
             or reference != request['publish_repository'] + '@' + manifest
             or checkpoint.get('checkpoint_binding') != expected_binding
+            or checkpoint.get('checkpoint_stage', 5 if stage == 5 else None) != stage
             or not HEX.fullmatch(checkpoint.get('producer_context_sha256', ''))):
-        raise ValueError('stage-5 registry checkpoint binding differs')
+        raise ValueError('registry checkpoint binding differs')
     return parent
 
 
-def archive_files(raw):
+def archive_files(raw, stage):
+    if stage not in CHECKPOINT_STAGES:
+        raise ValueError('unsupported registry checkpoint stage')
     result = {}
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         for entry in archive.infolist():
@@ -97,16 +103,16 @@ def archive_files(raw):
             if len(data) != entry.file_size:
                 raise ValueError('artifact entry length differs')
             result[name] = data
-    if not set(REQUIRED).issubset(result):
-        raise ValueError('artifact lacks complete stage-5 receipts')
+    if not set(ALL_RECEIPTS[:stage]).issubset(result):
+        raise ValueError('artifact lacks complete checkpoint receipts')
     return result
 
 
-def retrieve(run_id, attempt, receipt_sha256, request_path, output, api, repository,
+def retrieve(run_id, attempt, stage, receipt_sha256, request_path, output, api, repository,
              token, current_run_id, getter=get_url):
     if (not str(run_id).isdecimal() or int(run_id) <= 0 or not str(attempt).isdecimal()
             or int(attempt) <= 0 or not HEX.fullmatch(receipt_sha256)
-            or int(run_id) == int(current_run_id)):
+            or int(run_id) == int(current_run_id) or stage not in CHECKPOINT_STAGES):
         raise ValueError('explicit prior run, attempt and archive SHA256 required')
     base = api.rstrip('/') + '/repos/' + repository
     prior = json.loads(getter(base + f'/actions/runs/{int(run_id)}', token, MAX_METADATA),
@@ -129,16 +135,16 @@ def retrieve(run_id, attempt, receipt_sha256, request_path, output, api, reposit
     if len(matches) != 1 or not isinstance(matches[0].get('id'), int):
         raise ValueError('one unexpired prior finalization artifact required')
     raw = getter(base + f'/actions/artifacts/{matches[0]["id"]}/zip', token, MAX_ARCHIVE)
-    files = archive_files(raw)
+    files = archive_files(raw, stage)
     request_raw = Path(request_path).read_bytes()
     accepted_receipt = validate_receipts(
-        files, request_raw, hashlib.sha256(request_raw).hexdigest())
+        files, request_raw, hashlib.sha256(request_raw).hexdigest(), stage)
     if accepted_receipt != receipt_sha256:
-        raise ValueError('prior stage-5 receipt SHA256 differs')
+        raise ValueError('prior checkpoint receipt SHA256 differs')
     output = Path(output)
     output.mkdir(mode=0o700)
     try:
-        for name in REQUIRED:
+        for name in ALL_RECEIPTS[:stage]:
             path = output / name
             with path.open('xb') as destination:
                 destination.write(files[name])
@@ -156,7 +162,8 @@ def retrieve(run_id, attempt, receipt_sha256, request_path, output, api, reposit
         output.rmdir()
         raise
     return {'run_id': int(run_id), 'attempt': int(attempt), 'artifact_id': matches[0]['id'],
-            'receipt_sha256': receipt_sha256, 'request_sha256': hashlib.sha256(request_raw).hexdigest(),
+            'stage': stage, 'receipt_sha256': receipt_sha256,
+            'request_sha256': hashlib.sha256(request_raw).hexdigest(),
             'output': str(output)}
 
 
@@ -164,12 +171,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-id', required=True)
     parser.add_argument('--attempt', required=True)
+    parser.add_argument('--stage', required=True, type=int, choices=CHECKPOINT_STAGES)
     parser.add_argument('--receipt-sha256', required=True)
     parser.add_argument('--request', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     api = os.environ.get('GITHUB_API_URL') or os.environ['GITHUB_SERVER_URL'].rstrip('/') + '/api/v1'
-    result = retrieve(args.run_id, args.attempt, args.receipt_sha256, args.request, args.output,
+    result = retrieve(args.run_id, args.attempt, args.stage, args.receipt_sha256, args.request, args.output,
         api, os.environ['GITHUB_REPOSITORY'], os.environ['TASK_TOKEN'], os.environ['GITHUB_RUN_ID'])
     print(json.dumps(result, sort_keys=True))
 
@@ -178,4 +186,4 @@ if __name__ == '__main__':
     try:
         main()
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, zipfile.BadZipFile):
-        raise SystemExit('stage-5 artifact retrieval rejected')
+        raise SystemExit('registry checkpoint artifact retrieval rejected')

@@ -16,19 +16,24 @@ on:
         required: true
         type: string
       restore_run_id:
-        description: Prior failed internal run ID containing an explicit stage-5 registry checkpoint
+        description: Prior failed internal run ID containing an explicit registry checkpoint
         required: false
         default: ""
         type: string
       restore_run_attempt:
-        description: Prior failed run attempt containing the checkpoint artifact
+        description: Prior failed run attempt containing the selected checkpoint artifact
         required: false
         default: ""
         type: string
       restore_receipt_sha256:
-        description: Independently recorded canonical SHA256 of the prior stage-5 receipt
+        description: Independently recorded canonical SHA256 of the selected prior checkpoint receipt
         required: false
         default: ""
+        type: string
+      restore_stage:
+        description: Registry-backed checkpoint stage to restore (2 or 5)
+        required: false
+        default: "5"
         type: string
 
 concurrency:
@@ -57,6 +62,7 @@ jobs:
           RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
           RESTORE_RUN_ATTEMPT: ${{ inputs.restore_run_attempt }}
           RESTORE_RECEIPT_SHA256: ${{ inputs.restore_receipt_sha256 }}
+          RESTORE_STAGE: ${{ inputs.restore_stage }}
         run: |
           python3 - <<'PY'
           import importlib.util, json, os, pathlib, re
@@ -68,27 +74,31 @@ jobs:
           request_path.write_bytes(data)
           restore = [os.environ[name] for name in ('RESTORE_RUN_ID', 'RESTORE_RUN_ATTEMPT', 'RESTORE_RECEIPT_SHA256')]
           if any(restore) != all(restore):
-              raise ValueError('stage-5 restore inputs must be supplied together')
+              raise ValueError('checkpoint restore inputs must be supplied together')
           if all(restore) and (not restore[0].isdecimal() or not restore[1].isdecimal()
-                  or not re.fullmatch(r'[0-9a-f]{64}', restore[2])):
-              raise ValueError('invalid stage-5 restore identity')
+                  or not re.fullmatch(r'[0-9a-f]{64}', restore[2])
+                  or os.environ['RESTORE_STAGE'] not in ('2', '5')):
+              raise ValueError('invalid checkpoint restore identity')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('source_revision=' + json.loads(data)['source_revision'] + '\n')
-              output.write('restore_stage5=' + ('true' if all(restore) else 'false') + '\n')
+              output.write('restore_checkpoint=' + ('true' if all(restore) else 'false') + '\n')
+              output.write('restore_stage=' + os.environ['RESTORE_STAGE'] + '\n')
           PY
-      - name: Retrieve authenticated prior stage-5 evidence
-        if: steps.validated.outputs.restore_stage5 == 'true'
+      - name: Retrieve authenticated prior registry checkpoint
+        if: steps.validated.outputs.restore_checkpoint == 'true'
         env:
           TASK_TOKEN: ${{ github.token }}
           RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
           RESTORE_RUN_ATTEMPT: ${{ inputs.restore_run_attempt }}
           RESTORE_RECEIPT_SHA256: ${{ inputs.restore_receipt_sha256 }}
+          RESTORE_STAGE: ${{ inputs.restore_stage }}
         run: |
-          python3 controller/os/dev/fetch-finalization-stage5.py \
+          python3 controller/os/dev/fetch-finalization-checkpoint.py \
             --run-id "$RESTORE_RUN_ID" --attempt "$RESTORE_RUN_ATTEMPT" \
+            --stage "$RESTORE_STAGE" \
             --receipt-sha256 "$RESTORE_RECEIPT_SHA256" \
             --request "$RUNNER_TEMP/finalization-request.json" \
-            --output "$RUNNER_TEMP/stage5-evidence"
+            --output "$RUNNER_TEMP/checkpoint-evidence"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: source
@@ -112,11 +122,12 @@ jobs:
           FINALIZATION_REQUEST: ${{ inputs.request }}
           FINALIZATION_REQUEST_SHA256: ${{ inputs.request_sha256 }}
           HELPERS_REVISION: ${{ inputs.helpers_revision }}
-          RESTORE_STAGE5: ${{ steps.validated.outputs.restore_stage5 }}
+          RESTORE_CHECKPOINT: ${{ steps.validated.outputs.restore_checkpoint }}
+          RESTORE_STAGE: ${{ steps.validated.outputs.restore_stage }}
         run: |
           restore_args=()
-          if [ "$RESTORE_STAGE5" = true ]; then
-            restore_args=(--restore-stage5 "$RUNNER_TEMP/stage5-evidence")
+          if [ "$RESTORE_CHECKPOINT" = true ]; then
+            restore_args=(--restore-checkpoint "$RUNNER_TEMP/checkpoint-evidence" --restore-stage "$RESTORE_STAGE")
           fi
           python3 controller/os/dev/launch-finalization-worker.py \
             --controller "$PWD/controller" --source "$PWD/source" --helpers "$PWD/helpers" \

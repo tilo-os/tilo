@@ -10,6 +10,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
+BASE = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
 SPEC = importlib.util.spec_from_file_location(
     "ci_merge_dispatch", ROOT / "tools/ci/dispatch_merge.py"
 )
@@ -23,14 +24,17 @@ HEAD_9 = "9" * 40
 
 
 class ListApi:
-    def __init__(self, rows):
+    def __init__(self, rows, base=BASE):
         self.rows = rows
+        self.base = base
         self.calls = []
 
     def __call__(self, path, method="GET", body=None):
         self.calls.append((path, method, body))
         if path.startswith("/pulls?state=open"):
             return 200, self.rows
+        if path == "/branches/main":
+            return 200, {"commit": {"id": self.base}}
         raise AssertionError(path)
 
 
@@ -93,6 +97,7 @@ class DispatchTests(unittest.TestCase):
 
     def dispatch(self, api, **kwargs):
         kwargs.setdefault("refresh", lambda *_: True)
+        kwargs.setdefault("classify", lambda *_: [])
         return dispatch_merge.dispatch(api, self.root, self.state, **kwargs)
 
     def test_exclusive_process_lease_skips_a_concurrent_dispatch(self):
@@ -130,6 +135,69 @@ class DispatchTests(unittest.TestCase):
             result = self.dispatch(api, worker=worker, fetch=lambda *_: True)
         self.assertEqual(result, 0)
         worker.assert_not_called()
+
+    def test_non_routine_pr_skips_expensive_remote_admission(self):
+        api = ListApi([pr(7, HEAD_7)])
+        worker = mock.Mock()
+        observe = mock.Mock()
+        with mock.patch.object(merge_pr, "observe", observe):
+            result = self.dispatch(
+                api,
+                worker=worker,
+                fetch=lambda *_: True,
+                classify=lambda *_: ["non-routine path"],
+            )
+        self.assertEqual(result, 0)
+        worker.assert_not_called()
+        observe.assert_not_called()
+
+    def test_controller_state_fault_during_prefilter_is_uncertain(self):
+        api = ListApi([pr(7, HEAD_7)])
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", new=stderr):
+            result = self.dispatch(
+                api,
+                fetch=lambda *_: True,
+                classify=mock.Mock(side_effect=ValueError("checkout moved")),
+            )
+        self.assertEqual(result, 3)
+        self.assertEqual(json.loads(stderr.getvalue()), {
+            "event": "uncertain", "stage": "classify-candidate", "pr": 7,
+        })
+
+    def test_main_advance_during_non_routine_scan_is_uncertain(self):
+        api = ListApi([pr(7, HEAD_7)], base="a" * 40)
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", new=stderr):
+            result = self.dispatch(
+                api,
+                fetch=lambda *_: True,
+                classify=lambda *_: ["non-routine path"],
+            )
+        self.assertEqual(result, 3)
+        self.assertEqual(json.loads(stderr.getvalue()), {
+            "event": "uncertain", "stage": "main-changed",
+        })
+
+    def test_fetch_failure_names_the_stage_and_pr(self):
+        api = ListApi([pr(7, HEAD_7)])
+        stderr = io.StringIO()
+        with mock.patch("sys.stderr", new=stderr):
+            result = self.dispatch(api, fetch=lambda *_: False)
+        self.assertEqual(result, 3)
+        self.assertEqual(json.loads(stderr.getvalue()), {
+            "event": "uncertain", "stage": "fetch-candidate", "pr": 7,
+        })
+
+    def test_reuses_an_exact_fetched_candidate(self):
+        with mock.patch.object(merge_pr, "git", side_effect=[
+                (HEAD_7 + "\n").encode(), b"",
+        ]) as git:
+            self.assertTrue(dispatch_merge.fetch_candidate(self.root, 7, HEAD_7))
+        self.assertEqual(git.call_args_list, [
+            mock.call(self.root, "rev-parse", "--verify", "refs/qos-integration/candidates/7"),
+            mock.call(self.root, "cat-file", "-e", HEAD_7 + "^{commit}"),
+        ])
 
     def test_selects_one_ready_pr_by_number_and_invokes_exact_worker(self):
         api = ListApi([pr(9, HEAD_9), pr(7, HEAD_7)])
@@ -205,6 +273,11 @@ class MainRefreshTests(unittest.TestCase):
         self.assertTrue(dispatch_merge.refresh_main(self.api(current), self.repo.root))
         self.assertEqual(command(self.repo.root, "rev-parse", "HEAD"), current)
         self.assertEqual(command(self.repo.root, "status", "--porcelain"), "")
+
+    def test_current_exact_main_needs_no_network_fetch(self):
+        current = command(self.repo.root, "rev-parse", "HEAD")
+        command(self.repo.root, "remote", "set-url", "origin", "invalid://must-not-fetch")
+        self.assertTrue(dispatch_merge.refresh_main(self.api(current), self.repo.root))
 
     def test_dirty_or_untracked_checkout_is_never_reset(self):
         original = command(self.repo.root, "rev-parse", "HEAD")

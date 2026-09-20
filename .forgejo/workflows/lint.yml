@@ -58,7 +58,7 @@ jobs:
         run: bash tools/policy/run.sh
 
       - name: cargo deny
-        run: cargo deny --workspace check
+        run: cargo deny --workspace check --hide-inclusion-graph
 
       - name: cargo machete
-        run: cargo machete --with-metadata
+        run: bash tools/ci/check-unused-dependencies.sh

@@ -51,7 +51,10 @@ fn main() {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the example keeps its linear fixture setup visible as one auditable flow"
+)]
 fn run() -> Result<(), String> {
     let config_dir = PathBuf::from(arg("--config-dir").ok_or("--config-dir is required")?);
     let package_id = arg("--package-id").unwrap_or_else(|| "dev.tilo.sheets".to_string());
@@ -123,6 +126,12 @@ fn run() -> Result<(), String> {
             qpkg_root_hash_hex: qpkg_root,
             qpkg_size_bytes: advertised_len as u64,
             released_at_unix: 1,
+            qpkg_blake3_hex: Some(blake3::hash(&qpkg).to_hex().to_string()),
+            target: Some(registry_types::RegistryTarget {
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+            }),
         }],
         updated_at_unix: 2,
         signature_hex: String::new(),
@@ -146,6 +155,7 @@ fn run() -> Result<(), String> {
         }],
         entries: vec![entry],
         owner_signature_hex: String::new(),
+        channel_authorization: None,
     };
     sign_snapshot(&mut snapshot, &owner).map_err(|e| format!("sign snapshot: {e}"))?;
     let entries_json =

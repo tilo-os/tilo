@@ -108,6 +108,7 @@ class AppReleaseTests(unittest.TestCase):
             "tools/apps/final_app_receipt.py": "verification",
             "tools/apps/app_channel_manifest.py": "verification",
             "tools/ci/__init__.py": "verification",
+            "tools/ci/workspace_graph.py": "verification",
             "tools/ci/resolve_builder.py": "binary",
         }
         for path, kind in inputs.items():
@@ -120,6 +121,43 @@ class AppReleaseTests(unittest.TestCase):
         # Non-input prose and an unrelated CI helper must not become fleet rebuilds.
         self.assertEqual([], app_release.apps_from_changes(
             ['docs/architecture.md', 'tools/ci/queue_coalesce.py'], CATALOG))
+
+    def test_check_scheduling_is_not_an_app_release_dependency(self):
+        paths = ['tools/ci/affected_packages.py', 'tools/tests/test_ci_select.py',
+                 'docs/ci-performance.md']
+        self.assertEqual([], app_release.apps_from_changes(paths, CATALOG))
+        self.assertEqual({'binary': [], 'packaging': [], 'verification': []},
+                         app_release.input_classification(paths))
+        # The shared graph remains a release input, even with scheduling edits.
+        self.assertEqual(sorted(CATALOG), app_release.apps_from_changes(
+            paths + ['tools/ci/workspace_graph.py'], CATALOG))
+
+    def test_real_git_scheduling_then_graph_edit_replans_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
+            git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@invalid')
+            for relative in ('tools/ci/affected_packages.py', 'tools/ci/workspace_graph.py'):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text((ROOT / relative).read_text())
+            git('add', 'tools'); git('commit', '-qm', 'shared graph baseline')
+            base = git('rev-parse', 'HEAD')
+            scheduler = root / 'tools/ci/affected_packages.py'
+            scheduler.write_text(scheduler.read_text().replace('MAX_DEVELOPER_SHARDS = 2', 'MAX_DEVELOPER_SHARDS = 3'))
+            git('commit', '-qam', 'change check fanout')
+            args = SimpleNamespace(root=root, config=ROOT / 'dist/apps/app-collections.toml',
+                                   tag='', apps='', base=base, collection='default')
+            with mock.patch.object(app_release, 'app_catalog', return_value=app_release.app_catalog(ROOT)), \
+                 mock.patch.object(app_release.ci_select, 'cargo_metadata', return_value={'packages': []}):
+                self.assertEqual(app_release.plan(args)['count'], 0)
+                graph = root / 'tools/ci/workspace_graph.py'
+                graph.write_text(graph.read_text().replace('pending = list(selected)', 'pending = sorted(selected)'))
+                git('commit', '-qam', 'change graph traversal')
+                result = app_release.plan(args)
+            self.assertGreater(result['count'], 0)
+            self.assertEqual(result['input_classification']['verification'], ['tools/ci/workspace_graph.py'])
 
     def test_plan_exposes_receipt_only_invalidation_without_binary_claim(self) -> None:
         args = SimpleNamespace(root=ROOT, config=ROOT / 'dist/apps/app-collections.toml',
@@ -183,6 +221,150 @@ class AppReleaseTests(unittest.TestCase):
             sorted(CATALOG),
         )
 
+    def test_proven_lockfile_closure_selects_only_dependent_apps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def package(name, directory, dependencies=()):
+                return {
+                    "name": name,
+                    "manifest_path": str(root / directory / "Cargo.toml"),
+                    "dependencies": [
+                        {"name": dependency, "path": None}
+                        for dependency in dependencies
+                    ],
+                }
+
+            metadata = {
+                "packages": [
+                    package("notes-bin", "apps/notes", ["markdown-parser"]),
+                    package("settings-bin", "apps/settings", ["settings-format"]),
+                ]
+            }
+            catalog = {
+                "notes": {"package": "notes-bin"},
+                "settings": {"package": "settings-bin"},
+            }
+            self.assertEqual(
+                app_release.apps_from_changes(
+                    ["Cargo.lock"],
+                    catalog,
+                    metadata,
+                    root,
+                    {"notes-bin"},
+                ),
+                ["notes"],
+            )
+
+    def test_plan_uses_proven_lockfile_closure(self) -> None:
+        args = SimpleNamespace(
+            root=ROOT,
+            config=ROOT / "dist/apps/app-collections.toml",
+            tag="",
+            apps="",
+            base="baseline",
+            collection="default",
+        )
+        metadata = {
+            "packages": [
+                {
+                    "name": "notes",
+                    "manifest_path": str(ROOT / "apps/notes/Cargo.toml"),
+                    "dependencies": [],
+                }
+            ]
+        }
+        with mock.patch.object(
+            app_release, "changed_paths", return_value=["Cargo.lock"]
+        ), mock.patch.object(
+            app_release.ci_select, "cargo_metadata", return_value=metadata
+        ), mock.patch.object(
+            app_release,
+            "lockfile_affected_packages",
+            return_value={"notes"},
+        ):
+            result = app_release.plan(args)
+        self.assertEqual(result["apps"], ["notes"])
+        self.assertEqual(result["input_classification"]["binary"], ["Cargo.lock"])
+
+    def test_lockfile_dependency_graph_reaches_workspace_consumers(self) -> None:
+        old = b'''version = 4
+[[package]]
+name = "markdown-parser"
+version = "1.0.0"
+source = "registry+https://example.invalid/index"
+checksum = "old"
+[[package]]
+name = "document-engine"
+version = "1.0.0"
+dependencies = ["markdown-parser 1.0.0"]
+'''
+        new = b'''version = 4
+[[package]]
+name = "markdown-parser"
+version = "1.1.0"
+source = "registry+https://example.invalid/index"
+checksum = "new"
+[[package]]
+name = "document-engine"
+version = "1.0.0"
+dependencies = ["markdown-parser 1.1.0"]
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.lock").write_bytes(new)
+
+            def package(name, directory, dependencies=()):
+                return {
+                    "name": name,
+                    "manifest_path": str(root / directory / "Cargo.toml"),
+                    "dependencies": [
+                        {"name": dependency, "path": None}
+                        for dependency in dependencies
+                    ],
+                }
+
+            metadata = {
+                "packages": [
+                    package("notes-bin", "apps/notes", ["document-engine"]),
+                    package("settings-bin", "apps/settings", ["settings-format"]),
+                ]
+            }
+            completed = subprocess.CompletedProcess(
+                args=["git", "show"], returncode=0, stdout=old
+            )
+            with mock.patch.object(
+                app_release.ci_select,
+                "comparison_merge_base",
+                return_value="base",
+            ), mock.patch.object(app_release.subprocess, "run", return_value=completed):
+                self.assertEqual(
+                    app_release.lockfile_affected_packages("base", metadata, root),
+                    {"notes-bin"},
+                )
+
+    def test_unreadable_prior_lockfile_keeps_full_fleet_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            failed = subprocess.CompletedProcess(
+                args=["git", "show"], returncode=128, stdout=b""
+            )
+            with mock.patch.object(
+                app_release.ci_select,
+                "comparison_merge_base",
+                return_value="base",
+            ), mock.patch.object(app_release.subprocess, "run", return_value=failed):
+                affected = app_release.lockfile_affected_packages(
+                    "base", {"packages": []}, root
+                )
+            self.assertIsNone(affected)
+            self.assertEqual(
+                app_release.apps_from_changes(
+                    ["Cargo.lock"], CATALOG, {"packages": []}, root, affected
+                ),
+                sorted(CATALOG),
+            )
+
     def test_global_change_excludes_os_integrated_apps(self) -> None:
         catalog = {**CATALOG, "browser": {}}
         self.assertEqual(
@@ -222,6 +404,16 @@ class AppReleaseTests(unittest.TestCase):
                 ),
                 ["notes"],
             )
+
+    def test_real_toolkit_change_fans_out_to_every_generic_app(self) -> None:
+        catalog = app_release.app_catalog(ROOT)
+        metadata = app_release.ci_select.cargo_metadata(ROOT)
+        self.assertEqual(
+            app_release.apps_from_changes(
+                ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, ROOT
+            ),
+            sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
+        )
 
     def test_default_collection_is_the_complete_publication_boundary(self) -> None:
         catalog = app_release.app_catalog(ROOT)

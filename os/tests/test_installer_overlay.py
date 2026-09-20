@@ -24,7 +24,8 @@ class Overlay(unittest.TestCase):
  def test_command_pins_local_image_and_disables_network_and_pulls(self):
   cmd=overlay.command('/context','sha256:'+'1'*64,123,'/image.iid')
   self.assertIn('--pull=never',cmd);self.assertIn('--network=none',cmd)
-  self.assertIn('installer-base=container-image://sha256:'+'1'*64,cmd)
+  self.assertIn('TILO_BASE_IMAGE=sha256:'+'1'*64,cmd)
+  self.assertFalse(any('installer-base=container-image://' in value for value in cmd))
   self.assertIn('TILO_INSTALLER_DEV_SSH=0',cmd)
   with self.assertRaises(ValueError):overlay.command('/context','mutable:tag',123,'/image.iid')
 if __name__=='__main__':unittest.main()

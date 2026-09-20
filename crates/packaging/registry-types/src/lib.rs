@@ -68,8 +68,8 @@ pub mod verify;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
 pub use entry::{
-    ENTRY_DOMAIN, INDEX_DOMAIN, RegistryEntry, RegistryVersion, entry_signing_message,
-    index_signing_message, sign_entry,
+    ENTRY_DOMAIN, INDEX_DOMAIN, RegistryEntry, RegistryTarget, RegistryVersion,
+    entry_signing_message, index_signing_message, sign_entry,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
 pub use moderation::{
@@ -80,9 +80,11 @@ pub use moderation::{
     verify_moderation_mutation, verify_transparency_chain,
 };
 pub use snapshot::{
+    CHANNEL_AUTHORIZATION_PROTOCOL, ChannelAuthorization, DELEGATED_SNAPSHOT_PROTOCOL,
     MAX_SNAPSHOT_ENCODED_BYTES, MAX_SNAPSHOT_ENTRIES, MAX_SNAPSHOT_PUBLISHERS,
     MAX_SNAPSHOT_VALIDITY_SECONDS, PublisherAuthorization, SNAPSHOT_PROTOCOL,
-    SignedRegistrySnapshot, SnapshotError, sign_snapshot, snapshot_hash, snapshot_signing_message,
+    SignedRegistrySnapshot, SnapshotError, sign_channel_authorization, sign_snapshot,
+    sign_snapshot_delegated, snapshot_hash, snapshot_signing_message, verify_channel_authorization,
     verify_snapshot,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};

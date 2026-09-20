@@ -29,6 +29,7 @@ use pkg::{Manifest, MemoryBlobStore, PackageId};
 /// Author a tiny signed `.qpkg` for `dev.tilo.editor@1.0.0`.
 fn author_qpkg(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
     let pubhex = hex::encode(identity.public_key_bytes());
+    let arch = std::env::consts::ARCH;
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();
@@ -39,6 +40,9 @@ fn author_qpkg(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
 id = "dev.tilo.editor"
 version = "1.0.0"
 kind = "app"
+
+[package.isa]
+{arch} = "baseline"
 
 [publisher]
 identity = "ed25519:{pubhex}"

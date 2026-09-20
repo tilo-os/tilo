@@ -26,6 +26,16 @@ merge_pr = importlib.util.module_from_spec(WORKER_SPEC)
 WORKER_SPEC.loader.exec_module(merge_pr)
 
 
+def event(name, **fields):
+    """Write one bounded, credential-free controller event."""
+    print(json.dumps({"event": name, **fields}, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def uncertain(stage, **fields):
+    event("uncertain", stage=stage, **fields)
+    return UNCERTAIN
+
+
 class LeaseUnavailable(Exception):
     """Another dispatcher process owns the lease."""
 
@@ -110,6 +120,13 @@ def run_worker(root: Path, journal: Path, number: int, *, reconcile=False):
 def fetch_candidate(root: Path, number: int, listed_head: str):
     ref = f"refs/qos-integration/candidates/{number}"
     try:
+        cached = merge_pr.git(root, "rev-parse", "--verify", ref).decode().strip()
+        if cached == listed_head:
+            merge_pr.git(root, "cat-file", "-e", listed_head + "^{commit}")
+            return True
+    except subprocess.SubprocessError:
+        pass
+    try:
         merge_pr.git(
             root,
             "fetch",
@@ -133,6 +150,8 @@ def refresh_main(api, root: Path):
         observed = branch.get("commit", {}).get("id", "")
         if not merge_pr.SHA.fullmatch(observed):
             return False
+        if merge_pr.git(root, "rev-parse", "HEAD").decode().strip() == observed:
+            return True
         merge_pr.git(
             root,
             "fetch",
@@ -160,64 +179,86 @@ def journal_path(state_dir: Path, number: int, head: str):
 
 
 def dispatch(api, root: Path, state_dir: Path, worker=run_worker, fetch=fetch_candidate,
-             refresh=refresh_main):
+             refresh=refresh_main, classify=merge_pr.routine_prefilter_errors):
     try:
         with ProcessLease(state_dir / "dispatcher.lock"):
             try:
                 existing = journals(state_dir)
             except ValueError:
-                return UNCERTAIN
+                return uncertain("journal-read")
 
             unresolved = [(path, record) for path, record in existing
                           if record.get("state") in RECONCILABLE]
             unknown = [(path, record) for path, record in existing
                        if record.get("state") not in TERMINAL | RECONCILABLE]
             if unknown or len(unresolved) > 1:
-                return UNCERTAIN
+                return uncertain("journal-state", unknown=len(unknown), unresolved=len(unresolved))
             if unresolved:
                 path, record = unresolved[0]
                 number = record.get("pr")
                 head = record.get("head")
                 if type(number) is not int or not merge_pr.SHA.fullmatch(head or ""):
-                    return UNCERTAIN
+                    return uncertain("journal-identity")
                 return worker(root, path, number, reconcile=True)
 
             if not refresh(api, root):
-                return UNCERTAIN
+                return uncertain("refresh-main")
+
+            try:
+                base = merge_pr.git(root, "rev-parse", "HEAD").decode().strip()
+            except (OSError, subprocess.SubprocessError, UnicodeError):
+                return uncertain("read-main")
 
             recorded_heads = {record.get("head") for _, record in existing
                               if merge_pr.SHA.fullmatch(record.get("head", ""))}
             try:
                 open_prs = merge_pr.pages(api, "/pulls?state=open")
             except (OSError, TypeError, ValueError):
-                return UNCERTAIN
+                return uncertain("list-pulls")
 
             candidates = []
             seen_numbers = set()
             for candidate in open_prs:
                 if not isinstance(candidate, dict) or not isinstance(candidate.get("head"), dict):
-                    return UNCERTAIN
+                    return uncertain("pull-record")
                 number = candidate.get("number")
                 listed_head = candidate.get("head", {}).get("sha", "")
                 if (type(number) is not int or number <= 0 or number in seen_numbers
                         or not merge_pr.SHA.fullmatch(listed_head)):
-                    return UNCERTAIN
+                    return uncertain("pull-record")
                 seen_numbers.add(number)
                 candidates.append((number, listed_head))
 
+            fetched = routine = 0
             for number, listed_head in sorted(candidates):
                 if listed_head in recorded_heads:
                     continue
                 if not fetch(root, number, listed_head):
-                    return UNCERTAIN
+                    return uncertain("fetch-candidate", pr=number)
+                fetched += 1
+                try:
+                    if classify(root, base, listed_head):
+                        continue
+                except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+                    return uncertain("classify-candidate", pr=number)
+                routine += 1
                 try:
                     observation = merge_pr.observe(api, number, root)
                 except (OSError, subprocess.SubprocessError, TypeError, ValueError):
-                    return UNCERTAIN
+                    return uncertain("observe-candidate", pr=number)
                 if (observation.get("head") != listed_head or observation.get("errors")):
                     continue
                 path = journal_path(state_dir, number, listed_head)
+                event("selected", pr=number, head=listed_head)
                 return worker(root, path, number)
+            try:
+                _, final_branch = api(f"/branches/{merge_pr.BRANCH}")
+                final_base = final_branch.get("commit", {}).get("id", "")
+            except (OSError, TypeError, ValueError):
+                return uncertain("recheck-main")
+            if final_base != base:
+                return uncertain("main-changed")
+            event("scan", open=len(candidates), fetched=fetched, routine=routine)
             return 0
     except LeaseUnavailable:
         return LEASE_BUSY
