@@ -119,7 +119,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
             &theme,
             out,
             state,
-            args.text_scale,
         )?;
         return Ok(());
     }
@@ -130,7 +129,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
             &theme,
             out,
             ui::State::new(),
-            args.text_scale,
         )?;
     } else if args.has("--narrow") {
         render_shot_to_png(
@@ -139,7 +137,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
             &theme,
             out,
             ui::State::new(),
-            args.text_scale,
         )?;
     } else {
         let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
@@ -153,7 +150,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
                 &theme,
                 out,
                 ui::State::new(),
-                args.text_scale,
             )?,
             None => {
                 render_shot_to_png(
@@ -162,7 +158,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
                     &theme,
                     out,
                     ui::State::new(),
-                    args.text_scale,
                 )?;
             }
         }
@@ -183,7 +178,6 @@ fn render_shot_to_png(
     theme: &Theme,
     out: &std::path::Path,
     mut state: ui::State,
-    text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let presence = PresenceCtx::empty();
