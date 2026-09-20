@@ -86,6 +86,7 @@ class WorkerContract(unittest.TestCase):
                 'publish_repository': 'code.podesta.ai/qos/tilo-development',
                 'generation': 1, 'source_date_epoch': 1789690573, 'systemd_version': '259.1',
                 'minimum_free_bytes': 8 * 1024**3, 'stage_timeout_seconds': 1800,
+                'signing_response_timeout_seconds': 1800, 'prediction_stage_timeout_seconds': 5400,
                 **{key: 'registry.invalid/input@sha256:' + 'f' * 64
                    for key in ('base_ref', 'rpms_ref', 'kernel_ref', 'wpe_ref')}}
 
@@ -108,6 +109,20 @@ class WorkerContract(unittest.TestCase):
 
     def test_exact_public_contract(self):
         self.assertEqual(json.loads(self.check(self.request())), self.request())
+
+    def test_initial_operator_gate_is_independent_of_execution_deadlines(self):
+        self.assertEqual(worker.OPERATOR_READY_TIMEOUT_SECONDS, 7200)
+        self.assertEqual(worker.POST_GATE_OBSERVATION_SECONDS, 8700)
+        self.assertEqual(worker.WORKER_WAIT_TIMEOUT_SECONDS, 15900)
+        # The request still carries the narrower build/signing budgets checked
+        # by the finalizer; the human staging window does not rewrite them.
+        self.assertEqual(self.request()['signing_response_timeout_seconds'], 1800)
+
+    def test_workflow_encloses_gate_supervision_and_receipt_cleanup(self):
+        workflow = (Path(__file__).resolve().parents[2]
+                    / '.forgejo/workflows/development-finalize.yml').read_text()
+        self.assertIn('timeout-minutes: 280', workflow)
+        self.assertIn('timeout-minutes: 270', workflow)
 
     def test_reviewed_assembly_source_and_epoch_bound_together(self):
         request = self.request()
@@ -207,6 +222,23 @@ class WorkerContract(unittest.TestCase):
         self.assertIn('signing-pending.json', worker.EVIDENCE)
         self.assertTrue(all('/' not in name and name.endswith('.json') for name in worker.EVIDENCE))
         self.assertFalse(any(word in name for name in worker.EVIDENCE for word in ('key', 'auth', 'log')))
+
+    def test_restore_requires_an_explicit_complete_bounded_receipt_chain(self):
+        for stage in worker.CHECKPOINT_STAGES:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory(
+                    prefix=f'tilo-stage{stage}-checkpoint-') as temporary:
+                root = Path(temporary)
+                expected = worker.EVIDENCE[:stage]
+                for number, name in enumerate(expected, 1):
+                    (root / name).write_text(json.dumps({'schema': 1, 'stage': number}))
+                result = worker.registry_checkpoint(root, stage)
+                self.assertEqual(tuple(result), expected)
+                (root / expected[-1]).unlink()
+                with self.assertRaisesRegex(ValueError, 'complete bounded'):
+                    worker.registry_checkpoint(root, stage)
+                (root / expected[-1]).symlink_to(root / expected[0])
+                with self.assertRaisesRegex(ValueError, 'complete bounded'):
+                    worker.registry_checkpoint(root, stage)
 
     def archive(self, kind=tarfile.REGTYPE, size=2, count=1):
         buffer = io.BytesIO()

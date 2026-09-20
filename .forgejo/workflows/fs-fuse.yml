@@ -27,6 +27,7 @@ on:
   #     - "crates/session/shell/**"
   #     - "crates/sdk/ui-core/**"
   #     - "scripts/ci-run.sh"
+  #     - "tools/ci/focused_test.py"
   #     - "os/usr/libexec/tilo-session"
   #     - "os/usr/lib/systemd/user/tilo-graphical-session.target"
   #     - "os/usr/lib/systemd/user/tilo-identity.service"
@@ -64,6 +65,7 @@ on:
       - "crates/session/shell/**"
       - "crates/sdk/ui-core/**"
       - "scripts/ci-run.sh"
+      - "tools/ci/focused_test.py"
       - "os/usr/libexec/tilo-session"
       - "os/usr/lib/systemd/user/tilo-graphical-session.target"
       - "os/usr/lib/systemd/user/tilo-identity.service"
@@ -76,27 +78,67 @@ on:
       - "os/containers/tilo-relay/**"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/fs-fuse.yml"
+      - "tools/ci/workflow_applicability.py"
+      - "tools/ci/prepare_pr_history.py"
+      - "tools/ci/sccache.sh"
   schedule:
     - cron: "30 4 * * *"
   workflow_dispatch:
 
 concurrency:
-  # The privileged runner exposes one kernel-backed FUSE lane. Jobs from
-  # different refs must queue behind each other rather than contend for that
-  # device and get killed immediately after preflight.
-  group: fs-fuse
-  cancel-in-progress: false
+  # Each broker runner has its own Kata guest kernel, DinD storage and FUSE
+  # device. Replace superseded heavy PR runs, but keep manual and scheduled
+  # validation separate and uncancelled. Check/lint use their own commit groups.
+  group: fs-fuse-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_HOME: /cargo-home
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   RUSTFLAGS: "-D warnings"
   TILO_FS_FUSE_REQUIRED: "1"
 
 jobs:
+  applicability:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    outputs:
+      applicable: ${{ steps.compare.outputs.applicable }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+          sparse-checkout: |
+            tools/ci/prepare_pr_history.py
+            tools/ci/workflow_applicability.py
+            .forgejo/workflows/fs-fuse.yml
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Prepare targeted PR history
+        run: python3 -I tools/ci/prepare_pr_history.py
+      - name: Require an exact relevant PR diff before FUSE work
+        id: compare
+        run: python3 -I tools/ci/workflow_applicability.py --workflow .forgejo/workflows/fs-fuse.yml
+
   real-fuse:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 60
     container:
@@ -108,9 +150,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Require a real kernel FUSE environment
         run: bash scripts/ci-fuse-preflight.sh
+
+      - name: Enable shared compiler cache
+        run: bash tools/ci/sccache.sh prepare
 
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/tilo-session-lifecycle.sh
@@ -164,7 +211,9 @@ jobs:
         run: |
           bash scripts/ci-run.sh "replica receipt clock skew" -- cargo test --locked -p fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
           bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p fs sync::tests::a_read_only_peer_pulls_updates_but_cannot_author --lib -- --nocapture
-          bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- cargo test --locked -p fs fs::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions --lib -- --nocapture
+          SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=fs TEST_TARGET= OPERATION=test-lib \
+            TEST_NAME=fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions \
+            bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- python3 -I tools/ci/focused_test.py run --root .
 
       - name: Reject corrupted collaborative state and prove legacy name migration
         run: |
@@ -185,12 +234,29 @@ jobs:
           bash scripts/ci-run.sh "collaborative-files performance gate" --
           cargo test --locked -p fs --test performance_gate -- --nocapture --test-threads=1
 
+      - name: Report compiler cache effectiveness
+        if: always()
+        continue-on-error: true
+        run: |
+          echo '### real-fuse compiler cache' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   # File Explorer's full UI/library harness links the entire toolkit. Building
   # it after the relay, shell, and FUSE harnesses filled the privileged
   # runner's container overlay, then an ordinary tempfile write failed with
   # ENOSPC at test 213/213. Give this non-FUSE suite a fresh container instead
   # of deleting an incomplete subset of Cargo artifacts in the live mount job.
   files-ux:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
     runs-on: runner
     timeout-minutes: 30
     env:
@@ -203,8 +269,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Enable shared compiler cache
+        run: bash tools/ci/sccache.sh prepare
 
       - name: Enforce Files collaboration UX in a fresh overlay
         run: >-
           bash scripts/ci-run.sh "Files collaboration UX" --
           cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1
+
+      - name: Report compiler cache effectiveness
+        if: always()
+        continue-on-error: true
+        run: |
+          echo '### files-ux compiler cache' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

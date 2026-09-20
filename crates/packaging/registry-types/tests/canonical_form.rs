@@ -36,6 +36,8 @@ fn sample_entry(pubkey_hex: String) -> RegistryEntry {
             qpkg_root_hash_hex: "cd".repeat(32),
             qpkg_size_bytes: 12_345,
             released_at_unix: 1_800_000_000,
+            qpkg_blake3_hex: None,
+            target: None,
         }],
         updated_at_unix: 1_800_000_100,
         signature_hex: String::new(),

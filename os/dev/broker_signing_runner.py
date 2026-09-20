@@ -4,6 +4,7 @@ Only fixed transport/staging commands are admitted. Tokens stay in transient
 stdin, never argv, files or diagnostics. Public payloads use bounded file/stream
 I/O rather than JSON/base64 buffering. No new credentials or service is created.
 """
+import contextlib
 import importlib.util
 import io
 import json
@@ -161,11 +162,24 @@ class BrokerRunner:
         if type(limit) is not int or not 0 < limit <= MAX_STREAM or not 0 < timeout <= 1800:
             raise ValueError('invalid broker operation bounds')
         deadline = time.monotonic() + timeout
-        # Anonymous scratch holds only public bytes. The token header travels
-        # through a pipe and is never written to a filesystem object.
-        with tempfile.TemporaryFile() as public:
+        # Seekable public input can feed the broker directly once its remaining
+        # size is admitted. Only non-seekable input needs an anonymous staging
+        # file. The token header always stays in the pipe.
+        with contextlib.ExitStack() as resources:
             count = 0
-            if source is not None:
+            public = io.BytesIO()
+            public_start = 0
+            if source is not None and getattr(source, 'seekable', lambda: False)():
+                start = source.tell()
+                end = source.seek(0, os.SEEK_END)
+                source.seek(start)
+                count = end - start
+                if not 0 <= count <= MAX_STREAM:
+                    raise ValueError('broker input exceeds admission')
+                public = source
+                public_start = start
+            elif source is not None:
+                public = resources.enter_context(tempfile.TemporaryFile())
                 while True:
                     data = source.read(min(65536, MAX_STREAM + 1 - count))
                     if not data: break
@@ -189,17 +203,22 @@ class BrokerRunner:
             header_raw = spool.canonical(header) + b'\n'
             if len(header_raw) > 262144:
                 raise ValueError('broker header exceeds admission')
-            public.seek(0)
+            public.seek(public_start)
             reader, writer = os.pipe()
             failures = []
             def feed():
                 try:
                     with os.fdopen(writer, 'wb') as stream:
                         stream.write(header_raw)
-                        while True:
-                            chunk = public.read(65536)
-                            if not chunk: break
+                        remaining = count
+                        while remaining:
+                            chunk = public.read(min(65536, remaining))
+                            if not chunk:
+                                raise ValueError('broker input shortened during transfer')
                             stream.write(chunk)
+                            remaining -= len(chunk)
+                        if public.read(1):
+                            raise ValueError('broker input grew during transfer')
                 except (OSError, ValueError):
                     failures.append(True)
             thread = threading.Thread(target=feed, daemon=True)

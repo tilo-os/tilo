@@ -20,6 +20,7 @@ class SelectorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text("[workspace]\n")
         def package(name: str, rel: str, deps: list[str] | None = None) -> dict:
             directory = self.root / rel
             return {
@@ -42,6 +43,39 @@ class SelectorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_native_dependency_selection_tracks_declared_build_and_observer_inputs(self):
+        (self.root / "Cargo.toml").write_text(
+            '[patch.crates-io]\nopenh264-sys2 = { path = "vendor/openh264-sys2" }\n')
+        # No vendor payload or fixture exists: declaration still selects the job,
+        # whose production command must fail rather than convert absence to skip.
+        for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
+                     "vendor/openh264-sys2/build.rs", "os/tests/test_openh264_source_order.py",
+                     ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py"):
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
+                self.assertTrue(plan["native_dependencies_required"])
+        self.assertFalse(ci_select.native_dependencies_required(self.root, ["apps/calculator/src/actions.rs"]))
+        self.assertFalse(ci_select.native_dependencies_required(self.root, ["DEVELOPMENT.md"]))
+        self.assertTrue(ci_select.native_dependencies_required(self.root, [], force_full=True))
+
+    def test_native_contract_bootstrap_does_not_break_other_dependencies_or_full_runs(self):
+        for changes in (["Cargo.lock"], ["Cargo.toml"], ["rust-toolchain.toml"],
+                        [".forgejo/workflows/check.yml", "tools/ci/affected_packages.py",
+                         "os/tests/test_openh264_source_order.py"], ["tools/ci/workspace_graph.py"], []):
+            with self.subTest(changes=changes):
+                self.assertFalse(ci_select.native_dependencies_required(self.root, changes))
+                self.assertFalse(ci_select.native_dependencies_required(self.root, changes, force_full=True))
+        # Removing the declaration together with native files cannot hide the check.
+        self.assertTrue(ci_select.native_dependencies_required(self.root, ["vendor/openh264-sys2/build.rs"]))
+
+    def test_unreadable_native_declaration_fails_selection(self):
+        (self.root / "Cargo.toml").write_text("[malformed")
+        with self.assertRaises(ValueError):
+            ci_select.native_dependencies_required(self.root, ["Cargo.lock"])
+        (self.root / "Cargo.toml").unlink()
+        with self.assertRaises(FileNotFoundError):
+            ci_select.native_dependencies_required(self.root, ["Cargo.lock"])
+
     def test_reverse_dependency_closure(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
         self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "qdoc", "pkg", "collab-types"})
@@ -61,6 +95,7 @@ class SelectorTests(unittest.TestCase):
     def test_design_only_has_explicit_empty_rust_matrix(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["docs/designs/ci.md"], 2)
         self.assertFalse(plan["rust_required"])
+        self.assertTrue(plan["security_required"])
         self.assertEqual(plan["selected_count"], 0)
         self.assertEqual(plan["shard_count"], 0)
         self.assertEqual(plan["matrix"], {"include": []})
@@ -68,7 +103,97 @@ class SelectorTests(unittest.TestCase):
         ci_select.emit_github(plan, output)
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(values["rust_required"], "false")
+        self.assertEqual(values["security_required"], "true")
         self.assertEqual(values["selected_count"], "0")
+
+    def test_security_skip_is_limited_to_audited_pull_request_inputs(self) -> None:
+        self.install_quality_helpers()
+        prose = [
+            "AGENTS.md",
+            "DEVELOPMENT.md",
+            "docs/ci-performance.md",
+            "docs/ci-emergency-relief.md",
+            "docs/headless-testing.md",
+            "docs/designs/ci.md",
+        ]
+        for path in prose:
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("audited prose\n")
+        for path in prose:
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, [path], 2, allow_security_skip=True)
+                self.assertFalse(plan["security_required"])
+        for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
+            for changes in ([source], [test], [source, test, "docs/designs/ci.md"]):
+                with self.subTest(changes=changes):
+                    plan = ci_select.make_plan(
+                        self.metadata, self.root, changes, 2, allow_security_skip=True)
+                    self.assertFalse(plan["security_required"])
+
+    def test_security_selector_defaults_true_for_non_pr_and_full_runs(self) -> None:
+        for changes, options in [
+            (["docs/designs/ci.md"], {}),
+            (["docs/designs/ci.md"], {"force_full": True}),
+            (["tools/ci/affected_packages.py"], {}),
+        ]:
+            with self.subTest(changes=changes, options=options):
+                self.install_quality_helpers()
+                plan = ci_select.make_plan(self.metadata, self.root, changes, 2, **options)
+                self.assertTrue(plan["security_required"])
+
+    def test_security_selector_rejects_control_sensitive_and_mixed_inputs(self) -> None:
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        excluded = [
+            ".forgejo/workflows/check.yml",
+            "os/tests/security-boundaries.sh",
+            "tools/run-security-boundary-invariants.sh",
+            "Cargo.toml",
+            "os/external-assets/github-assets.tsv",
+            "SECURITY.md",
+            "tools/unknown.py",
+        ]
+        for path in excluded:
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(
+                    self.metadata, self.root, [path], 2, allow_security_skip=True)
+                self.assertTrue(plan["security_required"])
+        mixed = ci_select.make_plan(
+            self.metadata,
+            self.root,
+            ["tools/ci/affected_packages.py", "SECURITY.md"],
+            2,
+            allow_security_skip=True,
+        )
+        self.assertTrue(mixed["security_required"])
+
+    def test_security_selector_fails_closed_for_deleted_or_unobserved_helpers(self) -> None:
+        deleted_prose = self.root / "docs/designs/deleted.md"
+        deleted_prose.parent.mkdir(parents=True, exist_ok=True)
+        deleted_prose.write_text("audited prose\n")
+        deleted_prose.unlink()
+        self.assertTrue(ci_select.make_plan(
+            self.metadata,
+            self.root,
+            ["docs/designs/deleted.md"],
+            2,
+            allow_security_skip=True,
+        )["security_required"])
+        for source, test in ci_select.QUALITY_ONLY_HELPERS.items():
+            for missing in (source, test):
+                self.install_quality_helpers()
+                (self.root / missing).unlink()
+                with self.subTest(source=source, missing=missing):
+                    plan = ci_select.make_plan(
+                        self.metadata,
+                        self.root,
+                        [source],
+                        2,
+                        allow_security_skip=True,
+                    )
+                    self.assertTrue(plan["security_required"])
 
     def test_design_exception_never_overrides_code_or_manual_full(self) -> None:
         for changes, full in [
@@ -91,7 +216,7 @@ class SelectorTests(unittest.TestCase):
                 self.assertTrue(ci_select.ALWAYS_PACKAGES.issubset(plan["selected"]))
 
     def test_audited_developer_docs_omit_only_rust(self) -> None:
-        paths = ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md"]
+        paths = ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md", "docs/headless-testing.md"]
         for changes in [[path] for path in paths] + [paths + ["docs/designs/ci.md"]]:
             with self.subTest(changes=changes):
                 plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -99,8 +224,24 @@ class SelectorTests(unittest.TestCase):
                 self.assertEqual(plan["selected_count"], 0)
                 self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_headless_guide_and_agent_instructions_need_no_native_jobs(self) -> None:
+        changes = ["AGENTS.md", "docs/headless-testing.md"]
+        for name in changes:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Developer test commands.\n")
+        plan = ci_select.make_plan(
+            self.metadata, self.root, changes, 2, allow_security_skip=True)
+        self.assertFalse(plan["rust_required"])
+        self.assertFalse(plan["security_required"])
+        self.assertEqual(plan["matrix"], {"include": []})
+        (self.root / changes[1]).unlink()
+        deleted = ci_select.make_plan(
+            self.metadata, self.root, changes, 2, allow_security_skip=True)
+        self.assertTrue(deleted["security_required"])
+
     def test_developer_docs_do_not_mask_mixed_changes_or_full_override(self) -> None:
-        for doc in ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md"]:
+        for doc in ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md", "docs/headless-testing.md"]:
             for extra, force in [(None, True), ("leaf/src/lib.rs", False),
                                  ("Cargo.lock", False), ("docs/packaging.md", False)]:
                 with self.subTest(doc=doc, extra=extra, force=force):
@@ -160,6 +301,40 @@ class SelectorTests(unittest.TestCase):
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
         self.assertTrue(plan["full"])
         self.assertEqual(plan["selected_count"], plan["workspace_count"])
+        self.assertEqual(plan["shard_count"], 1)  # small workspace stays cheap
+
+    def test_global_inputs_balance_large_workspaces_without_losing_coverage(self):
+        # Enough genuine package targets/dependencies to exceed the budget,
+        # with uneven costs so this exercises the production balancer.
+        for index in range(100):
+            name = f"app-{index:03}"
+            self.metadata["packages"].append({
+                "name": name,
+                "manifest_path": str(self.root / "apps" / name / "Cargo.toml"),
+                "targets": [{"name": name}] * (1 + index % 5),
+                "dependencies": [{"name": f"external-{i}"} for i in range(index % 30)],
+            })
+        for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "crates/unmapped/src/lib.rs"):
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 99)
+                rows = plan["matrix"]["include"]
+                self.assertEqual(plan["shard_count"], 2)
+                self.assertEqual(len(rows), 2)
+                self.assertEqual({row["arch"] for row in rows}, {"x86_64"})
+                self.assertEqual({row["runner"] for row in rows}, {ci_select.NATIVE_RUNNERS["x86_64"]})
+                for field in ("packages", "test_packages"):
+                    names = [name for row in rows for name in row[field].split()[1::2]]
+                    self.assertEqual(sorted(names), plan["selected"])
+                    self.assertEqual(len(names), len(set(names)))
+                self.assertEqual(sum(row["estimated_cost"] for row in rows), plan["estimated_cost"])
+                self.assertLess(max(row["estimated_cost"] for row in rows), plan["estimated_cost"] * .6)
+                reversed_metadata = {"packages": list(reversed(self.metadata["packages"]))}
+                self.assertEqual(plan, ci_select.make_plan(reversed_metadata, self.root, [path], 99))
+        single = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 1)
+        self.assertEqual(single["shard_count"], 1)
+        # A normal narrow edit does not fan out just because the workspace grew.
+        narrow = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 99)
+        self.assertEqual(narrow["shard_count"], 1)
 
     def test_explicit_full_selects_every_package_even_without_changes(self) -> None:
         for changes in ([], ["docs/development-signing.md"]):
@@ -335,6 +510,100 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(plan["selected"], [])
         self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_builder_only_asset_rows_do_not_compile_unrelated_rust(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "base"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        manifest = self.root / "os/external-assets/github-assets.tsv"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            "a" * 64 + "\tpdfium.tgz\thttps://example.invalid/pdfium.tgz\n"
+        )
+        subprocess.run(["git", "add", str(manifest.relative_to(self.root))], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "base manifest"], cwd=self.root, check=True)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        manifest.write_text(
+            manifest.read_text()
+            + "# Builder-only linker archives.\n"
+            + "b" * 64
+            + "\tmold-2.40.4-x86_64-linux.tar.gz"
+            + "\thttps://github.com/rui314/mold/releases/download/v2.40.4/"
+            + "mold-2.40.4-x86_64-linux.tar.gz\n"
+            + "c" * 64
+            + "\tmold-2.40.4-aarch64-linux.tar.gz"
+            + "\thttps://github.com/rui314/mold/releases/download/v2.40.4/"
+            + "mold-2.40.4-aarch64-linux.tar.gz\n"
+        )
+        subprocess.run(["git", "commit", "-qam", "add mold assets"], cwd=self.root, check=True)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        self.assertTrue(ci_select.builder_only_asset_manifest_change(self.root, base, head))
+        self.install_quality_helpers()
+        self.install_control_inputs()
+        recipe = self.root / "os/Containerfile.builder"
+        recipe.parent.mkdir(parents=True, exist_ok=True)
+        recipe.write_text("FROM scratch\n")
+        changes = [
+            ".forgejo/workflows/build-builder-image.yml",
+            "os/Containerfile.builder",
+            "os/external-assets/github-assets.tsv",
+            "os/tests/test_builder_candidate_workflow.py",
+            "tools/ci/verify-native-mold.sh",
+            "tools/tests/test_ci_native_mold.py",
+        ]
+        plan = ci_select.make_plan(
+            self.metadata, self.root, changes, 2, builder_only_external_assets=True
+        )
+        self.assertFalse(plan["rust_required"])
+        self.assertFalse(plan["full"])
+        self.assertEqual(plan["matrix"], {"include": []})
+
+    def test_shared_or_mixed_asset_changes_force_full_workspace(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "base"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        manifest = self.root / "os/external-assets/github-assets.tsv"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            "a" * 64 + "\tpdfium-old.tgz\thttps://example.invalid/pdfium-old.tgz\n"
+        )
+        subprocess.run(["git", "add", str(manifest.relative_to(self.root))], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "base manifest"], cwd=self.root, check=True)
+        base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+        manifest.write_text(
+            manifest.read_text()
+            + "b" * 64
+            + "\tmold-2.40.4-x86_64-linux.tar.gz"
+            + "\thttps://github.com/rui314/mold/releases/download/v2.40.4/"
+            + "mold-2.40.4-x86_64-linux.tar.gz\n"
+            + "c" * 64 + "\tpdfium-new.tgz\thttps://example.invalid/pdfium-new.tgz\n"
+        )
+        subprocess.run(["git", "commit", "-qam", "mixed assets"], cwd=self.root, check=True)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        self.assertFalse(ci_select.builder_only_asset_manifest_change(self.root, base, head))
+        plan = ci_select.make_plan(
+            self.metadata, self.root, ["os/external-assets/github-assets.tsv"], 2
+        )
+        self.assertTrue(plan["rust_required"])
+        self.assertTrue(plan["full"])
+        self.assertEqual(plan["selected_count"], plan["workspace_count"])
+
+        manifest.write_text(
+            "a" * 64 + "\tpdfium-old.tgz\thttps://example.invalid/pdfium-old.tgz\n"
+            + "d" * 64
+            + "\tmold-2.40.4-aarch64-linux.tar.gz"
+            + "\thttps://example.invalid/mold-2.40.4-aarch64-linux.tar.gz\n"
+        )
+        subprocess.run(["git", "commit", "-qam", "untrusted mold source"], cwd=self.root, check=True)
+        untrusted_head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
+        ).strip()
+        self.assertFalse(
+            ci_select.builder_only_asset_manifest_change(self.root, base, untrusted_head)
+        )
+
     def test_ci_control_plane_mapping_stays_exact_and_conservative(self) -> None:
         self.install_control_inputs()
         source = ".forgejo/workflows/check.yml"
@@ -443,7 +712,7 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(values["shard_count"], "1")
         self.assertEqual(values["estimated_cost"], str(plan["estimated_cost"]))
 
-    def test_changed_files_compares_shallow_base_and_head_trees(self) -> None:
+    def test_changed_files_fails_when_merge_base_is_unavailable(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
         subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
@@ -459,7 +728,32 @@ class SelectorTests(unittest.TestCase):
         subprocess.run(["git", "commit", "-qm", "head"], cwd=self.root, check=True)
         head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
 
-        self.assertEqual(ci_select.changed_files(self.root, base, head), ["base.rs", "head.rs"])
+        with self.assertRaisesRegex(RuntimeError, "merge base"):
+            ci_select.changed_files(self.root, base, head)
+
+    def test_changed_files_excludes_changes_only_on_advanced_base(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "base"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.email", "ci@example.invalid"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "CI"], cwd=self.root, check=True)
+        (self.root / "shared.txt").write_text("common\n")
+        subprocess.run(["git", "add", "shared.txt"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "common"], cwd=self.root, check=True)
+
+        subprocess.run(["git", "switch", "-qc", "pull-request"], cwd=self.root, check=True)
+        (self.root / "head-only.py").write_text("print('head')\n")
+        subprocess.run(["git", "add", "head-only.py"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "pull request"], cwd=self.root, check=True)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.root, text=True).strip()
+
+        subprocess.run(["git", "switch", "-q", "base"], cwd=self.root, check=True)
+        (self.root / "base-only.rs").write_text("fn landed_on_main() {}\n")
+        subprocess.run(["git", "add", "base-only.rs"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "advance base"], cwd=self.root, check=True)
+        advanced_base = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
+        ).strip()
+
+        self.assertEqual(ci_select.changed_files(self.root, advanced_base, head), ["head-only.py"])
 
     def test_move_between_packages_selects_both_owners_and_dependants(self) -> None:
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
