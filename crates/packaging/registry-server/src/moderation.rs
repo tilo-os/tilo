@@ -818,11 +818,14 @@ fn validate_bound_version(
         .as_ref()
         .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
     let target_ok = version.target.as_ref().is_some_and(|target| {
-        target.architecture == "x86_64"
-            && matches!(
-                target.isa.as_str(),
-                "x86_64" | "x86_64-v2" | "x86_64-v3" | "x86_64-v4"
-            )
+        matches!(
+            (target.architecture.as_str(), target.isa.as_str()),
+            ("x86_64", "x86_64" | "x86_64-v2" | "x86_64-v3" | "x86_64-v4")
+                | (
+                    "aarch64",
+                    "aarch64" | "aarch64-v8.2" | "aarch64-v8.4" | "aarch64-v9"
+                )
+        )
     });
     if !hash_ok || !target_ok || version.qpkg_size_bytes == 0 {
         return Err(ModerationError::UnsupportedPackageTarget {
@@ -941,7 +944,7 @@ pub enum ModerationError {
     VersionHistoryRemoved { package_id: String, version: String },
     #[error("entry {package_id} reuses version identity {version} for different bytes")]
     VersionIdentityReused { package_id: String, version: String },
-    #[error("entry {package_id} version {version} lacks a supported x86_64 artifact binding")]
+    #[error("entry {package_id} version {version} lacks a supported architecture artifact binding")]
     UnsupportedPackageTarget { package_id: String, version: String },
     #[error("public entry {0} conflicts with the quarantined revision")]
     PublicEntryConflict(String),
@@ -1050,6 +1053,27 @@ mod tests {
             service.submit(change(&other, EntryAction::Add, 12), 102),
             Err(ModerationError::PendingOwnedByAnotherPublisher(_))
         ));
+    }
+
+    #[test]
+    fn both_architectures_are_preserved_when_a_stale_submission_arrives() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut OsRng);
+        let mut aggregate = entry(&key, 10);
+        let mut arm = aggregate.versions[0].clone();
+        let target = arm.target.as_mut().unwrap();
+        target.architecture = "aarch64".into();
+        target.isa = "aarch64-v8.2".into();
+        aggregate.versions.push(arm);
+        sign_entry(&mut aggregate, &key);
+        let request = sign_change_request(EntryAction::Add, aggregate, &key);
+        let pending = service.submit(request, 100).unwrap();
+        assert_eq!(pending.change.entry.versions.len(), 2);
+        assert!(matches!(
+            service.submit(change(&key, EntryAction::Add, 11), 101),
+            Err(ModerationError::VersionHistoryRemoved { .. })
+        ));
+        assert_eq!(service.pending("dev.tilo.editor").unwrap(), Some(pending));
     }
 
     #[test]
