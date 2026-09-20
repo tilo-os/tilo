@@ -367,6 +367,16 @@ dependencies = ["markdown-parser 1.1.0"]
                 ["notes"],
             )
 
+    def test_real_toolkit_change_fans_out_to_every_generic_app(self) -> None:
+        catalog = app_release.app_catalog(ROOT)
+        metadata = app_release.ci_select.cargo_metadata(ROOT)
+        self.assertEqual(
+            app_release.apps_from_changes(
+                ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, ROOT
+            ),
+            sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
+        )
+
     def test_default_collection_is_the_complete_publication_boundary(self) -> None:
         catalog = app_release.app_catalog(ROOT)
         self.assertEqual(
