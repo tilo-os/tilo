@@ -209,6 +209,17 @@ struct PhaseWindow {
     cpu_swizzle_us: u128,
     readback_bytes: u64,
     output_bytes: u64,
+    /// Wall time around the complete renderer bridge call. This remains
+    /// available when a failed/timed-out paint cannot publish its detailed
+    /// Vello phase record.
+    bridge_us: u128,
+    /// Wall time after the bridge returns until the scanout submission path
+    /// completes (dumb-buffer cursor work, dirtyfb/page-flip included).
+    scanout_us: u128,
+    /// Legacy readback attempts which returned without detailed bridge phase
+    /// timing. They are still frames attempted by the physical presenter and
+    /// must not disappear from a performance incident report.
+    unprofiled_frames: u64,
 }
 
 impl Default for PhaseWindow {
@@ -225,6 +236,9 @@ impl Default for PhaseWindow {
             cpu_swizzle_us: 0,
             readback_bytes: 0,
             output_bytes: 0,
+            bridge_us: 0,
+            scanout_us: 0,
+            unprofiled_frames: 0,
         }
     }
 }
@@ -242,6 +256,37 @@ impl PhaseWindow {
             .saturating_add(timing.cpu_copy_swizzle_us);
         self.readback_bytes = self.readback_bytes.saturating_add(timing.readback_bytes);
         self.output_bytes = self.output_bytes.saturating_add(timing.cpu_output_bytes);
+    }
+
+    fn record_legacy_attempt(
+        &mut self,
+        timing: Option<paint::BridgePhaseTiming>,
+        bridge_us: u128,
+        scanout_us: u128,
+    ) {
+        if let Some(timing) = timing {
+            self.record(timing);
+        } else {
+            self.frames = self.frames.saturating_add(1);
+            self.unprofiled_frames = self.unprofiled_frames.saturating_add(1);
+        }
+        self.bridge_us = self.bridge_us.saturating_add(bridge_us);
+        self.scanout_us = self.scanout_us.saturating_add(scanout_us);
+    }
+
+    fn summary_fields(&self, now: Instant) -> PhaseSummaryFields {
+        PhaseSummaryFields {
+            frames: self.frames,
+            direct_frames: self.direct_frames,
+            direct_dropped: self.direct_dropped,
+            flip_completions: self.flip_completions,
+            unprofiled_frames: self.unprofiled_frames,
+            window_us: now.saturating_duration_since(self.started).as_micros(),
+            bridge_us: self.bridge_us,
+            scanout_us: self.scanout_us,
+            readback_bytes: self.readback_bytes,
+            output_bytes: self.output_bytes,
+        }
     }
 
     fn record_direct_submit(&mut self) {
@@ -269,6 +314,20 @@ impl PhaseWindow {
             ..Self::default()
         };
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PhaseSummaryFields {
+    frames: u64,
+    direct_frames: u64,
+    direct_dropped: u64,
+    flip_completions: u64,
+    unprofiled_frames: u64,
+    window_us: u128,
+    bridge_us: u128,
+    scanout_us: u128,
+    readback_bytes: u64,
+    output_bytes: u64,
 }
 
 #[cfg(test)]
@@ -302,6 +361,29 @@ mod phase_window_tests {
         assert_eq!(window.cpu_swizzle_us, 20);
         assert_eq!(window.readback_bytes, 25);
         assert_eq!(window.output_bytes, 30);
+        assert_eq!(window.bridge_us, 0);
+        assert_eq!(window.scanout_us, 0);
+        assert_eq!(window.unprofiled_frames, 0);
+    }
+
+    #[test]
+    fn phase_window_keeps_failed_legacy_attempt_visible_without_vello_timing() {
+        let mut window = PhaseWindow::default();
+        window.record_legacy_attempt(None, 41, 7);
+        window.record_legacy_attempt(Some(timing(2)), 23, 5);
+
+        assert_eq!(window.frames, 2);
+        assert_eq!(window.unprofiled_frames, 1);
+        assert_eq!(window.bridge_us, 64);
+        assert_eq!(window.scanout_us, 12);
+        assert_eq!(window.submit_us, 2);
+        assert_eq!(window.gpu_readback_map_us, 4);
+        let summary = window.summary_fields(window.started + Duration::from_micros(99));
+        assert_eq!(summary.frames, 2);
+        assert_eq!(summary.unprofiled_frames, 1);
+        assert_eq!(summary.bridge_us, 64);
+        assert_eq!(summary.scanout_us, 12);
+        assert_eq!(summary.window_us, 99);
     }
 
     #[test]
@@ -332,6 +414,9 @@ mod phase_window_tests {
         assert_eq!(window.cpu_swizzle_us, 0);
         assert_eq!(window.readback_bytes, 0);
         assert_eq!(window.output_bytes, 0);
+        assert_eq!(window.bridge_us, 0);
+        assert_eq!(window.scanout_us, 0);
+        assert_eq!(window.unprofiled_frames, 0);
     }
 
     #[test]
@@ -437,7 +522,7 @@ impl DrmPresenter {
         if self.blanked || self.paused {
             return;
         }
-        let direct_queued = paint_scanouts(
+        let sample = paint_scanouts(
             &mut self.scanouts,
             &self.outputs,
             &mut self.paint,
@@ -446,10 +531,10 @@ impl DrmPresenter {
             None,
             Some(&mut self.phase_window),
         );
-        if direct_queued {
+        if sample.direct_queued {
             self.retire_direct_flip();
         }
-        self.emit_phase_profile();
+        self.emit_phase_profile(sample);
     }
 
     fn render_frame(&mut self, frame: &FramePaint) {
@@ -457,7 +542,7 @@ impl DrmPresenter {
         if self.blanked || self.paused {
             return;
         }
-        let direct_queued = paint_scanouts(
+        let sample = paint_scanouts(
             &mut self.scanouts,
             &self.outputs,
             &mut self.paint,
@@ -470,10 +555,10 @@ impl DrmPresenter {
             }),
             Some(&mut self.phase_window),
         );
-        if direct_queued {
+        if sample.direct_queued {
             self.retire_direct_flip();
         }
-        self.emit_phase_profile();
+        self.emit_phase_profile(sample);
     }
 
     /// Tighten `Presenter::present_frame`'s completion boundary to the KMS
@@ -510,30 +595,35 @@ impl DrmPresenter {
         }
     }
 
-    fn emit_phase_profile(&mut self) {
-        if let Some(timing) = self
-            .paint
-            .as_ref()
-            .and_then(paint::VelloDrmBridge::last_phase_timing)
-        {
-            self.phase_window.record(timing);
+    fn emit_phase_profile(&mut self, sample: PaintScanoutSample) {
+        if sample.legacy_attempted {
+            let timing = self
+                .paint
+                .as_ref()
+                .and_then(paint::VelloDrmBridge::last_phase_timing);
+            self.phase_window
+                .record_legacy_attempt(timing, sample.bridge_us, sample.scanout_us);
         }
         let now = Instant::now();
         if self.phase_window.due(now) {
             let frames = self.phase_window.frames.max(1);
+            let summary = self.phase_window.summary_fields(now);
             tracing::info!(
                 target: "tilo::render_phase_summary",
-                frames = self.phase_window.frames,
-                direct_frames = self.phase_window.direct_frames,
-                direct_dropped = self.phase_window.direct_dropped,
-                flip_completions = self.phase_window.flip_completions,
-                window_us = now.saturating_duration_since(self.phase_window.started).as_micros(),
+                frames = summary.frames,
+                direct_frames = summary.direct_frames,
+                direct_dropped = summary.direct_dropped,
+                flip_completions = summary.flip_completions,
+                window_us = summary.window_us,
                 avg_submit_us = self.phase_window.submit_us / u128::from(frames),
                 avg_gpu_readback_map_us = self.phase_window.gpu_readback_map_us / u128::from(frames),
                 avg_settle_us = self.phase_window.settle_us / u128::from(frames),
                 avg_cpu_swizzle_us = self.phase_window.cpu_swizzle_us / u128::from(frames),
-                readback_bytes = self.phase_window.readback_bytes,
-                output_bytes = self.phase_window.output_bytes,
+                readback_bytes = summary.readback_bytes,
+                output_bytes = summary.output_bytes,
+                bridge_us = summary.bridge_us,
+                scanout_us = summary.scanout_us,
+                unprofiled_frames = summary.unprofiled_frames,
                 "DRM render phase summary"
             );
             self.phase_window.reset(now);
@@ -578,6 +668,14 @@ impl DrmPresenter {
             );
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PaintScanoutSample {
+    direct_queued: bool,
+    legacy_attempted: bool,
+    bridge_us: u128,
+    scanout_us: u128,
 }
 
 /// Apply one reconfiguration to a scanout set. Shared by the presenter (normal case, render
@@ -676,13 +774,13 @@ fn paint_scanouts(
     scene: &Scene,
     damage: Option<SceneDamage<'_>>,
     mut phase_window: Option<&mut PhaseWindow>,
-) -> bool {
+) -> PaintScanoutSample {
     if scanouts.is_empty() {
-        return false;
+        return PaintScanoutSample::default();
     }
     let target_size = combined_geometry(outputs);
     if target_size.0 == 0 || target_size.1 == 0 {
-        return false;
+        return PaintScanoutSample::default();
     }
     if paint.is_none() {
         match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
@@ -695,7 +793,7 @@ fn paint_scanouts(
             }
             Err(e) => {
                 tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
-                return false;
+                return PaintScanoutSample::default();
             }
         }
     }
@@ -705,13 +803,13 @@ fn paint_scanouts(
         // already returned on failure — a miss here would mean that
         // silently didn't stick, so skip this frame rather than panic.
         let Some(bridge) = paint.as_mut() else {
-            return false;
+            return PaintScanoutSample::default();
         };
         if bridge.size() != target_size {
             bridge_resized = true;
             if let Err(e) = bridge.resize(target_size.0, target_size.1) {
                 tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                return false;
+                return PaintScanoutSample::default();
             }
         }
     }
@@ -748,7 +846,7 @@ fn paint_scanouts(
         // `fast_path` only goes true when `scanouts.first()` matched above,
         // so neither `first_mut()` nor `paint.as_mut()` can miss here.
         let (Some(entry), Some(bridge)) = (scanouts.first_mut(), paint.as_mut()) else {
-            return false;
+            return PaintScanoutSample::default();
         };
 
         // The direct path is deliberately narrow until every transformed,
@@ -842,13 +940,16 @@ fn paint_scanouts(
                                         framebuffer_staging_bytes = stats.framebuffer_staging_bytes,
                                         "DRM direct frame submitted"
                                     );
-                                    return true;
+                                    return PaintScanoutSample {
+                                        direct_queued: true,
+                                        ..PaintScanoutSample::default()
+                                    };
                                 }
                                 scanout::DirectSubmit::Busy => {
                                     if let Some(window) = phase_window.as_deref_mut() {
                                         window.record_direct_drop();
                                     }
-                                    return false;
+                                    return PaintScanoutSample::default();
                                 }
                                 scanout::DirectSubmit::Failed(error) => {
                                     tracing::warn!(%error, "DRM direct submit failed; disabling direct targets");
@@ -868,7 +969,7 @@ fn paint_scanouts(
                         if let Some(window) = phase_window.as_deref_mut() {
                             window.record_direct_drop();
                         }
-                        return false;
+                        return PaintScanoutSample::default();
                     }
                 }
             }
@@ -879,10 +980,15 @@ fn paint_scanouts(
             && sparse_coordinates_match
             && let Some(damage) = damage
         {
-            if let Err(error) = entry
+            let started = Instant::now();
+            let result = entry
                 .scanout
-                .present_scene_damage(cursor, bridge, scene, damage)
-            {
+                .present_scene_damage(cursor, bridge, scene, damage);
+            let elapsed_us = started.elapsed().as_micros();
+            let bridge_us = bridge
+                .last_phase_timing()
+                .map_or(elapsed_us, paint::BridgePhaseTiming::total_us);
+            if let Err(error) = result {
                 match error {
                     paint::BridgeError::RecoveryBackoff { .. } => {
                         tracing::debug!("DRM backend: paint recovery is cooling down: {error}");
@@ -890,17 +996,28 @@ fn paint_scanouts(
                     error => tracing::error!("DRM backend: history-aware XRGB paint: {error}"),
                 }
             }
-            return false;
+            return PaintScanoutSample {
+                legacy_attempted: true,
+                bridge_us,
+                scanout_us: elapsed_us.saturating_sub(bridge_us),
+                ..PaintScanoutSample::default()
+            };
         }
         if entry.scanout.xrgb_damage_requested() {
             entry.scanout.invalidate_xrgb_history();
         }
-        if let Err(e) = entry.scanout.present_into(cursor, |dst, pitch| {
+        let started = Instant::now();
+        let result = entry.scanout.present_into(cursor, |dst, pitch| {
             match damage.filter(|_| sparse_coordinates_match) {
                 Some(damage) => bridge.paint_damage_into_xrgb8888(scene, damage, dst, pitch),
                 None => bridge.paint_into_xrgb8888(scene, dst, pitch),
             }
-        }) {
+        });
+        let elapsed_us = started.elapsed().as_micros();
+        let bridge_us = bridge
+            .last_phase_timing()
+            .map_or(elapsed_us, paint::BridgePhaseTiming::total_us);
+        if let Err(e) = result {
             match e {
                 paint::BridgeError::RecoveryBackoff { .. } => {
                     tracing::debug!("DRM backend: paint recovery is cooling down: {e}");
@@ -908,7 +1025,12 @@ fn paint_scanouts(
                 e => tracing::error!("DRM backend: paint_into_xrgb8888: {e}"),
             }
         }
-        return false;
+        return PaintScanoutSample {
+            legacy_attempted: true,
+            bridge_us,
+            scanout_us: elapsed_us.saturating_sub(bridge_us),
+            ..PaintScanoutSample::default()
+        };
     }
 
     // Multi-output path: scanouts on one card share an open file
@@ -923,8 +1045,9 @@ fn paint_scanouts(
     // each output's sub-rect into its own scanout's dumb buffer (fused
     // single-pass, per output).
     let Some(bridge) = paint.as_mut() else {
-        return false;
+        return PaintScanoutSample::default();
     };
+    let bridge_started = Instant::now();
     let rgba = match bridge.paint(scene) {
         Ok(b) => b,
         Err(e) => {
@@ -934,14 +1057,25 @@ fn paint_scanouts(
                 }
                 e => tracing::error!("DRM backend: paint (combined): {e}"),
             }
-            return false;
+            return PaintScanoutSample {
+                legacy_attempted: true,
+                bridge_us: bridge_started.elapsed().as_micros(),
+                ..PaintScanoutSample::default()
+            };
         }
     };
+    let bridge_us = bridge_started.elapsed().as_micros();
+    let scanout_started = Instant::now();
     let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
     for e in scanouts.iter_mut() {
         paint_one_scanout(e, outputs, rgba, cw, ch, pointer);
     }
-    false
+    PaintScanoutSample {
+        legacy_attempted: true,
+        bridge_us,
+        scanout_us: scanout_started.elapsed().as_micros(),
+        ..PaintScanoutSample::default()
+    }
 }
 
 /// Drain one page-flip event stream per KMS device and route each completion
