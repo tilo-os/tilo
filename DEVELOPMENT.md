@@ -42,10 +42,12 @@ source-order exception additionally requires its pinned provenance and native
 dependency check; it is not ordinary vendored-source admission. Symlinks,
 submodules and malformed changes are rejected rather than treated as routine.
 
-The broader admission code was verified in the live controller on 2026-09-20
-after [infra PR 201](https://code.sandbox.example/PodestaAI/infra/pulls/201). Ordinary
-automatic landing under that revision has not yet been demonstrated; deployment
-alone is not evidence that the queue is advancing.
+A bounded queue pilot on 2026-09-20 created [integration PR 169](https://code.sandbox.example/qos/qos/pulls/169)
+for [author PR 162](https://code.sandbox.example/qos/qos/pulls/162), tested the generated
+candidate and landed exact commit `12fbe8301ddc9b3d410cefe49d79630b334034d3`
+without changing the author's branch. This verifies one integration through the
+pilot; it does not establish general queue availability or sustained reliability.
+Continue using the controller's current eligibility instructions.
 
 The CI scheduler assigns runners and queue order. Submit normally; do not reserve
 build slots or negotiate them with other agents. The repository's Codex hook sends
@@ -61,6 +63,11 @@ can still select every app; see [Preview affected applications](#preview-affecte
 for how selection and shared runtime compatibility interact. Use **Release / apps** manual
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
+
+The app registry is publicly reachable at `https://registry.sandbox.example`, but its
+signed catalogue is still empty. CI catalogue submission is not merged or enabled;
+Forgejo package publication alone does not make an app discoverable there. See the
+[production roadmap](docs/ci-production-roadmap.md) for the remaining acceptance gates.
 
 OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
 run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
