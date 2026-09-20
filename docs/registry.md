@@ -38,6 +38,9 @@ There are three layers:
 
 ```
  Registry owner offline key
+            | signs a short-lived, publisher-scoped channel authorization
+            v
+ Delegated channel key (networkless) <--- independently verifies staged qpkg bytes
             | signs exact policy + entries + expiry + moderation head
             v
  SignedRegistrySnapshot <--- publisher signs each RegistryEntry
@@ -81,6 +84,11 @@ publisher change sig = ed25519_sign(publisher_key,
 owner index sig      = ed25519_sign(owner_key,
                                     blake3(b"tilo-registry-index-v1\0"
                                            || postcard(index_manifest)))
+
+delegated index sig  = ed25519_sign(channel_key,
+                                    blake3(b"tilo-registry-index-v3\0"
+                                           || postcard(index_manifest
+                                                       + root authorization)))
 ```
 
 Postcard was chosen over JSON because JSON's key order and
@@ -161,6 +169,21 @@ entry.
 tilo-registry-server serve --port 8443 --bind 127.0.0.1
 ```
 
+The production OCI image uses the same interface and contains no TLS
+termination or private signing material:
+
+```text
+code.sandbox.example/qos/tilo-registry-server@sha256:<digest>
+/usr/local/bin/tilo-registry-server \
+  --data-dir /var/lib/tilo-registry serve --bind 0.0.0.0 --port 8443
+```
+
+It runs as UID/GID 65532 and supports a read-only root filesystem. Mount the
+state directory read-write, mount `/tmp` as a small tmpfs, and probe
+`GET /health` on port 8443. Main-branch CI publishes only an immutable
+`sha-<full-source-revision>` tag and records the deployable digest in the
+`registry-server-image-receipt` workflow artifact.
+
 Behind nginx / Caddy — see TLS below.
 
 ### 5. Publisher workflow
@@ -169,6 +192,32 @@ Publishers build a `RegistryEntry`, sign it with `sign_entry`
 (from `registry-types`), then POST an `EntryChangeRequest` to
 `/entries`. Publisher tooling should derive the advertised root hash and
 size from the final locally-built `.qpkg`, never from an intermediate build.
+CI can generate the complete request from those final bytes with the same
+identity that signed the package:
+
+```text
+tilo-pkg entry \
+  --identity /run/secrets/app-publisher.json \
+  --action update \
+  --previous-entry current-entry.json \
+  --url https://packages.example/immutable/app.qpkg \
+  app.qpkg > request.json
+curl --fail --header 'Content-Type: application/json' \
+  --data-binary @request.json https://apps.example/entries
+```
+
+Use `--action add` for the first version. The command refuses an identity that
+does not match the publisher embedded in the qpkg, so the registry submission
+cannot relabel artifacts signed by another key. Updates require the current
+signed entry and append to its immutable version history; re-running the same
+artifact reproduces the existing entry, while reusing a version/target identity
+for different bytes fails closed.
+
+Each signed version binds the package root, exact final-file BLAKE3 and size,
+architecture, minimum ISA and runtime ABI. The official registry currently
+accepts only `x86_64`; CI still retains immutable `aarch64` artifacts for the
+future multi-target lane. Do not publish a macOS package through this Linux
+qpkg lane.
 
 ### 6. Moderator workflow
 
@@ -202,12 +251,67 @@ tilo-registry-server sign-snapshot \
   --valid-for-seconds 86400
 ```
 
-The seed file is exactly 32 secret bytes encoded as 64 hex characters. The
-command binds the sorted entry set, publisher authorization policies, monotonic
-sequence, predecessor hash, validity window, and current moderation-log head.
-It atomically writes `published-snapshot.json`. The long-running `serve` process
-only has the public identity and refuses to serve a missing, expired, tampered,
-or otherwise invalid snapshot; it never receives the owner private key.
+Production does not put the root key in a recurring job. During bootstrap (or
+manual rotation), the offline root authorizes one short-lived channel key and
+binds it to the exact publisher policy, maximum snapshot lifetime, and entry
+count. Installing a higher-generation authorization immediately revokes the
+old online key at the registry; certificates expire after at most 31 days.
+
+```text
+tilo-registry-server authorize-channel \
+  --owner-key-file /secure/registry-owner.seed \
+  --channel-pubkey "$CHANNEL_PUBKEY" \
+  --publisher-pubkey "$FIRST_PARTY_PUBLISHER" \
+  --generation 1
+```
+
+Each recurring promotion has two security boundaries. A networked collector
+has no signing key and writes exact qpkg bytes under their BLAKE3 names. A
+separate networkless signer receives only the delegated key; it re-verifies the
+publisher request, live allowlist, staged-byte digest, qpkg root/signature,
+manifest identity, target policy, delegation scope, predecessor, sequence and
+expiry before approving or signing anything:
+
+```text
+tilo-registry-server collect-first-party \
+  --publisher-pubkey "$FIRST_PARTY_PUBLISHER" --max-items 50
+
+tilo-registry-server publish-staged-first-party \
+  --channel-key-file /run/secrets/registry-channel/seed \
+  --reviewer registry-promoter \
+  --reason automated-first-party-promotion \
+  --valid-for-seconds 86400
+
+# A separate networkless schedule refreshes expiry only when no batch is staged.
+tilo-registry-server sign-delegated-snapshot \
+  --channel-key-file /run/secrets/registry-channel/seed \
+  --valid-for-seconds 86400
+```
+
+Both seed files are exactly 32 secret bytes encoded as 64 hex characters. The
+root seed exists only in the bootstrap/manual authorization environment. The
+serving process receives neither private key. The collector cannot forge a
+stage because the signer treats its JSON as untrusted and independently checks
+the content-addressed bytes. The signer has no network path from which to fetch
+or substitute content.
+
+Every successful signing also retains the exact signed JSON under
+`snapshots/<sequence>-<hash>.json` before advancing `published-snapshot.json`.
+These small immutable files are the channel history and should share the data
+directory's backup policy. Roll back catalogue contents by publishing a new,
+higher sequence from one of them:
+
+```text
+tilo-registry-server rollback-snapshot \
+  --to-sequence 41 \
+  --owner-key-file /secure/registry-owner.seed \
+  --valid-for-seconds 86400
+```
+
+The command does not replay sequence 41. It signs sequence `current + 1`, links
+it to the current snapshot, uses the current publisher allowlist, and refuses
+to restore entries from a publisher that has since been removed. Client
+anti-rollback checkpoints therefore remain monotonic.
 
 For urgent removal, `review quarantine` immediately moves a public entry
 out of search while keeping its bytes and decision record recoverable.
@@ -278,6 +382,9 @@ data-dir/
         <review-id>.json # immutable moderator audit records
     quarantined/
         <pkg-id>.json    # recoverable entries hidden from clients
+    snapshots/
+        <sequence>-<hash>.json # immutable signed channel history
+    published-snapshot.json    # atomic current channel pointer
 ```
 
 All writes are atomic-rename (`.tmp` → real path), so

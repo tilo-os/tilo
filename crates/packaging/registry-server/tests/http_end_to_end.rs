@@ -276,6 +276,7 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
             .collect(),
         entries,
         owner_signature_hex: String::new(),
+        channel_authorization: None,
     };
     registry_types::sign_snapshot(&mut snapshot, owner).unwrap();
     storage.save_snapshot(&snapshot).unwrap();
@@ -297,6 +298,12 @@ fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
             qpkg_root_hash_hex: "cd".repeat(32),
             qpkg_size_bytes: 1024,
             released_at_unix: 1_800_000_000,
+            qpkg_blake3_hex: Some("ef".repeat(32)),
+            target: Some(registry_types::RegistryTarget {
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: None,
+            }),
         }],
         updated_at_unix: updated_at,
         signature_hex: String::new(),
@@ -327,7 +334,11 @@ async fn server_refuses_a_tampered_or_expired_published_snapshot() {
     let h = spawn_server(true).await;
     let mut snapshot = h.storage.load_snapshot().unwrap().unwrap();
     snapshot.expires_at_unix = 1;
-    h.storage.save_snapshot(&snapshot).unwrap();
+    std::fs::write(
+        h.storage.snapshot_path(),
+        serde_json::to_vec_pretty(&snapshot).unwrap(),
+    )
+    .unwrap();
     let response = reqwest::Client::new()
         .get(url(h.addr, "/entries"))
         .send()
