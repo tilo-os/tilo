@@ -8,6 +8,8 @@ Supported events are `Bash`, `exec_command`, and a single literal
 `workdir` wins over the outer session directory. Dynamic JavaScript, multiple
 calls, shell directory changes and pushes to other refs are intentionally not
 interpreted. This is a notification adapter, not a JavaScript or shell runtime.
+An output-only `text(result.output)` wrapper is accepted only after the outer
+exec cell completes; the exact remote HEAD check remains the push-success proof.
 
 The process checks the exact HEAD against the origin branch before watching.
 A nonblocking kernel-held lock in the repository's common Git directory under
