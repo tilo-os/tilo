@@ -498,6 +498,62 @@ class AppResourceActionContractTests(unittest.TestCase):
                 else:
                     self.assertTrue(any("production app launch" in v.reason for v in violations))
 
+    def test_component_factory_installs_the_registered_registry(self):
+        source = (
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "static DEFINITION: LazyLock<ApplicationDefinition> = LazyLock::new(|| "
+            "ApplicationDefinition { create: |context, target, restore| "
+            "create_component(context, target, restore) });\n"
+            "fn create_component(context: HostContext, target: &LaunchTarget, "
+            "restore: &RestoreInput) -> Result<AppComponent, Error> {\n"
+            " let mut registry = ActionRegistry::new();\n"
+            " actions::register(&mut registry);\n"
+            " Ok(AppComponent::new(context, Box::new(App), registry))\n"
+            "}\n"
+        )
+        root = self.fixture(source)
+        main = root / "apps" / "sample" / "src" / "main.rs"
+        main.write_text(
+            "fn main() { run(&LaunchSpec::from_definition(definition())"
+            ".component_host(prepare_component)); }\n",
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertFalse(any("production app launch" in item.reason for item in violations))
+
+    def test_disconnected_component_registry_does_not_satisfy_live_contract(self):
+        source = (
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+            "static DEFINITION: LazyLock<ApplicationDefinition> = LazyLock::new(|| "
+            "ApplicationDefinition { create: |context, target, restore| "
+            "create_component(context, target, restore) });\n"
+            "fn create_component(context: HostContext, target: &LaunchTarget, "
+            "restore: &RestoreInput) -> Result<AppComponent, Error> {\n"
+            " Ok(AppComponent::new(context, Box::new(App), ActionRegistry::new()))\n"
+            "}\n"
+            "fn test_only(context: HostContext) -> AppComponent {\n"
+            " let mut registry = ActionRegistry::new(); actions::register(&mut registry);\n"
+            " AppComponent::new(context, Box::new(App), registry)\n"
+            "}\n"
+        )
+        root = self.fixture(source)
+        main = root / "apps" / "sample" / "src" / "main.rs"
+        main.write_text(
+            "fn main() { run(&LaunchSpec::from_definition(definition())"
+            ".component_host(prepare_component)); }\n",
+            encoding="utf-8",
+        )
+        violations, _ = contract.audit(root)
+        self.assertTrue(any("production app launch" in item.reason for item in violations))
+
     def test_new_opaque_search_activation_is_rejected(self):
         root = self.fixture(
             "use tilo_actions::ActionSpec;\n"
