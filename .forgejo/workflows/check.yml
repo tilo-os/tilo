@@ -245,11 +245,29 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
-      - name: Checkout
+      - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
+          fetch-depth: 1
+
+      # Clippy compares the selected packages with the immutable base already
+      # established by the select job. Fetch that one commit instead of every
+      # branch and tag in this large, short-lived repository.
+      - name: Fetch exact Clippy base
+        env:
+          CLIPPY_BASE: ${{ needs.select.outputs.base }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CLIPPY_BASE" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
+          head=$(git rev-parse HEAD)
+          test "$head" = "$GITHUB_SHA"
+          if ! git cat-file -e "$CLIPPY_BASE^{commit}" 2>/dev/null; then
+            git fetch --no-tags --no-write-fetch-head --depth=1 origin \
+              "+$CLIPPY_BASE:refs/ci/clippy-base"
+          fi
+          test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"
 
       - name: Prepare Rust build caches
         id: rust-build
@@ -309,7 +327,18 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "check shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
-          cargo check --locked --all-targets ${{ matrix.packages }}
+          python3 tools/ci/compiler_inputs.py --output target/ci/compiler-inputs.json --
+          check --locked --all-targets ${{ matrix.packages }}
+
+      - name: Save observed compiler inputs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/ci/compiler-inputs.json
+          retention-days: 7
+          if-no-files-found: warn
 
       # Lint the exact same reverse-dependency closure at the selected base and
       # at HEAD. Historical diagnostics in an otherwise untouched dependant do
@@ -334,6 +363,16 @@ jobs:
           bash tools/ci/measure.sh "clippy shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
           tools/ci/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
+
+      - name: Save observed Clippy inputs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: clippy-inputs-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/ci/clippy-*-inputs.json
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Report remote compiler-cache effectiveness
         if: always()
