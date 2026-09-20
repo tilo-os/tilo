@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       architectures:
-        description: 'Verifier architectures (x86_64, aarch64, or both); empty selects both.'
+        description: 'Verifier architectures: x86_64, aarch64, or x86_64,aarch64; empty selects both.'
         required: false
         default: ''
       builder_image:
