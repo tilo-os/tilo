@@ -19,7 +19,7 @@
 //! ([`MAX_GROUP_DEPTH`]); see [`group_entries`] for concurrent naming.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
+use crate::clock::{Duration, SystemTime};
 
 use collab_types::OpClass;
 
@@ -665,7 +665,7 @@ pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
 mod tests {
     use super::*;
     use collab_types::ArtifactKind;
-    use std::time::Duration;
+    use crate::clock::Duration;
 
     fn entry(id: u8, author: &str, secs: u64, op: OpClass) -> HistoryEntry {
         let mut bytes = [0u8; 16];

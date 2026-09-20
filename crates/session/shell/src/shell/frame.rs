@@ -3722,3 +3722,6 @@ mod tests {
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

@@ -37,6 +37,7 @@ fn enabled() -> bool {
 }
 /// Unique within this Rust process, including across native helpers and tabs.
 /// Receipt is after transport/decode; it is not the CEF paint timestamp.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn received(tab: u32, rgba: &[u8], width: u32, height: u32) -> Option<u64> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     static SCROLL_MARKER: OnceLock<bool> = OnceLock::new();
@@ -80,6 +81,7 @@ pub(crate) fn drawn(id: Option<u64>) {
 }
 /// Called after recording a complete scene, even when it has no fresh input.
 /// Missing CPU IDs or overflow must be rejected by the measurement analyzer.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn finish_scene(cpu_frame_id: Option<u64>) {
     if !enabled() {
         return;
@@ -125,3 +127,6 @@ mod tests {
 pub(crate) fn take_for_test() -> (Vec<u64>, bool) {
     DRAWN.with(|scene| scene.borrow_mut().take())
 }
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn received(_: u32, _: &[u8], _: u32, _: u32) -> Option<u64> { None }

@@ -1918,6 +1918,60 @@ fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
     })
 }
 
+/// Check a direct affordance against the same live permission-filtered spec
+/// as named actions. Only a genuinely unbound call keeps legacy compatibility;
+/// an active record with missing/mismatched/revoked custody always refuses.
+pub(crate) fn authorize_current_resource_action(
+    doc: &AutoCommit,
+    resource: &tilo_actions::Resource,
+    action_id: &str,
+) -> Result<(), String> {
+    let active =
+        ACTIVE.with_borrow(|active| active.as_ref().map(|entry| (entry.2, entry.3.clone())));
+    let Some((witness, frame)) = active else {
+        return Ok(());
+    };
+    if !std::ptr::eq(witness, doc) {
+        return Err("resource action document does not match its owned frame".into());
+    }
+    let frame = frame.ok_or("resource action has no owned frame")?;
+    let binding = {
+        let owned = frame.borrow();
+        let frame = owned.as_ref().ok_or("resource action frame has ended")?;
+        frame
+            .mutation
+            .as_ref()
+            .map(|mutation| mutation.binding.clone())
+            .or_else(|| {
+                frame
+                    .operations
+                    .last()
+                    .map(|operation| operation.binding.clone())
+            })
+            .ok_or("resource action has no current owner")?
+    };
+    if binding.registry_owner.upgrade().is_none() {
+        return Err("resource action registry owner has ended".into());
+    }
+    let _entry = binding
+        .enter()
+        .map_err(|error| format!("resource action owner refused: {error:?}"))?;
+    if !binding
+        .check_record()
+        .map_err(|error| format!("resource action record refused: {error:?}"))?
+        .is_some_and(|current| std::ptr::eq(current, doc))
+    {
+        return Err("resource action record does not match its owner".into());
+    }
+    if filter_resource(&binding, resource.clone())
+        .is_some_and(|resource| resource.actions.iter().any(|action| action.id == action_id))
+    {
+        Ok(())
+    } else {
+        Err("resource action is unavailable under current permissions".into())
+    }
+}
+
 /// Narrow shared producer hook. Called only when a typed action is about to
 /// execute; returning None preserves the legacy `ActionHost` path unchanged.
 pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash>> {
@@ -2335,15 +2389,11 @@ pub(crate) fn with_owned_record_action<R>(
 
 impl CallbackBinding {
     pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {
-        let (_, app, workspace) = self.records.canonical_namespace()?;
+        let (_, app, _) = self.records.canonical_namespace()?;
         if app != self.app_id {
             return None;
         }
-        Some(crate::collaboration::RouteSpec::record(
-            app,
-            uuid::Uuid::parse_str(&workspace).ok()?,
-            self.checkout.id.as_str(),
-        ))
+        self.records.route(&self.checkout).ok()
     }
     pub(crate) fn matches_broker_route(
         &self,
@@ -3100,6 +3150,28 @@ mod owned_restore_tests;
 
 /// Remote delivery is not a local action. A physical or logical edit must be
 /// finished by its existing owner; the network queue never commits it.
+pub(crate) fn can_merge_remote_owned_document(
+    store: &RecordStore,
+    checkout: &RecordCheckout,
+) -> Result<bool, crate::history_mode::routes::RemoteApplyError> {
+    use crate::history_mode::routes::RemoteApplyError;
+    store
+        .open_existing_record_checked(checkout)
+        .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?;
+    store
+        .with_action_state(&checkout.id, |doc, _, state| {
+            doc.pending_ops() == 0
+                && !state.pending.as_ref().is_some_and(|pending| {
+                    !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
+                })
+                && state
+                    .generation
+                    .and_then(|value| value.checked_add(1))
+                    .is_some()
+        })
+        .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))
+}
+
 pub(crate) fn merge_remote_owned_document(
     store: &RecordStore,
     checkout: &RecordCheckout,
@@ -3236,8 +3308,8 @@ fn authorize_legacy_owner(
     let (_, app, _) = store
         .history_namespace(&checkout.id)
         .map_err(|error| error.to_string())?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = crate::clock::SystemTime::now()
+        .duration_since(crate::clock::UNIX_EPOCH)
         .map_err(|_| "execution time unavailable")?
         .as_secs();
     let current = authority.clone().at_unix_time(now);
@@ -3395,3 +3467,7 @@ mod document_action_ack_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/legacy_document_tests.rs"]
 pub(crate) mod legacy_document_tests;
+
+#[cfg(test)]
+#[path = "bound_dispatch/semantic_authority_tests.rs"]
+mod semantic_authority_tests;

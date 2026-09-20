@@ -10,7 +10,7 @@ fn resource(profile: &str, workspace: &str) -> HistoryResource {
         profile,
         workspace,
         "dev.qos.history-test",
-        RecordId::parse("uuid:document-1").expect("record id"),
+        RecordId::parse("uuid:00000000-0000-0000-0000-000000000001").expect("record id"),
     )
 }
 
@@ -231,13 +231,13 @@ fn restore_review_is_scoped_and_invalidated_by_selection_or_live_changes() {
             "profile-a",
             "workspace-a",
             "dev.qos.other-app",
-            RecordId::parse("uuid:document-1").unwrap(),
+            RecordId::parse("uuid:00000000-0000-0000-0000-000000000001").unwrap(),
         ),
         HistoryResource::new(
             "profile-a",
             "workspace-a",
             "dev.qos.history-test",
-            RecordId::parse("uuid:document-2").unwrap(),
+            RecordId::parse("uuid:00000000-0000-0000-0000-000000000002").unwrap(),
         ),
     ] {
         let mut other = HistoryController::new(mismatched, &doc).unwrap();

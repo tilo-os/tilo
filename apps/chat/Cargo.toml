@@ -46,7 +46,7 @@ qdoc = { path = "../../crates/doc/qdoc" }
 # The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -75,6 +75,10 @@ tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = tru
 
 [dev-dependencies]
 tempfile.workspace = true
+serial_test.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }

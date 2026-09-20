@@ -26,12 +26,14 @@ use ui::theme::Theme;
 // Provides `.r()/.g()/.b()` accessors on `vello` `Color` (used to derive
 // theme-tinted translucent chrome tones).
 use ui::ColorCompat;
+#[cfg(test)]
+use ui::clipboard_copy;
 use ui::icons::Icon;
 use ui::permissions::UserId;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{TextInput, TextInputKind, Widget};
-use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_copy, clipboard_paste};
+use ui::{PathSegment, PresenceCtx, PresenceKey, clipboard_paste};
 
 use crate::WpFormat;
 use crate::compact_swatch_palette::{
@@ -1206,6 +1208,7 @@ pub struct WordProcessorWidget {
     /// Vertical scroll offset (px) and the max scroll (content overflow), updated
     /// each frame from the laid-out content height.
     scroll_y: f64,
+    scroll_viewport: f64,
     max_scroll: f64,
     /// The document's stylesheet (component-instance styles). Authoritative copy
     /// in the widget; reloaded from the doc when not mid-drag, persisted on edit.
@@ -1341,6 +1344,9 @@ pub struct WordProcessorWidget {
     /// A transient operation result (e.g. save confirmation or failure),
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Option<(String, ToastKind)>,
+    canonical: bool,
+    ime_rect: Option<Rect>,
+    ime_preedit: String,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
@@ -1362,6 +1368,16 @@ impl Default for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
+    /// Construct from the canonical record; this performs no document writes.
+    pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
+        let mut widget = Self::new();
+        widget.inner = WordProcessor::from_document(state)?;
+        widget.canonical = true;
+        widget.refresh_blocks(&mut state.clone());
+        widget.sheet = widget.inner.stylesheet(state);
+        Ok(widget)
+    }
+
     fn canvas_horizontal_bounds(&self, full: Rect) -> (f64, f64) {
         let right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
             (full.x1 - self.styles_panel_width()).max(full.x0 + 1.0)
@@ -1431,6 +1447,7 @@ impl WordProcessorWidget {
             text_scale: 1.0,
             rich_clip: None,
             scroll_y: 0.0,
+            scroll_viewport: 0.0,
             max_scroll: 0.0,
             sheet: crate::styles::StyleSheet::default(),
             margins: Edges::uniform(72.0),
@@ -1502,6 +1519,9 @@ impl WordProcessorWidget {
             pending_history_revision: None,
             style_menu: StyleMenu::default(),
             toast: None,
+            canonical: false,
+            ime_rect: None,
+            ime_preedit: String::new(),
             color_picker: StyleColorPicker::default(),
         }
     }
@@ -1521,7 +1541,7 @@ impl WordProcessorWidget {
             state,
             crate::actions::WORD_PROCESSOR_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action),
+            tilo_actions::ActionContext::for_action("org.qos.Writer", "Writer", action),
         );
     }
 
@@ -3460,7 +3480,7 @@ impl WordProcessorWidget {
     /// header/footer band, using the laid geometry captured in `region_laid`. The
     /// band caret mirrors the body caret (same `caret_geometry` machinery) so it
     /// blinks-free but lands exactly between glyphs.
-    fn draw_band_caret(&self, scene: &mut Scene, ctf: Affine) {
+    fn draw_band_caret(&mut self, scene: &mut Scene, ctf: Affine, tr: &mut TextRenderer) {
         if !self.lifecycle.focused {
             return;
         }
@@ -3490,7 +3510,18 @@ impl WordProcessorWidget {
                 rl.origin.x + f64::from(cx) + CARET_WIDTH,
                 rl.origin.y + f64::from(cy) + f64::from(ch),
             );
+            self.ime_rect = Some(ctf.transform_rect_bbox(c));
             scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &c);
+            if !self.ime_preedit.is_empty() {
+                tr.draw_text(
+                    scene,
+                    &self.ime_preedit,
+                    12.0,
+                    PAPER_INK,
+                    ctf * Affine::translate((c.x0, c.y0)),
+                    None,
+                );
+            }
         }
     }
 
@@ -6940,6 +6971,7 @@ impl WordProcessorWidget {
         // is magnified by `zoom`, so the visible window covers `fg.canvas.height() /
         // zoom` of content — divide by zoom so the overflow (and thus max scroll)
         // grows when zoomed in and shrinks when zoomed out.
+        self.scroll_viewport = fg.canvas.height() / self.zoom.factor();
         self.max_scroll =
             (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom.factor()).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll);
@@ -7315,7 +7347,18 @@ impl WordProcessorWidget {
                     l.text_x + f64::from(cx) + CARET_WIDTH,
                     ly + f64::from(cy) + f64::from(ch),
                 );
+                self.ime_rect = Some(fg.ctf.transform_rect_bbox(caret));
                 scene.fill(Fill::NonZero, fg.ctf, PAPER_CARET, None, &caret);
+                if !self.ime_preedit.is_empty() {
+                    text_renderer.draw_text(
+                        scene,
+                        &self.ime_preedit,
+                        l.size,
+                        l.ink,
+                        fg.ctf * Affine::translate((caret.x0, caret.y0)),
+                        None,
+                    );
+                }
             }
             if clipped {
                 scene.pop_layer();
@@ -7838,9 +7881,10 @@ impl WordProcessorWidget {
     /// running head) on every page, then draw the band caret on top so it
     /// stays crisp through the veil.
     fn draw_running_region_veil(
-        &self,
+        &mut self,
         scene: &mut Scene,
         fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
         num_pages: usize,
         sy: f64,
     ) {
@@ -7872,7 +7916,7 @@ impl WordProcessorWidget {
                 );
                 scene.fill(Fill::NonZero, fg.ctf, BODY_DIM_VEIL, None, &veil);
             }
-            self.draw_band_caret(scene, fg.ctf);
+            self.draw_band_caret(scene, fg.ctf, text_renderer);
         }
     }
 
@@ -7916,7 +7960,7 @@ impl WordProcessorWidget {
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
         // A peer's just-typed run glows in their colour, fading; drawn first so it
         // sits under the selection and caret rather than competing with them.
-        for (user, spans) in self.remote_typing_overlays(presence, std::time::Instant::now()) {
+        for (user, spans) in self.remote_typing_overlays(presence, ui::clock::Instant::now()) {
             presence.draw_peer_typing(scene, theme, &user, &spans);
         }
         for sel in &remote_selections {
@@ -7928,7 +7972,7 @@ impl WordProcessorWidget {
         // not fake mouse coordinates. Resolve those anchors through the same
         // shaped layouts as a person's selection and decorate the resulting
         // geometry with the authenticated actor label.
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
                 tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
@@ -9258,10 +9302,13 @@ impl WordProcessorWidget {
             // exclusive; matches common word-processor bindings).
             "." | ">" => self.dispatch_exclusive_mark(state, "super", "sub"),
             "," | "<" => self.dispatch_exclusive_mark(state, "sub", "super"),
-            "c" => self.clipboard_copy(state),
-            "x" => {
+            "c" => {
                 self.clipboard_copy(state);
-                self.insert_text_via_action(state, "");
+            }
+            "x" => {
+                if self.clipboard_copy(state) {
+                    self.insert_text_via_action(state, "");
+                }
             }
             // Ctrl+V keeps formatting; Ctrl+Shift+V pastes plain text.
             "v" if shift => self.clipboard_paste_plain(state),
@@ -9286,6 +9333,9 @@ impl WordProcessorWidget {
 
 impl Widget for WordProcessorWidget {
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
+        if self.canonical {
+            return Vec::new();
+        }
         let current = serde_json::to_value(automerge::AutoSerde::from(doc)).ok();
         if current
             .as_ref()
@@ -9311,6 +9361,40 @@ impl Widget for WordProcessorWidget {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default(),
         }]
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        Some(ui::widget::PrimaryScrollRegion {
+            key: "primary",
+            owner_generation: None,
+            metrics: ui::widget::ScrollMetrics::new(
+                self.max_scroll + self.scroll_viewport,
+                self.scroll_viewport,
+                self.scroll_y,
+            ),
+        })
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        use ui::widget::PrimaryScrollResult;
+        let Some(region) = self.primary_vertical_scroll() else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        let Some(next) = action.offset(region.metrics) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        if next == region.metrics.offset {
+            return PrimaryScrollResult::Unchanged(region);
+        }
+        self.scroll_y = next;
+        self.lifecycle.dirty = true;
+        self.primary_vertical_scroll().map_or(
+            PrimaryScrollResult::Unsupported,
+            PrimaryScrollResult::Changed,
+        )
     }
 
     fn native_input_snapshot(
@@ -9412,6 +9496,9 @@ impl Widget for WordProcessorWidget {
         widget_path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         use crate::actions::WordProcessorOperation;
+        if cfg!(target_arch = "wasm32") && kind == tilo_actions::OperationKind::Effect {
+            return Err("file operation unsupported: no browser file/asset transport".into());
+        }
 
         if kind == tilo_actions::OperationKind::Document {
             return Ok(None);
@@ -9534,21 +9621,25 @@ impl Widget for WordProcessorWidget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let pristine = self.saved_document.is_none()
-            && self.inner.containers.is_none()
-            && state.length(root) == 0;
-        // First binding adds built-in styles/an empty paragraph. Rebase only
-        // if the full imported projection is unchanged; a pre-sync remote edit
-        // must remain unsaved. Bind on the live path after the host sets actor.
-        let unchanged_open = self.inner.containers.is_none()
-            && self.saved_document.is_some()
-            && serde_json::to_value(automerge::AutoSerde::from(&*state))
-                .ok()
-                .as_ref()
-                == self.saved_document.as_ref();
-        self.inner.bind(state, root);
-        if pristine || unchanged_open {
-            self.remember_saved_document(state);
+        if self.canonical {
+            self.inner.reconcile(state);
+        } else {
+            let pristine = self.saved_document.is_none()
+                && self.inner.containers.is_none()
+                && state.length(root) == 0;
+            // First binding adds built-in styles/an empty paragraph. Rebase only
+            // if the full imported projection is unchanged; a pre-sync remote edit
+            // must remain unsaved. Bind on the live path after the host sets actor.
+            let unchanged_open = self.inner.containers.is_none()
+                && self.saved_document.is_some()
+                && serde_json::to_value(automerge::AutoSerde::from(&*state))
+                    .ok()
+                    .as_ref()
+                    == self.saved_document.as_ref();
+            self.inner.bind(state, root);
+            if pristine || unchanged_open {
+                self.remember_saved_document(state);
+            }
         }
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
             if (self.save_status == DocumentSaveStatus::Modified) {
@@ -9693,6 +9784,7 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.ime_rect = None;
         // Resolve the OS theme into this frame's chrome palette once; every
         // chrome helper below reads `self.chrome` so the whole editor follows
         // light/dark mode + the OS palette. (`draw_frame_chrome` resolves the
@@ -9758,7 +9850,7 @@ impl Widget for WordProcessorWidget {
         // Header/footer edit mode: veil the body + draw the band caret (checks
         // `self.inner.in_running_region()` itself). Drawn last so the veil
         // covers the body but the band + its caret stay crisp on top.
-        self.draw_running_region_veil(scene, &fg, num_pages, sy);
+        self.draw_running_region_veil(scene, &fg, text_renderer, num_pages, sy);
 
         scene.pop_layer();
 
@@ -10027,17 +10119,49 @@ impl Widget for WordProcessorWidget {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => self.handle_right_press(state, tb_h, handled),
+            } => {
+                let was_handled = *handled;
+                self.handle_right_press(state, tb_h, handled);
+                if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
+                    *focus_target = Some(node_id);
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_press(state, tb_h, shift, ctrl, handled),
+            } => {
+                let was_handled = *handled;
+                self.handle_left_press(state, tb_h, shift, ctrl, handled);
+                if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
+                    *focus_target = Some(node_id);
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => self.handle_left_release(state, handled),
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.ime_preedit.clear();
+                self.handle_key_press(
+                    state,
+                    &Key::Character(text.as_str().into()),
+                    Some(text),
+                    false,
+                    false,
+                    handled,
+                );
+            }
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
+                self.ime_preedit = text.clone();
+                self.lifecycle.dirty = true;
+                *handled = true;
+            }
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                self.ime_preedit.clear();
+                self.lifecycle.dirty = true;
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -10347,14 +10471,14 @@ impl Widget for WordProcessorWidget {
         if self.find.is_open() {
             self.find.ime_cursor_rect()
         } else {
-            None
+            self.ime_rect
         }
     }
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         if self.find.is_open() {
             self.find.ime_purpose()
         } else {
-            None
+            Some(winit::window::ImePurpose::Normal)
         }
     }
     fn needs_commit(&self) -> bool {
@@ -10378,7 +10502,7 @@ impl Widget for WordProcessorWidget {
                 "word_processor.document",
                 resource_label,
             )
-            .with_app("org.tilo.Writer", "Writer")
+            .with_app("org.qos.Writer", "Writer")
         })
     }
     fn on_commit(&mut self) {
@@ -10407,6 +10531,12 @@ impl Widget for WordProcessorWidget {
     }
     fn mark_drawn(&mut self) {
         self.lifecycle.dirty = false;
+    }
+    /// One self-drawn taffy leaf filling its tile: its size follows the
+    /// parent alone, so only the first layout is a size change. Pages,
+    /// toolbars and panels are positioned inside `self.rect` by hand.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
     }
 }
 
@@ -10892,7 +11022,7 @@ impl WordProcessorWidget {
     pub(crate) fn remote_typing_overlays(
         &self,
         presence: &PresenceCtx,
-        now: std::time::Instant,
+        now: ui::clock::Instant,
     ) -> Vec<(UserId, Vec<(Rect, f32)>)> {
         let mut out = Vec::new();
         for l in &self.laid {
@@ -11641,13 +11771,16 @@ impl WordProcessorWidget {
         char_highlight(pos, &b.marks)
     }
 
-    fn clipboard_copy(&mut self, state: &AutoCommit) {
+    fn clipboard_copy(&mut self, state: &AutoCommit) -> bool {
         if !self.inner.has_selection() {
-            return;
+            return false;
         }
         let (plain, blocks) = self.inner.copy_fragment(state);
-        clipboard_copy(&plain);
+        if !ui::text_selection::try_clipboard_copy(&plain) {
+            return false;
+        }
         self.rich_clip = Some((plain, blocks));
+        true
     }
 
     /// Paste with formatting when the system clipboard still holds our last rich
@@ -11930,11 +12063,14 @@ impl WordProcessorWidget {
         };
         match action {
             CtxAction::Cut => {
-                self.clipboard_copy(state);
-                self.insert_text_via_action(state, "");
-                self.lifecycle.needs_commit = true;
+                if self.clipboard_copy(state) {
+                    self.insert_text_via_action(state, "");
+                    self.lifecycle.needs_commit = true;
+                }
             }
-            CtxAction::Copy => self.clipboard_copy(state),
+            CtxAction::Copy => {
+                self.clipboard_copy(state);
+            }
             CtxAction::Paste => {
                 self.clipboard_paste(state);
                 self.lifecycle.needs_commit = true;
@@ -12955,6 +13091,44 @@ mod r2_chrome_metrics;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod canonical_scroll_tests {
+    use super::*;
+
+    #[test]
+    fn primary_scroll_uses_drawn_geometry_without_document_mutation() {
+        use ui::widget::PrimaryScrollAction;
+
+        let mut state = ui::State::new();
+        let mut widget = WordProcessorWidget::new();
+        widget.sync(&mut state.doc, &state.root);
+        for _ in 0..40 {
+            widget
+                .model_mut()
+                .insert_str(&mut state.doc, "A retained paragraph.");
+            widget.model_mut().enter(&mut state.doc);
+        }
+        tests::pipeline_draw(&mut widget, &mut state, 1000, 400);
+        let heads = state.doc.get_heads();
+        let before = widget.primary_vertical_scroll().unwrap().metrics;
+        assert!(before.max_scroll() > 0.0);
+
+        widget.apply_primary_vertical_scroll(PrimaryScrollAction::End);
+        tests::pipeline_draw(&mut widget, &mut state, 1000, 400);
+        let after = widget.primary_vertical_scroll().unwrap().metrics;
+        assert!(after.offset > before.offset);
+        assert_eq!(after.offset, after.max_scroll());
+        assert_eq!(heads, state.doc.get_heads());
+
+        widget.apply_primary_vertical_scroll(PrimaryScrollAction::Start);
+        assert_eq!(widget.scroll_y, 0.0);
+        assert!(matches!(
+            widget.apply_primary_vertical_scroll(PrimaryScrollAction::Absolute(f64::NAN)),
+            ui::widget::PrimaryScrollResult::Unsupported
+        ));
+    }
+}
 
 #[cfg(test)]
 mod history_strip_tests;

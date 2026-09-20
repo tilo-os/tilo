@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
@@ -590,7 +590,7 @@ impl TextInput {
 
     pub fn set_font_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
         }
     }
@@ -608,7 +608,7 @@ impl TextInput {
 
     pub fn set_mono(&mut self, mono: bool) {
         if self.mono != mono {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         self.mono = mono;
         if mono {
@@ -732,7 +732,7 @@ impl TextInput {
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
         if self.family != family {
-            self.model_layout_dirty |= self.single_attributes.is_some();
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.family = family;
         }
     }
@@ -2940,6 +2940,9 @@ impl TextInput {
             self.caret_affinity = TextAffinity::Before;
             insert_char_at = char_idx;
         }
+        // A drag can leave an anchor equal to the old caret. Insertion must
+        // collapse that anchor too, or the newly inserted text becomes selected.
+        self.selection_anchor = None;
         // Latest-wins per position, so a peer typing into another's text splits their run correctly.
         if let (Some(obj_id), Some(author)) = (obj_id, &self.local_author) {
             let nchars = s.chars().count();
@@ -3038,8 +3041,7 @@ impl TextInput {
     fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some(s) = self.selected_str() {
             let owned = s.to_string();
-            clipboard_copy(&owned);
-            self.delete_selection(state, obj_id);
+            if crate::text_selection::try_clipboard_copy(&owned) { self.delete_selection(state, obj_id); }
         }
     }
 
@@ -4146,6 +4148,15 @@ impl Widget for TextInput {
         self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
     }
 
+    /// Same inputs as [`Self::layout_needs_measure`]: an input's size follows
+    /// its content only through a user edit (`dirty`, drained by the owner's
+    /// `take_dirty`) or a model change that reshapes multiline or attributed
+    /// text (`model_layout_dirty`, cleared by `measure`). Idle inputs would
+    /// otherwise be re-measured on every retained frame.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+    }
+
     /// A disabled input claims no cursor and defers to the host default.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if !self.effectively_disabled() && self.rect.contains(point) {
@@ -4289,7 +4300,13 @@ impl Widget for TextInput {
                 self.selection_anchor = (!self.text.is_empty()).then_some(0);
                 self.cursor_pos = self.text.len();
                 let obj = self.resolve_text_obj(state, root);
-                self.insert_str(&cleaned, state, obj.as_ref());
+                // SetValue replaces the complete value, including an empty
+                // replacement. insert_str intentionally ignores empty typing.
+                if cleaned.is_empty() {
+                    self.delete_selection(state, obj.as_ref());
+                } else {
+                    self.insert_str(&cleaned, state, obj.as_ref());
+                }
                 if obj.is_none() {
                     self.persist_first_path_edit(&previous_text, state, root);
                 }
@@ -4413,7 +4430,7 @@ impl Widget for TextInput {
             // re-derived approximation. `transform` maps the local rect to the scene.
 
             // Fading "just typed" highlighter under the caret/selection.
-            let now = std::time::Instant::now();
+            let now = crate::clock::Instant::now();
             for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
                 let rect = self.selection_rect(theme, range.start, range.end);
                 // `Affine * Point` is a geometric transform over f64 coordinates,
@@ -7101,6 +7118,24 @@ mod tests {
         assert_eq!(ti.value(), "B2:D4");
         assert_eq!(ti.cursor_pos(), "B2:D4".len());
         assert_eq!(ti.take_dirty().as_deref(), Some("B2:D4"));
+    }
+
+    #[test]
+    fn insertion_collapses_an_empty_drag_selection() {
+        for (text, caret, expected) in [("", 0, "Nx"), ("ab", 1, "aNxb")] {
+            let mut ti = TextInput::new(Vec::new());
+            ti.set_text(text);
+            // A real same-position drag may retain an anchor at its caret.
+            ti.cursor_pos = caret;
+            ti.selection_anchor = Some(caret);
+            let mut doc = AutoCommit::new();
+            ti.insert_str("N", &mut doc, None);
+            assert_eq!(ti.selection_range_public(), None);
+            assert_eq!(ti.cursor_pos(), caret + 1);
+            ti.insert_str("x", &mut doc, None);
+            assert_eq!(ti.value(), expected);
+            assert_eq!(ti.selection_range_public(), None);
+        }
     }
 
     /// The path Ctrl+V uses when pasting over selected text.

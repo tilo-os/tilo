@@ -21,7 +21,7 @@ capnp.workspace = true
 capnp-rpc.workspace = true
 # tokio 1.x. We use the runtime + net + io + macros features only;
 # heavy features like `signal` or `full` belong in the binary.
-tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
 thiserror.workspace = true
 serde_json.workspace = true
@@ -37,3 +37,6 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["net"] }

@@ -17,7 +17,7 @@
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};

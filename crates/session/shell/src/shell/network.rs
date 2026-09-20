@@ -9770,3 +9770,6 @@ mod tests {
         assert!(load_identity_revocations(&path, other_root.verifying_key().to_bytes()).is_err());
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

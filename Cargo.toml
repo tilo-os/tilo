@@ -29,6 +29,11 @@ default-members = [
 members = [
     "crates/packaging/install-artifacts",
     "crates/system/folder-service",
+    "crates/collab/qos-action-broker",
+    "crates/session/qos-desktop",
+    "crates/collab/qos-peer-state",
+    "crates/browser/qos-browser-runtime",
+    "crates/hosting/qos-session-peer",
     "crates/session/qos-ntfs-helper",
     "crates/session/qos-ntfs-protocol",
     "crates/browser/chromium-blocker",

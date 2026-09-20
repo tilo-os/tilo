@@ -22,7 +22,7 @@
 //! [`heads_for_entry`] turn a clicked row back into a document state.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::clock::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};

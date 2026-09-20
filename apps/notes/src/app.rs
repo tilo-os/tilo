@@ -362,7 +362,7 @@ pub struct NotesApp {
     /// takes seconds, and measuring from spawn would let a late joiner's
     /// grace lapse before its first sync, making it seed its own welcome
     /// instead of adopting an existing peer's.
-    started: std::time::Instant,
+    started: ui::clock::Instant,
     /// Whether the first `sync` has run (which (re)bases `started`).
     synced_once: bool,
     /// True once we've taken on shared document state — either by
@@ -394,6 +394,10 @@ pub struct NotesApp {
     /// Forces a redraw when our own chrome (top bar / drawer) changes
     /// without any child widget flagging itself dirty.
     self_dirty: bool,
+    /// Inputs of the last canonical projection: document heads, pending
+    /// operations, selected page and tag filter. `sync` re-projects the
+    /// whole page tree only when one of them moved instead of every frame.
+    canonical_synced: Option<(Vec<ChangeHash>, usize, Option<PageId>, Option<TagId>)>,
     /// Top-bar taffy node — present only while `built_narrow`.
     topbar_node: Option<NodeId>,
     /// Rect of the narrow-mode top bar, from `apply_layout`.
@@ -644,7 +648,7 @@ impl NotesApp {
             canonical_marks: Vec::new(),
             palette: PageJumpPalette::new(),
             last_mouse: Point::ZERO,
-            started: std::time::Instant::now(),
+            started: ui::clock::Instant::now(),
             synced_once: false,
             adopted: canonical,
             seeded: canonical,
@@ -659,6 +663,7 @@ impl NotesApp {
                 .breakpoint(NARROW_BREAKPOINT),
             pending_relayout: false,
             self_dirty: false,
+            canonical_synced: None,
             topbar_node: None,
             topbar_rect: Rect::ZERO,
             menu_btn_rect: Rect::ZERO,
@@ -734,7 +739,7 @@ impl NotesApp {
         // flip, a page switch, a word-count tick) — refresh_status runs every
         // frame, so poking unconditionally would pin the bubble open forever.
         if changed {
-            self.status_bubble.poke(std::time::Instant::now());
+            self.status_bubble.poke(ui::clock::Instant::now());
         }
     }
 
@@ -742,7 +747,7 @@ impl NotesApp {
     /// frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::clock::Instant::now());
     }
 
     /// `--shots`: capture an actual save-state presentation deterministically,
@@ -774,7 +779,7 @@ impl NotesApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         // On a phone the full page/word summary becomes a wide obstruction.
         // Keep the transient edge affordance to the actionable save state;
         // wider layouts retain the richer summary.
@@ -1237,10 +1242,15 @@ impl NotesApp {
             return Err("A file transfer is already pending".into());
         }
         let path = if target.to_ascii_lowercase().starts_with("file:") {
-            url::Url::parse(target)
-                .map_err(|error| format!("Invalid file URL: {error}"))?
-                .to_file_path()
-                .map_err(|()| "Markdown launch requires a local file URL".to_string())?
+            let url =
+                url::Url::parse(target).map_err(|error| format!("Invalid file URL: {error}"))?;
+            ui::portal::to_local_path(&url).ok_or_else(|| {
+                if cfg!(target_arch = "wasm32") {
+                    "Markdown launch does not support local file URLs in the browser".to_string()
+                } else {
+                    "Markdown launch requires a local file URL".to_string()
+                }
+            })?
         } else if target.contains("://") {
             return Err("Markdown launch requires a local file".into());
         } else {
@@ -1261,7 +1271,7 @@ impl NotesApp {
         // Base the seed-grace window on the first sync (collab is live by
         // now), not spawn — see `started`'s doc comment.
         if !self.synced_once {
-            self.started = std::time::Instant::now();
+            self.started = ui::clock::Instant::now();
             self.synced_once = true;
         }
         // Apply local deletions through their canonical action BEFORE reading
@@ -1653,9 +1663,9 @@ impl NotesApp {
     /// seeds immediately (tests can't wait 800 ms of wall-clock).
     #[doc(hidden)]
     pub fn bypass_seed_grace_for_test(&mut self) {
-        self.started = std::time::Instant::now()
+        self.started = ui::clock::Instant::now()
             .checked_sub(SEED_GRACE + Duration::from_secs(1))
-            .unwrap_or_else(std::time::Instant::now);
+            .unwrap_or_else(ui::clock::Instant::now);
         // Mark first-sync as done so `sync` doesn't re-base `started`
         // back to "now" and undo the bypass.
         self.synced_once = true;
@@ -1854,6 +1864,83 @@ impl NotesApp {
     ) -> Result<(), String> {
         self.drain_canonical_editor(doc);
         self.reconcile_canonical(doc)?;
+        // Direct title/create affordances use the current published contract,
+        // just like named actions. Check before any optimistic metadata edit.
+        let resource_action = match &event {
+            OutEvent::Rename { id, .. } => Some((actions::page_resource_id(*id), "rename")),
+            OutEvent::CreateChild { parent: Some(id) } => {
+                Some((actions::page_resource_id(*id), "new-child"))
+            }
+            OutEvent::CreateChild { parent: None } => Some(("notes.notebook".into(), "new-page")),
+            OutEvent::Delete(id) => Some((actions::page_resource_id(*id), "delete")),
+            OutEvent::Duplicate(id) => Some((actions::page_resource_id(*id), "duplicate")),
+            OutEvent::Move { id, delta } => Some((
+                actions::page_resource_id(*id),
+                if *delta < 0 { "move-up" } else { "move-down" },
+            )),
+            OutEvent::Reparent {
+                id,
+                new_parent,
+                before,
+            } => {
+                let published_action = (|| {
+                    let current = self.workspace.get(*id)?;
+                    if current.parent != *new_parent {
+                        let siblings = self.workspace.children_of(current.parent);
+                        let index = siblings.iter().position(|page| page.id == *id)?;
+                        if index
+                            .checked_sub(1)
+                            .and_then(|previous| siblings.get(previous))
+                            .is_some_and(|page| Some(page.id) == *new_parent)
+                            && before.is_none()
+                        {
+                            return Some("indent");
+                        }
+                        let parent = self.workspace.get(current.parent?)?;
+                        let parent_siblings = self.workspace.children_of(parent.parent);
+                        let expected_before = parent_siblings
+                            .iter()
+                            .skip_while(|page| page.id != parent.id)
+                            .nth(1)
+                            .map(|page| page.id);
+                        if *new_parent == parent.parent && *before == expected_before {
+                            return Some("outdent");
+                        }
+                        return None;
+                    }
+
+                    let siblings = self.workspace.children_of(current.parent);
+                    let old_index = siblings.iter().position(|page| page.id == *id)?;
+                    let without_current = siblings
+                        .into_iter()
+                        .filter(|page| page.id != *id)
+                        .collect::<Vec<_>>();
+                    let target_index = before
+                        .and_then(|before| {
+                            without_current.iter().position(|page| page.id == before)
+                        })
+                        .unwrap_or(without_current.len());
+                    if target_index.checked_add(1) == Some(old_index) {
+                        Some("move-up")
+                    } else if target_index == old_index.saturating_add(1) {
+                        Some("move-down")
+                    } else {
+                        None
+                    }
+                })()
+                // Arbitrary drag reparenting has no published named contract.
+                // Unbound legacy hosts allow it; bound custody fails closed.
+                .unwrap_or("direct-reparent");
+                Some((actions::page_resource_id(*id), published_action))
+            }
+            _ => None,
+        };
+        if let Some((resource_id, action_id)) = resource_action {
+            let resource = self
+                .resource(doc, &resource_id)
+                .ok_or("page action resource no longer exists")?;
+            ui::ActionHost::authorize_resource_action(doc, &resource, action_id)?;
+        }
         let before = self.meta_map();
         let tree_move = matches!(event, OutEvent::Move { .. } | OutEvent::Reparent { .. });
         match event {
@@ -3538,6 +3625,16 @@ impl Widget for NotesApp {
         })
     }
 
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        self.main.primary_vertical_scroll()
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        self.main.apply_primary_vertical_scroll(action)
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::NOTES_OPERATION_TYPE]
     }
@@ -3571,9 +3668,32 @@ impl Widget for NotesApp {
             }
             self.drain_sidebar_events(state);
             self.drain_empty_note_request(state);
-            if let Err(error) = self.reconcile_canonical(state) {
-                tracing::warn!(%error, "notes: canonical projection refused");
-                return;
+            // Project the workspace only when its inputs moved: committed
+            // heads, an open transaction (the drains above may have written),
+            // the selected page or the tag filter. Re-projecting every frame
+            // re-listed every page and tag on each pointer move.
+            let heads = state.base_heads();
+            let pending = state.pending_ops();
+            let key = (
+                heads,
+                pending,
+                self.workspace.selected(),
+                self.active_tag_filter,
+            );
+            let unchanged = self.canonical_synced.as_ref().is_some_and(|synced| {
+                synced.0 == key.0
+                    && synced.1 == 0
+                    && key.1 == 0
+                    && synced.2 == key.2
+                    && synced.3 == key.3
+            });
+            if !unchanged {
+                if let Err(error) = self.reconcile_canonical(state) {
+                    tracing::warn!(%error, "notes: canonical projection refused");
+                    return;
+                }
+                self.canonical_synced = Some(key);
+                self.self_dirty = true;
             }
         } else {
             self.drain_empty_note_request(state);
@@ -3957,7 +4077,7 @@ impl Widget for NotesApp {
         // Keep frames coming only while the floating status bubble is lingering
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
-        (!self.motion_reduced && self.status_bubble.needs_frame(std::time::Instant::now()))
+        (!self.motion_reduced && self.status_bubble.needs_frame(ui::clock::Instant::now()))
             || !self.transfer_toasts.is_empty()
             || (self.pending_markdown_source.is_some() && !self.import_control_emitted)
     }

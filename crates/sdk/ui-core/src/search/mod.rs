@@ -35,3 +35,5 @@ pub use provider::{
     SearchTextPage, fuzzy_score, normalize_search_text,
 };
 pub use registry::{FnProvider, SearchGroup, SearchRegistry};
+
+pub mod system;

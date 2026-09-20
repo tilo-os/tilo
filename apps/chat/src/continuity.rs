@@ -66,7 +66,7 @@ impl ChatRealtimeContinuity {
         self.next_request = self.next_request.saturating_add(1);
         ui::collaboration::CollabRequest::RealtimeCommand {
             request_id: self.next_request,
-            app_id: "dev.tilo.chat".into(),
+            app_id: ui::collaboration::local_app_id(),
             command,
         }
     }
@@ -257,6 +257,36 @@ mod tests {
         let mut doc = AutoCommit::new();
         Widget::sync(&mut app, &mut doc, &ROOT);
         (app, doc)
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn realtime_request_uses_the_actual_launched_durable_app_identity() {
+        let previous_package = std::env::var_os("TILO_PACKAGE_ID");
+        let previous_durable = std::env::var_os("TILO_DURABLE_APP_ID");
+        unsafe {
+            std::env::set_var("TILO_PACKAGE_ID", "dev.tilo.chat");
+            std::env::set_var("TILO_DURABLE_APP_ID", "dev.qos.chat");
+        };
+        let mut realtime = ChatRealtimeContinuity::default();
+        let request = realtime.request(ui::realtime_continuity::RealtimeCommand::TargetFailed {
+            session: "session-1".into(),
+        });
+        unsafe {
+            match previous_package {
+                Some(value) => std::env::set_var("TILO_PACKAGE_ID", value),
+                None => std::env::remove_var("TILO_PACKAGE_ID"),
+            }
+            match previous_durable {
+                Some(value) => std::env::set_var("TILO_DURABLE_APP_ID", value),
+                None => std::env::remove_var("TILO_DURABLE_APP_ID"),
+            }
+        }
+        assert!(matches!(
+            request,
+            ui::collaboration::CollabRequest::RealtimeCommand { app_id, .. }
+                if app_id == "dev.qos.chat"
+        ));
     }
 
     #[test]

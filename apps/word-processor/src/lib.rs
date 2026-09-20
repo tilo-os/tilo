@@ -1240,3 +1240,9 @@ mod tests {
         );
     }
 }
+
+pub mod component;
+pub use component::definition;
+pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {
+    WordProcessor::initialize_empty_document(doc)
+}

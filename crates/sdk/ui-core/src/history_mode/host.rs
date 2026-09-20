@@ -118,6 +118,18 @@ pub struct HistoryHost {
     canvas_node: Option<NodeId>,
 }
 impl HistoryHost {
+    /// Request the same read-only presentation as the History button. Restore
+    /// remains owned by the existing review/authority path.
+    pub(crate) fn request_open(&self) -> bool {
+        if self.invalid_owner {
+            return false;
+        }
+        if !self.open {
+            self.open_requested.set(true);
+        }
+        true
+    }
+
     pub(crate) fn new(
         registration: HistoryRegistration,
         doc: &AutoCommit,
@@ -772,6 +784,23 @@ impl HistoryHost {
             return None;
         }
         self.returning_live = false;
+        fn clear_focus(widget: &mut dyn Widget) {
+            widget.set_focus(false);
+            for child in widget.children_mut() {
+                clear_focus(child);
+            }
+        }
+        // History chrome is retained across the return frame. Clear its local
+        // focus flags before restoring the suspended live owner, otherwise the
+        // closed toolbar continues to capture keyboard input from that owner.
+        clear_focus(&mut self.toolbar);
+        clear_focus(&mut self.timeline);
+        clear_focus(&mut self.unavailable);
+        clear_focus(&mut self.before);
+        clear_focus(&mut self.after);
+        if let Some(panel) = &mut self.review {
+            clear_focus(&mut panel.dialog);
+        }
         let restored = self
             .saved_focus
             .take()
@@ -811,6 +840,9 @@ impl HistoryHost {
     }
     fn show_timeline(&self) -> bool {
         self.open && (self.width >= 600.0 || self.selected.is_empty() || self.activity_page)
+    }
+    fn timeline_available(&self) -> bool {
+        self.controller.is_some() || self.files.is_some()
     }
     fn show_preview(&self) -> bool {
         !self.selected.is_empty() && !self.activity_page
@@ -985,13 +1017,12 @@ impl HistoryHost {
                     }
                 }
                 Command::PreviousPage | Command::NextPage => {
-                    if let Some(preview) = &mut self.canvas_mut().preview {
-                        preview.navigate(if matches!(command, Command::NextPage) {
+                    self.canvas_mut()
+                        .navigate(if matches!(command, Command::NextPage) {
                             super::PreviewNavigation::NextPage
                         } else {
                             super::PreviewNavigation::PreviousPage
                         });
-                    }
                 }
                 Command::Activity => self.activity_page = true,
                 Command::Before => {

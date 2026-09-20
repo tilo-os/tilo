@@ -884,3 +884,6 @@ fn an_agent_holds_a_scoped_revocable_capability_set_like_an_app() {
         "the agent's authority is revocable in one act"
     );
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

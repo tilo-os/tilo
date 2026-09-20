@@ -429,7 +429,9 @@ pub fn for_namespace(namespace: &str) -> Option<&'static AppContract> {
 
 /// The contract for an announced app id.
 pub fn for_app_id(app_id: &str) -> Option<&'static AppContract> {
-    CONTRACTS.iter().find(|c| c.app_id == app_id)
+    CONTRACTS.iter().find(|contract| {
+        ui::application::lookup_compatible_first_party_app_ids(contract.app_id, app_id)
+    })
 }
 
 /// Decoders for every app the agent speaks to, in one registry: the door
@@ -1378,6 +1380,15 @@ mod tests {
             .is_none(),
             "holding a Photos replica must not silently rerender content; only the explicit export action may produce qos.content"
         );
+    }
+
+    #[test]
+    fn contract_lookup_accepts_both_durable_and_current_first_party_ids() {
+        let legacy = for_app_id("dev.qos.photos").expect("durable Photos route");
+        let current = for_app_id("dev.tilo.photos").expect("current Photos route");
+        assert_eq!(legacy.namespace, "photos");
+        assert_eq!(current.namespace, "photos");
+        assert!(for_app_id("dev.qos.unknown").is_none());
     }
 
     // -- opening an application ------------------------------------------

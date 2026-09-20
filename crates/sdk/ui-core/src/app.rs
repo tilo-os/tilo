@@ -550,13 +550,7 @@ fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceInte
     found
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Direction {
-    Up,
-    Down,
-    Left,
-    Right,
-}
+use crate::focus_navigation::Direction;
 
 /// Fans cursor moves out to Iroh peers too, alongside the Unix-socket
 /// send. Invoked after the throttle gate.
@@ -716,6 +710,8 @@ pub struct App {
     /// to that record's route while this manager remains subscribed solely
     /// to grants/discovery.
     room_collab_manager: Option<CollaborationManager>,
+    /// A failed pre-terminal handoff must not re-enter directed effects.
+    action_publication_failure: Option<String>,
     /// Every committed action is attributed to it and Ctrl+Z only reverts
     /// actions carrying it, so undo walks past collaborators' work rather
     /// than through it.
@@ -1068,15 +1064,27 @@ impl App {
     /// # Errors
     /// Returns the original component recovery owners when mounting is refused.
     pub fn from_component(
+        component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        Self::from_component_with_collaboration(component, inputs, CollaborationManager::disabled())
+    }
+
+    /// Mount a checked component on an explicitly admitted collaboration manager.
+    /// The manager retains the certified SDK route; no ambient identity or service
+    /// lookup is added. Component authority and record custody remain unchanged.
+    pub fn from_component_with_collaboration(
         mut component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
+        collaboration: CollaborationManager,
     ) -> Result<Self, crate::launch::LaunchError> {
         let scope = crate::wake::WakeScope::new();
         let handle = scope.handle();
         if let Err(error) = component.mount(move |_| handle.wake()) {
             return Err(component.setup_error(error));
         }
-        let inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
+        let mut inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
+        inputs.collab_manager = collaboration;
         let binding = component.callback_binding();
         let history = component.history.take();
         let mut root = Box::new(crate::widget::BoundAppWidget { component });
@@ -1100,6 +1108,11 @@ impl App {
             });
         }
         Ok(app)
+    }
+
+    /// Current SDK transport health, including fail-closed publication errors.
+    pub fn collaboration_is_connected(&self) -> bool {
+        self.collab_manager.is_connected()
     }
 
     /// Capture/close embedded components while the host still owns their trees.
@@ -1586,6 +1599,7 @@ impl App {
             last_stable_metadata: None,
             collab_manager: inputs.collab_manager,
             room_collab_manager: None,
+            action_publication_failure: None,
             local_author: inputs.local_author.resolve(),
             presence_ctx: inputs.presence_ctx.resolve(),
             permission_ctx: PermissionContext::permissive(),
@@ -3726,16 +3740,47 @@ impl App {
     fn invoke_published_action(
         &mut self,
         id: u64,
+        invocation: Option<tilo_actions::InvocationId>,
         resource: String,
         action: String,
         argument: Option<&str>,
         actor: &str,
         ambient_context: Option<&tilo_actions::ActionContext>,
     ) {
+        if self.action_publication_failure.is_some() {
+            return;
+        }
         let address = tilo_actions::ActionAddress::new(resource, action);
         // Arrival on this directed stream means the broker already performed
         // permission and one-use confirmation-token checks.
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let invocation = invocation
+            .unwrap_or_else(|| tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))));
+        // The broker permanently reserves UUIDs across caller identities.
+        // Also fail closed here before a malformed/repeated delivery can invoke
+        // a second handler or replace an active completion/cancellation route.
+        if let Some(pending) = self.directed_invocations.get(&invocation) {
+            if pending.wire_id == id {
+                return;
+            }
+        }
+        if self.directed_invocations.contains_key(&invocation)
+            || self.bound_invocations.contains_key(&invocation)
+            || self.local_invocations.contains_key(&invocation)
+        {
+            self.collab_manager.send(CollabRequest::UpdateInvocation {
+                id,
+                update: tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "action_invocation_identity_conflict".into(),
+                        message: "Invocation UUID already has an active operation".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            });
+            return;
+        }
         let result = self.invoke_resource_action(
             &address,
             argument,
@@ -3770,6 +3815,9 @@ impl App {
                 },
             },
         };
+        if update.is_terminal() && !self.queue_documents_before_terminal() {
+            return;
+        }
         self.collab_manager
             .send(CollabRequest::UpdateInvocation { id, update });
     }
@@ -5040,6 +5088,9 @@ impl App {
             .map(|(invocation, pending)| (*invocation, *pending))
             .collect::<Vec<_>>();
         for (invocation, pending) in invocations {
+            if self.action_publication_failure.is_some() {
+                break;
+            }
             let polled = if let Some(target) = self.bound_invocations.get(&invocation) {
                 crate::bound_dispatch::poll_resource_operation(
                     self.root_widget.as_mut(),
@@ -5077,6 +5128,12 @@ impl App {
                         retryable: false,
                     },
                 };
+            }
+            if update.is_terminal() && !self.queue_documents_before_terminal() {
+                // Keep admitted lifecycle state; do not poll the completed
+                // operation again or fabricate a no-effect refusal.
+                changed = true;
+                break;
             }
             if update.is_terminal() {
                 self.bound_invocations.remove(&invocation);
@@ -6857,6 +6914,7 @@ impl App {
                     self.apply_document_scrollback(ops, &decrypted_payloads);
                 }
                 CollabEvent::Invocation {
+                    invocation,
                     id,
                     resource,
                     action,
@@ -6866,6 +6924,7 @@ impl App {
                 } => {
                     self.invoke_published_action(
                         id,
+                        invocation,
                         resource,
                         action,
                         argument.as_deref(),
@@ -7075,6 +7134,7 @@ impl App {
                 self.apply_collab_context(collaborators);
             }
             CollabEvent::Invocation {
+                invocation,
                 id,
                 resource,
                 action,
@@ -7083,6 +7143,7 @@ impl App {
                 context,
             } => self.invoke_published_action(
                 id,
+                invocation,
                 resource,
                 action,
                 argument.as_deref(),
@@ -7172,54 +7233,9 @@ impl App {
             self.focused_node = node;
             return;
         }
-        fn collect_focusable(
-            node_id: NodeId,
-            widget: &dyn Widget,
-            taffy: &TaffyTree<()>,
-            order: &mut Vec<NodeId>,
-        ) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-                return;
-            };
-            if widget.is_focusable() && widget.is_enabled() {
-                order.push(node_id);
-            }
-            let children = widget.children();
-            if let Ok(child_nodes) = taffy.children(node_id) {
-                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
-                    collect_focusable(child_node, *child_widget, taffy, order);
-                }
-            }
-        }
-        // The deepest trapping widget wins (a modal opened from within one).
-        fn find_trap_focusables(
-            node_id: NodeId,
-            widget: &dyn Widget,
-            taffy: &TaffyTree<()>,
-        ) -> Option<Vec<NodeId>> {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-                return None;
-            };
-            let children = widget.children();
-            let child_nodes = taffy.children(node_id).ok();
-            // Recurse first so a nested trap takes precedence.
-            if let Some(child_nodes) = &child_nodes {
-                for (child_widget, &child_node) in children.iter().zip(child_nodes.iter()) {
-                    if let Some(inner) = find_trap_focusables(child_node, *child_widget, taffy) {
-                        return Some(inner);
-                    }
-                }
-            }
-            if widget.traps_focus() {
-                let mut order = Vec::new();
-                collect_focusable(node_id, widget, taffy, &mut order);
-                return Some(order);
-            }
-            None
-        }
-
-        if self.history.is_some()
-            || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref())
+        if self.close_admission.dialog.is_none()
+            && (self.history.is_some()
+                || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()))
         {
             self.update_history_focus_order();
             return;
@@ -7227,52 +7243,21 @@ impl App {
         self.focusable_order.clear();
         let Some(root) = self.root_node else { return };
 
-        let (trap_active, order) = self
+        let (order, trap_active) = self
             .with_native_presentation(|widget, _, _, taffy| {
-                let trap = find_trap_focusables(root, widget, taffy);
-                if let Some(order) = trap {
-                    (true, order)
-                } else {
-                    let mut order = Vec::new();
-                    collect_focusable(root, widget, taffy, &mut order);
-                    (false, order)
-                }
+                crate::focus_navigation::order(root, widget, taffy)
             })
             .unwrap_or_default();
         self.focusable_order = order;
-        match (self.focus_trap_active, trap_active) {
-            (false, true) => {
-                // Modal just opened: remember prior focus, move into the trap.
-                self.focus_before_trap = self.focused_node;
-                if let Some(&first) = self.focusable_order.first() {
-                    self.set_focused_node(Some(first));
-                } else {
-                    // No focusable content — drop focus so Tab can't reach
-                    // the content behind the backdrop.
-                    self.set_focused_node(None);
-                }
-            }
-            (true, false) => {
-                // Modal closed: restore only if that element still exists.
-                let restore = self
-                    .focus_before_trap
-                    .take()
-                    .filter(|id| self.focusable_order.contains(id));
-                self.set_focused_node(restore);
-            }
-            (true, true) => {
-                // Still trapped: pull focus back if a rebuild dropped it
-                // outside the modal.
-                let inside = self
-                    .focused_node
-                    .is_some_and(|id| self.focusable_order.contains(&id));
-                if !inside {
-                    self.set_focused_node(self.focusable_order.first().copied());
-                }
-            }
-            (false, false) => {}
+        if let Some(next) = crate::focus_navigation::reconcile_trap(
+            &mut self.focus_trap_active,
+            &mut self.focus_before_trap,
+            self.focused_node,
+            &self.focusable_order,
+            trap_active,
+        ) {
+            self.set_focused_node(next);
         }
-        self.focus_trap_active = trap_active;
     }
 
     /// The decode lives on [`crate::presence::PresenceCtx`] so the
@@ -7524,6 +7509,7 @@ impl App {
         if new_id.is_some_and(|node| self.is_history_node(node)) {
             self.remember_history_content();
         }
+        self.root_widget.focus_requested(new_id, &self.taffy);
         if self.focused_node != new_id {
             if let Some(old) = self.focused_node {
                 let _ = self.mutate_node(old, |widget| widget.set_focus(false));
@@ -7551,36 +7537,9 @@ impl App {
     /// [`Widget::ime_purpose`]; buttons and other focusable controls therefore
     /// never activate `text-input-v3` accidentally.
     fn ime_window_state(&self) -> Option<ImeWindowState> {
-        let id = self.focused_node?;
-        let purpose = self
-            .inspect_node(id, |widget| widget.ime_purpose())
+        self.inspect_node(self.focused_node?, ImeWindowState::from_widget)
             .ok()
-            .flatten()?;
-        let rect = self
-            .inspect_node(id, |widget| widget.ime_cursor_rect())
-            .ok()
-            .flatten()?;
-        let bounded = |v: f64| {
-            if v.is_finite() {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "value is clamped to [0.0, u32::MAX] on the line above, so the cast is exact"
-                )]
-                {
-                    v.max(0.0).min(f64::from(u32::MAX)).round() as u32
-                }
-            } else {
-                0
-            }
-        };
-        Some(ImeWindowState {
-            purpose,
-            x: bounded(rect.x0),
-            y: bounded(rect.y0),
-            width: bounded(rect.width()).max(1),
-            height: bounded(rect.height()).max(1),
-        })
+            .flatten()
     }
 
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
@@ -7736,35 +7695,15 @@ impl App {
         let Ok(current_rect) = self.inspect_node(current_id, |widget| widget.get_rect()) else {
             return;
         };
-        let current_center = current_rect.center();
-        let mut best_candidate = None;
-        let mut best_score = f64::MAX;
-        for &candidate_id in &self.focusable_order {
-            if candidate_id == current_id {
-                continue;
-            }
-            if let Ok(candidate_rect) = self.inspect_node(candidate_id, |widget| widget.get_rect())
-            {
-                let candidate_center = candidate_rect.center();
-                let vector = vello::kurbo::Vec2::new(
-                    candidate_center.x - current_center.x,
-                    candidate_center.y - current_center.y,
-                );
-                let (primary_dist, secondary_dist, in_direction) = match direction {
-                    Direction::Up => (-vector.y, vector.x.abs(), vector.y < -1.0),
-                    Direction::Down => (vector.y, vector.x.abs(), vector.y > 1.0),
-                    Direction::Left => (-vector.x, vector.y.abs(), vector.x < -1.0),
-                    Direction::Right => (vector.x, vector.y.abs(), vector.x > 1.0),
-                };
-                if in_direction {
-                    let score = primary_dist + (secondary_dist * 2.0);
-                    if score < best_score {
-                        best_score = score;
-                        best_candidate = Some(candidate_id);
-                    }
-                }
-            }
-        }
+        let best_candidate = crate::focus_navigation::next(
+            (current_id, current_rect),
+            self.focusable_order.iter().filter_map(|&id| {
+                self.inspect_node(id, |widget| widget.get_rect())
+                    .ok()
+                    .map(|rect| (id, rect))
+            }),
+            direction,
+        );
         if let Some(new_id) = best_candidate {
             self.set_focused_node(Some(new_id));
         }
@@ -7774,7 +7713,7 @@ impl App {
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
-        modal_rect.is_none() || self.focus_trap_active
+        crate::focus_navigation::keyboard_nav_allowed(modal_rect, self.focus_trap_active)
     }
 
     /// Tab normally belongs to the host's focus order. A focused editor-like
@@ -7835,24 +7774,9 @@ impl App {
         if len == 0 {
             return false;
         }
-        let current_idx = self
-            .focused_node
-            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
-        let next_idx = match current_idx {
-            Some(idx) => {
-                if shift {
-                    if idx == 0 {
-                        len.saturating_sub(1)
-                    } else {
-                        idx.saturating_sub(1)
-                    }
-                } else {
-                    let next = idx.saturating_add(1);
-                    if next >= len { 0 } else { next }
-                }
-            }
-            None => 0,
-        };
+        let next_idx =
+            crate::focus_navigation::tab_index(&self.focusable_order, self.focused_node, shift)
+                .unwrap();
         if let Some(&id) = self.focusable_order.get(next_idx) {
             self.set_focused_node(Some(id));
         }
@@ -9173,30 +9097,9 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
 /// surface's content coordinates is scoped to
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
-pub fn local_surface_id() -> String {
-    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    resolve_app_id(package_id.as_deref(), binary.as_deref())
-}
-
-/// A shared generic id would collapse every id-keyed compositor lookup (tab
-/// label, launch placement, "is this document already open") onto every
-/// other app; it's a last resort for no-package, no-binary-name.
-fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
-    let non_blank = |s: &str| {
-        let t = s.trim();
-        (!t.is_empty()).then(|| t.to_string())
-    };
-    if let Some(id) = package_id.and_then(non_blank) {
-        return id;
-    }
-    if let Some(bin) = binary.and_then(non_blank) {
-        return bin;
-    }
-    "org.tilo.app".to_string()
-}
+pub use crate::surface::local_surface_id;
+#[cfg(any(target_os = "linux", test))]
+use crate::surface::resolve_app_id;
 
 /// Pure, so the precedence is unit-testable without touching the process
 /// environment. First non-blank candidate wins.
@@ -9360,14 +9263,7 @@ struct NativeFloatingWindow {
     suspended: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ImeWindowState {
-    purpose: winit::window::ImePurpose,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
+use crate::ime::ImeWindowState;
 
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
@@ -16869,6 +16765,7 @@ mod semantic_tree_app_tests {
         let publication_attempts = app.action_surface_publication_attempts;
 
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation: None,
             id: 42,
             resource: "test.counter".into(),
             action: "bump".into(),
@@ -16892,6 +16789,81 @@ mod semantic_tree_app_tests {
     }
 
     #[test]
+    fn broker_invocation_uuid_collision_preserves_original_operation_route() {
+        for (legacy_collision, conflicting_action) in [
+            (false, "bump"),
+            (false, "async-bump"),
+            (true, "bump"),
+            (true, "async-bump"),
+        ] {
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CounterCard::with_async_post_bump_reset()),
+            );
+            app.action_registry_mut()
+                .register::<CounterAction>(COUNTER_TYPE);
+            app.init_layout();
+            let invocation =
+                tilo_actions::InvocationId(uuid::Uuid::from_u128(if legacy_collision {
+                    44
+                } else {
+                    0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b
+                }));
+            app.invoke_published_action(
+                43,
+                Some(invocation),
+                "test.counter".into(),
+                "async-bump".into(),
+                None,
+                "device:first",
+                None,
+            );
+            // A conflicting caller or the numeric legacy path must never replace
+            // the active operation's cancellation/completion route or run a second effect.
+            app.invoke_published_action(
+                44,
+                if legacy_collision {
+                    None
+                } else {
+                    Some(invocation)
+                },
+                "test.counter".into(),
+                conflicting_action.into(),
+                None,
+                "device:second",
+                None,
+            );
+            assert_eq!(
+                counter(&app),
+                0,
+                "conflicting invocation was rejected before its effect"
+            );
+            assert_eq!(
+                app.directed_invocations.get(&invocation).unwrap().wire_id,
+                43
+            );
+            app.request_invocation_cancellation(44);
+            assert!(
+                !app.directed_invocations
+                    .get(&invocation)
+                    .unwrap()
+                    .cancellation_requested
+            );
+            app.request_invocation_cancellation(43);
+            assert!(
+                app.directed_invocations
+                    .get(&invocation)
+                    .unwrap()
+                    .cancellation_requested
+            );
+            app.refresh_focus_order();
+            assert_eq!(counter(&app), 1, "only the first operation ran");
+            assert!(app.poll_directed_invocations());
+            assert!(app.directed_invocations.is_empty());
+        }
+    }
+
+    #[test]
     fn accepted_broker_invocation_republishes_when_its_terminal_update_arrives() {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
@@ -16901,8 +16873,11 @@ mod semantic_tree_app_tests {
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
 
-        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(43));
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
+            0xa5a5_a5a5_a5a5_a5a5_0000_0000_0000_002b,
+        ));
         app.apply_collab_event_for_test(CollabEvent::Invocation {
+            invocation: Some(invocation),
             id: 43,
             resource: "test.counter".into(),
             action: "async-bump".into(),
@@ -18722,7 +18697,9 @@ mod bound_component_tests {
                 doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
                 Some("child")
             );
-            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+            if !PUBLICATION_NORMAL_POLL.get() {
+                assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+            }
             Self::capture("mutable-cancel");
             Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
@@ -19259,6 +19236,7 @@ mod bound_component_tests {
         }
         fn broker() -> Self {
             let mut fixture = Self::with_same_record(true);
+            fixture.app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
             fixture.app.bound_broker_route_for_test =
                 Some(crate::collaboration::PrimaryRouteWitness {
                     route: fixture.bindings[0].broker_route().unwrap(),
@@ -19279,6 +19257,7 @@ mod bound_component_tests {
     }
 
     include!("app/action_directory_snapshot_bound_tests.rs");
+    include!("app/owner_publication_tests.rs");
 
     #[test]
     fn task4_bound_publication_preserves_contracts_and_directed_owner() {
@@ -20227,7 +20206,7 @@ mod bound_component_tests {
         }
         fixture
             .app
-            .invoke_published_action(41, resource, action, None, &actor, None);
+            .invoke_published_action(41, None, resource, action, None, &actor, None);
         assert!(
             fixture
                 .records
@@ -20512,6 +20491,7 @@ mod bound_component_tests {
             assert_eq!(fixture.app.next_broker_request_id, next_id);
             fixture.app.invoke_published_action(
                 50,
+                None,
                 alias.clone(),
                 "follow-up".into(),
                 None,

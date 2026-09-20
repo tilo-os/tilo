@@ -55,12 +55,14 @@ extern crate self as ui;
 #[path = "../tests/support/application.rs"]
 pub(crate) mod application_test_support;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod app;
 pub mod caps_lock;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
 pub mod clipboard;
+pub mod clock;
 pub mod collaboration;
 pub mod collection_transition;
 pub mod color_compat;
@@ -95,6 +97,7 @@ pub mod host_notifications;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
+pub mod ime;
 pub mod input;
 pub mod interaction;
 pub mod launch;
@@ -104,12 +107,14 @@ pub mod math;
 pub mod mpris;
 pub mod nav_stack;
 pub mod num;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod offscreen;
 pub mod overlay;
 pub mod paragraph;
 pub mod permissions;
 pub mod persist;
 pub mod platform;
+pub mod portable_storage;
 pub mod portal;
 pub mod presence;
 pub mod profiling;
@@ -124,6 +129,7 @@ pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod close_admission;
 pub mod reader_hud;
 pub mod record;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod render_thread;
 pub mod reorder;
 pub mod richtext;
@@ -149,6 +155,7 @@ pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
 pub mod wake;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod warmup;
 pub mod webview;
 pub mod widget;
@@ -166,7 +173,8 @@ pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
-pub use app::{ActionUiRoute, App, local_surface_id};
+#[cfg(not(target_arch = "wasm32"))]
+pub use app::{ActionUiRoute, App};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
@@ -208,6 +216,7 @@ pub use state::{
     DocumentDiagnostics, DocumentFrontier, FrontierDiagnostics, Revision, RevisionHistory,
     RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
 };
+pub use surface::local_surface_id;
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
 pub use ui_graph::{
@@ -344,11 +353,13 @@ pub use permissions::{
 
 pub mod application;
 pub mod application_view;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod presentation_feedback;
 
 /// Emission-time local control custody.
@@ -356,3 +367,4 @@ pub mod control_custody;
 pub use control_custody::{
     ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
 };
+mod focus_navigation;

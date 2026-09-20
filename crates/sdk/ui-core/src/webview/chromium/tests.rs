@@ -180,8 +180,8 @@ fn private_root() -> PathBuf {
 
 #[cfg(unix)]
 fn wait_until_removed(root: &Path) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while root.exists() && std::time::Instant::now() < deadline {
+    let deadline = crate::clock::Instant::now() + Duration::from_secs(5);
+    while root.exists() && crate::clock::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -686,10 +686,10 @@ fn native_capacity_is_reserved_until_closed_acknowledgment() {
     );
     assert_eq!(first.runtime.routes.lock().unwrap().len(), 32);
     std::fs::write(profile.join("ack-close"), b"ack").unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = crate::clock::Instant::now() + Duration::from_secs(2);
     while first.runtime.routes.lock().unwrap().contains_key(&32) {
         assert!(
-            std::time::Instant::now() < deadline,
+            crate::clock::Instant::now() < deadline,
             "closed event releases native reservation"
         );
         std::thread::sleep(Duration::from_millis(5));
@@ -812,12 +812,12 @@ fn detached_acknowledgment_releases_visible_route_before_physical_close() {
     let detached = first.create_tab().unwrap();
     let routes = first.runtime.routes.clone();
     std::fs::write(dir.path().join("profile/detach-ready"), b"ready").unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = crate::clock::Instant::now() + Duration::from_secs(2);
     let mut saw_detach = false;
     while !saw_detach {
         saw_detach = detached.drain_events().contains(&WebViewEvent::TabDetached);
         assert!(
-            std::time::Instant::now() < deadline,
+            crate::clock::Instant::now() < deadline,
             "detach acknowledgment"
         );
         std::thread::sleep(Duration::from_millis(5));
@@ -857,10 +857,10 @@ fn admitted_close_does_not_reinsert_capacity_when_endpoint_drops() {
         let tab = first.create_tab().unwrap();
         assert!(!tab.request_close());
         std::fs::write(profile.join(format!("ack-{id}")), b"ack").unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = crate::clock::Instant::now() + Duration::from_secs(2);
         while first.runtime.routes.lock().unwrap().contains_key(&id) {
             assert!(
-                std::time::Instant::now() < deadline,
+                crate::clock::Instant::now() < deadline,
                 "native close acknowledgment"
             );
             std::thread::sleep(Duration::from_millis(5));

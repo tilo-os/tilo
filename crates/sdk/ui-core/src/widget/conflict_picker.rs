@@ -764,7 +764,7 @@ impl ConflictPicker {
     ) {
         let cards = self.card_rects();
         let alt_count = self.alternatives().len();
-        let now = std::time::SystemTime::now();
+        let now = crate::clock::SystemTime::now();
         for (i, card) in cards.iter().enumerate() {
             let hovered = self.hover_alt == Some(i)
                 || (i == alt_count && self.has_merged_card() && self.hover_merged);
@@ -895,7 +895,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
-    use std::time::{Duration, SystemTime};
+    use crate::clock::{Duration, SystemTime};
     use winit::event::Modifiers;
     use winit::keyboard::PhysicalKey;
 

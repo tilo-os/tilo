@@ -459,8 +459,8 @@ fn find_synthetic_path(
 /// Reverse of the App's `taffy::NodeId -> *mut dyn Widget` map, so the walk can
 /// look up a stable id for any `&dyn Widget` it meets.
 struct WidgetNodeMap {
-    nodes: HashMap<*const (), Vec<(TaffyNodeId, *const dyn Widget)>>,
-    aliases: std::collections::HashSet<*const ()>,
+    nodes: HashMap<*const (), Vec<(TaffyNodeId, *const dyn Widget, String)>>,
+    names: HashMap<*const (), HashMap<String, usize>>,
 }
 
 impl WidgetNodeMap {
@@ -468,13 +468,23 @@ impl WidgetNodeMap {
         let pointer = std::ptr::from_ref(widget);
         let address = pointer.cast::<()>();
         let entries = self.nodes.get(&address)?;
-        // A Rust struct can share its address with its first field. Only
-        // the registered trait object owns this layout id; the wrapper gets
-        // a structural id. For unaliased addresses retain the original rule,
-        // independent of possible compiler duplication of trait vtables.
-        entries.iter().find_map(|&(id, registered)| {
-            (!self.aliases.contains(&address) || std::ptr::eq(pointer, registered)).then_some(id)
-        })
+        let names = self.names.get(&address)?;
+        let aliased = names.values().sum::<usize>() > 1;
+        // A Rust struct can share its address with its first field. Correlate
+        // an aliased address by a name unique at that address as well as pointer
+        // metadata: the same concrete widget can receive distinct duplicated
+        // trait vtables at its build and traversal coercion sites. A wrapper
+        // with the same or a different non-unique name remains structural and
+        // cannot inherit the registered child's dispatch id.
+        entries
+            .iter()
+            .find_map(|(id, registered, registered_name)| {
+                (!aliased
+                || std::ptr::eq(pointer, *registered)
+                    || (registered_name == widget.name()
+                        && names.get(widget.name()).copied() == Some(1)))
+                .then_some(*id)
+            })
     }
 }
 
@@ -484,34 +494,37 @@ fn reverse_node_map<S: BuildHasher, const BOUND: bool>(
 ) -> WidgetNodeMap {
     fn collect<const BOUND: bool>(
         widget: &dyn Widget,
-        seen: &mut std::collections::HashSet<*const ()>,
-        aliases: &mut std::collections::HashSet<*const ()>,
+        names: &mut HashMap<*const (), HashMap<String, usize>>,
     ) {
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(widget) else {
             return;
         };
         let address = std::ptr::from_ref(widget).cast::<()>();
-        if !seen.insert(address) {
-            aliases.insert(address);
-        }
+        *names
+            .entry(address)
+            .or_default()
+            .entry(widget.name().to_owned())
+            .or_default() += 1;
         for child in widget.children() {
-            collect::<BOUND>(child, seen, aliases);
+            collect::<BOUND>(child, names);
         }
     }
     let mut result = WidgetNodeMap {
         nodes: HashMap::new(),
-        aliases: std::collections::HashSet::new(),
+        names: HashMap::new(),
     };
-    let mut seen = std::collections::HashSet::new();
     for root in roots {
-        collect::<BOUND>(*root, &mut seen, &mut result.aliases);
+        collect::<BOUND>(*root, &mut result.names);
     }
     for (&taffy_id, &pointer) in node_map {
+        // SAFETY: layout pointers and the admitted roots describe the same live
+        // widget tree for this exclusive AccessKit traversal.
+        let name = unsafe { (&*pointer).name().to_owned() };
         result
             .nodes
             .entry(pointer.cast::<()>())
             .or_default()
-            .push((taffy_id, pointer));
+            .push((taffy_id, pointer, name));
     }
     result
 }

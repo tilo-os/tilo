@@ -16,7 +16,7 @@
 //! receiver to pattern-match — the cleanest fit for six fixed shapes.
 
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use web_time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes};
 use crate::channel::{ChannelId, ChannelSettingsDelta};

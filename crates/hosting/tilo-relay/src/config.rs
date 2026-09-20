@@ -159,6 +159,10 @@ pub struct WorkspaceBinding {
     /// room-scoped rather than a relay-wide collaborator union.
     #[serde(default)]
     pub admitted_users: Vec<String>,
+    /// Local shell governor pin supplied by the native owner. Neither workspace
+    /// membership nor a same-user relay identity implies this authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_authority: Option<qos_peer_state::retained_proof::RetentionAuthority>,
 }
 
 mod workspace_id_serde {
@@ -305,6 +309,7 @@ impl RelayConfig {
             pin,
             replication: default_server_replication(),
             admitted_users: Vec::new(),
+            shell_authority: None,
         });
         true
     }
@@ -370,6 +375,26 @@ mod tests {
     }
 
     #[test]
+    fn shell_authority_config_accepts_exact_local_binding() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/shell-proof/failure.json"
+        ))
+        .unwrap();
+        let binding = serde_json::json!({"id": "42", "shell_authority": {"room": fixture["room"], "governor": fixture["authority"]}});
+        let binding: WorkspaceBinding = serde_json::from_value(binding).unwrap();
+        assert_eq!(
+            toml::from_str::<WorkspaceBinding>(&toml::to_string(&binding).unwrap()).unwrap(),
+            binding
+        );
+        assert!(
+            serde_json::from_value::<WorkspaceBinding>(serde_json::json!({"id": "42"}))
+                .unwrap()
+                .shell_authority
+                .is_none()
+        );
+    }
+
+    #[test]
     fn workspace_ids_round_trip_above_toml_integer_range_and_parse_legacy_integers() {
         let high = (i64::MAX as u64) + 42;
         let binding = WorkspaceBinding {
@@ -377,6 +402,7 @@ mod tests {
             pin: true,
             replication: ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
+            shell_authority: None,
         };
         let text = toml::to_string(&binding).unwrap();
         assert!(text.contains(&format!("id = \"{high}\"")));

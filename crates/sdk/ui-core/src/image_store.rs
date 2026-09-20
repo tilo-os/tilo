@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -137,14 +137,85 @@ pub struct ImageStore {
     tx: SyncSender<String>,
 }
 
+/// Host-owned request drain for asynchronous browser fetch. Completion uses
+/// the same decoder/cache limits as native workers and wakes the owning component.
+pub struct HostImageLoader {
+    shared: Arc<Shared>,
+    requests: Receiver<String>,
+    in_flight: std::collections::HashSet<String>,
+    wake: crate::wake::WakeHandle,
+}
+impl HostImageLoader {
+    pub fn take_requests(&mut self) -> Vec<String> {
+        let requests: Vec<_> = self.requests.try_iter().collect();
+        self.in_flight.extend(requests.iter().cloned());
+        requests
+    }
+    /// Reopen only a previously admitted failed slot; arbitrary URLs cannot enter here.
+    pub fn retry(&mut self,url:&str)->bool{
+        if !self.wake.authorize_publication()||self.in_flight.contains(url){return false;}
+        let Ok(mut slots)=self.shared.slots.lock()else{return false;};
+        let Some(entry)=slots.slots.get_mut(url)else{return false;};
+        if !matches!(entry.slot,Slot::Failed){return false;}
+        entry.slot=Slot::Loading;self.in_flight.insert(url.into());self.shared.pending.fetch_add(1,Ordering::SeqCst);true
+    }
+    pub fn loaded(&self,url:&str)->bool{
+        self.shared.slots.lock().ok().is_some_and(|slots|slots.slots.get(url).is_some_and(|entry|matches!(entry.slot,Slot::Ready(_))))
+    }
+    /// Returns false for unknown/already-completed requests or a closed component.
+    pub fn complete(&mut self, url: &str, bytes: Option<&[u8]>) -> bool {
+        if !self.in_flight.remove(url) { return false; }
+        self.shared.pending.fetch_sub(1, Ordering::SeqCst);
+        if !self.wake.authorize_publication() { return false; }
+        if let Ok(mut slots) = self.shared.slots.lock() {
+            insert_settled(&mut slots, url.into(), decoded_slot(bytes));
+        } else { return false; }
+        self.wake.wake();
+        true
+    }
+}
+
+impl Drop for HostImageLoader {
+    fn drop(&mut self) {
+        let mut unfinished = std::mem::take(&mut self.in_flight);
+        unfinished.extend(self.requests.try_iter());
+        if let Ok(mut slots) = self.shared.slots.lock() {
+            for url in &unfinished { insert_settled(&mut slots, url.clone(), Slot::Failed); }
+        }
+        self.shared.pending.fetch_sub(unfinished.len(), Ordering::SeqCst);
+        self.wake.wake();
+    }
+}
+
+thread_local! {
+    static HOST_FACTORY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn() -> ImageStore>>> = const { std::cell::RefCell::new(None) };
+}
+
 impl ImageStore {
+    /// Construct app caches under a host's async service while preserving component wake custody.
+    pub fn with_host_factory<R>(factory: std::rc::Rc<dyn Fn() -> Self>, construct: impl FnOnce() -> R) -> R {
+        struct Restore(Option<std::rc::Rc<dyn Fn() -> ImageStore>>);
+        impl Drop for Restore { fn drop(&mut self) { HOST_FACTORY.with_borrow_mut(|slot| *slot = self.0.take()); } }
+        let _restore = Restore(HOST_FACTORY.with_borrow_mut(|slot| slot.replace(factory)));
+        construct()
+    }
+
+    /// A real cache driven by a host's asynchronous fetch executor, without threads.
+    pub fn host_driven() -> (Self, HostImageLoader) {
+        let (tx, requests) = std::sync::mpsc::sync_channel(IMAGE_JOB_QUEUE_LIMIT);
+        let shared = Arc::new(Shared { slots: Mutex::new(CacheState::default()), pending: AtomicUsize::new(0) });
+        (Self { shared: shared.clone(), tx }, HostImageLoader { shared, requests, in_flight: Default::default(), wake: crate::wake::WakeHandle::new() })
+    }
+
     /// Build a store with the default worker count.
     pub fn new(fetch: &Fetcher) -> Self {
+        if let Some(factory) = HOST_FACTORY.with_borrow(Clone::clone) { return factory(); }
         Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
     }
 
     /// Build a store with `workers` background fetch/decode threads, clamped
     /// to 1..=4 so each store has a predictable stack/scheduler footprint.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
         let (tx, rx) = std::sync::mpsc::sync_channel::<String>(IMAGE_JOB_QUEUE_LIMIT);
         let shared = Arc::new(Shared {
@@ -161,6 +232,15 @@ impl ImageStore {
                 .spawn(move || worker_loop(&rx, &shared, &fetch));
         }
         Self { shared, tx }
+    }
+
+    /// Blocking worker fetchers are unavailable in a browser. Install host_driven instead.
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_workers(_: &Fetcher, _: usize) -> Self {
+        let (store, host) = Self::host_driven();
+        drop(host);
+        tracing::warn!("native image fetch unavailable; install a host-driven image loader");
+        store
     }
 
     /// Decoded image for `url`, kicking off an async load the first time a URL
@@ -201,11 +281,11 @@ impl ImageStore {
         // Never block the UI thread behind image I/O. A full queue removes the
         // provisional Loading slot so a later frame can retry.
         if let Err(error) = self.tx.try_send(url.to_string()) {
-            let failed_url = match error {
-                TrySendError::Full(url) | TrySendError::Disconnected(url) => url,
-            };
             if let Ok(mut slots) = self.shared.slots.lock() {
-                slots.slots.remove(&failed_url);
+                match error {
+                    TrySendError::Full(url) => { slots.slots.remove(&url); },
+                    TrySendError::Disconnected(url) => insert_settled(&mut slots, url, Slot::Failed),
+                }
             }
             self.shared.pending.fetch_sub(1, Ordering::SeqCst);
         }
@@ -235,9 +315,14 @@ impl ImageStore {
     /// synchronous `--shots` pre-warm only — never call this on a live app's UI
     /// thread.
     pub fn block_until_idle(&self, timeout: Duration) {
+        #[cfg(target_arch = "wasm32")]
+        { let _ = timeout; tracing::warn!("blocking image wait unavailable in browser; await host completions"); }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
         let start = Instant::now();
         while self.pending() > 0 && start.elapsed() < timeout {
             std::thread::sleep(Duration::from_millis(10));
+        }
         }
     }
 }
@@ -252,20 +337,7 @@ fn worker_loop(rx: &Arc<Mutex<Receiver<String>>>, shared: &Arc<Shared>, fetch: &
                 Err(_) => break, // sender dropped: store gone
             }
         };
-        let decoded = fetch(&url).and_then(|bytes| decode_rgba(&bytes));
-        let slot = match decoded {
-            Some((rgba, w, h)) => {
-                let blob = Blob::new(Arc::new(rgba));
-                Slot::Ready(PenikoImage {
-                    data: blob,
-                    format: Format::Rgba8,
-                    alpha_type: ImageAlphaType::Alpha,
-                    width: w,
-                    height: h,
-                })
-            }
-            None => Slot::Failed,
-        };
+        let slot = decoded_slot(fetch(&url).as_deref());
         if let Ok(mut slots) = shared.slots.lock() {
             // Replace this request's Loading marker, then reclaim settled
             // entries until both the count and decoded-pixel ceilings fit.
@@ -344,6 +416,20 @@ pub fn paint_image_cover(
 mod tests {
     use super::*;
 
+    #[test]
+    fn dropping_host_loader_settles_queued_and_taken_requests() {
+        let (store, mut host) = ImageStore::host_driven();
+        store.get("taken");
+        assert_eq!(host.take_requests(), vec!["taken"]);
+        store.get("queued");
+        assert_eq!(store.pending(), 2);
+        drop(host);
+        assert!(store.is_idle());
+        assert!(store.get("taken").is_none());
+        assert!(store.get("queued").is_none());
+        assert!(store.is_idle());
+    }
+
     fn logical_image(width: u32, height: u32) -> PenikoImage {
         PenikoImage {
             data: Blob::new(Arc::new(vec![0, 0, 0, 0])),
@@ -356,6 +442,31 @@ mod tests {
 
     /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's
     /// fetch+decode+cache path is exercised deterministically.
+    #[test]
+    fn failed_host_image_can_retry_only_its_admitted_request_and_decode_real_bytes(){
+        let (store,mut host)=ImageStore::host_driven();store.get("retained");host.take_requests();
+        assert!(host.complete("retained",None));assert!(store.get("retained").is_none());
+        assert!(!host.retry("unknown"));assert!(host.retry("retained"));assert!(!host.retry("retained"));
+        assert!(host.complete("retained",Some(&png_bytes(9,7,[1,2,3]))));assert!(host.loaded("retained"));
+        assert_eq!((store.get("retained").unwrap().width,store.get("retained").unwrap().height),(9,7));assert_eq!(store.pending(),0);assert!(!host.retry("retained"));
+    }
+    #[test]
+    fn host_image_requests_decode_real_bytes_and_settle_failures() {
+        let (store, mut host) = ImageStore::host_driven();
+        assert!(store.get("cover").is_none());
+        assert_eq!(host.take_requests(), vec!["cover"]);
+        assert!(host.complete("cover", Some(&png_bytes(12, 8, [10, 200, 30]))));
+        let image = store.get("cover").unwrap();
+        assert_eq!((image.width, image.height), (12, 8));
+        assert_eq!(store.pending(), 0);
+        assert!(!host.complete("cover", None));
+        store.get("broken");
+        host.take_requests();
+        assert!(host.complete("broken", Some(b"not an image")));
+        assert!(store.get("broken").is_none());
+        assert!(store.is_idle());
+    }
+
     fn png_bytes(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
         let pixels = w.saturating_mul(h);
         let mut rgba = Vec::with_capacity(pixels.saturating_mul(4) as usize);
@@ -514,5 +625,36 @@ mod tests {
         let bytes = png_bytes(700, 2, [20, 40, 60]);
         let (_, width, height) = decode_rgba(&bytes).expect("valid PNG decodes");
         assert!(width <= 600 && height <= 600);
+    }
+}
+
+fn decoded_slot(bytes: Option<&[u8]>) -> Slot {
+    match bytes.and_then(decode_rgba) {
+            Some((rgba, w, h)) => {
+                let blob = Blob::new(Arc::new(rgba));
+                Slot::Ready(PenikoImage {
+                    data: blob,
+                    format: Format::Rgba8,
+                    alpha_type: ImageAlphaType::Alpha,
+                    width: w,
+                    height: h,
+                })
+            }
+            None => Slot::Failed,
+        }
+}
+
+#[cfg(test)]
+mod scoped_host_factory_tests {
+    use super::*;
+    #[test]
+    fn host_factory_constructs_async_store_inside_the_component_scope() {
+        let loaders=std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let captured=loaders.clone();
+        let factory=std::rc::Rc::new(move||{let (store,loader)=ImageStore::host_driven();captured.borrow_mut().push(loader);store});
+        let fetch:Fetcher=Arc::new(|_|panic!("native fetch must not execute"));
+        let store=ImageStore::with_host_factory(factory,||ImageStore::new(&fetch));
+        assert!(store.get("asset").is_none());
+        assert_eq!(loaders.borrow_mut()[0].take_requests(),vec!["asset"]);
     }
 }

@@ -15,8 +15,8 @@
 //! history, so toggling a chip narrows the list without re-chunking it under
 //! the reader.
 
+use crate::clock::SystemTime;
 use std::collections::{HashMap, HashSet};
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -422,8 +422,18 @@ impl ActivityTimeline {
     /// Use selection/inspection without offering metadata or direct revert actions.
     #[must_use]
     pub fn with_preview_selection(mut self) -> Self {
-        self.preview_selection = true;
+        self.set_preview_selection(true);
         self
+    }
+
+    /// Enable inspection without mutation affordances. Revocation cancels an
+    /// in-progress naming field before it can emit a metadata write intent.
+    pub fn set_preview_selection(&mut self, preview: bool) {
+        self.preview_selection = preview;
+        if preview {
+            self.naming = None;
+        }
+        self.dirty = true;
     }
 
     pub fn with_entries(entries: Vec<HistoryEntry>) -> Self {
@@ -3701,11 +3711,11 @@ impl ActivityTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Duration;
     use crate::widget::history::HistoryAuthor;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
@@ -4515,12 +4525,12 @@ mod tests {
 #[cfg(test)]
 mod group_tests {
     use super::*;
+    use crate::clock::Duration;
     use crate::widget::history::HistoryAuthor;
     use crate::widget::history_group::NamedRange;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
 
     const NOW: u64 = 2_000_000;

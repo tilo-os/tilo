@@ -1,6 +1,6 @@
 //! Shared drag/reorder state for virtualized collection widgets.
 
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use vello::kurbo::{Point, Rect};
 

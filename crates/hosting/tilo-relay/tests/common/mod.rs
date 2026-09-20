@@ -112,6 +112,15 @@ pub async fn spawn_relay_on(
     workspaces: &[u64],
     members: &[[u8; 32]],
 ) -> Relay {
+    if std::env::var_os("QOS_RELAY_CORRELATED_DIAGNOSTICS").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_env_filter(
+                "tilo_relay::peer=info,tilo_relay::client=info,tilo_relay::workspace_io=info",
+            )
+            .with_writer(|| PhaseWriter)
+            .try_init();
+    }
     let mut cfg = RelayConfig {
         state_root: state_root.to_path_buf(),
         ..Default::default()
@@ -122,6 +131,7 @@ pub async fn spawn_relay_on(
             pin: true,
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: Vec::new(),
+            shell_authority: None,
         });
     }
     let identity = RelayIdentity {
@@ -159,3 +169,36 @@ pub async fn wait_for(mut cond: impl FnMut() -> bool, attempts: u32) -> bool {
 
 #[allow(dead_code)]
 pub fn _keep_symbols_used(_h: &RelayHandle) {}
+
+fn phase_bytes() -> &'static std::sync::Mutex<std::collections::VecDeque<u8>> {
+    static BUFFER: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<u8>>> =
+        std::sync::OnceLock::new();
+    BUFFER.get_or_init(|| {
+        std::sync::Mutex::new(std::collections::VecDeque::with_capacity(128 * 1024))
+    })
+}
+struct PhaseWriter;
+impl std::io::Write for PhaseWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let mut buffer = phase_bytes().lock().unwrap();
+        for byte in bytes {
+            if buffer.len() == 128 * 1024 {
+                buffer.pop_front();
+            }
+            buffer.push_back(*byte);
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+pub fn print_phase_diagnostic() {
+    let bytes = phase_bytes()
+        .lock()
+        .unwrap()
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    eprintln!("{}", String::from_utf8_lossy(&bytes));
+}

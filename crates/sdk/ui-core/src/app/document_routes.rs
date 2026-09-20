@@ -48,7 +48,8 @@ impl App {
 
     /// Local queue state, not an acknowledgement of remote delivery/durability.
     pub fn document_sync_status(&self) -> Option<&str> {
-        self.document_routes
+        self.action_publication_failure.as_deref().or(self
+            .document_routes
             .status
             .as_deref()
             .or(self.document_routes.primary.failure.as_deref())
@@ -72,7 +73,7 @@ impl App {
                 } else {
                     None
                 }
-            })
+            }))
     }
     pub(super) fn refresh_document_routes(&mut self) {
         let before = self.document_sync_status().map(str::to_owned);
@@ -91,53 +92,130 @@ impl App {
             self.layout_dirty = true;
         }
     }
-    fn send_owned_document(&mut self, route: RouteSpec, request: CollabRequest) {
+    fn send_owned_document(&mut self, route: RouteSpec, request: CollabRequest) -> bool {
         #[cfg(test)]
-        self.document_routes
-            .sent
-            .push((route.clone(), request.clone()));
-        self.collab_manager.send_to_route(route, request);
+        let observation = (route.clone(), request.clone());
+        if !self.collab_manager.try_send_to_route(route, request) {
+            return false;
+        }
+        #[cfg(test)]
+        self.document_routes.sent.push(observation);
+        true
     }
+
+    /// Ordinary background/history publication remains best effort. Only a
+    /// directed terminal requires the explicit complete-queue result below.
     pub(super) fn publish_owned_documents(&mut self) {
+        let _ = self.queue_owned_documents();
+    }
+
+    /// Enqueue all changed live owned records. Success is queue admission, not
+    /// durability: the SDK still awaits each document RPC before a terminal.
+    fn queue_owned_documents(&mut self) -> Result<(), &'static str> {
+        fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
+            if let Some(owner) = root.history_owner()
+                && !owners.iter().any(|known| known.same_owner(&owner))
+            {
+                owners.push(owner);
+            }
+            for child in root.children() {
+                collect(child, owners);
+            }
+        }
         self.refresh_document_routes();
+        // Reconcile can omit a newly unreadable, unroutable or retired owner.
+        // Such omissions cannot serve as proof that every live owner was queued.
+        let mut current = vec![];
+        collect(self.root_widget.as_ref(), &mut current);
+        self.root_widget
+            .visit_framework_history(&mut |_, live| collect(live, &mut current));
+        if current.is_empty() {
+            return Ok(());
+        }
         if self.document_routes.witness.is_none() {
-            return;
+            return Err("the admitted document route is unavailable");
+        }
+        let mut blocked = None;
+        if current.iter().any(|owner| {
+            !self.document_routes.owners.iter().any(|entry| {
+                entry
+                    .owners
+                    .iter()
+                    .any(|installed| installed.same_owner(owner))
+            })
+        }) {
+            blocked = Some("a live document owner has no usable publication route");
         }
         let mut sends = vec![];
         for entry in &mut self.document_routes.owners {
             let Some(owner) = entry.owners.first() else {
+                blocked.get_or_insert("a document route has no owner");
                 continue;
             };
             if entry.owners.iter().any(|other| !owner.same_document(other)) {
                 entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
-                continue;
-            }
-            if entry.pending.failure.is_some() {
+                blocked.get_or_insert("document owners conflict on the publication route");
                 continue;
             }
             let Ok(mut document) = owner.document(&self.state.doc) else {
+                blocked.get_or_insert("an owned document is unreadable");
                 continue;
             };
             if document.pending_ops() != 0 {
+                blocked.get_or_insert("an owned document has unfinished changes");
                 continue;
             }
             let heads = crate::history_mode::sorted_heads(document.base_heads());
             if heads == entry.sent_heads && !entry.needs_snapshot {
                 continue;
             }
-            // Clone serialization cannot advance the canonical writer's or
-            // another subscriber's incremental save cursor.
+            if entry.pending.failure.is_some() {
+                blocked.get_or_insert("a changed document requires synchronization recovery");
+                continue;
+            }
+            // Clone serialization leaves the canonical writer and every other
+            // subscriber's incremental save cursor intact.
             let request = if entry.needs_snapshot {
                 CollabRequest::document_snapshot(document.save())
             } else {
                 CollabRequest::document_incremental(document.save_after(&entry.sent_heads))
             };
-            entry.sent_heads = heads;
-            entry.needs_snapshot = false;
-            sends.push((entry.route.clone(), request));
+            sends.push((entry.route.clone(), request, heads));
         }
-        for (route, request) in sends {
-            self.send_owned_document(route, request);
+        for (route, request, heads) in sends {
+            if self.send_owned_document(route.clone(), request) {
+                if let Some(entry) = self
+                    .document_routes
+                    .owners
+                    .iter_mut()
+                    .find(|entry| entry.route == route)
+                {
+                    entry.sent_heads = heads;
+                    entry.needs_snapshot = false;
+                }
+            } else {
+                blocked.get_or_insert("the document command could not enter the transport queue");
+            }
+        }
+        blocked.map_or(Ok(()), Err)
+    }
+
+    /// A local mutation may already exist. Suppress its terminal and retire the
+    /// transport; broker disconnect/recovery retains admitted uncertainty.
+    pub(super) fn queue_documents_before_terminal(&mut self) -> bool {
+        if self.action_publication_failure.is_some() {
+            return false;
+        }
+        match self.queue_owned_documents() {
+            Ok(()) => true,
+            Err(reason) => {
+                self.action_publication_failure = Some(format!(
+                    "Document publication blocked: {reason}; action outcome unknown. Reconnect and reconcile before retrying."
+                ));
+                self.collab_manager.stop_after_publication_failure();
+                self.layout_dirty = true;
+                false
+            }
         }
     }
     pub(super) fn drain_document_routes(&mut self) {

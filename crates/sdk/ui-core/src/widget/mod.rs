@@ -9,9 +9,9 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
+use crate::clock::Instant;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::time::Instant;
 
 /// Shared disabled-state opacity: wrap draw output in
 /// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
@@ -487,6 +487,17 @@ pub trait Widget {
             .collect()
     }
 
+    /// Explicit app-owned region; never search secondary children implicitly.
+    fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
+        None
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        _action: PrimaryScrollAction,
+    ) -> PrimaryScrollResult {
+        PrimaryScrollResult::Unsupported
+    }
+
     /// A successful, locally applied resource Document action on this exact owner.
     /// Immutable document access permits cache reconciliation only. Not called for
     /// submissions, failed execution, replay, remote merge, or History restore.
@@ -922,6 +933,9 @@ pub trait Widget {
     /// Lets a screenshot harness hold an animation at a chosen millisecond
     /// and render the real `draw` at that instant. Default `None`; a widget
     /// opts in with `Some(self)`.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
@@ -1066,7 +1080,30 @@ pub trait Widget {
     fn is_focusable(&self) -> bool {
         false
     }
+    /// Preferred control when its app is explicitly activated without a valid
+    /// saved control. Hosts still enforce visibility, enabled state and scope.
+    fn is_default_keyboard_focus(&self) -> bool {
+        false
+    }
+
+    /// Exact app instance whose non-text shortcuts this subtree owns when
+    /// activation has no control target. Unbound desktop chrome may declare
+    /// the active tab; component boundaries default to their captured owner.
+    fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
+        self.callback_binding().map(|binding| binding.instance_id)
+    }
+
     fn set_focus(&mut self, _focused: bool) {}
+
+    /// An explicit runner focus request, after resolving the actual keyboard
+    /// owner. Retained flags and layout restoration are not user gestures.
+    /// Containers can observe this to reveal the owning viewport.
+    fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
+        for child in self.children_mut() {
+            child.focus_requested(target, tree);
+        }
+    }
+
     fn is_focused(&self) -> bool {
         false
     }
@@ -1569,6 +1606,12 @@ pub trait Widget {
     /// video plus its comments. `doc` lets a provider enumerate resources
     /// living in the CRDT.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        Vec::new()
+    }
+
+    /// Explicit host-local presentation/request controls for the portable caller
+    /// palette. Only View operations are accepted; shared effects remain broker-owned.
+    fn caller_view_resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         Vec::new()
     }
 
@@ -2177,7 +2220,10 @@ pub use dropdown::Dropdown;
 pub mod tabs;
 pub use tabs::{TabBar, TabDescriptor};
 pub mod scrollbar;
-pub use scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+pub use scrollbar::{
+    PressOutcome, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, ScrollMetrics,
+    Scrollbar,
+};
 pub mod date_indexed_scrollbar;
 pub use date_indexed_scrollbar::{
     DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexPreview, DateIndexedScrollbar,

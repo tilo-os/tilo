@@ -19,6 +19,7 @@
 //! - A simulated remote cursor floats over the active tile.
 
 pub mod actions;
+pub(crate) mod broker_services;
 pub(crate) mod capture_surface;
 pub mod catalogue;
 pub mod chrome_state;
@@ -65,6 +66,7 @@ pub mod notification;
 pub mod osd;
 pub mod overlay_host;
 pub mod overview;
+pub mod peer_actions;
 pub mod peer_join_toast;
 pub mod peer_presence;
 pub mod peer_sync_overlay;
@@ -122,8 +124,7 @@ use ui::widget::context_menu::MenuItem;
 #[cfg(any(test, debug_assertions))]
 use ui::widget::toast::ToastStack;
 use ui::widget::{
-    AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
-    TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth, WorkspaceView,
+    AppKind as UiKind, AppWidget, GroupRow, TileContent as UiTile, Widget, WindowGroup as UiGroup,
     context_menu::ContextMenu,
 };
 
@@ -132,20 +133,9 @@ use crate::shell::global_search::GlobalSearch;
 use browser::BrowserWidget;
 
 use crate::shell::notes_app::NotesApp;
-use crate::shell::tile::{
-    Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
-    WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
-};
+use crate::shell::tile::TileContent as RuntimeTile;
+use qos_desktop::WorkspaceTree as RuntimeTree;
 
-/// Stable addresses of the three production workspace layers. The enclosing widget tree owns
-/// these boxes; `ShellOverlayHost` uses them only for its sequential retained-scene draw pass.
-/// Hand-built roots deliberately do not provide this capability and stay conservatively dense.
-#[derive(Clone, Copy)]
-pub(crate) struct WorkspaceSceneParts {
-    pub backdrop: *mut dyn Widget,
-    pub topbar: *mut topbar_chrome::TopBarChrome,
-    pub workspace: *mut dyn Widget,
-}
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
 pub use collaboration_launchpad::{
@@ -155,11 +145,7 @@ pub use collaboration_launchpad::{
 use file_explorer::FileExplorerWidget;
 use terminal::TerminalWidget;
 
-/// Root tilo shell handle. Owns the runtime workspace tree — the live
-/// counterpart to the persisted [`state::WorkspaceTree`], holding real
-/// `Box<dyn AppWidget>`s in [`tile::TileContent::App`] instead of
-/// `AppPlaceholder` symbols — and the single Automerge document shared
-/// across every hosted app.
+/// Native shell handle with canonical topology and separate live widget services.
 // Each overlay's visibility is toggled independently (they are not
 // mutually exclusive — e.g. quick settings can open over the overview),
 // so collapsing them into one enum/flags field would misrepresent the
@@ -171,6 +157,7 @@ use terminal::TerminalWidget;
 )]
 pub struct Shell {
     tree: RuntimeTree,
+    live_tiles: std::collections::HashMap<state::TabId, RuntimeTile>,
     state: ui::state::State,
 
     topbar: TopBar,
@@ -232,15 +219,35 @@ impl Shell {
             #[cfg(any(test, debug_assertions))]
             first_file_explorer_ptr,
         } = default_demo_tabs(&hosted_inputs, terminal);
-        let group = RuntimeGroup::with_tabs(tabs, state::WindowWidth::Normal);
-        let strip = RuntimeStrip::new("Main", vec![group]);
-        let workspace = RuntimeWorkspace::new("Home", vec![strip]);
-        let tree = RuntimeTree::new(vec![workspace]);
+        let (tabs, live_tiles): (Vec<_>, std::collections::HashMap<_, _>) = tabs
+            .into_iter()
+            .map(|DemoTab { tab, content }| {
+                let id = tab.id;
+                (tab, (id, content))
+            })
+            .unzip();
+        let group = state::WindowGroup {
+            id: state::next_id(),
+            active_tab: tabs.first().map_or(0, |t| t.id),
+            tabs,
+            width: state::WindowWidth::Normal,
+            maximized: false,
+        };
+        let mut strip = state::Strip::new(state::StripId::new(), "Main");
+        strip.window_groups.push(group);
+        let mut workspace = state::Workspace::new(state::WorkspaceId::new(), "Home");
+        workspace.strips = vec![strip];
+        let tree = RuntimeTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..Default::default()
+        };
         // WorkspaceSettings must target a workspace id; pre-seed with the
         // active one. `open_ws_settings` rebinds it on later switches.
         let active_ws_id = tree.active;
         let mut shell = Self {
             tree,
+            live_tiles,
             state: ui::state::State::new(),
             topbar: TopBar::new(),
             search: GlobalSearch::new(),
@@ -275,13 +282,17 @@ impl Shell {
         &self.tree
     }
 
+    pub fn runtime_tile(&self, tab: state::TabId) -> Option<&RuntimeTile> {
+        self.live_tiles.get(&tab)
+    }
+
     /// Shared by the constructor and [`Self::tick_for_test`].
     fn sync_all_apps(&mut self) {
         for ws in &mut self.tree.workspaces {
             for strip in &mut ws.strips {
                 for group in &mut strip.window_groups {
                     for tab in &mut group.tabs {
-                        if let RuntimeTile::App(app) = &mut tab.tile {
+                        if let Some(RuntimeTile::App(app)) = self.live_tiles.get_mut(&tab.id) {
                             app.sync(&mut self.state.doc, &self.state.root);
                         }
                     }
@@ -299,7 +310,7 @@ impl Shell {
             for strip in &mut ws.strips {
                 for group in &mut strip.window_groups {
                     for tab in &mut group.tabs {
-                        if let RuntimeTile::App(app) = &mut tab.tile {
+                        if let Some(RuntimeTile::App(app)) = self.live_tiles.get_mut(&tab.id) {
                             app.sync(&mut self.state.doc, &self.state.root);
                             let _ = app.update(&mut self.state.doc, &self.state.root);
                         }
@@ -591,7 +602,9 @@ impl Shell {
         else {
             return 0;
         };
-        workspace.strips.push(RuntimeStrip::new(name, Vec::new()));
+        workspace
+            .strips
+            .push(state::Strip::new(state::StripId::new(), name));
         workspace.strips.len().saturating_sub(1)
     }
 
@@ -803,8 +816,32 @@ mod tab_menu_item_tests {
 /// test-only raw pointers to the `TerminalWidget` / `FileExplorerWidget`
 /// allocations inside two of those tabs, so `Shell` can expose introspection
 /// helpers without downcasting through `Box<dyn AppWidget>` (not `Any`).
+struct DemoTab {
+    tab: state::Tab,
+    content: RuntimeTile,
+}
+impl DemoTab {
+    fn new(title: impl Into<String>, content: RuntimeTile) -> Self {
+        let title = title.into();
+        let kind = match content.kind() {
+            UiKind::Terminal => ShellKind::Terminal,
+            UiKind::Files => ShellKind::FileExplorer,
+            UiKind::Browser => ShellKind::Browser,
+            _ => ShellKind::Other(hosted_label_for_title(&title)),
+        };
+        Self {
+            tab: state::Tab {
+                id: state::next_id(),
+                title: title.clone(),
+                tile: ShellTile::AppPlaceholder { kind, label: title },
+            },
+            content,
+        }
+    }
+}
+
 struct DemoTabs {
-    tabs: Vec<RuntimeTab>,
+    tabs: Vec<DemoTab>,
     #[cfg(any(test, debug_assertions))]
     first_terminal_ptr: Option<*const TerminalWidget>,
     #[cfg(any(test, debug_assertions))]
@@ -819,7 +856,7 @@ fn default_demo_tabs(
     inputs: &hosted_inputs::HostedTileInputs,
     terminal: Option<TerminalWidget>,
 ) -> DemoTabs {
-    let mut tabs: Vec<RuntimeTab> = Vec::new();
+    let mut tabs: Vec<DemoTab> = Vec::new();
     #[cfg(any(test, debug_assertions))]
     let mut first_terminal_ptr: Option<*const TerminalWidget> = None;
     // Declared up here (written unconditionally below) so the final struct
@@ -838,11 +875,11 @@ fn default_demo_tabs(
                 first_terminal_ptr = Some(&raw const *boxed);
             }
             let app: Box<dyn AppWidget> = boxed;
-            tabs.push(RuntimeTab::new("Terminal", RuntimeTile::App(app)));
+            tabs.push(DemoTab::new("Terminal", RuntimeTile::App(app)));
         }
         Err(e) => {
             tracing::warn!("terminal spawn failed: {e}; falling back to stub");
-            tabs.push(RuntimeTab::new(
+            tabs.push(DemoTab::new(
                 "Terminal",
                 RuntimeTile::Stub {
                     kind: UiKind::Terminal,
@@ -862,7 +899,7 @@ fn default_demo_tabs(
         first_file_explorer_ptr = Some(&raw const *fe_boxed);
     }
     let fe_app: Box<dyn AppWidget> = fe_boxed;
-    tabs.push(RuntimeTab::new("Files", RuntimeTile::App(fe_app)));
+    tabs.push(DemoTab::new("Files", RuntimeTile::App(fe_app)));
 
     // Seeds a welcome paragraph on first boot; later boots load the shared doc.
     let notes = NotesApp::with_seed(
@@ -871,16 +908,13 @@ fn default_demo_tabs(
          replicate through the same CRDT path every widget uses.\n\n\
          Ctrl+Z / Ctrl+Y undo and redo across the whole shell.",
     );
-    tabs.push(RuntimeTab::new("Notes", RuntimeTile::App(Box::new(notes))));
+    tabs.push(DemoTab::new("Notes", RuntimeTile::App(Box::new(notes))));
 
     // Uses its own CRDT key so it doesn't stomp on the Notes body.
     let editor = EditorApp::with_default_snippet();
-    tabs.push(RuntimeTab::new(
-        "Editor",
-        RuntimeTile::App(Box::new(editor)),
-    ));
+    tabs.push(DemoTab::new("Editor", RuntimeTile::App(Box::new(editor))));
 
-    tabs.push(RuntimeTab::new(
+    tabs.push(DemoTab::new(
         "Browser",
         RuntimeTile::App(Box::new(BrowserWidget::new())),
     ));
@@ -892,10 +926,6 @@ fn default_demo_tabs(
         #[cfg(any(test, debug_assertions))]
         first_file_explorer_ptr,
     }
-}
-
-fn to_ui_width(w: state::WindowWidth) -> UiWidth {
-    w.to_ui()
 }
 
 fn to_ui_kind(k: &ShellKind) -> UiKind {
@@ -951,21 +981,6 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         UiTile::App(_) => "App",
         UiTile::Stub { .. } => "Stub",
         UiTile::Notice { .. } => "Notice",
-    }
-}
-
-/// Shared by the initial tree→widget build and by
-/// [`overlay_host::ShellOverlayHost`]'s per-revision resync.
-pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
-    match t {
-        ShellTile::Stub { kind, .. } | ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
-        // No `AppKind` describes "arbitrary external client", so both a
-        // foreign surface and a peer window wear the catch-all `Settings`
-        // glyph — and keep wearing it when a `PeerWindow` binds in and
-        // becomes `Foreign`, so the pill doesn't change under the user.
-        ShellTile::Foreign { .. } | ShellTile::PeerWindow { .. } | ShellTile::LocalApp { .. } => {
-            UiKind::Settings
-        }
     }
 }
 
@@ -1182,27 +1197,17 @@ pub fn to_ui_window_group_with_inputs(
     records: &ui::record::RecordStore,
     inputs: &hosted_inputs::HostedTileInputs,
 ) -> UiGroup {
-    let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
-        .tabs
-        .iter()
-        .map(|t| {
-            let kind = tile_app_kind(&t.tile);
-            (
-                TabDescriptor {
-                    id: t.id,
-                    title: t.title.clone(),
-                    app_kind: Some(kind),
-                },
-                to_ui_tile_for_tab_with_inputs(&t.tile, t.id, inputs),
-            )
-        })
-        .collect();
-    let mut group = UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
-        .with_maximized(g.maximized);
-    // Every tab gets its own document before it is ever synced, so no
-    // hosted app writes a keystroke into the shell's own state.
-    tab_documents::bind_group_records(&mut group, records);
-    group
+    qos_desktop::composition::build_group(
+        g,
+        state::RoomId::default(),
+        records,
+        &mut NativeTileResolver {
+            inputs,
+            failures: &Default::default(),
+        },
+        &mut vec![],
+        std::sync::Arc::new(|| {}),
+    )
 }
 
 /// Wires the hosted file explorer's document activation to
@@ -1286,165 +1291,120 @@ pub fn build_tilo_overlay_host_with_handle(
 
 /// A scratch tab belongs to the compositor, not to any installed app, so
 /// its records live under this package in the compositor's own state dir.
-pub const SHELL_RECORDS_PACKAGE: &str = "org.tilo.Shell";
+pub const SHELL_RECORDS_PACKAGE: &str = "org.nirios.Shell";
 
 pub fn session_record_store() -> ui::record::RecordStore {
     ui::record::RecordStore::open(SHELL_RECORDS_PACKAGE)
 }
 
-/// Backdrop, topbar, and one [`GroupRow`] per strip of the tree's active
-/// workspace, plus the per-strip pointer map the host's reconcilers harvest
-/// through. Extracted so the host can rebuild the content when the active
-/// workspace changes — the strip widgets are a projection of ONE workspace.
+/// Native services for the shared canonical composition.
+pub(crate) struct NativeTileResolver<'a> {
+    pub inputs: &'a hosted_inputs::HostedTileInputs,
+    pub failures: &'a std::collections::BTreeMap<u64, String>,
+}
+impl qos_desktop::resolver::TileResolver for NativeTileResolver<'_> {
+    fn ready_to_replace(&self, tab: &state::Tab) -> bool {
+        match &tab.tile {
+            state::TileContent::Foreign { surface_id, .. } => {
+                foreign::store().frame_seq(*surface_id) != 0
+            }
+            _ => true,
+        }
+    }
+    fn creation_refusal(&self, tab: &state::Tab) -> Option<String> {
+        self.failures.get(&tab.id).cloned()
+    }
+    fn resolve(
+        &mut self,
+        request: qos_desktop::resolver::TileRequest<'_>,
+    ) -> qos_desktop::resolver::TileResolution {
+        qos_desktop::resolver::TileResolution::Content(to_ui_tile_for_tab_with_inputs(
+            &request.tab.tile,
+            request.tab.id,
+            self.inputs,
+        ))
+    }
+}
 pub fn build_workspace_root(
     tree: &WorkspaceTree,
     records: &ui::record::RecordStore,
     chrome: &chrome_state::Chrome,
 ) -> (
     Box<dyn Widget>,
-    std::collections::HashMap<state::StripId, *mut GroupRow>,
+    std::collections::HashMap<state::StripId, state::StripId>,
 ) {
-    let (root, rows, _) = build_workspace_root_with_scene_parts(tree, records, chrome);
-    (root, rows)
-}
-
-pub(crate) fn build_workspace_root_with_scene_parts(
-    tree: &WorkspaceTree,
-    records: &ui::record::RecordStore,
-    chrome: &chrome_state::Chrome,
-) -> (
-    Box<dyn Widget>,
-    std::collections::HashMap<state::StripId, *mut GroupRow>,
-    WorkspaceSceneParts,
-) {
-    let strips_for_view: Vec<String> = tree
-        .active_workspace()
-        .map(|w| w.strips.iter().map(|s| s.name.clone()).collect())
-        .unwrap_or_default();
-    let strip_view: Box<dyn Widget> = Box::new(StripView::new(strips_for_view, 0));
-    let workspace_view: Box<dyn Widget> = Box::new(WorkspaceView::new(
-        tree.workspaces.len(),
-        tree.workspaces
-            .iter()
-            .position(|w| w.id == tree.active)
-            .unwrap_or(0),
-    ));
-
-    let topbar = match chrome.borrow().explicit_local_user() {
-        Some(local) => {
-            topbar_chrome::TopBarChrome::from_tree_with_local_user(tree, local.to_owned())
-        }
-        None => topbar_chrome::TopBarChrome::from_tree(tree),
-    };
-    let mut topbar = Box::new(topbar.with_chrome(chrome.clone()));
-    let topbar_ptr = &raw mut *topbar;
-
-    let mut content_col = Column::new()
-        // Fills the viewport height remaining after the persistent top bar.
-        // sibling in `foreground_col`; without it the column's
-        // `percent(1.0)` height overflowed the viewport by the bar height and apps
-        // painted right up to the absolute bottom.
-        .with_fill_remaining_height()
-        // 8px is the minimum keeping the active-tile bottom from clipping
-        // the windowed DE's edge — the tile-host's bloom shadow paints up
-        // to 120px past `self.rect.y1` (`TileHost::draw_steady_state`),
-        // and at 4px it visibly bled past the window edge.
-        .with_vertical_padding(8.0)
-        // No horizontal padding: `GroupRow::leading_inset` reserves
-        // canvas-x [0, SIDEBAR_WIDTH] for the wheel disc, and wheel/strip
-        // pan as one unit — a gutter here would split that canvas in two.
-        .with_horizontal_padding(0.0, 0.0)
-        .push(workspace_view)
-        .push(strip_view);
-
-    let workspace_is_empty = tree.active_workspace().is_some_and(|workspace| {
-        workspace
-            .strips
-            .iter()
-            .all(|strip| strip.window_groups.is_empty())
-    });
-    if workspace_is_empty {
-        content_col = content_col.push(Box::new(
-            collaboration_launchpad::CollaborationLaunchpad::new(),
-        ));
-    }
-
-    // Per-strip raw pointers to the live `GroupRow` widgets, captured so
-    // the host's per-frame `reconcile_active_group_off_closing` hook can
-    // harvest `WindowGroup::is_closing()` ids without re-walking a
-    // `&dyn Widget` tree. SAFETY contract on `ShellOverlayHost::group_row_ptrs`.
-    let mut group_row_ptrs: std::collections::HashMap<state::StripId, *mut GroupRow> =
-        std::collections::HashMap::new();
-
-    if let Some(ws) = tree.active_workspace() {
-        for strip in &ws.strips {
-            // GroupRow routes cross-group tab drag-drops; each WindowGroup
-            // still handles its own close/reorder/maximize.
-            let groups: Vec<UiGroup> = strip
-                .window_groups
-                .iter()
-                .map(|g| {
-                    let state = chrome.borrow();
-                    let mut group =
-                        to_ui_window_group_with_inputs(g, records, &state.hosted_inputs);
-                    tab_documents::apply_creation_failures(
-                        &mut group,
-                        &state.record_creation_errors(tree),
-                    );
-                    group
-                })
-                .collect();
-            let mut strip_row: Box<GroupRow> = Box::new(
-                GroupRow::new(groups)
-                    // Reserves canvas-x [0, SIDEBAR_WIDTH] for the wheel
-                    // disc (which lives in the overlay layer) so wheel and
-                    // strip share the same canvas and pan together.
-                    .with_leading_inset(f64::from(sidebar_wheel_disc::SIDEBAR_RESERVE_PX)),
-            );
-            // Captured before unsizing into `Box<dyn Widget>`; the
-            // coercion preserves the address, valid for the host's lifetime.
-            let row_ptr: *mut GroupRow = &raw mut *strip_row;
-            group_row_ptrs.insert(strip.id, row_ptr);
-            content_col = content_col.push(strip_row as Box<dyn Widget>);
-        }
-    }
-
-    // Full-screen siblings-underneath layer so the translucent topbar
-    // (alpha 204) picks up the gradient tint behind it — a Vello stand-in
-    // for backdrop-blur.
-    let mut backdrop: Box<dyn Widget> = tree.active_workspace().map_or_else(
+    let local = chrome
+        .borrow()
+        .explicit_local_user()
+        .map(str::to_owned)
+        .unwrap_or_else(state::local_user_id);
+    let topbar = topbar_chrome::TopBarChrome::from_tree_with_local_user(tree, local)
+        .with_chrome(topbar_chrome::native_source(chrome.clone()));
+    let backdrop: Box<dyn Widget> = tree.active_workspace().map_or_else(
         || Box::new(desktop_backdrop::DesktopBackdrop::new()) as Box<dyn Widget>,
         |workspace| {
-            let workspace_id = workspace.id.0.to_string();
-            let backdrop = if chrome.borrow().hosted_inputs.file_services().is_some() {
-                desktop_backdrop::DesktopBackdrop::for_workspace_without_wallpaper(workspace_id)
+            let id = workspace.id.0.to_string();
+            Box::new(if chrome.borrow().hosted_inputs.file_services().is_some() {
+                desktop_backdrop::DesktopBackdrop::for_workspace(id)
             } else {
-                desktop_backdrop::DesktopBackdrop::for_workspace(workspace_id)
-            };
-            Box::new(backdrop) as Box<dyn Widget>
+                desktop_backdrop::DesktopBackdrop::for_workspace(id)
+                    .with_wallpaper_provider(desktop_backdrop::native_wallpaper)
+            }) as Box<dyn Widget>
         },
     );
-    let backdrop_ptr = &raw mut *backdrop;
-    let mut workspace: Box<dyn Widget> = Box::new(content_col);
-    let workspace_ptr = &raw mut *workspace;
-    let foreground_col = Column::new().with_no_padding().push(topbar).push(workspace);
-    let stack = Stack::new().push(backdrop).push(Box::new(foreground_col));
-
-    let root: Box<dyn Widget> = Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_child(Box::new(stack))
-            .filling(),
-    );
-    (
-        root,
-        group_row_ptrs,
-        WorkspaceSceneParts {
-            backdrop: backdrop_ptr,
-            topbar: topbar_ptr,
-            workspace: workspace_ptr,
+    let state = chrome.borrow();
+    let failures = state.record_creation_errors(tree);
+    let mut resolver = NativeTileResolver {
+        inputs: &state.hosted_inputs,
+        failures: &failures,
+    };
+    let mut surface = qos_desktop::composition::DesktopSurface::build(
+        &tree.desktop,
+        records,
+        &mut resolver,
+        qos_desktop::composition::SurfaceChrome {
+            navigation: qos_desktop::composition::NavigationChrome::InSurface,
+            topbar: Box::new(topbar),
+            backdrop,
+            empty_workspace: Some(Box::new(
+                collaboration_launchpad::CollaborationLaunchpad::new(),
+            )),
+            leading_inset: f64::from(sidebar_wheel_disc::SIDEBAR_RESERVE_PX),
+            notify: None,
         },
-    )
+    );
+    for id in surface.strip_ids() {
+        if let Some(row) = surface.row_mut(id) {
+            for group in &mut row.groups {
+                tab_documents::apply_creation_failures(group, &failures);
+            }
+        }
+    }
+    let rows = surface.strip_ids().into_iter().map(|id| (id, id)).collect();
+    (Box::new(surface), rows)
+}
+/// Stable strip identities address the owning surface; no borrowed widget pointer escapes.
+#[allow(
+    clippy::expect_used,
+    reason = "strip identities are created and replaced atomically with DesktopSurface"
+)]
+fn desktop_row(content: &dyn Widget, id: state::StripId) -> &GroupRow {
+    content
+        .as_any()
+        .and_then(|v| v.downcast_ref::<qos_desktop::composition::DesktopSurface>())
+        .and_then(|s| s.row(id))
+        .expect("desktop strip belongs to its surface")
+}
+#[allow(
+    clippy::expect_used,
+    reason = "strip identities are created and replaced atomically with DesktopSurface"
+)]
+fn desktop_row_mut(content: &mut dyn Widget, id: state::StripId) -> &mut GroupRow {
+    content
+        .as_any_mut()
+        .and_then(|v| v.downcast_mut::<qos_desktop::composition::DesktopSurface>())
+        .and_then(|s| s.row_mut(id))
+        .expect("desktop strip belongs to its surface")
 }
 
 /// As [`build_tilo_overlay_host_with_handle`], but with the store the
@@ -1525,8 +1485,7 @@ fn build_overlay_host_from_chrome(
     fixture: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     let records = chrome.borrow().records().clone();
-    let (root, group_row_ptrs, scene_parts) =
-        build_workspace_root_with_scene_parts(tree, &records, &chrome);
+    let (root, group_row_ids) = build_workspace_root(tree, &records, &chrome);
     // Each workspace is a spoke; dragging rotates them, releasing snaps to
     // the nearest one.
     let spokes: Vec<sidebar_wheel_disc::SpokeLabel> = tree
@@ -1561,8 +1520,7 @@ fn build_overlay_host_from_chrome(
     .with_chrome(chrome.clone())
     .with_sidebar(sidebar)
     .with_sidebar_top(sidebar_top)
-    .with_group_row_ptrs(group_row_ptrs)
-    .with_workspace_scene_parts(scene_parts)
+    .with_group_row_ids(group_row_ids)
     .with_content_workspace(tree.active.raw())
     .with_peer_sync_enabled(enable_peer_sync);
     (host, chrome)

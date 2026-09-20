@@ -1518,11 +1518,23 @@ impl ChatApp {
         } = paint;
         let c = &theme.tokens.colors;
         let box_r = Rect::new(x - 4.0, y - 3.0, x + w, y + 19.0);
+        let focused = self.is_focused();
         fill_round(scene, tf, box_r, 5.0, c.neutral[2]);
-        stroke_round(scene, tf, box_r, 5.0, c.border_focus, 1.4);
+        stroke_round(
+            scene,
+            tf,
+            box_r,
+            5.0,
+            if focused {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            if focused { 1.4 } else { 1.0 },
+        );
         self.rename_input
             .apply_layout_external(Rect::new(x, y, x + w - 8.0, y + 16.0));
-        self.rename_input.set_focus(true);
+        self.rename_input.set_focus(focused);
         self.rename_input.draw(scene, tf, tr, theme, presence);
         ChatApp::push_hit(hits, box_r, Hit::FocusRename);
     }
@@ -1805,6 +1817,9 @@ impl ChatApp {
         // Empty channel: a quiet start-of-conversation marker rather than a
         // blank void, so a fresh channel reads as ready, not broken.
         if self.messages.is_empty() {
+            self.scroll_content = 0.0;
+            self.scroll_viewport = area.height().max(0.0);
+            self.scroll = 0.0;
             self.draw_empty_channel_marker(scene, tf, tr, theme, area);
             return;
         }
@@ -1822,6 +1837,8 @@ impl ChatApp {
             self.scroll += total - self.timeline_total_height;
         }
 
+        self.scroll_content = total;
+        self.scroll_viewport = area.height().max(0.0);
         let start_y = if total > area.height() {
             area.y1 - total
         } else {
@@ -1848,6 +1865,7 @@ impl ChatApp {
             // normal reader-driven scrolling on later frames.
             self.reveal_scroll_pending = false;
         }
+        self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
         let y = (start_y + self.scroll).clamp(min_start, max_start);
         // Store the normalised (bounded) offset, not the raw wheel accumulator.
         // This prevents an unbounded value from leaking across a resize or a
@@ -2481,8 +2499,20 @@ impl ChatApp {
             text_x + f64::from(text_w) + 8.0,
             *y + box_h,
         );
+        let focused = self.is_focused();
         fill_round(scene, tf, er, 10.0, c.neutral[2]);
-        stroke_round(scene, tf, er, 10.0, c.border_focus, 1.6);
+        stroke_round(
+            scene,
+            tf,
+            er,
+            10.0,
+            if focused {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            if focused { 1.6 } else { 1.0 },
+        );
         self.edit_input.set_placeholder("Edit message…");
         self.edit_input.apply_layout_external(Rect::new(
             text_x - 10.0,
@@ -2490,7 +2520,7 @@ impl ChatApp {
             text_x + f64::from(text_w) + 10.0,
             *y + box_h,
         ));
-        self.edit_input.set_focus(true);
+        self.edit_input.set_focus(focused);
         self.edit_input.draw(scene, tf, tr, theme, presence);
         ChatApp::push_hit(hits, er, Hit::FocusEdit);
         *y += box_h;
@@ -3103,7 +3133,9 @@ impl ChatApp {
         }
         // While an inline message edit is in progress the caret lives in the
         // editor, not the composer.
-        let focused = matches!(self.focus, crate::app::Focus::Main) && self.editing.is_none();
+        let focused = self.is_focused()
+            && matches!(self.focus, crate::app::Focus::Main)
+            && self.editing.is_none();
         let draft = self.composer_main.value();
         let send_enabled = !draft.trim().is_empty();
         let inner = Self::draw_input_box(
@@ -3315,7 +3347,9 @@ impl ChatApp {
             Self::draw_read_only_composer(scene, tf, tr, theme, comp);
             return;
         }
-        let focused = matches!(self.focus, crate::app::Focus::Thread) && self.editing.is_none();
+        let focused = self.is_focused()
+            && matches!(self.focus, crate::app::Focus::Thread)
+            && self.editing.is_none();
         let draft = self.composer_thread.value();
         let send_enabled = !draft.trim().is_empty();
         let inner = Self::draw_input_box(

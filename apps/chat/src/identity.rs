@@ -47,6 +47,7 @@ impl LocalIdentity {
     /// Resolve the live local identity from the environment. Never fabricates a
     /// shared id: each source below yields something distinct per real peer.
     pub fn resolve() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(id) = Self::from_runtime_identity() {
             return id;
         }
@@ -58,6 +59,7 @@ impl LocalIdentity {
 
     /// The Tilo runtime identity — the canonical per-user identity the launcher
     /// provisions and the collab layer signs with.
+    #[cfg(not(target_arch = "wasm32"))]
     fn from_runtime_identity() -> Option<Self> {
         let si = runtime_identity::load().ok()?;
         let pk = si.group_public_key();
@@ -124,6 +126,7 @@ impl LocalIdentity {
 }
 
 /// Lower-hex of the first 8 bytes.
+#[cfg(not(target_arch = "wasm32"))]
 fn hex8(b: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut s = String::with_capacity(16);

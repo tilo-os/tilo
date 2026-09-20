@@ -55,11 +55,14 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);
     WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group: HashMap::new(),
-        collaborators: vec![],
+        desktop: qos_desktop::WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group: HashMap::new(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

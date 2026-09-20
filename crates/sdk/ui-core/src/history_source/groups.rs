@@ -27,7 +27,7 @@
 //! Naming a version is a change like any other, but is deliberately not
 //! given its own row in the history surfaces — see [`is_group_marker`].
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::clock::{Duration, SystemTime, UNIX_EPOCH};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, PatchAction, Prop, ReadDoc, ScalarValue, Value};

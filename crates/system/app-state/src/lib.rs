@@ -25,26 +25,37 @@
 
 #[cfg(unix)]
 use atomic_file::lease::{AcquireError, FileLease as StoreLease, LeaseMode};
+#[cfg(any(unix, windows))]
 use atomic_file::{FileIdentity, Privacy, PublishMode, StorageDirectory};
+#[cfg(any(unix, windows))]
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
-#[cfg(not(unix))]
+use std::io;
+#[cfg(any(unix, windows))]
+use std::io::{Read, Write};
+#[cfg(all(any(unix, windows), not(unix)))]
 type StoreLease = File;
 #[cfg(windows)]
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(any(unix, windows))]
 use std::sync::atomic::AtomicBool;
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(any(unix, windows))]
 use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
+use automerge::{ActorId, AutoCommit, ChangeHash, ROOT, ReadDoc};
+#[cfg(any(unix, windows))]
+use automerge::{LoadOptions, OnPartialLoad};
 
+#[cfg(any(unix, windows))]
 mod autosave;
+#[cfg(any(unix, windows))]
 pub use autosave::{Autosave, DEFAULT_DEBOUNCE, DurabilitySnapshot};
 
 pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
+#[cfg(any(unix, windows))]
 const CANONICAL_GATE: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
 /// Subdirectory holding one directory per record. See [`DocStore::open_record`].
@@ -54,7 +65,9 @@ pub const RECORDS_DIR: &str = "records";
 pub const ROOMS_DIR: &str = "rooms";
 /// Durable claim files prevent a pre-room document from being silently
 /// imported into every room that happens to open after an upgrade.
+#[cfg(any(unix, windows))]
 const LEGACY_PACKAGE_ROOM_CLAIM: &str = ".tilo-legacy-room-index-claim";
+#[cfg(any(unix, windows))]
 const LEGACY_RECORD_ROOM_CLAIM: &str = ".tilo-legacy-room-record-claim";
 
 /// Root-map key for the document's layout version. A document from before
@@ -130,6 +143,7 @@ pub enum StoreError {
 
 impl StoreError {
     /// File publication phase, when this error retains a typed publication failure.
+    #[cfg(any(unix, windows))]
     pub fn publication_state(&self) -> Option<atomic_file::PublicationState> {
         match self {
             Self::Io { source, .. } => atomic_file::publication_state(source),
@@ -138,6 +152,7 @@ impl StoreError {
     }
 }
 
+#[cfg(any(unix, windows))]
 fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
     StoreError::Io {
         context: context.into(),
@@ -163,6 +178,7 @@ pub fn schema_version_of(doc: &AutoCommit) -> u32 {
         .unwrap_or(SCHEMA_VERSION)
 }
 
+#[cfg(any(unix, windows))]
 fn stamp_schema_version(doc: &mut AutoCommit, version: u32) {
     // Keep an existing old marker in sync so older builds also refuse a
     // newly migrated document. Do not discard its CRDT history.
@@ -178,6 +194,7 @@ fn stamp_schema_version(doc: &mut AutoCommit, version: u32) {
 
 /// Stamp the version only if the document doesn't already carry one, so a
 /// pre-versioning document gets it on first save rather than staying unlabelled.
+#[cfg(any(unix, windows))]
 fn ensure_schema_version(doc: &mut AutoCommit, version: u32) {
     if [SCHEMA_VERSION_KEY, LEGACY_SCHEMA_VERSION_KEY]
         .into_iter()
@@ -255,6 +272,7 @@ fn validate_record_key(key: &str) -> Result<(), StoreError> {
 /// The persistent store for one package's Automerge document. Construct
 /// with [`DocStore::open`], then drive by hand ([`DocStore::load_or_new`] +
 /// [`DocStore::save`]) or hand to [`DocStore::autosave`] for debounced writes.
+#[cfg(any(unix, windows))]
 pub struct DocStore {
     package_id: String,
     dir: PathBuf,
@@ -280,7 +298,7 @@ pub struct DocStore {
     faults: std::sync::Arc<TestFaults>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(unix, windows)))]
 #[derive(Default)]
 struct TestFaults {
     spawn_failures: std::sync::atomic::AtomicUsize,
@@ -296,6 +314,7 @@ struct TestFaults {
         std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
+#[cfg(any(unix, windows))]
 struct CanonicalState {
     directory: StorageDirectory,
     identity: std::sync::Arc<()>,
@@ -303,6 +322,7 @@ struct CanonicalState {
 }
 
 /// A validated decoding candidate. No recovered bytes are published until acceptance.
+#[cfg(any(unix, windows))]
 pub struct CanonicalLoad {
     doc: AutoCommit,
     source_bytes: Vec<u8>,
@@ -311,6 +331,7 @@ pub struct CanonicalLoad {
     identity: std::sync::Arc<()>,
 }
 
+#[cfg(any(unix, windows))]
 impl CanonicalLoad {
     pub fn document(&self) -> &AutoCommit {
         &self.doc
@@ -319,11 +340,13 @@ impl CanonicalLoad {
 
 /// The document on disk, and why this build would not open it.
 #[derive(Clone, Debug)]
+#[cfg(any(unix, windows))]
 struct Refusal {
     found: u32,
     message: String,
 }
 
+#[cfg(any(unix, windows))]
 impl DocStore {
     /// Open the store belonging to the running package, via `TILO_PACKAGE_ID` —
     /// no argument by design, since an app doesn't choose where its state lives.
@@ -546,6 +569,17 @@ impl DocStore {
         })
     }
 
+    /// The existing room-scoped package-primary directory, with explicit custody.
+    pub fn room_primary_dir_at(
+        profile_root: &Path,
+        package: &str,
+        room: &str,
+    ) -> Result<PathBuf, StoreError> {
+        validate_record_namespace(package, room)?;
+        validate_absolute_directory(profile_root)?;
+        Ok(profile_root.join(package).join(ROOMS_DIR).join(room))
+    }
+
     /// Resolve one record under an explicit profile root without consulting the environment.
     ///
     /// # Errors
@@ -556,8 +590,7 @@ impl DocStore {
         room: &str,
         record: &str,
     ) -> Result<PathBuf, StoreError> {
-        validate_package_id(package)?;
-        validate_record_key(room)?;
+        validate_record_namespace(package, room)?;
         validate_record_key(record)?;
         validate_absolute_directory(profile_root)?;
         Ok(profile_root
@@ -655,48 +688,7 @@ impl DocStore {
     /// Rejects legacy mode, malformed/conflicting schemas and newer schemas.
     pub fn validate_canonical_schema(&self, doc: &AutoCommit) -> Result<(), StoreError> {
         self.canonical_state()?;
-        let invalid = |reason| StoreError::InvalidSchema {
-            path: self.document.clone(),
-            reason,
-        };
-        let mut versions = Vec::new();
-        for key in [SCHEMA_VERSION_KEY, LEGACY_SCHEMA_VERSION_KEY] {
-            for (value, _) in doc
-                .get_all(ROOT, key)
-                .map_err(|e| self.automerge_error(e))?
-            {
-                let raw = match value {
-                    automerge::Value::Scalar(value) => match value.as_ref() {
-                        automerge::ScalarValue::Uint(v) => *v,
-                        automerge::ScalarValue::Int(v) => {
-                            u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
-                        }
-                        _ => return Err(invalid("schema version must be an integer")),
-                    },
-                    automerge::Value::Object(_) => {
-                        return Err(invalid("schema version must be a scalar"));
-                    }
-                };
-                versions
-                    .push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
-            }
-        }
-        if let Some(found) = versions
-            .iter()
-            .copied()
-            .max()
-            .filter(|v| *v > SCHEMA_VERSION)
-        {
-            return Err(StoreError::NewerSchema {
-                path: self.document.clone(),
-                found,
-                understood: SCHEMA_VERSION,
-            });
-        }
-        if versions.iter().any(|v| Some(v) != versions.first()) {
-            return Err(invalid("conflicting schema versions"));
-        }
-        Ok(())
+        validate_document_schema(doc, &self.document)
     }
 
     /// Decode an existing file, retaining any repair privately for identity validation.
@@ -1273,6 +1265,7 @@ impl DocStore {
     }
 }
 
+#[cfg(any(unix, windows))]
 fn validate_absolute_directory(path: &Path) -> Result<(), StoreError> {
     if !path.is_absolute()
         || path
@@ -1287,7 +1280,7 @@ fn validate_absolute_directory(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn open_directory(path: &Path, writable: bool) -> io::Result<File> {
     #[cfg(not(windows))]
     let _ = writable;
@@ -1300,13 +1293,13 @@ fn open_directory(path: &Path, writable: bool) -> io::Result<File> {
     options.open(path)
 }
 
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn acquire_gate(path: &Path, exclusive: bool) -> Result<StoreLease, StoreError> {
     let directory = StorageDirectory::open(path.parent().expect("gate parent"))
         .map_err(|e| io_err("opening gate parent", e))?;
     acquire_held_gate(&directory, path, exclusive)
 }
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn acquire_held_gate(
     directory: &StorageDirectory,
     path: &Path,
@@ -1328,21 +1321,21 @@ fn acquire_held_gate(
             AcquireError::Io(e) => io_err("acquiring canonical gate", e),
         })
 }
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn acquire_canonical_gate(
     directory: &StorageDirectory,
     path: &Path,
 ) -> Result<StoreLease, StoreError> {
     acquire_held_gate(directory, &path.join(CANONICAL_GATE), true)
 }
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn acquire_canonical_gate(
     _directory: &StorageDirectory,
     path: &Path,
 ) -> Result<StoreLease, StoreError> {
     acquire_gate(&path.join(CANONICAL_GATE), true)
 }
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn gate_matches(gate: &StoreLease, directory: &StorageDirectory) -> bool {
     let current = directory
         .open_read(std::ffi::OsStr::new(CANONICAL_GATE), Privacy::Inherit)
@@ -1352,7 +1345,7 @@ fn gate_matches(gate: &StoreLease, directory: &StorageDirectory) -> bool {
         .zip(gate.identity().ok())
         .is_some_and(|(a, b)| a == b)
 }
-#[cfg(windows)]
+#[cfg(all(any(unix, windows), windows))]
 fn gate_matches(gate: &StoreLease, directory: &StorageDirectory) -> bool {
     let current = directory
         .open_read(std::ffi::OsStr::new(CANONICAL_GATE), Privacy::Inherit)
@@ -1362,12 +1355,7 @@ fn gate_matches(gate: &StoreLease, directory: &StorageDirectory) -> bool {
         .zip(FileIdentity::of(gate).ok())
         .is_some_and(|(a, b)| a == b)
 }
-#[cfg(not(any(unix, windows)))]
-fn gate_matches(_gate: &StoreLease, _directory: &StorageDirectory) -> bool {
-    false
-}
-
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn reconcile_existing_directory(
     path: &Path,
     directory: &StorageDirectory,
@@ -1382,17 +1370,17 @@ fn reconcile_existing_directory(
         }
     })
 }
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn prepare_legacy_directory(path: &Path) -> Result<StorageDirectory, StoreError> {
     atomic_file::provision_directory(path, Privacy::Inherit)
         .map_err(|e| io_err("preparing legacy directory", e.into_io_error()))
 }
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn prepare_legacy_directory(path: &Path) -> Result<StorageDirectory, StoreError> {
     fs::create_dir_all(path).map_err(|e| io_err("creating legacy directory", e))?;
     StorageDirectory::open(path).map_err(|e| io_err("opening legacy directory", e))
 }
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn commit_existing_file(
     directory: &StorageDirectory,
     path: &Path,
@@ -1414,7 +1402,7 @@ fn commit_existing_file(
             }
         })
 }
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn commit_existing_file(
     _directory: &StorageDirectory,
     path: &Path,
@@ -1436,14 +1424,15 @@ fn commit_existing_file(
     file.sync_all()
         .map_err(|e| io_err("syncing accepted document", e))
 }
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn open_canonical_append(directory: &StorageDirectory, path: &Path) -> io::Result<File> {
     directory.open_append_existing(path.file_name().expect("document name"), Privacy::Inherit)
 }
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn open_canonical_append(_directory: &StorageDirectory, path: &Path) -> io::Result<File> {
     OpenOptions::new().append(true).open(path)
 }
+#[cfg(any(unix, windows))]
 fn read_held(
     directory: &StorageDirectory,
     name: &std::ffi::OsStr,
@@ -1454,6 +1443,7 @@ fn read_held(
     file.read_to_end(&mut bytes)?;
     Ok((bytes, identity))
 }
+#[cfg(any(unix, windows))]
 fn load_or_create_actor_held(
     directory: &StorageDirectory,
     path: &Path,
@@ -1486,7 +1476,7 @@ fn load_or_create_actor_held(
     Ok(actor)
 }
 
-#[cfg(windows)]
+#[cfg(all(any(unix, windows), windows))]
 fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
     let file = OpenOptions::new()
         .create(true)
@@ -1509,28 +1499,11 @@ fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
     }
 }
 
-#[cfg(not(any(unix, windows)))]
-fn acquire_gate(path: &Path, exclusive: bool) -> Result<File, StoreError> {
-    if exclusive {
-        return Err(io_err(
-            "canonical gate unsupported",
-            io::Error::from(io::ErrorKind::Unsupported),
-        ));
-    }
-    OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|e| io_err("opening gate", e))
-}
-
 /// Atomically assign a legacy source to one room.  A marker is deliberately
 /// retained forever: deleting it after a successful import would let a later
 /// room re-import the still-preserved source, while deleting it after a crash
 /// would make recovery non-deterministic.
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     let Some(name) = marker.file_name().and_then(|name| name.to_str()) else {
         return claim_room_marker(marker, room_key);
@@ -1560,7 +1533,7 @@ fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, St
     claim_room_marker(marker, room_key)
 }
 
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn claim_room_marker(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     match read_claim(marker)? {
         ClaimState::Owner(owner) => return Ok(owner == room_key),
@@ -1576,13 +1549,14 @@ fn claim_room_marker(marker: &Path, room_key: &str) -> Result<bool, StoreError> 
     publish_claim(marker, room_key)
 }
 
+#[cfg(any(unix, windows))]
 enum ClaimState {
     Absent,
     Malformed,
     Owner(String),
 }
 
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn read_claim(marker: &Path) -> Result<ClaimState, StoreError> {
     let bytes = match fs::read(marker) {
         Ok(bytes) => bytes,
@@ -1592,6 +1566,7 @@ fn read_claim(marker: &Path) -> Result<ClaimState, StoreError> {
     Ok(decode_claim(&bytes))
 }
 
+#[cfg(any(unix, windows))]
 fn decode_claim(bytes: &[u8]) -> ClaimState {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ClaimState::Malformed;
@@ -1611,7 +1586,7 @@ fn decode_claim(bytes: &[u8]) -> ClaimState {
 /// Publish a fully durable temp file with a no-replace hard link.  `link(2)`
 /// gives the needed compare-and-create property: even two recovery callers
 /// can never both become owner.
-#[cfg(not(unix))]
+#[cfg(all(any(unix, windows), not(unix)))]
 fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     static CLAIM_NONCE: AtomicU64 = AtomicU64::new(0);
     let parent = marker.parent().ok_or_else(|| StoreError::Io {
@@ -1665,7 +1640,7 @@ fn publish_claim(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
 }
 
 // Unix immutable claims use one held parent throughout both alias operations.
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, StoreError> {
     let parent = marker
         .parent()
@@ -1764,7 +1739,7 @@ fn claim_legacy_room_migration(marker: &Path, room_key: &str) -> Result<bool, St
     }
     Ok(true)
 }
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn claim_authority(
     directory: &StorageDirectory,
     path: &Path,
@@ -1798,6 +1773,7 @@ fn claim_authority(
 /// an old-format document) is moved aside to `<dir>.stale` — never deleted —
 /// and best-effort seeded as the new document so it migrates in. A genuine
 /// filesystem failure still surfaces as an error.
+#[cfg(any(unix, windows))]
 fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
     match fs::metadata(dir) {
         Ok(meta) if meta.is_dir() => return Ok(()),
@@ -1843,6 +1819,7 @@ fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
 
 /// A sibling path `<dir>.stale`, `.stale.1`, `.stale.2`, … — the first that
 /// doesn't exist yet, so preserving one leftover never clobbers another.
+#[cfg(any(unix, windows))]
 fn stale_sibling(dir: &Path) -> PathBuf {
     // Append rather than replace the extension: package ids contain dots
     // (`dev.tilo.maps`), so `with_extension` would eat the last id segment.
@@ -1861,7 +1838,7 @@ fn stale_sibling(dir: &Path) -> PathBuf {
 
 /// Take an exclusive, non-blocking `flock` on `path`. `None` when another
 /// process holds it, or (conservatively) when the lock file can't even be created.
-#[cfg(unix)]
+#[cfg(all(any(unix, windows), unix))]
 fn acquire_writer_lock(path: &Path) -> Option<StoreLease> {
     StorageDirectory::open(path.parent()?)
         .ok()?
@@ -1872,7 +1849,7 @@ fn acquire_writer_lock(path: &Path) -> Option<StoreLease> {
 /// Windows file sharing is fixed when the handle is opened. Denying every
 /// share mode gives this live `File` the same process-lifetime exclusivity as
 /// `flock`; closing it releases the lock even after a crash.
-#[cfg(windows)]
+#[cfg(all(any(unix, windows), windows))]
 fn acquire_writer_lock(path: &Path) -> Option<File> {
     OpenOptions::new()
         .create(true)
@@ -1884,12 +1861,8 @@ fn acquire_writer_lock(path: &Path) -> Option<File> {
         .ok()
 }
 
-#[cfg(not(any(unix, windows)))]
-fn acquire_writer_lock(_path: &Path) -> Option<File> {
-    None
-}
-
 /// Read the actor sidecar, creating a fresh identity the first time.
+#[cfg(any(unix, windows))]
 fn load_or_create_actor(path: &Path) -> Result<ActorId, StoreError> {
     match fs::read_to_string(path) {
         Ok(s) => {
@@ -1912,7 +1885,222 @@ fn load_or_create_actor(path: &Path) -> Result<ActorId, StoreError> {
     Ok(actor)
 }
 
-#[cfg(test)]
+// Browser hosts keep document bytes in their portable storage adapter.  Keep
+// the native storage API present for shared UI code, but make every attempt to
+// use it explicit rather than manufacturing a filesystem-backed session.
+#[cfg(not(any(unix, windows)))]
+const UNSUPPORTED_STORAGE: &str = "filesystem state storage is unavailable on this platform";
+
+#[cfg(not(any(unix, windows)))]
+fn unsupported_storage() -> StoreError {
+    StoreError::Io {
+        context: UNSUPPORTED_STORAGE.to_owned(),
+        source: io::Error::from(io::ErrorKind::Unsupported),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub struct DocStore {
+    package_id: String,
+    dir: PathBuf,
+    document: PathBuf,
+    actor: ActorId,
+    schema_version: u32,
+}
+
+#[cfg(not(any(unix, windows)))]
+pub struct CanonicalLoad {
+    doc: AutoCommit,
+}
+
+#[cfg(not(any(unix, windows)))]
+impl CanonicalLoad {
+    pub fn document(&self) -> &AutoCommit {
+        &self.doc
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+impl DocStore {
+    pub fn open() -> Result<Self, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn open_with_manifest_id(_: &str) -> Result<Self, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn open_for(_: &str) -> Result<Self, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn open_record(_: &str, _: &str) -> Result<Self, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn open_room_record(_: &str, _: &str, _: &str) -> Result<Self, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn legacy_record_document_path(_: &str, _: &str) -> Result<PathBuf, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn legacy_package_document_path(_: &str) -> Result<PathBuf, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn claim_legacy_package_migration(_: &str, _: &str) -> Result<bool, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn claim_legacy_record_migration(_: &str, _: &str, _: &str) -> Result<bool, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn open_room(_: &str, _: &str) -> Result<Self, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn room_primary_dir_at(_: &Path, _: &str, _: &str) -> Result<PathBuf, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn room_record_dir_at(_: &Path, _: &str, _: &str, _: &str) -> Result<PathBuf, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn open_canonical_at(_: &str, _: &Path) -> Result<Self, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn new_canonical_document(&self) -> Result<AutoCommit, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn validate_canonical_schema(&self, _: &AutoCommit) -> Result<(), StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn load_canonical(&self) -> Result<Option<CanonicalLoad>, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn load_canonical_complete(&self) -> Result<Option<CanonicalLoad>, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn accept_canonical(&mut self, _: CanonicalLoad) -> Result<AutoCommit, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn package_id(&self) -> &str {
+        &self.package_id
+    }
+    pub fn with_schema_version(mut self, version: u32) -> Self {
+        self.schema_version = version;
+        self
+    }
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+    pub fn document_path(&self) -> &Path {
+        &self.document
+    }
+    pub fn actor(&self) -> &ActorId {
+        &self.actor
+    }
+    pub fn is_exclusive_writer(&self) -> bool {
+        false
+    }
+    pub fn load(&mut self) -> Result<Option<AutoCommit>, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn load_complete(&mut self) -> Result<Option<AutoCommit>, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn load_migrating<F>(&mut self, _: F) -> Result<Option<AutoCommit>, StoreError>
+    where
+        F: FnOnce(&mut AutoCommit, u32, u32) -> Result<(), String>,
+    {
+        Err(unsupported_storage())
+    }
+    pub fn load_or_new(&mut self) -> AutoCommit {
+        AutoCommit::new()
+    }
+    pub fn refusal(&self) -> Option<&str> {
+        Some(UNSUPPORTED_STORAGE)
+    }
+    pub fn new_document(&mut self) -> AutoCommit {
+        AutoCommit::new()
+    }
+    pub fn save(&mut self, _: &mut AutoCommit) -> Result<(), StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn append(&mut self, _: &mut AutoCommit) -> Result<usize, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn migrate_from(&mut self, _: &Path) -> Result<bool, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn autosave(self, _: std::time::Duration) -> Autosave {
+        Autosave::disabled(UNSUPPORTED_STORAGE)
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub const DEFAULT_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+#[cfg(not(any(unix, windows)))]
+#[derive(Clone, Debug, Default)]
+pub struct DurabilitySnapshot {
+    pub durable_heads: Option<Vec<ChangeHash>>,
+    pub error: Option<String>,
+}
+
+#[cfg(not(any(unix, windows)))]
+pub struct Autosave {
+    reason: String,
+}
+
+#[cfg(not(any(unix, windows)))]
+impl Autosave {
+    pub fn spawn(_: DocStore, _: std::time::Duration) -> Self {
+        Self::disabled(UNSUPPORTED_STORAGE)
+    }
+    pub fn try_spawn_canonical(
+        _: &std::sync::Arc<DocStore>,
+        _: std::time::Duration,
+    ) -> Result<Self, StoreError> {
+        Err(unsupported_storage())
+    }
+    pub fn try_restart_canonical(&mut self) -> Result<bool, String> {
+        Err(self.reason.clone())
+    }
+    pub fn disabled(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+    pub fn is_enabled(&self) -> bool {
+        false
+    }
+    pub fn document_path(&self) -> &Path {
+        Path::new("")
+    }
+    pub fn package_id(&self) -> &str {
+        ""
+    }
+    pub fn seed(&mut self, _: &mut AutoCommit) {}
+    pub fn request(&mut self, _: &mut AutoCommit) {}
+    pub fn request_checkpoint(&mut self, _: &mut AutoCommit) {}
+    pub fn try_flush(&self) -> Result<(), String> {
+        Err(self.reason.clone())
+    }
+    pub fn flush(&self) {}
+    pub fn full_writes(&self) -> usize {
+        0
+    }
+    pub fn appends(&self) -> usize {
+        0
+    }
+    pub fn last_error(&self) -> Option<String> {
+        Some(self.reason.clone())
+    }
+    pub fn durability_snapshot(&self) -> DurabilitySnapshot {
+        DurabilitySnapshot {
+            durable_heads: None,
+            error: Some(self.reason.clone()),
+        }
+    }
+}
+
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
     use automerge::transaction::Transactable;
@@ -3562,4 +3750,58 @@ mod tests {
             ),
         }
     }
+}
+
+/// Validate portable or filesystem document schema assignments without mutating bytes.
+pub fn validate_document_schema(doc: &AutoCommit, path: &Path) -> Result<(), StoreError> {
+    let invalid = |reason| StoreError::InvalidSchema {
+        path: path.to_path_buf(),
+        reason,
+    };
+    let mut versions = Vec::new();
+    for key in [SCHEMA_VERSION_KEY, LEGACY_SCHEMA_VERSION_KEY] {
+        for (value, _) in doc
+            .get_all(ROOT, key)
+            .map_err(|source| StoreError::Automerge {
+                path: path.to_path_buf(),
+                source: Box::new(source),
+            })?
+        {
+            let raw = match value {
+                automerge::Value::Scalar(value) => match value.as_ref() {
+                    automerge::ScalarValue::Uint(v) => *v,
+                    automerge::ScalarValue::Int(v) => {
+                        u64::try_from(*v).map_err(|_| invalid("negative schema version"))?
+                    }
+                    _ => return Err(invalid("schema version must be an integer")),
+                },
+                automerge::Value::Object(_) => {
+                    return Err(invalid("schema version must be a scalar"));
+                }
+            };
+            versions.push(u32::try_from(raw).map_err(|_| invalid("schema version exceeds u32"))?);
+        }
+    }
+    if let Some(found) = versions
+        .iter()
+        .copied()
+        .max()
+        .filter(|v| *v > SCHEMA_VERSION)
+    {
+        return Err(StoreError::NewerSchema {
+            path: path.to_path_buf(),
+            found,
+            understood: SCHEMA_VERSION,
+        });
+    }
+    if versions.iter().any(|v| Some(v) != versions.first()) {
+        return Err(invalid("conflicting schema versions"));
+    }
+    Ok(())
+}
+
+/// Validate a canonical package/workspace identity independently of its storage adapter.
+pub fn validate_record_namespace(package: &str, workspace: &str) -> Result<(), StoreError> {
+    validate_package_id(package)?;
+    validate_record_key(workspace)
 }

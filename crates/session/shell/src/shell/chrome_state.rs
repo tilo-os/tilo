@@ -246,39 +246,7 @@ pub struct ActivityFocus {
     pub resource_version: Option<[u8; 16]>,
 }
 
-/// Seeded by which chord opened the palette: `Ctrl+K` →
-/// [`SearchScope::ActiveApp`]; `Super+K` / `Super+Space` / `Alt+Space` →
-/// [`SearchScope::All`] (`Alt+Space` because a nested Wayland client can't
-/// claim Super from the host DE). Degrades rather than empties: no
-/// provider claiming the focused tab widens `ActiveApp` to every
-/// provider; nothing focused widens the palette to `All`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SearchScope {
-    ActiveApp,
-    #[default]
-    Workspace,
-    All,
-}
-
-impl SearchScope {
-    /// `ActiveApp` renders the tab's title instead of this static
-    /// string. Must not share a word with the kind-filter chips —
-    /// those name result sorts, this names places.
-    pub fn label(self) -> &'static str {
-        match self {
-            SearchScope::ActiveApp => "This app",
-            SearchScope::Workspace => "Workspace",
-            SearchScope::All => "Everywhere",
-        }
-    }
-
-    /// The pill renders a narrowing scope with an explicit `Only …`
-    /// prefix so an empty result list is attributable to the scope,
-    /// not the query.
-    pub fn narrows_results(self) -> bool {
-        matches!(self, SearchScope::ActiveApp)
-    }
-}
+pub use ui::search::system::SearchScope;
 
 /// Normally decided by
 /// [`crate::shell::placement::placement_for_new_window`].
@@ -535,6 +503,7 @@ pub struct ChromeState {
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
     activity_focus_request: Option<ActivityFocus>,
+    workspace_view_request: Option<(WorkspaceId, qos_desktop::activity::WorkspaceViewRequest)>,
     /// The portal D-Bus backend's prompt queue drains onto the back
     /// every frame; the overlay host renders `front()` and drains it
     /// on click. Entries carry the portal's reply channel when a D-Bus
@@ -712,6 +681,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
+            workspace_view_request: None,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
             local_user_id,
@@ -1112,6 +1082,33 @@ impl ChromeState {
             self.activity_glance = next;
             self.bump();
         }
+    }
+
+    /// Private presentation requests share the portable descriptor contract.
+    pub fn request_workspace_view(&mut self, request: qos_desktop::activity::WorkspaceViewRequest) -> Result<(), String> {
+        use qos_desktop::activity::WorkspaceViewRequest;
+        request.validate(&self.tree())?;
+        let previous = self.tree().active;
+        match &request {
+            WorkspaceViewRequest::Select { workspace } => {
+                self.tree_mut().active = *workspace;
+                self.overlays.room_activity = false;
+            }
+            WorkspaceViewRequest::OpenActivity { workspace, .. } => {
+                if self.tree().active != *workspace { return Err("Workspace is no longer active".into()); }
+                self.open_room_activity(None);
+            }
+            WorkspaceViewRequest::CloseActivity { workspace } => {
+                if previous != *workspace { return Err("Workspace is no longer active".into()); }
+                self.overlays.room_activity = false;
+            },
+        }
+        self.workspace_view_request = Some((previous, request));
+        self.bump();
+        Ok(())
+    }
+    pub fn take_workspace_view_request(&mut self) -> Option<(WorkspaceId, qos_desktop::activity::WorkspaceViewRequest)> {
+        self.workspace_view_request.take()
     }
 
     pub fn open_room_activity(&mut self, focus: Option<ActivityFocus>) {
@@ -2271,10 +2268,13 @@ mod active_tab_tests {
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
         WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }
     }
@@ -2445,10 +2445,13 @@ mod active_tab_tests {
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         };
         (tree, strip_id, group_id, tab_id)
@@ -2668,3 +2671,6 @@ mod active_tab_tests {
         );
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

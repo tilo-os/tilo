@@ -7,8 +7,8 @@
 //! for publication, and a manual status always wins.
 
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
 
+use crate::clock::{Duration, SystemTime};
 use crate::permissions::UserId;
 
 /// Automatic summaries go stale quickly. A stale intention is worse than no

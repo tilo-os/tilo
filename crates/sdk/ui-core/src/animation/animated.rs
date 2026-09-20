@@ -2,7 +2,7 @@
 //! with a single `Animated<T: Lerp>` driver consumable by widgets.
 
 use crate::color_compat::ColorCompat;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 pub trait Lerp {
     #[must_use]

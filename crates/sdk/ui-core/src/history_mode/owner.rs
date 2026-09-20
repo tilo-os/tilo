@@ -113,7 +113,10 @@ impl HistoryOwner {
         self.validate()?;
         let (store, checkout, lifetime) = match &self.0 {
             OwnerKind::Component(binding) => {
-                if binding.app_id != app_id {
+                if !crate::application::lookup_compatible_first_party_app_ids(
+                    &binding.app_id,
+                    app_id,
+                ) {
                     return Err(HistoryRegistrationError::ForeignSource);
                 }
                 (&binding.records, &binding.checkout, binding.lifetime_id)
@@ -134,20 +137,20 @@ impl HistoryOwner {
         let (storage, package, room) = store
             .history_namespace(&checkout.id)
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
-        if !package.is_empty() && package != app_id {
+        if !package.is_empty()
+            && !crate::application::lookup_compatible_first_party_app_ids(&package, app_id)
+        {
             return Err(HistoryRegistrationError::ForeignSource);
         }
+        let durable_app_id = if package.is_empty() { app_id } else { &package };
         Ok(HistoryResource::new(
-            storage.map_or_else(
-                || format!("memory:{lifetime}"),
-                |path| path.to_string_lossy().into_owned(),
-            ),
+            storage.map_or_else(|| format!("memory:{lifetime}"), |identity| identity),
             if room.is_empty() {
                 format!("lifetime:{lifetime}")
             } else {
                 room
             },
-            app_id,
+            durable_app_id,
             checkout.id.clone(),
         ))
     }
@@ -194,11 +197,11 @@ impl HistoryOwner {
                 if package.is_empty() {
                     return None;
                 }
-                Some(crate::collaboration::RouteSpec::record(
-                    package,
-                    uuid::Uuid::parse_str(&workspace).ok()?,
-                    checkout.id.as_str(),
-                ))
+                if checkout.id.is_package_primary() {
+                    Some(crate::collaboration::RouteSpec::app(package, uuid::Uuid::parse_str(&workspace).ok()?))
+                } else {
+                    Some(crate::collaboration::RouteSpec::record(package, uuid::Uuid::parse_str(&workspace).ok()?, checkout.id.as_str()))
+                }
             }
         }
     }

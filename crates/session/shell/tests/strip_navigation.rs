@@ -103,11 +103,14 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
     active_group.insert(strip_id, groups[0]);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: qos_desktop::WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     (tree, strip_id, groups, tabs)
@@ -613,6 +616,10 @@ fn the_rail_maps_the_strip_and_marks_what_is_on_screen() {
 #[test]
 fn clicking_a_rail_segment_travels_to_that_window() {
     let mut h = Harness::new();
+    // App's bounded composition settlement admits the final output-width
+    // basis before accepting input. This manual harness needs its next
+    // layout pass too, before advancing the resulting focus animation.
+    h.tick();
     let home = h.scroll_x();
     let seg = h
         .host

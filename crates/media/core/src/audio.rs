@@ -27,8 +27,10 @@
 //! shelling-out [`RealGraphControl`] and [`RealEnumerator`] implementations
 //! invoke the command-line tools.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::Command;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use serde_json::Value;
@@ -663,6 +665,7 @@ pub trait GraphControl: Send + Sync {
 
 /// Run `bin` with `args`, mapping a missing binary or non-zero exit to the
 /// daemon's error string — the same best-effort shape `os_actions` uses.
+#[cfg(not(target_arch = "wasm32"))]
 fn run(bin: &str, args: &[String]) -> Result<(), String> {
     let mut command = Command::new(bin);
     command.args(args);
@@ -675,6 +678,12 @@ fn run(bin: &str, args: &[String]) -> Result<(), String> {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn run(_: &str, _: &[String]) -> Result<(), String> {
+    Err("PipeWire audio graph control is unsupported on this platform".to_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn sanitize_diagnostic(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .chars()
@@ -757,6 +766,7 @@ pub trait AudioEnumerator: Send + Sync {
 pub struct RealEnumerator;
 
 impl AudioEnumerator for RealEnumerator {
+    #[cfg(not(target_arch = "wasm32"))]
     fn enumerate(&self) -> AudioGraph {
         let Ok(out) = bounded_command::run(
             "pw-dump",
@@ -771,6 +781,11 @@ impl AudioEnumerator for RealEnumerator {
             return AudioGraph::default();
         }
         parse_pw_dump(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn enumerate(&self) -> AudioGraph {
+        AudioGraph::default()
     }
 }
 

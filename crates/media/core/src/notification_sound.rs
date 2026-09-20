@@ -6,7 +6,9 @@
 //! Pulse session. A standard theme file plus `pw-play` is the compatible
 //! fallback. Missing audio support is reported as a capability, never faked.
 
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::Command;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -43,24 +45,18 @@ pub fn sound_backend() -> SoundBackend {
 
 #[cfg(unix)]
 fn command_exists(name: &str) -> bool {
-    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     std::env::var_os("PATH").is_some_and(|paths| {
         std::env::split_paths(&paths).any(|dir| {
             let path = dir.join(name);
-            #[cfg(windows)]
-            let path = path.with_extension("exe");
             std::fs::metadata(path).is_ok_and(|metadata| {
-                #[cfg(unix)]
-                let executable = metadata.permissions().mode() & 0o111 != 0;
-                #[cfg(not(unix))]
-                let executable = true;
-                metadata.is_file() && executable
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
             })
         })
     })
 }
 
+#[cfg(unix)]
 fn themed_sound() -> Option<PathBuf> {
     [
         "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga",
@@ -73,6 +69,7 @@ fn themed_sound() -> Option<PathBuf> {
     .map(Path::to_path_buf)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn play_one(backend: SoundBackend) {
     let command = match backend {
         #[cfg(windows)]
@@ -97,10 +94,15 @@ fn play_one(backend: SoundBackend) {
             c
         }
         SoundBackend::PipeWire => {
-            let Some(path) = themed_sound() else { return };
-            let mut c = Command::new("pw-play");
-            c.arg(path);
-            c
+            #[cfg(unix)]
+            {
+                let Some(path) = themed_sound() else { return };
+                let mut c = Command::new("pw-play");
+                c.arg(path);
+                c
+            }
+            #[cfg(not(unix))]
+            return;
         }
         SoundBackend::Unavailable => return,
     };
@@ -134,20 +136,33 @@ pub struct NotificationSoundPlayer(Arc<Inner>);
 impl NotificationSoundPlayer {
     pub fn new() -> Self {
         let backend = sound_backend();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let worker = std::thread::Builder::new()
-            .name("tilo-notification-sound".into())
-            .spawn(move || {
-                while receiver.recv().is_ok() {
-                    play_one(backend);
-                }
-            })
-            .ok();
-        Self(Arc::new(Inner {
-            sender: Mutex::new(worker.as_ref().map(|_| sender)),
-            worker: Mutex::new(worker),
-            backend,
-        }))
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let worker = std::thread::Builder::new()
+                .name("tilo-notification-sound".into())
+                .spawn(move || {
+                    while receiver.recv().is_ok() {
+                        play_one(backend);
+                    }
+                })
+                .ok();
+            Self(Arc::new(Inner {
+                sender: Mutex::new(worker.as_ref().map(|_| sender)),
+                worker: Mutex::new(worker),
+                backend,
+            }))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // The browser host has no process or desktop sound-theme service.
+            // Keep the API available while reporting no delivery capability.
+            Self(Arc::new(Inner {
+                sender: Mutex::new(None),
+                worker: Mutex::new(None),
+                backend,
+            }))
+        }
     }
 
     pub fn backend(&self) -> SoundBackend {

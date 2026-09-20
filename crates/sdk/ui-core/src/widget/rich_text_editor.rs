@@ -30,7 +30,7 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};

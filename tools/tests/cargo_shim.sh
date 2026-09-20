@@ -14,7 +14,7 @@ cp "$repo/tools/ci/cargo-shim" "$bin/cargo"
 cat >"$home/.cargo/bin/cargo" <<'CARGO'
 #!/usr/bin/env bash
 for name in TMPDIR CARGO_TARGET_DIR RUSTC_WRAPPER SCCACHE_SERVER_PORT SCCACHE_DIR; do
-    if [[ -v $name ]]; then
+    if [[ ${!name+x} ]]; then
         printf '%s=set:%s\n' "$name" "${!name}"
     else
         printf '%s=unset\n' "$name"
@@ -64,7 +64,7 @@ set -euo pipefail
 [[ $1 == enter && -n $2 && $3 == -- && $4 == cargo ]]
 shift 4
 for name in TMPDIR CARGO_TARGET_DIR RUSTC_WRAPPER SCCACHE_SERVER_PORT SCCACHE_DIR; do
-    if [[ -v $name ]]; then
+    if [[ ${!name+x} ]]; then
         printf '%s=set:%s\n' "$name" "${!name}"
     else
         printf '%s=unset\n' "$name"

@@ -1049,6 +1049,60 @@ fn splice_cli_setenv(
     Ok(())
 }
 
+/// Export the compositor-authenticated durable route to the app. Keep
+/// `TILO_PACKAGE_ID` bound to the signed manifest for package state and
+/// sandbox policy; this separate value is the exact collaboration/record
+/// route already used for service and capability resolution above.
+fn splice_durable_app_id(argv: &mut Vec<String>, app_id: &str) -> Result<(), RunError> {
+    let entry = pop_entry(argv)?;
+    argv.extend([
+        "--setenv".to_string(),
+        "TILO_DURABLE_APP_ID".to_string(),
+        app_id.to_string(),
+        entry,
+    ]);
+    Ok(())
+}
+
+#[cfg(test)]
+mod durable_app_id_tests {
+    use super::*;
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn authenticated_launch_id_preserves_the_durable_route_separately() {
+        let previous = std::env::var_os("TILO_DURABLE_APP_ID");
+        unsafe { std::env::set_var("TILO_DURABLE_APP_ID", "dev.qos.untrusted-env") };
+        let mut argv = vec![
+            "--setenv".into(),
+            "TILO_PACKAGE_ID".into(),
+            "dev.tilo.notes".into(),
+            "/app/bin/notes".into(),
+        ];
+
+        splice_durable_app_id(&mut argv, "dev.qos.notes").unwrap();
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("TILO_DURABLE_APP_ID", value),
+                None => std::env::remove_var("TILO_DURABLE_APP_ID"),
+            }
+        }
+
+        let values: Vec<&str> = argv
+            .windows(3)
+            .filter(|window| window[0] == "--setenv" && window[1] == "TILO_DURABLE_APP_ID")
+            .map(|window| window[2].as_str())
+            .collect();
+        assert_eq!(values.last().copied(), Some("dev.qos.notes"));
+        assert!(argv.windows(3).any(|window| {
+            window[0] == "--setenv"
+                && window[1] == "TILO_PACKAGE_ID"
+                && window[2] == "dev.tilo.notes"
+        }));
+        assert_eq!(argv.last().map(String::as_str), Some("/app/bin/notes"));
+    }
+}
+
 /// Expose the upstream NT synchronization device only to GUI packages marked
 /// as games. The fresh bwrap `/dev` hides host devices by default; without this
 /// bind Wine/Proton silently falls back to slower userspace synchronization.
@@ -1764,6 +1818,7 @@ pub fn run_with(
         identity_arg,
         &capabilities,
     )?;
+    splice_durable_app_id(&mut argv, launch_app_id)?;
     let latency_sensitive = is_native_game_launch(manifest, opts);
     splice_cli_setenv(&mut argv, extra_setenv)?;
     splice_game_ntsync(&mut argv, latency_sensitive)?;
@@ -2306,6 +2361,7 @@ fn run_with_capture_spawn<T>(
         identity_arg,
         &capabilities,
     )?;
+    splice_durable_app_id(&mut argv, launch_app_id)?;
     splice_cli_setenv(&mut argv, extra_setenv)?;
     let extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
     splice_tool_context(&mut argv)?;

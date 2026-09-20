@@ -125,9 +125,11 @@ pub use mls_governance::{
     MlsGovernanceFrameV1,
 };
 pub use op::{
-    DocumentMutation, DocumentMutationError, EncryptionMetadata, RoutedDocumentPayload, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id,
-    validate_document_payload_route,
+    DecodedDocumentMutation, DocumentMutation, DocumentMutationError, DocumentWireVersion,
+    EncryptionMetadata, RoutedDocumentPayload, SignedOp, VersionedRoutedDocumentPayload,
+    document_artifact_id, document_artifact_id_for_version, document_attestation_id,
+    document_attestation_id_for_version, document_channel_id, document_channel_id_for_version,
+    validate_document_payload_route, validate_document_payload_route_versioned,
 };
 pub use ownership_transfer::{
     OWNERSHIP_TRANSFER_VERSION, OwnershipTransferAcceptanceV1, OwnershipTransferAuditV1,
@@ -157,3 +159,5 @@ pub use space::{Space, SpaceId};
 pub use validator::{
     ChannelState, ValidationError, validate_admitted_inbound_op, validate_inbound_op,
 };
+
+pub mod local_transport;

@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 use vello::kurbo::Point;
 
 // Navigation gestures (back / forward): app-agnostic recognisers for the

@@ -33,3 +33,7 @@ serial_test.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Enable Automerge's own browser entropy and clock support.
+automerge = { workspace = true, features = ["wasm"] }

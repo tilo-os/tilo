@@ -280,6 +280,7 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
         if cancel {
             app.invoke_published_action(
                 777,
+                None,
                 address().resource,
                 address().action,
                 None,

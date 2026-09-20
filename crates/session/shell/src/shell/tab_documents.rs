@@ -11,54 +11,11 @@
 //! holds it — the tab id, minted once, salted per peer, and persisted with
 //! the workspace tree.
 
-use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore};
-use ui::widget::WindowGroup as UiGroup;
-
-/// Record type for a tab whose content is the app's own, unsaved
-/// document — a scratch note, an untitled buffer. The shell only needs
-/// one name here since it never interprets the content.
-pub const TAB_RECORD_KIND: &str = "tab";
-
-/// The record a scratch tab is. Not `RecordId::minted()`: the tab id is
-/// already a written-down identity — allocated once, peer-salted, and
-/// persisted with the workspace tree — so a second one beside it could
-/// only drift.
-pub fn scratch_tab_record(tab_id: u64) -> RecordCheckout {
-    RecordCheckout::new(RecordId::for_tab(tab_id), RecordKind::new(TAB_RECORD_KIND))
-}
-
-/// Called only by the action that minted this new tab identity, before its
-/// first widget-tree rebuild. Never infer creation from an absent record.
-///
-/// # Errors
-/// Returns transient loan contention or a definite creation/storage refusal.
-pub fn create_scratch_tab_record(
-    store: &RecordStore,
-    tab_id: u64,
-) -> Result<(), ui::record::RecordOpenError> {
-    store.create_record(&scratch_tab_record(tab_id))
-}
-
-/// Failures belong to the exact fresh creation ticket, never to the saved
-/// resource globally. Apply before syncing the newly constructed group.
-pub(crate) fn apply_creation_failures(
-    group: &mut UiGroup,
-    failures: &std::collections::BTreeMap<u64, String>,
-) {
-    for (tab, reason) in failures {
-        if let Some(host) = group.host_for_tab_mut(*tab) {
-            host.refuse_record_binding(reason.clone());
-        }
-    }
-}
-
-/// Give every tab in `group` its own document. Called once per group as
-/// the shell (re)builds the widget tree. The binding travels with the
-/// tile, so a tab dragged into another group keeps its document.
-pub fn bind_group_records(group: &mut UiGroup, store: &RecordStore) {
-    group.bind_tab_records(store, scratch_tab_record);
-}
-
+pub use qos_desktop::records::{
+    TAB_RECORD_KIND, apply_creation_failures, bind_group_records, create_scratch_tab_record,
+    scratch_tab_record,
+};
+use ui::record::{RecordId, RecordStore};
 /// The body a tab's app wrote, read out of that tab's own document — the
 /// one place outside the widget tree that looks up a tab's content
 /// (in-app search above all).
@@ -85,7 +42,7 @@ mod tests {
     use std::sync::Arc;
     use taffy::{NodeId, TaffyTree};
     use ui::theme::Theme;
-    use ui::widget::{TileContent as UiTile, TileHost, Widget};
+    use ui::widget::{TileContent as UiTile, TileHost, Widget, WindowGroup as UiGroup};
     use winit::event::{ElementState, Modifiers, WindowEvent};
     use winit::keyboard::Key;
 
@@ -239,10 +196,13 @@ mod tests {
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
         Arc::new(RwLock::new(WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }))
     }
@@ -375,24 +335,38 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn both_tabs_come_back_with_their_own_content_after_a_restart() {
-        const PACKAGE: &str = "dev.tilo.test-tab-documents";
+        // Notes declares the shell package in its History contract; the temporary
+        // XDG root isolates storage without changing that application identity.
+        const PACKAGE: &str = crate::shell::SHELL_RECORDS_PACKAGE;
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`; no other thread reads
         // these between the writes here and the reads below.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
+            std::env::remove_var("QOS_PACKAGE_ID");
         }
 
         {
             let store = RecordStore::open(PACKAGE);
+            // The initial tab creation owns these new identities. The restart
+            // below only opens existing records and must never manufacture them.
+            create_scratch_tab_record(&store, TAB_A).unwrap();
+            create_scratch_tab_record(&store, TAB_B).unwrap();
             let mut shared = AutoCommit::new();
             let mut a = Tile::notes(TAB_A, &store);
             let mut b = Tile::notes(TAB_B, &store);
             a.type_str(&mut shared, "first tab");
             b.type_str(&mut shared, "second tab");
-            store.flush();
+            assert_eq!(
+                tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+                Some("first tab")
+            );
+            assert_eq!(
+                tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+                Some("second tab")
+            );
+            store.try_flush().expect("both tab records reached storage");
         }
 
         // A fresh session: same tab ids out of the persisted window tree,
@@ -425,13 +399,13 @@ mod tests {
     #[test]
     #[serial_test::serial(record_state_dir)]
     fn a_frame_offers_every_open_tab_to_its_writer() {
-        const PACKAGE: &str = "dev.tilo.test-frame-writeback";
+        const PACKAGE: &str = "dev.qos.test-frame-writeback";
 
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: serialised on `record_state_dir`.
         unsafe {
             std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
+            std::env::remove_var("QOS_PACKAGE_ID");
         }
 
         let store = RecordStore::open(PACKAGE);

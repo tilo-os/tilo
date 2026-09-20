@@ -40,6 +40,12 @@ pub fn try_os_open(url: &str) -> std::io::Result<()> {
             "URL contains NUL",
         ));
     }
+    #[cfg(target_arch = "wasm32")]
+    return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening links requires a host Link::on_open handler",
+    ));
+    #[cfg(not(target_arch = "wasm32"))]
     open::that_detached(url)
 }
 

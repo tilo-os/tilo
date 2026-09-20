@@ -817,6 +817,9 @@ fn identities_match(identities: &[String], app_id: &str) -> bool {
 /// its trailing component (`dev.tilo.hello` ↔ `hello`).
 fn identities_for_package(package_id: &str) -> Vec<String> {
     let mut out = vec![package_id.to_string()];
+    if let Some(current) = ui::application::current_package_id_for_legacy(package_id) {
+        out.push(current.to_string());
+    }
     if let Some(last) = package_id.rsplit('.').next()
         && !last.is_empty()
         && last != package_id
@@ -824,6 +827,10 @@ fn identities_for_package(package_id: &str) -> Vec<String> {
         out.push(last.to_string());
     }
     out
+}
+
+fn pending_placement_key(package_id: &str) -> &str {
+    ui::application::current_package_id_for_legacy(package_id).unwrap_or(package_id)
 }
 
 /// Publish the compositor's Wayland socket. Called once by the
@@ -1379,6 +1386,7 @@ pub fn build_launch_command(
         Some(wayland_socket),
         room,
         &LaunchExtras {
+            launch_app_id: None,
             capabilities_file,
             identity_path,
             render_node,
@@ -1411,6 +1419,7 @@ pub fn build_launch_command_for_tab(
         Some(wayland_socket),
         room,
         &LaunchExtras {
+            launch_app_id: None,
             capabilities_file,
             identity_path,
             render_node,
@@ -1438,6 +1447,7 @@ pub fn build_workspace_agent_command(
         None,
         room,
         &LaunchExtras {
+            launch_app_id: None,
             capabilities_file: None,
             identity_path,
             render_node: None,
@@ -1471,6 +1481,10 @@ pub fn build_workspace_agent_command(
 /// [`build_launch_command_for`] takes it by `&` and copies it back apart.
 #[derive(Clone, Copy)]
 struct LaunchExtras<'a> {
+    /// Exact durable identity requested by the shell tab. The signed package
+    /// may have a renamed registration, but record/collaboration routes keep
+    /// this identity unchanged.
+    launch_app_id: Option<&'a str>,
     capabilities_file: Option<&'a Path>,
     identity_path: Option<&'a Path>,
     render_node: Option<&'a Path>,
@@ -1488,6 +1502,7 @@ fn build_launch_command_for(
     extras: &LaunchExtras<'_>,
 ) -> LaunchCommand {
     let LaunchExtras {
+        launch_app_id,
         capabilities_file,
         identity_path,
         render_node,
@@ -1495,6 +1510,7 @@ fn build_launch_command_for(
         uri,
         continuity_tab_id,
     } = *extras;
+    let launch_app_id = launch_app_id.unwrap_or(&app.package_id);
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -1506,7 +1522,7 @@ fn build_launch_command_for(
         // Always passed, so the launcher checks every capability against
         // this id rather than trusting the file to already be filtered.
         "--app-id".to_string(),
-        app.package_id.clone(),
+        launch_app_id.to_string(),
     ];
     if let Some(wayland_socket) = wayland_socket {
         args.push("--wayland-socket".to_string());
@@ -1567,7 +1583,7 @@ fn build_launch_command_for(
         args,
         env,
         service_identity: Some(ServiceLaunchIdentity {
-            app_id: app.package_id.clone(),
+            app_id: launch_app_id.to_string(),
             workspace_id: room.to_string(),
             allowed_compat_entry_ids: if app.package_id == "dev.tilo.windows" {
                 lock(&WINDOWS_COMPAT_ENTRY_IDS).clone()
@@ -1837,9 +1853,15 @@ fn launch_with_context(
     tool_intent: Option<&ToolIntent>,
     media_handoff: Option<MediaHandoffLaunch>,
 ) -> Result<InstalledApp, LaunchError> {
-    let app = installed_apps()?
-        .into_iter()
+    let apps = installed_apps()?;
+    let app = apps
+        .iter()
         .find(|a| a.package_id == package_id)
+        .or_else(|| {
+            ui::application::current_package_id_for_legacy(package_id)
+                .and_then(|current| apps.iter().find(|app| app.package_id == current))
+        })
+        .cloned()
         .ok_or_else(|| LaunchError::NotInstalled {
             package_id: package_id.to_string(),
         })?;
@@ -1848,7 +1870,15 @@ fn launch_with_context(
             package_id: package_id.to_string(),
         });
     }
-    execute_installed(app, room, document, uri, tool_intent, media_handoff)
+    execute_installed(
+        app,
+        package_id,
+        room,
+        document,
+        uri,
+        tool_intent,
+        media_handoff,
+    )
 }
 
 #[cfg(test)]
@@ -1880,6 +1910,7 @@ fn selected_execution_program() -> Result<PathBuf, LaunchError> {
 
 fn execute_installed(
     app: InstalledApp,
+    launch_app_id: &str,
     room: RoomId,
     document: Option<&Path>,
     uri: Option<&str>,
@@ -1891,14 +1922,14 @@ fn execute_installed(
 
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
-    let capabilities = capabilities_for_app(&app.package_id);
-    let capabilities_file = match write_capabilities_file(&app.package_id, &capabilities) {
+    let capabilities = capabilities_for_app(launch_app_id);
+    let capabilities_file = match write_capabilities_file(launch_app_id, &capabilities) {
         Ok(path) => path,
         Err(e) => {
             eprintln!(
                 "[launch {}] could not stage {} capabilities ({e}); \
                  starting with manifest permissions only",
-                app.package_id,
+                launch_app_id,
                 capabilities.len()
             );
             None
@@ -1915,6 +1946,7 @@ fn execute_installed(
         Some(&socket),
         room,
         &LaunchExtras {
+            launch_app_id: Some(launch_app_id),
             capabilities_file: capabilities_file.as_deref(),
             identity_path: identity_path.as_deref(),
             render_node: crate::compositor::render_node::resolved(),
@@ -2321,7 +2353,7 @@ pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
 /// consumes the destination chosen by its own user action.
 pub fn set_pending_placement(package_id: &str, placement: crate::shell::tab_binding::Placement) {
     set_pending_placement_for_identities(
-        package_id,
+        pending_placement_key(package_id),
         &identities_for_package(package_id),
         placement,
     );
@@ -2406,6 +2438,7 @@ pub fn placement_and_instance_for_toplevel(
 /// called after the real launcher command is assembled, never by pure command
 /// construction, so tests and previews cannot invent a resumable instance.
 fn attach_continuity_instance(package_id: &str, instance: u64) {
+    let package_id = pending_placement_key(package_id);
     let mut pending = lock(&PENDING_PLACEMENT);
     if let Some(note) = pending
         .iter_mut()
@@ -2459,6 +2492,7 @@ pub(crate) fn take_staged_resume_for_package(
     package_id: &str,
     room: RoomId,
 ) -> Option<StagedContinuationResume> {
+    let package_id = pending_placement_key(package_id);
     let placement = lock(&PENDING_PLACEMENT)
         .iter()
         .rev()
@@ -2471,6 +2505,7 @@ pub(crate) fn take_staged_resume_for_package(
 /// undoing the most recently staged launch that failed before a surface was
 /// created without destroying older concurrent launches' destinations.
 pub fn clear_pending_placement(package_id: &str) {
+    let package_id = pending_placement_key(package_id);
     let mut pending = lock(&PENDING_PLACEMENT);
     if let Some(index) = pending
         .iter()
@@ -2490,6 +2525,7 @@ pub fn clear_pending_placement(package_id: &str) {
 /// events have no per-process token, so guessing during concurrent launches
 /// could close the other launch's real window.
 pub(crate) fn take_sole_claimed_surface_for_failed_launch(package_id: &str) -> Option<u64> {
+    let package_id = pending_placement_key(package_id);
     let mut pending = lock(&PENDING_PLACEMENT);
     let matching: Vec<usize> = pending
         .iter()
@@ -2511,7 +2547,7 @@ pub(crate) fn take_sole_claimed_surface_for_failed_launch(package_id: &str) -> O
 /// [`clear_pending_placement`] immediately.
 pub fn retire_pending_placement_after_grace(package_id: &str) {
     retire_pending_placement_at(
-        package_id,
+        pending_placement_key(package_id),
         pending_placement_deadline(PENDING_PLACEMENT_EXIT_GRACE),
     );
 }
@@ -2683,6 +2719,21 @@ mod tests {
         assert_eq!(
             take_staged_resume_for_package("dev.tilo.browser", room),
             Some((None, 0xdead_beef))
+        );
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn renamed_package_window_claims_the_legacy_tabs_pending_placement() {
+        clear_pending_placements();
+        let wanted = crate::shell::tab_binding::Placement::IntoTab(78);
+        set_pending_placement("dev.qos.notes", wanted);
+        attach_continuity_instance("dev.tilo.notes", 0xfeed);
+
+        assert_eq!(
+            placement_and_instance_for_toplevel("dev.tilo.notes", 101),
+            Some((wanted, Some(0xfeed)))
         );
         clear_pending_placements();
     }
@@ -2974,6 +3025,25 @@ mod tests {
             offered_ids,
             vec!["dev.tilo.hello"],
             "only the GUI package is launchable from the palette",
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn legacy_first_party_id_reaches_the_current_installed_package_lookup() {
+        let tmp = tempfile::tempdir().unwrap();
+        install_fixture(tmp.path(), "dev.tilo.notes", "gui");
+        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
+        invalidate_app_cache();
+        *lock(&WAYLAND_SOCKET) = None;
+
+        let result = launch("dev.qos.notes", RoomId::new());
+
+        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        invalidate_app_cache();
+        assert!(
+            matches!(result, Err(LaunchError::NoDisplay)),
+            "the legacy id must pass installed-package lookup before launch preflight: {result:?}"
         );
     }
 
@@ -3468,6 +3538,37 @@ mod tests {
     }
 
     #[test]
+    fn renamed_package_launch_keeps_the_requested_durable_identity() {
+        let app = test_app("dev.tilo.notes");
+        let cmd = build_launch_command_for(
+            &app,
+            Path::new("/usr/bin/tilo-launcher"),
+            Some(Path::new("/run/user/1000/wayland-3")),
+            RoomId::new(),
+            &LaunchExtras {
+                launch_app_id: Some("dev.qos.notes"),
+                capabilities_file: None,
+                identity_path: None,
+                render_node: None,
+                document: None,
+                uri: None,
+                continuity_tab_id: None,
+            },
+        );
+        assert!(
+            cmd.args
+                .windows(2)
+                .any(|w| w[0] == "--app-id" && w[1] == "dev.qos.notes")
+        );
+        assert_eq!(
+            cmd.service_identity
+                .as_ref()
+                .map(|identity| identity.app_id.as_str()),
+            Some("dev.qos.notes")
+        );
+    }
+
+    #[test]
     fn launch_command_names_the_capability_file_when_one_was_written() {
         let cmd = build_launch_command(
             &test_app("dev.tilo.books"),
@@ -3754,6 +3855,11 @@ mod tests {
         );
         let (_, start_time) = proc_stat(pid).expect("current process stat");
         assert_eq!(
+            consume_trusted_service_launch(pid, start_time, "dev.qos.windows", "room-1"),
+            None,
+            "a renamed id is not an authorization alias"
+        );
+        assert_eq!(
             consume_trusted_service_launch(pid, start_time, "dev.tilo.windows", "wrong-room"),
             None,
             "a mismatch must deny without transferring the record"
@@ -3932,3 +4038,6 @@ pub fn spawn_launch(
     }
     .to_string())
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

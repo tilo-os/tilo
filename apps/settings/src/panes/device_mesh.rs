@@ -788,6 +788,7 @@ impl DeviceMeshPane {
                         pin: true,
                         replication: ReplicationIntent::FullWorkspace,
                         admitted_users: Vec::new(),
+                        shell_authority: None,
                     })
                     .collect();
             }
@@ -2208,6 +2209,7 @@ mod tests {
             pin: true,
             replication: ReplicationIntent::OnDemand,
             admitted_users: Vec::new(),
+            shell_authority: None,
         });
         config.save(&path).unwrap();
 
@@ -2327,6 +2329,7 @@ mod tests {
             pin: false,
             replication: ReplicationIntent::OnDemand,
             admitted_users: Vec::new(),
+            shell_authority: None,
         });
         config.save(&path).unwrap();
 

@@ -198,6 +198,33 @@ fn review_driver() -> Driver {
         .unwrap();
     driver
 }
+
+#[test]
+fn managed_review_dialog_drains_and_returns_to_retained_preview() {
+    let mut driver = review_driver();
+    assert!(driver.targets().contains_key("history-preview"));
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "selected preview stayed dirty after draw"
+    );
+
+    driver.click_named("history-restore").unwrap();
+    assert!(driver.inspection_json().unwrap().contains("Restore version"));
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "review dialog stayed dirty after draw"
+    );
+    assert!(!driver.poll_frame().unwrap());
+
+    driver.key("Escape");
+    assert!(driver.targets().contains_key("history-preview"));
+    assert!(driver.inspection_json().unwrap().contains("Notebook: old"));
+    assert!(
+        !driver.frame_output().needs_redraw,
+        "retained preview was not current after closing review"
+    );
+    assert!(!driver.poll_frame().unwrap());
+}
 fn grant(
     actor: &str,
     scope: crate::permissions::Scope,
@@ -3876,11 +3903,11 @@ fn legacy_ui_restore_schedules_only_target_and_reopens_durable_result() {
             .unwrap(),
         "old"
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = crate::clock::Instant::now() + crate::clock::Duration::from_secs(3);
     while store.save_status(&first.id).unwrap() != crate::record::RecordSaveStatus::Saved
-        && std::time::Instant::now() < deadline
+        && crate::clock::Instant::now() < deadline
     {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(crate::clock::Duration::from_millis(10));
     }
     assert_eq!(
         store.save_status(&first.id).unwrap(),

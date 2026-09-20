@@ -8,7 +8,7 @@
 //! its fade, on an injected wall clock so it is unit-testable without an
 //! event loop.
 
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Stroke, Vec2};

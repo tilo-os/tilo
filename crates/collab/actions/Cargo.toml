@@ -15,6 +15,7 @@ path = "src/lib.rs"
 # `winit`, or rendering dependencies.
 
 [dependencies]
+web-time = { version = "1", features = ["serde"] }
 automerge = "0.8.0"
 chrono = { workspace = true, features = ["std"] }
 serde = { version = "1.0", features = ["derive"] }

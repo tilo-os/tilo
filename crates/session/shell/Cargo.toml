@@ -59,6 +59,9 @@ hevc-codec-tests = ["hdr-decode"]
 dev-session = []
 
 [dependencies]
+qos-action-broker = { path = "../../collab/qos-action-broker" }
+qos-desktop = { path = "../qos-desktop" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
@@ -246,6 +249,8 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+qos-action-broker = { path = "../../collab/qos-action-broker", features = ["test-support"] }
+qos-session-peer = { path = "../../hosting/qos-session-peer" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 # Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
 # `src/network/protocol.rs`. `qos-collab-types` already uses this for

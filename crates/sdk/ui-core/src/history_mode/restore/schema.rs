@@ -155,12 +155,14 @@ impl HistoryRootPattern {
         })
     }
     fn reserved(self) -> bool {
-        self.lengths().any(|length| {
-            length >= 4
-                && b"qos:".iter().enumerate().all(|(index, byte)| {
-                    self.byte_at(length, index)
-                        .map_or_else(|| capture_byte(*byte), |fixed| fixed == *byte)
-                })
+        ["qos:", "tilo:"].into_iter().any(|prefix| {
+            self.lengths().any(|length| {
+                length >= prefix.len()
+                    && prefix.bytes().enumerate().all(|(index, byte)| {
+                        self.byte_at(length, index)
+                            .map_or_else(|| capture_byte(byte), |fixed| fixed == byte)
+                    })
+            })
         })
     }
 }

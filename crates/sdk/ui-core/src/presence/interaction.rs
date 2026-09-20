@@ -10,11 +10,11 @@
 )]
 
 use super::{ParticipantKind, PresenceCtx};
+use crate::clock::{Duration, Instant};
 use crate::permissions::UserId;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
-use std::time::{Duration, Instant};
 use tilo_actions::{InteractionActorKind, InteractionPhase, InvocationId, SemanticInteraction};
 use vello::{
     Scene,

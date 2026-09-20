@@ -13,9 +13,9 @@
 //! The split owns the breakpoint, eased reveal, scrim, and dismissal; apps
 //! supply only the two child widgets.
 
+use crate::clock::Instant;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use std::time::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1408,8 +1408,9 @@ mod tests {
             "first frame establishes the clock and must not jump the slide"
         );
 
-        // A wall-clock gap, then a second draw advances the easing by a dt.
-        std::thread::sleep(std::time::Duration::from_millis(16));
+        // A real wall-clock gap, then a second draw advances the easing by a
+        // genuine dt.
+        std::thread::sleep(crate::clock::Duration::from_millis(16));
         draw_frame(&mut ns);
         let r = ns.flap().reveal();
         assert!(
@@ -1423,7 +1424,7 @@ mod tests {
 
         // Pump enough frames for the exponential approach to settle.
         for _ in 0..240 {
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(crate::clock::Duration::from_millis(1));
             draw_frame(&mut ns);
             if !ns.flap().is_animating(ns.layout_mode()) {
                 break;
@@ -1446,7 +1447,7 @@ mod tests {
         assert_eq!(ns.flap().reveal(), 1.0, "snap jumps straight to fully open");
         // Even with a time gap, a snapped (already-settled) flap stays
         // put because tick() is a no-op once reveal == target.
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(crate::clock::Duration::from_millis(20));
         draw_frame(&mut ns);
         assert_eq!(
             ns.flap().reveal(),

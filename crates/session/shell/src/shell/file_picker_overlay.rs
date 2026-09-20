@@ -367,3 +367,6 @@ mod tests {
         assert_eq!(received.try_recv().unwrap(), Some(vec![child]));
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

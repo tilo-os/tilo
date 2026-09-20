@@ -89,11 +89,14 @@ fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
     active_group.insert(strip_id, g_left);
 
     let tree = WorkspaceTree {
-        workspaces: vec![ws],
-        active: ws_id,
-        active_strip,
-        active_group,
-        collaborators: vec![],
+        desktop: qos_desktop::WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
 
@@ -403,3 +406,6 @@ fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
         "dropping the same file twice must record exactly one grant, got {count}"
     );
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

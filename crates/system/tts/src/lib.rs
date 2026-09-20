@@ -79,6 +79,7 @@
 )]
 
 mod error;
+#[cfg(not(target_arch = "wasm32"))]
 mod espeak;
 mod factory;
 mod null;
@@ -88,6 +89,7 @@ mod speaker;
 mod speechd;
 
 pub use error::TtsError;
+#[cfg(not(target_arch = "wasm32"))]
 pub use espeak::EspeakSpeaker;
 pub use factory::{default_speaker, select_speaker};
 pub use null::NullSpeaker;

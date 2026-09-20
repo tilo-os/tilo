@@ -6,7 +6,8 @@
 //! to running apps without filesystem I/O on every draw or keypress.
 
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use crate::clock::{Duration, Instant};
+use std::time::SystemTime; // Filesystem metadata stamp; never sampled as a clock.
 
 pub const SETTINGS_SECTION: &str = "text_assistance";
 pub const CHECK_SPELLING_KEY: &str = "check_spelling";

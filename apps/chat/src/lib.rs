@@ -120,3 +120,11 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     app.seed_shot_scenario(scenario);
     Box::new(app)
 }
+
+#[cfg(test)]
+mod component_tests;
+
+pub mod component;
+pub use component::definition;
+
+mod local_view;

@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};

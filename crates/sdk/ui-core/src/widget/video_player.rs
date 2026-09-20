@@ -8,11 +8,12 @@
 //! callers still migrating onto the engine.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
+#[cfg(not(target_arch = "wasm32"))]
 use openh264::formats::YUVSource;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -230,6 +231,7 @@ pub struct VideoPlayer {
     engine: Option<media::MediaEngine>,
     /// Lazily constructed on the first non-empty push so engine-mode
     /// consumers never touch the openh264 runtime.
+    #[cfg(not(target_arch = "wasm32"))]
     decoder: Option<openh264::decoder::Decoder>,
     /// Shared render cache for both the engine and push paths.
     latest_frame: Option<PenikoImage>,
@@ -357,6 +359,7 @@ impl VideoPlayer {
     pub fn new() -> Self {
         Self {
             engine: None,
+            #[cfg(not(target_arch = "wasm32"))]
             decoder: None,
             latest_frame: None,
             last_frame_pts: None,
@@ -655,6 +658,7 @@ impl VideoPlayer {
     }
 
     /// Returns `true` when a frame was decoded and `latest_frame` updated.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn feed_frame(&mut self, nalus: &[u8]) -> bool {
         if nalus.is_empty() {
             return false;
@@ -687,6 +691,10 @@ impl VideoPlayer {
         self.dirty = true;
         true
     }
+
+    /// Native H.264 decoding is unavailable; browser hosts may supply decoded frames.
+    #[cfg(target_arch = "wasm32")]
+    pub fn feed_frame(&mut self, _: &[u8]) -> bool { false }
 
     pub fn state(&self) -> PlaybackState {
         self.state
@@ -3168,7 +3176,7 @@ impl VideoPlayer {
                     .ok()
                     .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
                     .is_some_and(|seconds| {
-                        let millis = std::time::Duration::from_secs_f64(seconds).as_millis();
+                        let millis = crate::clock::Duration::from_secs_f64(seconds).as_millis();
                         self.seek_to_ms(u64::try_from(millis).unwrap_or(u64::MAX));
                         true
                     }),

@@ -12,6 +12,9 @@
 //! spawned.
 //!
 
+mod peer;
+pub use peer::PeerTransport;
+
 use uuid::Uuid;
 
 /// Hard fail-closed timeout for an RPC request waiting to be handled on the
@@ -39,13 +42,13 @@ pub use runtime_collab::{
 
 use crate::presence::PresenceKey;
 
+use crate::clock::Duration;
 use runtime_portal::RawFd;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
@@ -526,6 +529,7 @@ pub enum CollabEvent {
     /// connection by the session action broker.
     Invocation {
         id: u64,
+        invocation: Option<tilo_actions::InvocationId>,
         resource: String,
         action: String,
         argument: Option<String>,
@@ -730,7 +734,7 @@ impl SigningIdentity {
         artifact: collab_types::ArtifactId,
         op_class: collab_types::OpClass,
     ) -> Result<collab_types::SignedOp, SignedSendError> {
-        let timestamp = std::time::SystemTime::now();
+        let timestamp = crate::clock::SystemTime::now();
         let sequence = self
             .seq
             .checked_add(1)
@@ -762,6 +766,7 @@ enum Backend {
     /// the SDK client + subscriptions; winit-side send / poll bridge
     /// through bounded mpsc pairs.
     Sdk(SdkChannel),
+    Peer(Box<dyn PeerTransport>),
 }
 
 /// Owned mpsc pair + shovel-thread handle for SDK mode. Both directions are
@@ -1638,14 +1643,39 @@ struct SdkJoinIdentity {
 #[derive(Clone)]
 pub struct CertifiedEndpointIdentity {
     presentation: Vec<u8>,
-    device_key: ed25519_dalek::SigningKey,
+    signer: EndpointDocumentSigner,
+}
+
+#[derive(Clone)]
+enum EndpointDocumentSigner {
+    Device(ed25519_dalek::SigningKey),
+    Host(std::sync::Arc<dyn HostDocumentCommitter>),
 }
 
 impl CertifiedEndpointIdentity {
     pub fn new(presentation: Vec<u8>, device_key: ed25519_dalek::SigningKey) -> Self {
         Self {
             presentation,
-            device_key,
+            signer: EndpointDocumentSigner::Device(device_key),
+        }
+    }
+    /// Explicit owner-bound host publication. The host retains signing custody;
+    /// this hook must return only after the exact document is durably committed.
+    pub fn with_host_documents(
+        presentation: Vec<u8>,
+        documents: std::sync::Arc<dyn HostDocumentCommitter>,
+    ) -> Self {
+        Self {
+            presentation,
+            signer: EndpointDocumentSigner::Host(documents),
+        }
+    }
+    fn document_signer(&self) -> SdkDocumentSigner {
+        match &self.signer {
+            EndpointDocumentSigner::Host(host) => SdkDocumentSigner::Host(host.clone()),
+            EndpointDocumentSigner::Device(key) => {
+                SdkDocumentSigner::Harness(Box::new(key.clone()))
+            }
         }
     }
 }
@@ -1660,6 +1690,18 @@ impl std::fmt::Debug for CertifiedEndpointIdentity {
             .field("device_key", &"<redacted>")
             .finish()
     }
+}
+
+/// Host-local capability, never selected by a wire peer. Called on the SDK
+/// shovel thread, while the application's ordinary owner thread keeps pumping.
+/// Implementations bind an exact route and revalidate current authority.
+/// Native launcher and explicit-key endpoints retain their existing signer.
+pub trait HostDocumentCommitter: Send + Sync {
+    fn commit(
+        &self,
+        route: &RouteSpec,
+        mutation: collab_types::DocumentMutation,
+    ) -> Result<SignedOp, String>;
 }
 
 // One signing boundary for inherited Unix services and supplied host services.
@@ -1743,6 +1785,7 @@ impl SdkCertifiedIdentity for runtime_identity::SigningIdentity {
 }
 
 enum SdkDocumentSigner {
+    Host(std::sync::Arc<dyn HostDocumentCommitter>),
     Certified(Box<dyn SdkCertifiedIdentity>),
     /// Explicit-FD harnesses have no launcher identity service. Their
     /// in-process broker accepts this ephemeral signer; a production broker
@@ -1905,6 +1948,24 @@ pub struct CollaborationManager {
 }
 
 impl CollaborationManager {
+    /// Inject a host-owned ordinary authenticated peer transport. Joins remain
+    /// pending until the adapter supplies the broker's matching acknowledgement.
+    pub fn with_peer_transport(transport: impl PeerTransport + 'static) -> Self {
+        Self {
+            backend: Backend::Peer(Box::new(transport)),
+            primary_route: Default::default(),
+            identity: None,
+        }
+    }
+
+    fn peer_result(&mut self, result: Result<(), String>) {
+        if let Err(error) = result {
+            tracing::warn!(%error, "collaboration peer transport unavailable");
+            self.backend = Backend::Disabled;
+            self.primary_route.accepted = None;
+        }
+    }
+
     /// Connect to the launcher-inherited typed collaboration service and
     /// announce an explicit route. Headless participants use this instead of
     /// relying on process-wide `QUICK_APP_ID` / `TILO_WORKSPACE_ID` variables.
@@ -1979,9 +2040,9 @@ impl CollaborationManager {
             record,
             handle,
             Some(SdkJoinIdentity {
-                presentation: identity.presentation,
+                presentation: identity.presentation.clone(),
                 participant_kind: "person",
-                signer: SdkDocumentSigner::Harness(Box::new(identity.device_key)),
+                signer: identity.document_signer(),
             }),
             "person",
         )
@@ -2004,15 +2065,11 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
     ) -> Result<Self, runtime_portal::NotAvailable> {
-        tokio::task::spawn_blocking(move || {
-            Self::for_route_host_blocking(connector, app_id, cluster_id, record, handle)
-        })
-        .await
-        .map_err(|error| {
-            runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::other(format!(
-                "host collaboration bootstrap worker failed: {error}"
-            )))
-        })?
+        // Browser transports intentionally remain local and do not require
+        // `Send`; the shared manager enum therefore cannot cross a blocking
+        // worker boundary. The connector is one-shot, so perform the same
+        // fail-closed bootstrap in this caller-owned async task.
+        Self::for_route_host_blocking(connector, app_id, cluster_id, record, handle)
     }
 
     /// Synchronous implementation retained inside the background bootstrap
@@ -2202,9 +2259,9 @@ impl CollaborationManager {
             record,
             Some(agent_id.into()),
             Some(SdkJoinIdentity {
-                presentation: identity.presentation,
+                presentation: identity.presentation.clone(),
                 participant_kind: "agent",
-                signer: SdkDocumentSigner::Harness(Box::new(identity.device_key)),
+                signer: identity.document_signer(),
             }),
             "agent",
         )
@@ -2353,6 +2410,7 @@ impl CollaborationManager {
     /// The result surfaces via [`InitStatus`] on a one-shot mpsc so the
     /// caller picks Disabled vs Sdk before returning, instead of an app
     /// that only ever `poll`s silently running against a dead broker.
+    #[cfg(not(target_arch = "wasm32"))]
     fn spawn_sdk(
         source: SdkConnectSource,
         identity: Option<SdkJoinIdentity>,
@@ -2435,6 +2493,14 @@ impl CollaborationManager {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn spawn_sdk(
+        _: SdkConnectSource,
+        _: Option<SdkJoinIdentity>,
+    ) -> Result<SdkChannel, runtime_portal::NotAvailable> {
+        Err(runtime_portal::NotAvailable::ServiceFdMissing)
+    }
+
     /// True when connected to a live broker — used by the
     /// event loop to keep ticking so the stream drains promptly.
     pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
@@ -2442,7 +2508,11 @@ impl CollaborationManager {
     }
 
     pub fn is_connected(&self) -> bool {
-        matches!(&self.backend, Backend::Sdk(channel) if channel.state.is_healthy())
+        match &self.backend {
+            Backend::Disabled => false,
+            Backend::Sdk(channel) => channel.state.is_healthy(),
+            Backend::Peer(peer) => peer.is_connected(),
+        }
     }
 
     /// Bind a signing identity, builder-style for chaining at boot.
@@ -2507,7 +2577,12 @@ impl CollaborationManager {
                 channel.action_directory_published = false;
             }
         }
-        if let Backend::Sdk(ch) = &self.backend {
+        if let Backend::Peer(peer) = &mut self.backend {
+            let result = peer.send(req);
+            let queued = result.is_ok();
+            self.peer_result(result);
+            return queued;
+        } else if let Backend::Sdk(ch) = &self.backend {
             return enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Primary(req), &ch.state);
         }
         false
@@ -2517,6 +2592,11 @@ impl CollaborationManager {
     /// Re-registering is harmless: the broker atomically replaces the old
     /// capability for this live connection.
     pub fn publish_action_directory(&mut self, app_id: impl Into<String>) {
+        if let Backend::Peer(peer) = &mut self.backend {
+            let result = peer.publish_action_directory(app_id.into());
+            self.peer_result(result);
+            return;
+        }
         if let Backend::Sdk(ch) = &mut self.backend {
             if ch.action_directory_published {
                 return;
@@ -2537,6 +2617,9 @@ impl CollaborationManager {
     /// Drain requests issued by the shovel-side `ActionDirectory` server. This
     /// must be called by [`crate::app::App`] on its owner thread.
     pub(crate) fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
+        if let Backend::Peer(peer) = &mut self.backend {
+            return peer.take_action_directory_requests();
+        }
         let Backend::Sdk(ch) = &mut self.backend else {
             return Vec::new();
         };
@@ -2550,6 +2633,11 @@ impl CollaborationManager {
     /// Join and subscribe to an additional route without publishing traffic.
     /// Repeated joins of the same route are idempotent.
     pub fn join_route(&mut self, route: RouteSpec) {
+        if let Backend::Peer(peer) = &mut self.backend {
+            let result = peer.join_route(route);
+            self.peer_result(result);
+            return;
+        }
         if let Backend::Sdk(ch) = &mut self.backend {
             let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Join(route), &ch.state);
         }
@@ -2580,6 +2668,9 @@ impl CollaborationManager {
         if group.channel_id() != expected {
             return Err("MLS group does not belong to the requested document route".into());
         }
+        if let Backend::Peer(peer) = &mut self.backend {
+            return peer.install_document_encryption(route, group);
+        }
         let Backend::Sdk(ch) = &mut self.backend else {
             return Err("collaboration broker is unavailable".into());
         };
@@ -2604,20 +2695,51 @@ impl CollaborationManager {
     /// lazily and retained, and its inbound streams feed this manager's normal
     /// [`Self::poll`] queue.
     pub fn send_to_route(&mut self, route: RouteSpec, req: CollabRequest) {
+        let _ = self.try_send_to_route(route, req);
+    }
+
+    /// Exact local enqueue outcome. The SDK's later RPC barrier still owns
+    /// durable acknowledgment; callers must not interpret this as commitment.
+    pub(crate) fn try_send_to_route(&mut self, route: RouteSpec, req: CollabRequest) -> bool {
         if matches!(req, CollabRequest::Hello { .. }) {
             tracing::warn!("collab: send_to_route ignores Hello; use join_route");
-            return;
+            return false;
         }
-        if let Backend::Sdk(ch) = &mut self.backend {
-            let _ =
-                enqueue_sdk_command(&ch.outbound_tx, SdkCommand::ToRoute(route, req), &ch.state);
+        if let Backend::Peer(peer) = &mut self.backend {
+            let result = peer.send_to_route(route, req);
+            let queued = result.is_ok();
+            self.peer_result(result);
+            queued
+        } else if let Backend::Sdk(ch) = &mut self.backend {
+            enqueue_sdk_command(&ch.outbound_tx, SdkCommand::ToRoute(route, req), &ch.state)
+        } else {
+            false
         }
+    }
+
+    pub(crate) fn stop_after_publication_failure(&mut self) {
+        if let Backend::Sdk(channel) = &self.backend {
+            channel
+                .state
+                .fail_closed("pre-terminal document publication; outcome unknown");
+        }
+        // Drop the sender as well as withdrawing health, so an idle shovel
+        // wakes and closes its capability instead of awaiting another command.
+        self.backend = Backend::Disabled;
+        self.primary_route.accepted = None;
     }
 
     /// Drain every event pending on the current backend. Non-blocking.
     pub fn poll(&mut self) -> Vec<CollabEvent> {
+        if let Backend::Peer(peer) = &mut self.backend
+            && let Some(result) = peer.take_primary_route_result()
+            && let Err(error) = self.primary_route.accept(result)
+        {
+            self.peer_result(Err(error));
+        }
         match &mut self.backend {
             Backend::Disabled => Vec::new(),
+            Backend::Peer(peer) => peer.poll(),
             Backend::Sdk(ch) => {
                 ch.state.begin_poll();
                 let mut events = Vec::new();
@@ -2745,8 +2867,10 @@ pub mod channel_key {
 ///
 /// # Precedence (each half resolves independently)
 ///
-/// 1. `TILO_PACKAGE_ID` / `TILO_WORKSPACE_ID` — launcher-set for every
-///    compositor-started app (reverse-DNS app id, opened workspace).
+/// 1. `TILO_DURABLE_APP_ID` (falling back to `TILO_PACKAGE_ID`) /
+///    `TILO_WORKSPACE_ID` — launcher-set for every compositor-started app.
+///    The separate durable id preserves an existing route when the signed
+///    package registration was renamed.
 /// 2. `QUICK_APP_ID` / `QUICK_CLUSTER_ID` — standalone-dev override,
 ///    ranked below `TILO_PACKAGE_ID` so a dev identity never fragments
 ///    routing under a real session.
@@ -2838,9 +2962,10 @@ fn person_id_from_key(key: [u8; 32]) -> String {
     }
 }
 
-/// The application this process is, per `TILO_PACKAGE_ID` (falling back
-/// to `QUICK_APP_ID` for dev). Read from the same place the channel key
-/// is built, so what an app publishes can't disagree with its connection.
+/// The application's authenticated durable route (falling back to its signed
+/// package id, then `QUICK_APP_ID` for dev). Read from the same place the
+/// channel key is built, so what an app publishes can't disagree with its
+/// connection.
 pub fn local_app_id() -> String {
     auto_hello_env().0
 }
@@ -2863,7 +2988,8 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
     // collaboration test does this).
     static FALLBACK_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-    let app_id = non_empty_env("TILO_PACKAGE_ID")
+    let app_id = non_empty_env("TILO_DURABLE_APP_ID")
+        .or_else(|| non_empty_env("TILO_PACKAGE_ID"))
         .or_else(|| non_empty_env("QUICK_APP_ID"))
         .unwrap_or_else(|| {
             FALLBACK_APP_ID
@@ -3105,6 +3231,8 @@ async fn drive_shovel(
                     if !inbound_tx.state.is_healthy() {
                         break;
                     }
+                } else {
+                    inbound_tx.state.fail_closed("document route join");
                 }
             }
             SdkCommand::PrimaryReady(reply) => {
@@ -3416,7 +3544,7 @@ async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
     inbound_tx: &InboundBridge,
 ) {
-    if let Ok(stream) = channel.subscribe_invocations().await {
+    if let Ok(stream) = channel.subscribe_stable_invocations().await {
         let tx = inbound_tx.clone();
         let cancellation_channel = channel.clone();
         tokio::task::spawn_local(async move {
@@ -3425,6 +3553,9 @@ async fn spawn_invocation_stream(
                 let context = parse_invocation_context(id, &invocation.context_json);
                 if !tx.send_durable(CollabEvent::Invocation {
                     id,
+                    invocation: invocation
+                        .invocation_uuid
+                        .map(|bytes| tilo_actions::InvocationId(uuid::Uuid::from_bytes(bytes))),
                     resource: invocation.resource,
                     action: invocation.action,
                     argument: invocation.argument,
@@ -3437,7 +3568,7 @@ async fn spawn_invocation_stream(
                 let channel = cancellation_channel.clone();
                 tokio::task::spawn_local(async move {
                     loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        tokio::time::sleep(crate::clock::Duration::from_millis(100)).await;
                         match channel.invocation_cancellation(id).await {
                             Ok(false) => {}
                             Ok(true) => {
@@ -3599,11 +3730,11 @@ async fn spawn_presence_stream(
 static LAST_CERTIFIED_DOCUMENT_SEQ: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-fn next_certified_document_seq(now: std::time::SystemTime) -> u64 {
+fn next_certified_document_seq(now: crate::clock::SystemTime) -> u64 {
     use std::sync::atomic::Ordering;
 
     let wall = now
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .duration_since(crate::clock::SystemTime::UNIX_EPOCH)
         .map_or(0, |duration| {
             u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
         });
@@ -3633,24 +3764,59 @@ async fn send_document_mutation(
     route: &SdkRoute,
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
-    bridge_state: &BridgeState,
+    inbound: &InboundBridge,
 ) {
+    if let LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(host)) = signer {
+        // The standalone owner admits cleartext state. Never bypass an MLS
+        // requirement or produce a signed cleartext replacement for ciphertext.
+        if !route
+            .encryption
+            .lock()
+            .is_ok_and(|encryption| encryption.is_none())
+        {
+            inbound
+                .state
+                .fail_closed("host document encryption unavailable");
+            return;
+        }
+        let result = host
+            .commit(&route.spec, mutation)
+            .and_then(|op| postcard::to_stdvec(&op).map_err(|e| e.to_string()));
+        match result {
+            Ok(bytes) => {
+                if let Err(error) = route.channel.send(&bytes).await {
+                    tracing::warn!(%error, "collab: precommitted host document handoff failed; outcome unknown");
+                    inbound.state.fail_closed("host document receipt handoff");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: host document commit failed; outcome unknown");
+                inbound.state.fail_closed("host document commit");
+            }
+        }
+        return;
+    }
     let workspace_id = route.spec.cluster_id.to_string();
     let record_id = route.spec.record.as_deref().unwrap_or("");
     let cleartext = match mutation.encode() {
         Ok(payload) => payload,
         Err(error) => {
             tracing::warn!(%error, "collab: typed document mutation would not encode; dropping");
+            inbound.state.fail_closed("document signing or encoding");
             return;
         }
     };
     let Some((payload, encryption_metadata)) =
         prepare_document_payload(&route.encryption, cleartext)
     else {
+        inbound.state.fail_closed("document encryption");
         return;
     };
-    let now = std::time::SystemTime::now();
+    let now = crate::clock::SystemTime::now();
     let author = match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
+            unreachable!("host commits above")
+        }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             identity.signing_public_key()
         }
@@ -3689,10 +3855,14 @@ async fn send_document_mutation(
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, "collab: unsigned document envelope would not encode; dropping");
+            inbound.state.fail_closed("document signing or encoding");
             return;
         }
     };
     let signature = match signer {
+        LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Host(_)) => {
+            unreachable!("host commits above")
+        }
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => match identity
             .sign_collaboration_op(&workspace_id, &route.spec.app_id, record_id, &unsigned_op)
         {
@@ -3702,6 +3872,7 @@ async fn send_document_mutation(
                     ?error,
                     "collab: identity service denied document operation; dropping"
                 );
+                inbound.state.fail_closed("document signing or encoding");
                 return;
             }
         },
@@ -3712,7 +3883,7 @@ async fn send_document_mutation(
             Ok(signature) => signature,
             Err(error) => {
                 if !identity.is_usable() {
-                    bridge_state.fail_closed("host identity signing transport");
+                    inbound.state.fail_closed("host identity signing transport");
                 }
                 tracing::warn!(
                     ?error,
@@ -3727,6 +3898,7 @@ async fn send_document_mutation(
                 Ok(bytes) => bytes,
                 Err(error) => {
                     tracing::warn!(%error, "collab: document op would not canonicalize; dropping");
+                    inbound.state.fail_closed("document signing or encoding");
                     return;
                 }
             };
@@ -3736,10 +3908,14 @@ async fn send_document_mutation(
     op.signature = collab_types::Signature::from_bytes(signature);
     match postcard::to_stdvec(&op) {
         Ok(bytes) => {
-            let _ = route.channel.send(&bytes).await;
+            if let Err(error) = route.channel.send(&bytes).await {
+                tracing::warn!(%error, "collab: document commit failed; outcome unknown");
+                inbound.state.fail_closed("document commit RPC");
+            }
         }
         Err(error) => {
             tracing::warn!(%error, "collab: signed document envelope would not encode; dropping");
+            inbound.state.fail_closed("document encoding");
         }
     }
 }
@@ -3999,16 +4175,23 @@ async fn dispatch_sdk_request(
 ) {
     match request {
         CollabRequest::Hello { .. } => {}
-        CollabRequest::SignedOperation { envelope } => {
-            if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
-                let _ = route.channel.send(&bytes).await;
+        CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
+            Ok(bytes) => {
+                if route.channel.send(&bytes).await.is_err() {
+                    inbound_tx.state.fail_closed("signed document commit RPC");
+                }
             }
-        }
+            Err(_) => inbound_tx.state.fail_closed("signed document encoding"),
+        },
         CollabRequest::Document { mutation } => {
-            send_document_mutation(route, signer, mutation, &inbound_tx.state).await;
+            send_document_mutation(route, signer, mutation, inbound_tx).await;
         }
         CollabRequest::RequestDocumentSnapshot => {
-            let _ = route.channel.request_document_snapshot().await;
+            if route.channel.request_document_snapshot().await.is_err() {
+                inbound_tx
+                    .state
+                    .fail_closed("document snapshot request RPC");
+            }
         }
         CollabRequest::Presence { key, payload } => {
             let Some(presence) = route.presence.as_ref() else {
@@ -4237,15 +4420,29 @@ async fn dispatch_sdk_request(
         CollabRequest::CompleteInvocation { id, code, message } => {
             if let Err(error) = route.channel.complete_invocation(id, &code, &message).await {
                 tracing::warn!(%error, id, "collab: completing resource/action invocation failed");
+                inbound_tx
+                    .state
+                    .fail_closed("invocation completion outcome unknown");
             }
         }
         CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
             Ok(json) => {
                 if let Err(error) = route.channel.update_invocation(id, &json).await {
                     tracing::warn!(%error, id, "collab: updating action invocation failed");
+                    // Broker-owned acceptance and rejected progress are not
+                    // owner durability acknowledgments. A failed terminal may
+                    // follow an effect and must stop subsequent outbound work.
+                    if update.is_terminal() {
+                        inbound_tx
+                            .state
+                            .fail_closed("invocation update outcome unknown");
+                    }
                 }
             }
-            Err(error) => tracing::warn!(%error, id, "collab: encoding action update failed"),
+            Err(error) => {
+                tracing::warn!(%error, id, "collab: encoding action update failed");
+                inbound_tx.state.fail_closed("invocation update encoding");
+            }
         },
         CollabRequest::RecordLocalEffect { address, update } => {
             match serde_json::to_string(&update) {
@@ -4256,10 +4453,14 @@ async fn dispatch_sdk_request(
                         .await
                     {
                         tracing::warn!(%error, "collab: recording local effect receipt failed");
+                        inbound_tx
+                            .state
+                            .fail_closed("effect receipt outcome unknown");
                     }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "collab: encoding local effect receipt failed");
+                    inbound_tx.state.fail_closed("effect receipt encoding");
                 }
             }
         }
@@ -4573,11 +4774,11 @@ mod tests {
 
     use super::*;
 
+    use crate::clock::{Duration, Instant};
     use std::cell::RefCell;
     #[cfg(unix)]
     use std::os::fd::IntoRawFd;
     use std::rc::Rc;
-    use std::time::{Duration, Instant};
 
     use capnp::capability::Promise;
     use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
@@ -4595,6 +4796,9 @@ mod tests {
 
     #[derive(Default)]
     struct Captures {
+        fail_document: bool,
+        fail_terminal: bool,
+        terminal_updates: usize,
         joined: Vec<(String, Vec<u8>)>,
         signed_ops: Vec<Vec<u8>>,
         cursor_publishes: Vec<(f32, f32)>,
@@ -4928,6 +5132,21 @@ mod tests {
     }
 
     impl channel_handle::Server for FakeChannel {
+        fn update_invocation(
+            self: Rc<Self>,
+            _params: channel_handle::UpdateInvocationParams,
+            _results: channel_handle::UpdateInvocationResults,
+        ) -> Promise<(), capnp::Error> {
+            let mut captures = self.captures.lock().unwrap();
+            captures.terminal_updates += 1;
+            if captures.fail_terminal {
+                return Promise::err(capnp::Error::failed(
+                    "effect receipt barrier failed; outcome unknown".into(),
+                ));
+            }
+            Promise::ok(())
+        }
+
         fn send(
             self: Rc<Self>,
             params: channel_handle::SendParams,
@@ -4940,7 +5159,11 @@ mod tests {
                 Ok(o) => o.to_vec(),
                 Err(e) => return Promise::err(e),
             };
-            self.captures.lock().unwrap().signed_ops.push(op);
+            let mut captures = self.captures.lock().unwrap();
+            if captures.fail_document {
+                return Promise::err(capnp::Error::failed("owner durable barrier failed".into()));
+            }
+            captures.signed_ops.push(op);
             Promise::ok(())
         }
 
@@ -5642,6 +5865,82 @@ mod tests {
         (client_fd, captures, handle)
     }
 
+    #[test]
+    fn session_owner_commit_sdk_failure_stops_queued_terminal() {
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        captures.lock().unwrap().fail_document = true;
+        manager.send(CollabRequest::Document {
+            mutation: collab_types::DocumentMutation::Snapshot(
+                b"committed worker mutation".to_vec(),
+            ),
+        });
+        manager.send(CollabRequest::UpdateInvocation {
+            id: 42,
+            update: tilo_actions::InvocationUpdate::Succeeded {
+                invocation: tilo_actions::InvocationId::new(),
+                output: tilo_actions::ActionOutput::default(),
+            },
+        });
+        assert!(
+            wait_until(|| !manager.is_connected(), Duration::from_secs(2)),
+            "SDK stayed healthy after owner document RPC failed"
+        );
+        assert_eq!(
+            captures.lock().unwrap().terminal_updates,
+            0,
+            "failed document publication must not be followed by successful completion"
+        );
+        drop(manager);
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn session_owner_commit_sdk_terminal_failure_disconnects_before_next_request() {
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, thread) = stand_up_fake_broker(broker);
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
+        captures.lock().unwrap().fail_terminal = true;
+        let invocation = tilo_actions::InvocationId::new();
+        manager.send(CollabRequest::UpdateInvocation {
+            id: 42,
+            update: tilo_actions::InvocationUpdate::Accepted { invocation },
+        });
+        for id in [42, 43] {
+            manager.send(CollabRequest::UpdateInvocation {
+                id,
+                update: tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+            });
+        }
+        assert!(wait_until(
+            || !manager.is_connected(),
+            Duration::from_secs(2)
+        ));
+        assert_eq!(
+            captures.lock().unwrap().terminal_updates,
+            2,
+            "a broker-owned acceptance rejection must not kill a background worker; the subsequent failed terminal must"
+        );
+        drop(manager);
+        thread.join().unwrap();
+    }
+
     pub(super) fn connected_manager() -> CollaborationManager {
         let broker = FakeBroker {
             captures: Arc::new(std::sync::Mutex::new(Captures::default())),
@@ -6021,7 +6320,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([1u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             1,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
@@ -6256,7 +6555,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([2u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             42,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
@@ -6303,7 +6602,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([3_u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             43,
         );
         let event = signed_document_event(
@@ -6346,7 +6645,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([9; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             1,
             metadata,
         );
@@ -6362,7 +6661,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([9; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             2,
         );
         assert!(
@@ -6529,7 +6828,7 @@ mod tests {
             collab_types::Ed25519PublicKey::from_bytes([3u8; 32]),
             collab_types::AttestationId::new(),
             collab_types::OpClass::Splice,
-            std::time::SystemTime::UNIX_EPOCH,
+            crate::clock::SystemTime::UNIX_EPOCH,
             5,
         );
         op.signature = collab_types::Signature::from_bytes([0u8; 64]);
@@ -6637,5 +6936,32 @@ mod tests {
         assert_eq!(parse_invocation_context(7, &json), Some(context));
         assert_eq!(parse_invocation_context(8, "  "), None);
         assert_eq!(parse_invocation_context(9, "{not-json"), None);
+    }
+}
+
+#[cfg(test)]
+mod portable_transport_tests {
+    use super::*;
+    struct ClosedPeer;
+    impl PeerTransport for ClosedPeer {
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn send(&mut self, _: CollabRequest) -> Result<(), String> {
+            Err("peer disconnected".into())
+        }
+        fn poll(&mut self) -> Vec<CollabEvent> {
+            vec![]
+        }
+    }
+    #[test]
+    fn peer_enqueue_failure_disconnects_the_real_manager() {
+        let mut manager = CollaborationManager::with_peer_transport(ClosedPeer);
+        assert!(manager.is_connected());
+        manager.send(CollabRequest::Document {
+            mutation: collab_types::DocumentMutation::Snapshot(vec![1]),
+        });
+        assert!(!manager.is_connected());
+        assert!(manager.poll().is_empty());
     }
 }

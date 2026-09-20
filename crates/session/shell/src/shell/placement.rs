@@ -251,7 +251,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.set_active_group(strip_id, ids[1]);
         assert_eq!(
             placement_for_new_window(&tree, None),
@@ -264,7 +266,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 3, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.set_active_group(strip_id, ids[1]);
         assert_eq!(
             placement_for_new_window(&tree, None),
@@ -277,7 +281,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.active_group.remove(&strip_id);
         // Screen shows canvas 150..280: the seam at 200 (after group 1)
         // is on it; the one at 100 is behind the left edge.
@@ -293,7 +299,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.active_group.remove(&strip_id);
         // Inside group 1: no border between windows anywhere on screen.
         let view = viewport(strip_id, &ids, (120.0, 190.0));
@@ -308,7 +316,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.active_group.remove(&strip_id);
         // One group filling the display: the only seam is its own
         // trailing edge, and it is the one the window goes to.
@@ -327,7 +337,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.active_group.remove(&strip_id);
         let view = viewport(strip_id, &ids, (0.0, 100.0));
         assert_eq!(view.visible_seam(), None, "nothing of the gap is on screen");
@@ -342,7 +354,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.active_group.remove(&strip_id);
         // Panned into empty space: every seam is behind the viewport.
         let view = viewport(strip_id, &ids, (400.0, 800.0));
@@ -397,7 +411,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.active_group.remove(&strip_id);
         // The screen shows canvas 150..280 — the border after group 1 is
         // on it, the one after group 0 is off the left edge.
@@ -427,7 +443,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.active_group.remove(&strip_id);
         let view = viewport(strip_id, &ids, (120.0, 190.0));
 
@@ -455,7 +473,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.set_active_group(strip_id, ids[0]);
         // A viewport that would send an unselected launch elsewhere, so
         // the selection is demonstrably what decided this.
@@ -485,7 +505,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 3, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.set_active_group(strip_id, ids[1]);
         let view = viewport(strip_id, &ids, (150.0, 280.0));
 
@@ -507,7 +529,9 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
+        tree.desktop
+            .active_strip
+            .insert(tree.desktop.active, strip_id);
         tree.active_group.remove(&strip_id);
         let mut view = viewport(strip_id, &ids, (150.0, 280.0));
         view.strip = StripId::from(next_id());

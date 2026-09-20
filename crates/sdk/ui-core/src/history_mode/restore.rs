@@ -4,6 +4,8 @@ use automerge::{
     transaction::Transactable,
 };
 mod projection;
+mod import;
+pub use import::prepare_external_content_import;
 mod schema;
 mod selection;
 mod writer;

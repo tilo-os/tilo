@@ -69,8 +69,9 @@ pub(super) struct FileController {
     pub review_changed: bool,
     pub live_updates: bool,
     active: bool,
+    native_workers: bool,
     refreshing: bool,
-    next_poll: std::time::Instant,
+    next_poll: crate::clock::Instant,
 }
 impl FileController {
     pub fn new(target: FileHistoryTarget) -> Self {
@@ -103,32 +104,55 @@ impl FileController {
             review_changed: false,
             live_updates: false,
             active: true,
+            native_workers: cfg!(not(target_arch = "wasm32")),
             refreshing: false,
-            next_poll: std::time::Instant::now(),
+            next_poll: crate::clock::Instant::now(),
         }
     }
-    fn run(&self, work: impl FnOnce(Arc<dyn FileHistoryTransport>) -> Reply + Send + 'static) {
+    fn run(
+        &self,
+        unavailable: Reply,
+        work: impl FnOnce(Arc<dyn FileHistoryTransport>) -> Reply + Send + 'static,
+    ) {
         let transport = self.target.transport.clone();
         let key = self.key;
         let tx = self.tx.clone();
         let wake = self.wake.clone();
-        std::thread::spawn(move || {
-            let reply = work(transport);
-            let _ = tx.send(Completion { key, reply });
+        if !self.native_workers || cfg!(target_arch = "wasm32") {
+            let _ = tx.send(Completion {
+                key,
+                reply: unavailable,
+            });
             wake.wake();
-        });
+            return;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::spawn(move || {
+                let reply = work(transport);
+                let _ = tx.send(Completion { key, reply });
+                wake.wake();
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (transport, work);
     }
     pub fn has_results(&self) -> bool {
         self.inbox.borrow_mut().extend(self.rx.try_iter());
         !self.inbox.borrow().is_empty()
-            || self.active && !self.refreshing && std::time::Instant::now() >= self.next_poll
+            || self.native_workers
+                && self.active
+                && !self.refreshing
+                && crate::clock::Instant::now() >= self.next_poll
     }
     pub fn load(&mut self) {
         if self.refreshing {
             return;
         }
         self.refreshing = true;
-        self.run(|transport| Reply::Activity(load_all(transport.as_ref())));
+        self.run(Reply::Activity(Err(Error::Unavailable)), |transport| {
+            Reply::Activity(load_all(transport.as_ref()))
+        });
     }
     fn advance(&mut self) {
         if let Some(next) = self.key.generation.checked_add(1) {
@@ -165,7 +189,7 @@ impl FileController {
         self.preview_changed = true;
         self.active = true;
         self.refreshing = false;
-        self.next_poll = std::time::Instant::now();
+        self.next_poll = crate::clock::Instant::now();
         self.load();
     }
     /// Learned only from a successful authorized immutable metadata read.
@@ -186,9 +210,10 @@ impl FileController {
         self.before = None;
         self.preview_changed = true;
         self.message = "Loading immutable version".into();
-        self.run(move |transport| {
-            Reply::Selection(read_selection(transport.as_ref(), version, parent))
-        });
+        self.run(
+            Reply::Selection(Err(Error::Unavailable)),
+            move |transport| Reply::Selection(read_selection(transport.as_ref(), version, parent)),
+        );
     }
     pub fn request_review(&mut self, operation: Operation) {
         self.advance();
@@ -196,7 +221,10 @@ impl FileController {
         self.review = None;
         self.review_changed = true;
         self.message = "Checking current file permissions and frontier".into();
-        self.run(move |transport| Reply::Review(operation, transport.review()));
+        self.run(
+            Reply::Review(operation, Err(Outcome::Unavailable)),
+            move |transport| Reply::Review(operation, transport.review()),
+        );
     }
     pub fn cancel_review(&mut self) {
         self.advance();
@@ -219,19 +247,28 @@ impl FileController {
             return;
         };
         self.message = "Submitting checked restore".into();
-        self.run(move |transport| Reply::Outcome(request, transport.submit(request)));
+        self.run(
+            Reply::Outcome(request, Outcome::Unavailable),
+            move |transport| Reply::Outcome(request, transport.submit(request)),
+        );
     }
     pub fn retry(&self) {
         let Some(request) = self.restore.request else {
             return;
         };
-        self.run(move |transport| Reply::Outcome(request, transport.submit(request)));
+        self.run(
+            Reply::Outcome(request, Outcome::Unavailable),
+            move |transport| Reply::Outcome(request, transport.submit(request)),
+        );
     }
     pub fn check_result(&self) {
         let Some(request) = self.restore.request else {
             return;
         };
-        self.run(move |transport| Reply::Outcome(request, transport.result(request.intent_id)));
+        self.run(
+            Reply::Outcome(request, Outcome::Unavailable),
+            move |transport| Reply::Outcome(request, transport.result(request.intent_id)),
+        );
     }
     fn visible_identity(
         &self,
@@ -274,10 +311,11 @@ impl FileController {
         >,
     ) {
         self.refreshing = false;
-        let now = std::time::Instant::now();
+        let now = crate::clock::Instant::now();
         self.next_poll = now.checked_add(Duration::from_secs(2)).unwrap_or(now);
         let wake = self.wake.clone();
-        if self.active {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.active && self.native_workers {
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(2));
                 wake.wake();
@@ -335,7 +373,7 @@ impl FileController {
                     }
                     self.review_changed = true;
                     self.refreshing = false;
-                    self.next_poll = std::time::Instant::now();
+                    self.next_poll = crate::clock::Instant::now();
                 } else {
                     self.message =
                         "Invalid backend result; the exact request remains unresolved".into();
@@ -408,7 +446,11 @@ impl FileController {
                 Reply::Outcome(..) => {}
             }
         }
-        if self.active && !self.refreshing && std::time::Instant::now() >= self.next_poll {
+        if self.native_workers
+            && self.active
+            && !self.refreshing
+            && crate::clock::Instant::now() >= self.next_poll
+        {
             self.load();
         }
         changed
@@ -641,6 +683,49 @@ mod tests {
             record_id: collab_types::FileRecordId(uuid::Uuid::from_u128(3)),
             frontier: [4; 32],
         }
+    }
+    #[test]
+    fn portable_review_unavailable_file_history_settles_without_worker_or_poll_loop() {
+        struct MustNotRun;
+        impl FileHistoryTransport for MustNotRun {
+            fn read(&self, _: Query) -> Result<Value, Error> {
+                panic!("unsupported read executed")
+            }
+            fn preview(&self, _: Scope, _: FileVersionId) -> Result<Vec<u8>, Error> {
+                panic!("unsupported preview executed")
+            }
+            fn review(&self) -> Result<Review, Outcome> {
+                panic!("unsupported review executed")
+            }
+            fn submit(&self, _: Request) -> Outcome {
+                panic!("unsupported submit executed")
+            }
+            fn result(&self, _: uuid::Uuid) -> Outcome {
+                panic!("unsupported result executed")
+            }
+        }
+        let mut controller = controller();
+        controller.target.transport = Arc::new(MustNotRun);
+        controller.native_workers = false;
+        controller.activate();
+        assert!(controller.drain());
+        assert_eq!(
+            controller.message,
+            "File history is temporarily unavailable"
+        );
+        assert!(
+            !controller.has_results(),
+            "unsupported service must not keep polling"
+        );
+        controller.select(FileVersionId(uuid::Uuid::new_v4()), None);
+        assert!(controller.drain());
+        assert!(controller.after.is_none());
+        controller.request_review(Operation::Restore {
+            version_id: FileVersionId(uuid::Uuid::new_v4()),
+        });
+        assert!(controller.drain());
+        assert!(controller.review.is_none());
+        assert!(controller.message.contains("unavailable"));
     }
     #[test]
     fn round1_denial_fences_delayed_preview_and_review_but_keeps_exact_settlement() {
@@ -931,12 +1016,12 @@ mod tests {
         });
         let mut controller = controller();
         controller.target.transport = transport.clone();
-        controller.next_poll = std::time::Instant::now() + Duration::from_secs(60);
+        controller.next_poll = crate::clock::Instant::now() + Duration::from_secs(60);
         controller.load();
         rx.recv_timeout(Duration::from_secs(2)).unwrap();
         controller.select(version.id, None);
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while controller.after.is_none() && std::time::Instant::now() < deadline {
+        let deadline = crate::clock::Instant::now() + Duration::from_secs(2);
+        while controller.after.is_none() && crate::clock::Instant::now() < deadline {
             controller.drain();
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -953,9 +1038,9 @@ mod tests {
         );
         let calls = transport.calls.load(Ordering::SeqCst);
         transport.revoked.store(true, Ordering::SeqCst);
-        controller.next_poll = std::time::Instant::now();
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while controller.after.is_some() && std::time::Instant::now() < deadline {
+        controller.next_poll = crate::clock::Instant::now();
+        let deadline = crate::clock::Instant::now() + Duration::from_secs(2);
+        while controller.after.is_some() && crate::clock::Instant::now() < deadline {
             controller.drain();
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -995,7 +1080,7 @@ mod tests {
                 ),
             })
             .unwrap();
-        controller.next_poll = std::time::Instant::now() + Duration::from_secs(60);
+        controller.next_poll = crate::clock::Instant::now() + Duration::from_secs(60);
         controller.drain();
         assert!(
             controller.review.is_none(),

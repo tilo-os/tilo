@@ -447,7 +447,7 @@ impl CallChromeMotion {
             self.transition.set_open(
                 open,
                 if theme.reduce_motion {
-                    std::time::Duration::ZERO
+                    ui::clock::Duration::ZERO
                 } else {
                     theme.tokens.motion.durations.base()
                 },
@@ -459,7 +459,7 @@ impl CallChromeMotion {
             );
             self.target_open = open;
         }
-        let now = std::time::Instant::now();
+        let now = ui::clock::Instant::now();
         self.sampled = self.transition.value(now);
         self.animating = self.transition.is_animating(now);
     }
@@ -561,6 +561,8 @@ pub struct ChatApp {
     /// Last measured timeline height. Keeps a reader's visual anchor stable if
     /// new messages arrive while they are reading older messages.
     pub(crate) timeline_total_height: f64,
+    pub(crate) scroll_content: f64,
+    pub(crate) scroll_viewport: f64,
     pub(crate) thread_open: Option<Id>,
     pub(crate) revealed_message: Option<Id>,
     /// A search result needs one initial scroll into view. Keeping this
@@ -767,6 +769,13 @@ pub struct ChatApp {
     /// collaborators do not retain a stale featured-stage reservation.
     screen_share_needs_sync: bool,
     legacy_migration_attempted: bool,
+    pub(crate) canonical: bool,
+    canonical_dirty: bool,
+    /// Document heads and pending-operation count at the last canonical reload,
+    /// so an unchanged document is not reloaded and repainted every frame.
+    synced: Option<(Vec<automerge::ChangeHash>, usize)>,
+    host_focused: bool,
+    pub(crate) external_services: bool,
 }
 
 impl Default for ChatApp {
@@ -775,7 +784,42 @@ impl Default for ChatApp {
     }
 }
 
+/// Native external services are explicit; browser peer transport is installed later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatRuntime {
+    Native,
+    Unavailable,
+}
+
 impl ChatApp {
+    pub fn from_document(
+        doc: &AutoCommit,
+        identity: LocalIdentity,
+        runtime: ChatRuntime,
+    ) -> Result<Self, String> {
+        if !ChatDoc::is_seeded(doc) {
+            return Err("Chat record has no workspace schema".into());
+        }
+        let mut app = Self::bare();
+        app.canonical = true;
+        app.external_services = runtime == ChatRuntime::Native;
+        app.me = identity;
+        app.active_ws.clear();
+        app.context_ws.clear();
+        app.active_channel.clear();
+        app.thread_open = None;
+        app.media_error = (!app.external_services).then(|| {
+            "Calls and screen sharing are unsupported until a media transport is connected".into()
+        });
+        if app.external_services {
+            app.media = MediaEngine::new();
+        }
+        app.reload(doc);
+        if app.ensure_selection() {
+            app.reload(doc);
+        }
+        Ok(app)
+    }
     /// The live instance: resolves this peer's real identity. The document
     /// itself is loaded and written by `app-state` (see `main`), so nothing
     /// here touches disk. The resolved identity is what makes two running
@@ -837,6 +881,8 @@ impl ChatApp {
             scroll: 0.0,
             timeline_at_end: true,
             timeline_total_height: 0.0,
+            scroll_content: 0.0,
+            scroll_viewport: 0.0,
             thread_open: Some("m_concept".into()),
             revealed_message: None,
             reveal_scroll_pending: false,
@@ -927,6 +973,11 @@ impl ChatApp {
             media_error: None,
             screen_share_needs_sync: false,
             legacy_migration_attempted: false,
+            canonical: false,
+            canonical_dirty: true,
+            synced: None,
+            host_focused: true,
+            external_services: true,
         }
     }
 
@@ -935,7 +986,7 @@ impl ChatApp {
     /// is blocked from join/speak/camera/screen-share; leaving is always
     /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
-        self.perms.allows(action)
+        self.external_services && self.perms.allows(action)
     }
 
     /// Whether the local peer may post / react / start a call in the active
@@ -1383,7 +1434,7 @@ impl ChatApp {
     fn pump_mic(&mut self, me: &str) {
         use crate::call::CallAction;
         use crate::media::TrackKind;
-        use std::time::Duration;
+        use ui::clock::Duration;
 
         let transmit =
             !self.call.muted && !self.call.deafened && self.call_allows(CallAction::Speak);
@@ -1412,7 +1463,7 @@ impl ChatApp {
     fn pump_camera(&mut self, me: &str) {
         use crate::call::CallAction;
         use crate::media::TrackKind;
-        use std::time::Duration;
+        use ui::clock::Duration;
 
         let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
         if !camera_on {
@@ -1455,12 +1506,12 @@ impl ChatApp {
     #[cfg(feature = "live-media")]
     fn pump_screen(&mut self, me: &str) {
         use crate::media::TrackKind;
-        use std::time::Duration;
+        use ui::clock::Duration;
 
         let screen_result = match (self.screen.as_mut(), self.screen_session.as_mut()) {
             (Some(scr), Some(session)) => scr
                 .poll()
-                .map(|rgba| session.offer_frame(&rgba, std::time::Instant::now())),
+                .map(|rgba| session.offer_frame(&rgba, ui::clock::Instant::now())),
             _ => None,
         };
         let Some(result) = screen_result else {
@@ -1488,7 +1539,7 @@ impl ChatApp {
         &mut self,
         me: &str,
         kind: crate::media::TrackKind,
-        pts: std::time::Duration,
+        pts: ui::clock::Duration,
         payload: Vec<u8>,
     ) -> bool {
         if payload.len() > crate::media::MAX_MEDIA_PAYLOAD {
@@ -2046,13 +2097,19 @@ impl ChatApp {
     /// when no inline editor / rename is capturing input. Idempotent; called
     /// from `reload` and after any focus change.
     pub(crate) fn set_composer_focus(&mut self) {
-        let editing = self.editing.is_some() || self.rename.is_some();
+        let editing = self.editing.is_some() || self.rename.is_some() || !self.host_focused;
         let main = matches!(self.focus, Focus::Main) && !editing;
         let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
         ui::Widget::set_focus(&mut self.composer_main, main);
         ui::Widget::set_focus(&mut self.composer_thread, thread);
-        ui::Widget::set_focus(&mut self.edit_input, self.editing.is_some());
-        ui::Widget::set_focus(&mut self.rename_input, self.rename.is_some());
+        ui::Widget::set_focus(
+            &mut self.edit_input,
+            self.host_focused && self.editing.is_some(),
+        );
+        ui::Widget::set_focus(
+            &mut self.rename_input,
+            self.host_focused && self.rename.is_some(),
+        );
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
@@ -2545,7 +2602,7 @@ impl ChatApp {
             let _ = self.images.get(&e.key());
         }
         self.images
-            .block_until_idle(std::time::Duration::from_secs(3));
+            .block_until_idle(ui::clock::Duration::from_secs(3));
     }
 
     /// The host-tile video rect for the current call mode, including the
@@ -2934,10 +2991,75 @@ impl Widget for ChatApp {
         }
     }
 
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        Some(ui::widget::PrimaryScrollRegion {
+            key: "primary",
+            owner_generation: None,
+            metrics: ui::widget::ScrollMetrics::new(
+                self.scroll_content,
+                self.scroll_viewport,
+                (self.scroll_content - self.scroll_viewport).max(0.0)
+                    - self
+                        .scroll
+                        .clamp(0.0, (self.scroll_content - self.scroll_viewport).max(0.0)),
+            ),
+        })
+    }
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        use ui::widget::PrimaryScrollResult;
+        let Some(region) = self.primary_vertical_scroll() else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        let Some(next) = action.offset(region.metrics) else {
+            return PrimaryScrollResult::Unsupported;
+        };
+        if next == region.metrics.offset {
+            return PrimaryScrollResult::Unchanged(region);
+        }
+        self.scroll = region.metrics.max_scroll() - next;
+        self.timeline_at_end = self.scroll <= 0.5;
+        self.canonical_dirty = true;
+        self.primary_vertical_scroll().map_or(
+            PrimaryScrollResult::Unsupported,
+            PrimaryScrollResult::Changed,
+        )
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn is_focused(&self) -> bool {
+        self.host_focused
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.host_focused = focused;
+        self.canonical_dirty = true;
+        self.set_composer_focus();
+    }
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.host_focused
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.host_focused {
+            return None;
+        }
+        if self.rename.is_some() {
+            self.rename_input.ime_cursor_rect()
+        } else if self.editing.is_some() {
+            self.edit_input.ime_cursor_rect()
+        } else {
+            self.focused_composer().ime_cursor_rect()
+        }
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
-        if self.is_live {
+        if !self.canonical && self.is_live {
             // Live instance. `app-state` has already restored the previous
             // session's document by now, so an unseeded document really is a
             // first run: scaffold a real, empty starter workspace for this
@@ -2961,14 +3083,14 @@ impl Widget for ChatApp {
                 self.me.color_idx,
                 model::Presence::Online,
             ) {}
-        } else if self.shot_starter {
+        } else if !self.canonical && self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.
             ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
-        } else {
+        } else if !self.canonical {
             // Ephemeral `--shots`/test instance: the rich demo workspace.
             ChatDoc::seed_if_empty(doc);
         }
-        if !self.legacy_migration_attempted {
+        if !self.canonical && !self.legacy_migration_attempted {
             ChatDoc::migrate_legacy_attachment_paths(doc);
             self.legacy_migration_attempted = true;
         }
@@ -2979,9 +3101,31 @@ impl Widget for ChatApp {
         }
         self.settle_attachment_picker();
         self.settle_attachment_import(doc);
-        self.reload(doc);
+        if self.canonical {
+            use automerge::transaction::Transactable as _;
+            // Reload and repaint only when the document moved: committed heads
+            // differ, or a transaction is or was open. Service completions run
+            // before this comparison so their canonical changes are projected
+            // in the same frame without making idle sync reload continuously.
+            let heads = doc.base_heads();
+            let pending = doc.pending_ops();
+            let unchanged = self
+                .synced
+                .as_ref()
+                .is_some_and(|(synced_heads, synced_pending)| {
+                    *synced_heads == heads && *synced_pending == 0 && pending == 0
+                });
+            if !unchanged {
+                self.canonical_dirty = true;
+                self.reload(doc);
+                self.synced = Some((heads, pending));
+            }
+        } else {
+            self.reload(doc);
+        }
         if self.ensure_selection() {
             // Re-picking the workspace changes which channels/messages apply.
+            self.canonical_dirty = true;
             self.reload(doc);
         }
         // The channel in view is read: advance its watermark (no-op when
@@ -3136,7 +3280,7 @@ impl Widget for ChatApp {
         self.layout_text_scale = theme.text_scale;
         self.reconcile_flaps();
         self.reconcile_huddle_motion(theme);
-        self.tooltips.tick(std::time::Instant::now());
+        self.tooltips.tick(ui::clock::Instant::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let c = &theme.tokens.colors;
@@ -3253,7 +3397,9 @@ impl Widget for ChatApp {
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
         // is painted last so it remains legible on rail, sidebar and popovers.
         let semantic = Self::deduplicate_semantic_hits(self.semantic_hits_from(&hits));
-        if let Some(index) = self.keyboard_target {
+        if self.host_focused
+            && let Some(index) = self.keyboard_target
+        {
             if let Some((rect, ..)) = semantic.get(index) {
                 crate::paint::stroke_round(scene, tf, *rect, 9.0, c.accent[7], 2.0);
             } else {
@@ -3299,11 +3445,23 @@ impl Widget for ChatApp {
         state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        // Embedded inputs request focus with a temporary layout node. Map
+        // that actual request to Chat's retained keyboard/IME owner.
+        let was_handled = *handled;
+        let requested = self.dispatch_event(event, scale_factor, *modifiers, state, handled);
+        // Pointer motion that neither Chat nor its inputs consumed changes
+        // nothing visible; every other event may. Marking every event dirty
+        // made each pointer move anywhere on the desktop repaint everything.
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || requested {
+            self.canonical_dirty = true;
+        }
+        if !was_handled && requested && focus_target.is_none() {
+            *focus_target = Some(node_id);
+        }
     }
 
     /// The resource tree Chat currently has open — the active workspace, its
@@ -3327,9 +3485,19 @@ impl Widget for ChatApp {
             .into_iter()
             .enumerate()
             .map(|(index, (rect, hit, name, role, selected))| {
-                let mut state = AccessState::new()
-                    .focusable(true)
-                    .focused(self.keyboard_target == Some(index));
+                let input = match &hit {
+                    Hit::FocusMain => Some(&self.composer_main),
+                    Hit::FocusThread => Some(&self.composer_thread),
+                    Hit::FocusRename => Some(&self.rename_input),
+                    Hit::FocusEdit => Some(&self.edit_input),
+                    _ => None,
+                };
+                let focused = self.host_focused
+                    && self.keyboard_target.map_or_else(
+                        || input.is_some_and(|input| ui::Widget::is_focused(input)),
+                        |target| target == index,
+                    );
+                let mut state = AccessState::new().focusable(true).focused(focused);
                 if matches!(role, Role::Tab | Role::ListItem) {
                     state = state.selected(selected);
                 }
@@ -3342,13 +3510,6 @@ impl Widget for ChatApp {
                     .with_bounds(rect)
                     .with_key(index as u64)
                     .with_action_target(hit.semantic_id());
-                let input = match hit {
-                    Hit::FocusMain => Some(&self.composer_main),
-                    Hit::FocusThread => Some(&self.composer_thread),
-                    Hit::FocusRename => Some(&self.rename_input),
-                    Hit::FocusEdit => Some(&self.edit_input),
-                    _ => None,
-                };
                 if let Some(input) = input {
                     let (anchor, focus) = input
                         .selection_range_public()
@@ -3480,6 +3641,11 @@ impl Widget for ChatApp {
         ) {
             use ui::a11y::Action;
 
+            // `keyboard_target` is the immediate-mode Tab ring. A semantic
+            // editor action moves focus into the actual TextInput instead, so
+            // let that editor be the single focused accessibility child.
+            self.keyboard_target = None;
+
             match action {
                 Action::Focus | Action::Activate => {
                     self.on_hit(hit, state);
@@ -3541,8 +3707,12 @@ impl Widget for ChatApp {
         ) {
             return false;
         }
+        let messages_before = matches!(hit, Hit::Send)
+            .then(|| ChatDoc::list_messages(state, &self.active_channel).len());
         self.on_hit(hit, state);
-        true
+        messages_before.is_none_or(|before| {
+            ChatDoc::list_messages(state, &self.active_channel).len() == before.saturating_add(1)
+        })
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -3586,6 +3756,9 @@ impl Widget for ChatApp {
         };
         match &operation {
             crate::actions::ChatOperation::ImportAttachment { .. } => {
+                if !self.external_services {
+                    return Err("attachment import unsupported: no host asset transport".into());
+                }
                 if kind != tilo_actions::OperationKind::Effect {
                     return Err("attachment import requires an Effect operation".into());
                 }
@@ -3861,7 +4034,12 @@ impl Widget for ChatApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        true
+        !self.canonical || self.canonical_dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.canonical_dirty = false;
+        self.composer_main.mark_drawn();
+        self.composer_thread.mark_drawn();
     }
 }
 
@@ -4017,7 +4195,7 @@ mod screenshare_reuse_tests {
     #[test]
     fn oversized_screen_object_stops_the_track_instead_of_silent_transport_drop() {
         use crate::media::{MAX_MEDIA_PAYLOAD, TrackKind};
-        use std::time::Duration;
+        use ui::clock::Duration;
 
         let mut app = ChatApp::new_ephemeral();
         app.call.sharing = true;
@@ -4044,6 +4222,28 @@ mod screenshare_reuse_tests {
 #[cfg(test)]
 mod identity_on_screen {
     use super::*;
+    #[test]
+    fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
+        use ui::widget::PrimaryScrollAction;
+        let mut app = ChatApp::new_ephemeral();
+        app.scroll_content = 1000.0;
+        app.scroll_viewport = 200.0;
+        app.scroll = 0.0;
+        assert_eq!(app.primary_vertical_scroll().unwrap().metrics.offset, 800.0);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::Start);
+        assert_eq!(app.scroll, 800.0);
+        assert!(!app.timeline_at_end);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::Line(1));
+        assert_eq!(app.scroll, 752.0);
+        app.apply_primary_vertical_scroll(PrimaryScrollAction::End);
+        assert_eq!(app.scroll, 0.0);
+        assert!(app.timeline_at_end);
+        app.scroll_content = 100.0;
+        assert_eq!(
+            app.primary_vertical_scroll().unwrap().metrics.max_scroll(),
+            0.0
+        );
+    }
 
     fn user(id: &str, is_agent: bool) -> User {
         User {

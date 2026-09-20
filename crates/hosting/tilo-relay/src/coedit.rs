@@ -45,6 +45,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::client::RelayClient;
+use crate::clock::now_ns;
 use crate::transport::Envelope;
 
 /// Body carried inside an [`Envelope::Delta`]. Self-describing so the
@@ -221,6 +222,80 @@ impl RelayCoeditSession {
         })
     }
 
+    /// Enable the private v2 lane on this same co-edit connection. Await its
+    /// `ActionsReady` with `recv_action`; v1 sessions explicitly return an error.
+    ///
+    /// # Errors
+    /// Returns an error for a different room, v1, or a full/disconnected queue.
+    pub fn enable_actions(&self, room: uuid::Uuid) -> Result<(), crate::client::ClientError> {
+        if !crate::room_workspace_id_matches(&room.to_string(), self.workspace_id) {
+            return Err(crate::client::ClientError::Codec(
+                "action room differs from co-edit room".into(),
+            ));
+        }
+        self.client
+            .send_action(crate::transport_v2::EnvelopeV2::EnableActions { room })
+    }
+
+    /// Negotiate client access to an attached durable broker on this same lane.
+    /// Call after `enable_actions`, which preserves subscribe-before-enable ordering.
+    pub fn enable_broker_client(&self, room: uuid::Uuid) -> Result<(), crate::client::ClientError> {
+        if !crate::room_workspace_id_matches(&room.to_string(), self.workspace_id) {
+            return Err(crate::client::ClientError::Codec(
+                "action room differs from co-edit room".into(),
+            ));
+        }
+        self.client
+            .send_action(crate::transport_v2::EnvelopeV2::EnableBrokerClient { room })
+    }
+
+    /// Send privately through the co-edit session's existing demultiplexer.
+    ///
+    /// # Errors
+    /// Returns an error for a different room, v1, or a full/disconnected queue.
+    pub fn send_action(
+        &self,
+        action: crate::peer_actions::DirectedAction,
+    ) -> Result<(), crate::client::ClientError> {
+        if !crate::room_workspace_id_matches(&action.room.to_string(), self.workspace_id) {
+            return Err(crate::client::ClientError::Codec(
+                "action room differs from co-edit room".into(),
+            ));
+        }
+        self.client
+            .send_action(crate::transport_v2::EnvelopeV2::Directed(action))
+    }
+
+    /// Receive only private events; this never consumes shared co-edit state.
+    pub async fn recv_action(&self) -> Option<crate::transport_v2::EnvelopeV2> {
+        self.client.recv_action().await
+    }
+
+    /// Attach an already healthy durable broker to this private lane.
+    pub fn register_action_broker(
+        &self,
+        room: uuid::Uuid,
+        host: uuid::Uuid,
+    ) -> Result<(), crate::client::ClientError> {
+        if !crate::room_workspace_id_matches(&room.to_string(), self.workspace_id) || host.is_nil()
+        {
+            return Err(crate::client::ClientError::Codec(
+                "invalid broker room or host".into(),
+            ));
+        }
+        self.client
+            .send_action(crate::transport_v2::EnvelopeV2::RegisterBroker { room, host })
+    }
+    /// Receive opaque source evidence using this connection's authenticated demultiplexer.
+    pub async fn recv_certified_action(&self) -> Option<crate::client::CertifiedActionEvent> {
+        self.client.recv_certified_action().await
+    }
+
+    /// Close both lanes when an attached native broker loses its bounded path.
+    pub async fn close(&self) {
+        self.client.disconnect().await;
+    }
+
     /// The workspace this session is bound to.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
@@ -360,18 +435,6 @@ impl RelayCoeditSession {
     pub fn into_client(self) -> RelayClient {
         self.client
     }
-}
-
-/// Wall-clock nanoseconds since the epoch, used as the envelope's
-/// `authored_at_ns`. The host assigns its own monotonic delivery seq
-/// for the pending queue, so this value is metadata only.
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        // `u64` nanoseconds since the epoch doesn't overflow until the
-        // year 2554; clamp rather than panic on the (unreachable in
-        // practice) far side of that.
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]

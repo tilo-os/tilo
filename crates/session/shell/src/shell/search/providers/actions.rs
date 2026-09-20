@@ -150,7 +150,9 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "projection.open"
         | "capture.open"
         | "collaborators.open"
-        | "room.activity.open" => {
+        | "room.activity.open"
+        | "room.activity.explore"
+        | "room.activity.replay" => {
             contract = ActionContract::view();
         }
         "identity.connect" | "identity.select" => {
@@ -217,6 +219,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "capture.open"
         | "collaborators.open"
         | "room.activity.open"
+        | "room.activity.explore"
+        | "room.activity.replay"
         | "peer.invite"
         | "peer.connect" => tilo_actions::OperationKind::View,
         "text.insert" | "record.bring" | "peer.invite.named" | "agent.invite" => {
@@ -1953,6 +1957,40 @@ impl SearchProvider for ActionsProvider {
                 });
             }
         }
+        for descriptor in qos_desktop::activity::view_actions::workspace_view_descriptors(
+            &ctx.chrome.tree(),
+            true,
+        ) {
+            let Some(score) = match_score(
+                &needle_lower,
+                &descriptor.label.to_lowercase(),
+                "workspace activity history",
+                &descriptor.id,
+            ) else {
+                continue;
+            };
+            let request = descriptor.request;
+            out.push(SearchResult {
+                kind: ResourceKind::Action,
+                operation_kind: tilo_actions::OperationKind::View,
+                provider_id: self.id().into(),
+                id: descriptor.id,
+                title: descriptor.label,
+                subtitle: Some("Local workspace view".into()),
+                badge: None,
+                score,
+                params: vec![],
+                contract: Some(tilo_actions::ActionContract::view()),
+                on_open: Rc::new(move |_, _, chrome, _| {
+                    chrome
+                        .borrow_mut()
+                        .request_workspace_view(request.clone())
+                        .map_err(ActionError::Refused)
+                }),
+                on_invoke: None,
+                on_begin_invoke: None,
+            });
+        }
         const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str)] = &[
             (
                 QS_BRIGHTNESS_ID,
@@ -2821,6 +2859,32 @@ mod tests {
     }
 
     #[test]
+    fn workspace_activity_exact_local_actions_are_exported() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let out = provider.query(SearchContext {
+            needle: "activity",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        for id in [
+            "room.activity.open",
+            "room.activity.explore",
+            "room.activity.replay",
+        ] {
+            assert!(
+                out.iter().any(|action| action.id == id
+                    && action.operation_kind == tilo_actions::OperationKind::View),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
     fn room_activity_action_opens_the_sheet_on_open() {
         let p = ActionsProvider::new();
         let c = chrome_with_room();
@@ -2839,7 +2903,7 @@ mod tests {
             .iter()
             .find(|r| r.id == "room.activity.open")
             .expect("typing 'activity' must surface the room-activity action");
-        assert_eq!(action.title, "Show workspace activity");
+        assert_eq!(action.title, "Review workspace activity");
         assert!(!c.borrow().overlays.room_activity, "starts closed");
         (action.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none())
             .expect("a nullary chrome action must run");
@@ -3046,7 +3110,7 @@ mod tests {
         assert!(
             !ws.allows(
                 &ws.actor_for_agent("operator"),
-                &crate::shell::state::ResourceRef::App("dev.tilo.notes".into()),
+                &crate::shell::state::ResourceRef::App("dev.qos.notes".into()),
                 crate::shell::state::Verb::Write,
             ),
             "even the Operator profile requires an explicit scoped grant"
@@ -3669,7 +3733,7 @@ mod tests {
         let provider = ActionsProvider::new();
         let rules = serde_json::to_string(&vec![collab_types::PermissionProfileRule::grant(
             collab_types::Scope::Action {
-                app: "dev.tilo.notes".into(),
+                app: "dev.qos.notes".into(),
                 action: "note.open".into(),
             },
             collab_types::Verb::Read,
@@ -3738,10 +3802,13 @@ mod tests {
         assert!(workspace.allows(
             &workspace.actor_for_agent("researcher"),
             &crate::shell::state::ResourceRef::Action {
-                app: "dev.tilo.notes".into(),
+                app: "dev.qos.notes".into(),
                 action: "note.open".into(),
             },
             crate::shell::state::Verb::Read,
         ));
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

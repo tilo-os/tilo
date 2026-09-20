@@ -61,7 +61,7 @@ impl HistorySeenFrontier {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, SystemTime};
+    use crate::clock::{Duration, SystemTime};
 
     use collab_types::{ArtifactKind, OpClass};
 

@@ -104,3 +104,6 @@ fn only_an_administrator_may_write_permission_state() {
         "only the owner's own membership is recorded"
     );
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

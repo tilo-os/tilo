@@ -53,7 +53,7 @@ portal = ["dep:ashpd", "dep:windows", "dep:mime_guess"]
 notifications = ["dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
 
 [dependencies]
-private-fs = { path = "../../system/private-fs" }
+qos-peer-state = { path = "../../collab/qos-peer-state" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
 atomic-file = { path = "../../system/atomic-file" }
 settings-store = { path = "../../system/settings-store" }
@@ -86,7 +86,6 @@ syntect = { version = "5.3", default-features = false, features = ["default-synt
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
-rustls.workspace = true
 chacha20poly1305.workspace = true
 cosmic-text = { version = "0.19.0", default-features = false, features = ["fontconfig", "peniko", "swash", "std"] }
 # Keep this aligned with cosmic-text: text painting needs the font's complete
@@ -99,7 +98,7 @@ rustc-hash.workspace = true
 # `create_texture_from_hal`.
 ash = { version = "0.38", optional = true }
 taffy = { workspace = true, features = ["content_size"] }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
@@ -131,7 +130,6 @@ chrono = { workspace = true, features = ["clock", "std"] }
 # `source` feature compiles the pure-C reference implementation so we don't
 # rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
 # screencast pipeline.
-openh264.workspace = true
 # Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
@@ -143,12 +141,10 @@ media = { path = "../../media/core" }
 # talk to the data-control compositor extension when available
 # (kanshi / GNOME / KDE), falling back to the seat-driven protocol
 # otherwise.
-arboard = { workspace = true, features = ["image-data"] }
 # The `Link` widget hands its URL to the OS's registered handler (xdg-open /
 # the desktop portal on Linux) when activated. Same crate + pin the file
 # explorer already uses to open files with the desktop default; already
 # resolved in the workspace lockfile, so this adds no registry fetch.
-open = { workspace = true, features = ["shellexecute-on-windows"] }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
@@ -219,7 +215,6 @@ rand_core = { workspace = true, features = ["getrandom"] }
 # `crates/sdk/ui-core/src/accesskit_bridge.rs` (tree builder + role/action mapping) and the
 # adapter wiring in `crates/sdk/ui-core/src/app.rs`.
 accesskit = "0.25.0"
-accesskit_winit = "0.34.0"
 # Accessibility: the built-in screen reader (`ui::screen_reader`) speaks
 # focus / value / live-region narration through the offline Tilo TTS engine.
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
@@ -334,3 +329,19 @@ path = "examples/manual_composition_shots.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "qos-presentation-feedback"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+private-fs = { path = "../../system/private-fs" }
+open = { workspace = true, features = ["shellexecute-on-windows"] }
+rustls.workspace = true
+arboard = { workspace = true, features = ["image-data"] }
+openh264.workspace = true
+accesskit_winit = "0.34.0"
+tokio = { workspace = true, features = ["full"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { workspace = true, features = ["js"] }
+uuid = { workspace = true, features = ["js"] }
+web-time = "1"
+getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+getrandom04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }

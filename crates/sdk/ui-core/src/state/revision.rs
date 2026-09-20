@@ -8,7 +8,7 @@
 use automerge::{AutoCommit, ChangeHash};
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::clock::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Stable, content-addressed identifier for one document revision.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

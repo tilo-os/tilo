@@ -5,7 +5,7 @@ use cosmic_text::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use crate::clock::Instant;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::{Color, Fill, FontData as Font, StyleRef};
@@ -1444,7 +1444,7 @@ impl TextRenderer {
         ))
     }
 
-    fn with_font_system(font_system: FontSystem) -> Self {
+    pub fn with_font_system(font_system: FontSystem) -> Self {
         Self {
             font_system,
             swash_cache: SwashCache::new(),

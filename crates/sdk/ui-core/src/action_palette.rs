@@ -173,6 +173,10 @@ impl PendingOperation {
         }
     }
 
+    pub(crate) fn has_valid_input(&self) -> bool {
+        !matches!(self.input, PendingInput::Invalid)
+    }
+
     pub fn confirmation_evidence(&self) -> &serde_json::Value {
         &self.confirmation_evidence
     }
@@ -240,6 +244,8 @@ pub struct ActionPalette {
     provider_complete: Vec<bool>,
     next_provider: usize,
     search_query: String,
+    /// A revoked selection stays unselected until restored or deliberately changed.
+    missing_selection: Option<String>,
     search_generation: u64,
     search_announcement: Option<String>,
     open: bool,
@@ -346,6 +352,7 @@ impl ActionPalette {
             provider_complete: Vec::new(),
             next_provider: 0,
             search_query: String::new(),
+            missing_selection: None,
             search_generation: 0,
             search_announcement: None,
             open: false,
@@ -392,6 +399,28 @@ impl ActionPalette {
             return;
         }
         self.resources = resources.to_vec();
+    }
+
+    /// Refresh displayed authority asynchronously without moving an existing
+    /// selection onto a different control. Argument/confirmation fields retain
+    /// their original address; dispatch still rechecks the fresh authority.
+    pub fn refresh_visible_resources(&mut self, resources: &[Resource]) {
+        self.resources = resources.to_vec();
+        if self.in_argument_mode() {
+            return;
+        }
+        let selected = self
+            .results
+            .selected_action_id()
+            .map(str::to_owned)
+            .or_else(|| self.missing_selection.take());
+        let query = self.field.value().to_owned();
+        self.rebuild(&query);
+        if let Some(id) = selected {
+            if !self.results.restore_action_selection(&id) {
+                self.missing_selection = Some(id);
+            }
+        }
     }
 
     /// Resource ids referenced by the current canonical search rows.
@@ -1241,6 +1270,7 @@ impl ActionPalette {
 
     /// Move the highlight to a flat row index (clamped).
     pub fn set_cursor(&mut self, index: usize) {
+        self.missing_selection = None;
         self.results.set_cursor(index);
     }
 
@@ -1635,6 +1665,7 @@ impl ActionPalette {
     /// Rebuild the result set for `query`: exported actions (fuzzy-filtered)
     /// as the **Actions** group, then each provider's hits as its own group.
     fn rebuild(&mut self, query: &str) {
+        self.missing_selection = None;
         let mut rows: Vec<SearchResult> = Vec::new();
         let mut index: HashMap<String, RowResolution> = HashMap::new();
 
@@ -1909,6 +1940,87 @@ impl ActionPalette {
         }
     }
 
+    pub(crate) fn presentation_widgets(&self) -> (&dyn Widget, &dyn Widget) {
+        (&self.field, &self.results)
+    }
+
+    pub(crate) fn perform_host_semantic(
+        &mut self,
+        results_owner: bool,
+        target: Option<&str>,
+        action: &crate::a11y::Action,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        // The caller resolves this owner against the current inspection before
+        // entering the widget. No guessed path or substring is an authority.
+        let handled = if results_owner {
+            target.is_some_and(|target| {
+                self.results
+                    .perform_semantic_action(target, action, doc, root)
+            })
+        } else if matches!(action, crate::a11y::Action::Focus) {
+            true
+        } else {
+            self.field.perform_action(action, doc, root)
+        };
+        if let Some(query) = self.field.take_dirty() {
+            if self.arg.is_none() && self.confirm.is_none() {
+                self.rebuild(&query);
+            }
+        }
+        self.poll_view_activation();
+        handled
+    }
+
+    pub(crate) fn handle_host_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+    ) -> bool {
+        if self.handle_key(event, modifiers, doc, root) {
+            return true;
+        }
+        let normalized;
+        let event = if let WindowEvent::CursorMoved {
+            device_id,
+            position,
+        } = event
+        {
+            normalized = WindowEvent::CursorMoved {
+                device_id: *device_id,
+                position: winit::dpi::PhysicalPosition::new(position.x / scale, position.y / scale),
+            };
+            &normalized
+        } else {
+            event
+        };
+        match event {
+            WindowEvent::Ime(_) => {
+                self.route_to_field(event, *modifiers, doc, root);
+                if let Some(query) = self.field.take_dirty() {
+                    if self.arg.is_none() && self.confirm.is_none() {
+                        self.rebuild(&query);
+                    }
+                }
+                true
+            }
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => {
+                self.route_to_field(event, *modifiers, doc, root);
+                self.route_to_results(event, *modifiers, doc, root);
+                self.poll_view_activation();
+                true
+            }
+            WindowEvent::Touch(_) => true,
+            _ => false,
+        }
+    }
+
     /// Feed a keyboard event to the open palette; returns whether consumed.
     /// While open, the palette is modal: it swallows every key so nothing
     /// leaks to the app behind it.
@@ -2115,6 +2227,12 @@ impl ActionPalette {
             Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Enter)
         );
         if nav {
+            if matches!(
+                &key.logical_key,
+                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
+            ) {
+                self.missing_selection = None;
+            }
             self.route_to_results(event, *modifiers, doc, path);
             self.poll_view_activation();
         } else {
@@ -2129,6 +2247,7 @@ impl ActionPalette {
     /// Drain the results view's latched activation into a pending outcome.
     fn poll_view_activation(&mut self) {
         if let Some(id) = self.results.take_activated() {
+            self.missing_selection = None;
             self.resolve_activation(&id);
         }
     }
@@ -2147,6 +2266,22 @@ impl ActionPalette {
     }
 
     fn queue_or_confirm(&mut self, pending: PendingOperation, confirmation: ConfirmationPolicy) {
+        if !pending.has_valid_input() {
+            let message = format!(
+                "Invalid arguments: {}",
+                String::from_utf8_lossy(&pending.encoded.payload)
+            );
+            self.arg = Some(ArgState {
+                bound: pending.bound,
+                address: pending.address,
+                history_target: pending.history_target,
+                history_draft_identity: pending.history_draft_identity,
+            });
+            self.results.set_groups(Vec::new());
+            self.results.set_empty_text(&message);
+            self.search_announcement = Some(message);
+            return;
+        }
         self.request_generation = uuid::Uuid::new_v4();
         let expected = match confirmation {
             ConfirmationPolicy::None => {
@@ -2162,6 +2297,8 @@ impl ActionPalette {
             .set_placeholder(&confirmation_instruction(&expected));
         self.focus_part(0);
         self.results.set_groups(Vec::new());
+        self.results
+            .set_empty_text("Confirm this action in the field above");
         self.confirm = Some(ConfirmState { pending, expected });
     }
 
@@ -2865,6 +3002,84 @@ mod tests {
         assert_eq!(
             palette.take_operation().unwrap().confirmation_evidence(),
             &serde_json::json!({ "confirmation_phrase": "MARK THING" })
+        );
+    }
+
+    #[test]
+    fn visible_refresh_keeps_exact_selection_through_reorder_revocation_and_restore() {
+        let resource = |id: &str, label: &str| {
+            let mut value = thing_resource();
+            value.id = tilo_actions::ResourceId::new(id);
+            value.label = label.into();
+            value.actions.truncate(1);
+            value
+        };
+        let a = resource("a", "Alpha");
+        let b = resource("b", "Beta");
+        let c = resource("c", "Aardvark");
+        let mut palette = ActionPalette::new();
+        palette.load_open_resources(&[a.clone(), b.clone()]);
+        palette.open();
+        palette.set_cursor(1);
+        palette.refresh_visible_resources(&[c, a.clone(), b.clone()]);
+        assert_eq!(palette.results.selected_action_id(), Some("b\u{1f}mark"));
+        palette.refresh_visible_resources(&[a.clone()]);
+        assert_eq!(palette.result_labels(), vec!["Alpha — Mark done"]);
+        assert!(palette.results.selected().is_none());
+        palette.activate_selected();
+        assert!(palette.take_operation().is_none());
+        palette.refresh_visible_resources(&[a, b]);
+        palette.activate_selected();
+        assert_eq!(palette.take_operation().unwrap().address.resource, "b");
+    }
+
+    #[test]
+    fn invalid_arguments_stay_visible_before_confirmation_and_can_be_corrected() {
+        let mut spec = ActionSpec::typed(
+            "number",
+            "Number",
+            "",
+            ExecutionLocus::ClientLocal,
+            vec![tilo_actions::ActionParam::required(
+                "rows",
+                tilo_actions::ParamType::Number,
+                "Rows",
+            )],
+            |_| EncodedAction {
+                type_id: "fixture".into(),
+                payload: vec![],
+            },
+        );
+        spec.contract.confirmation = ConfirmationPolicy::Confirm;
+        let resource = Resource::new("document", "document", "Document").with_action(spec);
+        let mut palette = ActionPalette::new();
+        palette.load_open_resources(&[resource]);
+        palette.open();
+        palette.activate_selected();
+        palette.field.set_query("{\"rows\":\"bad\"}");
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let enter =
+            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        assert!(palette.confirm.is_none());
+        assert!(palette.arg.is_some());
+        assert!(palette.is_open());
+        assert!(palette.take_operation().is_none());
+        assert!(
+            serde_json::to_string(&palette.results.accessibility())
+                .unwrap()
+                .contains("Invalid arguments")
+        );
+        palette.field.set_query("{\"rows\":2}");
+        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        assert!(palette.confirm.is_some());
+        assert!(palette.take_operation().is_none());
+        palette.field.set_query("CONFIRM");
+        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        assert_eq!(
+            palette.take_operation().unwrap().confirmation_evidence(),
+            &serde_json::json!({"confirm":true})
         );
     }
 

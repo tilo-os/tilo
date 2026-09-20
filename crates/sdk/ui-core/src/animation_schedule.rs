@@ -1,5 +1,5 @@
 //! Paces animation-only redraw requests; input and renderer recovery bypass it.
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 

@@ -18,6 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::WorkspaceExt as _;
 use std::io;
 use std::path::Path;
 use std::time::Duration;

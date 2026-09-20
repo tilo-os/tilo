@@ -12,9 +12,11 @@
 )]
 
 use std::collections::BTreeMap;
+use std::ffi::{CStr, CString, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -790,22 +792,29 @@ where
         output_dir: &File,
         mut remaining: usize,
     ) -> Result<Vec<[u8; 32]>, ComputeExecutionError> {
-        let pinned_dir = PathBuf::from(format!("/proc/self/fd/{}", output_dir.as_raw_fd()));
-        let mut paths = fs::read_dir(&pinned_dir)
-            .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
+        let names = output_names(output_dir)
             .map_err(|error| ComputeExecutionError::Staging(error.to_string()))?;
-        paths.sort_by_key(std::fs::DirEntry::file_name);
-        if paths.len() > MAX_COMPUTE_OUTPUTS {
+        if names.len() > MAX_COMPUTE_OUTPUTS {
             return Err(ComputeExecutionError::InvalidOutput);
         }
-        let mut outputs = Vec::with_capacity(paths.len());
-        for entry in paths {
-            let mut file = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(entry.path())
-                .map_err(|_| ComputeExecutionError::InvalidOutput)?;
+        let mut outputs = Vec::with_capacity(names.len());
+        for name in names {
+            let name =
+                CString::new(name.as_bytes()).map_err(|_| ComputeExecutionError::InvalidOutput)?;
+            // SAFETY: name is NUL-terminated and output_dir owns the pinned
+            // output directory descriptor established before sandbox launch.
+            let fd = unsafe {
+                libc::openat(
+                    output_dir.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                )
+            };
+            if fd < 0 {
+                return Err(ComputeExecutionError::InvalidOutput);
+            }
+            // SAFETY: openat returned a fresh owned descriptor.
+            let mut file = unsafe { File::from_raw_fd(fd) };
             if !file
                 .metadata()
                 .map_err(|_| ComputeExecutionError::InvalidOutput)?
@@ -898,6 +907,73 @@ fn verify_installed_payload(
         return Err(ComputeExecutionError::PackageDigestMismatch);
     }
     Ok(())
+}
+
+fn output_names(output_dir: &File) -> io::Result<Vec<OsString>> {
+    // fdopendir assumes ownership of the descriptor it receives, so duplicate
+    // the held capability before transferring it. Enumeration and subsequent
+    // opens remain relative to output_dir even if its path is replaced.
+    let fd = unsafe { libc::fcntl(output_dir.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fd is a newly duplicated live directory descriptor whose
+    // ownership transfers to DIR on success.
+    let stream = unsafe { libc::fdopendir(fd) };
+    if stream.is_null() {
+        let error = io::Error::last_os_error();
+        // SAFETY: fdopendir did not take ownership after reporting failure.
+        unsafe {
+            libc::close(fd);
+        }
+        return Err(error);
+    }
+    struct DirectoryStream(*mut libc::DIR);
+    impl Drop for DirectoryStream {
+        fn drop(&mut self) {
+            // SAFETY: this stream exclusively owns the descriptor from fdopendir.
+            unsafe {
+                libc::closedir(self.0);
+            }
+        }
+    }
+    let stream = DirectoryStream(stream);
+    let mut names = Vec::new();
+    loop {
+        clear_errno();
+        // SAFETY: stream remains live for the duration of this call.
+        let entry = unsafe { libc::readdir(stream.0) };
+        if entry.is_null() {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(0) {
+                return Err(error);
+            }
+            break;
+        }
+        // SAFETY: d_name is NUL-terminated and remains valid until readdir.
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsString::from_vec(name.to_vec()));
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(target_os = "linux")]
+fn clear_errno() {
+    // SAFETY: errno is thread-local.
+    unsafe {
+        *libc::__errno_location() = 0;
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn clear_errno() {
+    // SAFETY: errno is thread-local.
+    unsafe {
+        *libc::__error() = 0;
+    }
 }
 
 fn copy_payload_snapshot(source: &Path, destination: &Path) -> std::io::Result<()> {

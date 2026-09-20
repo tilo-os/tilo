@@ -42,8 +42,8 @@ fn new_category_id() -> String {
 }
 
 fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::clock::SystemTime::now()
+        .duration_since(ui::clock::UNIX_EPOCH)
         .map_or(NOW, |d| d.as_secs() as i64)
 }
 
@@ -76,17 +76,17 @@ impl<'a> EventDispatch<'a> {
 /// Feed one raw winit event into an embedded [`TextInput`]. The composers live
 /// outside the taffy tree (the app lays them out by hand), so a throwaway leaf
 /// node satisfies the `Widget::handle_event` signature; the input only uses it
-/// to report a focus target, which the composer host ignores.
+/// to report a focus target, which the composer host maps to its retained owner.
 fn drive_text_input(
     ti: &mut TextInput,
     event: &WindowEvent,
     scale: f64,
     modifiers: Modifiers,
     doc: &mut AutoCommit,
-) {
+) -> bool {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
-        return;
+        return false;
     };
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
@@ -101,6 +101,7 @@ fn drive_text_input(
         node,
         &taffy,
     );
+    focus_target.is_some()
 }
 
 /// Drive the retained shared menu from Chat's immediate-mode event host.
@@ -141,10 +142,27 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
-    ) {
+    ) -> bool {
         if self.route_context_menu_event(event, scale, modifiers, doc) {
             *handled = true;
-            return;
+            return false;
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+                | WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+        ) {
+            let _ = self.tooltips.dismiss();
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -174,7 +192,7 @@ impl ChatApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(event, scale, modifiers, doc, handled);
+                return self.handle_left_press(event, scale, modifiers, doc, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -212,6 +230,7 @@ impl ChatApp {
             }
             _ => {}
         }
+        false
     }
 
     /// Give an open shared context menu first refusal. Its selection index is
@@ -271,7 +290,7 @@ impl ChatApp {
         let tooltip_target = self.hover_tooltip_target(last_mouse);
         if self
             .tooltips
-            .on_pointer(tooltip_target, std::time::Instant::now())
+            .on_pointer(tooltip_target, ui::clock::Instant::now())
         {
             *handled = true;
         }
@@ -346,7 +365,8 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut AutoCommit,
         handled: &mut bool,
-    ) {
+    ) -> bool {
+        let mut focus_requested = false;
         self.keyboard_target = None;
         match self.hit_at(self.last_mouse) {
             Some(Hit::CallDragHandle) => {
@@ -383,11 +403,16 @@ impl ChatApp {
                 // real press so the widget resolves the position.
                 if text_input_hit {
                     self.forward_press_to_focused_text_input(event, scale, modifiers, doc);
+                    // `on_hit` above activated this actual input. Its local
+                    // caret may already be focused on a cold mount, but the
+                    // retained Chat owner must still claim keyboard/IME focus.
+                    focus_requested = true;
                 }
                 *handled = true;
             }
             None => {}
         }
+        focus_requested
     }
 
     /// A left-button release: ends any overlay drag or composer
@@ -628,13 +653,13 @@ impl ChatApp {
         scale: f64,
         modifiers: Modifiers,
         doc: &mut AutoCommit,
-    ) {
+    ) -> bool {
         if self.rename.is_some() {
-            drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
+            drive_text_input(&mut self.rename_input, event, scale, modifiers, doc)
         } else if self.editing.is_some() {
-            drive_text_input(&mut self.edit_input, event, scale, modifiers, doc);
+            drive_text_input(&mut self.edit_input, event, scale, modifiers, doc)
         } else {
-            drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
+            drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc)
         }
     }
 
@@ -1634,6 +1659,12 @@ impl ChatApp {
         channel: &str,
         path: &std::path::Path,
     ) -> bool {
+        if !self.external_services {
+            self.attachment_status =
+                Some("Attachment import unsupported: no host asset transport".into());
+            return false;
+        }
+
         if !self.can_participate() || self.attachment_pending.is_some() {
             return false;
         }
@@ -1912,6 +1943,41 @@ mod tests {
             }
             other => panic!("expected SendMessage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn semantic_send_reports_acceptance_only_when_it_appends_a_message() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        render_frame(&mut app, 1280.0, 720.0);
+        let target = app
+            .semantic_hits()
+            .into_iter()
+            .find_map(|(_, hit, ..)| matches!(hit, Hit::Send).then(|| hit.semantic_id()))
+            .expect("the painted Send button has a semantic target");
+
+        assert!(!ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        let before = ChatDoc::top_level_count(&doc, "c_general");
+        ChatDoc::set_draft(&mut doc, "c_general", "accepted semantic send");
+        app.reload(&doc);
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(ui::Widget::perform_semantic_action(
+            &mut app,
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(ChatDoc::top_level_count(&doc, "c_general"), before + 1);
+        assert_eq!(ChatDoc::draft_text(&doc, "c_general"), "");
     }
 
     #[test]
@@ -2347,7 +2413,7 @@ mod tests {
             if ChatDoc::list_messages(doc, channel).len() == expected_count {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(ui::clock::Duration::from_millis(5));
         }
         panic!("attachment worker did not settle within 500ms");
     }
@@ -2358,7 +2424,7 @@ mod tests {
             if app.attachment_picker_pending.is_none() {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(ui::clock::Duration::from_millis(5));
         }
         panic!("attachment picker worker did not settle within 500ms");
     }

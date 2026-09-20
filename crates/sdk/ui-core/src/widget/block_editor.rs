@@ -5015,6 +5015,9 @@ impl Widget for BlockEditor {
         self.focus_block_under_mouse(event, &mut ctx);
 
         self.route_event_to_focused_block(event, &mut ctx);
+        // Consumed input can move the caret or selection without editing text.
+        // Repaint that change once; focus alone is not an animation source.
+        self.dirty |= *ctx.handled;
     }
 
     fn name(&self) -> &'static str {
@@ -5390,9 +5393,7 @@ impl Widget for BlockEditor {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
-            || self.visual_formula_focus.is_some()
-            || self.blocks.iter().any(|b| b.line.is_focused())
+        self.dirty || self.visual_formula_focus.is_some()
     }
 
     fn needs_commit(&self) -> bool {
@@ -5418,6 +5419,19 @@ impl Widget for BlockEditor {
         let was = self.structure_dirty;
         self.structure_dirty = false;
         was
+    }
+
+    /// The editor is a column of one taffy node per line; its own margins
+    /// and formula minimums are styles set at build time (a structural
+    /// change), so its size can only move when a line's does. Forwarded per
+    /// line rather than through `children()`, which the editor does not
+    /// expose, so an idle document re-measures nothing.
+    fn is_layout_dirty(&self) -> bool {
+        self.blocks.iter().any(|block| block.line.is_layout_dirty())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.blocks.iter().any(|block| block.line.layout_needs_measure())
     }
 }
 
@@ -5499,7 +5513,7 @@ impl BlockEditor {
         }
         // A peer's recently-inserted run glows and decays over
         // TYPING_FADE. Drawn over authorship, under caret/selection.
-        let now = std::time::Instant::now();
+        let now = crate::clock::Instant::now();
         for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
             if self.local_author.as_deref() == Some(user.0.as_str()) {
                 continue;
@@ -6889,6 +6903,45 @@ mod tests {
             theme,
             &PresenceCtx::empty(),
         );
+    }
+
+    #[test]
+    fn focused_solid_caret_settles_after_paint_and_focus_changes_redraw() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("stable caret")]);
+        editor.set_focus(true);
+        assert!(editor.needs_redraw());
+        layout_and_draw_editor(&mut editor, &Theme::dark());
+        editor.mark_drawn();
+        assert!(!editor.needs_redraw(), "a painted solid caret needs no idle redraw");
+        editor.set_focus(false);
+        assert!(editor.needs_redraw(), "blur must repaint the caret");
+        layout_and_draw_editor(&mut editor, &Theme::dark());
+        editor.mark_drawn();
+        assert!(!editor.needs_redraw());
+        editor.set_focus(true);
+        assert!(editor.needs_redraw(), "refocus must repaint the caret");
+    }
+
+    #[test]
+    fn focused_block_ime_repaints_after_an_idle_paint() {
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![Block::paragraph("text")]);
+        editor.set_focus(true);
+        layout_and_draw_editor(&mut editor, &Theme::dark());
+        editor.mark_drawn();
+        let mut handled = false;
+        editor.handle_event(
+            &WindowEvent::Ime(winit::event::Ime::Preedit("candidate".into(), Some((0, 9)))),
+            1.0, &Modifiers::default(), &mut AutoCommit::new(), &automerge::ROOT,
+            &mut handled, &mut None, NodeId::new(0), &TaffyTree::new(),
+        );
+        assert!(handled);
+        assert!(editor.needs_redraw(), "IME changes must repaint without permanent focus demand");
+        assert_eq!(editor.blocks()[0].text(), "text", "preedit must remain uncommitted");
+        layout_and_draw_editor(&mut editor, &Theme::dark());
+        editor.mark_drawn();
+        assert!(!editor.needs_redraw());
     }
 
     #[test]

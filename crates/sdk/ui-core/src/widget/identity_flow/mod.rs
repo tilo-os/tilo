@@ -15,10 +15,10 @@
 //! screens, so tests (including `end_to_end_ceremony_lets_both_devices_co_sign`)
 //! drive it directly without ever building a `TaffyTree`.
 
+use crate::clock::{Duration, SystemTime};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
 
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
@@ -137,7 +137,17 @@ impl IdentityRecord {
         created_at: SystemTime,
     ) -> Result<Self, IdentityFlowError> {
         let serialisable = SerializableIdentity::from_identity(identity)?;
-        let ts = chrono::DateTime::<chrono::Utc>::from(created_at).to_rfc3339();
+        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
+            i64::try_from(
+                created_at
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs()),
+            )
+            .unwrap_or(i64::MAX),
+            0,
+        )
+        .unwrap_or_default()
+        .to_rfc3339();
         Ok(Self {
             display_name: display_name.into(),
             avatar_color,
@@ -663,6 +673,7 @@ impl PairingHandshake {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn remote_call(
         endpoint: &str,
         certificate: &[u8],
@@ -706,6 +717,16 @@ impl PairingHandshake {
         let mut response = vec![0; len];
         stream.read_exact(&mut response).ok()?;
         postcard::from_bytes(&response).ok()
+    }
+
+    /// Native TLS sockets are unavailable in a browser; a host transport must be injected.
+    #[cfg(target_arch = "wasm32")]
+    pub fn remote_call(
+        _: &str,
+        _: &[u8],
+        _: &PairingBrokerRequest,
+    ) -> Option<PairingBrokerResponse> {
+        None
     }
 
     /// Open a restart-safe broker spool owned by the shell/runtime. `root`
@@ -1151,12 +1172,14 @@ impl PairingHandshake {
 /// certificate as a root would also trust a child certificate it signs; exact
 /// comparison keeps the pin's meaning narrow while the provider still checks
 /// the handshake signature against the pinned certificate's public key.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 struct ExactCertificateVerifier {
     expected: Arc<[u8]>,
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl rustls::client::danger::ServerCertVerifier for ExactCertificateVerifier {
     fn verify_server_cert(
         &self,

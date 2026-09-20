@@ -254,7 +254,7 @@ struct RowEntry {
 
 struct ClickRecord {
     page: PageId,
-    at: std::time::Instant,
+    at: ui::clock::Instant,
     pos: Point,
 }
 
@@ -1159,6 +1159,31 @@ impl Widget for NoteTreeView {
         )
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+        // Validate against exactly the currently published rows/affordance.
+        let visible = self.accessibility().is_some_and(|node| node.children.iter()
+            .any(|child| child.action_target.as_deref() == Some(target)));
+        if !visible { return false; }
+        if matches!(action, Action::Focus) { return true; }
+        if !matches!(action, Action::Activate) { return false; }
+        let event = if target == "notes:new-page" {
+            OutEvent::CreateChild { parent: None }
+        } else if let Some(page) = target.strip_prefix("notes:page:").and_then(|id| id.parse::<PageId>().ok()) {
+            self.selected = Some(page);
+            OutEvent::Select(page)
+        } else { return false; };
+        self.pending_events.push(event);
+        self.dirty = true;
+        true
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let [index] = path else {
             return None;
@@ -1923,7 +1948,7 @@ impl NoteTreeView {
                 return;
             }
             // Double-click on the label → enter rename mode.
-            let now = std::time::Instant::now();
+            let now = ui::clock::Instant::now();
             let is_double = self.last_click.as_ref().is_some_and(|c| {
                 c.page == row_id
                     && now.duration_since(c.at).as_millis() < DOUBLE_CLICK_INTERVAL_MS

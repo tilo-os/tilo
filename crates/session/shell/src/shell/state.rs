@@ -1,13 +1,22 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::atomic::Ordering as AtomicOrdering;
 
-mod fs_authority;
-mod shared_surfaces;
 #[cfg(test)]
-use fs_authority::wait_for_fs_authority_publication_idle;
-use fs_authority::{permission_profile_document_key, schedule_fs_authority_publication};
-pub use shared_surfaces::SharedSurfaces;
+use qos_desktop::fs_authority::wait_for_fs_authority_publication_idle;
+use qos_desktop::fs_authority::{
+    permission_profile_document_key, schedule_fs_authority_publication,
+};
+pub(crate) use qos_desktop::identity::{NEXT_ID, next_id, peer_salt_of};
+#[cfg(test)]
+pub(crate) use qos_desktop::identity::{NEXT_ID_PEER_SALT, PEER_ID_SALT_SHIFT, counter_of};
+pub use qos_desktop::{
+    APP_ID_PREFIX, AppId, AppKind, Collaborator, FileId, GroupId, RoomId, STATE_SCHEMA_VERSION,
+    SharedSurfaces, Strip, StripId, Tab, TabId, TabRef, TileContent, UserId, WindowGroup,
+    WindowWidth, Workspace, WorkspaceEffectReceipt, WorkspaceId, WorkspaceTask,
+    WorkspaceTaskAuditEvent, WorkspaceTaskResource, WorkspaceTaskRoute, WorkspaceTaskStatus,
+};
 
 fn now_unix_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -24,24 +33,6 @@ pub use collab_types::caps::{
 };
 pub use collab_types::role::Role as CapRole;
 pub use collab_types::{PermissionProfile, PermissionProfileError};
-
-/// Monotonic workspace identifier, newtype-wrapped over `u64`.
-#[derive(
-    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-#[serde(transparent)]
-pub struct WorkspaceId(pub u64);
-
-impl WorkspaceId {
-    /// Allocate a fresh, process-wide unique id.
-    pub fn new() -> Self {
-        Self(next_id())
-    }
-
-    pub fn raw(&self) -> u64 {
-        self.0
-    }
-}
 
 #[cfg(test)]
 mod identity_fs_tests {
@@ -60,7 +51,7 @@ mod identity_fs_tests {
         let release = temp.path().join("publisher-release");
         std::fs::write(
             &publisher,
-            "#!/bin/sh\nprintf ready > \"$TILO_FS_AUTHORITY_TEST_STARTED\"\nwhile [ ! -f \"$TILO_FS_AUTHORITY_TEST_RELEASE\" ]; do sleep 0.01; done\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
+            "#!/bin/sh\nprintf ready > \"$QOS_FS_AUTHORITY_TEST_STARTED\"\nwhile [ ! -f \"$QOS_FS_AUTHORITY_TEST_RELEASE\" ]; do sleep 0.01; done\nprintf '%s\\n' \"$@\" > \"$QOS_FS_AUTHORITY_TEST_LOG\"\n",
         )
         .expect("publisher script");
         let mut permissions = std::fs::metadata(&publisher)
@@ -70,18 +61,18 @@ mod identity_fs_tests {
         std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
         let acl = temp.path().join("fs-capabilities.json");
         let cache = temp.path().join("cache");
-        let old_publisher = std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER");
-        let old_cache = std::env::var_os("TILO_FS_AUTHORITY_CACHE_DIR");
-        let old_log = std::env::var_os("TILO_FS_AUTHORITY_TEST_LOG");
-        let old_started = std::env::var_os("TILO_FS_AUTHORITY_TEST_STARTED");
-        let old_release = std::env::var_os("TILO_FS_AUTHORITY_TEST_RELEASE");
+        let old_publisher = std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER");
+        let old_cache = std::env::var_os("QOS_FS_AUTHORITY_CACHE_DIR");
+        let old_log = std::env::var_os("QOS_FS_AUTHORITY_TEST_LOG");
+        let old_started = std::env::var_os("QOS_FS_AUTHORITY_TEST_STARTED");
+        let old_release = std::env::var_os("QOS_FS_AUTHORITY_TEST_RELEASE");
         // SAFETY: guarded by the process_env serial group.
         unsafe {
-            std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            std::env::set_var("TILO_FS_AUTHORITY_CACHE_DIR", &cache);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", &log);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_STARTED", &started);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
+            std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", &publisher);
+            std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", &cache);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_STARTED", &started);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_RELEASE", &release);
         }
 
         let tree = WorkspaceTree {
@@ -119,24 +110,24 @@ mod identity_fs_tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match old_publisher {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_PUBLISHER"),
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_PUBLISHER"),
             }
             match old_cache {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_CACHE_DIR", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_CACHE_DIR"),
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_CACHE_DIR", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_CACHE_DIR"),
             }
             match old_log {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_LOG"),
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_LOG"),
             }
             match old_started {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_STARTED", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_STARTED"),
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_STARTED", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_STARTED"),
             }
             match old_release {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_RELEASE", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_RELEASE"),
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_RELEASE", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_RELEASE"),
             }
         }
     }
@@ -153,7 +144,7 @@ mod identity_fs_tests {
         let log = temp.path().join("authority-arguments");
         std::fs::write(
             &publisher,
-            "#!/bin/sh\ncount=0\n[ -f \"$TILO_FS_AUTHORITY_TEST_COUNT\" ] && count=$(cat \"$TILO_FS_AUTHORITY_TEST_COUNT\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$TILO_FS_AUTHORITY_TEST_COUNT\"\n[ \"$count\" -le 4 ] && exit 1\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
+            "#!/bin/sh\ncount=0\n[ -f \"$QOS_FS_AUTHORITY_TEST_COUNT\" ] && count=$(cat \"$QOS_FS_AUTHORITY_TEST_COUNT\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$QOS_FS_AUTHORITY_TEST_COUNT\"\n[ \"$count\" -le 4 ] && exit 1\nprintf '%s\\n' \"$@\" > \"$QOS_FS_AUTHORITY_TEST_LOG\"\n",
         )
         .expect("publisher script");
         let mut permissions = std::fs::metadata(&publisher)
@@ -162,14 +153,14 @@ mod identity_fs_tests {
         permissions.set_mode(0o700);
         std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
         let acl = temp.path().join("fs-capabilities.json");
-        let old_publisher = std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER");
-        let old_count = std::env::var_os("TILO_FS_AUTHORITY_TEST_COUNT");
-        let old_log = std::env::var_os("TILO_FS_AUTHORITY_TEST_LOG");
+        let old_publisher = std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER");
+        let old_count = std::env::var_os("QOS_FS_AUTHORITY_TEST_COUNT");
+        let old_log = std::env::var_os("QOS_FS_AUTHORITY_TEST_LOG");
         // SAFETY: guarded by the process_env serial group.
         unsafe {
-            std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_COUNT", &count);
-            std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", &log);
+            std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", &publisher);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", &count);
+            std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", &log);
         }
         let tree = WorkspaceTree {
             fs_acl_path: Some(acl),
@@ -201,16 +192,16 @@ mod identity_fs_tests {
         // SAFETY: guarded by the process_env serial group.
         unsafe {
             match old_publisher {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_PUBLISHER", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_PUBLISHER"),
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_PUBLISHER", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_PUBLISHER"),
             }
             match old_count {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_COUNT", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_COUNT"),
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_COUNT", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_COUNT"),
             }
             match old_log {
-                Some(value) => std::env::set_var("TILO_FS_AUTHORITY_TEST_LOG", value),
-                None => std::env::remove_var("TILO_FS_AUTHORITY_TEST_LOG"),
+                Some(value) => std::env::set_var("QOS_FS_AUTHORITY_TEST_LOG", value),
+                None => std::env::remove_var("QOS_FS_AUTHORITY_TEST_LOG"),
             }
         }
     }
@@ -222,10 +213,10 @@ mod identity_fs_tests {
         let xdg = temp.path().join("config");
         let system = temp.path().join("system");
         let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        let old_root = std::env::var_os("TILO_IDENTITY_ROOT");
+        let old_root = std::env::var_os("QOS_IDENTITY_ROOT");
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &xdg);
-            std::env::set_var("TILO_IDENTITY_ROOT", &system);
+            std::env::set_var("QOS_IDENTITY_ROOT", &system);
         }
         let identity_dir = xdg.join("tilo/identity");
         let paths = tilo_user_identity::IdentityPaths::under(&system);
@@ -286,8 +277,8 @@ mod identity_fs_tests {
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
             }
             match old_root {
-                Some(value) => std::env::set_var("TILO_IDENTITY_ROOT", value),
-                None => std::env::remove_var("TILO_IDENTITY_ROOT"),
+                Some(value) => std::env::set_var("QOS_IDENTITY_ROOT", value),
+                None => std::env::remove_var("QOS_IDENTITY_ROOT"),
             }
         }
     }
@@ -334,8 +325,11 @@ mod identity_fs_tests {
             Verb::Read,
         ));
         let mut tree = WorkspaceTree {
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![room_a, room_b],
+                ..Default::default()
+            },
             fs_acl_path: Some(output.clone()),
-            workspaces: vec![room_a, room_b],
             ..WorkspaceTree::default()
         };
         tree.export_fs_capabilities();
@@ -375,58 +369,6 @@ mod identity_fs_tests {
             !(capability.subject == Subject::User(alice)
                 && capability.scope == Scope::Room(primary_relay_scope.clone()))
         }));
-    }
-}
-
-/// Durable, globally-unique identity of a workspace as a collaboration
-/// room. Unlike [`WorkspaceId`] (a local counter) it is minted once as a
-/// random v4 uuid and carried rather than recomputed, so machines that
-/// have never met still agree on it. [`Self::nil`] is the unminted
-/// sentinel a pre-room state file loads as.
-#[derive(
-    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-#[serde(transparent)]
-pub struct RoomId(uuid::Uuid);
-
-impl RoomId {
-    /// Mint a fresh room identity, once per workspace at creation.
-    pub fn new() -> Self {
-        Self(uuid::Uuid::new_v4())
-    }
-
-    /// The "no identity yet" sentinel. Distinguishable from every
-    /// minted id because `Uuid::new_v4` never produces the nil uuid.
-    pub const fn nil() -> Self {
-        Self(uuid::Uuid::nil())
-    }
-
-    /// Whether this is the unminted sentinel.
-    pub fn is_nil(&self) -> bool {
-        self.0.is_nil()
-    }
-
-    /// The underlying uuid, for the wire formats that speak `Uuid`.
-    pub fn as_uuid(&self) -> uuid::Uuid {
-        self.0
-    }
-
-    /// Parse a room id off the wire (invite token, automerge doc,
-    /// `TILO_WORKSPACE_ID`). `None` on anything that isn't a valid uuid.
-    pub fn parse(s: &str) -> Option<Self> {
-        uuid::Uuid::parse_str(s).ok().map(Self)
-    }
-}
-
-impl std::fmt::Display for RoomId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl From<uuid::Uuid> for RoomId {
-    fn from(v: uuid::Uuid) -> Self {
-        Self(v)
     }
 }
 
@@ -550,289 +492,6 @@ pub struct GovernedPeerIdentity {
     pub revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 
-impl From<u64> for WorkspaceId {
-    fn from(v: u64) -> Self {
-        Self(v)
-    }
-}
-
-impl From<WorkspaceId> for u64 {
-    fn from(v: WorkspaceId) -> Self {
-        v.0
-    }
-}
-
-/// Monotonic strip identifier, newtype-wrapped like [`WorkspaceId`].
-#[derive(
-    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-#[serde(transparent)]
-pub struct StripId(pub u64);
-
-impl StripId {
-    /// Allocate a fresh, process-wide unique id.
-    pub fn new() -> Self {
-        Self(next_id())
-    }
-
-    pub fn raw(&self) -> u64 {
-        self.0
-    }
-}
-
-impl From<u64> for StripId {
-    fn from(v: u64) -> Self {
-        Self(v)
-    }
-}
-
-impl From<StripId> for u64 {
-    fn from(v: StripId) -> Self {
-        v.0
-    }
-}
-
-pub type GroupId = u64;
-pub type TabId = u64;
-pub type FileId = u64;
-
-/// Snapshot of the focused tab, cloned out of the [`WorkspaceTree`] read
-/// guard so callers can drop the guard before using the values.
-#[derive(Clone, Debug)]
-pub struct TabRef {
-    pub id: TabId,
-    pub title: String,
-}
-
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
-
-/// Process-wide monotonic counter behind [`WorkspaceId::new`],
-/// [`StripId::new`] and `next_id()`.
-/// [`WorkspaceTree::seed_next_id_from_self`] advances it past the highest
-/// persisted id at load, or a fresh process restarts at `1` and collides
-/// with an already-loaded entry. Only the low 48 bits come from here; the
-/// high 16 carry [`NEXT_ID_PEER_SALT`] so two peers minting in parallel
-/// never collide — otherwise `apply_changes` folds two distinct
-/// workspaces with the same id into one.
-pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-/// High-16-bit peer salt for every id [`next_id`] mints. Default `0`
-/// keeps tests on `0x0001, 0x0002, …`; the hosted entry point overwrites
-/// it at startup with a hash of the local Iroh key. `Relaxed`: written
-/// once at boot, nothing piggy-backs on visibility.
-pub(crate) static NEXT_ID_PEER_SALT: AtomicU16 = AtomicU16::new(0);
-
-/// Mask that selects the low-48-bit counter portion of a salted id.
-pub(crate) const PEER_ID_COUNTER_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
-
-/// Shift amount that lifts the 16-bit peer salt into the high bits.
-pub(crate) const PEER_ID_SALT_SHIFT: u32 = 48;
-
-pub(crate) fn next_id() -> u64 {
-    let counter = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
-    let counter = counter & PEER_ID_COUNTER_MASK;
-    let salt = u64::from(NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed));
-    (salt << PEER_ID_SALT_SHIFT) | counter
-}
-
-/// Extract the 16-bit peer salt encoded in the high bits of a salted id.
-pub(crate) fn peer_salt_of(id: u64) -> u16 {
-    (id >> PEER_ID_SALT_SHIFT) as u16
-}
-
-/// Extract the low-48-bit counter component of a salted id.
-pub(crate) fn counter_of(id: u64) -> u64 {
-    id & PEER_ID_COUNTER_MASK
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AppKind {
-    Terminal,
-    FileExplorer,
-    Browser,
-    Settings,
-    Other(String),
-}
-
-impl AppKind {
-    pub fn as_str(&self) -> &str {
-        match self {
-            AppKind::Terminal => "Terminal",
-            AppKind::FileExplorer => "Files",
-            AppKind::Browser => "Browser",
-            AppKind::Settings => "Settings",
-            AppKind::Other(s) => s,
-        }
-    }
-
-    /// The key into the per-workspace [`Workspace::grants`] map — distinct
-    /// from [`Self::as_str`]'s display label. Foreign clients carry their
-    /// real `xdg_toplevel::set_app_id` (`org.gimp.GIMP`, …) straight in;
-    /// built-ins get namespaced under the compositor's reverse-DNS prefix
-    /// so every grant key lives in one namespace.
-    pub fn app_id(&self) -> AppId {
-        match self {
-            AppKind::Terminal => format!("{APP_ID_PREFIX}.Terminal"),
-            AppKind::FileExplorer => format!("{APP_ID_PREFIX}.Files"),
-            AppKind::Browser => format!("{APP_ID_PREFIX}.Browser"),
-            AppKind::Settings => format!("{APP_ID_PREFIX}.Settings"),
-            AppKind::Other(s) if s.contains('.') => s.clone(),
-            AppKind::Other(s) => format!("{APP_ID_PREFIX}.{s}"),
-        }
-    }
-}
-
-/// Reverse-DNS prefix the compositor stamps on built-in apps' ids,
-/// matching its own portal backend name
-/// (`org.freedesktop.impl.portal.desktop.tilo`).
-pub const APP_ID_PREFIX: &str = "org.tilo";
-
-/// Reference width the legacy pixel model was scaled against, so a
-/// migrated `Custom(600)` preserves the *proportion* the user saw rather
-/// than snapping to whichever tier is now "Normal".
-const LEGACY_PIXEL_REFERENCE_WIDTH: u32 = 1200;
-
-/// Persisted width of a [`WindowGroup`], as a fraction of the strip's
-/// usable width — a stored pixel count would mean a different screen
-/// share on every monitor. Kept separate from [`ui::widget::WindowWidth`]
-/// (serde/CRDT shape vs. layout shape).
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-pub enum WindowWidth {
-    Narrow,
-    Normal,
-    Wide,
-    /// An arbitrary fraction of the strip's usable width, in per-mille.
-    /// What a manual resize persists.
-    Fraction(u16),
-}
-
-impl WindowWidth {
-    /// The fraction this width represents, in per-mille of the strip's
-    /// usable width. Delegates to the toolkit so the shell's persisted
-    /// tiers and the laid-out ones cannot drift apart.
-    pub fn permille(&self) -> u16 {
-        self.to_ui().permille()
-    }
-
-    /// Resolve to logical pixels against a strip of `strip_usable_px`.
-    pub fn resolve(&self, strip_usable_px: f64) -> f64 {
-        self.to_ui().resolve(strip_usable_px)
-    }
-
-    /// The toolkit width this persisted width maps to.
-    pub fn to_ui(self) -> ui::widget::WindowWidth {
-        match self {
-            WindowWidth::Narrow => ui::widget::WindowWidth::Narrow,
-            WindowWidth::Normal => ui::widget::WindowWidth::Normal,
-            WindowWidth::Wide => ui::widget::WindowWidth::Wide,
-            WindowWidth::Fraction(p) => ui::widget::WindowWidth::Fraction(p),
-        }
-    }
-
-    /// The persisted width for a toolkit width.
-    pub fn from_ui(w: ui::widget::WindowWidth) -> Self {
-        match w {
-            ui::widget::WindowWidth::Narrow => WindowWidth::Narrow,
-            ui::widget::WindowWidth::Normal => WindowWidth::Normal,
-            ui::widget::WindowWidth::Wide => WindowWidth::Wide,
-            ui::widget::WindowWidth::Fraction(p) => WindowWidth::Fraction(p),
-        }
-    }
-
-    /// Migrate a width persisted by the pixel model — see
-    /// [`LEGACY_PIXEL_REFERENCE_WIDTH`].
-    pub fn from_legacy_pixels(px: u32) -> Self {
-        WindowWidth::Fraction(ui::widget::permille_for_px(
-            f64::from(px),
-            f64::from(LEGACY_PIXEL_REFERENCE_WIDTH),
-        ))
-    }
-}
-
-impl<'de> Deserialize<'de> for WindowWidth {
-    /// Accepts both the current shape and the legacy pixel shape, so an
-    /// existing `~/.local/state` workspace still loads.
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        enum Raw {
-            Narrow,
-            Normal,
-            Wide,
-            Fraction(u16),
-            /// Legacy: an absolute pixel count.
-            Custom(u32),
-        }
-        Ok(match Raw::deserialize(d)? {
-            Raw::Narrow => WindowWidth::Narrow,
-            Raw::Normal => WindowWidth::Normal,
-            Raw::Wide => WindowWidth::Wide,
-            Raw::Fraction(p) => WindowWidth::Fraction(p.clamp(
-                ui::widget::WIDTH_MIN_PERMILLE,
-                ui::widget::WIDTH_MAX_PERMILLE,
-            )),
-            Raw::Custom(px) => WindowWidth::from_legacy_pixels(px),
-        })
-    }
-}
-
-/// What a tile holds. Persistence only carries `Stub` and a symbolic
-/// `AppPlaceholder` for native apps, whose concrete widgets are
-/// constructed at shell boot.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum TileContent {
-    AppPlaceholder {
-        kind: AppKind,
-        label: String,
-    },
-    Stub {
-        kind: AppKind,
-        label: String,
-    },
-    /// Foreign Wayland client adopted by the compositor. `surface_id` is
-    /// the `wl_surface` protocol id the compositor maps back to a smithay
-    /// `WlSurface`; renders as a Stub until the frame loop blits it.
-    Foreign {
-        app_id: String,
-        surface_id: u64,
-    },
-    /// Durable local application window awaiting a fresh compositor surface.
-    /// Unlike `Foreign`, this stores no process-local Wayland id. At session
-    /// startup the normal launcher opens `app_id` and binds its first
-    /// toplevel back into this exact tab, preserving layout without reviving
-    /// a dead surface handle.
-    LocalApp {
-        app_id: String,
-        label: String,
-        #[serde(default)]
-        note: String,
-    },
-    /// A window a peer has open, before this machine has bound a local
-    /// instance to the tab. The peer's `surface_id` only resolves on
-    /// their compositor so it is dropped, keeping only the app id. A
-    /// waypoint: `shell::peer_windows` binds a local instance and the
-    /// tile becomes `Foreign`. Never projected into a room document,
-    /// since a `PeerWindow` is by construction somebody else's.
-    PeerWindow {
-        /// The wayland app-id the peer's window announces.
-        app_id: String,
-        /// The peer's own resolved tab title.
-        label: String,
-        /// What this machine is doing about it, for the card. Empty means
-        /// nobody has looked yet; writing the note is how
-        /// `shell::peer_windows` records that the decision was made, so a
-        /// refusal or launch only ever starts once.
-        #[serde(default)]
-        note: String,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Tab {
-    pub id: TabId,
-    pub title: String,
-    pub tile: TileContent,
-}
-
 /// Device-local identity needed to reconstruct a hosted document tab.
 /// It is persisted in the local profile but never projected into a room doc.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -841,195 +500,11 @@ pub struct NativeDocumentReference {
     pub path: std::path::PathBuf,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WindowGroup {
-    pub id: GroupId,
-    pub tabs: Vec<Tab>,
-    pub active_tab: TabId,
-    pub width: WindowWidth,
-    /// Mirrors the widget's maximized flag. This is presentation state for
-    /// this device: it survives a local restart but is never sent to room
-    /// peers. `#[serde(default)]` keeps pre-existing local JSON loading
-    /// un-maximized.
-    #[serde(default)]
-    pub maximized: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Strip {
-    pub id: StripId,
-    pub name: String,
-    pub window_groups: Vec<WindowGroup>,
-}
-
-impl Strip {
-    pub fn new(id: StripId, name: impl Into<String>) -> Self {
-        Self {
-            id,
-            name: name.into(),
-            window_groups: Vec::new(),
-        }
-    }
-}
-
-/// One tab as a room's replication document carries it. Deliberately not
-/// a [`Tab`]: no field here for anything a person's own session decided.
-#[derive(Clone, Debug)]
-struct ReplicatedTab {
-    id: TabId,
-    order: u64,
-    title: String,
-    /// `None` when unparseable — hydrated as a stub rather than dropped,
-    /// since a window in the room should still show up as one here.
-    tile: Option<TileContent>,
-}
-
-/// One window group as a room's replication document carries it. Geometry,
-/// maximization and active-tab selection are per-device presentation state,
-/// so the shared record carries only its topology and tabs.
-#[derive(Clone, Debug)]
-struct ReplicatedGroup {
-    id: GroupId,
-    order: u64,
-    tabs: Vec<ReplicatedTab>,
-}
-
-/// One strip as a room's replication document carries it.
-#[derive(Clone, Debug)]
-struct ReplicatedStrip {
-    id: u64,
-    order: u64,
-    name: Option<String>,
-    groups: Vec<ReplicatedGroup>,
-}
-
-/// Write `value` at `key` only when the document does not already say
-/// it, so a document accumulates a change per changed value rather than
-/// one per export — otherwise each sync round manufactures ops out of
-/// untouched state and two peers exporting to each other never fall
-/// quiet.
-fn put_str_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: &str) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    };
-    if current.as_deref() != Some(value) {
-        let _ = doc.put(obj, key, value.to_string());
-    }
-}
-
-/// [`put_str_if_changed`] for an unsigned integer.
-fn put_uint_if_changed(doc: &mut AutoCommit, obj: &automerge::ObjId, key: &str, value: u64) {
-    use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
-    let current = match doc.get(obj, key).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Uint(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    };
-    if current != Some(value) {
-        let _ = doc.put(obj, key, ScalarValue::Uint(value));
-    }
-}
-
-/// [`put_str_if_changed`] for a boolean.
-#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
-pub struct Collaborator {
-    pub id: String,
-    pub name: String,
-    /// Tab id the collaborator is focused on, driving per-tab presence
-    /// dots. `None` means present in the workspace but not on content.
-    #[serde(default)]
-    pub active_tab: Option<u64>,
-    /// Optional `#rrggbb`/`#rrggbbaa` override for the palette
-    /// [`ui::presence::user_color`] would otherwise pick.
-    #[serde(default)]
-    pub cursor_color: Option<String>,
-    /// Optional avatar URL or initials fragment; not yet wired to a
-    /// bitmap loader (the runtime renders initials today).
-    #[serde(default)]
-    pub avatar: Option<String>,
-    /// Display-only role chip. Authority comes from
-    /// [`Workspace::role_of`], never from this field.
-    #[serde(default)]
-    pub role_id: Option<String>,
-    /// Named by the room but has not taken part yet.
-    #[serde(default)]
-    pub invited: bool,
-    /// The publishing peer's Iroh handle, so a departure (which names
-    /// only a peer id) finds this row again after it has been renamed
-    /// from the handle to the person. `None` for a persisted row.
-    #[serde(default)]
-    pub session: Option<u64>,
-}
-
-impl Collaborator {
-    /// Build a collaborator with no tab attribution.
-    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            name: name.into(),
-            active_tab: None,
-            cursor_color: None,
-            avatar: None,
-            role_id: None,
-            invited: false,
-            session: None,
-        }
-    }
-
-    /// Record the live session this person is here through.
-    #[must_use]
-    pub fn with_session(mut self, peer: u64) -> Self {
-        self.session = Some(peer);
-        self
-    }
-
-    /// Like [`Collaborator::new`] but attributed to a specific tab.
-    #[must_use]
-    pub fn with_active_tab(id: impl Into<String>, name: impl Into<String>, tab: u64) -> Self {
-        let mut c = Self::new(id, name);
-        c.active_tab = Some(tab);
-        c
-    }
-
-    /// Attach an explicit `#rrggbb` / `#rrggbbaa` override for this peer.
-    #[must_use]
-    pub fn with_cursor_color(mut self, hex: impl Into<String>) -> Self {
-        self.cursor_color = Some(hex.into());
-        self
-    }
-
-    /// Attach an avatar reference (URL or initials fragment).
-    #[must_use]
-    pub fn with_avatar(mut self, avatar: impl Into<String>) -> Self {
-        self.avatar = Some(avatar.into());
-        self
-    }
-
-    /// Attach a role id pointing into the workspace's role table.
-    #[must_use]
-    pub fn with_role(mut self, role_id: impl Into<String>) -> Self {
-        self.role_id = Some(role_id.into());
-        self
-    }
-
-    /// Mark this collaborator as invited rather than arrived.
-    #[must_use]
-    pub fn as_invited(mut self) -> Self {
-        self.invited = true;
-        self
-    }
-}
+#[cfg(test)]
+use qos_desktop::projection::{ReplicatedGroup, ReplicatedTab};
 
 /// Identifier for an installed app — opaque to the state layer; the
 /// portal layer fills it in with the caller's wayland app-id.
-pub type AppId = String;
 
 /// Filesystem-grant access mode. Mirrors the read / read-write split
 /// the portal D-Bus backend surfaces to apps.
@@ -1096,82 +571,7 @@ pub enum Capability {
     },
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceTaskStatus {
-    Queued,
-    InProgress,
-    Waiting,
-    Done,
-    Cancelled,
-}
-
-impl WorkspaceTaskStatus {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Queued => "Queued",
-            Self::InProgress => "In progress",
-            Self::Waiting => "Waiting",
-            Self::Done => "Done",
-            Self::Cancelled => "Cancelled",
-        }
-    }
-
-    pub fn is_finished(&self) -> bool {
-        matches!(self, Self::Done | Self::Cancelled)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceTaskRoute {
-    /// A person advances the task from the native task surface. No model is
-    /// contacted, which keeps Task Center useful on an offline desktop.
-    Manual,
-    /// An agent may use exported actions and deterministic matching only.
-    RulesOnly,
-    /// An agent may ask its configured model before dispatching exported
-    /// actions. The resulting action trace remains the source of truth.
-    Model,
-}
-
-impl WorkspaceTaskRoute {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Manual => "Manual · no model",
-            Self::RulesOnly => "Agent · rules only",
-            Self::Model => "Agent · model assisted",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceTaskResource {
-    pub app_id: Option<String>,
-    pub app_label: Option<String>,
-    pub id: String,
-    pub kind: String,
-    pub label: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceTaskAuditEvent {
-    pub at: i64,
-    pub actor: String,
-    pub summary: String,
-}
-
-/// Append-only, broker-authenticated record of an external side effect.
-/// Arguments, output values, produced resource addresses, failure messages,
-/// and failure details are deliberately absent from this durable shape.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceEffectReceipt {
-    pub invocation: tilo_actions::InvocationId,
-    pub actor: String,
-    pub context: tilo_actions::ActionContext,
-    pub status: tilo_actions::EffectReceiptStatus,
-    pub completed_at: i64,
-}
+pub use qos_action_broker::policy::redacted_effect_receipt;
 
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
@@ -1180,156 +580,6 @@ fn unix_now() -> i64 {
         .and_then(|duration| i64::try_from(duration.as_secs()).ok())
         .unwrap_or_default()
 }
-
-fn bounded_receipt_text(value: &str, max: usize) -> String {
-    value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(max)
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
-    context.action_label = bounded_receipt_text(&context.action_label, 200);
-    if let Some(app) = &mut context.app {
-        app.id = bounded_receipt_text(&app.id, 160);
-        app.label = bounded_receipt_text(&app.label, 160);
-    }
-    if let Some(resource) = &mut context.resource {
-        resource.id = bounded_receipt_text(&resource.id, 512);
-        resource.kind = bounded_receipt_text(&resource.kind, 160);
-        resource.label = bounded_receipt_text(&resource.label, 200);
-    }
-    context.purpose = context
-        .purpose
-        .as_deref()
-        .map(|value| bounded_receipt_text(value, 512))
-        .filter(|value| !value.is_empty());
-    if let Some(group) = &mut context.group {
-        group.id = bounded_receipt_text(&group.id, 160);
-        group.label = bounded_receipt_text(&group.label, 200);
-        group.kind = bounded_receipt_text(&group.kind, 160);
-    }
-    context.facets.truncate(32);
-    for facet in &mut context.facets {
-        facet.key = bounded_receipt_text(&facet.key, 96);
-        facet.value = bounded_receipt_text(&facet.value, 160);
-    }
-}
-
-/// A durable unit of work in a collaboration room.
-///
-/// Tasks are deliberately shell-owned rather than chat messages: every app
-/// can attach a resource, people can run them without a language model, and
-/// the workspace room CRDT carries the same record to every desktop.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceTask {
-    pub id: String,
-    pub title: String,
-    pub created_by: String,
-    pub assigned_agent: Option<String>,
-    pub route: WorkspaceTaskRoute,
-    pub status: WorkspaceTaskStatus,
-    pub resource: Option<WorkspaceTaskResource>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    #[serde(default)]
-    pub audit: Vec<WorkspaceTaskAuditEvent>,
-}
-
-impl WorkspaceTask {
-    pub fn action_context(&self) -> tilo_actions::ActionContext {
-        let mut context = tilo_actions::ActionContext::default()
-            .with_purpose(self.title.clone())
-            .with_group(self.id.clone(), self.title.clone(), "task");
-        if let Some(resource) = &self.resource {
-            context.resource = Some(tilo_actions::ActionResource {
-                id: resource.id.clone(),
-                kind: resource.kind.clone(),
-                label: resource.label.clone(),
-            });
-            if let (Some(id), Some(label)) = (&resource.app_id, &resource.app_label) {
-                context = context.with_app(id.clone(), label.clone());
-            }
-        }
-        context
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Workspace {
-    pub id: WorkspaceId,
-    /// Durable identity of this workspace as a collaboration room — the
-    /// value two hosts must agree on, unlike the local-only [`Self::id`].
-    /// `#[serde(default)]` yields [`RoomId::nil`] for pre-room state
-    /// files until `adopt_roomless_workspaces` mints a real one at boot.
-    #[serde(default)]
-    pub room: RoomId,
-    pub name: String,
-    pub strips: Vec<Strip>,
-    /// Who is in this workspace *right now*, asserted present by a
-    /// verified invite or presence frame — not durable membership, which
-    /// is [`Workspace::owner`] / [`Workspace::capabilities`].
-    /// `skip_deserializing` rather than `skip`: reading is the direction
-    /// that can fabricate a stale person, but `Serialize` still feeds the
-    /// control socket's state dump.
-    #[serde(skip_deserializing)]
-    pub collaborators: Vec<Collaborator>,
-    /// Who owns this room — the one principal whose authority is not
-    /// itself a capability. `None` means a pre-ownership state file,
-    /// adopted by the local user on first load.
-    #[serde(default)]
-    pub owner: Option<UserId>,
-    /// One exact, owner-signed offer awaiting the named recipient's consent.
-    /// Persisted with the workspace so restart cannot erase, extend, or retarget
-    /// the ceremony.
-    #[serde(default)]
-    pub pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
-    /// Completed transfers retaining the outgoing owner's signed authorization
-    /// and the exact recipient's signed acceptance. This is append-only audit
-    /// evidence, not a second source of current ownership.
-    #[serde(default)]
-    pub ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
-    /// Owner-signed cancellations retained so a cancelled proposal cannot be
-    /// replayed after restart.
-    #[serde(default)]
-    pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
-    /// **Every** permission in this room, as capabilities — one list, one
-    /// vocabulary (room membership, file shares, portal grants), so it
-    /// can't drift the way a second per-app map would.
-    #[serde(default)]
-    pub capabilities: Vec<CapOverride>,
-    /// Reusable least-privilege bundles authored for this workspace. Profiles
-    /// are policy source; assigned authority is still materialized into
-    /// `capabilities`, the sole enforcement and replication vocabulary.
-    #[serde(default)]
-    pub permission_profiles: Vec<PermissionProfile>,
-    /// Default-application policy belongs to the workspace, while each
-    /// person's ordinary defaults remain in their personal settings. All
-    /// mutation goes through the authority-checked methods below.
-    #[serde(default)]
-    pub default_apps: desktop_policy::WorkspaceDefaults,
-    /// Work shared by the room independently of any one chat thread or app.
-    /// Values are projected as a CRDT map keyed by task id.
-    #[serde(default)]
-    pub tasks: Vec<WorkspaceTask>,
-    /// Consequential effects are activity, but never pretend to be edits to
-    /// an app's collaborative document.
-    #[serde(default)]
-    pub effect_receipts: Vec<WorkspaceEffectReceipt>,
-    /// Surfaces from this workspace being streamed to peers. Keys are
-    /// wayland `wl_surface` ids; values are the target Iroh peers
-    /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
-    #[serde(default)]
-    pub shared_surfaces: SharedSurfaces,
-}
-
-/// Stable identifier for a person. The compositor's collaborator table
-/// keys on this; a peer's Ed25519 key hex is a valid value, and so is
-/// the local user's account name.
-pub type UserId = String;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PermissionProfileMutationError {
@@ -1343,7 +593,7 @@ pub enum PermissionProfileMutationError {
     MissingPrincipal,
 }
 
-pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "tilo.workspace";
+pub const WORKSPACE_GOVERNANCE_APP_ID: &str = "qos.workspace";
 pub const PROFILE_SAVE_ACTION_ID: &str = "profile.save";
 pub const PROFILE_ASSIGN_ACTION_ID: &str = "profile.assign";
 
@@ -1367,7 +617,7 @@ pub fn role_label(role: CapRole) -> &'static str {
 pub fn local_user_id() -> UserId {
     #[cfg(test)]
     crate::shell::test_support::ambient_start("session identity");
-    if let Ok(v) = std::env::var("TILO_USER_ID")
+    if let Ok(v) = std::env::var("QOS_USER_ID")
         && !v.is_empty()
     {
         return v;
@@ -1544,7 +794,74 @@ impl Capability {
     }
 }
 
-impl Workspace {
+/// Native policy operations. Admission still delegates to qos-peer-state;
+/// the portable desktop only holds the resulting display/topology data.
+pub trait WorkspaceExt {
+    fn set_default_app_policy_as(
+        &mut self,
+        actor: &UserId,
+        resource: desktop_policy::ResourceKind,
+        policy: desktop_policy::WorkspaceDefaultPolicy,
+        resolver: &desktop_policy::DefaultAppResolver<'_>,
+    ) -> Result<(), WorkspaceDefaultError>;
+    fn set_default_app_choice_as(
+        &mut self,
+        actor: &UserId,
+        subject: &UserId,
+        resource: desktop_policy::ResourceKind,
+        choice: desktop_policy::UserWorkspaceChoice,
+        resolver: &desktop_policy::DefaultAppResolver<'_>,
+    ) -> Result<(), WorkspaceDefaultError>;
+    fn grant_app(&mut self, app_id: &str, cap: &Capability) -> Vec<String>;
+    fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride>;
+    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>>;
+    fn has_app_grants(&self) -> bool;
+    fn app_grant_ids(&self, app_id: &str) -> Vec<String>;
+    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision;
+    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool;
+    fn grant_capability(&mut self, cap: CapOverride) -> String;
+    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String>;
+    fn revoke_capability(&mut self, id: &str) -> bool;
+    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool;
+    fn revoke_matching(&mut self, pred: impl Fn(&CapOverride) -> bool) -> Vec<String>;
+    fn may_administer(&self, user: &UserId) -> bool;
+    fn set_owner(&mut self, user: impl Into<UserId>);
+    fn surrender_governance(&mut self) -> bool;
+    fn role_of(&self, user: &UserId) -> Option<CapRole>;
+    fn actor_for_person(&self, user: &UserId) -> Actor;
+    fn actor_for_app(&self, app_id: &str) -> Actor;
+    fn actor_for_agent(&self, agent_id: &str) -> Actor;
+    fn roster(&self) -> Vec<(UserId, CapRole)>;
+    fn role_of_agent(&self, agent: &str) -> Option<CapRole>;
+    fn agent_members(&self) -> Vec<(String, CapRole)>;
+    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride>;
+    fn save_permission_profile_as(
+        &mut self,
+        actor: &UserId,
+        profile: PermissionProfile,
+    ) -> Result<(), PermissionProfileMutationError>;
+    fn save_permission_profile_as_actor(
+        &mut self,
+        actor: &Actor,
+        profile: PermissionProfile,
+    ) -> Result<(), PermissionProfileMutationError>;
+    fn assign_permission_profile_as(
+        &mut self,
+        actor: &UserId,
+        profile_name: &str,
+        subject: Subject,
+        expiry: Expiry,
+    ) -> Result<Vec<String>, PermissionProfileMutationError>;
+    fn assign_permission_profile_as_actor(
+        &mut self,
+        actor: &Actor,
+        profile_name: &str,
+        subject: Subject,
+        expiry: Expiry,
+    ) -> Result<Vec<String>, PermissionProfileMutationError>;
+}
+
+impl WorkspaceExt for Workspace {
     /// Set the administrator layer of default-app policy. The shell supplies
     /// the authenticated local identity; a caller cannot widen policy by
     /// merely painting an enabled control.
@@ -1555,7 +872,7 @@ impl Workspace {
     /// not hold administrator authority in this workspace, or
     /// [`WorkspaceDefaultError::InvalidSelection`] if `policy` names an app
     /// package the resolver rejects for `resource`.
-    pub fn set_default_app_policy_as(
+    fn set_default_app_policy_as(
         &mut self,
         actor: &UserId,
         resource: desktop_policy::ResourceKind,
@@ -1584,7 +901,7 @@ impl Workspace {
     /// from `subject` — a person may only set their own choice — or
     /// [`WorkspaceDefaultError::InvalidSelection`] if `choice` names an app
     /// package the resolver rejects for `resource`.
-    pub fn set_default_app_choice_as(
+    fn set_default_app_choice_as(
         &mut self,
         actor: &UserId,
         subject: &UserId,
@@ -1614,7 +931,7 @@ impl Workspace {
 
     /// Record an app's grant. Returns the ids of the capabilities
     /// written (one per requested scope).
-    pub fn grant_app(&mut self, app_id: &str, cap: &Capability) -> Vec<String> {
+    fn grant_app(&mut self, app_id: &str, cap: &Capability) -> Vec<String> {
         let expiry = cap.requested_expiry();
         cap.requested_scopes()
             .into_iter()
@@ -1626,7 +943,7 @@ impl Workspace {
             .collect()
     }
 
-    pub fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
+    fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
         let want = Subject::app(app_id);
         let now = Some(now_unix());
         self.capabilities
@@ -1639,7 +956,7 @@ impl Workspace {
     /// Rebuilt from [`Self::capabilities`] on every call — mutating the
     /// returned map edits a temporary and stores nothing. To grant, use
     /// [`Self::grant_app`] or [`Self::grant_as`].
-    pub fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
+    fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
         let now = Some(now_unix());
         let mut out: HashMap<AppId, Vec<Capability>> = HashMap::new();
         for c in &self.capabilities {
@@ -1658,7 +975,7 @@ impl Workspace {
 
     /// Does any app hold a grant in this room? Drives the Permissions
     /// tab's visibility.
-    pub fn has_app_grants(&self) -> bool {
+    fn has_app_grants(&self) -> bool {
         let now = Some(now_unix());
         self.capabilities.iter().any(|c| {
             c.effect == Effect::Grant
@@ -1671,7 +988,7 @@ impl Workspace {
     /// Ids of the capabilities backing app `app_id`'s grants, in the
     /// same order [`Self::grants`] renders them, so a Revoke button
     /// that knows a row index can name the capability it removes.
-    pub fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
+    fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
         let now = Some(now_unix());
         let want = Subject::app(app_id);
         self.capabilities
@@ -1691,54 +1008,28 @@ impl Workspace {
 
     /// Decide whether `actor` may apply `verb` to `resource` in this
     /// room. Fail-closed: denies unless something explicitly permits.
-    pub fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        decide_capability(actor, resource, verb, &self.capabilities, Some(now_unix()))
+    fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
+        qos_action_broker::policy::WorkspacePolicy::decide(self, actor, resource, verb)
     }
 
     /// [`Self::decide`] reduced to a bool, for call sites that only
     /// gate an action rather than explaining a denial.
-    pub fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
-        self.decide(actor, resource, verb) == CapDecision::Allow
+    fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
+        qos_action_broker::policy::WorkspacePolicy::allows(self, actor, resource, verb)
     }
 
     /// Record a capability, minting an id if the caller didn't supply
     /// one. Authority to *make* the grant is checked by the caller
     /// ([`Self::grant_as`]), not here.
-    pub fn grant_capability(&mut self, mut cap: CapOverride) -> String {
-        if cap.id.is_empty() {
-            cap.id = format!("cap-{}", next_id());
-        }
-        // Merges rather than stacks a re-grant of the same (subject,
-        // scope, effect, verb), keeping the longer-lived expiry — a
-        // grant is monotonic; reducing authority is revoke's job.
-        if let Some(slot) = self.capabilities.iter_mut().find(|c| {
-            c.subject == cap.subject
-                && c.scope == cap.scope
-                && c.effect == cap.effect
-                && c.verb == cap.verb
-        }) {
-            slot.expiry = Expiry::longest(slot.expiry, cap.expiry);
-            if !cap.id.is_empty() {
-                slot.id = cap.id;
-            }
-            if cap.granted_by.is_some() {
-                slot.granted_by = cap.granted_by;
-            }
-            return slot.id.clone();
-        }
-        if cap.id.is_empty() {
-            cap.id = format!("cap-{}", next_id());
-        }
-        let id = cap.id.clone();
-        self.capabilities.push(cap);
-        id
+    fn grant_capability(&mut self, cap: CapOverride) -> String {
+        qos_action_broker::policy::WorkspacePolicy::grant_capability(self, cap)
     }
 
     /// Grant a capability **on behalf of** `grantor`, enforcing that
     /// the grantor actually holds authority to delegate it — a peer
     /// without `Admin` cannot widen anyone's access, including their
     /// own. `None` when the grantor lacks that authority.
-    pub fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
+    fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
         if !self.may_administer(grantor) {
             return None;
         }
@@ -1748,7 +1039,7 @@ impl Workspace {
 
     /// Create or replace a workspace permission profile. The profile itself
     /// grants nothing; assignment below materializes ordinary capabilities.
-    pub fn save_permission_profile_as(
+    fn save_permission_profile_as(
         &mut self,
         actor: &UserId,
         profile: PermissionProfile,
@@ -1759,7 +1050,7 @@ impl Workspace {
     /// Actor-general form used by the broker. Agents and apps have no ambient
     /// role; they can manage profiles only when explicitly granted this exact
     /// governance action (or the containing governance app/workspace).
-    pub fn save_permission_profile_as_actor(
+    fn save_permission_profile_as_actor(
         &mut self,
         actor: &Actor,
         profile: PermissionProfile,
@@ -1792,7 +1083,7 @@ impl Workspace {
     /// Assign a saved profile to a person, app, or agent in one validated
     /// mutation. Returned ids are the exact revocation/audit handles written
     /// to the canonical capability store.
-    pub fn assign_permission_profile_as(
+    fn assign_permission_profile_as(
         &mut self,
         actor: &UserId,
         profile_name: &str,
@@ -1807,7 +1098,7 @@ impl Workspace {
         )
     }
 
-    pub fn assign_permission_profile_as_actor(
+    fn assign_permission_profile_as_actor(
         &mut self,
         actor: &Actor,
         profile_name: &str,
@@ -1845,21 +1136,19 @@ impl Workspace {
 
     /// Drop the capability with this id. Returns whether anything was
     /// removed.
-    pub fn revoke_capability(&mut self, id: &str) -> bool {
-        let before = self.capabilities.len();
-        self.capabilities.retain(|c| c.id != id);
-        self.capabilities.len() != before
+    fn revoke_capability(&mut self, id: &str) -> bool {
+        qos_action_broker::policy::WorkspacePolicy::revoke_capability(self, id)
     }
 
     /// Revoke on behalf of `revoker`, enforcing the same authority as
     /// [`Self::grant_as`].
-    pub fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
+    fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
         self.may_administer(revoker) && self.revoke_capability(id)
     }
 
     /// Drop every capability matching `pred`. Returns the ids removed,
     /// so the caller can mirror each removal into the replicated doc.
-    pub fn revoke_matching(&mut self, pred: impl Fn(&CapOverride) -> bool) -> Vec<String> {
+    fn revoke_matching(&mut self, pred: impl Fn(&CapOverride) -> bool) -> Vec<String> {
         let mut removed = Vec::new();
         self.capabilities.retain(|c| {
             if pred(c) {
@@ -1877,40 +1166,92 @@ impl Workspace {
     /// Is `user` the owner, or a delegated co-owner (`Admin` over the
     /// room)? An ownerless workspace has no administrators, not
     /// everyone-is-an-administrator.
-    pub fn may_administer(&self, user: &UserId) -> bool {
-        if self.owner.as_deref() == Some(user.as_str()) {
-            return true;
-        }
-        self.allows(
-            &self.actor_for_person(user),
-            &ResourceRef::Workspace,
-            Verb::Admin,
-        )
+    fn may_administer(&self, user: &UserId) -> bool {
+        qos_action_broker::policy::WorkspacePolicy::may_administer(self, user)
     }
 
     /// Install `user` as owner, and record the membership capability
     /// that makes them `Admin` — `owner` survives an empty capability
     /// list, and the capability is what replicates and what `decide` reads.
-    pub fn set_owner(&mut self, user: impl Into<UserId>) {
-        let user = user.into();
-        let owner_capability_id = format!("owner-{}", self.id.raw());
-        // The owner capability has a stable id because the replicated map is
-        // keyed by capability id.  Remove its previous in-memory value before
-        // changing the subject: `grant_capability` deliberately merges only
-        // identical subjects, and would otherwise leave the former owner with
-        // a second local Admin grant until the next document rebuild.
-        self.revoke_capability(&owner_capability_id);
-        self.owner = Some(user.clone());
-        self.grant_capability(
-            CapOverride::membership(
-                Subject::Principal(Principal::Person(user)),
-                self.room.to_string(),
-                Verb::Admin,
-            )
-            .with_id(owner_capability_id),
-        );
+    fn set_owner(&mut self, user: impl Into<UserId>) {
+        qos_action_broker::policy::WorkspacePolicy::set_owner(self, user)
     }
 
+    /// Give up administration because this workspace joined a room it
+    /// did not mint — drops both the recorded owner and every admin
+    /// capability, or [`Self::may_administer`] would still answer yes
+    /// for a room this machine doesn't own.
+    fn surrender_governance(&mut self) -> bool {
+        let had_owner = self.owner.take().is_some();
+        let dropped = self.revoke_matching(|c| {
+            let is_person = matches!(c.subject, Subject::Principal(Principal::Person(_)));
+            // Capability vectors are already owned by one workspace. Accept
+            // legacy local-id and current durable-room spellings alike so a
+            // replicated membership cannot disappear on a peer whose local
+            // workspace handle differs.
+            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
+            is_person && covers_room && c.verb.implies(Verb::Admin)
+        });
+        had_owner || !dropped.is_empty()
+    }
+
+    /// The role `user` holds. Not stored separately — it *is* the verb
+    /// on their membership capability, so "in the room" and "allowed
+    /// to do something" can't drift apart. `None` means not a member.
+    fn role_of(&self, user: &UserId) -> Option<CapRole> {
+        qos_action_broker::policy::WorkspacePolicy::role_of(self, user)
+    }
+
+    /// Build the [`Actor`] for a person acting in this room.
+    fn actor_for_person(&self, user: &UserId) -> Actor {
+        qos_action_broker::policy::WorkspacePolicy::actor_for_person(self, user)
+    }
+
+    /// Build the [`Actor`] for an app running in this room. Carries the
+    /// room as principal but **no role** — an app has no base authority,
+    /// only what's granted to it by name.
+    fn actor_for_app(&self, app_id: &str) -> Actor {
+        qos_action_broker::policy::WorkspacePolicy::actor_for_app(self, app_id)
+    }
+
+    /// Build the [`Actor`] for an agent acting for the user. Same
+    /// authority shape as an app: scoped, revocable, no role.
+    fn actor_for_agent(&self, agent_id: &str) -> Actor {
+        qos_action_broker::policy::WorkspacePolicy::actor_for_agent(self, agent_id)
+    }
+
+    /// The room roster: the people who are *members*. Built from
+    /// room-scoped capabilities only — someone with a capability on one
+    /// file and nothing else is **not** here. See [`Self::shares_of`].
+    fn roster(&self) -> Vec<(UserId, CapRole)> {
+        qos_action_broker::policy::WorkspacePolicy::roster(self)
+    }
+
+    /// The role an *agent* holds — same derivation as [`Self::role_of`]
+    /// minus the owner short-circuit, since an agent is never the owner.
+    fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
+        qos_action_broker::policy::WorkspacePolicy::role_of_agent(self, agent)
+    }
+
+    /// The agents that hold membership in this room — a *second* list
+    /// from [`Self::roster`], since an agent is not a person and
+    /// rendering them undifferentiated would misrepresent who's present.
+    fn agent_members(&self) -> Vec<(String, CapRole)> {
+        qos_action_broker::policy::WorkspacePolicy::agent_members(self)
+    }
+
+    /// The share list for one resource. Room-scoped capabilities are
+    /// excluded (those belong in [`Self::roster`]) so the UI can never
+    /// present "shared one file with Bob" as "Bob is a collaborator".
+    fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
+        qos_action_broker::policy::WorkspacePolicy::shares_of(self, resource)
+    }
+}
+trait WorkspaceOwnershipExt {
+    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool;
+}
+
+impl WorkspaceOwnershipExt for Workspace {
     /// Transfer the structural owner role.
     ///
     /// This is intentionally stricter than ordinary role administration:
@@ -1928,336 +1269,13 @@ impl Workspace {
         self.set_owner(new_owner.clone());
         true
     }
-
-    /// Give up administration because this workspace joined a room it
-    /// did not mint — drops both the recorded owner and every admin
-    /// capability, or [`Self::may_administer`] would still answer yes
-    /// for a room this machine doesn't own.
-    pub fn surrender_governance(&mut self) -> bool {
-        let had_owner = self.owner.take().is_some();
-        let dropped = self.revoke_matching(|c| {
-            let is_person = matches!(c.subject, Subject::Principal(Principal::Person(_)));
-            // Capability vectors are already owned by one workspace. Accept
-            // legacy local-id and current durable-room spellings alike so a
-            // replicated membership cannot disappear on a peer whose local
-            // workspace handle differs.
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            is_person && covers_room && c.verb.implies(Verb::Admin)
-        });
-        had_owner || !dropped.is_empty()
-    }
-
-    /// The role `user` holds. Not stored separately — it *is* the verb
-    /// on their membership capability, so "in the room" and "allowed
-    /// to do something" can't drift apart. `None` means not a member.
-    pub fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        if self.owner.as_deref() == Some(user.as_str()) {
-            return Some(CapRole::Owner);
-        }
-        let subject_is_user = |c: &CapOverride| match &c.subject {
-            Subject::Principal(Principal::Person(p)) => p == user,
-            _ => false,
-        };
-        let now = Some(now_unix());
-        let mut best: Option<Verb> = None;
-        let mut blocked = false;
-        for c in &self.capabilities {
-            if !subject_is_user(c) || !c.is_live_at(now) {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            match c.effect {
-                Effect::Grant => {
-                    best = Some(match best {
-                        Some(prev) if prev.implies(c.verb) => prev,
-                        _ => c.verb,
-                    });
-                }
-                // A room-wide Restrict below Read is how a member is
-                // blocked without being erased from history.
-                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
-                Effect::Restrict => {}
-            }
-        }
-        if blocked {
-            return Some(CapRole::Denied);
-        }
-        best.map(|v| match v {
-            Verb::Admin => CapRole::Owner,
-            Verb::Write => CapRole::Editor,
-            Verb::Comment => CapRole::Commenter,
-            Verb::Read | Verb::Invite => CapRole::Viewer,
-        })
-    }
-
-    /// Build the [`Actor`] for a person acting in this room.
-    pub fn actor_for_person(&self, user: &UserId) -> Actor {
-        Actor::person(self.role_of(user), user.clone()).in_room(self.room.to_string())
-    }
-
-    /// Build the [`Actor`] for an app running in this room. Carries the
-    /// room as principal but **no role** — an app has no base authority,
-    /// only what's granted to it by name.
-    pub fn actor_for_app(&self, app_id: &str) -> Actor {
-        Actor::app(app_id).in_room(self.room.to_string())
-    }
-
-    /// Build the [`Actor`] for an agent acting for the user. Same
-    /// authority shape as an app: scoped, revocable, no role.
-    pub fn actor_for_agent(&self, agent_id: &str) -> Actor {
-        Actor::agent(agent_id).in_room(self.room.to_string())
-    }
-
-    /// The room roster: the people who are *members*. Built from
-    /// room-scoped capabilities only — someone with a capability on one
-    /// file and nothing else is **not** here. See [`Self::shares_of`].
-    pub fn roster(&self) -> Vec<(UserId, CapRole)> {
-        let now = Some(now_unix());
-        let mut seen: Vec<UserId> = Vec::new();
-        for c in &self.capabilities {
-            if !c.is_live_at(now) || c.effect != Effect::Grant {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            if let Subject::Principal(Principal::Person(p)) = &c.subject
-                && !seen.contains(p)
-            {
-                seen.push(p.clone());
-            }
-        }
-        if let Some(owner) = &self.owner
-            && !seen.contains(owner)
-        {
-            seen.insert(0, owner.clone());
-        }
-        seen.into_iter()
-            .filter_map(|u| self.role_of(&u).map(|r| (u, r)))
-            .collect()
-    }
-
-    /// The role an *agent* holds — same derivation as [`Self::role_of`]
-    /// minus the owner short-circuit, since an agent is never the owner.
-    pub fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        let now = Some(now_unix());
-        let mut best: Option<Verb> = None;
-        let mut blocked = false;
-        for c in &self.capabilities {
-            let subject_matches = matches!(
-                &c.subject,
-                Subject::Principal(Principal::Agent(a)) if a == agent
-            );
-            if !subject_matches || !c.is_live_at(now) {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            match c.effect {
-                Effect::Grant => {
-                    best = Some(match best {
-                        Some(prev) if prev.implies(c.verb) => prev,
-                        _ => c.verb,
-                    });
-                }
-                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
-                Effect::Restrict => {}
-            }
-        }
-        if blocked {
-            return Some(CapRole::Denied);
-        }
-        best.map(|v| match v {
-            Verb::Admin => CapRole::Owner,
-            Verb::Write => CapRole::Editor,
-            Verb::Comment => CapRole::Commenter,
-            Verb::Read | Verb::Invite => CapRole::Viewer,
-        })
-    }
-
-    /// The agents that hold membership in this room — a *second* list
-    /// from [`Self::roster`], since an agent is not a person and
-    /// rendering them undifferentiated would misrepresent who's present.
-    pub fn agent_members(&self) -> Vec<(String, CapRole)> {
-        let now = Some(now_unix());
-        let mut seen: Vec<String> = Vec::new();
-        for c in &self.capabilities {
-            if !c.is_live_at(now) || c.effect != Effect::Grant {
-                continue;
-            }
-            let covers_room = matches!(c.scope, Scope::Room(_) | Scope::Workspace);
-            if !covers_room {
-                continue;
-            }
-            if let Subject::Principal(Principal::Agent(a)) = &c.subject
-                && !seen.contains(a)
-            {
-                seen.push(a.clone());
-            }
-        }
-        seen.into_iter()
-            .filter_map(|a| self.role_of_agent(&a).map(|r| (a, r)))
-            .collect()
-    }
-
-    /// The share list for one resource. Room-scoped capabilities are
-    /// excluded (those belong in [`Self::roster`]) so the UI can never
-    /// present "shared one file with Bob" as "Bob is a collaborator".
-    pub fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        let now = Some(now_unix());
-        self.capabilities
-            .iter()
-            .filter(|c| {
-                c.is_live_at(now)
-                    && c.effect == Effect::Grant
-                    && c.subject_is_person()
-                    && !c.is_room_membership()
-                    && c.scope.matches_resource(resource)
-            })
-            .collect()
-    }
-
-    pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
-        Self {
-            id,
-            // A workspace that exists is a room that exists: minted
-            // here rather than lazily.
-            room: RoomId::new(),
-            name: name.into(),
-            strips: Vec::new(),
-            collaborators: Vec::new(),
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
-        }
-    }
-
-    /// What fixtures want instead of a hand-written `Workspace { … }`
-    /// literal (which breaks on every new field); each fixture also gets
-    /// its own room rather than sharing the nil one.
-    pub fn test_default(id: WorkspaceId, name: impl Into<String>) -> Self {
-        Self::new(id, name)
-    }
-
-    /// This workspace's collaboration cluster id — [`Self::room`], not
-    /// the local [`Self::id`]. Unminted returns the nil uuid, which
-    /// `CrdtRoute::delivers_to` refuses to deliver to.
-    pub fn collab_cluster_id(&self) -> uuid::Uuid {
-        self.room.as_uuid()
-    }
-
-    /// Mark `surface_id` as being streamed to `peer_id`. Additive — two
-    /// calls record both peers in the per-surface set.
-    pub fn share_surface(&mut self, surface_id: u64, peer_id: u64) {
-        self.shared_surfaces.share(surface_id, peer_id);
-    }
-
-    /// Drop the share entry for `surface_id` (no-op if unshared).
-    /// Returns the peers it was shared with, so callers can fire
-    /// `StopShare` for each without a second lookup.
-    pub fn unshare_surface(&mut self, surface_id: u64) -> Option<std::collections::HashSet<u64>> {
-        self.shared_surfaces.unshare(surface_id)
-    }
-
-    /// Stop streaming `surface_id` to one peer, leaving others intact.
-    /// Drops the surface key entirely once the last peer is removed, so
-    /// [`Self::is_surface_shared`] reports `false` again.
-    pub fn unshare_surface_from_peer(&mut self, surface_id: u64, peer_id: u64) -> bool {
-        self.shared_surfaces.unshare_peer(surface_id, peer_id)
-    }
-
-    /// Whether `surface_id` is currently streamed somewhere. Used by
-    /// the compositor's commit hook to short-circuit the readback for
-    /// unshared surfaces (~all of them in steady state).
-    pub fn is_surface_shared(&self, surface_id: u64) -> bool {
-        self.shared_surfaces.contains(surface_id)
-    }
-}
-
-impl Default for Workspace {
-    /// Room is minted, not left at [`RoomId::nil`] — two workspaces
-    /// built this way must not silently become the same room. Nil is
-    /// reachable only via deserializing a pre-rooms state file.
-    fn default() -> Self {
-        Self {
-            id: WorkspaceId::default(),
-            room: RoomId::new(),
-            name: String::new(),
-            strips: Vec::new(),
-            collaborators: Vec::new(),
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
-        }
-    }
-}
-
-/// The shape of `state.json` this build writes and understands. Bump
-/// only when a change makes a file unreadable to an older build in a way
-/// that loses meaning (field removed/repurposed, id space renumbered) —
-/// a new `#[serde(default)]` field does not qualify. Guards the one
-/// direction with no safe default: older reading newer.
-pub const STATE_SCHEMA_VERSION: u32 = 1;
-
-/// A file with no `schema_version` key is version 1 — the key was added
-/// alongside the check, not a format change, and defaulting to "unknown"
-/// would strand every existing session on upgrade.
-fn state_schema_version_of_a_file_without_one() -> u32 {
-    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WorkspaceTree {
-    /// Which version of this struct's on-disk shape the file describes.
-    /// Read back to decide whether this build may touch the file at all.
-    #[serde(default = "state_schema_version_of_a_file_without_one")]
-    pub schema_version: u32,
-    /// Counts rounds in which a peer's changes landed. `#[serde(skip)]`
-    /// — a restored value could match a live reader's cache and
-    /// suppress the first resync.
-    #[serde(skip)]
-    pub room_epoch: u64,
-    /// Mutations performed outside retained chrome (for example the local
-    /// action broker or a Wayland lifecycle callback) increment this so chrome
-    /// can invalidate retained panes.
-    /// It is process-local: restoring a persisted value could suppress the
-    /// first refresh after launch.
-    #[serde(skip)]
-    pub external_revision: u64,
-    pub workspaces: Vec<Workspace>,
-    #[serde(default)]
-    pub active: WorkspaceId,
-    pub active_strip: HashMap<WorkspaceId, StripId>,
-    /// Per-strip "active group" pointer, one level deeper than
-    /// [`Self::active_strip`]. Missing means "fall back to the first
-    /// non-closing group" (see [`Self::resolve_active_group`]).
-    #[serde(default)]
-    pub active_group: HashMap<StripId, GroupId>,
-    /// Legacy session-wide presence cache. Ordinary chrome must read the
-    /// active workspace's roster instead: a person present elsewhere is not
-    /// present here. `#[serde(skip)]` prevents stale presence after reload.
-    #[serde(skip_deserializing)]
-    pub collaborators: Vec<Collaborator>,
+pub struct NativeWorkspaceTree {
+    /// The only desktop topology and local view storage, shared with portable hosts.
+    #[serde(flatten)]
+    pub desktop: qos_desktop::WorkspaceTree,
     /// Automerge backing doc for peer-sync. The cache (other fields) is
     /// the source of truth for reads; this doc for peer change export.
     /// `#[serde(skip)]` — repopulates as peer-sync runs. Public so tests
@@ -2287,17 +1305,6 @@ pub struct WorkspaceTree {
     #[serde(default)]
     pub room_peer_identities:
         HashMap<RoomId, std::collections::BTreeMap<String, GovernedPeerIdentity>>,
-    /// Mirror of each room's record index (record id → kind), pushed by
-    /// [`Self::set_room_records`] — a plain-data copy since the
-    /// index lives behind an `Rc<RefCell<_>>` peer-sync's
-    /// `Arc<RwLock<_>>` can't reach. Not persisted.
-    #[serde(skip, default)]
-    pub room_records_held: HashMap<RoomId, std::collections::BTreeMap<String, String>>,
-    /// References that arrived from a peer and have not been folded into
-    /// the local index yet. Drained by the shell — see
-    /// [`Self::take_inbound_room_records`].
-    #[serde(skip, default)]
-    pub room_records_inbound: Vec<(RoomId, String, String)>,
     /// For a joined room, the [`NEXT_ID`] value at the moment of
     /// joining — windows minted before that aren't projected in, or
     /// accepting an invite would publish every window already open. A
@@ -2332,12 +1339,6 @@ pub struct WorkspaceTree {
     /// room projection deliberately has no corresponding field.
     #[serde(default)]
     pub native_document_tabs: HashMap<TabId, NativeDocumentReference>,
-    /// This tree's own peer salt, overriding the process-wide one — the
-    /// static is wrong when one process holds **two** trees (e.g. two
-    /// simulated peers). [`Self::local_salt`] prefers this field;
-    /// production never sets it.
-    #[serde(skip, default)]
-    pub peer_salt_override: Option<u16>,
     /// Where to write this tree when a capability changes. `None`
     /// disables it (tests, offscreen renderer). Set at boot by the
     /// compositor — what makes an `Always` grant survive a restart.
@@ -2350,24 +1351,31 @@ pub struct WorkspaceTree {
     pub fs_acl_path: Option<std::path::PathBuf>,
 }
 
+/// Compatibility name for the native host adapter.
+pub type WorkspaceTree = NativeWorkspaceTree;
+
+impl std::ops::Deref for NativeWorkspaceTree {
+    type Target = qos_desktop::WorkspaceTree;
+    fn deref(&self) -> &Self::Target {
+        &self.desktop
+    }
+}
+
+impl std::ops::DerefMut for NativeWorkspaceTree {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.desktop
+    }
+}
+
 impl Default for WorkspaceTree {
     fn default() -> Self {
         Self {
-            schema_version: STATE_SCHEMA_VERSION,
-            room_epoch: 0,
-            external_revision: 0,
-            workspaces: Vec::new(),
-            active: WorkspaceId::default(),
-            active_strip: HashMap::new(),
-            active_group: HashMap::new(),
-            collaborators: Vec::new(),
+            desktop: qos_desktop::WorkspaceTree::default(),
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
             room_peer_names: HashMap::new(),
             room_peer_identities: HashMap::new(),
-            room_records_held: HashMap::new(),
-            room_records_inbound: Vec::new(),
             room_share_floor: HashMap::new(),
             continuation_tabs: BTreeSet::new(),
             continuation_rooms: BTreeSet::new(),
@@ -2375,7 +1383,6 @@ impl Default for WorkspaceTree {
             continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
             native_document_tabs: HashMap::new(),
-            peer_salt_override: None,
             persist_path: None,
             fs_acl_path: None,
         }
@@ -2441,6 +1448,10 @@ impl WorkspaceTreeHandleExt for WorkspaceTreeHandle {
 }
 
 impl WorkspaceTree {
+    pub fn set_process_peer_salt(salt: u16) {
+        qos_desktop::WorkspaceTree::set_process_peer_salt(salt);
+    }
+
     /// Wrap this tree in a [`WorkspaceTreeHandle`]. Consumes the tree
     /// (there should only ever be one instance) and returns the shared
     /// handle every subsystem clones from.
@@ -2451,86 +1462,9 @@ impl WorkspaceTree {
 
 /// Owner, capability blobs, and peer-name claims read from a room
 /// document's governance keys. See [`WorkspaceTree::governance_of`].
-type RoomGovernance = (
-    Option<String>,
-    std::collections::BTreeMap<String, Vec<u8>>,
-    std::collections::BTreeMap<String, String>,
-    std::collections::BTreeMap<String, Vec<u8>>,
-);
+type RoomGovernance = qos_peer_state::room::RoomGovernance;
 
 impl WorkspaceTree {
-    /// Set the process-wide peer salt [`next_id`] stamps into the high
-    /// 16 bits of every freshly-allocated id. Default `0` keeps
-    /// `WorkspaceId(1)`-style test literals working; two peers under
-    /// distinct salts can never collide. Takes `&mut self` even though
-    /// the salt is process-global, so a per-tree-salt refactor stays a
-    /// one-line change.
-    pub fn set_peer_salt(&mut self, salt: u16) {
-        Self::set_process_peer_salt(salt);
-    }
-
-    /// [`Self::set_peer_salt`] without a tree to call it on. Must run
-    /// **before** the tree is loaded: ids minted before the salt exists
-    /// land in the shared 0-salt range, identical on every first boot,
-    /// and the room document keys a window group by id — so two such
-    /// peers fold two distinct windows into one. Re-seeding the counter
-    /// afterward does not repair already-minted ids.
-    pub fn set_process_peer_salt(salt: u16) {
-        NEXT_ID_PEER_SALT.store(salt, AtomicOrdering::Relaxed);
-    }
-
-    /// Read the current process-wide peer salt. Mostly used by tests to
-    /// assert on the salt without poking the static directly.
-    pub fn peer_salt(&self) -> u16 {
-        NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed)
-    }
-
-    /// The salt replication treats as this tree's own — the id range
-    /// this tree may write and sweep. [`Self::peer_salt_override`]
-    /// first, the process-wide salt otherwise.
-    pub fn local_salt(&self) -> u16 {
-        self.peer_salt_override
-            .unwrap_or_else(|| NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed))
-    }
-
-    /// Give this tree a salt without touching the process-wide one, for
-    /// holding two trees at once. The caller must mint matching ids
-    /// itself; [`next_id`] reads the static.
-    pub fn set_salt_override(&mut self, salt: u16) {
-        self.peer_salt_override = Some(salt);
-    }
-
-    /// Walk every id and advance [`NEXT_ID`] past the highest counter
-    /// stamped by the local peer salt — idempotent, called after
-    /// deserializing. The counter restarts at `1` each process, so
-    /// without this it collides with persisted ids. Only local-salt ids
-    /// count; a remote peer's must not advance our counter.
-    pub fn seed_next_id_from_self(&self) {
-        let local_salt = NEXT_ID_PEER_SALT.load(AtomicOrdering::Relaxed);
-        let mut max_counter: u64 = 0;
-        let mut consider = |id: u64| {
-            if peer_salt_of(id) == local_salt {
-                max_counter = max_counter.max(counter_of(id));
-            }
-        };
-        for ws in &self.workspaces {
-            consider(ws.id.raw());
-            for strip in &ws.strips {
-                consider(strip.id.raw());
-                for group in &strip.window_groups {
-                    consider(group.id);
-                    for tab in &group.tabs {
-                        consider(tab.id);
-                    }
-                }
-            }
-        }
-        // Advance the counter past `max_counter`. `fetch_max` keeps the
-        // higher of the two so a parallel allocator that already
-        // pushed past max_counter isn't reset backwards.
-        NEXT_ID.fetch_max(max_counter.saturating_add(1), AtomicOrdering::Relaxed);
-    }
-
     /// Close the room document's open transaction, stamping when it
     /// happened — otherwise `AutoCommit`'s implicit close leaves the
     /// advisory timestamp at zero and no activity view can date-filter
@@ -2594,17 +1528,6 @@ impl WorkspaceTree {
     // the receiver never sees and automerge parks them unapplied
     // forever). So the replication unit is a document per room,
     // projected from the cache.
-
-    /// Every room this machine is in, deduplicated, in workspace order.
-    /// A workspace whose room is still the unminted sentinel is skipped.
-    pub fn rooms(&self) -> Vec<RoomId> {
-        let mut seen = std::collections::HashSet::new();
-        self.workspaces
-            .iter()
-            .map(|w| w.room)
-            .filter(|r| !r.is_nil() && seen.insert(*r))
-            .collect()
-    }
 
     /// Who may write `room`'s governance. No recorded authority means
     /// this machine minted the room and governs it; joining another's
@@ -2876,7 +1799,7 @@ impl WorkspaceTree {
         if room.is_nil() {
             return false;
         }
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         Self::admit_into(&mut ws.collaborators, who)
@@ -2885,7 +1808,12 @@ impl WorkspaceTree {
     /// [`Self::admit_collaborator_in_room`] addressed by this machine's
     /// local workspace handle instead of the room's durable identity.
     pub fn admit_collaborator(&mut self, workspace_id: WorkspaceId, who: Collaborator) -> bool {
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
             return false;
         };
         Self::admit_into(&mut ws.collaborators, who)
@@ -2898,7 +1826,7 @@ impl WorkspaceTree {
         if room.is_nil() {
             return false;
         }
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         let before = ws.collaborators.len();
@@ -2917,7 +1845,7 @@ impl WorkspaceTree {
         }
         let handle = session_handle(peer);
         let named = !user.is_empty() && user != handle;
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return false;
         };
         let mut changed = false;
@@ -2949,7 +1877,7 @@ impl WorkspaceTree {
     /// several rooms at once, and it left all of them.
     pub fn retire_session(&mut self, peer: u64) -> bool {
         let mut changed = false;
-        for ws in &mut self.workspaces {
+        for ws in &mut self.desktop.workspaces {
             let before = ws.collaborators.len();
             ws.collaborators.retain(|c| c.session != Some(peer));
             changed |= before != ws.collaborators.len();
@@ -2993,7 +1921,7 @@ impl WorkspaceTree {
         if room.is_nil() {
             return None;
         }
-        self.workspaces.iter().find(|w| w.room == room)
+        self.desktop.workspaces.iter().find(|w| w.room == room)
     }
 
     /// Project the cached state of `room`'s workspace into that room's
@@ -3176,27 +2104,7 @@ impl WorkspaceTree {
     }
 
     fn workspace_tasks_of(doc: &AutoCommit) -> Vec<WorkspaceTask> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-        let Some((_, tasks_id)) = doc.get(&ROOT, Self::ROOM_TASKS_KEY).ok().flatten() else {
-            return Vec::new();
-        };
-        let mut tasks = Vec::new();
-        for key in doc.keys(&tasks_id) {
-            if let Some((Value::Scalar(value), _)) = doc.get(&tasks_id, key.as_str()).ok().flatten()
-                && let ScalarValue::Bytes(blob) = value.as_ref()
-                && let Ok(task) = serde_json::from_slice::<WorkspaceTask>(blob)
-            {
-                tasks.push(task);
-            }
-        }
-        tasks.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        tasks
+        qos_desktop::projection::workspace_tasks_of(doc)
     }
 
     fn project_effect_receipts(doc: &mut AutoCommit, receipts: &[WorkspaceEffectReceipt]) {
@@ -3234,28 +2142,7 @@ impl WorkspaceTree {
     }
 
     fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectReceipt> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let Some((_, object)) = doc
-            .get(&ROOT, Self::ROOM_EFFECT_RECEIPTS_KEY)
-            .ok()
-            .flatten()
-        else {
-            return Vec::new();
-        };
-        let mut receipts = doc
-            .keys(&object)
-            .filter_map(|key| {
-                let (Value::Scalar(value), _) = doc.get(&object, key).ok().flatten()? else {
-                    return None;
-                };
-                let ScalarValue::Bytes(blob) = value.as_ref() else {
-                    return None;
-                };
-                serde_json::from_slice(blob).ok()
-            })
-            .collect::<Vec<_>>();
-        receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
-        receipts
+        qos_desktop::projection::workspace_effect_receipts_of(doc)
     }
 
     /// Project "who the peers in this room are", as Iroh `EndpointId`
@@ -3417,374 +2304,20 @@ impl WorkspaceTree {
         out
     }
 
-    /// Key the room document stores the room's window contents under.
-    const ROOM_CONTENTS_KEY: &'static str = "contents";
-
-    /// A strip / group / tab id as a `contents` map key: fixed-width hex,
-    /// so the key parses back into the id it names and two peers spell
-    /// one id the same way.
+    #[cfg(test)]
     fn contents_key(id: u64) -> String {
-        format!("{id:016x}")
+        qos_desktop::projection::RoomProjection::contents_key(id)
     }
-
-    /// The id a `contents` key names, or `None` for a key this build did
-    /// not write.
-    fn contents_key_id(key: &str) -> Option<u64> {
-        u64::from_str_radix(key, 16).ok()
-    }
-
-    /// Project the strips, window groups and tabs this machine owns into
-    /// the room document's `contents` map. The `active_*` pointers are
-    /// excluded — projecting them would drag a colleague off the page
-    /// they were on whenever somebody else changed tabs.
-    ///
-    /// Every entry is written only by the peer whose salt its id carries
-    /// ([`peer_salt_of`]) — a single-writer rule
-    /// [`Self::apply_room_changes`] enforces, so last-writer-wins has
-    /// nothing to arbitrate. Entries carry their index; readers sort by
-    /// `(order, id)` so peers appending at once still agree, and the
-    /// sweep at each level deletes only entries this machine owns. Salt
-    /// `0` has no id space, so nothing is projected or merged there.
     fn project_owned_contents(
         doc: &mut AutoCommit,
         strips: &[Strip],
-        local_salt: u16,
-        share_floor: Option<u64>,
+        salt: u16,
+        floor: Option<u64>,
     ) {
-        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
-        use std::collections::HashSet;
-
-        if local_salt == 0 {
-            return;
-        }
-        // "Mine to publish": minted by this peer, and since it joined
-        // (not before) if this is a room it joined rather than minted.
-        let mine = |id: u64| -> bool {
-            peer_salt_of(id) == local_salt
-                && share_floor.is_none_or(|floor| counter_of(id) >= floor)
-        };
-
-        let contents_id = match doc.get(&ROOT, Self::ROOM_CONTENTS_KEY).ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(&ROOT, Self::ROOM_CONTENTS_KEY, ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: contents map");
-                    return;
-                }
-            },
-        };
-
-        let mut live_strips: HashSet<String> = HashSet::new();
-        for (si, strip) in strips.iter().enumerate() {
-            // An empty strip holds no state; an empty row arriving on
-            // someone else's desktop is noise, not news.
-            if strip.window_groups.is_empty() {
-                continue;
-            }
-            let owns_strip = mine(strip.id.raw());
-            // A peer's strip is still walked: a window we opened into it
-            // is ours to publish even though the row isn't.
-            let has_owned = strip
-                .window_groups
-                .iter()
-                .any(|g| mine(g.id) || g.tabs.iter().any(|t| mine(t.id)));
-            if !owns_strip && !has_owned {
-                continue;
-            }
-
-            let skey = Self::contents_key(strip.id.raw());
-            let strip_entry = match doc.get(&contents_id, skey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&contents_id, skey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: strip entry");
-                        continue;
-                    }
-                },
-            };
-            if owns_strip {
-                live_strips.insert(skey.clone());
-                put_str_if_changed(doc, &strip_entry, "name", &strip.name);
-                put_uint_if_changed(doc, &strip_entry, "order", si as u64);
-            }
-
-            Self::project_owned_groups(doc, &strip_entry, strip, &mine);
-        }
-        let stale: Vec<String> = doc
-            .keys(&contents_id)
-            .filter(|k| {
-                !live_strips.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(&mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&contents_id, key.as_str());
-        }
+        qos_desktop::projection::RoomProjection::project_owned_contents(doc, strips, salt, floor);
     }
-
-    /// [`Self::project_owned_contents`]'s per-strip pass: get-or-create
-    /// `strip_entry`'s `groups` map, project every group this machine owns
-    /// (or owns a tab within), then sweep group keys this machine owns
-    /// that no longer appear among `strip`'s groups.
-    fn project_owned_groups(
-        doc: &mut AutoCommit,
-        strip_entry: &automerge::ObjId,
-        strip: &Strip,
-        mine: &impl Fn(u64) -> bool,
-    ) {
-        use automerge::{ObjType, ReadDoc, transaction::Transactable};
-        use std::collections::HashSet;
-
-        let groups_id = match doc.get(strip_entry, "groups").ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(strip_entry, "groups", ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: groups map");
-                    return;
-                }
-            },
-        };
-        let mut live_groups: HashSet<String> = HashSet::new();
-        for (gi, group) in strip.window_groups.iter().enumerate() {
-            let owns_group = mine(group.id);
-            let has_owned_tabs = group.tabs.iter().any(|t| mine(t.id));
-            if !owns_group && !has_owned_tabs {
-                continue;
-            }
-            let gkey = Self::contents_key(group.id);
-            let group_entry = match doc.get(&groups_id, gkey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&groups_id, gkey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: group entry");
-                        continue;
-                    }
-                },
-            };
-            if owns_group {
-                live_groups.insert(gkey.clone());
-                put_uint_if_changed(doc, &group_entry, "order", gi as u64);
-                // Width, maximization and active-tab selection are local
-                // presentation preferences. Old room documents may still
-                // contain the first two fields, but no current peer writes
-                // or reads them.
-            }
-
-            Self::project_owned_tabs(doc, &group_entry, group, mine);
-        }
-        let stale: Vec<String> = doc
-            .keys(&groups_id)
-            .filter(|k| {
-                !live_groups.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&groups_id, key.as_str());
-        }
-    }
-
-    /// [`Self::project_owned_groups`]'s per-group pass: get-or-create
-    /// `group_entry`'s `tabs` map, project every tab this machine owns,
-    /// then sweep tab keys this machine owns that no longer appear among
-    /// `group`'s tabs.
-    fn project_owned_tabs(
-        doc: &mut AutoCommit,
-        group_entry: &automerge::ObjId,
-        group: &WindowGroup,
-        mine: &impl Fn(u64) -> bool,
-    ) {
-        use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
-        use std::collections::HashSet;
-
-        let tabs_id = match doc.get(group_entry, "tabs").ok().flatten() {
-            Some((_, id)) => id,
-            None => match doc.put_object(group_entry, "tabs", ObjType::Map) {
-                Ok(id) => id,
-                Err(err) => {
-                    tracing::error!(?err, "room doc: tabs map");
-                    return;
-                }
-            },
-        };
-        let mut live_tabs: HashSet<String> = HashSet::new();
-        for (ti, tab) in group.tabs.iter().enumerate() {
-            if !mine(tab.id) {
-                continue;
-            }
-            let tkey = Self::contents_key(tab.id);
-            live_tabs.insert(tkey.clone());
-            let tab_entry = match doc.get(&tabs_id, tkey.as_str()).ok().flatten() {
-                Some((_, id)) => id,
-                None => match doc.put_object(&tabs_id, tkey.as_str(), ObjType::Map) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        tracing::error!(?err, "room doc: tab entry");
-                        continue;
-                    }
-                },
-            };
-            put_uint_if_changed(doc, &tab_entry, "order", ti as u64);
-            put_str_if_changed(doc, &tab_entry, "title", &tab.title);
-            if let Ok(blob) = serde_json::to_vec(&tab.tile) {
-                let unchanged = matches!(
-                    doc.get(&tab_entry, "tile_json").ok().flatten(),
-                    Some((automerge::Value::Scalar(v), _))
-                        if matches!(v.as_ref(), ScalarValue::Bytes(b) if b == &blob)
-                );
-                if !unchanged {
-                    let _ = doc.put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
-                }
-            }
-        }
-        let stale: Vec<String> = doc
-            .keys(&tabs_id)
-            .filter(|k| {
-                !live_tabs.contains(k.as_str()) && Self::contents_key_id(k).is_some_and(mine)
-            })
-            .collect();
-        for key in stale {
-            let _ = doc.delete(&tabs_id, key.as_str());
-        }
-    }
-
-    /// Read a room document's `contents` back into plain values. Every
-    /// level sorts by `(order, id)`; an entry with no `order` sorts
-    /// last so it can't displace one whose owner did state a position.
-    fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-        let uint = |obj: &automerge::ObjId, key: &str| -> Option<u64> {
-            match doc.get(obj, key).ok().flatten() {
-                Some((Value::Scalar(v), _)) => match v.as_ref() {
-                    ScalarValue::Uint(n) => Some(*n),
-                    // A negative `Int` has no sane `order`/id reading, so
-                    // treat it as absent rather than wrapping it into a
-                    // huge `u64` via a bit-reinterpreting cast.
-                    ScalarValue::Int(n) => u64::try_from(*n).ok(),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-        let text = |obj: &automerge::ObjId, key: &str| -> Option<String> {
-            match doc.get(obj, key).ok().flatten() {
-                Some((Value::Scalar(v), _)) => match v.as_ref() {
-                    ScalarValue::Str(t) => Some(t.to_string()),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-
-        let Some((_, contents_id)) = doc.get(&ROOT, Self::ROOM_CONTENTS_KEY).ok().flatten() else {
-            return Vec::new();
-        };
-        let mut strips: Vec<ReplicatedStrip> = Vec::new();
-        for skey in doc.keys(&contents_id) {
-            let Some(sid) = Self::contents_key_id(&skey) else {
-                continue;
-            };
-            let Some((_, strip_entry)) = doc.get(&contents_id, skey.as_str()).ok().flatten() else {
-                continue;
-            };
-            let mut groups: Vec<ReplicatedGroup> = Vec::new();
-            if let Some((_, groups_id)) = doc.get(&strip_entry, "groups").ok().flatten() {
-                for gkey in doc.keys(&groups_id) {
-                    let Some(gid) = Self::contents_key_id(&gkey) else {
-                        continue;
-                    };
-                    let Some((_, group_entry)) = doc.get(&groups_id, gkey.as_str()).ok().flatten()
-                    else {
-                        continue;
-                    };
-                    let mut tabs: Vec<ReplicatedTab> = Vec::new();
-                    if let Some((_, tabs_id)) = doc.get(&group_entry, "tabs").ok().flatten() {
-                        for tkey in doc.keys(&tabs_id) {
-                            let Some(tid) = Self::contents_key_id(&tkey) else {
-                                continue;
-                            };
-                            let Some((_, tab_entry)) =
-                                doc.get(&tabs_id, tkey.as_str()).ok().flatten()
-                            else {
-                                continue;
-                            };
-                            let tile = match doc.get(&tab_entry, "tile_json").ok().flatten() {
-                                Some((Value::Scalar(v), _)) => match v.as_ref() {
-                                    ScalarValue::Bytes(b) => serde_json::from_slice(b).ok(),
-                                    _ => None,
-                                },
-                                _ => None,
-                            };
-                            tabs.push(ReplicatedTab {
-                                id: tid,
-                                order: uint(&tab_entry, "order").unwrap_or(u64::MAX),
-                                title: text(&tab_entry, "title").unwrap_or_default(),
-                                tile,
-                            });
-                        }
-                    }
-                    tabs.sort_by_key(|t| (t.order, t.id));
-                    groups.push(ReplicatedGroup {
-                        id: gid,
-                        order: uint(&group_entry, "order").unwrap_or(u64::MAX),
-                        tabs,
-                    });
-                }
-            }
-            groups.sort_by_key(|g| (g.order, g.id));
-            strips.push(ReplicatedStrip {
-                id: sid,
-                order: uint(&strip_entry, "order").unwrap_or(u64::MAX),
-                name: text(&strip_entry, "name"),
-                groups,
-            });
-        }
-        strips.sort_by_key(|s| (s.order, s.id));
-        strips
-    }
-
-    /// Every value in `doc`'s `contents` that this machine owns, as a
-    /// comparable digest. [`Self::apply_room_changes`] diffs this
-    /// before/after a peer's batch and refuses it whole if any owned
-    /// entry changed — enforcing "one writer per entry".
-    fn owned_contents_digest(doc: Option<&AutoCommit>, local_salt: u16) -> Vec<(u64, String)> {
-        let Some(doc) = doc else {
-            return Vec::new();
-        };
-        if local_salt == 0 {
-            return Vec::new();
-        }
-        let mut out: Vec<(u64, String)> = Vec::new();
-        for strip in Self::contents_of(doc) {
-            if peer_salt_of(strip.id) == local_salt {
-                out.push((
-                    strip.id,
-                    format!(
-                        "s|{}|{}",
-                        strip.order,
-                        strip.name.clone().unwrap_or_default()
-                    ),
-                ));
-            }
-            for group in &strip.groups {
-                if peer_salt_of(group.id) == local_salt {
-                    out.push((group.id, format!("g|{}", group.order)));
-                }
-                for tab in &group.tabs {
-                    if peer_salt_of(tab.id) == local_salt {
-                        out.push((
-                            tab.id,
-                            format!("t|{}|{}|{:?}", tab.order, tab.title, tab.tile),
-                        ));
-                    }
-                }
-            }
-        }
-        out.sort();
-        out
+    fn owned_contents_digest(doc: Option<&AutoCommit>, salt: u16) -> Vec<(u64, String)> {
+        qos_desktop::projection::RoomProjection::owned_contents_digest(doc, salt)
     }
 
     /// Fold the room document's `contents` into the cached workspace
@@ -3800,291 +2333,26 @@ impl WorkspaceTree {
     /// `active_group` with them so resolvers fall back rather than point
     /// at nothing.
     fn merge_room_contents(&mut self, room: RoomId) -> bool {
-        let local_salt = self.local_salt();
-        if local_salt == 0 {
-            return false;
-        }
-        let replicated = {
-            let Some(doc) = self.room_docs.get(&room) else {
-                return false;
-            };
-            Self::contents_of(doc)
-        };
-        let is_local = |id: u64| peer_salt_of(id) == local_salt;
-
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let salt = self.local_salt();
+        let Some(doc) = self.room_docs.get(&room) else {
             return false;
         };
-        let mut changed = false;
-        let prior_strip_order: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
-        let mut by_strip: std::collections::BTreeMap<u64, ReplicatedStrip> =
-            replicated.into_iter().map(|s| (s.id, s)).collect();
-
-        // `(order, id, strip)` so local-only strips keep a position too.
-        let mut out: Vec<(u64, u64, Strip)> = Vec::new();
-        // Old strip ids that don't make it into `out` below — collected
-        // as the loop drops them rather than diffed afterward against a
-        // snapshot, since `ws.strips` is about to be overwritten with the
-        // merged result.
-        let mut vanished: Vec<StripId> = Vec::new();
-        for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
-            let sid = strip.id.raw();
-            let published = by_strip.remove(&sid);
-            if published.is_none() {
-                if is_local(sid) {
-                    // Ours and simply not published; the document has
-                    // no say over it.
-                    out.push((i as u64, sid, strip));
-                } else {
-                    // A foreign strip no longer being merged in — drop it.
-                    changed = true;
-                    vanished.push(StripId::from(sid));
-                }
-                continue;
-            }
-            let rep = published.unwrap_or_else(|| ReplicatedStrip {
-                id: sid,
-                order: i as u64,
-                name: None,
-                groups: Vec::new(),
-            });
-            // Ours keeps our cache's position — taking it from the
-            // document would undo a local reorder until re-projected.
-            let order = if is_local(sid) { i as u64 } else { rep.order };
-            out.push((
-                order,
-                sid,
-                Self::merge_strip(strip, rep, &is_local, &mut changed),
-            ));
-        }
-        for (sid, rep) in by_strip {
-            out.push((rep.order, sid, Self::hydrate_strip(rep)));
-            changed = true;
-        }
-        out.sort_by_key(|(order, id, _)| (*order, *id));
-        if !prior_strip_order
-            .iter()
-            .copied()
-            .eq(out.iter().map(|(_, _, strip)| strip.id))
-        {
-            changed = true;
-        }
-        ws.strips = out.into_iter().map(|(_, _, s)| s).collect();
-
-        let ws_id = ws.id;
-        let live: Vec<StripId> = ws.strips.iter().map(|s| s.id).collect();
-
-        // Removed rather than repointed: resolvers already fall back to
-        // the first strip/group with no explicit selection.
-        if self
-            .active_strip
-            .get(&ws_id)
-            .is_some_and(|active| !live.contains(active))
-        {
-            self.active_strip.remove(&ws_id);
-        }
-        for strip in vanished {
-            self.active_group.remove(&strip);
-        }
-        changed
+        qos_desktop::projection::RoomProjection::merge_room_contents(
+            &mut self.desktop,
+            room,
+            doc,
+            salt,
+        )
     }
-
-    /// Reconcile one strip against what the room document says about it.
-    fn merge_strip(
-        mut local: Strip,
-        rep: ReplicatedStrip,
-        is_local: &dyn Fn(u64) -> bool,
-        changed: &mut bool,
-    ) -> Strip {
-        // A name is only taken from the document for a strip we do not
-        // own; ours is ours to write.
-        if !is_local(local.id.raw())
-            && let Some(name) = rep.name
-            && local.name != name
-        {
-            local.name = name;
-            *changed = true;
-        }
-        let mut by_group: std::collections::BTreeMap<u64, ReplicatedGroup> =
-            rep.groups.into_iter().map(|g| (g.id, g)).collect();
-        let prior_group_order: Vec<u64> =
-            local.window_groups.iter().map(|group| group.id).collect();
-
-        let mut out: Vec<(u64, u64, WindowGroup)> = Vec::new();
-        for (i, group) in std::mem::take(&mut local.window_groups)
-            .into_iter()
-            .enumerate()
-        {
-            let gid = group.id;
-            match by_group.remove(&gid) {
-                Some(rep) => {
-                    let order = if is_local(gid) { i as u64 } else { rep.order };
-                    out.push((order, gid, Self::merge_group(group, rep, is_local, changed)));
-                }
-                None if is_local(gid) => out.push((i as u64, gid, group)),
-                None => *changed = true,
-            }
-        }
-        for (gid, rep) in by_group {
-            out.push((rep.order, gid, Self::hydrate_group(rep)));
-            *changed = true;
-        }
-        out.sort_by_key(|(order, id, _)| (*order, *id));
-        if !prior_group_order
-            .iter()
-            .copied()
-            .eq(out.iter().map(|(_, id, _)| *id))
-        {
-            *changed = true;
-        }
-        local.window_groups = out.into_iter().map(|(_, _, g)| g).collect();
-        local
-    }
-
-    /// Reconcile one window group. **This is where view state is kept.**
+    #[cfg(test)]
     fn merge_group(
-        mut local: WindowGroup,
+        group: WindowGroup,
         rep: ReplicatedGroup,
-        is_local: &dyn Fn(u64) -> bool,
+        local: &dyn Fn(u64) -> bool,
         changed: &mut bool,
     ) -> WindowGroup {
-        // Geometry and maximization remain exactly as this device last set
-        // them. A peer changing its own desktop must never resize, maximize,
-        // or otherwise rearrange ours.
-
-        let mut by_tab: std::collections::BTreeMap<u64, ReplicatedTab> =
-            rep.tabs.into_iter().map(|t| (t.id, t)).collect();
-        let prior_tab_order: Vec<u64> = local.tabs.iter().map(|tab| tab.id).collect();
-        let mut out: Vec<(u64, u64, Tab)> = Vec::new();
-        for (i, tab) in std::mem::take(&mut local.tabs).into_iter().enumerate() {
-            let tid = tab.id;
-            match by_tab.remove(&tid) {
-                Some(rep) => {
-                    let order = if is_local(tid) { i as u64 } else { rep.order };
-                    let mut tab = tab;
-                    if !is_local(tid) {
-                        if tab.title != rep.title {
-                            tab.title.clone_from(&rep.title);
-                            *changed = true;
-                        }
-                        if let Some(tile) = rep.tile.clone() {
-                            let tile = Self::localise_tile(tile, Some(&tab.tile), &rep.title);
-                            if serde_json::to_vec(&tab.tile).ok() != serde_json::to_vec(&tile).ok()
-                            {
-                                tab.tile = tile;
-                                *changed = true;
-                            }
-                        }
-                    }
-                    out.push((order, tid, tab));
-                }
-                None if is_local(tid) => out.push((i as u64, tid, tab)),
-                None => *changed = true,
-            }
-        }
-        for (tid, rep) in by_tab {
-            out.push((rep.order, tid, Self::hydrate_tab(rep)));
-            *changed = true;
-        }
-        out.sort_by_key(|(order, id, _)| (*order, *id));
-        if !prior_tab_order
-            .iter()
-            .copied()
-            .eq(out.iter().map(|(_, id, _)| *id))
-        {
-            *changed = true;
-        }
-        local.tabs = out.into_iter().map(|(_, _, t)| t).collect();
-
-        // `active_tab` is not taken from `rep` — the document doesn't
-        // carry one. Moves only when the tab is genuinely gone.
-        if !local.tabs.iter().any(|t| t.id == local.active_tab)
-            && let Some(first) = local.tabs.first()
-        {
-            local.active_tab = first.id;
-        }
-        local
+        qos_desktop::projection::RoomProjection::merge_group(group, rep, local, changed)
     }
-
-    /// A strip that arrived from a peer.
-    fn hydrate_strip(rep: ReplicatedStrip) -> Strip {
-        Strip {
-            id: StripId::from(rep.id),
-            name: rep.name.unwrap_or_default(),
-            window_groups: rep.groups.into_iter().map(Self::hydrate_group).collect(),
-        }
-    }
-
-    /// A window group that arrived from a peer. Its `active_tab` is
-    /// chosen **here** — a local decision about a local view, not the
-    /// opening peer's to make.
-    fn hydrate_group(rep: ReplicatedGroup) -> WindowGroup {
-        let tabs: Vec<Tab> = rep.tabs.into_iter().map(Self::hydrate_tab).collect();
-        let active_tab = tabs.first().map(|t| t.id).unwrap_or_default();
-        WindowGroup {
-            id: rep.id,
-            tabs,
-            active_tab,
-            width: WindowWidth::Normal,
-            maximized: false,
-        }
-    }
-
-    /// A tab that arrived from a peer.
-    fn hydrate_tab(rep: ReplicatedTab) -> Tab {
-        let title = rep.title;
-        Tab {
-            tile: rep.tile.map_or(
-                TileContent::Stub {
-                    kind: AppKind::Other(String::new()),
-                    label: String::new(),
-                },
-                |tile| Self::localise_tile(tile, None, &title),
-            ),
-            id: rep.id,
-            title,
-        }
-    }
-
-    /// Make a peer's tile mean something on this machine: a
-    /// [`TileContent::Foreign`] `wl_surface` id only resolves on the
-    /// compositor hosting that client, so the surface is dropped and the
-    /// app id survives as [`TileContent::PeerWindow`]. `current` is
-    /// preferred once a local instance is bound, or the peer's
-    /// re-projection would take the window away again every round.
-    fn localise_tile(
-        tile: TileContent,
-        current: Option<&TileContent>,
-        tab_title: &str,
-    ) -> TileContent {
-        match tile {
-            TileContent::Foreign { app_id, .. } => {
-                // Already resolved here, to our own instance or the same
-                // waypoint — the remote tile has nothing to add.
-                match current {
-                    Some(
-                        matched @ (TileContent::Foreign { app_id: local, .. }
-                        | TileContent::PeerWindow { app_id: local, .. }),
-                    ) if local.eq_ignore_ascii_case(&app_id) => {
-                        return matched.clone();
-                    }
-                    _ => {}
-                }
-                let label = if tab_title.trim().is_empty() {
-                    app_id.clone()
-                } else {
-                    tab_title.to_string()
-                };
-                TileContent::PeerWindow {
-                    app_id,
-                    label,
-                    note: String::new(),
-                }
-            }
-            other => other,
-        }
-    }
-
     /// Key the room document stores a room's record index under, mirroring
     /// [`ui::record::room`]'s shape (id -> `kind`) in the document that
     /// crosses the wire.
@@ -4169,89 +2437,12 @@ impl WorkspaceTree {
         out
     }
 
-    /// Tell the tree which records `room`'s index holds. Returns whether
-    /// this was news, so the caller can skip re-asking when nothing moved.
-    pub fn set_room_records(
-        &mut self,
-        room: RoomId,
-        held: std::collections::BTreeMap<String, String>,
-    ) -> bool {
-        match self.room_records_held.get(&room) {
-            Some(existing) if *existing == held => false,
-            _ => {
-                self.room_records_held.insert(room, held);
-                true
-            }
-        }
-    }
-
-    /// Take the references peers have added since this was last called.
-    /// Drained rather than read so a queue that only grows isn't a leak.
-    pub fn take_inbound_room_records(&mut self) -> Vec<(RoomId, String, String)> {
-        std::mem::take(&mut self.room_records_inbound)
-    }
-
     /// The governance a room document records: owner and capability
     /// list — a peer able to write either controls the whole security
     /// policy. The room's **name** is deliberately not governed. The
     /// **id** is stricter still: a mismatched payload is refused outright.
     fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let Some(doc) = doc else {
-            return (
-                None,
-                std::collections::BTreeMap::new(),
-                std::collections::BTreeMap::new(),
-                std::collections::BTreeMap::new(),
-            );
-        };
-        let owner = match doc.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let mut caps = std::collections::BTreeMap::new();
-        if let Some((_, caps_id)) = doc.get(&ROOT, "capabilities").ok().flatten() {
-            let keys: Vec<String> = doc.keys(&caps_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = doc.get(&caps_id, &key).ok().flatten()
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                {
-                    caps.insert(key, blob.clone());
-                }
-            }
-        }
-        // Peer names fold in beside the capability list, the same kind
-        // of claim — left out, it'd be the one governance key a guest
-        // could write, and an impostor's first target.
-        let mut peers = std::collections::BTreeMap::new();
-        if let Some((_, peers_id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
-            let keys: Vec<String> = doc.keys(&peers_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = doc.get(&peers_id, &key).ok().flatten()
-                    && let ScalarValue::Str(v) = s.as_ref()
-                {
-                    peers.insert(key, v.to_string());
-                }
-            }
-        }
-        let mut identities = std::collections::BTreeMap::new();
-        if let Some((_, object)) = doc
-            .get(&ROOT, Self::ROOM_PEER_IDENTITIES_KEY)
-            .ok()
-            .flatten()
-        {
-            for key in doc.keys(&object) {
-                if let Some((Value::Scalar(value), _)) = doc.get(&object, &key).ok().flatten()
-                    && let ScalarValue::Bytes(bytes) = value.as_ref()
-                {
-                    identities.insert(key, bytes.clone());
-                }
-            }
-        }
-        (owner, caps, peers, identities)
+        qos_peer_state::room::governance_of(doc)
     }
 
     /// Current heads of `room`'s replication document — the baseline a
@@ -4286,26 +2477,10 @@ impl WorkspaceTree {
     /// True (and logs a warning) if the payload's own `room` field
     /// disagrees with the room it was sent to answer.
     fn declared_room_mismatches(candidate: &AutoCommit, room: RoomId) -> bool {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let declared = match candidate.get(&ROOT, "room").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => RoomId::parse(v.as_str()),
-                _ => None,
-            },
-            _ => None,
-        };
-        if declared.is_some_and(|d| d != room) {
-            tracing::warn!(
-                target: "shell::state",
-                asked = %room,
-                got = %declared.map(|d| d.to_string()).unwrap_or_default(),
-                "room sync refused: the payload names a different room than \
-                 the one it answers",
-            );
-            true
-        } else {
-            false
-        }
+        qos_peer_state::room::declared_room_mismatches(
+            candidate,
+            uuid::Uuid::parse_str(&room.to_string()).expect("RoomId is a UUID"),
+        )
     }
 
     /// True (and logs a warning, or pins an unpinned authority) if
@@ -4417,34 +2592,7 @@ impl WorkspaceTree {
     fn extract_governed_fields(
         candidate: &AutoCommit,
     ) -> (Option<String>, Option<String>, Vec<CapOverride>) {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let name = match candidate.get(&ROOT, "name").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let owner = match candidate.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let mut caps: Vec<CapOverride> = Vec::new();
-        if let Some((_, caps_id)) = candidate.get(&ROOT, "capabilities").ok().flatten() {
-            let keys: Vec<String> = candidate.keys(&caps_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = candidate.get(&caps_id, &key).ok().flatten()
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                    && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
-                {
-                    caps.push(cap);
-                }
-            }
-        }
-        (name, owner, caps)
+        qos_peer_state::room::extract_governed_fields(candidate)
     }
 
     /// Diffs `candidate`'s room-record index against what's already held
@@ -4456,7 +2604,7 @@ impl WorkspaceTree {
         // brought — queued for the shell to fold in, since the tree
         // can't reach the room's own index.
         let arrived = Self::room_records_of(candidate);
-        let already = self.room_records_held.get(&room);
+        let already = self.desktop.room_records_held.get(&room);
         let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
         for (id, kind) in arrived {
             let known = already.and_then(|h| h.get(&id));
@@ -4465,7 +2613,7 @@ impl WorkspaceTree {
             }
         }
         let records_changed = !inbound.is_empty();
-        self.room_records_inbound.extend(inbound);
+        self.desktop.room_records_inbound.extend(inbound);
         records_changed
     }
 
@@ -4499,28 +2647,15 @@ impl WorkspaceTree {
         if self.workspace_in_room(room).is_none() {
             return Ok(false);
         }
-        let parsed: Result<Vec<automerge::Change>, _> = changes
-            .iter()
-            .map(|b| automerge::Change::try_from(b.as_slice()))
-            .collect();
-        let parsed = parsed?;
-
-        // Applied to a copy first: a check that runs after the merge has
-        // already happened is not a check.
-        let mut candidate = self
-            .room_docs
-            .get(&room)
-            .cloned()
-            .unwrap_or_else(AutoCommit::new);
-        // See `sync_room_doc`: a patch log carried into `apply_changes`
-        // is what turns a peer's first delta into a panic.
-        candidate.reset_diff_cursor();
-        candidate.apply_changes(parsed)?;
+        let candidate = qos_peer_state::room::candidate(self.room_docs.get(&room), changes)?;
 
         if Self::declared_room_mismatches(&candidate, room) {
             return Ok(false);
         }
         if self.governance_write_refused(room, &candidate, from) {
+            return Ok(false);
+        }
+        if qos_peer_state::coverage::monotonic(self.room_docs.get(&room), &candidate).is_err() {
             return Ok(false);
         }
         if self.owned_contents_conflict(room, &candidate, from) {
@@ -4557,7 +2692,7 @@ impl WorkspaceTree {
         // view state; see `merge_room_contents`.
         let contents_changed = self.merge_room_contents(room);
 
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+        let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.room == room) else {
             return Ok(records_changed || contents_changed);
         };
         let mut fields_changed = false;
@@ -4610,7 +2745,7 @@ impl WorkspaceTree {
             // A peer's window is in the tree now but not on screen yet —
             // this runs on the network thread, and only the frame
             // thread splices the widget tree, on chrome revision bumps.
-            self.room_epoch = self.room_epoch.wrapping_add(1);
+            self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         }
         Ok(landed)
     }
@@ -4619,7 +2754,7 @@ impl WorkspaceTree {
     /// Monotonic per session, not persisted — read by the frame loop,
     /// which bumps the chrome revision when it moves.
     pub fn room_epoch(&self) -> u64 {
-        self.room_epoch
+        self.desktop.room_epoch
     }
 
     /// Seed the automerge doc from the cache. Idempotent (truncates
@@ -4639,9 +2774,11 @@ impl WorkspaceTree {
     )]
     pub fn seed_doc_from_cache(&mut self) {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
-        let _ = self
-            .doc
-            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
+        let _ = self.doc.put(
+            &ROOT,
+            "active",
+            ScalarValue::Uint(self.desktop.active.raw()),
+        );
         // Truncate + re-fill from the cache; not diff-aware, so
         // concurrent appends can clobber.
         let workspaces_id = if let Some((_, id)) = self.doc.get(&ROOT, "workspaces").ok().flatten()
@@ -4659,7 +2796,7 @@ impl WorkspaceTree {
         for i in (0..current_len).rev() {
             let _ = self.doc.delete(&workspaces_id, i);
         }
-        for (i, ws) in self.workspaces.iter().enumerate() {
+        for (i, ws) in self.desktop.workspaces.iter().enumerate() {
             let Ok(entry) = self.doc.insert_object(&workspaces_id, i, ObjType::Map) else {
                 continue;
             };
@@ -4842,7 +2979,7 @@ impl WorkspaceTree {
     fn rebuild_cache_from_doc(&mut self) {
         use automerge::{ROOT, ReadDoc};
         if let Some(raw) = Self::doc_uint(&self.doc, &ROOT, "active") {
-            self.active = WorkspaceId::from(raw);
+            self.desktop.active = WorkspaceId::from(raw);
         }
         // Rebuild while preserving any existing nested state by id-match.
         if let Some(workspaces_id) = Self::doc_obj(&self.doc, &ROOT, "workspaces") {
@@ -4867,9 +3004,9 @@ impl WorkspaceTree {
                 // *revocation* take effect.
                 let replicated = self.doc_read_capabilities(&entry_id);
                 let mut ws = if let Some(existing_idx) =
-                    self.workspaces.iter().position(|w| w.id == ws_id)
+                    self.desktop.workspaces.iter().position(|w| w.id == ws_id)
                 {
-                    let mut existing = self.workspaces.remove(existing_idx);
+                    let mut existing = self.desktop.workspaces.remove(existing_idx);
                     existing.name = name;
                     existing
                 } else {
@@ -4891,7 +3028,7 @@ impl WorkspaceTree {
                 ws.effect_receipts = self.doc_read_workspace_effect_receipts(&entry_id);
                 new_workspaces.push(ws);
             }
-            self.workspaces = new_workspaces;
+            self.desktop.workspaces = new_workspaces;
         }
 
         // Reconstruct shared topology and tabs, matching each strip/group by
@@ -4942,7 +3079,8 @@ impl WorkspaceTree {
                     let Some(group_id) = Self::doc_uint(&self.doc, &group_entry, "id") else {
                         continue;
                     };
-                    let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+                    let Some(ws) = self.desktop.workspaces.iter_mut().find(|w| w.id == ws_id)
+                    else {
                         continue;
                     };
                     let strip = if let Some(pos) = ws.strips.iter().position(|s| s.id == strip_id) {
@@ -4958,7 +3096,7 @@ impl WorkspaceTree {
                     // cache; new ids get synthesized entries.
                     // Explicit `&self.doc` (not a `&self` method): `strip`
                     // above already holds a mutable borrow into
-                    // `self.workspaces`, so this can only borrow the `doc`
+                    // `self.desktop.workspaces`, so this can only borrow the `doc`
                     // field, not all of `self`.
                     let doc_tabs = Self::collect_doc_tabs(&self.doc, &group_entry);
                     Self::apply_group_from_doc(strip, group_id, &doc_tabs);
@@ -5195,7 +3333,7 @@ impl WorkspaceTree {
                 .ok()
                 .map(|key| key.verifying_key().to_bytes());
         let mut caps: Vec<CapOverride> = Vec::new();
-        for workspace in &self.workspaces {
+        for workspace in &self.desktop.workspaces {
             let profile =
                 crate::identity_registry::selected_identity_profile(&workspace.room.to_string())
                     .ok()
@@ -5257,7 +3395,12 @@ impl WorkspaceTree {
             tracing::warn!("filesystem capability export failed: {e}");
             return;
         }
-        schedule_fs_authority_publication(path.clone());
+        // `qos_desktop` is compiled as a dependency of shell tests, so its
+        // own `cfg(test)` guard is not active there. Keep fixture exports
+        // away from the real service unless the test supplied a publisher.
+        if !cfg!(test) || std::env::var_os("QOS_FS_AUTHORITY_PUBLISHER").is_some() {
+            schedule_fs_authority_publication(path.clone());
+        }
     }
 
     /// Give every workspace with no recorded owner to `user`, returning
@@ -5286,7 +3429,7 @@ impl WorkspaceTree {
             .map(|(room, _)| *room)
             .collect();
         let mut adopted = Vec::new();
-        for ws in &mut self.workspaces {
+        for ws in &mut self.desktop.workspaces {
             if ws.owner.is_none() && !governed_elsewhere.contains(&ws.room) {
                 let user = identity_for_room(&ws.room);
                 ws.set_owner(user.clone());
@@ -5318,7 +3461,7 @@ impl WorkspaceTree {
     /// the ids minted for.
     pub fn adopt_roomless_workspaces(&mut self) -> Vec<WorkspaceId> {
         let mut adopted = Vec::new();
-        for ws in &mut self.workspaces {
+        for ws in &mut self.desktop.workspaces {
             if ws.room.is_nil() {
                 ws.room = RoomId::new();
                 adopted.push(ws.id);
@@ -5339,15 +3482,6 @@ impl WorkspaceTree {
         adopted
     }
 
-    /// The durable room identity of `workspace_id`. What the launch path
-    /// needs to turn a local handle into the value the wire speaks.
-    pub fn room_of(&self, workspace_id: WorkspaceId) -> Option<RoomId> {
-        self.workspaces
-            .iter()
-            .find(|w| w.id == workspace_id)
-            .map(|w| w.room)
-    }
-
     /// Point `workspace_id` at `room`, mirroring the change to peers and
     /// disk — how an invitee stops being in their own room and starts
     /// being in the inviter's. Refuses a nil `room`. Also where a
@@ -5361,8 +3495,13 @@ impl WorkspaceTree {
         // Joining a room some other local workspace is already in is not a
         // join: this machine is already in the room and already knows who
         // governs it.
-        let joining = !self.workspaces.iter().any(|w| w.room == room);
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+        let joining = !self.desktop.workspaces.iter().any(|w| w.room == room);
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
             return false;
         };
         if ws.room == room {
@@ -5396,7 +3535,7 @@ impl WorkspaceTree {
 
     /// Mirror a workspace's room into the automerge doc, as a string —
     /// what every other consumer of the value speaks
-    /// (`TILO_WORKSPACE_ID`, the invite token, `CrdtRoute::cluster_id`).
+    /// (`QOS_WORKSPACE_ID`, the invite token, `CrdtRoute::cluster_id`).
     /// Null-tolerant like the other `doc_*` mirrors.
     pub fn doc_set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) {
         use automerge::transaction::Transactable;
@@ -5436,7 +3575,11 @@ impl WorkspaceTree {
             );
             return None;
         }
-        let ws = self.workspaces.iter_mut().find(|w| w.id == workspace_id)?;
+        let ws = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)?;
         let id = ws.grant_as(grantor, cap)?;
         let stored = ws.capabilities.iter().find(|c| c.id == id).cloned()?;
         self.doc_insert_capability(workspace_id, &stored);
@@ -5454,7 +3597,12 @@ impl WorkspaceTree {
         revoker: &UserId,
         cap_id: &str,
     ) -> bool {
-        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)
+        else {
             return false;
         };
         if !ws.revoke_as(revoker, cap_id) {
@@ -5805,7 +3953,8 @@ impl WorkspaceTree {
                 summary: format!("Created task · {title}"),
             }],
         };
-        self.workspaces
+        self.desktop
+            .workspaces
             .iter_mut()
             .find(|workspace| workspace.id == workspace_id)?
             .tasks
@@ -5929,27 +4078,8 @@ impl WorkspaceTree {
         {
             return false;
         }
-        let original_action = bounded_receipt_text(&context.action_label, 160);
-        context.action_label = if original_action.is_empty() {
-            status.label().to_string()
-        } else {
-            format!("{} · {original_action}", status.label())
-        };
-        context
-            .facets
-            .push(tilo_actions::ActionFacet::new("tilo.receipt", "effect"));
-        context.facets.push(tilo_actions::ActionFacet::new(
-            "tilo.invocation",
-            invocation.0.to_string(),
-        ));
-        redact_receipt_context(&mut context);
-        let receipt = WorkspaceEffectReceipt {
-            invocation,
-            actor: bounded_receipt_text(actor, 160),
-            context,
-            status,
-            completed_at,
-        };
+        let mut receipt = redacted_effect_receipt(invocation, actor, context, status);
+        receipt.completed_at = completed_at;
         workspace.effect_receipts.push(receipt.clone());
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
         self.flush_to_disk();
@@ -6472,7 +4602,7 @@ impl WorkspaceTree {
             return false;
         };
         let ws_len = self.doc.length(&workspaces_id);
-        let active_raw = self.active.raw();
+        let active_raw = self.desktop.active.raw();
         for ws_idx in 0..ws_len {
             let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
                 continue;
@@ -6540,7 +4670,7 @@ impl WorkspaceTree {
             return false;
         };
         let ws_len = self.doc.length(&workspaces_id);
-        let active_raw = self.active.raw();
+        let active_raw = self.desktop.active.raw();
         for ws_idx in 0..ws_len {
             let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
                 continue;
@@ -6613,38 +4743,8 @@ impl WorkspaceTree {
     ///
     /// For a populated tree, use [`Self::bootstrap_demo`].
     pub fn bootstrap_default() -> Self {
-        let ws_id = WorkspaceId::new();
-        let strip_id = StripId::new();
-        let home = Workspace {
-            id: ws_id,
-            room: RoomId::new(),
-            name: "Home".into(),
-            strips: vec![Strip {
-                id: strip_id,
-                name: "Main".into(),
-                window_groups: Vec::new(),
-            }],
-            collaborators: Vec::new(),
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
-        };
-
-        let mut active_strip = HashMap::new();
-        active_strip.insert(ws_id, strip_id);
         let mut tree = Self {
-            workspaces: vec![home],
-            active: ws_id,
-            active_strip,
-            active_group: HashMap::new(),
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree::bootstrap_default(),
             ..Default::default()
         };
         tree.seed_doc_from_cache();
@@ -6739,11 +4839,14 @@ impl WorkspaceTree {
         let mut active_group = HashMap::new();
         active_group.insert(strip_id, group_id);
         let mut tree = Self {
-            workspaces: vec![home],
-            active: ws_id,
-            active_strip,
-            active_group,
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![home],
+                active: ws_id,
+                active_strip,
+                active_group,
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -6773,36 +4876,10 @@ impl WorkspaceTree {
 
     pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
-        let ws_id = WorkspaceId::new();
-        let strip_id = StripId::new();
-        // A workspace the user just created is a room that now exists;
-        // it gets its identity at the same moment it gets its id, not
-        // the first time someone tries to share it.
-        let room = RoomId::new();
-        let ws = Workspace {
-            id: ws_id,
-            room,
-            name: name.into(),
-            strips: vec![Strip {
-                id: strip_id,
-                name: "Main".into(),
-                window_groups: vec![],
-            }],
-            collaborators: vec![],
-            owner: None,
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
-            capabilities: Vec::new(),
-            permission_profiles: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            tasks: Vec::new(),
-            effect_receipts: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
+        let ws_id = self.desktop.append_empty_workspace(name);
+        let Some(room) = self.desktop.room_of(ws_id) else {
+            return ws_id;
         };
-        self.active_strip.insert(ws_id, strip_id);
-        self.workspaces.push(ws);
-
         // Mirror the append into the doc so peer-sync sees a discrete
         // change. Creates the list lazily, for trees not yet seeded.
         // Doc writes here are best-effort, same as `seed_doc_from_cache`
@@ -6854,7 +4931,7 @@ impl WorkspaceTree {
         let id = WorkspaceId::new();
         let mut workspace = Workspace::new(id, "From another device");
         workspace.room = room;
-        self.workspaces.push(workspace);
+        self.desktop.workspaces.push(workspace);
         self.continuation_rooms.insert(room);
         self.room_authority.insert(room, RoomAuthority::Unpinned);
         self.room_share_floor
@@ -6872,7 +4949,7 @@ impl WorkspaceTree {
             return false;
         }
         self.continuation_file_references.remove(&tab);
-        if let Some(room) = self.workspaces.iter().find_map(|workspace| {
+        if let Some(room) = self.desktop.workspaces.iter().find_map(|workspace| {
             workspace
                 .strips
                 .iter()
@@ -6915,7 +4992,8 @@ impl WorkspaceTree {
             .map(|tab| tab.id)
             .filter(|tab| self.continuation_tabs.contains(tab))
             .collect();
-        self.workspaces
+        self.desktop
+            .workspaces
             .retain(|workspace| !stale.contains(&workspace.room));
         self.continuation_rooms.retain(|room| !stale.contains(room));
         self.continuation_tabs
@@ -6935,9 +5013,9 @@ impl WorkspaceTree {
         if !self
             .workspaces
             .iter()
-            .any(|workspace| workspace.id == self.active)
+            .any(|workspace| workspace.id == self.desktop.active)
         {
-            self.active = self
+            self.desktop.active = self
                 .workspaces
                 .first()
                 .map_or_else(WorkspaceId::default, |workspace| workspace.id);
@@ -7119,7 +5197,7 @@ impl WorkspaceTree {
         if stale.is_empty() {
             return false;
         }
-        for workspace in &mut self.workspaces {
+        for workspace in &mut self.desktop.workspaces {
             for strip in &mut workspace.strips {
                 for group in &mut strip.window_groups {
                     group.tabs.retain(|tab| !stale.contains(&tab.id));
@@ -7144,142 +5222,37 @@ impl WorkspaceTree {
         true
     }
 
-    pub fn set_active(&mut self, id: WorkspaceId) {
+    fn persist_local_selection(&mut self) {
         use automerge::{ROOT, ScalarValue, transaction::Transactable};
-        if self.workspaces.iter().any(|w| w.id == id) {
-            self.active = id;
-            let _ = self
-                .doc
-                .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
-            // Workspace selection is user-visible session state, not merely
-            // a render hint. Persist it immediately so a compositor restart
-            // opens the workspace the user selected rather than the one that
-            // happened to be active at the last unrelated mutation.
-            self.flush_to_disk();
+        let _ = self.doc.put(
+            &ROOT,
+            "active",
+            ScalarValue::Uint(self.desktop.active.raw()),
+        );
+        self.flush_to_disk();
+    }
+
+    pub fn set_active(&mut self, id: WorkspaceId) {
+        if self.desktop.workspaces.iter().any(|w| w.id == id) {
+            self.desktop.set_active(id);
+            self.persist_local_selection();
         }
     }
 
-    pub fn active_workspace(&self) -> Option<&Workspace> {
-        self.workspaces.iter().find(|w| w.id == self.active)
-    }
-
-    pub fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
-        self.workspaces.iter_mut().find(|w| w.id == self.active)
-    }
-
     pub fn switch_up(&mut self) -> bool {
-        use automerge::{ROOT, ScalarValue, transaction::Transactable};
-        let idx = self
-            .workspaces
-            .iter()
-            .position(|w| w.id == self.active)
-            .unwrap_or(0);
-        let Some(prev_idx) = idx.checked_sub(1) else {
+        if !self.desktop.switch_up() {
             return false;
-        };
-        let Some(prev) = self.workspaces.get(prev_idx) else {
-            return false;
-        };
-        self.active = prev.id;
-        let _ = self
-            .doc
-            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
-        self.flush_to_disk();
+        }
+        self.persist_local_selection();
         true
     }
 
     pub fn switch_down(&mut self) -> bool {
-        use automerge::{ROOT, ScalarValue, transaction::Transactable};
-        let idx = self
-            .workspaces
-            .iter()
-            .position(|w| w.id == self.active)
-            .unwrap_or(0);
-        let Some(next) = self.workspaces.get(idx.saturating_add(1)) else {
+        if !self.desktop.switch_down() {
             return false;
-        };
-        self.active = next.id;
-        let _ = self
-            .doc
-            .put(&ROOT, "active", ScalarValue::Uint(self.active.raw()));
-        self.flush_to_disk();
-        true
-    }
-
-    // Active-group pointer: one [`GroupId`] per [`StripId`], the
-    // receiver of focus/keyboard/presence. Closing the active group's
-    // last tab latches a 180 ms shrink before pruning, so
-    // [`Self::nudge_active_group_off_closing`] advances the pointer to
-    // the next surviving sibling at fade-start rather than letting it
-    // resolve to the fading group for that whole window.
-
-    /// The currently-active [`GroupId`] for `strip_id`, or `None` if
-    /// unseeded — callers compose this with their own fallback.
-    pub fn active_group_for(&self, strip_id: StripId) -> Option<GroupId> {
-        self.active_group.get(&strip_id).copied()
-    }
-
-    /// Mark `group_id` as the active group of `strip_id`. Not validated
-    /// against the strip's actual membership — the shell's reconciler is
-    /// expected to be the sole writer.
-    pub fn set_active_group(&mut self, strip_id: StripId, group_id: GroupId) {
-        self.active_group.insert(strip_id, group_id);
-    }
-
-    /// Resolve the active group on `strip_id` under `is_closing`: if
-    /// closing, returns the next non-closing sibling right, falling
-    /// back left. Pure read; `None` if no group survives, or the strip
-    /// doesn't exist.
-    pub fn resolve_active_group(
-        &self,
-        strip_id: StripId,
-        is_closing: impl Fn(GroupId) -> bool,
-    ) -> Option<GroupId> {
-        let strip = self
-            .workspaces
-            .iter()
-            .flat_map(|w| w.strips.iter())
-            .find(|s| s.id == strip_id)?;
-        let recorded = self.active_group.get(&strip_id).copied();
-        // First non-closing group in the strip scanning right
-        // (increasing index) from — and including — `from`.
-        let scan_right = |from: usize| -> Option<GroupId> {
-            strip
-                .window_groups
-                .get(from..)
-                .unwrap_or(&[])
-                .iter()
-                .find(|g| !is_closing(g.id))
-                .map(|g| g.id)
-        };
-        // Same, scanning left (decreasing index) from — and including —
-        // `from`.
-        let scan_left = |from: usize| -> Option<GroupId> {
-            strip
-                .window_groups
-                .get(..=from)
-                .unwrap_or(&[])
-                .iter()
-                .rev()
-                .find(|g| !is_closing(g.id))
-                .map(|g| g.id)
-        };
-        match recorded {
-            Some(id) => {
-                if !is_closing(id) {
-                    return Some(id);
-                }
-                // Recorded group is closing — find its index, then
-                // scan right for a survivor; if none, scan left.
-                let Some(idx) = strip.window_groups.iter().position(|g| g.id == id) else {
-                    // Recorded group no longer in the strip; fall
-                    // through to "first non-closing" as a default.
-                    return scan_right(0);
-                };
-                scan_right(idx.saturating_add(1)).or_else(|| idx.checked_sub(1).and_then(scan_left))
-            }
-            None => scan_right(0),
         }
+        self.persist_local_selection();
+        true
     }
 
     /// Mirror a cross-strip tab drag-drop into the persisted tree. The
@@ -7299,114 +5272,37 @@ impl WorkspaceTree {
         new_group_id: GroupId,
         destination: usize,
     ) -> bool {
-        if src_strip_id == dest_strip_id {
-            // Return-to-source re-splices into a new group on the same
-            // strip; the tab is still attributed to this strip, so
-            // skipping the write is safe — a restart rebuilds it anyway.
-            return false;
-        }
-        // Cache and Automerge document form one transaction. Keep snapshots
-        // so a stale/malformed document cannot leave the live cache moved
-        // while replication still describes the old layout.
-        let before_workspaces = self.workspaces.clone();
+        let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
-        // Validate the destination before detaching anything. A stale drop
-        // target must not make the source tab disappear.
-        if !self
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .any(|strip| strip.id == dest_strip_id)
-        {
+        let Some(moved) = self.desktop.move_tab_across_strips(
+            src_strip_id,
+            dest_strip_id,
+            tab_id,
+            new_group_id,
+            destination,
+        ) else {
+            return false;
+        };
+        if !self.doc_move_tab_across_strips(
+            src_strip_id,
+            dest_strip_id,
+            moved.source_group,
+            moved.pruned_source_group,
+            &moved.group,
+            moved.destination,
+        ) {
+            tracing::warn!(
+                tab_id,
+                src_strip_id = src_strip_id.raw(),
+                dest_strip_id = dest_strip_id.raw(),
+                "cross-strip move could not be mirrored into the room document"
+            );
+            self.desktop.workspaces = before_workspaces;
+            self.doc = before_doc;
             return false;
         }
-        // Scan every workspace's strips: StripId is workspace-agnostic.
-        let mut moved_tab: Option<Tab> = None;
-        let mut prune_group_at: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, group_idx)
-        let mut src_group_id = 0;
-        'outer: for (ws_idx, ws) in self.workspaces.iter_mut().enumerate() {
-            for (strip_idx, strip) in ws.strips.iter_mut().enumerate() {
-                if strip.id != src_strip_id {
-                    continue;
-                }
-                for (group_idx, group) in strip.window_groups.iter_mut().enumerate() {
-                    if let Some(pos) = group.tabs.iter().position(|t| t.id == tab_id) {
-                        src_group_id = group.id;
-                        let removed = group.tabs.remove(pos);
-                        // If the moved tab was active, promote the
-                        // first remaining sibling so a future re-render
-                        // doesn't dereference a stale active id.
-                        if group.active_tab == tab_id
-                            && let Some(first) = group.tabs.first()
-                        {
-                            group.active_tab = first.id;
-                        }
-                        if group.tabs.is_empty() {
-                            prune_group_at = Some((ws_idx, strip_idx, group_idx));
-                        }
-                        moved_tab = Some(removed);
-                        break 'outer;
-                    }
-                }
-            }
-        }
-        let Some(moved) = moved_tab else { return false };
-        if let Some((ws_idx, strip_idx, group_idx)) = prune_group_at {
-            // `ws_idx`/`strip_idx` were captured in the scan just above and
-            // nothing has mutated `self.workspaces` since, but a `.get_mut()`
-            // chain costs nothing and can't panic if that ever changes.
-            if let Some(groups) = self
-                .workspaces
-                .get_mut(ws_idx)
-                .and_then(|w| w.strips.get_mut(strip_idx))
-                .map(|s| &mut s.window_groups)
-                && group_idx < groups.len()
-            {
-                groups.remove(group_idx);
-            }
-        }
-        let active_tab = moved.id;
-        let new_group = WindowGroup {
-            id: new_group_id,
-            tabs: vec![moved],
-            active_tab,
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        for ws in &mut self.workspaces {
-            for strip in &mut ws.strips {
-                if strip.id == dest_strip_id {
-                    let destination = destination.min(strip.window_groups.len());
-                    strip.window_groups.insert(destination, new_group.clone());
-                    let doc_changed = self.doc_move_tab_across_strips(
-                        src_strip_id,
-                        dest_strip_id,
-                        src_group_id,
-                        prune_group_at.is_some(),
-                        &new_group,
-                        destination,
-                    );
-                    if !doc_changed {
-                        tracing::warn!(
-                            tab_id,
-                            src_strip_id = src_strip_id.raw(),
-                            dest_strip_id = dest_strip_id.raw(),
-                            "cross-strip move could not be mirrored into the room document"
-                        );
-                        self.workspaces = before_workspaces;
-                        self.doc = before_doc;
-                        return false;
-                    }
-                    self.flush_to_disk();
-                    return true;
-                }
-            }
-        }
-        // Defensive rollback if later refactors make strip membership
-        // mutable between validation and insertion.
-        self.workspaces = before_workspaces;
-        self.doc = before_doc;
-        false
+        self.flush_to_disk();
+        true
     }
 
     /// Split `tab_id` out of its group into a brand-new single-tab group
@@ -7430,86 +5326,30 @@ impl WorkspaceTree {
         tab_id: TabId,
         insert_at: usize,
     ) -> Option<GroupId> {
-        let (ws_idx, strip_idx, group_idx, tab_idx) =
-            self.workspaces
-                .iter()
-                .enumerate()
-                .find_map(|(ws_idx, ws)| {
-                    let (strip_idx, strip) = ws
-                        .strips
-                        .iter()
-                        .enumerate()
-                        .find(|(_, strip)| strip.id == strip_id)?;
-                    strip
-                        .window_groups
-                        .iter()
-                        .enumerate()
-                        .find_map(|(group_idx, group)| {
-                            group
-                                .tabs
-                                .iter()
-                                .position(|tab| tab.id == tab_id)
-                                .map(|tab_idx| (ws_idx, strip_idx, group_idx, tab_idx))
-                        })
-                })?;
-        let before_workspaces = self.workspaces.clone();
+        let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
-        let (src_group_id, moved) = {
-            let group = self
-                .workspaces
-                .get_mut(ws_idx)?
-                .strips
-                .get_mut(strip_idx)?
-                .window_groups
-                .get_mut(group_idx)?;
-            if group.tabs.len() < 2 {
-                return None;
-            }
-            let moved = group.tabs.remove(tab_idx);
-            if group.active_tab == tab_id {
-                group.active_tab = group
-                    .tabs
-                    .get(tab_idx)
-                    .or_else(|| group.tabs.last())
-                    .map_or(0, |tab| tab.id);
-            }
-            (group.id, moved)
-        };
-        let new_group = WindowGroup {
-            id: next_id(),
-            active_tab: moved.id,
-            tabs: vec![moved],
-            width: WindowWidth::Normal,
-            maximized: false,
-        };
-        let new_id = new_group.id;
-        let groups = &mut self
-            .workspaces
-            .get_mut(ws_idx)?
-            .strips
-            .get_mut(strip_idx)?
-            .window_groups;
-        let destination = insert_at.min(groups.len());
-        groups.insert(destination, new_group.clone());
+        let moved = self
+            .desktop
+            .split_tab_into_new_group(strip_id, tab_id, insert_at)?;
         if !self.doc_move_tab_across_strips(
             strip_id,
             strip_id,
-            src_group_id,
-            false,
-            &new_group,
-            destination,
+            moved.source_group,
+            moved.pruned_source_group,
+            &moved.group,
+            moved.destination,
         ) {
             tracing::warn!(
                 tab_id,
                 strip_id = strip_id.raw(),
                 "in-strip split could not be mirrored into the room document"
             );
-            self.workspaces = before_workspaces;
+            self.desktop.workspaces = before_workspaces;
             self.doc = before_doc;
             return None;
         }
         self.flush_to_disk();
-        Some(new_id)
+        Some(moved.group.id)
     }
 
     /// Replace one strip's group/tab arrangement with the identity-only shape
@@ -7683,90 +5523,48 @@ impl WorkspaceTree {
         group_id: u64,
         new_index: usize,
     ) -> bool {
-        // Locate the strip (StripId is workspace-agnostic, so scan all).
-        let mut located: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, cur_idx)
-        'scan: for (ws_idx, ws) in self.workspaces.iter().enumerate() {
-            for (strip_idx, strip) in ws.strips.iter().enumerate() {
-                if strip.id != strip_id {
-                    continue;
-                }
-                if let Some(cur_idx) = strip.window_groups.iter().position(|g| g.id == group_id) {
-                    located = Some((ws_idx, strip_idx, cur_idx));
-                }
-                break 'scan;
-            }
-        }
-        let Some((ws_idx, strip_idx, cur_idx)) = located else {
+        if !self
+            .desktop
+            .reorder_group_within_strip(strip_id, group_id, new_index)
+        {
             return false;
-        };
-        // `ws_idx`/`strip_idx` were captured in the scan just above and
-        // nothing has mutated `self.workspaces` since, but `.get_mut()`
-        // costs nothing and can't panic if that ever changes.
-        let Some(groups) = self
+        }
+        let Some((dest, moved)) = self
+            .desktop
             .workspaces
-            .get_mut(ws_idx)
-            .and_then(|w| w.strips.get_mut(strip_idx))
-            .map(|s| &mut s.window_groups)
+            .iter()
+            .flat_map(|w| &w.strips)
+            .find(|s| s.id == strip_id)
+            .and_then(|s| {
+                s.window_groups
+                    .iter()
+                    .enumerate()
+                    .find(|(_, g)| g.id == group_id)
+            })
+            .map(|(i, g)| (i, g.clone()))
         else {
             return false;
         };
-        // Clamp into the post-removal index space so a raw gap index
-        // (which can equal `len`, "append") lands on the last slot.
-        let dest = new_index.min(groups.len().saturating_sub(1));
-        if dest == cur_idx || cur_idx >= groups.len() {
-            return false;
-        }
-        let moved = groups.remove(cur_idx);
-        groups.insert(dest, moved.clone());
-        // Mirror from the cache copy we just placed, so the doc entry
-        // carries the group's full content at the new slot. Tolerant
-        // of an unseeded doc — see [`Self::locate_group`].
         self.doc_reorder_group_within_strip(strip_id, &moved, dest);
         self.flush_to_disk();
         true
     }
 
-    /// Move the tab at `from` to index `to` inside `group_id`'s tab
-    /// list — the persisted half of an intra-group tab drag, mirroring
-    /// what the widget tree already reordered. `to` is clamped to the
-    /// last slot; `true` only when the order actually changed.
     pub fn reorder_tab_within_group(&mut self, group_id: u64, from: usize, to: usize) -> bool {
-        // Locate the group in the cache (ids are workspace-agnostic).
-        let mut located: Option<(usize, usize, usize)> = None;
-        'scan: for (ws_idx, ws) in self.workspaces.iter().enumerate() {
-            for (strip_idx, strip) in ws.strips.iter().enumerate() {
-                if let Some(g_idx) = strip.window_groups.iter().position(|g| g.id == group_id) {
-                    located = Some((ws_idx, strip_idx, g_idx));
-                    break 'scan;
-                }
-            }
-        }
-        let Some((ws_idx, strip_idx, g_idx)) = located else {
+        if !self.desktop.reorder_tab_within_group(group_id, from, to) {
             return false;
-        };
-        // `ws_idx`/`strip_idx`/`g_idx` were captured in the scan just
-        // above and nothing has mutated `self.workspaces` since, but
-        // `.get_mut()` costs nothing and can't panic if that ever changes.
-        let Some(group) = self
+        }
+        let Some(tabs) = self
+            .desktop
             .workspaces
-            .get_mut(ws_idx)
-            .and_then(|w| w.strips.get_mut(strip_idx))
-            .and_then(|s| s.window_groups.get_mut(g_idx))
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|s| &s.window_groups)
+            .find(|g| g.id == group_id)
+            .map(|group| group.tabs.clone())
         else {
             return false;
         };
-        if from >= group.tabs.len() {
-            return false;
-        }
-        let dest = to.min(group.tabs.len().saturating_sub(1));
-        if dest == from {
-            return false;
-        }
-        let moved = group.tabs.remove(from);
-        group.tabs.insert(dest, moved);
-        // Mirror the reordered list into the doc so peer-sync ships the new
-        // order. Cloned first because the doc write borrows `self` mutably.
-        let tabs = group.tabs.clone();
         self.doc_rewrite_group_tabs(group_id, &tabs);
         self.flush_to_disk();
         true
@@ -7794,33 +5592,6 @@ impl WorkspaceTree {
                         .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
                 }
             }
-        }
-    }
-
-    /// Reconcile the active-group pointer against `closing_ids`: if the
-    /// recorded group is closing, advance to the next non-closing
-    /// sibling. `None` when every group is closing — the entry is
-    /// removed, since an emptying strip has no active group rather than
-    /// one clamped to a corpse. Idempotent.
-    pub fn nudge_active_group_off_closing(
-        &mut self,
-        strip_id: StripId,
-        closing_ids: &[GroupId],
-    ) -> Option<GroupId> {
-        let recorded = self.active_group.get(&strip_id).copied()?;
-        if !closing_ids.contains(&recorded) {
-            return Some(recorded);
-        }
-        let resolved = self.resolve_active_group(strip_id, |id| closing_ids.contains(&id));
-        if let Some(next) = resolved {
-            self.active_group.insert(strip_id, next);
-            Some(next)
-        } else {
-            // Whole strip is fading; drop the entry rather than
-            // leave a dangling pointer. The shell re-seeds when
-            // fresh groups land.
-            self.active_group.remove(&strip_id);
-            None
         }
     }
 }
@@ -10204,11 +7975,14 @@ mod active_group_tests {
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
         let tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group: HashMap::new(),
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group: HashMap::new(),
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         };
         (tree, strip_id, group_ids)
@@ -10811,11 +8585,14 @@ mod active_workspace_peer_count_tests {
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
         WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group: HashMap::new(),
-            collaborators: vec![],
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group: HashMap::new(),
+                collaborators: vec![],
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -10874,12 +8651,15 @@ mod capability_tests {
     fn app_kind_app_id_is_a_reverse_dns_id_not_the_display_label() {
         // The grant key must be a real app-id, in the same namespace as
         // an adopted client's `set_app_id` — never the display label.
-        assert_eq!(AppKind::FileExplorer.app_id(), "org.tilo.Files");
-        assert_eq!(AppKind::Terminal.app_id(), "org.tilo.Terminal");
-        assert_eq!(AppKind::Browser.app_id(), "org.tilo.Browser");
-        assert_eq!(AppKind::Settings.app_id(), "org.tilo.Settings");
+        assert_eq!(AppKind::FileExplorer.app_id(), "org.nirios.Files");
+        assert_eq!(AppKind::Terminal.app_id(), "org.nirios.Terminal");
+        assert_eq!(AppKind::Browser.app_id(), "org.nirios.Browser");
+        assert_eq!(AppKind::Settings.app_id(), "org.nirios.Settings");
         // A bare `Other` label is namespaced under the compositor prefix.
-        assert_eq!(AppKind::Other("Editor".into()).app_id(), "org.tilo.Editor");
+        assert_eq!(
+            AppKind::Other("Editor".into()).app_id(),
+            "org.nirios.Editor"
+        );
         // The app-id is distinct from the display label for every kind.
         for kind in [
             AppKind::FileExplorer,
@@ -11293,7 +9073,7 @@ mod agent_membership {
         );
         assert!(ws.allows(
             &ws.actor_for_person(&"remote-editor".to_string()),
-            &ResourceRef::App("dev.tilo.notes".into()),
+            &ResourceRef::App("dev.qos.notes".into()),
             Verb::Write,
         ));
     }
@@ -11346,7 +9126,7 @@ mod agent_membership {
             &"quinten".to_string(),
             CapOverride::grant(
                 Subject::agent("scribe"),
-                Scope::App("dev.tilo.word-processor".into()),
+                Scope::App("dev.qos.word-processor".into()),
                 Verb::Write,
             ),
         )
@@ -11385,10 +9165,10 @@ mod permission_profile_assignment {
             name: "Release reviewer".into(),
             description: "Read Builds and approve releases".into(),
             rules: vec![
-                PermissionProfileRule::grant(Scope::App("org.tilo.Builds".into()), Verb::Read),
+                PermissionProfileRule::grant(Scope::App("org.qos.Builds".into()), Verb::Read),
                 PermissionProfileRule::grant(
                     Scope::Action {
-                        app: "org.tilo.Builds".into(),
+                        app: "org.qos.Builds".into(),
                         action: "release.approve".into(),
                     },
                     Verb::Write,
@@ -11417,7 +9197,7 @@ mod permission_profile_assignment {
         assert!(workspace.allows(
             &Actor::person(None, "ada"),
             &ResourceRef::Action {
-                app: "org.tilo.Builds".into(),
+                app: "org.qos.Builds".into(),
                 action: "release.approve".into(),
             },
             Verb::Write,
@@ -11457,8 +9237,11 @@ mod permission_profile_assignment {
             .save_permission_profile_as(&"owner".into(), profile())
             .unwrap();
         let mut tree = WorkspaceTree {
-            workspaces: vec![workspace],
-            active: id,
+            desktop: qos_desktop::WorkspaceTree {
+                workspaces: vec![workspace],
+                active: id,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         };
         tree.seed_doc_from_cache();
@@ -11478,7 +9261,7 @@ mod peer_window_merge_tests {
 
     use super::*;
 
-    const APP: &str = "dev.tilo.word-processor";
+    const APP: &str = "dev.qos.word-processor";
 
     /// Somebody else's tab, as the room document delivers it.
     fn remote_tab(id: u64, surface: u64) -> ReplicatedTab {
@@ -11593,7 +9376,7 @@ mod peer_window_merge_tests {
         let mut rep_tab = remote_tab(7, 4242);
         rep_tab.title = "Terminal".into();
         rep_tab.tile = Some(TileContent::Foreign {
-            app_id: "dev.tilo.terminal".into(),
+            app_id: "dev.qos.terminal".into(),
             surface_id: 4242,
         });
         let rep = ReplicatedGroup {
@@ -11604,7 +9387,7 @@ mod peer_window_merge_tests {
         let mut changed = false;
         let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
         match &merged.tabs[0].tile {
-            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "dev.tilo.terminal"),
+            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "dev.qos.terminal"),
             other => panic!("expected the new app, got {other:?}"),
         }
         assert!(changed);
@@ -11827,7 +9610,7 @@ mod peer_window_merge_tests {
                 group: 0,
                 tab: 0,
             },
-            crate::shell::personal_continuity::LaunchIntent::app("dev.tilo.browser").unwrap(),
+            crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser").unwrap(),
             None,
             crate::shell::personal_continuity::ContinuityStamp { counter: 1, device },
         );
@@ -11855,7 +9638,7 @@ mod peer_window_merge_tests {
                 group: 0,
                 tab: 0,
             },
-            crate::shell::personal_continuity::LaunchIntent::app("dev.tilo.browser").unwrap(),
+            crate::shell::personal_continuity::LaunchIntent::app("dev.qos.browser").unwrap(),
             None,
             crate::shell::personal_continuity::ContinuityStamp {
                 counter: 1,
@@ -11910,14 +9693,14 @@ mod peer_window_merge_tests {
             "Laptop",
             &crate::shell::personal_continuity::WorkspaceContinuation {
                 room,
-                apps: vec![make(0, "dev.tilo.browser")],
+                apps: vec![make(0, "dev.qos.browser")],
             },
         );
         tree.materialize_continuation_workspace(
             "Laptop",
             &crate::shell::personal_continuity::WorkspaceContinuation {
                 room,
-                apps: vec![make(1, "dev.tilo.music")],
+                apps: vec![make(1, "dev.qos.music")],
             },
         );
         let workspace = tree
@@ -11940,7 +9723,7 @@ mod peer_window_merge_tests {
             .unwrap();
         assert!(matches!(
             &moved.tile,
-            TileContent::PeerWindow { app_id, .. } if app_id == "dev.tilo.music"
+            TileContent::PeerWindow { app_id, .. } if app_id == "dev.qos.music"
         ));
     }
 
@@ -12021,7 +9804,7 @@ mod peer_window_merge_tests {
         let app = AppInstanceState::new(
             id,
             placement,
-            LaunchIntent::app("dev.tilo.browser").unwrap(),
+            LaunchIntent::app("dev.qos.browser").unwrap(),
             None,
             stamp,
         );
@@ -12045,7 +9828,7 @@ mod peer_window_merge_tests {
             .expect("the newer app offer remains in the same logical tab");
         assert!(matches!(
             &replacement.tile,
-            TileContent::PeerWindow { app_id, .. } if app_id == "dev.tilo.browser"
+            TileContent::PeerWindow { app_id, .. } if app_id == "dev.qos.browser"
         ));
     }
 
@@ -12109,7 +9892,7 @@ mod peer_window_merge_tests {
                 Some("review-agent".into()),
                 WorkspaceTaskRoute::RulesOnly,
                 Some(WorkspaceTaskResource {
-                    app_id: Some("org.tilo.Writer".into()),
+                    app_id: Some("org.qos.Writer".into()),
                     app_label: Some("Writer".into()),
                     id: "document:brief".into(),
                     kind: "document".into(),
@@ -12182,7 +9965,7 @@ mod peer_window_merge_tests {
             "mail.message",
             "Release update",
         )
-        .with_app("org.tilo.Mail", "Mail");
+        .with_app("org.qos.Mail", "Mail");
 
         assert!(tree.append_workspace_effect_receipt(
             workspace,
@@ -12216,7 +9999,7 @@ mod peer_window_merge_tests {
                     context
                         .facets
                         .iter()
-                        .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
+                        .any(|facet| facet.key == "qos.receipt" && facet.value == "effect")
                 })
             })
             .expect("effect receipt appears in workspace activity");
@@ -12224,5 +10007,74 @@ mod peer_window_merge_tests {
             !entry.is_revertible(),
             "external work is not a CRDT undo claim"
         );
+    }
+}
+
+#[cfg(test)]
+mod canonical_model_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn native_persistence_flattens_the_canonical_model_and_keeps_paths_local() {
+        let mut native = WorkspaceTree::bootstrap_default();
+        let workspace = native.active;
+        let room = native.room_of(workspace).unwrap();
+        native.native_document_tabs.insert(
+            42,
+            NativeDocumentReference {
+                provider_id: "org.nirios.Editor".into(),
+                path: PathBuf::from("/local/private/draft.txt"),
+            },
+        );
+        native.room_authority.insert(room, RoomAuthority::Unpinned);
+        native.persist_path = Some(PathBuf::from("/local/state.json"));
+        native
+            .collaborators
+            .push(Collaborator::new("stale", "Stale"));
+        native.room_epoch = 9;
+        let value = serde_json::to_value(&native).unwrap();
+        assert!(value.get("desktop").is_none());
+        assert!(value.get("persist_path").is_none());
+        assert!(value.get("room_epoch").is_none());
+        assert_eq!(
+            value["native_document_tabs"]["42"]["path"],
+            "/local/private/draft.txt"
+        );
+        let restored: WorkspaceTree = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(restored.active, workspace);
+        assert_eq!(restored.room_of(workspace), Some(room));
+        assert!(restored.collaborators.is_empty());
+        assert_eq!(restored.room_epoch, 0);
+        assert_eq!(restored.room_authority(room), RoomAuthority::Unpinned);
+        assert_eq!(
+            restored.native_document_tabs[&42].path,
+            PathBuf::from("/local/private/draft.txt")
+        );
+        let portable: qos_desktop::WorkspaceTree = serde_json::from_value(value).unwrap();
+        assert_eq!(portable.room_of(workspace), Some(room));
+        let portable_value = serde_json::to_value(&portable).unwrap();
+        assert!(portable_value.get("native_document_tabs").is_none());
+        assert!(portable_value.get("room_authority").is_none());
+    }
+
+    #[test]
+    fn native_mutations_and_canonical_storage_are_the_same_tree() {
+        let mut native = WorkspaceTree::bootstrap_default();
+        let first = native.active;
+        let second = native.append_empty_workspace("Second");
+        native.set_active(second);
+        let portable: &qos_desktop::WorkspaceTree = &native;
+        assert_eq!(portable.active_workspace().unwrap().id, second);
+        assert_eq!(portable.workspaces.len(), 2);
+        assert!(native.switch_up());
+        assert_eq!(native.desktop.active, first);
+        let saved = tempfile::tempdir().unwrap();
+        native.persist_path = Some(saved.path().join("state.json"));
+        native.set_active(second);
+        let restored: WorkspaceTree =
+            serde_json::from_slice(&std::fs::read(native.persist_path.as_ref().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(restored.desktop.active, second);
     }
 }

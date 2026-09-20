@@ -31,6 +31,8 @@ pub struct ApplicationDefinition {
 #[non_exhaustive]
 pub enum LaunchTarget {
     New,
+    /// Explicit creation of the one room-scoped package-primary document.
+    PrimaryNew,
     Record {
         checkout: RecordCheckout,
         reveal: Option<tilo_actions::ActionAddress>,
@@ -45,7 +47,10 @@ pub enum RestoreInput {
 
 /// Explicit identity, authority and storage. Apps receive no ambient profile resolver.
 pub struct HostContext {
+    /// Exact durable record/route identity supplied by the host.
     app_id: String,
+    /// Installed component definition selected through the finite rename table.
+    definition_app_id: String,
     instance_id: InstanceId,
     device_id: String,
     records: RecordStore,
@@ -107,7 +112,7 @@ impl HostContext {
         let (profile, package, workspace) = records
             .canonical_namespace()
             .ok_or(LaunchError::BindingMismatch)?;
-        if package != definition.app_id
+        if !lookup_compatible_first_party_app_ids(&package, definition.app_id)
             || !views.matches_namespace(&profile, &device_id, &workspace)
         {
             return Err(LaunchError::BindingMismatch);
@@ -118,9 +123,9 @@ impl HostContext {
             }
         }
         let (record, reservation) = match target {
-            LaunchTarget::New => {
+            LaunchTarget::New | LaunchTarget::PrimaryNew => {
                 let checkout =
-                    RecordCheckout::new(RecordId::minted(), definition.record_kind.clone());
+                    RecordCheckout::new(if matches!(target, LaunchTarget::PrimaryNew) { RecordId::package_primary() } else { RecordId::minted() }, definition.record_kind.clone());
                 let reservation = records
                     .reserve_record(&checkout)
                     .map_err(LaunchError::Record)?;
@@ -137,7 +142,8 @@ impl HostContext {
             }
         };
         Ok(Self {
-            app_id: definition.app_id.into(),
+            app_id: package,
+            definition_app_id: definition.app_id.into(),
             instance_id,
             device_id,
             records,
@@ -269,6 +275,96 @@ impl HostContext {
         }
     }
 }
+
+/// First-party package ids renamed when qOS became Tilo.
+///
+/// This table is deliberately finite. It is used only when resolving an
+/// installed application definition or its persisted record namespace; it is
+/// never consulted by capability, signature, or document-route validation.
+const RENAMED_FIRST_PARTY_APP_IDS: &[(&str, &str)] = &[
+    ("dev.qos.agent", "dev.tilo.agent"),
+    ("dev.qos.api-tester", "dev.tilo.api-tester"),
+    ("dev.qos.backups", "dev.tilo.backups"),
+    ("dev.qos.browser", "dev.tilo.browser"),
+    ("dev.qos.calculator", "dev.tilo.calculator"),
+    ("dev.qos.calendar", "dev.tilo.calendar"),
+    ("dev.qos.camera", "dev.tilo.camera"),
+    ("dev.qos.chat", "dev.tilo.chat"),
+    ("dev.qos.code-editor", "dev.tilo.code-editor"),
+    ("dev.qos.contacts", "dev.tilo.contacts"),
+    ("dev.qos.containers", "dev.tilo.containers"),
+    ("dev.qos.db-client", "dev.tilo.db-client"),
+    ("dev.qos.diffmerge", "dev.tilo.diffmerge"),
+    ("dev.qos.disks", "dev.tilo.disks"),
+    ("dev.qos.ebook", "dev.tilo.ebook"),
+    ("dev.qos.feeds", "dev.tilo.feeds"),
+    ("dev.qos.file-explorer", "dev.tilo.file-explorer"),
+    ("dev.qos.firewall", "dev.tilo.firewall"),
+    ("dev.qos.git-client", "dev.tilo.git-client"),
+    ("dev.qos.hex-editor", "dev.tilo.hex-editor"),
+    ("dev.qos.imager", "dev.tilo.imager"),
+    ("dev.qos.logs", "dev.tilo.logs"),
+    ("dev.qos.mail", "dev.tilo.mail"),
+    ("dev.qos.maps", "dev.tilo.maps"),
+    ("dev.qos.monitor", "dev.tilo.monitor"),
+    ("dev.qos.music", "dev.tilo.music"),
+    ("dev.qos.notes", "dev.tilo.notes"),
+    ("dev.qos.osk", "dev.tilo.osk"),
+    ("dev.qos.pdf-viewer", "dev.tilo.pdf-viewer"),
+    ("dev.qos.photos", "dev.tilo.photos"),
+    ("dev.qos.remote", "dev.tilo.remote"),
+    ("dev.qos.scratchpad", "dev.tilo.scratchpad"),
+    ("dev.qos.settings", "dev.tilo.settings"),
+    ("dev.qos.sheets", "dev.tilo.sheets"),
+    ("dev.qos.slides", "dev.tilo.slides"),
+    ("dev.qos.snippets", "dev.tilo.snippets"),
+    ("dev.qos.store", "dev.tilo.store"),
+    ("dev.qos.terminal", "dev.tilo.terminal"),
+    ("dev.qos.themes", "dev.tilo.themes"),
+    ("dev.qos.totp", "dev.tilo.totp"),
+    ("dev.qos.tube", "dev.tilo.tube"),
+    ("dev.qos.typst-editor", "dev.tilo.typst-editor"),
+    ("dev.qos.video-editor", "dev.tilo.video-editor"),
+    ("dev.qos.video-player", "dev.tilo.video-player"),
+    ("dev.qos.vpn", "dev.tilo.vpn"),
+    ("dev.qos.weather", "dev.tilo.weather"),
+    ("dev.qos.windows", "dev.tilo.windows"),
+    ("dev.qos.word-processor", "dev.tilo.word-processor"),
+];
+
+/// Current package registration for a deployed first-party durable id.
+///
+/// Lookup compatibility only: callers must keep the original id on persisted
+/// tabs, record routes, capabilities, and cryptographic domains.
+#[must_use]
+pub fn current_package_id_for_legacy(app_id: &str) -> Option<&'static str> {
+    RENAMED_FIRST_PARTY_APP_IDS
+        .iter()
+        .find_map(|(legacy, current)| (*legacy == app_id).then_some(*current))
+}
+
+/// The explicitly paired id used for definition/catalogue lookup.
+#[must_use]
+pub fn first_party_app_id_lookup_alias(app_id: &str) -> Option<&'static str> {
+    RENAMED_FIRST_PARTY_APP_IDS
+        .iter()
+        .find_map(|(legacy, current)| {
+            if *legacy == app_id {
+                Some(*current)
+            } else if *current == app_id {
+                Some(*legacy)
+            } else {
+                None
+            }
+        })
+}
+
+/// Whether two ids name the same explicitly renamed first-party app for
+/// definition or persisted-record lookup.
+#[must_use]
+pub fn lookup_compatible_first_party_app_ids(left: &str, right: &str) -> bool {
+    left == right || first_party_app_id_lookup_alias(left) == Some(right)
+}
 impl Drop for HostContext {
     fn drop(&mut self) {
         self.control_domain.close();
@@ -313,11 +409,15 @@ impl ApplicationDefinition {
         target: LaunchTarget,
         restore: RestoreInput,
     ) -> Result<AppComponent, LaunchError> {
-        if context.app_id != self.app_id || context.record.kind != self.record_kind {
+        if context.definition_app_id != self.app_id || context.record.kind != self.record_kind {
+            return Err(LaunchError::BindingMismatch);
+        }
+        if matches!(target, LaunchTarget::New) && context.record.id.is_package_primary()
+            || matches!(target, LaunchTarget::PrimaryNew) && !context.record.id.is_package_primary() {
             return Err(LaunchError::BindingMismatch);
         }
         match &target {
-            LaunchTarget::New if context.reservation.is_none() => {
+            LaunchTarget::New | LaunchTarget::PrimaryNew if context.reservation.is_none() => {
                 return Err(LaunchError::BindingMismatch);
             }
             LaunchTarget::Record { checkout, .. }
@@ -430,7 +530,7 @@ impl AppComponent {
         registration: crate::history_mode::HistoryRegistration,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
         registration.validate()?;
-        if registration.definition.app_id != self.context.app_id {
+        if registration.definition.app_id != self.context.definition_app_id {
             return Err(crate::history_mode::HistoryRegistrationError::ForeignSource);
         }
         self.history = Some(registration);
@@ -605,7 +705,20 @@ impl AppComponent {
             view.open_resource.clone_from(&inherited.open_resource);
         }
         view.validate()?;
-        let application = root.capture_application_view()?;
+        let mut application = root.capture_application_view()?;
+        if let Some(local) = &mut application {
+            if !lookup_compatible_first_party_app_ids(
+                &local.app_id,
+                &self.context.definition_app_id,
+            ) {
+                return Err(ThawError::BindingMismatch);
+            }
+            // Application widgets describe the installed definition, while the
+            // persisted envelope belongs to the exact durable route. Keep the
+            // stored pair on that route so an older qOS build can still reopen
+            // a view written by this build.
+            local.app_id.clone_from(&self.context.app_id);
+        }
         self.context
             .envelope(view.clone(), application.clone())
             .validate()?;
@@ -624,7 +737,19 @@ impl AppComponent {
         self.context
             .read_record(|doc| {
                 let policy = if let Some(local) = &saved.application {
-                    root.restore_application_view(local, doc)?
+                    if !lookup_compatible_first_party_app_ids(
+                        &local.app_id,
+                        &self.context.definition_app_id,
+                    ) {
+                        return Err(ThawError::BindingMismatch);
+                    }
+                    // The stored id remains durable. Translate only the
+                    // in-memory schema selector passed to the renamed widget.
+                    let mut definition_local = local.clone();
+                    definition_local
+                        .app_id
+                        .clone_from(&self.context.definition_app_id);
+                    root.restore_application_view(&definition_local, doc)?
                 } else {
                     ApplicationFocusRestore::Generic
                 };
@@ -1049,6 +1174,10 @@ impl ApplicationCatalog {
     pub fn resolve(&self, app_id: &str) -> Result<&'static ApplicationDefinition, LaunchError> {
         self.definitions
             .get(app_id)
+            .or_else(|| {
+                first_party_app_id_lookup_alias(app_id)
+                    .and_then(|alias| self.definitions.get(alias))
+            })
             .copied()
             .ok_or_else(|| LaunchError::UnknownApplication(app_id.into()))
     }
@@ -1215,6 +1344,59 @@ mod bound_lifetime_tests {
             tilo_actions::ActionRegistry::new(),
         ))
     }
+
+    #[test]
+    fn application_catalog_resolves_only_explicit_first_party_rename_aliases() {
+        static CURRENT: std::sync::LazyLock<ApplicationDefinition> =
+            std::sync::LazyLock::new(|| ApplicationDefinition {
+                app_id: "dev.tilo.notes",
+                title: "Notes",
+                icon: IconDescriptor::Named("notes".into()),
+                record_kind: RecordKind::new("notes.notebook"),
+                required: vec![],
+                optional: vec![],
+                create: factory,
+            });
+        let mut catalog = ApplicationCatalog::new();
+        catalog.register(&CURRENT).unwrap();
+
+        assert_eq!(
+            catalog.resolve("dev.qos.notes").unwrap().app_id,
+            "dev.tilo.notes"
+        );
+        assert!(matches!(
+            catalog.resolve("dev.qos.not-a-first-party-app"),
+            Err(LaunchError::UnknownApplication(_))
+        ));
+
+        let cache = crate::portable_storage::PortableStorage::new(
+            "legacy-app-id-profile",
+            "legacy-app-id-device",
+        )
+        .unwrap();
+        let records = crate::record::RecordOwners::portable(cache.clone())
+            .open("dev.qos.notes", "legacy-app-id-room")
+            .unwrap();
+        let views = Rc::new(InstanceViewStore::portable(cache, "legacy-app-id-room").unwrap());
+        let context = HostContext::prepare(
+            &CURRENT,
+            records,
+            views,
+            "legacy-app-id-device".into(),
+            7,
+            Rc::new(RefCell::new(PermissionContext::permissive())),
+            UserId("legacy-app-id-author".into()),
+            tilo_actions::ActionContext::default(),
+            &LaunchTarget::New,
+        )
+        .expect("the current component must mount the deployed record namespace");
+        assert_eq!(
+            context.records.canonical_namespace().unwrap().1,
+            "dev.qos.notes"
+        );
+        assert_eq!(context.app_id, "dev.qos.notes");
+        assert_eq!(context.definition_app_id, "dev.tilo.notes");
+    }
     #[test]
     fn actual_component_reopen_refuses_queued_old_wakes_and_busy_store_entry() {
         let temp = tempfile::tempdir().unwrap();
@@ -1345,5 +1527,36 @@ mod bound_lifetime_tests {
             component.with_live_component(&binding, |_, _, _| panic!("closed component delivered")),
             Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
         ));
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use crate::application_test_support as probe;
+    #[test]
+    fn portable_host_checks_namespaces_authority_and_persists_real_component() {
+        let cache = crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
+        let records = crate::record::RecordOwners::portable(cache.clone()).open(probe::APP, probe::ROOM).unwrap();
+        let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::ROOM).unwrap());
+        let definition = probe::definition(probe::probe_factory);
+        let prepare = |views, permissions| HostContext::prepare(&definition, records.clone(), views, probe::DEVICE.into(), 7, permissions, probe::author(), probe::provenance(), &LaunchTarget::New);
+        let foreign = crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
+        assert!(matches!(prepare(Rc::new(InstanceViewStore::portable(foreign, probe::ROOM).unwrap()), probe::permissions()), Err(LaunchError::BindingMismatch)));
+        let context = prepare(views.clone(), probe::permissions()).unwrap();
+        let mut component = definition.instantiate(context, LaunchTarget::New, RestoreInput::None).unwrap();
+        let checkout = component.record().clone();
+        assert!(records.is_ready(&checkout.id));
+        let report = component.close();
+        assert!(report.record_error.is_some());
+        assert!(report.view_error.is_some());
+        for write in cache.pending_writes() { cache.acknowledge(&write, Ok(())).unwrap(); }
+        records.try_flush().unwrap();
+        let saved = views.load(7).unwrap().unwrap();
+        assert_eq!(saved.record_id, checkout.id.as_str());
+        views.save(&saved).unwrap();
+        let mut denied = probe::definition(probe::probe_factory);
+        denied.required.push(probe::denied_scope());
+        assert!(matches!(HostContext::prepare(&denied, records, views, probe::DEVICE.into(), 8, probe::permissions(), probe::author(), probe::provenance(), &LaunchTarget::New), Err(LaunchError::CapabilityDenied(_))));
     }
 }

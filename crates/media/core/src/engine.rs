@@ -17,7 +17,7 @@
 //! [`FrameAcceptance`].
 
 use std::sync::OnceLock;
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::event::{MediaEvent, VideoFrame};
 use crate::frame::{Frame, FrameAcceptance, FramePayload};
@@ -416,7 +416,7 @@ impl MediaEngine {
     /// specific frame in hand rather than eventually — extracting a thumbnail,
     /// or settling a scrub before a screenshot. An interactive preview should
     /// keep using `seek_ms` + [`Self::poll`] and stay non-blocking.
-    pub fn seek_and_wait(&mut self, ms: u64, timeout: std::time::Duration) -> bool {
+    pub fn seek_and_wait(&mut self, ms: u64, timeout: web_time::Duration) -> bool {
         // `Instant + Duration` panics on overflow, and the only way to reach
         // that is a `timeout` of hundreds of billions of years — a caller
         // spelling "wait as long as it takes" as `Duration::MAX`. `None` here
@@ -433,7 +433,7 @@ impl MediaEngine {
             if let Backend::Gst(g) = &mut self.backend {
                 // A flushing seek is asynchronous: the new preroll exists only
                 // once the state change completes.
-                g.wait_settled(std::time::Duration::from_millis(50));
+                g.wait_settled(web_time::Duration::from_millis(50));
             }
             if !accepted {
                 accepted = self.seek_with(ms, SeekMode::Accurate);
@@ -445,7 +445,7 @@ impl MediaEngine {
             if deadline.is_some_and(|d| Instant::now() >= d) {
                 return false;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(web_time::Duration::from_millis(5));
         }
     }
 
@@ -983,7 +983,7 @@ mod tests {
             url: "https://x/v.mp4".into(),
         });
         assert!(
-            e.seek_and_wait(1_000, std::time::Duration::MAX),
+            e.seek_and_wait(1_000, web_time::Duration::MAX),
             "an unbounded wait still returns the frame it waited for"
         );
     }

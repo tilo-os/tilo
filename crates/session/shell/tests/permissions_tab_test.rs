@@ -727,3 +727,6 @@ fn the_draft_survives_a_tab_round_trip() {
 
     assert_eq!(chrome.borrow().ws_grant_draft, composed);
 }
+
+#[allow(unused_imports)]
+use shell::shell::state::WorkspaceExt as _;

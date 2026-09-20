@@ -396,3 +396,6 @@ mod tests {
         let _ = child.wait();
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

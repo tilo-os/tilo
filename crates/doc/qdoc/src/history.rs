@@ -8,7 +8,7 @@ use crate::snapshot::DocSnapshot;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 /// One entry on the timeline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

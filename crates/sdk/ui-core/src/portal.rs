@@ -42,7 +42,7 @@
 mod windows;
 
 use std::fs::File;
-#[cfg(any(feature = "portal", test))]
+#[cfg(all(any(feature = "portal", test), not(target_arch = "wasm32")))]
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -375,6 +375,16 @@ impl PickRequest {
     /// through [`send_multiple`](Self::send_multiple) instead, so every pick
     /// is delivered.
     pub fn send(self) -> PortalChannel {
+        self.send_on_platform(cfg!(not(target_arch = "wasm32")))
+    }
+    fn send_on_platform(self, native: bool) -> PortalChannel {
+        if !native {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(PortalOutcome::Failed(
+                "File picker unavailable in this host".into(),
+            ));
+            return rx;
+        }
         if suppressed() {
             return inject_for_test(PortalOutcome::Cancelled);
         }
@@ -393,6 +403,16 @@ impl PickRequest {
     /// This is valid only for a single-file Open request. Calling it for Save
     /// or multi-select requests reports a normal failed outcome.
     pub fn send_open_file(self) -> OpenFileChannel {
+        self.send_open_file_on_platform(cfg!(not(target_arch = "wasm32")))
+    }
+    fn send_open_file_on_platform(self, native: bool) -> OpenFileChannel {
+        if !native {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(OpenFileOutcome::Failed(
+                "File picker unavailable in this host".into(),
+            ));
+            return rx;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         if suppressed() {
             let _ = tx.send(OpenFileOutcome::Cancelled);
@@ -407,6 +427,16 @@ impl PickRequest {
 
     /// Multi-select counterpart of [`send`](Self::send).
     pub fn send_multiple(self) -> MultiChannel {
+        self.send_multiple_on_platform(cfg!(not(target_arch = "wasm32")))
+    }
+    fn send_multiple_on_platform(self, native: bool) -> MultiChannel {
+        if !native {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(MultiOutcome::Failed(
+                "File picker unavailable in this host".into(),
+            ));
+            return rx;
+        }
         if suppressed() {
             return inject_multi_for_test(MultiOutcome::Cancelled);
         }
@@ -477,6 +507,7 @@ fn spawn_worker(name: &str, work: impl FnOnce() + Send + 'static) {
 /// then reach outside the directory the user actually browsed. So we also
 /// require that the decoded path has exactly as many components as the URI had
 /// segments, and that none of them is `..` or `.`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_local_path(uri: &url::Url) -> Option<PathBuf> {
     use std::path::Component;
 
@@ -561,7 +592,7 @@ pub fn map_uris(uris: &[url::Url]) -> MultiOutcome {
 /// Turn an already validated portal URI into a descriptor-retaining outcome.
 /// This runs on the portal worker, immediately after the picker returns, so
 /// no UI-frame delay can turn an accepted path into a later reopen.
-#[cfg(any(feature = "portal", test))]
+#[cfg(all(any(feature = "portal", test), not(target_arch = "wasm32")))]
 fn open_uri(uri: &url::Url) -> OpenFileOutcome {
     let Some(path) = to_local_path(uri) else {
         return OpenFileOutcome::Failed(format!("not a local file: {uri}"));
@@ -575,7 +606,7 @@ fn open_uri(uri: &url::Url) -> OpenFileOutcome {
     }
 }
 
-#[cfg(any(feature = "portal", test))]
+#[cfg(all(any(feature = "portal", test), not(target_arch = "wasm32")))]
 fn display_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -680,7 +711,7 @@ impl PortalOutcome {
 // The ashpd round-trip.
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 fn single(req: PickRequest) -> PortalOutcome {
     match run_picker(req) {
         Ok(uris) => map_uri(&uris),
@@ -688,7 +719,7 @@ fn single(req: PickRequest) -> PortalOutcome {
     }
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 fn single_open_file(req: PickRequest) -> OpenFileOutcome {
     if suppressed() {
         return OpenFileOutcome::Cancelled;
@@ -707,7 +738,7 @@ fn single_open_file(req: PickRequest) -> OpenFileOutcome {
     }
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 fn multiple(req: PickRequest) -> MultiOutcome {
     match run_picker(req) {
         Ok(uris) => map_uris(&uris),
@@ -786,7 +817,7 @@ fn open_directory(path: &Path) -> std::io::Result<File> {
 }
 
 /// A portal round-trip that did not return URIs.
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 enum PortalFailure {
     /// The user dismissed the picker. Surfaces from ashpd as a "cancelled"
     /// response error, not a bug.
@@ -794,7 +825,7 @@ enum PortalFailure {
     Failed(String),
 }
 
-#[cfg(feature = "portal")]
+#[cfg(all(feature = "portal", not(target_arch = "wasm32")))]
 impl PortalFailure {
     fn into_single(self) -> PortalOutcome {
         match self {
@@ -874,27 +905,27 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
 /// Without the `portal` feature there is no picker: report a failure so the
 /// caller still gets exactly one drained outcome and never hangs waiting for a
 /// picker that cannot open.
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 fn single(_req: PickRequest) -> PortalOutcome {
     PortalOutcome::Failed(NO_PORTAL.to_string())
 }
 
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 fn single_open_file(_req: PickRequest) -> OpenFileOutcome {
     OpenFileOutcome::Failed(NO_PORTAL.to_string())
 }
 
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 fn multiple(_req: PickRequest) -> MultiOutcome {
     MultiOutcome::Failed(NO_PORTAL.to_string())
 }
 
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 fn launch(_req: LaunchRequest) -> LaunchOutcome {
     LaunchOutcome::Failed(NO_PORTAL.to_string())
 }
 
-#[cfg(not(feature = "portal"))]
+#[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
 const NO_PORTAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
 
 #[cfg(test)]
@@ -916,6 +947,22 @@ mod tests {
         PathBuf::from(s)
     }
 
+    #[test]
+    fn portable_review_unavailable_pickers_deliver_failed_outcomes_without_workers() {
+        let request = || PickRequest::open("Open", "Open").thread_name("invalid\0worker");
+        assert!(matches!(
+            request().send_on_platform(false).try_recv(),
+            Ok(PortalOutcome::Failed(_))
+        ));
+        assert!(matches!(
+            request().send_open_file_on_platform(false).try_recv(),
+            Ok(OpenFileOutcome::Failed(_))
+        ));
+        assert!(matches!(
+            request().send_multiple_on_platform(false).try_recv(),
+            Ok(MultiOutcome::Failed(_))
+        ));
+    }
     #[test]
     fn directory_request_is_single_select_and_has_no_filename() {
         let request = PickRequest::directory("Choose folder", "Choose");
@@ -1311,7 +1358,7 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "portal"))]
+    #[cfg(any(not(feature = "portal"), target_arch = "wasm32"))]
     #[test]
     #[serial_test::serial(portal_suppression)]
     fn without_the_feature_a_request_fails_rather_than_hanging() {
@@ -1322,4 +1369,9 @@ mod tests {
         let rx = PickRequest::open("Open", "Open").send_open_file();
         assert!(matches!(rx.recv(), Ok(OpenFileOutcome::Failed(_))));
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn to_local_path(_: &url::Url) -> Option<PathBuf> {
+    None
 }

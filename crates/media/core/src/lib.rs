@@ -113,7 +113,7 @@ pub use transport::{
 /// so it must be a wall clock (roughly synced across peers), not a monotonic
 /// one. Saturates to 0 before the Unix epoch.
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    web_time::SystemTime::now()
+        .duration_since(web_time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }

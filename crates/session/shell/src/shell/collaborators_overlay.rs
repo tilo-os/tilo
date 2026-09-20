@@ -2006,3 +2006,5 @@ mod tests {
         );
     }
 }
+
+use crate::shell::state::WorkspaceExt as _;

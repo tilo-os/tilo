@@ -2194,3 +2194,6 @@ mod framing_tests {
         }
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

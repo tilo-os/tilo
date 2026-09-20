@@ -1,6 +1,6 @@
 //! Per-surface retry admission. Explicit interaction survives queued outcomes.
 use super::FrameOutcome;
-use std::time::{Duration, Instant};
+use crate::clock::{Duration, Instant};
 
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 /// Collaboration currently has no event-loop wake bridge. Poll connected

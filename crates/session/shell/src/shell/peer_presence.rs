@@ -1828,3 +1828,6 @@ mod two_sessions {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

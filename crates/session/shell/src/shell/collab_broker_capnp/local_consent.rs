@@ -18,7 +18,7 @@ struct LocalSessionState {
     onboarding_active: Option<bool>,
 }
 
-pub(super) struct LocalSessionAuthority {
+pub(crate) struct LocalSessionAuthority {
     state: Arc<Mutex<LocalSessionState>>,
 }
 
@@ -44,7 +44,7 @@ pub(crate) struct LocalSessionSnapshot {
 }
 
 impl LocalSessionAuthority {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(LocalSessionState {
                 epoch: Uuid::new_v4(),
@@ -56,7 +56,7 @@ impl LocalSessionAuthority {
         }
     }
 
-    pub(super) fn lifecycle(&self) -> LocalSessionLifecycle {
+    pub(crate) fn lifecycle(&self) -> LocalSessionLifecycle {
         LocalSessionLifecycle {
             state: Arc::downgrade(&self.state),
         }

@@ -45,7 +45,14 @@ mod federation_workspace_shard;
 mod multi_host;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
+#[path = "protocol_compat.rs"]
+mod protocol_compat;
 #[path = "relay_daemon.rs"]
 mod relay_daemon;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
+#[path = "browser_transport.rs"]
+mod browser_transport;
+
+#[path = "addressed_actions.rs"]
+mod addressed_actions;

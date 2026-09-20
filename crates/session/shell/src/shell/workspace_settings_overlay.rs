@@ -2654,3 +2654,6 @@ mod general_scroll_tests {
         assert_eq!(overlay.name_rect(), name);
     }
 }
+
+#[allow(unused_imports)]
+use crate::shell::state::WorkspaceExt as _;

@@ -9,7 +9,7 @@
 //! narrows the list.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
+use crate::clock::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1356,7 +1356,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
+    use crate::clock::Duration;
     use winit::event::Modifiers;
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 

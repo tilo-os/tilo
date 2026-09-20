@@ -302,6 +302,7 @@ pub fn extend_span_drag<T: Ord + Copy>(
 /// `wl_data_device` instead. Construction is skipped rather than attempted
 /// on Wayland because arboard's probe there is slow, and a handle that
 /// fails on every call is worse than no handle.
+#[cfg(not(target_arch = "wasm32"))]
 fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
     static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
     CB.get_or_init(|| {
@@ -342,6 +343,7 @@ fn try_write_selection(target: ClipboardTarget, text: &str) -> bool {
     if target == ClipboardTarget::Primary {
         return false;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(cb) = arboard_clipboard()
         && let Ok(mut handle) = cb.lock()
     {
@@ -382,7 +384,14 @@ fn write_selection(target: ClipboardTarget, text: &str) {
         }
         return;
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        tracing::warn!("clipboard copy unavailable without a host clipboard backend");
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     warn_fallback_once("copy");
+    #[cfg(not(target_arch = "wasm32"))]
     if let Ok(mut fb) = clipboard_fallback().lock() {
         match target {
             ClipboardTarget::Clipboard => fb.0 = Some(text.to_string()),
@@ -400,6 +409,7 @@ fn read_selection(target: ClipboardTarget) -> Option<String> {
     if target == ClipboardTarget::Primary {
         return clipboard_fallback().lock().ok()?.1.clone();
     }
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(cb) = arboard_clipboard()
         && let Ok(mut handle) = cb.lock()
     {
@@ -418,11 +428,19 @@ fn read_selection(target: ClipboardTarget) -> Option<String> {
             ClipboardTarget::Primary => handle.get_text().ok(),
         };
     }
-    warn_fallback_once("paste");
-    let fb = clipboard_fallback().lock().ok()?;
-    match target {
-        ClipboardTarget::Clipboard => fb.0.clone(),
-        ClipboardTarget::Primary => fb.1.clone(),
+    #[cfg(target_arch = "wasm32")]
+    {
+        tracing::warn!("clipboard paste unavailable without a host clipboard backend");
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        warn_fallback_once("paste");
+        let fb = clipboard_fallback().lock().ok()?;
+        match target {
+            ClipboardTarget::Clipboard => fb.0.clone(),
+            ClipboardTarget::Primary => fb.1.clone(),
+        }
     }
 }
 
@@ -467,18 +485,25 @@ pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
     if let Some(backend) = clipboard_backend() {
         return backend.set_image(width, height, rgba);
     }
-    let Some(cb) = arboard_clipboard() else {
-        return false;
-    };
-    let Ok(mut handle) = cb.lock() else {
-        return false;
-    };
-    let img = arboard::ImageData {
-        width,
-        height,
-        bytes: std::borrow::Cow::Borrowed(rgba),
-    };
-    handle.set_image(img).is_ok()
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(cb) = arboard_clipboard() else {
+            return false;
+        };
+        let Ok(mut handle) = cb.lock() else {
+            return false;
+        };
+        let img = arboard::ImageData {
+            width,
+            height,
+            bytes: std::borrow::Cow::Borrowed(rgba),
+        };
+        handle.set_image(img).is_ok()
+    }
 }
 
 /// Pull the current clipboard contents as a UTF-8 string. Returns
