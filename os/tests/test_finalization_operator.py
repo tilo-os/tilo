@@ -84,7 +84,9 @@ class OperatorTests(unittest.TestCase):
                    trigger_event='workflow_dispatch', commit_sha=c['helper_revision'], status='running',
                    event_payload=json.dumps({'ref': 'refs/heads/' + c['dispatch_ref'], 'inputs': {
                        'request': s.canonical(self.q).decode(), 'request_sha256': c['request_sha256'],
-                       'helpers_revision': c['helper_revision']}}))
+                       'helpers_revision': c['helper_revision'], 'restore_run_id': '',
+                       'restore_run_attempt': '', 'restore_receipt_sha256': '',
+                       'restore_stage': '5'}}))
         job = dict(id=9, name='finalize', run_id=23, attempt=2, task_id=42, status='running')
         return run, job
 
@@ -204,6 +206,39 @@ class OperatorTests(unittest.TestCase):
             r['event_payload'] = json.dumps(event)
             with self.subTest(change=change), self.assertRaises(ValueError):
                 o.admit_job(c, raw, r, jobs, 2)
+
+    def test_event_admission_accepts_exact_restore_identity_and_rejects_partial_or_implicit_restore(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        raw = s.canonical(self.q)
+        event = json.loads(run['event_payload'])
+        event['inputs'].update(restore_run_id='41', restore_run_attempt='3',
+                               restore_receipt_sha256='a' * 64, restore_stage='2')
+        run['event_payload'] = json.dumps(event)
+        self.assertEqual(o.admit_job(c, raw, run, [job], 2), job)
+        mutations = {
+            'partial': {'restore_run_attempt': ''},
+            'zero-run': {'restore_run_id': '0'},
+            'bad-digest': {'restore_receipt_sha256': 'A' * 64},
+            'bad-stage': {'restore_stage': '3'},
+            'extra': {'unexpected': ''},
+        }
+        for label, mutation in mutations.items():
+            changed = copy.deepcopy(event)
+            changed['inputs'].update(mutation)
+            candidate = copy.deepcopy(run)
+            candidate['event_payload'] = json.dumps(changed)
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                o.admit_job(c, raw, candidate, [job], 2)
+
+    def test_event_admission_rejects_nondefault_restore_stage_on_fresh_run(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        event = json.loads(run['event_payload'])
+        event['inputs']['restore_stage'] = '2'
+        run['event_payload'] = json.dumps(event)
+        with self.assertRaisesRegex(ValueError, 'fresh dispatch restore defaults differ'):
+            o.admit_job(c, s.canonical(self.q), run, [job], 2)
 
     def test_status_decodes_transport_bytes_and_rejects_changed_task(self):
         c, _ = self.init()
