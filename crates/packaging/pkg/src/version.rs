@@ -1,6 +1,6 @@
 //! Shared ordering for signed registry versions. Build metadata is identity,
-//! never update precedence. Numeric CalVer and legacy opaque versions retain
-//! their historical ordering when neither input parses as SemVer.
+//! never update precedence. Numeric `CalVer` and legacy opaque versions retain
+//! their historical ordering when neither input parses as `SemVer`.
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
