@@ -77,6 +77,25 @@ class ChangedRustfmtTests(unittest.TestCase):
             ["<--edition>", "<2024>", "<--check>", "<-->", "<base.rs>", "<space name.rs>"],
         )
 
+    def test_upstream_vendor_is_excluded_but_first_party_nested_vendor_is_checked(self) -> None:
+        for name in ("vendor/codec/src/lib.rs", "crates/demo/vendor/local.rs"):
+            path = self.root / name
+            path.parent.mkdir(parents=True)
+            path.write_text("#[allow(dead_code)]\nfn f() {}\n", encoding="utf-8")
+        self.commit("import")
+
+        self.run_check(self.base)
+        arguments = self.arguments.read_text(encoding="utf-8")
+        self.assertNotIn("<vendor/codec/src/lib.rs>", arguments)
+        self.assertIn("<crates/demo/vendor/local.rs>", arguments)
+        result = subprocess.run(
+            ["python3", str(SCRIPT.with_name("check_changed_rust_allows.py")),
+             "--root", str(self.root), self.base], text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("crates/demo/vendor/local.rs:1:", result.stderr)
+        self.assertNotIn("vendor/codec/src/lib.rs", result.stderr)
+
     def test_push_zero_base_falls_back_to_parent(self) -> None:
         (self.root / "base.rs").write_text("fn changed() {}\n", encoding="utf-8")
         self.commit("change")
