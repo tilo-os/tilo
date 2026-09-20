@@ -874,6 +874,24 @@ impl AccessibilityRuntime {
     }
 }
 
+/// Host-owned persistence and record-checkout state.
+struct PersistenceRuntime {
+    autosave: Option<crate::persist::Autosave>,
+    /// The live document belongs to the record selected by the root widget.
+    records: Option<crate::record::RecordSet>,
+    room_index: Option<crate::state::DocumentReplica>,
+}
+
+impl PersistenceRuntime {
+    fn new() -> Self {
+        Self {
+            autosave: None,
+            records: None,
+            room_index: None,
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -965,12 +983,8 @@ pub struct App {
     /// To distinguish app-driven from compositor-driven transitions.
     fullscreen_active: bool,
 
-    autosave: Option<crate::persist::Autosave>,
     pub(crate) legacy_persistence: crate::launch::LegacyPersistencePolicy,
-    /// When present the live document is one record's, named by the root
-    /// widget via [`crate::widget::Widget::record_intent`].
-    records: Option<crate::record::RecordSet>,
-    room_index: Option<crate::state::DocumentReplica>,
+    persistence: PersistenceRuntime,
 
     actions: ActionRuntime,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
@@ -1569,10 +1583,8 @@ impl App {
             accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
             fullscreen_requested: false,
             fullscreen_active: false,
-            autosave: None,
             legacy_persistence: crate::launch::LegacyPersistencePolicy::Host,
-            records: None,
-            room_index: None,
+            persistence: PersistenceRuntime::new(),
             actions: ActionRuntime::new(),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
@@ -5464,13 +5476,13 @@ impl App {
     /// can never be merged into the index (or vice versa).
     fn broadcast_room_index_delta(&mut self) {
         let connected = self.room_collab_manager.as_ref().map_or_else(
-            || self.records.is_some() && self.collab_manager.is_connected(),
+            || self.persistence.records.is_some() && self.collab_manager.is_connected(),
             CollaborationManager::is_connected,
         );
         if !connected {
             return;
         }
-        let Some(room) = self.room_index.as_mut() else {
+        let Some(room) = self.persistence.room_index.as_mut() else {
             return;
         };
         let (delta, heads) = room.pending_outbound_delta();
@@ -5485,7 +5497,7 @@ impl App {
             {
                 room.advance_outbound(heads);
             }
-        } else if self.records.is_some() && self.collab_manager.is_connected() {
+        } else if self.persistence.records.is_some() && self.collab_manager.is_connected() {
             // Before the first record checkout the primary manager is the
             // room route. It becomes `room_collab_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
@@ -5621,7 +5633,7 @@ impl App {
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) {
-        if self.records.is_some() && self.room_collab_manager.is_none() {
+        if self.persistence.records.is_some() && self.room_collab_manager.is_none() {
             let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
             return;
         }
@@ -5655,7 +5667,7 @@ impl App {
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) -> bool {
-        let Some(room) = self.room_index.as_mut() else {
+        let Some(room) = self.persistence.room_index.as_mut() else {
             return false;
         };
         let applied = match collab_types::DocumentMutation::decode(
@@ -5673,7 +5685,10 @@ impl App {
             }
         };
         if applied
-            && let (Some(records), Some(room)) = (self.records.as_mut(), self.room_index.as_ref())
+            && let (Some(records), Some(room)) = (
+                self.persistence.records.as_mut(),
+                self.persistence.room_index.as_ref(),
+            )
         {
             records.discover_room(room.document());
             self.invalidate_widget_resource_cache();
@@ -5717,9 +5732,10 @@ impl App {
                     }
                 }
                 CollabEvent::DocumentSnapshotRequested { .. } => {
-                    if let (Some(manager), Some(room)) =
-                        (self.room_collab_manager.as_mut(), self.room_index.as_mut())
-                    {
+                    if let (Some(manager), Some(room)) = (
+                        self.room_collab_manager.as_mut(),
+                        self.persistence.room_index.as_mut(),
+                    ) {
                         let snapshot = room.document_mut().save();
                         let _ = manager.send(
                             crate::collaboration::CollabRequest::document_snapshot(snapshot),
@@ -7306,7 +7322,7 @@ impl App {
     /// ```
     #[must_use]
     pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
-        self.autosave = Some(autosave);
+        self.persistence.autosave = Some(autosave);
         self
     }
 
@@ -7358,17 +7374,18 @@ impl App {
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
         records.discover_room(&room_index);
-        self.records = Some(records);
-        self.room_index = Some(crate::state::DocumentReplica::new(room_index));
+        self.persistence.records = Some(records);
+        self.persistence.room_index = Some(crate::state::DocumentReplica::new(room_index));
         self
     }
 
     pub fn records(&self) -> Option<&crate::record::RecordSet> {
-        self.records.as_ref()
+        self.persistence.records.as_ref()
     }
 
     pub fn room_index(&self) -> Option<&automerge::AutoCommit> {
-        self.room_index
+        self.persistence
+            .room_index
             .as_ref()
             .map(crate::state::DocumentReplica::document)
     }
@@ -7378,13 +7395,14 @@ impl App {
     /// under the previous record's name.
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
-        let Some(set) = self.records.as_mut() else {
+        let Some(set) = self.persistence.records.as_mut() else {
             return false;
         };
         let switched = crate::record::tick(
             set,
             &mut self.state,
-            self.room_index
+            self.persistence
+                .room_index
                 .as_mut()
                 .map(crate::state::DocumentReplica::document_mut),
             &*self.root_widget,
@@ -7432,17 +7450,18 @@ impl App {
     /// instead of the live document — sending the live doc to both would put
     /// a record's content in the room index.
     fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        match self.records.as_mut() {
+        match self.persistence.records.as_mut() {
             Some(set) => {
                 set.tick(&mut self.state.doc);
-                if let (Some(saver), Some(room)) =
-                    (self.autosave.as_mut(), self.room_index.as_mut())
-                {
+                if let (Some(saver), Some(room)) = (
+                    self.persistence.autosave.as_mut(),
+                    self.persistence.room_index.as_mut(),
+                ) {
                     saver.request(room.document_mut());
                 }
             }
             None => {
-                if let Some(saver) = self.autosave.as_mut() {
+                if let Some(saver) = self.persistence.autosave.as_mut() {
                     saver.request(&mut self.state.doc);
                 }
             }
@@ -7492,15 +7511,18 @@ impl App {
             }
             return;
         }
-        if let Some(set) = self.records.as_mut() {
+        if let Some(set) = self.persistence.records.as_mut() {
             set.flush(&mut self.state.doc);
-            if let (Some(saver), Some(room)) = (self.autosave.as_mut(), self.room_index.as_mut()) {
+            if let (Some(saver), Some(room)) = (
+                self.persistence.autosave.as_mut(),
+                self.persistence.room_index.as_mut(),
+            ) {
                 saver.request(room.document_mut());
                 saver.flush();
             }
             return;
         }
-        if let Some(saver) = self.autosave.as_mut() {
+        if let Some(saver) = self.persistence.autosave.as_mut() {
             saver.request(&mut self.state.doc);
             saver.flush();
         }
@@ -7509,7 +7531,7 @@ impl App {
     /// Lets a caller check [`crate::persist::Autosave::last_error`] rather
     /// than assuming the disk accepted the writes.
     pub fn autosave(&self) -> Option<&crate::persist::Autosave> {
-        self.autosave.as_ref()
+        self.persistence.autosave.as_ref()
     }
 
     pub fn run(self) {
@@ -7978,7 +8000,11 @@ fn draw_frame_content(
     if app.history_chrome_enabled {
         let context = crate::standalone_history::HistoryReadContext {
             document: &app.state.doc,
-            active_record: app.records.as_ref().and_then(|records| records.active()),
+            active_record: app
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: app.state.document_identity(),
             permissions: &app.permission_ctx,
         };
@@ -18524,7 +18550,7 @@ mod prepared_runner_tests {
         let component = editable_component(&host, 11);
         let binding = component.callback_binding();
         let mut app = App::from_component(component, runner_inputs()).unwrap();
-        assert!(app.autosave.is_none() && app.records.is_none());
+        assert!(app.persistence.autosave.is_none() && app.persistence.records.is_none());
         assert_saved_body(&host, &binding, "initialized");
         edit_bound_record(&mut app, &binding);
         app.autosave_tick().unwrap();
