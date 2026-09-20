@@ -213,8 +213,11 @@ impl HistoryOwner {
     pub(crate) fn with_restore_authority<T>(
         &self,
         fallback_authority: &crate::permissions::PermissionContext,
-        fallback_author: &crate::state::UserId,
-        operation: impl FnOnce(&crate::permissions::PermissionContext, &crate::state::UserId) -> T,
+        fallback_author: &crate::permissions::UserId,
+        operation: impl FnOnce(
+            &crate::permissions::PermissionContext,
+            &crate::permissions::UserId,
+        ) -> T,
     ) -> T {
         match &self.0 {
             OwnerKind::Component(binding) => {
