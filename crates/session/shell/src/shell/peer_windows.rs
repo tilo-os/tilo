@@ -120,6 +120,41 @@ pub(crate) fn mark_failed_host_restore(tree: &mut WorkspaceTree, desktop_id: &st
     changed
 }
 
+/// Settle a persisted host-app card whose process started but never produced
+/// a surface. Unlike an Xwayland outage this is not automatically retryable:
+/// retrying every frame would create an unbounded process loop.
+pub(crate) fn mark_timed_out_host_restore(tree: &mut WorkspaceTree, desktop_id: &str) -> bool {
+    let Some(app) = crate::shell::host_apps::find(desktop_id) else {
+        return false;
+    };
+    let mut changed = false;
+    for ws in &mut tree.workspaces {
+        for strip in &mut ws.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
+                    let TileContent::LocalApp { app_id, note, .. } = &mut tab.tile else {
+                        continue;
+                    };
+                    if note == OPENING
+                        && (app.desktop_id.eq_ignore_ascii_case(app_id)
+                            || app
+                                .window_identities
+                                .iter()
+                                .any(|id| id.eq_ignore_ascii_case(app_id)))
+                    {
+                        *note = "The app started but did not open a window.".to_string();
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    if changed {
+        tree.flush_to_disk();
+    }
+    changed
+}
+
 /// Every peer window with no note on it yet.
 fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
     let mut out = Vec::new();
@@ -774,6 +809,46 @@ mod tests {
         crate::shell::host_apps::invalidate_cache();
         crate::shell::launcher::clear_pending_placements();
         crate::shell::host_apps::set_x11_unavailable();
+        unsafe {
+            if let Some(previous) = previous_data_home {
+                std::env::set_var("XDG_DATA_HOME", previous);
+            } else {
+                std::env::remove_var("XDG_DATA_HOME");
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn timed_out_host_restore_becomes_an_explicit_non_retrying_error() {
+        let data = tempfile::tempdir().expect("temporary XDG data home");
+        let applications = data.path().join("applications");
+        std::fs::create_dir_all(&applications).expect("applications directory");
+        std::fs::write(
+            applications.join("org.example.Windowless.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Windowless App\nExec=/bin/true\nStartupWMClass=Windowless\n",
+        )
+        .expect("desktop entry");
+        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
+        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+        crate::shell::host_apps::invalidate_cache();
+
+        let (mut tree, tab) = tree_with_local_app("org.example.Windowless");
+        assert!(set_note(&mut tree, tab, OPENING.to_string()));
+        assert!(mark_timed_out_host_restore(
+            &mut tree,
+            "org.example.Windowless"
+        ));
+        assert_eq!(
+            local_app_note(&tree, tab),
+            "The app started but did not open a window."
+        );
+        assert!(
+            !any_pending(&tree),
+            "timeout errors must not relaunch every frame"
+        );
+
+        crate::shell::host_apps::invalidate_cache();
         unsafe {
             if let Some(previous) = previous_data_home {
                 std::env::set_var("XDG_DATA_HOME", previous);

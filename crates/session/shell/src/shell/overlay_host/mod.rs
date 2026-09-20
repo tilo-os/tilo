@@ -5721,15 +5721,47 @@ impl ShellOverlayHost {
         use crate::shell::launcher::LaunchEventKind;
         // Expiry is independent of new launcher events: a daemonising parent
         // can exit and never produce another event or window.
-        crate::shell::launcher::expire_pending_placements();
+        let timed_out = crate::shell::launcher::expire_pending_placements();
         let events = crate::shell::launcher::drain_events();
-        if events.is_empty() {
+        if events.is_empty() && timed_out.is_empty() {
             return false;
         }
         let Some(chrome_handle) = self.chrome.clone() else {
             return false;
         };
         let mut posted = false;
+        for package_id in timed_out {
+            if crate::shell::peer_windows::mark_timed_out_host_restore(
+                &mut chrome_handle.borrow().tree_mut(),
+                &package_id,
+            ) {
+                chrome_handle.borrow_mut().bump();
+            }
+            let pending_notice = crate::shell::catalogue::take_pending_notice(&package_id);
+            {
+                let mut st = chrome_handle.borrow_mut();
+                if let Some(notice) = pending_notice {
+                    st.dismiss_notification(notice);
+                }
+                st.push_notification_full(
+                    crate::shell::notification::Notification::new(
+                        "Application did not open",
+                        "The app started but did not create a window. Check the session log and try again.",
+                    )
+                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
+                    .with_app_name("Applications")
+                    .with_dismiss_after(crate::shell::launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+                );
+                st.bump();
+            }
+            tracing::error!(
+                target: "tilo::app_launch",
+                %package_id,
+                timeout_seconds = 15_u64,
+                "application started but did not present a window before the launch deadline"
+            );
+            posted = true;
+        }
         for event in events {
             if self.room_activity.observe_agent_launch_event(&event) {
                 chrome_handle.borrow_mut().bump();
