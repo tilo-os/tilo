@@ -2753,7 +2753,7 @@ impl BrowserWidget {
                     let display_name = entry.display_name();
                     if !library_filter_matches(
                         &filter_query,
-                        &[display_name.as_str(), &entry.source_url, &status],
+                        &[display_name, &entry.source_url, &status],
                     ) {
                         continue;
                     }
