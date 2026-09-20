@@ -1,9 +1,8 @@
 use ui::LocalState;
 use ui::tilo_actions;
-use ui::tokens::TextRole;
 use ui::widget::{
-    Actions, Button, Checkbox, Dropdown, Field, Form, FormPage, NumberInput, Section, Slider, Text,
-    TextInput, Widget, labeled_check,
+    Actions, Button, Checkbox, Dropdown, Field, Form, FormPage, FormSection, NumberInput, Slider,
+    Text, TextInput, Widget, labeled_check,
 };
 
 fn update_profile(
@@ -208,7 +207,7 @@ pub fn app_root() -> Box<dyn Widget> {
         "starter-title",
         Form::new()
             .section(
-                Section::new("starter-profile-title")
+                FormSection::new("starter-profile-title")
                     .field(Field::new("starter-name-label", input))
                     .content(Box::new(labeled_check(
                         "starter-updates-label",
