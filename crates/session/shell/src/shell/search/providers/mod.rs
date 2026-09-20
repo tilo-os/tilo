@@ -12,6 +12,7 @@ pub mod host_applications;
 pub mod live_app_actions;
 pub mod notes;
 pub mod records;
+pub mod session_actions;
 pub mod text_app;
 
 pub use actions::ActionsProvider;
@@ -24,3 +25,4 @@ pub use host_applications::HostApplicationsProvider;
 pub use live_app_actions::LiveAppActionsProvider;
 pub use notes::NotesProvider;
 pub use records::RecordsProvider;
+pub use session_actions::SessionActionsProvider;
