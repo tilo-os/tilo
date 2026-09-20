@@ -167,7 +167,7 @@ fn failed_native_commit_cannot_publish_an_issuance_result() {
 }
 
 #[test]
-fn revoked_viewer_cannot_complete_or_refresh_membership() {
+fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     use qos_user_identity::{
         RevocationEntry, RevocationList, RevocationReason, WorkspaceDirectory,
         persist::{self, IdentityPaths},
@@ -233,4 +233,19 @@ fn revoked_viewer_cannot_complete_or_refresh_membership() {
     );
     assert_eq!(owner.status(), before);
     assert_eq!(owner.enrollment_count(), 1);
+
+    // A retained revoked certificate is history, not an active bootstrap peer.
+    let other = SigningKey::from_bytes(&[25; 32]);
+    let request = proof(&mut service, &owner, &other, 25, now);
+    let certificate = service.complete(&mut owner, request, now).unwrap();
+    let bootstrap = public_bootstrap(&owner, &certificate, serde_json::json!({"id":"public-address"}), "http://127.0.0.1:12345", now).unwrap();
+    let roster: Vec<qos_user_identity::DeviceCert> = serde_json::from_value(bootstrap["bootstrap"]["certified_roster"].clone()).unwrap();
+    let mut revoked = RevocationList::new();
+    for entry in serde_json::from_value::<Vec<RevocationEntry>>(bootstrap["revocations"].clone()).unwrap() { revoked.insert(entry).unwrap(); }
+    let fresh = qos_peer_state::StatePeer::new(owner.peer().room(), owner.peer().authority().clone(), roster.clone(), revoked.clone(), web_time::SystemTime::now());
+    assert!(fresh.is_ok(), "an unrelated revoked viewer must not block browser startup: {:?}", fresh.err());
+    let restored = qos_peer_state::StatePeer::restore(&owner.peer().durable().unwrap(), owner.peer().room(), owner.peer().authority().clone(), roster, revoked, web_time::SystemTime::now()).unwrap();
+    assert!(restored.permissions(other.verifying_key().to_bytes(), web_time::SystemTime::now()).is_ok());
+    assert!(restored.permissions(key.verifying_key().to_bytes(), web_time::SystemTime::now()).is_err());
+    assert_eq!(restored.rows(), owner.peer().rows());
 }

@@ -256,7 +256,13 @@ pub fn public_bootstrap(
     let update = directory
         .signed_snapshot(&owner.identity.native, now)
         .map_err(EnrollmentError::unavailable)?;
+    let revocations = owner.peer().revocations();
+    // StatePeer::new admits an active roster. Retired certificates remain in
+    // durable history, but must not prevent an unrelated viewer from starting.
+    let roster = owner.peer().certificates().into_iter().filter(|cert| {
+        !revocations.iter().any(|entry| entry.revoked_device_public_key == cert.device_public_key)
+    }).collect::<Vec<_>>();
     Ok(
-        serde_json::json!({"version":2,"certificate":certificate,"root_public_key":certificate.user_public_key,"host_certificate":owner.host_certificate(),"relay_address":relay_address,"packet_relay":packet_relay,"revocations":owner.peer().revocations(),"bootstrap":{"directory_update":update,"directory_author":owner.peer().authority(),"certified_roster":owner.peer().certificates(),"room":owner.peer().room(),"workspace_id":qos_relay::room_workspace_id(owner.peer().room()).map_err(EnrollmentError::unavailable)?.to_string(),"writer_tab_id":1,"chat_package_primary":true,"records":owner.peer().rows()}}),
+        serde_json::json!({"version":2,"certificate":certificate,"root_public_key":certificate.user_public_key,"host_certificate":owner.host_certificate(),"relay_address":relay_address,"packet_relay":packet_relay,"revocations":revocations,"bootstrap":{"directory_update":update,"directory_author":owner.peer().authority(),"certified_roster":roster,"room":owner.peer().room(),"workspace_id":qos_relay::room_workspace_id(owner.peer().room()).map_err(EnrollmentError::unavailable)?.to_string(),"writer_tab_id":1,"chat_package_primary":true,"records":owner.peer().rows()}}),
     )
 }
