@@ -20,6 +20,7 @@ SPEC.loader.exec_module(watch_ci)
 class WatchCiTests(unittest.TestCase):
     def event(self, command: str, exit_code: int = 0) -> dict:
         return {
+            "cwd": str(Path.cwd()),
             "tool_name": "Bash",
             "tool_input": {"command": command},
             "tool_response": {"exit_code": exit_code},
@@ -43,6 +44,7 @@ class WatchCiTests(unittest.TestCase):
 
     def test_successful_code_exec_push_starts_watcher(self) -> None:
         event = {
+            "cwd": str(Path.cwd()),
             "tool_name": "exec",
             "tool_input": {
                 "code": (
