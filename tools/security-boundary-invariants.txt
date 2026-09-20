@@ -63,3 +63,4 @@ os/tests/system_extension_invariants.sh
 os/tests/tinker_subprocess_invariants.sh
 os/tests/local_model_catalog_invariants.sh
 os/tests/release_pipeline_invariants.sh
+os/tests/test_thin_app_selection.py

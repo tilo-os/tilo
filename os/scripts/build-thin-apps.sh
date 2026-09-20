@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build every qpkg application and the shared Rust/UI runtime in one Cargo
+# Resolve qpkg applications and the shared Rust/UI runtime in one Cargo
 # graph. One graph is a correctness requirement: Rust dylib symbols include
 # crate hashes, and independently resolving apps can otherwise produce thin
 # binaries that expect different builds of libruntime_dylib.so.
@@ -8,6 +8,7 @@ set -euo pipefail
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 EXCLUDE_PACKAGES=" ${EXCLUDE_PACKAGES:-} "
 INCLUDE_PACKAGES=" ${INCLUDE_PACKAGES:-} "
+BUILD_PACKAGES=" ${BUILD_PACKAGES:-} "
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
@@ -16,6 +17,8 @@ packages=()
 features=()
 binary_crates=()
 binaries=()
+build_targets=()
+selected_crates=()
 for manifest in "$REPO"/apps/*/tilo-app.toml; do
     dir="$(dirname "$manifest")"
     package="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$dir/Cargo.toml" | head -1)"
@@ -34,21 +37,34 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     packages+=("-p" "$package")
     features+=("$package/thin")
     binary_crates+=("${binary//-/_}")
-    binaries+=("$binary")
+    if [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; then
+        binaries+=("$binary")
+        selected_crates+=("${binary//-/_}")
+        build_targets+=(--bin "$binary")
+    fi
 done
 
 [ "${#packages[@]}" -gt 0 ] || { echo "no qpkg applications selected" >&2; exit 1; }
+[ "${#binaries[@]}" -gt 0 ] || { echo "no qpkg binaries selected" >&2; exit 1; }
+for requested in $BUILD_PACKAGES; do
+    [[ " ${packages[*]} " == *" -p $requested "* ]] || {
+        echo "requested app is outside the runtime graph: $requested" >&2; exit 1;
+    }
+done
 feature_csv="$(IFS=,; echo "${features[*]}")"
 if [ -n "$APP_FEATURES" ]; then
     feature_csv="$feature_csv,$APP_FEATURES"
 fi
 thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 
+# Keep every package and feature in resolution, but select only requested binary
+# targets. Cargo still builds their runtime dependency and gives it the same
+# unified dependency features as a full collection build.
 cd "$REPO"
 TILO_THIN_BIN_CRATES="$thin_crates" \
 RUSTC_WORKSPACE_WRAPPER="$REPO/tools/ci/rustc-thin-app-wrapper.sh" \
 cargo build --locked --profile "$PROFILE" --features "$feature_csv" \
-    -p runtime-dylib "${packages[@]}"
+    -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
 
 # A Rust dylib mismatch is not reliably rejected by the ELF linker: symbol
 # names include crate hashes, so an app built against a second feature-unified
@@ -58,9 +74,9 @@ cargo build --locked --profile "$PROFILE" --features "$feature_csv" \
 # supported app argument; reaching main (any status except the loader's 127)
 # is enough for this ABI check.
 rust_target_libdir=$(rustc --print target-libdir)
-for index in "${!binary_crates[@]}"; do
+for index in "${!binaries[@]}"; do
     binary=${binaries[$index]}
-    crate=${binary_crates[$index]}
+    crate=${selected_crates[$index]}
     set +e
     LD_LIBRARY_PATH="$TARGET_DIR/$PROFILE:$rust_target_libdir" \
         "$TARGET_DIR/$PROFILE/$binary" --help \
@@ -77,4 +93,4 @@ for index in "${!binary_crates[@]}"; do
 done
 
 printf 'built %s thin qpkg apps with %s\n' \
-    "${#binary_crates[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so"
+    "${#binaries[@]}" "$TARGET_DIR/$PROFILE/libruntime_dylib.so"
