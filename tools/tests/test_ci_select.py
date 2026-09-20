@@ -284,6 +284,40 @@ class SelectorTests(unittest.TestCase):
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
         self.assertTrue(plan["full"])
         self.assertEqual(plan["selected_count"], plan["workspace_count"])
+        self.assertEqual(plan["shard_count"], 1)  # small workspace stays cheap
+
+    def test_global_inputs_balance_large_workspaces_without_losing_coverage(self):
+        # Enough genuine package targets/dependencies to exceed the budget,
+        # with uneven costs so this exercises the production balancer.
+        for index in range(100):
+            name = f"app-{index:03}"
+            self.metadata["packages"].append({
+                "name": name,
+                "manifest_path": str(self.root / "apps" / name / "Cargo.toml"),
+                "targets": [{"name": name}] * (1 + index % 5),
+                "dependencies": [{"name": f"external-{i}"} for i in range(index % 30)],
+            })
+        for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", "crates/unmapped/src/lib.rs"):
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 99)
+                rows = plan["matrix"]["include"]
+                self.assertEqual(plan["shard_count"], 2)
+                self.assertEqual(len(rows), 2)
+                self.assertEqual({row["arch"] for row in rows}, {"x86_64"})
+                self.assertEqual({row["runner"] for row in rows}, {ci_select.NATIVE_RUNNERS["x86_64"]})
+                for field in ("packages", "test_packages"):
+                    names = [name for row in rows for name in row[field].split()[1::2]]
+                    self.assertEqual(sorted(names), plan["selected"])
+                    self.assertEqual(len(names), len(set(names)))
+                self.assertEqual(sum(row["estimated_cost"] for row in rows), plan["estimated_cost"])
+                self.assertLess(max(row["estimated_cost"] for row in rows), plan["estimated_cost"] * .6)
+                reversed_metadata = {"packages": list(reversed(self.metadata["packages"]))}
+                self.assertEqual(plan, ci_select.make_plan(reversed_metadata, self.root, [path], 99))
+        single = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 1)
+        self.assertEqual(single["shard_count"], 1)
+        # A normal narrow edit does not fan out just because the workspace grew.
+        narrow = ci_select.make_plan(self.metadata, self.root, ["leaf/src/lib.rs"], 99)
+        self.assertEqual(narrow["shard_count"], 1)
 
     def test_explicit_full_selects_every_package_even_without_changes(self) -> None:
         for changes in ([], ["docs/development-signing.md"]):

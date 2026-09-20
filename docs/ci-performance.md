@@ -3,7 +3,7 @@
 Current deployment and measured startup results are recorded in the
 [emergency runbook](ci-emergency-relief.md). CI has three complementary paths:
 
-- `check.yml` uses one x86-64 shard for ordinary push/PR feedback. It checks all
+- `check.yml` uses one x86-64 shard for targeted push/PR feedback. It checks all
   targets in the affected reverse-dependency closure, while linking and running
   tests for directly changed packages plus `collab-types`, `pkg`, and `qdoc`.
   Repository-wide build inputs and unmapped workspace paths retain full-workspace
@@ -34,8 +34,13 @@ references together only after reviewing the new image's candidate bundle.
 The candidate workflow uploads changed PNGs, a binary patch, its SHA-256, and a
 diff inventory; it deliberately has no repository-write step.
 
-Ordinary feedback uses one target tree to avoid recompiling shared dependencies
-across shards. Full native qualification may use up to two weighted shards per
+Targeted feedback uses one target tree to avoid recompiling shared dependencies
+across shards. Global build inputs and unmapped workspace changes use up to two
+cost-balanced x86-64 shards, each with the existing four Cargo workers. Small
+selections stay on one shard; coverage and runner labels are unchanged. This
+bounds ordinary affected checks at eight Cargo workers; shared dependency work
+can still be repeated across the two target trees. Full native qualification
+may use up to two weighted shards per
 architecture; small selections use fewer. Do not manually dispatch `check.yml`
 as a cheap repeat of ordinary feedback: dispatch explicitly selects the entire
 workspace on both architectures. Submit the updated task branch/PR normally;
