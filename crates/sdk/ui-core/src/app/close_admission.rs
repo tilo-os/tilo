@@ -11,6 +11,7 @@ use crate::widget::Widget;
 mod native_quit_request;
 
 impl App {
+    #[cfg(test)]
     pub(super) fn admit_native_close_request(&mut self) -> bool {
         self.request_close() && self.finish_close_if_ready()
     }
