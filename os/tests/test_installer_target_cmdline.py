@@ -63,14 +63,16 @@ def projection_commands(source):
         boundary,
         'target_uki="$(find /boot/EFI/Linux -type f -name \'*.efi\' -print -quit)"',
         f'cp "$target_uki" {TARGET}',
+        f'live_cmdline="$({INSTALLED_HELPER} show)"',
         f'target_cmdline="$({INSTALLED_HELPER} show {TARGET})"',
     }
     # Accept the narrow shell checks as production code, not a test-side
     # reimplementation. Their result is evaluated by the real shell below.
-    for key in ("root", "rd[.]luks[.]options"):
-        check = ('test "$(printf \'%s\\n\' "$target_cmdline" | '
-                 'tr \'[:space:]\' \'\\n\' | grep -E \'^' + key + '(=|$)\')" = ')
-        patterns.append(re.escape(check) + token)
+    for variable in ("live_cmdline", "target_cmdline"):
+        for key in ("root", "rd[.]luks[.]options"):
+            check = ('test "$(printf \'%s\\n\' "$' + variable + '" | '
+                     'tr \'[:space:]\' \'\\n\' | grep -E \'^' + key + '(=|$)\')" = ')
+            patterns.append(re.escape(check) + token)
     for command in selected:
         if command not in fixed and not any(re.fullmatch(p, command) for p in patterns):
             raise ValueError(f"unsupported UKI projection command: {command}")
@@ -133,6 +135,10 @@ class TargetCmdlineTests(unittest.TestCase):
             uses_default = command.startswith(INSTALLED_HELPER) and " /boot/" not in command
             for path in (TARGET, "/boot/tilo-target/predictions", "/boot/EFI/Linux"):
                 command = command.replace(path, shlex.quote(str(self.directory / path.lstrip("/"))))
+            command = command.replace(
+                f"$({INSTALLED_HELPER} show)",
+                f"$({INSTALLED_HELPER} show {shlex.quote(str(self.live))})",
+            )
             if uses_default:
                 if " | " in command:
                     command = command.replace(" | ", f" {shlex.quote(str(self.live))} | ", 1)
@@ -182,14 +188,18 @@ class TargetCmdlineTests(unittest.TestCase):
         target_tokens = self.tokens(self.target)
         self.assertEqual(target_tokens.count(ROOT_TOKEN), 1)
         self.assertEqual(target_tokens.count(OPTIONS_TOKEN), 1)
-        self.assertEqual(target_tokens, [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_KEYS])
+        self.assertEqual(
+            target_tokens,
+            [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_KEYS]
+            + [ROOT_TOKEN, OPTIONS_TOKEN],
+        )
         self.assertTrue(LIVE_KEYS.isdisjoint({t.split("=", 1)[0] for t in target_tokens}))
         for token in ("composefs=" + "a" * 128, "tilo.generation=42", "tilo.mode=normal", "preempt=full"):
             self.assertIn(token, target_tokens)
         self.assertEqual(self.live.read_bytes(), live_before)
         self.assert_only_cmdline_changed(live_before, self.target.read_bytes())
 
-    def test_invalid_inherited_keys_are_rejected_without_normalizing_them(self):
+    def test_invalid_inherited_keys_are_rejected_before_target_projection(self):
         for expected in (ROOT_TOKEN, OPTIONS_TOKEN):
             key = expected.split("=", 1)[0]
             cases = {
@@ -205,27 +215,29 @@ class TargetCmdlineTests(unittest.TestCase):
             for name, replacement in cases.items():
                 with self.subTest(key=key, invalid=name):
                     tokens = [t for t in self.base if t != expected] + replacement
-                    live_before = self.prepare_live(tokens)
-                    live_tokens = self.tokens(self.live)
-                    result = self.run_commands(self.project)
+                    self.live.write_bytes(fixture_bytes(tokens))
+                    result = self.run_commands(self.prepare)
                     self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-                    # A helper/launch error is not evidence of the new production
-                    # checks. The last executed command must be a shell test.
                     trace = [line for line in result.stderr.splitlines() if line.startswith("+ ")]
                     self.assertTrue(trace[-1].startswith("+ test "), result.stderr)
-                    self.assertEqual(self.tokens(self.target),
-                                     [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_KEYS])
-                    self.assertEqual(self.live.read_bytes(), live_before)
-                    self.assert_only_cmdline_changed(live_before, self.target.read_bytes())
+                    self.assertFalse(self.target.exists())
+                    remaining = [
+                        token for token in self.tokens(self.live)
+                        if token.split("=", 1)[0] == key
+                    ]
+                    self.assertEqual(remaining, replacement)
 
     def test_shared_helper_still_refuses_duplicate_append_without_writing(self):
-        live_before = self.prepare_live()
+        self.prepare_live()
+        projected = self.run_commands(self.project)
+        self.assertEqual(projected.returncode, 0, projected.stdout + projected.stderr)
+        target_before = self.target.read_bytes()
         for token in (ROOT_TOKEN, OPTIONS_TOKEN):
             with self.subTest(token=token):
-                result = self.cli("append", token, self.live)
+                result = self.cli("append", token, self.target)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("is already on the sealed command line", result.stderr)
-                self.assertEqual(self.live.read_bytes(), live_before)
+                self.assertEqual(self.target.read_bytes(), target_before)
 
     def test_extraction_fails_when_subject_is_missing_or_changes_unsupported(self):
         source = CONTAINERFILE.read_text()
