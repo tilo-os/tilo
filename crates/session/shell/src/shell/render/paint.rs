@@ -131,6 +131,19 @@ pub struct BridgePhaseTiming {
     pub cpu_output_bytes: u64,
 }
 
+impl BridgePhaseTiming {
+    /// Complete measured bridge wall time. The phases are sequential and
+    /// bounded by one bridge call, so their saturating sum is suitable for
+    /// separating renderer/readback work from the following KMS submission.
+    #[must_use]
+    pub fn total_us(self) -> u128 {
+        self.submit_us
+            .saturating_add(self.completed_readback_map_us)
+            .saturating_add(self.settle_us)
+            .saturating_add(self.cpu_copy_swizzle_us)
+    }
+}
+
 /// Versioned native-pixel damage for [`VelloDrmBridge::paint_damage_into_xrgb8888`].
 ///
 /// `regions: None` deliberately requests a conservative full render. Sparse rendering is only
