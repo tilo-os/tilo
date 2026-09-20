@@ -29,6 +29,11 @@ def request(env):
 
 
 def execute(root, values):
+    # Cargo merges configuration from ancestors. The workflow helper checkout
+    # must be a sibling, never a parent supplying another revision's settings.
+    for parent in root.resolve().parents:
+        if any((parent / '.cargo' / name).exists() for name in ('config', 'config.toml')):
+            raise ValueError('source inherits an ancestor Cargo configuration')
     def read(args):
         return subprocess.check_output(args, cwd=root, text=True)
     actual = read(['git', 'rev-parse', 'HEAD']).strip()
