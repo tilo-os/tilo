@@ -156,8 +156,8 @@ def produce(args):
                  '--iidfile', str(iidfile), '--build-context', f'raw-rootfs=container-image://{args.rootfs_id}',
                  '--build-context', f'signed-loader={payload}', '--build-context', f'loader-tools={tools}',
                  '--build-arg', f'LOADER_NAME={relative.name}', '--build-arg', f'ARCHITECTURE={args.architecture}',
-                 '--build-arg', f'CERTIFICATE_SHA256={fingerprint}',
-                 '--build-arg', f'ORIGINAL_SHA256={evidence["original_sha256"]}', str(context)])
+                 '--build-arg', f'ORIGINAL_SHA256={evidence["original_sha256"]}',
+                 '--build-arg', f'SIGNED_SHA256={evidence["signed_sha256"]}', str(context)])
         signed_id = iidfile.read_text().strip()
         if not re.fullmatch(r'sha256:[0-9a-f]{64}', signed_id):
             raise ValueError('build did not return a full immutable image ID')

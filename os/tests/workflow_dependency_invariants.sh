@@ -61,11 +61,13 @@ else
   fail=1
 fi
 
-if grep -Fq "cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}" "$check_workflow" \
-   && grep -Fq "cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}" "$workflows/lint.yml"; then
-  printf 'ok    busy main retains complete check and lint verification runs\n'
+if grep -Fq 'group: check-${{ github.event_name }}-${{ github.sha }}' "$check_workflow" \
+   && grep -Fq 'cancel-in-progress: false' "$check_workflow" \
+   && grep -Fq 'group: lint-${{ github.event_name }}-${{ github.sha }}' "$workflows/lint.yml" \
+   && grep -Fq 'cancel-in-progress: false' "$workflows/lint.yml"; then
+  printf 'ok    every check and lint event retains an independent result\n'
 else
-  printf 'main verification may starve under continuous integration\n' >&2
+  printf 'check or lint events may replace required results\n' >&2
   fail=1
 fi
 
@@ -91,7 +93,7 @@ fi
 
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$kernel_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$kernel_workflow" \
-   && grep -Fq 'needs: signing-preflight' "$kernel_workflow"; then
+   && grep -Fq 'needs: [signing-preflight, applicability]' "$kernel_workflow"; then
   printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
 else
   printf 'release kernel compilation can start before its signing authority is identity-bound\n' >&2
@@ -101,7 +103,7 @@ fi
 relay_workflow="$workflows/tilo-relay.yaml"
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$relay_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$relay_workflow" \
-   && grep -Fq 'needs: signing-preflight' "$relay_workflow"; then
+   && grep -Fq 'needs: [signing-preflight, applicability]' "$relay_workflow"; then
   printf 'ok    release relay build starts only after KMS identity preflight\n'
 else
   printf 'release relay build can start before its signing authority is identity-bound\n' >&2
