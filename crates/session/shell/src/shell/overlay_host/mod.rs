@@ -13833,6 +13833,9 @@ impl Widget for ShellOverlayHost {
         // the group. Otherwise a stale or racing id blanks the entire shell.
         self.sync_fullscreen_from_chrome();
         let fullscreen = self.fullscreen_group_is_owned();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().set_fullscreen_presentation(fullscreen);
+        }
         let spans = self.strip_output_spans();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as every other `group_row_ptrs`
@@ -26313,7 +26316,7 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let content = Box::new(StubContent::new());
-        let host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        let host = ShellOverlayHost::with_fixture_content(content).with_chrome(chrome.clone());
         build_harness_with_host(host, chrome)
     }
 
@@ -27720,7 +27723,7 @@ mod tests {
     }
 
     /// Search must reach the focused app's own *content*, not just its tab
-    /// title. `nir` appears only in the note's body, so
+    /// title. `Welcome` appears only in the note's body, so
     /// a provider looking it up by tab id rather than by document
     /// answers nothing.
     #[test]
@@ -27752,7 +27755,7 @@ mod tests {
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), sup));
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
 
-        h.host.palette.set_query("nir");
+        h.host.palette.set_query("Welcome");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
         let hit = h
@@ -28939,7 +28942,7 @@ mod resync_strips_tests {
         reason = "the frame-writeback regression keeps input, persistence, and next-frame assertions together"
     )]
     #[test]
-    fn active_tab_writeback_is_flushed_before_the_next_frame() {
+    fn active_tab_focus_is_flushed_before_the_next_frame() {
         let (mut tree, strip_id, group_id) = one_group_seed();
         let state_dir = tempfile::tempdir().expect("state directory");
         let state_path = state_dir.path().join("state.json");
@@ -28955,9 +28958,7 @@ mod resync_strips_tests {
                 },
             });
         let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        assert!(host.focus_window_widget(strip_id, group_id, 2));
-
-        host.flush_active_tab_writeback();
+        assert!(host.focus_window_on_strip(strip_id, group_id, 2));
 
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("selection writeback creates valid durable state");

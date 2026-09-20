@@ -545,8 +545,13 @@ pub struct ChromeState {
     /// Id of the group put full screen with the tab's Expand chip. Kept
     /// separate from [`Self::fullscreen_group`], which the compositor
     /// rewrites every frame — a value parked there by Expand would be
-    /// wiped on the next tick. Both feed [`Self::is_fullscreen`].
+    /// wiped on the next tick. Once the retained row exists, both can feed
+    /// [`Self::is_fullscreen`] through `fullscreen_presentation`.
     maximized_group: Option<u64>,
+    /// Whether the retained widget tree currently owns the requested
+    /// fullscreen/maximized group. The raw request may arrive before its row;
+    /// chrome must remain visible until the row is present.
+    fullscreen_presentation: bool,
     /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
@@ -678,6 +683,7 @@ impl ChromeState {
             session_lock_requested: false,
             fullscreen_group: None,
             maximized_group: None,
+            fullscreen_presentation: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
@@ -765,7 +771,11 @@ impl ChromeState {
     /// expanded with the tab's Expand chip — both suppress the top bar
     /// and sidebar wheel.
     pub fn is_fullscreen(&self) -> bool {
-        self.fullscreen_group.is_some() || self.maximized_group.is_some()
+        self.fullscreen_presentation
+    }
+
+    pub(crate) fn set_fullscreen_presentation(&mut self, presented: bool) {
+        self.fullscreen_presentation = presented;
     }
 
     pub fn maximized_group(&self) -> Option<u64> {
