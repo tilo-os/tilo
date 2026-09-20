@@ -92,7 +92,7 @@ fn add_screen_resolves_app_and_emits_a_valid_graph() {
     assert_eq!(outcome.files.len(), 3);
     assert_eq!(
         outcome.next_command.as_deref(),
-        Some("tilo-dev ui edit ui/account-settings.json")
+        Some("tilo-app ui edit ui/account-settings.json")
     );
     let graph = load_ui_graph(graph_path).unwrap();
     assert!(matches!(
@@ -330,7 +330,7 @@ fn add_screen_extends_only_a_generated_registry() {
     assert_eq!(outcomes[1].updated.len(), 1);
     assert!(outcomes[1].updated[0].ends_with("src/screens.rs"));
     let registry = std::fs::read_to_string(app.join("src/screens.rs")).unwrap();
-    assert_eq!(registry.matches("tilo-dev:screen=").count(), 2);
+    assert_eq!(registry.matches("tilo-app:screen=").count(), 2);
     assert!(registry.contains("\"main\""));
     assert!(registry.contains("\"settings\""));
     assert_eq!(
@@ -528,7 +528,7 @@ fn add_wizard_reviews_and_builds_a_typed_form_component() {
 
     assert!(app.join("src/components/profile_card.rs").is_file());
     assert!(app.join("src/components/mod.rs").is_file());
-    assert_eq!(outcome.next_command.as_deref(), Some("tilo-dev test"));
+    assert_eq!(outcome.next_command.as_deref(), Some("tilo-app test"));
     let transcript = String::from_utf8(output).unwrap();
     assert!(transcript.contains("4) component"));
     assert!(transcript.contains("Component template:"));
@@ -545,7 +545,7 @@ fn add_wizard_can_create_register_and_mount_a_display_component() {
 
     let outcome = add_app_artifact_interactive_with(&app, &mut input, &mut output, true).unwrap();
 
-    assert_eq!(outcome.next_command.as_deref(), Some("tilo-dev dev"));
+    assert_eq!(outcome.next_command.as_deref(), Some("tilo-app dev"));
     assert!(matches!(
         load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-card"),
         Some(tilo_ui_graph::UiNode::Component { name, props, .. })
@@ -568,7 +568,7 @@ fn add_wizard_can_mount_an_interactive_form_component() {
 
     let outcome = add_app_artifact_interactive_with(&app, &mut input, &mut output, true).unwrap();
 
-    assert_eq!(outcome.next_command.as_deref(), Some("tilo-dev dev"));
+    assert_eq!(outcome.next_command.as_deref(), Some("tilo-app dev"));
     assert!(matches!(
         load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-form"),
         Some(tilo_ui_graph::UiNode::Component { name, props, .. })
@@ -646,7 +646,7 @@ fn add_component_registers_typed_accessible_rust_without_overwriting_work() {
         dry_run: false,
     })
     .unwrap();
-    assert_eq!(display.next_command.as_deref(), Some("tilo-dev test"));
+    assert_eq!(display.next_command.as_deref(), Some("tilo-app test"));
     let display_source =
         std::fs::read_to_string(app.join("src/components/activity_card.rs")).unwrap();
     syn::parse_file(&display_source).unwrap();
@@ -727,7 +727,7 @@ fn add_component_registers_typed_accessible_rust_without_overwriting_work() {
     let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
     assert_eq!(
         registry
-            .matches("// tilo-dev:component=profile-card")
+            .matches("// tilo-app:component=profile-card")
             .count(),
         1
     );
@@ -837,7 +837,7 @@ fn generated_graph_apps_auto_register_compatible_components() {
         dry_run: false,
     })
     .unwrap();
-    assert_eq!(outcome.next_command.as_deref(), Some("tilo-dev dev"));
+    assert_eq!(outcome.next_command.as_deref(), Some("tilo-app dev"));
     assert!(
         outcome
             .files
@@ -998,7 +998,7 @@ fn generated_graph_apps_mount_stateful_form_components() {
     })
     .unwrap();
 
-    assert_eq!(outcome.next_command.as_deref(), Some("tilo-dev dev"));
+    assert_eq!(outcome.next_command.as_deref(), Some("tilo-app dev"));
     assert!(matches!(
         load_ui_graph(&app.join("ui/main.json")).unwrap().node("profile-form"),
         Some(tilo_ui_graph::UiNode::Component { name, props, .. })
@@ -1007,7 +1007,7 @@ fn generated_graph_apps_mount_stateful_form_components() {
                 && props.get("enabled_path") == Some(&serde_json::json!("profile-form-enabled"))
     ));
     let source = std::fs::read_to_string(app.join("src/components/profile_form.rs")).unwrap();
-    assert!(source.contains("// tilo-dev:graph-props=form-v2"));
+    assert!(source.contains("// tilo-app:graph-props=form-v2"));
     assert!(source.contains("TextInput::from_document_string(value_path)"));
     assert!(source.contains("pub fn register_ui_graph("));
     let report = doctor_app(&app).unwrap();
@@ -1330,7 +1330,7 @@ fn screen_scenario_scaffolds_a_reachable_semantic_workflow() {
     .unwrap();
     assert_eq!(
         outcome.next_command.as_deref(),
-        Some("tilo-dev scenario run settings-smoke")
+        Some("tilo-app scenario run settings-smoke")
     );
     let source = std::fs::read_to_string(&outcome.files[0]).unwrap();
     let actions = tilo_headless_schema::parse_actions(&source).unwrap();
@@ -2244,6 +2244,7 @@ fn source_checkout_builder_manifest_is_discoverable() {
 }
 
 #[test]
+#[cfg(unix)]
 fn ui_graph_init_protects_existing_work_without_force() {
     let temp = tempfile::tempdir().expect("temp dir");
     let graph = temp.path().join("screen.json");
@@ -2318,7 +2319,7 @@ fn creates_complete_starter() {
 
     let report = doctor_app(&destination).expect("doctor generated app");
     assert!(report.is_ready(), "{}", report.summary());
-    assert!(report.summary().contains("Ready for `tilo-dev run`"));
+    assert!(report.summary().contains("Ready for `tilo-app run`"));
 }
 
 #[test]
@@ -2423,7 +2424,7 @@ fn standalone_wizard_accepts_the_discovered_toolkit_default() {
     let temp = tempfile::tempdir().expect("temp dir");
     let destination = temp.path().join("notes");
     let discovered = discover_ui_dir(temp.path(), None)
-        .expect("tilo-dev source toolkit")
+        .expect("tilo-app source toolkit")
         .canonicalize()
         .unwrap();
     let mut req = request(destination.clone());
@@ -2469,14 +2470,14 @@ fn standalone_noninteractive_creation_discovers_the_toolkit() {
 }
 
 #[test]
-fn toolkit_discovery_follows_the_tilo_dev_executable_ancestry() {
+fn toolkit_discovery_follows_the_tilo_app_cli_executable_ancestry() {
     let temp = tempfile::tempdir().expect("temp dir");
     let ui = temp.path().join("crates/sdk/ui-core");
     std::fs::create_dir_all(&ui).unwrap();
     std::fs::write(ui.join("Cargo.toml"), "[workspace]\n").unwrap();
 
     assert_eq!(
-        ui_dir_from_ancestor(&temp.path().join("target/debug/tilo-dev")),
+        ui_dir_from_ancestor(&temp.path().join("target/debug/tilo-app")),
         Some(ui)
     );
 }
@@ -2524,6 +2525,7 @@ fn new_app_preflights_workspace_registration_before_creating_files() {
 }
 
 #[test]
+#[cfg(unix)]
 fn new_app_publishes_complete_tree_and_workspace_member_together() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();
@@ -2578,6 +2580,7 @@ fn new_app_publishes_complete_tree_and_workspace_member_together() {
 }
 
 #[test]
+#[cfg(unix)]
 fn staged_new_app_failure_restores_workspace_and_empty_destination() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();
@@ -2875,7 +2878,7 @@ fn doctor_preflights_graph_component_factories_and_typed_props() {
     let registry = std::fs::read_to_string(&registry_path).unwrap();
     std::fs::write(
         &registry_path,
-        registry.replace("// tilo-dev:graph-component=profile-card\n", ""),
+        registry.replace("// tilo-app:graph-component=profile-card\n", ""),
     )
     .unwrap();
     let missing_factory = doctor_app(&destination).unwrap();
@@ -2918,7 +2921,7 @@ fn doctor_marks_app_owned_component_contexts_as_unverifiable() {
 fn doctor_keeps_the_generated_form_v1_props_contract_readable() {
     let contract = graph_props_contract(
         "legacy-form",
-        "// tilo-dev:graph-props=form-v1\npub fn register_ui_graph() {}\n",
+        "// tilo-app:graph-props=form-v1\npub fn register_ui_graph() {}\n",
     )
     .unwrap();
     assert_eq!(contract, GraphPropsContract::FormV1);
@@ -2949,11 +2952,11 @@ fn creation_summary_prints_copyable_commands_for_shell_unsafe_paths() {
         workspace_member: false,
     };
     let summary = outcome.summary();
-    assert!(summary.contains("tilo-dev check '/tmp/O'\\''Reilly app'"));
-    assert!(summary.contains("tilo-dev dev '/tmp/O'\\''Reilly app'"));
+    assert!(summary.contains("tilo-app check '/tmp/O'\\''Reilly app'"));
+    assert!(summary.contains("tilo-app dev '/tmp/O'\\''Reilly app'"));
     assert!(summary.contains("Start developing:"));
     assert!(summary.contains("Verify everything:"));
-    assert!(summary.contains("tilo-dev --help"));
+    assert!(summary.contains("tilo-app --help"));
 }
 
 #[test]
@@ -3167,9 +3170,9 @@ fn graph_template_generates_a_valid_editable_screen() {
     assert!(app_lib(&spec).contains("components::ui_graph_context()"));
     assert!(app_lib(&spec).contains("ActionBinding::new"));
     assert!(app_test(&spec).contains("serialized_screen_is_interactive"));
-    assert!(app_readme(&spec).contains("tilo-dev ui tree"));
-    assert!(app_readme(&spec).contains("tilo-dev ui set"));
-    assert!(app_readme(&spec).contains("tilo-dev ui apply"));
+    assert!(app_readme(&spec).contains("tilo-app ui tree"));
+    assert!(app_readme(&spec).contains("tilo-app ui set"));
+    assert!(app_readme(&spec).contains("tilo-app ui apply"));
     assert!(app_readme(&spec).contains("--mount main"));
     assert!(app_readme(&spec).contains("available to every generated screen automatically"));
 }
@@ -3297,28 +3300,28 @@ fn generated_readme_commands_work_inside_workspace_or_standalone() {
             template: Template::Starter,
         };
         let readme = app_readme(&spec);
-        assert!(readme.contains("tilo-dev check --fix\n"));
-        assert!(readme.contains("tilo-dev new notes --template starter --dev"));
+        assert!(readme.contains("tilo-app check --fix\n"));
+        assert!(readme.contains("tilo-app new notes --template starter --dev"));
         assert!(readme.contains("\"resource\":\"generated.form:root\""));
-        assert!(readme.contains("tilo-dev test\n"));
-        assert!(readme.contains("tilo-dev dev\n"));
-        assert!(readme.contains("tilo-dev run\n"));
-        assert!(readme.contains("tilo-dev add component profile-card --template form"));
-        assert!(readme.contains("tilo-dev add component project-tree --template tree"));
-        assert!(readme.contains("tilo-dev add component activity-list --template list"));
-        assert!(readme.contains("tilo-dev add component results-table --template table"));
-        assert!(readme.contains("tilo-dev add component article-body --template text"));
-        assert!(readme.contains("tilo-dev scenario run\n"));
-        assert!(readme.contains("tilo-dev scenario run --artifacts target/scenario-artifacts"));
+        assert!(readme.contains("tilo-app test\n"));
+        assert!(readme.contains("tilo-app dev\n"));
+        assert!(readme.contains("tilo-app run\n"));
+        assert!(readme.contains("tilo-app add component profile-card --template form"));
+        assert!(readme.contains("tilo-app add component project-tree --template tree"));
+        assert!(readme.contains("tilo-app add component activity-list --template list"));
+        assert!(readme.contains("tilo-app add component results-table --template table"));
+        assert!(readme.contains("tilo-app add component article-body --template text"));
+        assert!(readme.contains("tilo-app scenario run\n"));
+        assert!(readme.contains("tilo-app scenario run --artifacts target/scenario-artifacts"));
         assert!(
-            readme.contains("tilo-dev scenario run --audit --artifacts target/scenario-artifacts")
+            readme.contains("tilo-app scenario run --audit --artifacts target/scenario-artifacts")
         );
-        assert!(readme.contains("tilo-dev shot\n"));
-        assert!(readme.contains("tilo-dev inspect --actions tests/headless-actions.json"));
+        assert!(readme.contains("tilo-app shot\n"));
+        assert!(readme.contains("tilo-app inspect --actions tests/headless-actions.json"));
         assert!(readme.contains(
-                "tilo-dev inspect --audit --audit-report target/audit/report.json --actions tests/headless-actions.json"
+                "tilo-app inspect --audit --audit-report target/audit/report.json --actions tests/headless-actions.json"
             ));
-        assert!(readme.contains("tilo-dev package\n"));
+        assert!(readme.contains("tilo-app package\n"));
         assert!(readme.contains("`cargo test` and `cargo run`"));
     }
 }
@@ -3805,6 +3808,7 @@ fn dev_build_drain_detects_a_newer_edit_without_reacting_to_noise() {
 }
 
 #[test]
+#[cfg(unix)]
 fn dev_candidate_build_selects_default_binary_and_reports_failures() {
     let temp = tempfile::tempdir().expect("temp dir");
     let app = temp.path().join("app");
@@ -3857,6 +3861,7 @@ fn dev_candidate_build_selects_default_binary_and_reports_failures() {
 }
 
 #[test]
+#[cfg(unix)]
 fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
     let temp = tempfile::tempdir().expect("temp dir");
     let output = temp.path().join("invocation.txt");
