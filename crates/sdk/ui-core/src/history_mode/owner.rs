@@ -214,10 +214,7 @@ impl HistoryOwner {
         &self,
         fallback_authority: &crate::permissions::PermissionContext,
         fallback_author: &crate::permissions::UserId,
-        operation: impl FnOnce(
-            &crate::permissions::PermissionContext,
-            &crate::permissions::UserId,
-        ) -> T,
+        operation: impl FnOnce(&crate::permissions::PermissionContext, &crate::permissions::UserId) -> T,
     ) -> T {
         match &self.0 {
             OwnerKind::Component(binding) => {
