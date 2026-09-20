@@ -183,6 +183,150 @@ class AppReleaseTests(unittest.TestCase):
             sorted(CATALOG),
         )
 
+    def test_proven_lockfile_closure_selects_only_dependent_apps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def package(name, directory, dependencies=()):
+                return {
+                    "name": name,
+                    "manifest_path": str(root / directory / "Cargo.toml"),
+                    "dependencies": [
+                        {"name": dependency, "path": None}
+                        for dependency in dependencies
+                    ],
+                }
+
+            metadata = {
+                "packages": [
+                    package("notes-bin", "apps/notes", ["markdown-parser"]),
+                    package("settings-bin", "apps/settings", ["settings-format"]),
+                ]
+            }
+            catalog = {
+                "notes": {"package": "notes-bin"},
+                "settings": {"package": "settings-bin"},
+            }
+            self.assertEqual(
+                app_release.apps_from_changes(
+                    ["Cargo.lock"],
+                    catalog,
+                    metadata,
+                    root,
+                    {"notes-bin"},
+                ),
+                ["notes"],
+            )
+
+    def test_plan_uses_proven_lockfile_closure(self) -> None:
+        args = SimpleNamespace(
+            root=ROOT,
+            config=ROOT / "dist/apps/app-collections.toml",
+            tag="",
+            apps="",
+            base="baseline",
+            collection="default",
+        )
+        metadata = {
+            "packages": [
+                {
+                    "name": "notes",
+                    "manifest_path": str(ROOT / "apps/notes/Cargo.toml"),
+                    "dependencies": [],
+                }
+            ]
+        }
+        with mock.patch.object(
+            app_release, "changed_paths", return_value=["Cargo.lock"]
+        ), mock.patch.object(
+            app_release.ci_select, "cargo_metadata", return_value=metadata
+        ), mock.patch.object(
+            app_release,
+            "lockfile_affected_packages",
+            return_value={"notes"},
+        ):
+            result = app_release.plan(args)
+        self.assertEqual(result["apps"], ["notes"])
+        self.assertEqual(result["input_classification"]["binary"], ["Cargo.lock"])
+
+    def test_lockfile_dependency_graph_reaches_workspace_consumers(self) -> None:
+        old = b'''version = 4
+[[package]]
+name = "markdown-parser"
+version = "1.0.0"
+source = "registry+https://example.invalid/index"
+checksum = "old"
+[[package]]
+name = "document-engine"
+version = "1.0.0"
+dependencies = ["markdown-parser 1.0.0"]
+'''
+        new = b'''version = 4
+[[package]]
+name = "markdown-parser"
+version = "1.1.0"
+source = "registry+https://example.invalid/index"
+checksum = "new"
+[[package]]
+name = "document-engine"
+version = "1.0.0"
+dependencies = ["markdown-parser 1.1.0"]
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Cargo.lock").write_bytes(new)
+
+            def package(name, directory, dependencies=()):
+                return {
+                    "name": name,
+                    "manifest_path": str(root / directory / "Cargo.toml"),
+                    "dependencies": [
+                        {"name": dependency, "path": None}
+                        for dependency in dependencies
+                    ],
+                }
+
+            metadata = {
+                "packages": [
+                    package("notes-bin", "apps/notes", ["document-engine"]),
+                    package("settings-bin", "apps/settings", ["settings-format"]),
+                ]
+            }
+            completed = subprocess.CompletedProcess(
+                args=["git", "show"], returncode=0, stdout=old
+            )
+            with mock.patch.object(
+                app_release.ci_select,
+                "comparison_merge_base",
+                return_value="base",
+            ), mock.patch.object(app_release.subprocess, "run", return_value=completed):
+                self.assertEqual(
+                    app_release.lockfile_affected_packages("base", metadata, root),
+                    {"notes-bin"},
+                )
+
+    def test_unreadable_prior_lockfile_keeps_full_fleet_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            failed = subprocess.CompletedProcess(
+                args=["git", "show"], returncode=128, stdout=b""
+            )
+            with mock.patch.object(
+                app_release.ci_select,
+                "comparison_merge_base",
+                return_value="base",
+            ), mock.patch.object(app_release.subprocess, "run", return_value=failed):
+                affected = app_release.lockfile_affected_packages(
+                    "base", {"packages": []}, root
+                )
+            self.assertIsNone(affected)
+            self.assertEqual(
+                app_release.apps_from_changes(
+                    ["Cargo.lock"], CATALOG, {"packages": []}, root, affected
+                ),
+                sorted(CATALOG),
+            )
+
     def test_global_change_excludes_os_integrated_apps(self) -> None:
         catalog = {**CATALOG, "browser": {}}
         self.assertEqual(
