@@ -16,28 +16,26 @@ A new push requires fresh checks and a fresh merge request. The controller also
 checks that the branch is up to date and the change is eligible for routine
 integration; a green check alone does not merge a PR.
 
-Review is optional for ordinary product changes, including core SDK, shell,
-filesystem, new apps, assets, documentation, manifests, lockfiles and ordinary
-vendored sources. After checks pass, the author can request **claude**
-through Forgejo's reviewer control. This holds merging until the request is
-cancelled or receives an allowed approval for that head; change requests block.
-Automatic review-agent launches are currently disabled, so a native request alone
-does not start an agent. The eligibility comment reports review availability.
+Review is optional and informational for every change. Review requests,
+approvals and change requests never affect merge admission; exact-head CI and
+author intent are authoritative. Automatic review-agent launches are currently
+disabled, so a native request alone does not start an agent.
 
 CI policy, publication, signing and named security-boundary paths use the
-reviewed operator path. Changes crossing into those paths or changing an existing
-file's executable mode also require review. After checks pass, obtain an
-official **claude** approval and post the author's `/merge <full-head-sha>` intent.
-An authorized operator then runs this command from the `PodestaAI/infra` checkout:
+protected-path operator flow. Changes crossing into those paths or changing an
+existing file's executable mode may require additional CI or provenance checks,
+but never review. After checks pass, post the author's `/merge <full-head-sha>`
+intent. An authorized operator then runs this command from the `PodestaAI/infra`
+checkout:
 
 ```sh
 python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
 ```
 
-It runs the deployed merge worker, which rechecks scope, current main, CI, author
-intent and approval before integration. This command accepts only changes
-classified into the reviewed scope. Optional approval of a routine PR does not
-change its scope: it still follows normal integration and queue priority.
+It runs the deployed merge worker, which rechecks scope, current main, CI and
+author intent before integration. This command accepts only changes classified
+into the protected scope. Review state does not change a PR's scope or queue
+priority.
 Direct merges do not bypass that worker.
 The [deployed admission policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json)
 defines the protected paths and bounded dependency exceptions. The OpenH264
