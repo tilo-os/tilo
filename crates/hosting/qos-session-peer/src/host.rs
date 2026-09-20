@@ -195,6 +195,22 @@ fn signed_commit_publication_due(
     cadence.on_commit(now)
 }
 
+fn owner_commit_publication_due(
+    cadence: &mut CheckpointCadence,
+    now: std::time::Instant,
+    desktop: bool,
+) -> bool {
+    if desktop {
+        // Desktop commits append their room delta and any newly created record
+        // to the durable outbox. Publish that gesture in this owner turn, not
+        // after the background document checkpoint's idle window.
+        cadence.mark_published(now);
+        true
+    } else {
+        cadence.on_commit(now)
+    }
+}
+
 pub struct NativeSubscription {
     session: Arc<RelayCoeditSession>,
     actions: Option<AttachedActions>,
@@ -694,15 +710,24 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             pending = commits.recv(), if session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
                 let _timing = crate::action_timing::Timing::slow("owner_commit");
                 let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
-                let result = if pending.is_desktop() { pending.apply_desktop(&mut owner) } else { pending.apply(&mut owner).map(|_| ()) };
+                let desktop = pending.is_desktop();
+                let result = if desktop { pending.apply_desktop(&mut owner) } else { pending.apply(&mut owner).map(|_| None) };
+                if let Ok(Some(delivery)) = &result {
+                    if let Some(session) = session.as_ref() {
+                        if let Err(problem) = session.send_action(delivery.clone()) {
+                            tracing::debug!(%problem, "direct desktop delivery unavailable; retained publication follows");
+                        }
+                    }
+                }
                 *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
                 // An owner commit reacting to remote input (an acknowledgement or
                 // effect receipt the native's apps derive from each browser delta)
                 // is coalesced by the same cadence as the inbound path; otherwise
                 // a live browser typing drives one native checkpoint per key. The
                 // commit is durable locally regardless; only the wire checkpoint
-                // is deferred and flushes on idle or at the cap.
-                let due = cadence.on_commit(std::time::Instant::now());
+                // is deferred and flushes on idle or at the cap. Explicit
+                // desktop gestures publish immediately through the same cursor.
+                let due = owner_commit_publication_due(&mut cadence, std::time::Instant::now(), desktop);
                 let published = if due { tracing::debug!(site = "owner_commit", "publish site"); session.as_ref().filter(|s| s.is_ready()).ok_or_else(|| anyhow::anyhow!("owner committed while disconnected; publication pending")).and_then(|s| publish(&owner, s)) } else { Ok(()) };
                 if let Some(runtime) = actions.as_ref() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(signing.fail(problem)); } }
                 if let Err(problem) = result { action_error = Some(problem); }
@@ -954,7 +979,7 @@ mod tests {
 
 #[cfg(test)]
 mod cadence_tests {
-    use super::{CheckpointCadence, signed_commit_publication_due};
+    use super::{CheckpointCadence, owner_commit_publication_due, signed_commit_publication_due};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1020,5 +1045,16 @@ mod cadence_tests {
         }
         assert!(cadence.pending);
         assert!(cadence.due_on_idle(start + Duration::from_millis(50) + CheckpointCadence::IDLE));
+    }
+
+    #[test]
+    fn desktop_gesture_flushes_pending_publication_without_waiting_for_idle() {
+        let mut cadence = CheckpointCadence::new();
+        let start = Instant::now();
+        assert!(!owner_commit_publication_due(&mut cadence, start, false));
+        let gesture = start + Duration::from_millis(20);
+        assert!(owner_commit_publication_due(&mut cadence, gesture, true));
+        assert!(!cadence.due_on_idle(gesture + CheckpointCadence::IDLE));
+        assert!(!owner_commit_publication_due(&mut cadence, gesture + CheckpointCadence::IDLE, false));
     }
 }

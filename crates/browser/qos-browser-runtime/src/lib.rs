@@ -54,6 +54,7 @@ mod system_search;
 
 /// Private browser action correlation, also exercised by the ordinary host harness.
 pub mod action_client;
+pub mod committed_desktop;
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod storage_key;

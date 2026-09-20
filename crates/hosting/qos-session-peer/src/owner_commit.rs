@@ -50,6 +50,7 @@ pub struct OwnerCommitMailbox {
 }
 pub struct PendingOwnerCommit {
     request: OwnerCommitRequest,
+    direct_delivery: bool,
     started: Option<oneshot::Sender<std::time::Instant>>,
     reply: Option<oneshot::Sender<Result<OwnerCommitReceipt, String>>>,
     desktop_reply: Option<oneshot::Sender<Result<OwnerCommitReceipt, qos_peer_state::desktop_command::DesktopCommandError>>>,
@@ -104,6 +105,7 @@ impl OwnerCommitService for OwnerCommitHandle {
             this.sender
                 .try_send(PendingOwnerCommit {
                     request: request.clone(),
+                    direct_delivery: false,
                     started: Some(started),
                     reply: Some(reply),
                     desktop_reply: None,
@@ -136,17 +138,25 @@ impl PendingOwnerCommit {
         }
     }
     pub fn is_desktop(&self) -> bool { self.desktop_reply.is_some() }
-    pub fn apply_desktop(mut self, owner: &mut SessionOwner) -> Result<(), String> {
+    pub fn apply_desktop(mut self, owner: &mut SessionOwner) -> Result<Option<qos_relay::peer_actions::DirectedAction>, String> {
         use qos_peer_state::desktop_command::DesktopCommandError;
         self.start_execution();
         let result = self.health.check().map_err(DesktopCommandError::Uncertain)
-            .and_then(|()| owner.commit_desktop_command(&self.request));
+            .and_then(|()| if self.direct_delivery {
+                owner.commit_desktop_command_with_delivery(&self.request)
+            } else {
+                owner.commit_desktop_command(&self.request).map(|receipt| (receipt, None))
+            });
         let health = match &result {
             Err(DesktopCommandError::Uncertain(reason)) => Err(self.health.fail(reason.clone())),
             _ => Ok(()),
         };
+        let (result, delivery) = match result {
+            Ok((receipt, delivery)) => (Ok(receipt), delivery),
+            Err(error) => (Err(error), None),
+        };
         if let Some(reply) = self.desktop_reply.take() { let _ = reply.send(result); }
-        health
+        health.map(|()| delivery)
     }
     /// Called only by the serialized owner loop. A successful reply follows its
     /// aggregate fsync+directory barrier. Dropped callers do not cancel commits.
@@ -175,7 +185,11 @@ impl Drop for PendingOwnerCommit {
 }
 
 impl OwnerCommitHandle {
+    #[cfg(test)]
     pub(crate) fn desktop_command(&self, request: OwnerCommitRequest) -> qos_action_broker::services::DesktopCommandFuture {
+        self.desktop_command_with_delivery(request, false)
+    }
+    pub(crate) fn desktop_command_with_delivery(&self, request: OwnerCommitRequest, direct_delivery: bool) -> qos_action_broker::services::DesktopCommandFuture {
         let this = self.clone();
         Box::pin(async move {
             use qos_peer_state::desktop_command::DesktopCommandError::{Rejected, Uncertain};
@@ -187,7 +201,7 @@ impl OwnerCommitHandle {
             let permit = this.permits.clone().try_acquire_owned().map_err(|_| Rejected("desktop command capacity exhausted".into()))?;
             let (reply, response) = oneshot::channel();
             let (started, start) = oneshot::channel();
-            this.sender.try_send(PendingOwnerCommit { request: request.clone(), started: Some(started), reply: None, desktop_reply: Some(reply), health: this.health.clone(), _permit: permit })
+            this.sender.try_send(PendingOwnerCommit { request: request.clone(), direct_delivery, started: Some(started), reply: None, desktop_reply: Some(reply), health: this.health.clone(), _permit: permit })
                 .map_err(|_| Uncertain(this.health.fail("desktop owner queue unavailable; outcome unknown")))?;
             let deadline = start.await
                 .map_err(|_| Uncertain(this.health.fail("desktop owner reply lost; outcome unknown")))?;
@@ -336,7 +350,7 @@ mod desktop_mailbox_tests {
         let (service, mut mailbox) = OwnerCommitMailbox::bounded(2);
         let before = owner.status();
         let refused = tokio::spawn(service.desktop_command(command(&owner, "")));
-        mailbox.recv().await.unwrap().apply_desktop(&mut owner).unwrap();
+        assert!(mailbox.recv().await.unwrap().apply_desktop(&mut owner).unwrap().is_none());
         assert!(matches!(refused.await.unwrap(), Err(DesktopCommandError::Rejected(_))));
         assert!(service.health().is_ok()); assert!(owner.permits_publication());
         assert_eq!(owner.status(), before);
@@ -354,6 +368,28 @@ mod desktop_mailbox_tests {
         assert!(matches!(uncertain.await.unwrap(), Err(DesktopCommandError::Uncertain(_))));
         assert!(service.health().is_err()); assert!(!owner.permits_publication());
         assert_eq!(owner.status(), before);
+    }
+    #[tokio::test]
+    async fn immediate_delivery_requires_explicit_browser_opt_in() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let (service, mut mailbox) = OwnerCommitMailbox::bounded(2);
+        let waiting = tokio::spawn(service.desktop_command(command(&owner, "Old browser")));
+        assert!(mailbox.recv().await.unwrap().apply_desktop(&mut owner).unwrap().is_none(), "old tabs cannot decode the new private message");
+        waiting.await.unwrap().unwrap();
+        let waiting = tokio::spawn(service.desktop_command_with_delivery(command(&owner, "New browser"), true));
+        assert!(mailbox.recv().await.unwrap().apply_desktop(&mut owner).unwrap().is_some());
+        waiting.await.unwrap().unwrap();
+        let waiting = tokio::spawn(service.desktop_command_with_delivery(command(&owner, ""), true));
+        assert!(mailbox.recv().await.unwrap().apply_desktop(&mut owner).unwrap().is_none());
+        assert!(matches!(waiting.await.unwrap(), Err(DesktopCommandError::Rejected(_))));
+        let path = root.path().join("owner");
+        let waiting = tokio::spawn(service.desktop_command_with_delivery(command(&owner, "Failed disk"), true));
+        let pending = mailbox.recv().await.unwrap();
+        std::fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
+        std::fs::create_dir(path.join("session.bin")).unwrap();
+        assert!(pending.apply_desktop(&mut owner).is_err());
+        assert!(matches!(waiting.await.unwrap(), Err(DesktopCommandError::Uncertain(_))));
     }
     fn effect(owner: &SessionOwner) -> OwnerCommitRequest {
         let invocation = uuid::Uuid::new_v4();

@@ -7,7 +7,7 @@ const binding={room,sender:'sender',senderRoot:'root',target:'target',targetRoot
 const invocation='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 // Deliberately beyond JS integer precision: the bridge must never decode/rebuild it.
 const command='{"source":{"room":"'+room+'","heads":[[7]]},"command":{"CloseTab":{"location":{"strip":18446744073709551001,"group":18446744073709551002,"tab":18446744073709551003}}}}';
-const catalogue={version:1,surfaces:[{peer_id:'9007199254740993',app_id:'dev.qos.desktop',record_id:'',cluster_id:room,live:true,actions:[{resource:'desktop:session',action:'command',resource_label:'Desktop',resource_kind:'desktop',action_label:'Change desktop',operation_kind:'Effect',params:[{name:'command',ty:'text',required:true}],contract:{confirmation:{mode:'none'}}}]}]};
+const catalogue={version:1,surfaces:[{peer_id:'9007199254740993',app_id:'dev.qos.desktop',record_id:'',cluster_id:room,live:true,actions:[{resource:'desktop:session',action:'command',resource_label:'Desktop',resource_kind:'desktop',action_label:'Change desktop',operation_kind:'Effect',params:[{name:'command',ty:'text',required:true},{name:'committed_desktop_v2',ty:'boolean',required:false}],contract:{confirmation:{mode:'none'}}}]}]};
 async function fixture({requestHook,commitHook,clock}={}){
  let disk,deny=false,available=true,outcome='unknown';const sent=[],reports=[];let queue=[{invocation,command}];
  const config={context:()=>binding,load:async()=>disk,commit:async value=>{await commitHook?.(value);if(deny)throw Error('quota');disk=structuredClone(value);},request:async message=>{
@@ -23,7 +23,7 @@ async function fixture({requestHook,commitHook,clock}={}){
 }
 test('widget command preserves full IDs and UUID through actual durable client and restart recovery',async()=>{
  const f=await fixture();await f.bridge.pump();
- const invoke=f.sent.find(row=>row.type==='invoke_bound');assert.equal(invoke.invocation,invocation);assert.equal(invoke.argument.command,command);assert.equal(invoke.app_peer,'9007199254740993');assert.equal(f.queue.length,0);assert.equal(f.disk.entries.length,1);
+ const invoke=f.sent.find(row=>row.type==='invoke_bound');assert.equal(invoke.invocation,invocation);assert.equal(invoke.argument.command,command);assert.equal(invoke.argument.committed_desktop_v2,true);assert.equal(invoke.app_peer,'9007199254740993');assert.equal(f.queue.length,0);assert.equal(f.disk.entries.length,1);
  assert.equal(f.reports.at(-1).desktopCommand.state,'unknown');
  f.bridge.close();const recovered=await createActionClient(f.config);await recovered.catalogue();await recovered.recover();
  assert.equal(f.sent.filter(row=>row.type==='invoke_bound').length,1);assert.equal(f.sent.find(row=>row.type==='status').invocation,invocation);
@@ -47,11 +47,7 @@ const delayed=()=>Object.assign(Error('discovery delayed'),{code:'transport-time
 test('catalogue timeout then success retains and launches the exact original intent once',async()=>{
  const clock=fakeClock();let calls=0;const f=await fixture({clock,requestHook:m=>{if(m.type==='catalogue_refresh'&&++calls===1)throw delayed();}});
  await f.bridge.pump();assert.equal(f.queue.length,1);assert.equal(f.reports.at(-1).desktopCommand.terminal,false);
- await clock.tick(249);assert.equal(calls,1);await clock.tick(1);assert.equal(calls,3);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,1);assert.equal(f.disk.entries[0].intent.argument.command,command);assert.equal(f.queue.length,0);f.bridge.close();
-});
-test('second discovery failure retries with the pinned descriptor and original UUID',async()=>{
- const clock=fakeClock();let calls=0;const f=await fixture({clock,requestHook:m=>{if(m.type==='catalogue_refresh'&&++calls===2)throw delayed();}});
- await f.bridge.pump();assert.equal(f.queue.length,1);assert.equal(f.disk,undefined);await clock.tick(250);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,1);assert.equal(f.disk.entries[0].invocation,invocation);f.bridge.close();
+ await clock.tick(249);assert.equal(calls,1);await clock.tick(1);assert.equal(calls,2);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,1);assert.equal(f.disk.entries[0].intent.argument.command,command);assert.equal(f.queue.length,0);f.bridge.close();
 });
 test('close, explicit cancel and actual queue supersession prevent late discovery dispatch',async()=>{
  for(const stop of ['close','cancel','supersede']){const hold=deferred(),entered=deferred();const f=await fixture({requestHook:async m=>{if(m.type==='catalogue_refresh'){entered.resolve();await hold.promise;}}});
@@ -71,15 +67,27 @@ test('first failed discovery pins identity across retries',async()=>{
  const bridge=bindDesktopCommands({actions,clock,peek:()=>queue[0],ack:()=>queue.shift()});await bridge.pump();current={...binding,certificate:'replacement'};await clock.tick(250);assert.equal(sent.filter(m=>m.type==='invoke_bound').length,0);assert.equal(queue.length,0);bridge.close();await actions.close();
 });
 test('deadline includes queued discovery and a late response cannot dispatch',async()=>{
- const clock=fakeClock(),hold=deferred();let calls=0;const f=await fixture({clock,requestHook:async m=>{if(m.type==='catalogue_refresh'&&++calls===2)await hold.promise;}});const pumping=f.bridge.pump();await drain();await clock.tick(30000);await pumping;assert.equal(f.queue.length,0);assert.match(f.reports.at(-1).desktopCommand.error,/not sent/i);hold.resolve();await drain();assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0);assert.equal(f.disk,undefined);f.bridge.close();
+ const clock=fakeClock(),hold=deferred();let calls=0;const f=await fixture({clock,requestHook:async m=>{if(m.type==='catalogue_refresh'&&++calls===1)await hold.promise;}});const pumping=f.bridge.pump();await drain();await clock.tick(30000);await pumping;assert.equal(f.queue.length,0);assert.match(f.reports.at(-1).desktopCommand.error,/not sent/i);hold.resolve();await drain();assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0);assert.equal(f.disk,undefined);f.bridge.close();
 });
 test('deadline during pending commit never retries or dispatches and retains original row',async()=>{
  const clock=fakeClock(),hold=deferred(),entered=deferred();const f=await fixture({clock,commitHook:async()=>{entered.resolve();await hold.promise;}});const pumping=f.bridge.pump();await entered.promise;await clock.tick(30000);assert.equal(f.actions.getInvocationStage(invocation),'admitting');assert.equal(f.queue.length,1);assert.equal(f.reports.at(-1).desktopCommand.state,'unknown');hold.resolve();await pumping;assert.equal(f.queue.length,0);assert.equal(f.disk.entries[0].invocation,invocation);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0);assert.equal(f.reports.at(-1).desktopCommand.state,'unknown');f.bridge.close();
 });
-test('security and descriptor changes during revalidation refuse without retries',async()=>{
- for(const change of ['host','binding','live','cluster','removed','revision','descriptor','confirmation','permission','expired']){
-  const clock=fakeClock();let calls=0;const f=await fixture({clock,requestHook:m=>{if(m.type!=='catalogue_refresh'||++calls!==2)return;const changed=structuredClone(catalogue);if(change==='permission'||change==='expired')throw Error(change==='expired'?'device cert has expired':'permission revoked');if(change==='binding')return{type:'rejected',code:'NotAuthorised'};if(change==='live')changed.surfaces[0].live=false;if(change==='cluster')changed.surfaces[0].cluster_id='wrong';if(change==='removed')changed.surfaces=[];if(change==='revision')changed.surfaces[0].actions[0].revision='new';if(change==='descriptor')changed.surfaces[0].actions[0].action_label='replacement';if(change==='confirmation')changed.surfaces[0].actions[0].contract.confirmation={mode:'confirm'};return{type:'broker_catalogue',host:change==='host'?'dddddddd-dddd-4ddd-8ddd-dddddddddddd':host,catalogue:changed};}});
-  await f.bridge.pump();await clock.tick(30000);assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0,change);assert.equal(f.disk,undefined,change);assert.equal(calls,2,change);assert.equal(f.reports.at(-1).desktopCommand.state,'rejected',change);f.bridge.close();
+test('fresh desktop selection refuses unavailable routes and required confirmation before admission',async()=>{
+ for(const change of ['live','cluster','removed','confirmation','permission','expired']){
+  const clock=fakeClock();let calls=0;const f=await fixture({clock,requestHook:m=>{
+   if(m.type!=='catalogue_refresh')return;calls++;const changed=structuredClone(catalogue);
+   if(change==='permission'||change==='expired')throw Error(change==='expired'?'device cert has expired':'permission revoked');
+   if(change==='live')changed.surfaces[0].live=false;
+   if(change==='cluster')changed.surfaces[0].cluster_id='wrong';
+   if(change==='removed')changed.surfaces=[];
+   if(change==='confirmation')changed.surfaces[0].actions[0].contract.confirmation={mode:'confirm'};
+   return {type:'broker_catalogue',host,catalogue:changed};
+  }});
+  await f.bridge.pump();await clock.tick(30000);
+  assert.equal(f.sent.filter(m=>m.type==='invoke_bound').length,0,change);
+  assert.equal(f.disk,undefined,change);assert.equal(calls,1,change);
+  assert.equal(f.reports.at(-1).desktopCommand.state,'rejected',change);
+  f.bridge.close();await f.actions.close();
  }
 });
 test('supersession during backoff rejects the retired intent waiter',async()=>{
@@ -87,4 +95,41 @@ test('supersession during backoff rejects the retired intent waiter',async()=>{
 });
 test('explicit cancellation retires a queued intent before its first pump',async()=>{
  const f=await fixture(),waiting=f.bridge.waitForTerminal(invocation),rejected=assert.rejects(waiting,/cancelled/);assert.equal(f.bridge.cancel(invocation),true);await rejected;await f.bridge.pump();assert.equal(f.sent.length,0);assert.equal(f.queue.length,0);f.bridge.close();
+});
+
+
+test('desktop open and close use one fresh catalogue round trip before dispatch',async()=>{
+ const f=await fixture();await f.bridge.pump();
+ assert.deepEqual(f.sent.map(m=>m.type),['catalogue_refresh','invoke_bound']);
+ f.bridge.close();await f.actions.close();
+});
+test('command presentation starts before any network request and observes every retained completion',async()=>{
+ const f=await fixture(),events=[];
+ f.bridge.close();
+ const bridge=bindDesktopCommands({actions:f.actions,peek:()=>f.queue[0],ack:()=>f.queue.shift(),onPending:pending=>events.push(['pending',pending]),onUpdate:row=>events.push(['update',row])});
+ const pumping=bridge.pump();assert.equal(events[0]?.[0],'pending');assert.equal(events[0]?.[1].command,command);
+ await pumping;f.succeed();await f.actions.status(invocation);
+ assert(events.some(([kind,row])=>kind==='update'&&row.invocation===invocation&&row.terminal&&row.state==='succeeded'));
+ bridge.close();await f.actions.close();
+});
+
+
+test('supersession clears presentation both during discovery and while backing off',async()=>{
+ for(const busy of [true,false]){
+  const gate=deferred(),entered=deferred(),clock=fakeClock(),updates=[];
+  const f=await fixture({clock,requestHook:async m=>{if(m.type==='catalogue_refresh'){entered.resolve();if(busy)await gate.promise;else throw delayed();}}});
+  f.bridge.close();const bridge=bindDesktopCommands({actions:f.actions,clock,peek:()=>f.queue[0],ack:()=>f.queue.shift(),onUpdate:row=>updates.push(row)});
+  const pumping=bridge.pump();await entered.promise;if(!busy)await pumping;
+  f.queue[0]={invocation:'ffffffff-ffff-4fff-8fff-ffffffffffff',command};
+  if(busy){gate.resolve();await pumping;}else await bridge.pump();
+  assert(updates.some(row=>row.invocation===invocation&&row.state==='cancelled'&&row.terminal));
+  bridge.close();await f.actions.close();
+ }
+});
+
+test('older server catalogue is used without an unsupported direct-delivery argument',async()=>{
+ const old=structuredClone(catalogue);old.surfaces[0].actions[0].params=old.surfaces[0].actions[0].params.filter(p=>p.name!=='committed_desktop_v2');
+ const f=await fixture({requestHook:async message=>message.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue:old}:undefined});
+ try { await f.bridge.pump();assert.equal(f.sent.find(m=>m.type==='invoke_bound').argument.committed_desktop_v2,undefined); }
+ finally { f.bridge.close(); }
 });

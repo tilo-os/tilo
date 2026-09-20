@@ -29,3 +29,5 @@ pub mod desktop_command;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod retained_proof;
+
+pub mod desktop_delivery;

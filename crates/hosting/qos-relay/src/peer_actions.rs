@@ -31,6 +31,14 @@ pub struct DirectedAction {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionMessage {
     CatalogueRefresh,
+    /// Best-effort immediate copy of a durably committed desktop publication.
+    /// Receivers must pin the source authority and use ordinary state admission.
+    CommittedDesktop {
+        invocation: InvocationId,
+        packets: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opened: Option<OpenedDesktopTab>,
+    },
     BrokerCatalogue {
         host: Uuid,
         catalogue: serde_json::Value,
@@ -85,6 +93,15 @@ pub enum ActionMessage {
     },
 }
 
+/// Exact native IDs, represented as decimal strings across the JS boundary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenedDesktopTab {
+    pub strip: String,
+    pub group: String,
+    pub tab: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "phrase", rename_all = "snake_case")]
 pub enum Confirmation {
@@ -106,7 +123,8 @@ pub enum UnavailableReason {
 impl ActionMessage {
     pub fn invocation(&self) -> Option<InvocationId> {
         match self {
-            Self::InvokeBound { invocation, .. }
+            Self::CommittedDesktop { invocation, .. }
+            | Self::InvokeBound { invocation, .. }
             | Self::Observation { invocation, .. }
             | Self::Invoke { invocation, .. }
             | Self::Status { invocation }
@@ -134,6 +152,11 @@ impl ActionMessage {
         }
         let identifier = |value: &str| !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES;
         match self {
+            Self::CommittedDesktop { invocation, packets, opened } => {
+                !invocation.0.is_nil() && !packets.is_empty() && packets.len() <= 64
+                    && packets.iter().all(|p| { let p = p.strip_prefix("z:").unwrap_or(p); !p.is_empty() && p.len() % 2 == 0 && p.bytes().all(|b| b.is_ascii_hexdigit()) })
+                    && opened.as_ref().is_none_or(|route| [&route.strip, &route.group, &route.tab].iter().all(|id| id.parse::<u64>().is_ok_and(|id| id != 0)))
+            }
             Self::InvokeBound {
                 host,
                 invocation,

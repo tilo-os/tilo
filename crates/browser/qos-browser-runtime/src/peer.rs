@@ -299,8 +299,40 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                 // Delivered is attested by the same mutually authenticated relay.
                 // Current membership/certificate validity is rechecked for every response.
                 if action_context(&peer).is_ok() {
+                    if matches!(&event, qos_relay::transport_v2::EnvelopeV2::Delivered { action, .. }
+                        if matches!(action.message, qos_relay::peer_actions::ActionMessage::CommittedDesktop { .. })) {
+                        // Flush local edits before cloning admission, just as on
+                        // the retained channel. A complete batch installs once.
+                        if let Err(error) = crate::browser::prepare_peer_remote(peer.id) {
+                            mark_failure(peer.id, error); continue;
+                        }
+                        let candidate = crate::committed_desktop::admit(&peer.state.borrow(), &event,
+                            peer._key.verifying_key().to_bytes(), SystemTime::now());
+                        match candidate {
+                            Ok(Some(candidate)) => {
+                                peer.last_peer_contact.set(Some(js_sys::Date::now()));
+                                if let Err(e) = install_candidate(&peer, candidate) {
+                                    *peer.admission_failure.borrow_mut() = Some(e.clone());
+                                    report(&peer, "incomplete", Some(e));
+                                } else if let qos_relay::transport_v2::EnvelopeV2::Delivered { action, .. } = &event {
+                                    if let qos_relay::peer_actions::ActionMessage::CommittedDesktop { invocation, opened, .. } = &action.message {
+                                        let notice = serde_json::json!({"committedDesktop":{"invocation":invocation,"room":action.room,"opened":opened}}).to_string();
+                                        let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str(&notice));
+                                    }
+                                }
+                            }
+                            // This is a best-effort copy; ordinary retained state
+                            // supplies missing prerequisites without speculative UI.
+                            Ok(None) => (),
+                            Err(error) => web_sys::console::debug_1(&JsValue::from_str(&format!("Committed desktop awaiting retained state: {error}"))),
+                        }
+                        continue;
+                    }
                     let root=peer.state.borrow().authority().user_public_key;
                     peer.actions.borrow_mut().receive(event,root);
+                    // Wake command waiters as soon as the authenticated response
+                    // is installed. The JS host keeps only a deadline timer.
+                    let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str("{\"actionResponseReady\":true}"));
                 }
             }
         });
@@ -363,35 +395,9 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                 Ok(outcome) => {
                     if authenticated && author==peer.state.borrow().authority().device_public_key{peer.last_peer_contact.set(Some(js_sys::Date::now()));}
                     if outcome.changed || outcome.metadata_changed {
-                        let (mut outbox,reconciliation_error)=match candidate.reconcile_outbox(&peer.outbox.borrow(),&peer._key,SystemTime::now()) {
-                            Ok(outbox)=>(outbox,None),
-                            // Never discard newly accepted revocations/prerequisites
-                            // merely because local outgoing recovery is forbidden.
-                            Err(error)=>(peer.outbox.borrow().iter().filter(|message|!candidate.covers(message)).cloned().collect(),Some(error)),
-                        };
-                        // Acceptance may reconcile author sequences, but cannot retire the
-                        // immutable original without an exact designated durable receipt.
-                        for original in peer.outbox.borrow().iter(){
-                            let durable=match original {NeighbourMsg::AppDocument{app_id,record_id,..}=>candidate.durable_coverage(app_id,record_id).ok().flatten().is_some()&&candidate.covers(original),_=>false};
-                            if !durable && !outbox.iter().any(|other|postcard::to_allocvec(other).ok()==postcard::to_allocvec(original).ok()){outbox.push(original.clone());}
-                        }
-                        let install = if candidate.incomplete_reason().is_some() {
-                            Ok(())
-                        } else {
-                            install_records(&peer, &candidate)
-                        };
-                        match install.and_then(|()| stage_journal(&peer, &candidate, &outbox)) {
-                            Ok(()) => {
-                                let journal=StorageKey::Admission{workspace:candidate.room().into()};
-                                let revision=peer.cache.status(&journal).filter(|status|!status.durable).map(|status|status.revision);
-                                peer.admission_progress.borrow_mut().accepted(revision);
-                                *peer.admission_failure.borrow_mut()=reconciliation_error;
-                                *peer.outbox.borrow_mut() = outbox;
-                                *peer.state.borrow_mut() = candidate;
-                                crate::browser::refresh_peer_mounts(peer.id);
-                                report(&peer, "admitting", None);
-                            }
-                            Err(e) => { *peer.admission_failure.borrow_mut()=Some(e.clone());report(&peer, "incomplete", Some(e)); },
+                        if let Err(e) = install_candidate(&peer, candidate) {
+                            *peer.admission_failure.borrow_mut() = Some(e.clone());
+                            report(&peer, "incomplete", Some(e));
                         }
                     } else {
                         if candidate.pending_count()<pending_before {peer.admission_progress.borrow_mut().accepted(None);}
@@ -723,6 +729,38 @@ pub(crate) fn desktop_state(id:u32)->Result<StatePeer,String>{
     })
 }
 
+/// One admission installation path for retained and immediate committed state.
+fn install_candidate(peer: &Peer, mut candidate: StatePeer) -> Result<(), String> {
+    let (mut outbox,reconciliation_error)=match candidate.reconcile_outbox(&peer.outbox.borrow(),&peer._key,SystemTime::now()) {
+        Ok(outbox)=>(outbox,None),
+        // Never discard newly accepted revocations/prerequisites
+        // merely because local outgoing recovery is forbidden.
+        Err(error)=>(peer.outbox.borrow().iter().filter(|message|!candidate.covers(message)).cloned().collect(),Some(error)),
+    };
+    // Acceptance may reconcile author sequences, but cannot retire the
+    // immutable original without an exact designated durable receipt.
+    for original in peer.outbox.borrow().iter(){
+        let durable=match original {NeighbourMsg::AppDocument{app_id,record_id,..}=>candidate.durable_coverage(app_id,record_id).ok().flatten().is_some()&&candidate.covers(original),_=>false};
+        if !durable && !outbox.iter().any(|other|postcard::to_allocvec(other).ok()==postcard::to_allocvec(original).ok()){outbox.push(original.clone());}
+    }
+    let install = if candidate.incomplete_reason().is_some() {
+        Ok(())
+    } else {
+        install_records(&peer, &candidate)
+    };
+        install?;
+        stage_journal(peer, &candidate, &outbox)?;
+        let journal = StorageKey::Admission { workspace: candidate.room().into() };
+        let revision = peer.cache.status(&journal).filter(|status| !status.durable).map(|status| status.revision);
+        peer.admission_progress.borrow_mut().accepted(revision);
+        *peer.admission_failure.borrow_mut() = reconciliation_error;
+        *peer.outbox.borrow_mut() = outbox;
+        *peer.state.borrow_mut() = candidate;
+        crate::browser::refresh_peer_mounts(peer.id);
+        report(peer, "admitting", None);
+        Ok(())
+}
+
 fn action_context(peer:&Peer)->Result<serde_json::Value,String>{
     if peer.closed.get()||!peer.transport_connected.get(){return Err("action transport disconnected".into());}
     if !peer.action_v2.get(){return Err("state-only peer: actions unavailable".into());}
@@ -733,6 +771,8 @@ fn action_context(peer:&Peer)->Result<serde_json::Value,String>{
     let hex=|bytes:[u8;32]|bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
     Ok(serde_json::json!({"room":state.room(),"sender":hex(sender),"senderRoot":hex(own.user_public_key),"target":hex(target.device_public_key),"targetRoot":hex(target.user_public_key),"certificate":serde_json::to_string(target).map_err(|e|e.to_string())?}))
 }
+#[wasm_bindgen]
+pub fn peer_action_notifications()->bool { true }
 #[wasm_bindgen]
 pub fn peer_action_context(id:u32)->Result<String,JsValue>{
     let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))?;

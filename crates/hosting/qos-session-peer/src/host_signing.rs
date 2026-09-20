@@ -50,8 +50,8 @@ impl HostSigning {
         struct Commands { room: String, owner: OwnerCommitHandle }
         impl qos_action_broker::services::DesktopCommands for Commands {
             fn room(&self) -> &str { &self.room }
-            fn execute(&self, request: OwnerCommitRequest) -> qos_action_broker::services::DesktopCommandFuture {
-                self.owner.desktop_command(request)
+            fn execute(&self, request: OwnerCommitRequest, direct_delivery: bool) -> qos_action_broker::services::DesktopCommandFuture {
+                self.owner.desktop_command_with_delivery(request, direct_delivery)
             }
         }
         Arc::new(Commands { room, owner: self.ordinary.clone() })

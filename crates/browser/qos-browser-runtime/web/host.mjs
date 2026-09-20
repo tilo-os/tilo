@@ -43,7 +43,8 @@ export async function mountDesktop(target,options={}) {
   const navigationFocus=createNavigationFocus({document,surface,canvas,active});
   const presentationWaiters=new Set();
   const config={app:'writer',profile:'renderer-proof',device:'browser-proof-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:'Browser proof user',instance:1,mac:/Mac/.test(navigator.platform),...options};
-  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;
+  delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;
+  let unsubscribeDesktopCommits;
   let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,navigation,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
   const inputScope=createInputScope({active,read:()=>desktopOwnership?runtime.desktop_input_ownership(id):undefined,onChange:()=>{
     hiddenKeys?.invalidate();semanticKeys?.invalidate();composition?.cancel();semantic?.revokeInput();composing=false;editor.value='';pasteShift=false;
@@ -167,7 +168,7 @@ export async function mountDesktop(target,options={}) {
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
-      navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=JSON.parse(runtime.close(id));
       surface.remove();
     },
@@ -278,13 +279,14 @@ export async function mountDesktop(target,options={}) {
     await presented;
     if(!active())throw Error('mount disposed');
     if(options.actionsV1)actionPalette=bindActionPalette({actions:options.actionsV1,publish:rows=>{if(active())runtime.caller_actions(id,JSON.stringify(rows));},report});
-    if(options.actionsV1)desktopCommands=bindDesktopCommands({actions:options.actionsV1,peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report});
+    if(options.actionsV1)desktopCommands=bindDesktopCommands({actions:options.actionsV1,onPending:pending=>navigation?.commandPending(pending),onUpdate:row=>navigation?.commandUpdated(row),peek:()=>{if(!active())return null;const raw=runtime.pending_desktop_command(id);return raw?JSON.parse(raw):null;},ack:invocation=>{if(active())runtime.acknowledge_desktop_command(id,invocation);},report});
     if(runtime.desktop_navigation_snapshot && runtime.desktop_navigation_snapshot(id)) {
-      navigation=createDesktopNavigation({active,snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>{
+      navigation=createDesktopNavigation({active,captureLaunchFocus:()=>({activation:inputScope.capture()?.activation,epoch:externalFocusEpoch}),snapshot:()=>runtime.desktop_navigation_snapshot(id),revision:()=>runtime.desktop_navigation_revision(id),dispatch:command=>{
         const request=navigationFocus.begin(JSON.parse(command),navigation.controller.getSnapshot());
         try{const result=runtime.desktop_navigate(id,command);navigationFocus.accepted(request);return result;}
         catch(error){navigationFocus.failed(request);throw error;}
       },search:(generation,query)=>runtime.desktop_command_search(id,generation,query),globalSearch:runtime.desktop_global_search?(generation,query)=>runtime.desktop_global_search(id,generation,query):undefined,focusSearch:()=>{inputScope.capture();canvas.focus({preventScroll:true});},captureSelect:()=>({scope:inputScope.capture(),epoch:externalFocusEpoch}),completeSelect:before=>handoff.complete(before.scope,before.epoch),awaitTerminal:desktopCommands?invocation=>desktopCommands.waitForTerminal(invocation):undefined});
+      unsubscribeDesktopCommits=options.subscribeDesktopCommits?.(event=>{if(active())navigation.commandCommitted(event);});
 
       // Cloud's toolbar is a sibling of the renderer in its Desktop section.
       // Scope the listener to that mounted desktop; other page editors stay native.

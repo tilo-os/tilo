@@ -215,3 +215,91 @@ test('Select completion waits for scoped handoff and rejects stale or failed dis
  await assert.rejects(nav.controller.dispatch({kind:'select',generation:'stale'}),/Stale/);
  rejected=true;await assert.rejects(nav.controller.dispatch({kind:'select',generation:'g'}),/modal/);assert.equal(completions.length,1);
 });
+
+
+test('opening presentation is immediate and survives unrelated snapshots until success and a new tab',()=>{
+ const route={workspace:'1',strip:'2',group:'3',tab:'9007199254740993'};
+ let raw={generation:'mount',applications:[{id:'dev.qos.writer',label:'Writer'}],entries:[{route,label:'Writer'}]},revision=1;
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>revision,dispatch:()=>{},active:()=>true});
+ let updates=0;nav.controller.subscribe(()=>updates++);
+ const pending={invocation:'open-1',command:'{"command":{"OpenTab":{"app":"dev.qos.writer","placement":{"NewGroup":{"strip":18446744073709551001}}}}}'};
+ nav.commandPending(pending);
+ assert.deepEqual(nav.controller.getSnapshot().pendingLaunches,[{invocation:'open-1',label:'Writer'}]);assert.equal(updates,1);
+ nav.commandPending(pending);assert.equal(updates,1,'repeated pumps do not publish or reset the baseline');
+ nav.commandUpdated({invocation:'open-1',state:'succeeded',terminal:true});
+ assert.equal(nav.controller.getSnapshot().pendingLaunches.length,1,'completion alone must not flash away the launching tab');
+ raw={...raw,widthPermille:500};revision++;nav.refresh();assert.equal(nav.controller.getSnapshot().pendingLaunches.length,1);
+ raw={...raw,entries:[...raw.entries,{route:{...route,tab:'9007199254740995'},label:'Writer'}]};revision++;nav.refresh();
+ assert.deepEqual(nav.controller.getSnapshot().pendingLaunches,[]);
+ nav.close();
+});
+test('launch refusal and generation changes clear presentation; unknown outcomes stay pending',()=>{
+ let raw={generation:'mount',applications:[{id:'writer',label:'Writer'}],entries:[]},revision=1;
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>revision,dispatch:()=>{},active:()=>true});
+ const pending={invocation:'open-1',command:JSON.stringify({command:{OpenTab:{app:'writer'}}})};
+ nav.commandPending(pending);nav.commandUpdated({invocation:'open-1',state:'unknown',terminal:false});
+ assert.equal(nav.controller.getSnapshot().pendingLaunches.length,1);
+ nav.commandUpdated({invocation:'open-1',state:'failed',terminal:true});assert.equal(nav.controller.getSnapshot().pendingLaunches.length,0);
+ nav.commandPending({...pending,invocation:'open-2'});raw={...raw,generation:'replacement'};revision++;nav.refresh();
+ assert.equal(nav.controller.getSnapshot().pendingLaunches.length,0);
+ nav.commandUpdated({invocation:'open-2',state:'succeeded',terminal:true});assert.equal(nav.controller.getSnapshot().pendingLaunches.length,0);
+ nav.close();
+});
+
+
+test('separate completions for duplicate launches cannot consume the same real tab twice',()=>{
+ let raw={generation:'mount',applications:[{id:'writer',label:'Writer'}],entries:[]},revision=1;
+ const nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>revision,dispatch:()=>{},active:()=>true});
+ for(const invocation of ['one','two'])nav.commandPending({invocation,command:JSON.stringify({command:{OpenTab:{app:'writer'}}})});
+ const route={workspace:'1',strip:'2',group:'3',tab:'4'};
+ raw={...raw,entries:[{route,label:'Writer'}]};revision++;nav.refresh();
+ nav.commandUpdated({invocation:'one',state:'succeeded',terminal:true});
+ nav.commandUpdated({invocation:'two',state:'succeeded',terminal:true});
+ assert.deepEqual(nav.controller.getSnapshot().pendingLaunches,[{invocation:'two',label:'Writer'}]);
+ raw={...raw,entries:[...raw.entries,{route:{...route,tab:'5'},label:'Writer'}]};revision++;nav.refresh();
+ assert.deepEqual(nav.controller.getSnapshot().pendingLaunches,[]);nav.close();
+});
+
+function committedLaunchFixture(){
+ const existing={workspace:'1',strip:'2',group:'3',tab:'4'};
+ const opened={workspace:'1',strip:'9007199254740993',group:'9007199254740994',tab:'9007199254740995'};
+ const pending={invocation:'local-launch',command:JSON.stringify({source:{room:'room'},command:{OpenTab:{app:'notes'}}})};
+ const committed={invocation:pending.invocation,room:'room',opened:{strip:opened.strip,group:opened.group,tab:opened.tab}};
+ let raw={generation:'mount',activeWorkspace:'1',active:existing,workspaces:[{id:'1',room:'room'}],applications:[{id:'notes',label:'Notes'}],entries:[{route:existing,label:'Writer'}]},revision=1,activation=0;
+ const calls=[],handoff={scope:'outgoing'},nav=createDesktopNavigation({snapshot:()=>JSON.stringify(raw),revision:()=>revision,active:()=>true,
+  captureLaunchFocus:()=>({activation}),captureSelect:()=>{calls.push('capture');return handoff;},completeSelect:before=>{assert.equal(before,handoff);calls.push('handoff');},
+  dispatch:encoded=>{const command=JSON.parse(encoded);calls.push(command);raw={...raw,active:command.route};revision++;}});
+ return {nav,pending,committed,existing,opened,calls,admit(){raw={...raw,entries:[...raw.entries,{route:opened,label:'Notes'}]};revision++;nav.refresh();},nativeSelection(){activation++;}};
+}
+
+test('committed launch navigation survives event/frame/terminal ordering and uses normal selection handoff once',async()=>{
+ for(const order of ['commit-before-frame','frame-before-commit','terminal-and-frame-before-commit']){
+  const f=committedLaunchFixture();f.nav.commandPending(f.pending);
+  assert.equal(f.nav.controller.getSnapshot().pendingLaunches.length,1);
+  if(order==='commit-before-frame'){
+   f.nav.commandCommitted(f.committed);assert.deepEqual(f.calls,[],'a private notice cannot select an unadmitted route');f.admit();
+  }else{
+   if(order==='terminal-and-frame-before-commit')f.nav.commandUpdated({invocation:f.pending.invocation,state:'succeeded',terminal:true});
+   f.admit();assert.deepEqual(f.calls,[],'canonical topology alone cannot select a launch');
+   if(order==='terminal-and-frame-before-commit')assert.deepEqual(f.nav.controller.getSnapshot().pendingLaunches,[],'focus token survives removal of its visual placeholder');
+   f.nav.commandCommitted(f.committed);
+  }
+  await Promise.resolve();
+  assert.deepEqual(f.calls,['capture',{kind:'select',generation:'mount',route:f.opened},'handoff'],order);
+  assert.deepEqual(f.nav.controller.getSnapshot().active,f.opened);
+  assert.deepEqual(f.nav.controller.getSnapshot().pendingLaunches,[]);
+  f.nav.commandCommitted(f.committed);f.nav.commandUpdated({invocation:f.pending.invocation,state:'succeeded',terminal:true});f.nav.refresh();
+  assert.equal(f.calls.length,3,'duplicate notices and slower terminal responses cannot select again');f.nav.close();
+ }
+});
+
+test('newer toolbar or native selection cancels committed launch focus even while awaiting its frame',async()=>{
+ for(const eventFirst of [false,true])for(const native of [false,true]){
+  const f=committedLaunchFixture();f.nav.commandPending(f.pending);
+  if(eventFirst)f.nav.commandCommitted(f.committed);
+  if(native)f.nativeSelection();else await f.nav.controller.dispatch({kind:'select',generation:'mount',route:f.existing});
+  f.calls.length=0;f.admit();if(!eventFirst)f.nav.commandCommitted(f.committed);
+  f.nav.commandPending(f.pending);f.nav.commandCommitted(f.committed);
+  await Promise.resolve();assert.deepEqual(f.calls,[],'an intervening selection must win and retries cannot re-arm launch focus');f.nav.close();
+ }
+});

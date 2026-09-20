@@ -45,7 +45,8 @@ async fn request(
     )
 }
 async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) {
-    let child = Command::new(env!("CARGO_BIN_EXE_qos-session-peer"))
+    let executable = std::env::var_os("QOS_SESSION_PEER_TEST_BINARY").unwrap_or_else(|| env!("CARGO_BIN_EXE_qos-session-peer").into());
+    let child = Command::new(executable)
         .arg("run")
         .arg(state)
         .arg(ready)
@@ -276,6 +277,15 @@ async fn failed_private_attachment_withdraws_actions() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn normal_host_serves_real_checked_application_catalogue() {
+    checked_application_catalogue(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalogue_and_close_work_with_multiple_writers() {
+    checked_application_catalogue(true).await;
+}
+
+async fn checked_application_catalogue(multiple_writers: bool) {
     use qos_relay::{
         RelayClient,
         peer_actions::{ActionMessage, DirectedAction},
@@ -286,6 +296,33 @@ async fn normal_host_serves_real_checked_application_catalogue() {
     let state = temp.path().join("owner");
     let ready = temp.path().join("ready.json");
     let mut owner = SessionOwner::initialize(&state).unwrap();
+    if multiple_writers {
+        use qos_peer_state::{desktop_command::*, owner_commit::*};
+        let mut tree = qos_desktop::WorkspaceTree::default();
+        qos_desktop::projection::RoomProjection::apply_admitted_room(
+            &mut tree, qos_desktop::RoomId::parse(owner.peer().room()).unwrap(),
+            owner.peer().admitted_room().unwrap(),
+        ).unwrap();
+        let strip = tree.workspaces[0].strips[0].id.0;
+        for _ in 0..4 {
+            let command = BoundCommand {
+                source: CommandSource {
+                    room: owner.peer().room().into(),
+                    heads: owner.peer().admitted_room().unwrap().clone().get_heads().into_iter().map(|h| h.0).collect(),
+                },
+                command: DesktopCommand::OpenTab {
+                    app: "dev.qos.word-processor".into(),
+                    placement: TabPlacement::NewGroup { strip, after: None },
+                },
+            };
+            owner.commit_desktop_command(&OwnerCommitRequest {
+                room: owner.peer().room().into(),
+                operation: CommitOperation::DesktopCommand {
+                    invocation: uuid::Uuid::new_v4(), caller: owner.peer().authority().clone(), command,
+                },
+            }).unwrap();
+        }
+    }
     // Persist a floor far ahead of any SDK wall-clock allocator, then reopen
     // through the ordinary executable before its actual checked workers sign.
     let key = qos_user_identity::persist::read_device_key(
@@ -366,7 +403,7 @@ async fn normal_host_serves_real_checked_application_catalogue() {
             workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let event = client.recv().await.unwrap();
             if matches!(event, Envelope::Ready { .. }) {
@@ -425,7 +462,7 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         {
             if catalogue["surfaces"]
                 .as_array()
-                .is_some_and(|s| s.iter().any(|s| s["app_id"] == "dev.qos.word-processor"))
+                .is_some_and(|s| s.iter().filter(|s| s["app_id"] == "dev.qos.word-processor").count() >= if multiple_writers { 5 } else { 1 })
             {
                 assert!(!broker_host.is_nil());
                 break (broker_host, catalogue);
@@ -439,6 +476,12 @@ async fn normal_host_serves_real_checked_application_catalogue() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    if multiple_writers {
+        assert!(catalogue["surfaces"].as_array().unwrap().iter().filter(|s| s["app_id"] == "dev.qos.word-processor").count() >= 5);
+        desktop_close_through_broker(&client, &mut remote, room, &cert, &native, broker_host, &catalogue).await;
+        client.close().await;
+        return;
+    }
     for app in ["dev.qos.word-processor", "dev.qos.chat", "dev.qos.notes"] {
         assert!(
             catalogue["surfaces"]
@@ -876,6 +919,20 @@ async fn invoke_and_observe(
     invocation: qos_actions::InvocationId,
     operation: qos_relay::peer_actions::ActionMessage,
 ) {
+    invoke_and_observe_until(client, remote, room, cert, native, host, invocation, operation, |remote| table_cells(remote) == 4).await;
+}
+
+async fn invoke_and_observe_until(
+    client: &qos_relay::RelayClient,
+    remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid,
+    cert: &qos_user_identity::DeviceCert,
+    native: &qos_user_identity::DeviceCert,
+    host: uuid::Uuid,
+    invocation: qos_actions::InvocationId,
+    operation: qos_relay::peer_actions::ActionMessage,
+    complete: impl Fn(&qos_peer_state::StatePeer) -> bool,
+) {
     use qos_relay::{
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
@@ -889,7 +946,7 @@ async fn invoke_and_observe(
     let mut success = false;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if success && table_cells(remote) == 4 { break; }
+            if success && complete(remote) { break; }
             tokio::select! {
                 state = client.recv() => apply_state(remote, state.unwrap()),
                 event = client.recv_action() => {
@@ -1815,12 +1872,12 @@ async fn desktop_open_through_broker(
     let invocation = qos_actions::InvocationId::new();
     let operation = ActionMessage::InvokeBound { host, invocation, app_peer: surface["peer_id"].as_u64().unwrap().to_string(), app_id: APP_ID.into(), record_id: "".into(), resource: RESOURCE.into(), action: ACTION.into(), argument: Some(serde_json::json!({"command":serde_json::to_string(&command).unwrap()})), confirmation: None, revision: None };
     let prior = remote.rows().len();
-    invoke_and_observe(client, remote, room, cert, native, host, invocation, operation.clone()).await;
-    // Signed app commits share the host's five-second idle checkpoint cadence;
-    // leave scheduling margin beyond that deliberate publication boundary.
-    tokio::time::timeout(Duration::from_secs(7), async {
+    // A desktop gesture must publish its committed topology and checked record
+    // without waiting for the five-second background checkpoint timer.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        invoke_and_observe(client, remote, room, cert, native, host, invocation, operation.clone()).await;
         while remote.rows().len() <= prior { apply_state(remote, client.recv().await.unwrap()); }
-    }).await.expect("native desktop record must replicate after the idle publication cadence");
+    }).await.expect("native desktop record must replicate without the idle publication delay");
     let records = remote.rows().len();
     invoke_and_observe(client, remote, room, cert, native, host, invocation, operation.clone()).await;
     assert_eq!(remote.rows().len(), records, "duplicate full UUID must not create another checked record");
@@ -1829,4 +1886,39 @@ async fn desktop_open_through_broker(
     let count = |tree: &qos_desktop::WorkspaceTree| tree.workspaces.iter().flat_map(|w| &w.strips).flat_map(|s| &s.window_groups).map(|g|g.tabs.len()).sum::<usize>();
     assert_eq!(count(&reconstructed), count(&tree)+1, "signed canonical topology replicates along with checked record");
     (invocation, operation, records)
+}
+
+async fn desktop_close_through_broker(
+    client: &qos_relay::RelayClient, remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid, cert: &qos_user_identity::DeviceCert, native: &qos_user_identity::DeviceCert,
+    host: uuid::Uuid, catalogue: &serde_json::Value,
+) {
+    use qos_peer_state::desktop_command::*;
+    use qos_relay::peer_actions::ActionMessage;
+    let project = |remote: &qos_peer_state::StatePeer| {
+        let mut tree = qos_desktop::WorkspaceTree::default();
+        qos_desktop::projection::RoomProjection::apply_admitted_room(&mut tree, room.into(), remote.admitted_room().unwrap()).unwrap();
+        tree
+    };
+    let tree = project(remote);
+    let strip = &tree.workspaces[0].strips[0];
+    let group = strip.window_groups.last().unwrap();
+    let tab = group.tabs[0].id;
+    let command = BoundCommand {
+        source: CommandSource { room: room.to_string(), heads: remote.admitted_room().unwrap().clone().get_heads().into_iter().map(|h| h.0).collect() },
+        command: DesktopCommand::CloseTab { location: TabLocation { strip: strip.id.0, group: group.id, tab } },
+    };
+    let surface = catalogue["surfaces"].as_array().unwrap().iter().find(|s| s["app_id"] == APP_ID).unwrap();
+    let invocation = qos_actions::InvocationId::new();
+    let operation = ActionMessage::InvokeBound { host, invocation, app_peer: surface["peer_id"].as_u64().unwrap().to_string(), app_id: APP_ID.into(), record_id: "".into(), resource: RESOURCE.into(), action: ACTION.into(), argument: Some(serde_json::json!({"command":serde_json::to_string(&command).unwrap()})), confirmation: None, revision: None };
+    let present = |remote: &qos_peer_state::StatePeer| project(remote).workspaces.iter().flat_map(|w| &w.strips).flat_map(|s| &s.window_groups).flat_map(|g| &g.tabs).any(|t| t.id == tab);
+    let started = Instant::now();
+    // Optimized builds enforce the interactive budget. Debug proof validation
+    // is substantially slower while the fixture publishes its initial records.
+    let budget = if cfg!(debug_assertions) && std::env::var_os("QOS_SESSION_PEER_TEST_BINARY").is_none() { 8 } else { 2 };
+    tokio::time::timeout(Duration::from_secs(budget), async {
+        invoke_and_observe_until(client, remote, room, cert, native, host, invocation, operation, |remote| !present(remote)).await;
+    }).await.expect("close must remove the app from the replicated desktop without the idle timer");
+    assert!(!present(remote));
+    eprintln!("Confirmed desktop removal in {} ms", started.elapsed().as_millis());
 }

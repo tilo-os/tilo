@@ -36,7 +36,7 @@ pub type DesktopCommandFuture = std::pin::Pin<Box<dyn std::future::Future<Output
 /// The broker constructs requests from authenticated durable invocations.
 pub trait DesktopCommands: Send + Sync {
     fn room(&self) -> &str;
-    fn execute(&self, request: qos_peer_state::owner_commit::OwnerCommitRequest) -> DesktopCommandFuture;
+    fn execute(&self, request: qos_peer_state::owner_commit::OwnerCommitRequest, direct_delivery: bool) -> DesktopCommandFuture;
 }
 
 #[derive(Clone)]

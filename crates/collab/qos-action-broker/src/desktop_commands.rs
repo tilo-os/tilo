@@ -42,6 +42,9 @@ impl CapnpBrokerState {
                             "command",
                             qos_actions::ParamType::Text,
                             "Exact source-bound desktop command",
+                        ), qos_actions::ActionParam::optional(
+                            "committed_desktop_v2", qos_actions::ParamType::Boolean,
+                            "Receive the committed desktop immediately; defaults to false",
                         )],
                         contract: qos_actions::ActionContract {
                             permission: qos_actions::PermissionRequirement::Write,
@@ -158,7 +161,8 @@ impl CapnpBrokerState {
                 command,
             },
         };
-        let receipt = service.execute(request.clone()).await?;
+        let direct_delivery = argument.get("committed_desktop_v2").and_then(serde_json::Value::as_bool) == Some(true);
+        let receipt = service.execute(request.clone(), direct_delivery).await?;
         receipt.validate_for(&request).map_err(Uncertain)?;
         Ok(())
     }

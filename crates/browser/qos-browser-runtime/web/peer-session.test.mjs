@@ -94,6 +94,33 @@ function fixture({enroll,recoveryClock,initialStatus,acquireStorage}={}){
  }});
  return{runtime,storage,connect,syncs,peers,mounts,closed,mountSignals,mountOptionsSeen,queueMount:gate=>mountGates.push(gate),rebound,suspended,setFailMount:v=>failMount=v,setPublishFailure:v=>{publishFailure=v;pendingWrite=true;},setCommitStatus:v=>commitStatus=v,status:value=>statusCallback(JSON.stringify(value)),recovery:()=>({componentOwners,durableRecord}),setFailCommit:v=>{failCommit=v;pendingWrite=true;},setFailConnect:v=>failConnect=v,setFailClose:v=>failClose=v,setGate:v=>gate=v,counts:()=>({held,storageRefs,attempts})};
 }
+test('committed desktop notices reach live mount subscriptions without entering snapshots or replaying',async t=>{
+ const f=fixture(),peer=await f.connect();t.after(()=>peer.dispose());
+ await peer.mountDesktop({});await drain();
+ const subscribe=f.mountOptionsSeen.at(-1).subscribeDesktopCommits,received=[],late=[],snapshots=[];
+ assert.equal(typeof subscribe,'function');
+ const unsubscribe=subscribe(event=>received.push(event));
+ const unsubscribeSnapshots=peer.subscribe(snapshot=>snapshots.push(snapshot));t.after(unsubscribeSnapshots);
+ const notice={invocation:'local-launch',room:'r',opened:{strip:'9007199254740993',group:'9007199254740994',tab:'9007199254740995'}};
+ const before=peer.getSnapshot();f.status({committedDesktop:notice});await drain();
+ assert.deepEqual(received,[notice]);assert.equal(peer.getSnapshot(),before);assert.deepEqual(snapshots,[],'transient notification must not publish a retained session snapshot');
+ const stopLate=subscribe(event=>late.push(event));assert.deepEqual(late,[],'new mount subscribers do not replay earlier launch focus');
+ f.status({phase:'ready',committedDesktop:{...notice,invocation:'second'}});await drain();
+ assert.equal(received.length,2);assert.equal(late.length,1);
+ assert.equal(Object.hasOwn(peer.getSnapshot(),'committedDesktop'),false);
+ assert(snapshots.every(snapshot=>!Object.hasOwn(snapshot,'committedDesktop')));
+ unsubscribe();f.status({committedDesktop:{...notice,invocation:'third'}});await drain();
+ assert.equal(received.length,2,'unsubscribed mounts receive no late notices');assert.equal(late.length,2);stopLate();
+});
+test('committed desktop subscriptions are isolated from listener errors and stop when session disposal starts',async()=>{
+ const f=fixture(),peer=await f.connect();await peer.mountDesktop({});
+ const subscribe=f.mountOptionsSeen.at(-1).subscribeDesktopCommits,received=[];
+ subscribe(()=>{throw Error('disposed mount callback');});subscribe(event=>received.push(event));
+ const notice={invocation:'local-launch',room:'r',opened:{strip:'2',group:'3',tab:'4'}};
+ assert.doesNotThrow(()=>f.status({committedDesktop:notice}));await drain();assert.deepEqual(received,[notice]);
+ const disposing=peer.dispose();f.status({committedDesktop:{...notice,invocation:'during-disposal'}});await disposing;
+ f.status({committedDesktop:{...notice,invocation:'after-disposal'}});await drain();assert.deepEqual(received,[notice]);
+});
 test('failed reconnect retains durable owner; next retry rebinds same mount and disposes',async()=>{
  const f=fixture(),peer=await f.connect();const mount=await peer.mountDesktop({});
  f.setFailConnect(true);await assert.rejects(peer.reconnect(),/dial failed/);
@@ -532,3 +559,18 @@ test('a private-action write between two peer batches keeps its place in the per
   assert.equal(access.mode(),'worker');
  }finally{await storage.release();await peer.dispose();}
  assert.deepEqual(locks.held(),[]);});
+
+test('private replies wake their waiter immediately without polling or entering public snapshots',async t=>{
+ const time=clock(),f=fixture({recoveryClock:time,initialStatus:progressing('0',true)}),transport=privateTransport(f);
+ let response=null,reads=0;
+ f.runtime.peer_action_notifications=()=>true;
+ f.runtime.peer_action_response=()=>{reads++;return response&&JSON.stringify(response);};
+ const peer=await f.connect();t.after(()=>peer.dispose());
+ let outcome='pending';const request=peer.actionsV1.catalogue().then(()=>{outcome='ready';},()=>{outcome='rejected';});
+ await drain();const initialReads=reads;await time.tick(24);assert.equal(reads,initialReads);
+ response={type:'broker_catalogue',host:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',catalogue:{version:1,surfaces:[]}};
+ f.status({actionResponseReady:true});await drain();
+ assert.equal(outcome,'ready','a delivered reply must not wait for the next 25ms timer');
+ assert.equal(peer.getSnapshot().actionResponseReady,undefined);assert.equal(transport.forgot.length,1);
+ await request;const completedReads=reads;await time.tick(10000);assert.equal(reads,completedReads);
+});

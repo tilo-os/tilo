@@ -2084,11 +2084,15 @@ async fn route_private(
     use UnavailableReason as U;
     private_phase(action, "route_enter");
     if action.source != peer.device_public_key || !current_cert(peer, session) {
+        private_phase(action, "route_rejected_source");
         return Ok(Some(U::NotAuthorised));
     }
-    if !action.validate()
-        || crate::transport_v2::encode(&EnvelopeV2::Directed(action.clone())).is_err()
-    {
+    if !action.validate() {
+        private_phase(action, "route_rejected_message");
+        return Ok(Some(U::InvalidRequest));
+    }
+    if crate::transport_v2::encode(&EnvelopeV2::Directed(action.clone())).is_err() {
+        private_phase(action, "route_rejected_encoding");
         return Ok(Some(U::InvalidRequest));
     }
     let id = crate::room_workspace_id(&action.room.to_string())
@@ -2142,6 +2146,7 @@ async fn route_private(
     let extension = matches!(
         action.message,
         ActionMessage::InvokeBound { .. }
+            | ActionMessage::CommittedDesktop { .. }
             | ActionMessage::BrokerCatalogue { .. }
             | ActionMessage::Observation { .. }
             | ActionMessage::Rejected { .. }

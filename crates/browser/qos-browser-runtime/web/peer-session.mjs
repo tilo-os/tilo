@@ -17,6 +17,8 @@ return async function connectPeer(options={}){
   const {enrollmentBaseUrl='/qos-peer/enrollment',signal}=options;
   let lease,actionsV1,actionRevision=0n,actionRecovery=false,actionTimer=null,actionPolling=false;
   let id,closed=false,closing=false,snapshot={phase:'authenticating',records:[]},connection,storage,namespace,raw,flush=Promise.resolve(),queuedPersist,failed=false,generation=0;
+  const desktopCommitListeners=new Set(),actionResponseListeners=new Set();
+  const subscribeDesktopCommits=listener=>{desktopCommitListeners.add(listener);return()=>desktopCommitListeners.delete(listener);};
   const subscribers=new Set(),mounts=new Set(),failedMounts=new Set(),pendingMounts=new Set(),mountControllers=new Set();
   let reconnecting,closePromise,setup,operationId=0,surfaceId=0,healthRevision=0n,saving,admissionTimer=null,admissionDeadline=null,admissionRevision=0;
   const admissionWaiters=new Set(),admissionFailures=new Map();let admissionEpisode,admissionEpoch=0;
@@ -82,7 +84,7 @@ return async function connectPeer(options={}){
   // `persistenceNeeded` asks this host to commit pending writes now. It is a
   // trigger, not snapshot state: the runtime's light report between commit
   // boundaries (phase plus trigger) publishes nothing to subscribers.
-  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}const {persistenceNeeded,...parsed}=JSON.parse(value);let next=parsed;if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(persistenceNeeded)void persist().catch(()=>{});};
+  const update=value=>{if(closed||closing)return;if(actionsV1){try{runtime.peer_action_context(id);}catch{actionsV1.invalidate('identity-or-transport-unavailable');actionRecovery=false;}}const {persistenceNeeded,committedDesktop,actionResponseReady,...parsed}=JSON.parse(value);if(actionResponseReady){for(const listener of [...actionResponseListeners])listener();if(!Object.keys(parsed).length&&!persistenceNeeded&&!committedDesktop)return;}if(committedDesktop){for(const listener of desktopCommitListeners){try{listener(committedDesktop);}catch{}}if(!Object.keys(parsed).length&&!persistenceNeeded)return;}let next=parsed;if(failed)next={...next,phase:'incomplete',error:snapshot.error,persistence:'failed'};report(next);for(const listener of [...actionResponseListeners])listener();if(next.health?.transport?.phase==='offline'||next.phase==='failed'){coordinator.schedule();}if(next.phase==='ready'&&next.health?.transport?.authenticated){coordinator.reset();if(actionsV1&&!actionRecovery){actionRecovery=true;pollActions();}}if(persistenceNeeded)void persist().catch(()=>{});};
   async function post(route,body){
     const response=await fetchEnrollment(`${enrollmentBaseUrl}/${route}`,{method:'POST',headers:{'Content-Type':'application/json'},body,signal,cache:'no-store',credentials:'same-origin'});
     const text=await response.text();
@@ -191,15 +193,15 @@ return async function connectPeer(options={}){
             const deadline=Math.min(now()+10000,control.deadlineAtMs??Infinity);
             return new Promise((resolve,reject)=>{
               let timer,settled=false;
-              const finish=(error,response)=>{if(settled)return;settled=true;timerClear(timer);control.signal.removeEventListener('abort',abort);runtime.peer_action_forget(owner,request);error?reject(error):resolve(response);};
+              const finish=(error,response)=>{if(settled)return;settled=true;timerClear(timer);actionResponseListeners.delete(poll);control.signal.removeEventListener('abort',abort);runtime.peer_action_forget(owner,request);error?reject(error):resolve(response);};
               const abort=()=>finish(control.signal.reason??actionError('cancelled',stage,'Action attempt cancelled'));
-              const poll=()=>{try{
+              const poll=()=>{if(settled)return;timerClear(timer);try{
                 control.check();if(closed||closing||owner!==id||transport!==health.transport.generation||!health.transport.authenticated)throw disconnected();
                 const response=actionRuntime(()=>runtime.peer_action_response(owner,request),stage);if(response){finish(null,JSON.parse(response));return;}
                 if(now()>=deadline)throw actionError('transport-timeout',stage,discovery?'Desktop service discovery delayed':'Action response expired; outcome unknown',discovery);
-                timer=timerSet(poll,Math.min(25,deadline-now()));
+                timer=timerSet(poll,runtime.peer_action_notifications?.()===true?deadline-now():Math.min(25,deadline-now()));
               }catch(error){finish(error);}};
-              control.signal.addEventListener('abort',abort,{once:true});poll();
+              control.signal.addEventListener('abort',abort,{once:true});actionResponseListeners.add(poll);poll();
             });
           },
         });
@@ -239,7 +241,7 @@ return async function connectPeer(options={}){
   function close(){
     if(closed)return Promise.resolve();
     if(closePromise)return closePromise;
-    closing=true;const actionClose=actionsV1?.close();if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;coordinator.dispose();events?.removeEventListener?.('online',online);
+    closing=true;desktopCommitListeners.clear();const actionClose=actionsV1?.close();if(actionTimer!==null)timerClear(actionTimer);actionTimer=null;if(admissionTimer!==null)timerClear(admissionTimer);admissionTimer=null;admissionDeadline=null;coordinator.dispose();events?.removeEventListener?.('online',online);
     closePromise=(async()=>{
       for(const waiter of admissionWaiters)waiter.reject(Error('Session closed'));
       for(const waiter of surfaceWaiters.values())waiter.reject(Error('Session closed'));surfaceWaiters.clear();
@@ -379,7 +381,7 @@ return async function connectPeer(options={}){
             if(entry.cancelled||closed||closing||surfaceTargets.get(target)!==surface)throw Error('Desktop attempt cancelled');
             const current=++allocation;let admissionRejected=false;
             try{
-              return await mountDesktop(target,{...mountOptions,...namespace,actionsV1,signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
+              return await mountDesktop(target,{...mountOptions,...namespace,actionsV1,subscribeDesktopCommits,signal:controller.signal,app,peer:id,record:record?.record_id||undefined,author:snapshot.deviceId,onStatus:status=>{
                 if(entry.cancelled||current!==allocation||closed||closing||surfaceTargets.get(target)!==surface)return;
                 // Only this exact initial guard failure is temporary. Allocation
                 // cleanup must finish before retry; all security/GPU errors pass through.
