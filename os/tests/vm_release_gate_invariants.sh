@@ -152,15 +152,15 @@ mkdir -p "$tmp/aavmf-fedora" "$tmp/aavmf-debian"
 : > "$tmp/aavmf-fedora/vars-template-pflash.raw"
 : > "$tmp/aavmf-debian/AAVMF_CODE.fd"
 : > "$tmp/aavmf-debian/AAVMF_VARS.fd"
-if fedora_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 \
+if fedora_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_RUN="$tmp/aavmf-run" \
     TILO_AAVMF_DIRS="$tmp/aavmf-fedora" "$vm" firmware --no-tpm 2>/dev/null)" \
-  && debian_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 \
+  && debian_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_RUN="$tmp/aavmf-run" \
     TILO_AAVMF_DIRS="$tmp/aavmf-debian" "$vm" firmware --no-tpm 2>/dev/null)" \
   && grep -Fq "code       $tmp/aavmf-fedora/QEMU_EFI-pflash.raw" <<<"$fedora_fw" \
   && grep -Fq "vars       $tmp/aavmf-fedora/vars-template-pflash.raw" <<<"$fedora_fw" \
   && grep -Fq "code       $tmp/aavmf-debian/AAVMF_CODE.fd" <<<"$debian_fw" \
   && grep -Fq "vars       $tmp/aavmf-debian/AAVMF_VARS.fd" <<<"$debian_fw" \
-  && ! TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_AAVMF_DIRS="$tmp/aavmf-fedora" \
+  && ! TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_RUN="$tmp/aavmf-run" TILO_AAVMF_DIRS="$tmp/aavmf-fedora" \
     "$vm" firmware --tpm >/dev/null 2>&1; then
   ok 'ARM firmware resolution works for both package families and TPM fails closed'
 else
