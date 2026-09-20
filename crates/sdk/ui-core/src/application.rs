@@ -709,6 +709,7 @@ impl AppComponent {
             view_retry: None,
             record_error: None,
             record_retry: None,
+            record_retry_target: None,
             teardown_error: None,
         };
         // Set the report before teardown: Drop must not fall back to a write.
