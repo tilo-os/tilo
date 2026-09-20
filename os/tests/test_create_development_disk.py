@@ -508,14 +508,15 @@ class CreationTests(unittest.TestCase):
         observed = []
         def inspect(argv):
             mounts = [argv[i + 1] for i, item in enumerate(argv) if item == '--volume']
-            auth = next(value for value in mounts if '/run/tilo-registry-auth.json:ro' in value)
+            auth = next(value for value in mounts if '/run/ostree/auth.json:ro' in value)
             snapshot = Path(auth.split(':')[0])
             self.assertNotEqual(snapshot, original)
             self.assertEqual(snapshot.read_bytes(), original.read_bytes())
             self.assertEqual(snapshot.stat().st_mode & 0o777, 0o600)
             self.assertEqual(snapshot.parent.stat().st_mode & 0o777, 0o700)
             self.assertEqual(os.environ['REGISTRY_AUTH_FILE'], str(original))
-            self.assertIn('REGISTRY_AUTH_FILE=/run/tilo-registry-auth.json', argv)
+            self.assertIn('REGISTRY_AUTH_FILE=/run/ostree/auth.json', argv)
+            self.assertNotIn('/run/tilo-registry-auth.json', str(argv))
             self.assertNotIn('test-secret', str(argv))
             observed.append(snapshot)
         self.inspect_install = inspect
@@ -525,6 +526,7 @@ class CreationTests(unittest.TestCase):
         self.assertFalse(observed[0].exists())
         self.assertEqual(self.verifier_auth, observed[0])
         self.assertNotIn('test-secret', str(receipt))
+        self.assertNotIn('/run/ostree/auth.json', str(self.calls[0]))
         self.assertNotIn('/run/tilo-registry-auth.json', str(self.calls[0]))
 
     def test_auth_snapshot_removed_on_installer_failure(self):
