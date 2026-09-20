@@ -111,13 +111,14 @@ pub fn main() {
     reason = "signature is fixed by LaunchSpec's argument-aware root factory"
 )]
 fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(Box::new(browser_widget(args)))
+    Ok(Box::new(browser_widget(args)?))
 }
 
-fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
-    let mut widget = launch_target(args.positionals()).map_or_else(browser::app_root, |uri| {
-        BrowserWidget::new().with_initial_uri(uri)
-    });
+fn browser_widget(args: &LaunchArgs) -> Result<BrowserWidget, LaunchError> {
+    let mut widget = BrowserWidget::try_new().map_err(LaunchError::Operation)?;
+    if let Some(uri) = launch_target(args.positionals()) {
+        widget = widget.with_initial_uri(uri);
+    }
     match args.value("--audit-state") {
         Some("error") => widget.debug_show_load_error(),
         Some("history") => widget.debug_show_library("history"),
@@ -128,7 +129,7 @@ fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
         Some("history-paused") => widget.debug_show_history_paused(),
         _ => {}
     }
-    widget
+    Ok(widget)
 }
 
 #[allow(
@@ -138,7 +139,7 @@ fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
 fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
-    let widget = browser_widget(args);
+    let widget = browser_widget(args)?;
     let engine = widget.engine_handle();
 
     // Zero-copy GPU compositing: when the WebView engine exports dmabuf
