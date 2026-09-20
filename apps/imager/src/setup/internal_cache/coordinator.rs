@@ -31,13 +31,18 @@ fn next_operation(counter: &AtomicU64) -> Result<u64, String> {
 
 /// Read-only cooperative stop view for a scoped consumer. The transfer latch
 /// cannot be reset or retained beyond the borrowed consumption scope.
-pub(in crate::setup) struct Cancellation<'a> {
-    _cancel: &'a AtomicBool,
-}
+#[allow(
+    dead_code,
+    reason = "the live download flow does not consume verified cache entries yet"
+)]
+pub(in crate::setup) struct Cancellation<'a>(&'a AtomicBool);
 impl Cancellation<'_> {
-    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "the live download flow does not consume verified cache entries yet"
+    )]
     pub(in crate::setup) fn is_cancelled(&self) -> bool {
-        self._cancel.load(Ordering::Acquire)
+        self.0.load(Ordering::Acquire)
     }
 }
 
@@ -101,7 +106,10 @@ struct Request {
 }
 #[derive(Clone, Copy)]
 enum Action {
-    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "the live download flow releases rather than consumes verified cache entries"
+    )]
     Consume,
     Release,
 }
@@ -237,7 +245,10 @@ impl Worker {
         self.shared.wake.notify_all();
         Ok(())
     }
-    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "reserved for the verified cache-to-installer handoff"
+    )]
     pub(in crate::setup) fn consume(&self, token: &Token) -> Result<(), String> {
         self.action(token, Action::Consume)
     }
@@ -412,7 +423,7 @@ impl Ready<'_> {
         let [first, second] = &mut self.finals;
         first.with_verified_reader(cancel, |a| {
             second.with_verified_reader(cancel, |b| {
-                consumer(self.selected, &Cancellation { _cancel: cancel }, a, b)
+                consumer(self.selected, &Cancellation(cancel), a, b)
             })
         })
     }
@@ -556,7 +567,6 @@ fn run_selected<'s>(
     stop(flags)?;
     match action {
         Action::Release => status.phase = Phase::Released,
-        #[cfg(test)]
         Action::Consume => {
             status.phase = Phase::Consuming;
             report(shared, status);

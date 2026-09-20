@@ -20,6 +20,3 @@ pub(super) use windows::{check_directory, check_private_file, create_directory};
 fn refusal(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
-
-#[cfg(windows)]
-pub(super) use windows::{require_private_protected, with_private_creation_descriptor};

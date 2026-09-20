@@ -1223,12 +1223,16 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     {
         return Err("write helper request changed after authorization".into());
     }
-    let mut request: WriteRequest = serde_json::from_slice(&request_bytes)?;
+    let request: WriteRequest = serde_json::from_slice(&request_bytes)?;
     if begin_job(&request, &request.target.dev_path()) != JobStart::Started {
         return Err("write helper rejected an invalid or unsafe request".into());
     }
     #[cfg(target_os = "linux")]
-    bind_linux_helper_source(&mut request, caller_uid)?;
+    let request = {
+        let mut request = request;
+        bind_linux_helper_source(&mut request, caller_uid)?;
+        request
+    };
     // The privileged process creates the progress inode itself. `create_new`
     // refuses a pre-planted symlink instead of letting a user-writable path
     // redirect root's append into an arbitrary file.
