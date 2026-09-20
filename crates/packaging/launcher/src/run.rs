@@ -1504,7 +1504,10 @@ fn splice_sandbox_shim(
 /// `pre_exec`, then wait for it. Logs the derived Landlock/egress plan from
 /// the parent for observability (the shim enforces Landlock; this only
 /// records intent).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the process boundary needs the complete validated sandbox, service, egress, and identity plan in one call"
+)]
 fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
