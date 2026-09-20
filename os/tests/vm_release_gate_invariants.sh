@@ -96,6 +96,13 @@ fi
   && ok 'the target keeps one stable serial through attach, install and reboot' \
   || bad 'the target disk serial changes across the install cycle'
 
+grep -Fq 'python3 -m http.server "$browser_fixture_port"' "$installer_cycle" \
+  && grep -Fq '"$vm" keys meta_l-spc' "$installer_cycle" \
+  && grep -Fq "wait_screen 18-browser-offline 'Tilo[[:space:]]+browser[[:space:]]+offline[[:space:]]+ready'" "$installer_cycle" \
+  && grep -Fq "'browser_offline_page_verified':True" "$repo/os/dev/run-supervised-install-lane.py" \
+  && ok 'the installed-target cold boot proves Browser renders a local offline page' \
+  || bad 'the installed-target cold boot lacks durable Browser render evidence'
+
 if grep -Fq "wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity'" "$installer_cycle" \
   && grep -Fq '"$vm" keys tab tab tab spc tab ret' "$installer_cycle" \
   && grep -Fq "wait_screen 10-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready'" "$installer_cycle" \
