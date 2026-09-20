@@ -212,7 +212,8 @@ export async function mountDesktop(target,options={}) {
     // authorize that activation. A later status may complete the gesture, but
     // cannot create one or outlive a subsequent outside-focus gesture.
     for(const type of ['pointerdown','pointerup','click','keydown','keyup','input'])on(surface,type,()=>{
-      const scope=inputScope.capture();if(scope)localActivationGesture={scope,epoch:externalFocusEpoch};
+      const scope=inputScope.capture();
+      if(scope&&(['pointerdown','keydown'].includes(type)||!localActivationGesture))localActivationGesture={scope,epoch:externalFocusEpoch};
       queueMicrotask(observeLocalActivation);
     },{capture:true});
     for(const node of [canvas,editor]){

@@ -3246,11 +3246,25 @@ mod tests {
             .store
             .read(&chat.checkout.id, |doc| doc.clone().save())
             .unwrap();
-        frame.click_named("word_processor").unwrap();
+        fn writer_editable_rect(node: &ui::headless::InspectionNode) -> Option<Rect> {
+            if node.test_id.as_deref() == Some("word_processor") && node.focusable {
+                return Some(Rect::new(node.rect[0], node.rect[1], node.rect[2], node.rect[3]));
+            }
+            node.children.iter().find_map(writer_editable_rect)
+        }
+        let writer_rect = writer_editable_rect(&frame.inspection().root)
+            .expect("real Writer editable coordinate");
+        frame.click_at(writer_rect.center().x, writer_rect.center().y);
         assert!(
             frame.frame_output().ime.is_some(),
             "clicked Writer must own the native IME route"
         );
+        frame.send_host_event(&winit::event::WindowEvent::Focused(true));
+        frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Enabled));
+        frame.send_host_event(&winit::event::WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::default(),
+        ));
+        // Browser beforeinput forwards committed text through this native event.
         frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
             "Two-group pointer Writer".into(),
         )));

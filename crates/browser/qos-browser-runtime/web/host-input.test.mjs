@@ -72,15 +72,16 @@ test('Rust-internal Search selection hands off only for a local surface gesture'
  const external=new Node('textarea');f.document.body.append(external);external.focus();
  f.state={sequence:'3',activation:'3',owner:'writer',ime:{x:0,y:0,height:20}};f.update({phase:'presented',frames:2});await tick();assert.equal(f.document.activeElement,external);
 });
-test('pointer ownership transfer focuses the host and types only into Notes then Chat without a new activation',async()=>{
+test('complete pointer gesture retains its original owner until Notes then Chat receive beforeinput',async()=>{
  const f=await fixture();
  await f.host.navigation.dispatch({kind:'select',generation:'g',route:'chat'});
  const activation=f.state.activation,surface=f.host.canvas.parentNode;
+ const clickCanvas=()=>{for(const type of ['pointerdown','pointerup','click'])f.host.canvas.dispatchEvent(new DomEvent(type));};
  let destination={sequence:'3',activation,owner:'notes',ime:{x:0,y:0,height:20}},frames=2;
  f.host.canvas.addEventListener('pointerdown',()=>{f.state=destination;f.update({phase:'presented',frames});});
  const chatControl=new Node('textarea');surface.append(chatControl);chatControl.focus();
  let leakedToChat=0;chatControl.addEventListener('beforeinput',()=>leakedToChat++);
- f.host.canvas.dispatchEvent(new DomEvent('pointerdown'));await tick();
+ clickCanvas();await tick();
  assert.equal(f.state.activation,activation,'a direct control click does not select a desktop route');
  assert.equal(f.document.activeElement,f.host.editor,'the new Notes IME owner receives native DOM focus');
  f.document.activeElement.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'notes sentinel'}));
@@ -89,7 +90,7 @@ test('pointer ownership transfer focuses the host and types only into Notes then
  const notesControl=new Node('textarea');surface.append(notesControl);notesControl.focus();
  let leakedToNotes=0;notesControl.addEventListener('beforeinput',()=>leakedToNotes++);
  destination={sequence:'4',activation,owner:'chat',ime:{x:0,y:0,height:20}};frames=3;
- f.host.canvas.dispatchEvent(new DomEvent('pointerdown'));await tick();
+ clickCanvas();await tick();
  assert.equal(f.document.activeElement,f.host.editor,'the returning Chat IME owner receives native DOM focus');
  f.document.activeElement.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'chat sentinel'}));
  assert.equal(leakedToNotes,0);assert.deepEqual(f.deliveredOwners.at(-1),['chat','chat sentinel']);
