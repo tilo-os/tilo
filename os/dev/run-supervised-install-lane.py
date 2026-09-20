@@ -568,6 +568,7 @@ def main():
                   (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
     agent=host_agent(args.context,disk['node'])
     stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/helpers',helpers)
+    stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/public-trust',public)
     controller(root,args,disk,agent,True)
     controller(root,args,disk,agent,False)
     creation=(args.operation_dir/'creation.json').read_bytes()
