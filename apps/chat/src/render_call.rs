@@ -22,8 +22,7 @@ use crate::emoji;
 use crate::geometry::line_top;
 use crate::model::{self, Presence, VoiceMember};
 use crate::paint::{
-    PaintContext, fill_circle, fill_rect, fill_round, hline, label, stroke_circle, stroke_round,
-    text,
+    PaintContext, fill_circle, fill_rect, fill_round, label, stroke_circle, stroke_round, text,
 };
 use crate::render_chat::draw_avatar;
 
@@ -39,18 +38,6 @@ struct Participant {
     muted: bool,
     audio_only: bool,
     sharing: bool,
-}
-
-#[derive(Clone, Copy)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "typed snapshot of four independent visual control states passed together to the leaf painter"
-)]
-struct ControlVisual {
-    on: bool,
-    danger: bool,
-    hovered: bool,
-    enabled: bool,
 }
 
 fn huddle_lower_chrome_for_reveal(reveal: f32) -> f64 {
