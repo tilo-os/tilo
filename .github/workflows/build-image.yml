@@ -593,12 +593,16 @@ jobs:
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
-      # Set up buildx with the docker-container driver — the default `docker`
-      # driver doesn't support cache export (the registry-backed cache we
-      # need to survive across ephemeral runners).
-      - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@e4c1c000c95f9cc255f72940e9c56bcbd1239436 # v1
+      # Retain bounded execution on both GitHub-hosted native build lanes.
+      - name: Set up buildx (docker-container driver for cache export)
         id: buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker-container
+          # Serialize large RPM/Rust stages to preserve composefs workspace headroom.
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 1
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -627,7 +631,7 @@ jobs:
       # the complete build and registry cache without retaining output.
       - name: Build the Tilo image
         id: build
-        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
@@ -683,13 +687,15 @@ jobs:
           # (~1-2 min). Export only final-stage dependencies: mode=max
           # duplicates the multi-gigabyte Rust build graph and can exhaust
           # the runner before BuildKit can finish or clean up.
+          cache-from: type=registry,ref=ghcr.io/tilo-os/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=ghcr.io/tilo-os/tilo-buildcache:${{ matrix.arch }},mode=min
 
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
       - name: Independently rebuild the release candidate
         if: steps.release-mode.outputs.validate == 'true'
-        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:

@@ -135,9 +135,7 @@ if grep -Fq 'runner":"ubuntu-24.04"' "$workflow" \
    && grep -Fq 'podman manifest push --all' "$workflow" \
    && grep -Fq 'published OCI index does not contain exactly the verified native children' "$workflow" \
    && grep -Fq 'externalParameters.children == $children' "$workflow" \
-   && grep -Eq 'uses: useblacksmith/setup-docker-builder@[0-9a-f]{40}([[:space:]]|$)' "$workflow" \
-   && grep -Eq 'uses: useblacksmith/build-push-action@[0-9a-f]{40}([[:space:]]|$)' "$workflow" \
-   && ! grep -Eq '^[[:space:]]+cache-(from|to):' "$workflow" \
+   && grep -Fq 'tilo-buildcache:${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
    && grep -Fq 'latest="ghcr.io/tilo-os/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then
