@@ -19,7 +19,15 @@ import re
 import subprocess
 import sys
 import tomllib
-from typing import Iterable
+
+# Direct CLI execution and importlib-based policy tests both load the same graph.
+TOOLS = Path(__file__).resolve().parents[1]
+if str(TOOLS) not in sys.path:
+    sys.path.append(str(TOOLS))
+from ci.workspace_graph import (
+    cargo_metadata, changed_files, closure, comparison_merge_base,
+    owner_for, package_maps, reverse_dependencies, run,
+)
 
 
 # Preserve the existing wire/document/package contract suites, including
@@ -36,15 +44,18 @@ NON_COMPILING_DOCS = {
     "DEVELOPMENT.md",
     "docs/ci-performance.md",
     "docs/ci-emergency-relief.md",
+    "docs/headless-testing.md",
 }
 # These orchestration/validation helpers are exercised by the mandatory quality
 # job's tools/policy/run.sh unittest discovery. They are not Rust build
 # inputs. Keep exact source/test pairs: unknown tools, deleted files, workflows,
 # compiler wrappers and packaging implementation changes retain native coverage.
 QUALITY_ONLY_HELPERS = {
+    "scripts/ci-run.sh": "tools/tests/test_ci_run.py",
     "tools/ci/check-changed-rustfmt.sh": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/check_changed_rust_allows.py": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
+    "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/merge_pr.py": "tools/tests/test_ci_merge_pr.py",
@@ -125,52 +136,10 @@ HEAVY_PACKAGES = {
 # rebuilding shared dependencies than it saves in wall time. Shard timing and
 # CPU figures are emitted by tools/ci/measure.sh so this can be tuned from runs.
 SHARD_COST_BUDGET = 1_000
-
-
-def run(*args: str, cwd: Path) -> str:
-    return subprocess.check_output(args, cwd=cwd, text=True).strip()
-
-
-def cargo_metadata(root: Path) -> dict:
-    return json.loads(run("cargo", "metadata", "--locked", "--no-deps", "--format-version", "1", cwd=root))
-
-
-def package_maps(metadata: dict, root: Path) -> tuple[dict[str, dict], dict[Path, str]]:
-    packages = {p["name"]: p for p in metadata["packages"]}
-    by_dir = {
-        Path(p["manifest_path"]).resolve().parent.relative_to(root.resolve()): p["name"]
-        for p in metadata["packages"]
-    }
-    return packages, by_dir
-
-
-def comparison_merge_base(root: Path, base: str | None, head: str) -> str:
-    if not base:
-        base = run("git", "rev-parse", f"{head}^", cwd=root)
-    try:
-        return run("git", "merge-base", base, head, cwd=root)
-    except subprocess.CalledProcessError as error:
-        raise RuntimeError(
-            f"cannot determine merge base for {base!r} and {head!r}; "
-            "refusing to select packages from a two-tree diff"
-        ) from error
-
-
-def changed_files(root: Path, base: str | None, head: str) -> list[str]:
-    merge_base = comparison_merge_base(root, base, head)
-    # Compare the PR side with the common ancestor. A direct base..head diff
-    # would also report files changed only on an advanced base branch.
-    diff_range = f"{merge_base}..{head}"
-    # A move affects both the old owner and the new owner. Rename detection's
-    # name-only output reports only the destination, losing the old package's
-    # reverse dependants. NUL delimiters also avoid Git quoting Unicode paths
-    # or splitting valid filenames containing newlines/leading whitespace.
-    output = subprocess.check_output(
-        ["git", "diff", "--no-renames", "--name-only", "-z",
-         "--diff-filter=ACDMRTUXB", diff_range, "--"], cwd=root,
-    )
-    return [path.decode("utf-8", errors="surrogateescape")
-            for path in output.split(b"\0") if path]
+# Ordinary global-input checks use at most two existing x86 runners (four
+# Cargo workers each). Keep small/reverse-closure changes on one warm target;
+# explicit full qualification retains its native architecture matrix.
+MAX_DEVELOPER_SHARDS = 2
 
 
 def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
@@ -225,41 +194,6 @@ def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) 
         and (name not in after or builder_mold_asset(name, after[name]))
         for name in changed_names
     )
-
-
-def owner_for(path: str, by_dir: dict[Path, str]) -> str | None:
-    candidate = Path(path)
-    owners = ((len(directory.parts), name) for directory, name in by_dir.items() if candidate.is_relative_to(directory))
-    return max(owners, default=(0, None))[1]
-
-
-def reverse_dependencies(packages: dict[str, dict], root: Path) -> dict[str, set[str]]:
-    manifest_to_name = {
-        str(Path(pkg["manifest_path"]).resolve()): name for name, pkg in packages.items()
-    }
-    reverse = {name: set() for name in packages}
-    for consumer, pkg in packages.items():
-        for dependency in pkg.get("dependencies", []):
-            dep_path = dependency.get("path")
-            if not dep_path:
-                continue
-            manifest = str((Path(dep_path).resolve() / "Cargo.toml"))
-            provider = manifest_to_name.get(manifest)
-            if provider:
-                reverse[provider].add(consumer)
-    return reverse
-
-
-def closure(seeds: Iterable[str], reverse: dict[str, set[str]]) -> set[str]:
-    selected = set(seeds)
-    pending = list(selected)
-    while pending:
-        package = pending.pop()
-        for dependent in reverse.get(package, ()):
-            if dependent not in selected:
-                selected.add(dependent)
-                pending.append(dependent)
-    return selected
 
 
 def package_cost(pkg: dict) -> int:
@@ -317,7 +251,7 @@ def native_dependencies_required(root: Path, changes: list[str], force_full: boo
         return False
     files = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "os/Containerfile.builder",
              ".forgejo/workflows/check.yml", "os/tests/test_openh264_source_order.py",
-             "tools/ci/affected_packages.py", "tools/tests/test_ci_select.py",
+             "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py", "tools/tests/test_ci_select.py",
              "tools/tests/test_ci_check_aggregate.py"}
     prefixes = (".cargo/", ".forgejo/actions/prepare-rust-build/")
     return force_full or any(path in files or path.startswith(prefixes) for path in changes)
@@ -415,7 +349,9 @@ def make_plan(
     # on x86, but links tests only for changed crates and the existing contract
     # suites. Global/unowned workspace inputs retain complete test coverage.
     tested = (selected if full else (seeds | ALWAYS_PACKAGES) & selected)
-    effective_shards = useful_shard_count(selected, packages, shard_count if force_full else 1)
+    shard_limit = (shard_count if force_full else
+                   min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
+    effective_shards = useful_shard_count(selected, packages, shard_limit)
     runners = NATIVE_RUNNERS if force_full else {"x86_64": NATIVE_RUNNERS["x86_64"]}
     matrix = []
     for arch, runner in runners.items():

@@ -16,27 +16,39 @@ A new push requires fresh checks and a fresh merge request. The controller also
 checks that the branch is up to date and the change is eligible for routine
 integration; a green check alone does not merge a PR.
 
-Review is optional only for Rust source changes under an existing app's
-`apps/<app>/src/` directory. After checks pass, the author can request **claude**
-through Forgejo's reviewer control. This holds merging until the request is
-cancelled or receives an allowed approval for that head; change requests block.
-Automatic review-agent launches are currently disabled, so a native request alone
-does not start an agent. The eligibility comment reports review availability.
+Review is optional and informational for every change. Review requests,
+approvals and change requests never affect merge admission; exact-head CI and
+author intent are authoritative. Automatic review-agent launches are currently
+disabled, so a native request alone does not start an agent.
 
-Documentation, tools, workflow YAML and Python/shell/PowerShell scripts under
-`dist/` or `os/` use the reviewed operator path. After checks pass, obtain an
-official **claude** approval and post the author's `/merge <full-head-sha>` intent.
-An authorized operator then runs this command from the `PodestaAI/infra` checkout:
+CI policy, publication, signing and named security-boundary paths use the
+protected-path operator flow. Changes crossing into those paths or changing an
+existing file's executable mode may require additional CI or provenance checks,
+but never review. After checks pass, post the author's `/merge <full-head-sha>`
+intent. An authorized operator then runs this command from the `PodestaAI/infra`
+checkout:
 
 ```sh
 python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
 ```
 
-It runs the deployed merge worker, which rechecks scope, current main, CI, author
-intent and approval before integration. Direct merges do not bypass that worker.
-Other paths, including Cargo manifests, `Cargo.lock`, vendored code and non-app
-Rust crates, currently have no supported admission path; they need a reviewed
-policy extension and appropriate validation first.
+It runs the deployed merge worker, which rechecks scope, current main, CI and
+author intent before integration. This command accepts only changes classified
+into the protected scope. Review state does not change a PR's scope or queue
+priority.
+Direct merges do not bypass that worker.
+The [deployed admission policy](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json)
+defines the protected paths and bounded dependency exceptions. The OpenH264
+source-order exception additionally requires its pinned provenance and native
+dependency check; it is not ordinary vendored-source admission. Symlinks,
+submodules and malformed changes are rejected rather than treated as routine.
+
+A bounded queue pilot on 2026-09-20 created [integration PR 169](https://code.sandbox.example/qos/qos/pulls/169)
+for [author PR 162](https://code.sandbox.example/qos/qos/pulls/162), tested the generated
+candidate and landed exact commit `12fbe8301ddc9b3d410cefe49d79630b334034d3`
+without changing the author's branch. This verifies one integration through the
+pilot; it does not establish general queue availability or sustained reliability.
+Continue using the controller's current eligibility instructions.
 
 The CI scheduler assigns runners and queue order. Submit normally; do not reserve
 build slots or negotiate them with other agents. The repository's Codex hook sends
@@ -53,6 +65,11 @@ for how selection and shared runtime compatibility interact. Use **Release / app
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
 
+The app registry is publicly reachable at `https://registry.sandbox.example`, but its
+signed catalogue is still empty. CI catalogue submission is not merged or enabled;
+Forgejo package publication alone does not make an app discoverable there. See the
+[production roadmap](docs/ci-production-roadmap.md) for the remaining acceptance gates.
+
 OS publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually
 run **Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
 scheduled integration runs do not publish an OS release. macOS setup packaging,
@@ -60,6 +77,17 @@ cask publication and installation tests remain in **Release / imager** but are
 disabled during alpha; tags do not enable those lanes.
 
 ## Fast checks before assembly
+
+For a native integration test without a full workspace dispatch, use
+**Development / focused native test** (`focused-test.yml`). Select a full source
+commit SHA, one Cargo package, integration target and exact Rust test path. For
+example: package `shell`, target `it`, test
+`concept_parity_spec::overview_add_workspace::overview_add_workspace_click_appends_workspace`.
+Use operation `check-tests` with the target/name empty to compile that package's
+test targets. Both modes use `--locked` on one native x86-64 runner and share the
+normal download/compiler caches. Missing or ignored tests fail. The job records
+source SHA, workflow SHA, builder digest and exit status; its diagnostic result
+does not replace required PR checks or trigger publication.
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
