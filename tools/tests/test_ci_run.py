@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -17,6 +18,65 @@ def shell_path(path):
 
 
 class CiRunSummaryTests(unittest.TestCase):
+    def test_immediate_commands_do_not_leave_an_open_heartbeat_pipe(self):
+        # Exercise shutdown before the heartbeat necessarily assigns its child
+        # PID. Capturing output observes leaked pipe owners, unlike wait alone.
+        for attempt in range(30):
+            with self.subTest(attempt=attempt):
+                result = subprocess.run(
+                    ["bash", shell_path(CI_RUN), "immediate", "--", "true"],
+                    cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    timeout=10, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_completion_reaps_heartbeat_sleeper_and_preserves_status(self):
+        for status in (0, 7, -15):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                sleeper = root / "sleeper.pid"
+                binary = root / "bin"
+                binary.mkdir()
+                shim = binary / "sleep"
+                # Record only the heartbeat sleeper, then retain its exact PID.
+                shim.write_text(
+                    "#!/usr/bin/env bash\n"
+                    f'if [ "$1" = 60 ]; then echo $$ > {shlex.quote(shell_path(sleeper))}; fi\n'
+                    'exec /bin/sleep "$@"\n', encoding="utf-8"
+                )
+                shim.chmod(0o755)
+                command = root / "command.sh"
+                finish = 'kill -TERM "$PPID"\nexit 0\n' if status == -15 else f"exit {status}\n"
+                command.write_text(
+                    "#!/usr/bin/env bash\n"
+                    f"for attempt in {{1..200}}; do [ -s {shlex.quote(shell_path(sleeper))} ] && break; sleep 0.01; done\n"
+                    f"test -s {shlex.quote(shell_path(sleeper))} || exit 99\n"
+                    + finish, encoding="utf-8"
+                )
+                try:
+                    result = subprocess.run(
+                        ["bash", "-c", 'export PATH="$1:$PATH"; exec bash "$2" heartbeat -- bash "$3"',
+                         "fixture", shell_path(binary), shell_path(CI_RUN), shell_path(command)],
+                        cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        timeout=10, check=False,
+                    )
+                    self.assertEqual(result.returncode, status, result.stdout)
+                    pid = sleeper.read_text().strip()
+                    reaped = subprocess.run(
+                        ["bash", "-c", 'test ! -e "/proc/$1"', "fixture", pid],
+                        check=False,
+                    )
+                    self.assertEqual(reaped.returncode, 0, "heartbeat must reap its owned sleep")
+                finally:
+                    # Keep a regressed wrapper from leaking its recorded child.
+                    # This runs after the reaping assertion, never in its place.
+                    if sleeper.exists():
+                        subprocess.run(
+                            ["bash", "-c", 'kill -TERM "$1" 2>/dev/null || true',
+                             "fixture", sleeper.read_text().strip()], check=False,
+                        )
+
+
     def test_clippy_diff_failure_keeps_lint_location_and_name(self):
         diagnostic = """introduced 1 Clippy diagnostic site(s):
 warning: item in documentation is missing backticks
@@ -52,6 +112,7 @@ warning: item in documentation is missing backticks
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 check=False,
+                timeout=10,
             )
 
             self.assertEqual(result.returncode, 1, result.stdout)
