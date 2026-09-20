@@ -145,7 +145,7 @@ export function createFocusHandoff({scope,epoch,focus}) {
   let serial=0;
   return {complete(before,externalEpoch=epoch()){
     const after=scope.capture();
-    if(!before||!after||after.legacy||before.activation===after.activation)return Promise.resolve(false);
+    if(!before||!after||after.legacy||(before.sequence===after.sequence&&before.activation===after.activation&&before.owner===after.owner))return Promise.resolve(false);
     const request=++serial;
     return Promise.resolve().then(()=>{
       if(request!==serial||epoch()!==externalEpoch||!scope.valid(after))return false;

@@ -57,7 +57,9 @@ export async function mountDesktop(target,options={}) {
     if(!gesture)return;
     if(!active()||gesture.epoch!==externalFocusEpoch){localActivationGesture=undefined;return;}
     const current=inputScope.capture();
-    if(current&&current.activation!==gesture.scope.activation){localActivationGesture=undefined;void handoff.complete(gesture.scope,gesture.epoch);}
+    if(current&&(current.sequence!==gesture.scope.sequence||current.activation!==gesture.scope.activation||current.owner!==gesture.scope.owner)){
+      localActivationGesture=undefined;void handoff.complete(gesture.scope,gesture.epoch);
+    }
   }
   semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
     keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},

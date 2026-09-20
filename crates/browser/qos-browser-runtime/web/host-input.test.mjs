@@ -33,12 +33,13 @@ async function fixture({standalone=false,legacy=false}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
  globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.fetch=async()=>({ok:true,json:async()=>[]});
- let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[];let update;
+ let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[];let update;
  const runtime={mount(_canvas,_config,_assets,_entries,callback){update=callback;setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},refresh_storage_lease(){},pending_writes:()=> '[]',asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop disposed');if(standalone)throw Error('Desktop navigation unavailable');return JSON.stringify(state);},desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,
   desktop_navigate:(_id,raw)=>{const command=JSON.parse(raw);if(command.route==='bad')throw Error('rejected');state={sequence:String(Number(state.sequence)+1),activation:String(Number(state.activation)+1),owner:command.route,ime:command.route==='calculator'?null:{x:0,y:0,height:20}};},
  };
  if(legacy)delete runtime.desktop_input_ownership;
+ const originalIme=runtime.ime;runtime.ime=(...args)=>{if(args[1]==='commit')deliveredOwners.push([state.owner,args[2]]);originalIme(...args);};
  globalThis.__hostFixture={runtime,storage:{fresh:false,hydrate:async()=>[],release:async()=>{}}};
  let source=(await readFile(new URL('./host.mjs',import.meta.url),'utf8')).replaceAll('import.meta.url',JSON.stringify(new URL('./host.mjs',import.meta.url).href));
  source=source.replace("import init,* as runtime from './pkg/qos_browser_runtime.js';","const init=async()=>{};const runtime=globalThis.__hostFixture.runtime;")
@@ -46,7 +47,7 @@ async function fixture({standalone=false,legacy=false}={}){
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}#${Math.random()}`);
  const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:standalone?'writer':'desktop'});await tick();
- return {host,document,delivered,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
+ return {host,document,delivered,deliveredOwners,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
 }
 test('mounted activation focuses latest destination and preserves a later external gesture',async()=>{
  const f=await fixture();
@@ -70,6 +71,28 @@ test('Rust-internal Search selection hands off only for a local surface gesture'
  f.host.canvas.dispatchEvent(new DomEvent('keydown',{key:'Enter'}));await tick();assert.equal(f.document.activeElement,f.host.editor);
  const external=new Node('textarea');f.document.body.append(external);external.focus();
  f.state={sequence:'3',activation:'3',owner:'writer',ime:{x:0,y:0,height:20}};f.update({phase:'presented',frames:2});await tick();assert.equal(f.document.activeElement,external);
+});
+test('pointer ownership transfer focuses the host and types only into Notes then Chat without a new activation',async()=>{
+ const f=await fixture();
+ await f.host.navigation.dispatch({kind:'select',generation:'g',route:'chat'});
+ const activation=f.state.activation,surface=f.host.canvas.parentNode;
+ let destination={sequence:'3',activation,owner:'notes',ime:{x:0,y:0,height:20}},frames=2;
+ f.host.canvas.addEventListener('pointerdown',()=>{f.state=destination;f.update({phase:'presented',frames});});
+ const chatControl=new Node('textarea');surface.append(chatControl);chatControl.focus();
+ let leakedToChat=0;chatControl.addEventListener('beforeinput',()=>leakedToChat++);
+ f.host.canvas.dispatchEvent(new DomEvent('pointerdown'));await tick();
+ assert.equal(f.state.activation,activation,'a direct control click does not select a desktop route');
+ assert.equal(f.document.activeElement,f.host.editor,'the new Notes IME owner receives native DOM focus');
+ f.document.activeElement.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'notes sentinel'}));
+ assert.equal(leakedToChat,0);assert.deepEqual(f.deliveredOwners.at(-1),['notes','notes sentinel']);
+
+ const notesControl=new Node('textarea');surface.append(notesControl);notesControl.focus();
+ let leakedToNotes=0;notesControl.addEventListener('beforeinput',()=>leakedToNotes++);
+ destination={sequence:'4',activation,owner:'chat',ime:{x:0,y:0,height:20}};frames=3;
+ f.host.canvas.dispatchEvent(new DomEvent('pointerdown'));await tick();
+ assert.equal(f.document.activeElement,f.host.editor,'the returning Chat IME owner receives native DOM focus');
+ f.document.activeElement.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'chat sentinel'}));
+ assert.equal(leakedToNotes,0);assert.deepEqual(f.deliveredOwners.at(-1),['chat','chat sentinel']);
 });
 test('queued stale presentation IME cannot override fresh activation ownership',async()=>{
  const f=await fixture();await f.host.navigation.dispatch({kind:'select',generation:'g',route:'calculator'});
