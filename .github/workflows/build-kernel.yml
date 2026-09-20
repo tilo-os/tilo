@@ -398,6 +398,9 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: write
     env:
       KERNEL_SNAPSHOT_INPUTS: |
         os/kernel
@@ -451,3 +454,16 @@ jobs:
           gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/os/kernel-snapshot.env" \
             -f message='build(os): refresh native kernel snapshots' \
             -f content="$content" -f branch=main -f sha="$blob_sha" >/dev/null
+
+      - name: Dispatch the full image build and boot test
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            -H 'Content-Type: application/json' \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/build-image.yml/dispatches" \
+            --data '{"ref":"main","inputs":{"with_browser":"1"}}'

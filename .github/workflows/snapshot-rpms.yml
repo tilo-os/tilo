@@ -448,15 +448,18 @@ jobs:
           echo '::error::snapshot pin promotion lost five consecutive branch races'
           exit 1
 
-      - name: Dispatch the full image build and boot test
+      - name: Dispatch the kernel and relay builds
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          curl --fail-with-body --silent --show-error \
-            -X POST \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            -H 'Content-Type: application/json' \
-            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/build-image.yml/dispatches" \
-            --data "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"with_browser\":\"1\"}}"
+          set -euo pipefail
+          for workflow in build-kernel.yml tilo-relay.yaml; do
+            curl --fail-with-body --silent --show-error \
+              -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              -H 'Content-Type: application/json' \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/dispatches" \
+              --data "{\"ref\":\"${GITHUB_REF_NAME}\"}"
+          done
