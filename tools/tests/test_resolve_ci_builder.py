@@ -36,24 +36,27 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertEqual(result.stderr, '::error::CI builder resolution failed (ValueError)\n')
         self.assertNotIn('Traceback', result.stderr)
 
-    def test_actual_forgejo_manifest_record_contract(self):
-        # Fields retained from authenticated package-file API read on 2026-09-19.
-        row = {'id': 229897, 'Size': 493, 'name': 'manifest.json',
-               'sha256': '027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a'}
+    def test_actual_github_package_version_contract(self):
+        digest = '027e43c051f1f34ce9ac1539172af0e711958243115e2efd08901ffa58729c5a'
+        row = {'id': 229897, 'name': 'sha256:' + digest,
+               'metadata': {'package_type': 'container', 'container': {'tags': ['latest']}}}
         seen = []
         def fetch(token):
             seen.append(token)
             return [row]
-        self.assertEqual(resolver.resolve(token='fixture', fetch=fetch), resolver.IMAGE + '@sha256:' + row['sha256'])
+        self.assertEqual(resolver.resolve(token='fixture', fetch=fetch), resolver.IMAGE + '@sha256:' + digest)
         self.assertEqual(seen, ['fixture'])
-        row['sha256'] = 'a' * 64
+        row['name'] = 'sha256:' + 'a' * 64
         self.assertEqual(resolver.resolve(token='fixture', fetch=fetch), resolver.IMAGE + '@sha256:' + 'a' * 64,
                          'a newly published builder must not be replaced by the cached seed digest')
 
     def test_ambiguous_or_invalid_api_response_fails_closed(self):
-        valid = {'Size': 493, 'name': 'manifest.json', 'sha256': 'a' * 64}
-        for rows in (None, {}, [], [valid, valid], [None], [{**valid, 'name': 'other.json'}],
-                     [{**valid, 'sha256': 'bad'}], [{**valid, 'Size': 0}]):
+        valid = {'name': 'sha256:' + 'a' * 64,
+                 'metadata': {'container': {'tags': ['latest']}}}
+        untagged = {'name': 'sha256:' + 'b' * 64,
+                    'metadata': {'container': {'tags': ['sha-old']}}}
+        for rows in (None, {}, [], [valid, valid], [None], [{**valid, 'name': 'bad'}],
+                     [{**valid, 'metadata': None}], [untagged]):
             with self.subTest(rows=rows), self.assertRaises(ValueError):
                 resolver.resolve(token='fixture', fetch=lambda token: rows)
 
@@ -73,7 +76,8 @@ class BuilderResolutionTests(unittest.TestCase):
 
 class MetadataTransportTests(unittest.TestCase):
     token = 'secret-token-sentinel'
-    valid = [{'Size': 493, 'name': 'manifest.json', 'sha256': 'a' * 64}]
+    valid = [{'name': 'sha256:' + 'a' * 64,
+              'metadata': {'container': {'tags': ['latest']}}}]
 
     def response(self, value=None):
         return io.BytesIO(json.dumps(self.valid if value is None else value).encode())
@@ -98,7 +102,7 @@ class MetadataTransportTests(unittest.TestCase):
                 sleep.assert_called_once_with(1)
                 requests = [call.args[0] for call in opener.open.call_args_list]
                 self.assertIs(requests[0], requests[1])
-                self.assertEqual(requests[0].full_url, resolver.FILES_URL)
+                self.assertEqual(requests[0].full_url, resolver.VERSIONS_URL)
                 self.assertEqual(requests[0].get_method(), 'GET')
                 self.assertIsNone(requests[0].data)
                 self.assertEqual([call.kwargs for call in opener.open.call_args_list], [{'timeout': 30}]*2)
@@ -129,7 +133,7 @@ class MetadataTransportTests(unittest.TestCase):
         with patch.object(broken, 'read', side_effect=ConnectionResetError(errno.ECONNRESET, self.token)), \
                 patch.object(resolver, 'build_opener', return_value=opener), \
                 patch.object(resolver.time, 'sleep') as sleep, patch('sys.stderr', new_callable=io.StringIO):
-            self.assertEqual(resolver.fetch_files(self.token), self.valid)
+            self.assertEqual(resolver.fetch_versions(self.token), self.valid)
         self.assertTrue(broken.closed)
         self.assertEqual(opener.open.call_count, 2)
         sleep.assert_called_once_with(1)
@@ -158,7 +162,7 @@ class MetadataTransportTests(unittest.TestCase):
 
     def test_invalid_json_manifest_and_oversized_response_never_retry(self):
         for response in (io.BytesIO(b'{secret-body-sentinel'), self.response([]),
-                         self.response([dict(self.valid[0], sha256='invalid')]),
+                         self.response([dict(self.valid[0], name='invalid')]),
                          io.BytesIO(b'x' * (resolver.MAX_RESPONSE + 1))):
             opener = Mock()
             opener.open.return_value = response

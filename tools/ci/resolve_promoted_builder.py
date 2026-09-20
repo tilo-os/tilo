@@ -23,7 +23,7 @@ def command(*args):
     return subprocess.check_output(args)
 
 
-def resolve(token, run=command, fetch=resolver.fetch_files):
+def resolve(token, run=command, fetch=resolver.fetch_versions):
     index = resolver.resolve("", token, fetch)
     if not re.fullmatch(re.escape(REPOSITORY) + r"@sha256:[0-9a-f]{64}", index):
         raise ValueError("promoted builder is not immutable")

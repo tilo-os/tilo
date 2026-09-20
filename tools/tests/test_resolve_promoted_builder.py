@@ -24,7 +24,8 @@ class PromotedBuilderTests(unittest.TestCase):
 
     def fetch(self, token):
         self.assertEqual(token, "token")
-        return [{"name": "manifest.json", "sha256": self.index.rsplit(":", 1)[1], "Size": len(self.raw)}]
+        return [{"name": self.index.rsplit("@", 1)[1],
+                 "metadata": {"container": {"tags": ["latest"]}}}]
 
     def command(self, *args):
         self.calls.append(args)

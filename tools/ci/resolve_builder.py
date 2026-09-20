@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the Forgejo builder tag to its immutable package manifest digest."""
+"""Resolve the GHCR builder tag to its immutable manifest digest."""
 import errno
 import http.client
 import json
@@ -14,7 +14,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 IMAGE = "ghcr.io/tilo-os/tilo-builder"
-FILES_URL = "https://code.podesta.ai/api/v1/packages/tilo/container/tilo-builder/latest/files"
+VERSIONS_URL = (
+    "https://api.github.com/orgs/tilo-os/packages/container/"
+    "tilo-builder/versions?per_page=100"
+)
 MAX_RESPONSE = 1024 * 1024
 ATTEMPTS = 3
 # errno.errorcode can prefer Winsock aliases on Windows. Keep supported
@@ -61,11 +64,17 @@ def failure(error):
     return "UnexpectedError", False
 
 
-def fetch_files(token):
+def fetch_versions(token):
     if not token:
         raise ValueError("REGISTRY_TOKEN is required to resolve the current builder")
-    request = Request(FILES_URL, headers={"Authorization": "token " + token,
-                                         "Accept": "application/json"})
+    request = Request(
+        VERSIONS_URL,
+        headers={
+            "Authorization": "Bearer " + token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
     opener = build_opener(NoRedirect())
     # Only this fixed-origin metadata GET is retried. Each attempt retains the
     # 30-second socket timeout and 1 MiB response bound; backoff is 1s then 2s.
@@ -87,23 +96,29 @@ def fetch_files(token):
     return json.loads(payload)
 
 
-def resolve(requested="", token="", fetch=fetch_files):
+def resolve(requested="", token="", fetch=fetch_versions):
     if requested:
         if not re.fullmatch(re.escape(IMAGE) + r"@sha256:[0-9a-f]{64}", requested):
             raise ValueError("builder_image must be an immutable tilo-builder SHA-256 reference")
         return requested
     rows = fetch(token)
-    # This Forgejo container-package endpoint returns the manifest/index as
-    # manifest.json; its SHA-256 is the registry's content-addressed reference.
-    # Reject ambiguous or changed API contracts instead of silently using latest.
-    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        raise ValueError("expected exactly one builder manifest file")
-    row = rows[0]
-    if row.get("name") != "manifest.json" or not re.fullmatch(r"[0-9a-f]{64}", str(row.get("sha256", ""))):
-        raise ValueError("builder manifest name or SHA-256 is invalid")
-    if type(row.get("Size")) is not int or row["Size"] <= 0:
-        raise ValueError("builder manifest size is invalid")
-    return IMAGE + "@sha256:" + row["sha256"]
+    if not isinstance(rows, list):
+        raise ValueError("GitHub package versions response is invalid")
+    latest = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("GitHub package version is invalid")
+        metadata = row.get("metadata")
+        container = metadata.get("container") if isinstance(metadata, dict) else None
+        tags = container.get("tags") if isinstance(container, dict) else None
+        if isinstance(tags, list) and "latest" in tags:
+            latest.append(row)
+    if len(latest) != 1:
+        raise ValueError("expected exactly one GHCR version tagged latest")
+    digest = latest[0].get("name")
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError("GHCR package version digest is invalid")
+    return IMAGE + "@" + digest
 
 
 def main():
