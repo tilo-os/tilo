@@ -19,11 +19,10 @@ on:
         type: string
 
 concurrency:
-  # Keep every main revision, without serializing all commits behind one slow
-  # native build. Runner admission limits resource use across these runs.
-  group: check-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
-  # Feature branches still supersede obsolete work immediately.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Keep every event and commit independent so required PR evidence cannot be
+  # replaced by a push or by a newer revision.
+  group: check-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 env:
   CARGO_HOME: /cargo-home
@@ -94,6 +93,8 @@ jobs:
       base: ${{ steps.plan.outputs.base }}
       full: ${{ steps.plan.outputs.full }}
       rust_required: ${{ steps.plan.outputs.rust_required }}
+      security_required: ${{ steps.plan.outputs.security_required }}
+      native_dependencies_required: ${{ steps.plan.outputs.native_dependencies_required }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
@@ -138,7 +139,9 @@ jobs:
           set -euo pipefail
           base='${{ github.event.pull_request.base.sha }}'
           selection_args=()
-          if [ '${{ github.event_name }}' = workflow_dispatch ]; then
+          if [ '${{ github.event_name }}' = pull_request ]; then
+            selection_args+=(--allow-security-skip)
+          elif [ '${{ github.event_name }}' = workflow_dispatch ]; then
             # Dispatch has no pull-request base or push-before SHA. Do not
             # silently reduce an acceptance run to the last commit's changes.
             base=origin/main
@@ -166,10 +169,12 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Shell, image-configuration, and workflow policy cannot be selected through
-  # Cargo's dependency graph. Keep these checks mandatory, but run them beside
-  # selection so they do not delay the affected-package matrix.
+  # Cargo's dependency graph. Run these checks beside selection so they do not
+  # delay the affected-package matrix. Pull requests containing only audited
+  # prose or self-tested quality helpers may omit this independent suite.
   security:
-    needs: builder
+    if: needs.select.outputs.security_required == 'true'
+    needs: [builder, select]
     runs-on: runner-quality
     timeout-minutes: 30
     env:
@@ -195,6 +200,28 @@ jobs:
       - name: Security boundary invariants
         run: bash tools/run-security-boundary-invariants.sh
 
+  native-dependencies:
+    if: needs.select.outputs.native_dependencies_required == 'true'
+    needs: [builder, select]
+    runs-on: runner-quality
+    timeout-minutes: 10
+    env:
+      CARGO_BUILD_JOBS: '2'
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout native dependency tests
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Verify deterministic native archive inputs
+        id: native-check
+        run: |
+          python3 os/tests/test_openh264_source_order.py -v
+
   affected:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
@@ -218,11 +245,29 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
-      - name: Checkout
+      - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
+          fetch-depth: 1
+
+      # Clippy compares the selected packages with the immutable base already
+      # established by the select job. Fetch that one commit instead of every
+      # branch and tag in this large, short-lived repository.
+      - name: Fetch exact Clippy base
+        env:
+          CLIPPY_BASE: ${{ needs.select.outputs.base }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CLIPPY_BASE" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
+          head=$(git rev-parse HEAD)
+          test "$head" = "$GITHUB_SHA"
+          if ! git cat-file -e "$CLIPPY_BASE^{commit}" 2>/dev/null; then
+            git fetch --no-tags --no-write-fetch-head --depth=1 origin \
+              "+$CLIPPY_BASE:refs/ci/clippy-base"
+          fi
+          test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"
 
       - name: Prepare Rust build caches
         id: rust-build
@@ -282,7 +327,18 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "check shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
-          cargo check --locked --all-targets ${{ matrix.packages }}
+          python3 tools/ci/compiler_inputs.py --output target/ci/compiler-inputs.json --
+          check --locked --all-targets ${{ matrix.packages }}
+
+      - name: Save observed compiler inputs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/ci/compiler-inputs.json
+          retention-days: 7
+          if-no-files-found: warn
 
       # Lint the exact same reverse-dependency closure at the selected base and
       # at HEAD. Historical diagnostics in an otherwise untouched dependant do
@@ -308,6 +364,16 @@ jobs:
           bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
           tools/ci/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
 
+      - name: Save observed Clippy inputs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: clippy-inputs-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/ci/clippy-*-inputs.json
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Report remote compiler-cache effectiveness
         if: always()
         run: |
@@ -330,7 +396,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [select, security, affected]
+    needs: [builder, select, security, affected, native-dependencies]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -342,16 +408,42 @@ jobs:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
         env:
+          BUILDER_RESULT: ${{ needs.builder.result }}
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           AFFECTED_RESULT: ${{ needs.affected.result }}
+          NATIVE_DEPENDENCIES_RESULT: ${{ needs.native-dependencies.result }}
+          NATIVE_DEPENDENCIES_REQUIRED: ${{ needs.select.outputs.native_dependencies_required }}
+          EVENT_NAME: ${{ github.event_name }}
+          SECURITY_REQUIRED: ${{ needs.select.outputs.security_required }}
           RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
           SELECTED_COUNT: ${{ needs.select.outputs.selected_count }}
         shell: bash
         run: |
           set -euo pipefail
+          test "$BUILDER_RESULT" = success
           test "$SELECT_RESULT" = success
-          test "$SECURITY_RESULT" = success
+          case "$EVENT_NAME:$SECURITY_REQUIRED:$SECURITY_RESULT" in
+            *:true:success)
+              ;;
+            pull_request:false:skipped)
+              echo 'Security checks not applicable: audited pull-request-only inputs.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '::error::Security checks failed, were skipped unexpectedly, or selection outputs are invalid.'
+              exit 1
+              ;;
+          esac
+          case "$NATIVE_DEPENDENCIES_REQUIRED:$NATIVE_DEPENDENCIES_RESULT" in
+            true:success) ;;
+            false:skipped)
+              echo 'Native dependency checks not applicable: no matching build inputs changed.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '::error::Native dependency checks failed or applicability is invalid.'
+              exit 1
+              ;;
+          esac
           case "$RUST_REQUIRED:$SELECTED_COUNT:$AFFECTED_RESULT" in
             false:0:skipped)
               echo 'Rust checks not applicable: audited non-compiling inputs.' >> "$GITHUB_STEP_SUMMARY"
