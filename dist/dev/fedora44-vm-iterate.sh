@@ -161,6 +161,8 @@ build_one() {
         # and sccache can otherwise return an object generated for older ones.
         export CC=/usr/bin/gcc CXX=/usr/bin/g++
         mkdir -p '$target_rel'
+        mkdir -p '$target_rel/tmp'
+        export TMPDIR='$target_rel/tmp'
         # This is a persistent, disposable build cache rather than source. The
         # standard tag keeps backup/indexing tools from treating it as project
         # content when a developer snapshots the checkout.
@@ -190,6 +192,8 @@ build_shell_pair() {
         export QCARGO_BYPASS=1
         export CC=/usr/bin/gcc CXX=/usr/bin/g++
         mkdir -p '$target_rel'
+        mkdir -p '$target_rel/tmp'
+        export TMPDIR='$target_rel/tmp'
         if [ ! -e '$target_rel/CACHEDIR.TAG' ]; then
           printf '%s\\n' 'Signature: 8a477f597d28d172789f06886806bc55' \\
             '# This file is a cache directory tag created by Tilo.' \\
@@ -270,6 +274,11 @@ remote_install() {
     ssh_base \
         "set -eu; umask 077; cat > \"\$HOME/$vm_root/incoming/$remote_name.\$\$\"; chmod 700 \"\$HOME/$vm_root/incoming/$remote_name.\$\$\"; mv -f \"\$HOME/$vm_root/incoming/$remote_name.\$\$\" \"\$HOME/$vm_root/$remote_name\"" \
         <"$local_path"
+    local expected actual
+    expected=$(sha256sum -- "$local_path" | cut -d' ' -f1)
+    actual=$(ssh_base "sha256sum -- \"\$HOME/$vm_root/$remote_name\" | cut -d' ' -f1")
+    [[ $actual == "$expected" ]] \
+        || die "deployed $remote_name digest mismatch: expected $expected, got $actual"
 }
 
 dev_transfer_image() {
@@ -321,6 +330,43 @@ deploy_one() {
     dev_transfer_image "$source" "$transfer"
     assert_vm_runtime_compatible "$transfer" "$binary"
     remote_install "$transfer" "$binary"
+    if [[ $package == tilo-unlock-helper ]]; then
+        local pam_stack=$repo_root/os/etc/pam.d/tilo-unlock
+        [[ -f $pam_stack ]] || die "unlock PAM stack is missing: $pam_stack"
+        # The compositor deliberately invokes the same fixed path as a
+        # packaged session.  Install it as a system file: copying it only into
+        # the developer's private directory gives PAM the wrong ownership and
+        # bypasses Fedora's normal file labelling on an enforcing guest.
+        ssh_base "set -eu
+            incoming=\"\$HOME/$vm_root/incoming/tilo-unlock.pam.\$\$\"
+            umask 077
+            cat > \"\$incoming\"
+            sudo install -o root -g root -m 0755 \
+              \"\$HOME/$vm_root/tilo-unlock-helper\" \
+              /usr/libexec/tilo-unlock-helper
+            sudo install -o root -g root -m 0644 \"\$incoming\" \
+              /etc/pam.d/tilo-unlock
+            rm -f -- \"\$incoming\"
+            if command -v restorecon >/dev/null 2>&1; then
+              sudo restorecon -F /usr/libexec/tilo-unlock-helper \
+                /etc/pam.d/tilo-unlock
+            fi
+            test \"\$(stat -c '%U:%G:%a:%F' \
+              /usr/libexec/tilo-unlock-helper)\" = \
+              'root:root:755:regular file'
+            test \"\$(stat -c '%U:%G:%a:%F' /etc/pam.d/tilo-unlock)\" = \
+              'root:root:644:regular file'
+            test -u /usr/sbin/unix_chkpwd
+            test \"\$(stat -c '%U:%G' /usr/sbin/unix_chkpwd)\" = root:root
+            if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then
+              helper_type=\$(stat -c '%C' /usr/libexec/tilo-unlock-helper \
+                | sed -n 's/^[^:]*:[^:]*:\([^:]*\):.*$/\1/p')
+              pam_type=\$(stat -c '%C' /etc/pam.d/tilo-unlock \
+                | sed -n 's/^[^:]*:[^:]*:\([^:]*\):.*$/\1/p')
+              test \"\$helper_type\" = bin_t
+              test \"\$pam_type\" = etc_t
+            fi" <"$pam_stack"
+    fi
     if [[ $package == shell ]]; then
         local launcher_transfer
         launcher_transfer=$(mktemp "${TMPDIR:-/tmp}/tilo-launcher.XXXXXX")

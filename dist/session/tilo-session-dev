@@ -150,6 +150,35 @@ install -d -m 700 -- "$ATTEST_DIR" || die "cannot prepare developer-session runt
 TILO_TEST_CONTROL="$ATTEST_DIR/control.sock"
 rm -f -- "$TILO_TEST_CONTROL"
 export TILO_TEST_CONTROL
+
+# A DRM login inside the supported 2D VM has no render-capable hardware
+# adapter.  Keep its software renderer on Mesa's Vulkan/lavapipe path: the
+# EGL/GLES software path can initialise without DRI2 and then wedge during the
+# first readback fence.  Real hardware sessions remain untouched, and an
+# explicit developer override still wins.
+VIRTUAL_DRM=0
+for _drm_device in /sys/class/drm/card*/device; do
+    [ -e "$_drm_device" ] || continue
+    if udevadm info -q property -p "$_drm_device" 2>/dev/null \
+        | grep -Eq '^(DRIVER=virtio-pci|PCI_ID=1AF4:1050)$'; then
+        VIRTUAL_DRM=1
+        break
+    fi
+done
+if [ "$VIRTUAL_DRM" -eq 1 ]; then
+    : "${WGPU_BACKEND:=vulkan}"
+    : "${WGPU_ADAPTER_NAME:=llvmpipe}"
+    if [ -z "${VK_DRIVER_FILES:-}" ]; then
+        for _icd in /usr/share/vulkan/icd.d/lvp_icd."$(uname -m)".json \
+            /usr/share/vulkan/icd.d/lvp_icd.x86_64.json; do
+            if [ -f "$_icd" ]; then
+                VK_DRIVER_FILES=$_icd
+                break
+            fi
+        done
+    fi
+    export WGPU_BACKEND WGPU_ADAPTER_NAME VK_DRIVER_FILES
+fi
 ATTEST_TMP="$ATTEST_DIR/active.$$"
 TARGET_SHA256=
 if [ -f "$CONF_SHA" ]; then

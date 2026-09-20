@@ -123,6 +123,26 @@ grep -Fq 'tilo-flight-recorder' "$log"
 grep -Fq '/usr/libexec/tilo-flight-recorder' "$log"
 grep -Fq 'ldconfig -p' "$log"
 
+# Unlock-helper deployment is not an ordinary private dev-binary update. PAM
+# and Fedora's unix_chkpwd boundary require the production system paths to be
+# root-owned and correctly labelled.
+mkdir -p "$repo_root/$target_rel/debug"
+printf 'unlock helper\n' >"$repo_root/$target_rel/debug/tilo-unlock-helper"
+chmod 700 "$repo_root/$target_rel/debug/tilo-unlock-helper"
+: >"$log"
+env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
+    TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
+    TILO_VM_SSH_PORT=29999 TILO_VM_SSH_IDENTITY="$work/test_vm_key" \
+    "$tool" deploy tilo-unlock-helper
+grep -Fq 'sudo install -o root -g root -m 0755' "$log"
+grep -Fq '/usr/libexec/tilo-unlock-helper' "$log"
+grep -Fq 'sudo install -o root -g root -m 0644' "$log"
+grep -Fq '/etc/pam.d/tilo-unlock' "$log"
+grep -Fq 'restorecon -F /usr/libexec/tilo-unlock-helper' "$log"
+grep -Fq "root:root:755:regular file" "$log"
+grep -Fq "root:root:644:regular file" "$log"
+grep -Fq 'test -u /usr/sbin/unix_chkpwd' "$log"
+
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
     TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
