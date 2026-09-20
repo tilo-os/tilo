@@ -343,8 +343,8 @@ class CreationTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'disk.raw'
         self.args = SimpleNamespace(output=self.path, size_bytes=4096,
-            source='registry.invalid/tilo-development/os@sha256:' + '1' * 64,
-            target='registry.invalid/tilo-development/os:aarch64',
+            source='code.podesta.ai/qos/tilo-development@sha256:' + '1' * 64,
+            target='code.podesta.ai/qos/tilo-development:aarch64',
             architecture='aarch64', manifest_sha256='2' * 64, generation=1,
             composefs_digest='3' * 128, systemd_version='259.8')
         self.events = []
@@ -430,6 +430,9 @@ class CreationTests(unittest.TestCase):
         self.assertIn(self.image, argv)
         self.assertIn('--source-imgref=docker://' + self.args.source, argv)
         self.assertIn('--target-imgref=' + self.args.target, argv)
+        self.assertIn('--entrypoint=/usr/bin/python3', argv)
+        self.assertIn('/run/tilo-bootc-registry-wrapper.py', argv)
+        self.assertEqual(argv[argv.index('--') + 1], '/usr/bin/bootc')
         self.assertNotIn('--skip-fetch-check', argv)
         self.assertFalse(receipt['installable'])
         self.assertFalse(receipt['installed_bytes_verified'])

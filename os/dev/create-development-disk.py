@@ -310,13 +310,21 @@ def _create_verified_disk(args):
                 raise ValueError('packaged bootc lacks a required installation flag')
             disk = disks.enter_context(PrivateDiskImage(args.output, args.size_bytes))
             path = disk.validate()
+            source_match = re.fullmatch(
+                r'code\.podesta\.ai/[a-z0-9_./-]+@(sha256:[0-9a-f]{64})', args.source)
+            if source_match is None:
+                raise ValueError('bootc warmup requires the expected immutable registry source')
+            wrapper = Path(__file__).with_name('bootc-registry-wrapper.py')
             # Only a newly allocated file is bound, never the guest root. The
             # operator must provision this VM without device passthrough;
             # privileged Podman still has access to the VM's own devices.
             bootc_install([*run, '--privileged', '--network=host', *auth_args,
                 '--volume', f'{path}:/output/disk.raw:rw',
-                '--entrypoint=/usr/bin/bootc', verified.image_id,
-                'install', 'to-disk', '--via-loopback', '--generic-image',
+                '--volume', f'{wrapper}:/run/tilo-bootc-registry-wrapper.py:ro',
+                '--entrypoint=/usr/bin/python3', verified.image_id,
+                '/run/tilo-bootc-registry-wrapper.py', 'docker://' + args.source,
+                source_match.group(1), '--', '/usr/bin/bootc', 'install', 'to-disk',
+                '--via-loopback', '--generic-image',
                 '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
                 '--source-imgref=docker://' + args.source,
                 '--target-imgref=' + args.target,
