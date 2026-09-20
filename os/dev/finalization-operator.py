@@ -248,22 +248,42 @@ def packet(operation, context, c):
 
 
 OBSERVE = r'''
-import hashlib,json,sys
+import hashlib,json,os,sys
 from kubernetes import client,config
 from kubernetes.stream import stream
 p=json.load(sys.stdin)
-cfg=client.Configuration()
-config.load_kube_config('/etc/sandbox-broker/clusters/eks.yaml',client_configuration=cfg)
-cfg.refresh_api_key_hook=None;cfg.api_key['authorization']='Bearer '+p['token']
-a=client.ApiClient(cfg);v=client.CoreV1Api(a);namespace='agent-sandboxes'
+if set(p['auth']) != set(TARGETS):raise ValueError('broker target authorization differs')
+profiles=json.loads(os.environ['BROKER_CLUSTER_TARGETS'])
+if (not isinstance(profiles,list) or not all(isinstance(x,dict) and isinstance(x.get('name'),str) for x in profiles)
+    or len({x['name'] for x in profiles})!=len(profiles)):raise ValueError('invalid broker target inventory')
+enabled={x['name']:x for x in profiles if x.get('ci_enabled') is True}
+if not enabled or not set(enabled) <= set(TARGETS):raise ValueError('unknown enabled CI target')
+namespace='agent-sandboxes'
 matches=[]
-for pod in v.list_namespaced_pod(namespace,_request_timeout=15).items:
- if pod.status.phase!='Running' or not any(c.name=='runner' for c in pod.spec.containers):continue
- if p.get('pod') and pod.metadata.name!=p['pod']:continue
- log=v.read_namespaced_pod_log(pod.metadata.name,namespace,container='runner',tail_lines=500,_request_timeout=10)
- if ('task '+str(p['task'])+' repo is '+p['repository']) in log:matches.append(pod)
+for target_name in sorted(enabled):
+ target=TARGETS[target_name];profile=enabled[target_name];cfg=client.Configuration()
+ expected=target['kubeconfig']
+ if profile.get('kubeconfig')!=expected:raise ValueError('broker target path differs')
+ if target['mode']=='in-cluster':
+  if p['auth'][target_name] is not None:raise ValueError('in-cluster authorization differs')
+  config.load_incluster_config(client_configuration=cfg)
+ else:
+  token=p['auth'][target_name]
+  if not isinstance(token,str) or not token.startswith('k8s-aws-v1.') or len(token)>32768:
+   raise ValueError('EKS authorization differs')
+  config.load_kube_config(expected,client_configuration=cfg)
+  cfg.refresh_api_key_hook=None;cfg.api_key['authorization']='Bearer '+token
+ a=client.ApiClient(cfg);v=client.CoreV1Api(a)
+ for pod in v.list_namespaced_pod(namespace,_request_timeout=15).items:
+  labels=pod.metadata.labels or {};containers={c.name for c in pod.spec.containers}
+  if (pod.status.phase!='Running' or labels.get('app.kubernetes.io/managed-by')!='sandbox-broker'
+      or labels.get('podesta.ai/workload')!='forgejo-ci'
+      or labels.get('podesta.ai/cluster')!=target_name or not {'runner','dind'}<=containers):continue
+  if p.get('pod') and pod.metadata.name!=p['pod']:continue
+  log=v.read_namespaced_pod_log(pod.metadata.name,namespace,container='runner',tail_lines=500,_request_timeout=10)
+  if ('task '+str(p['task'])+' repo is '+p['repository']) in log:matches.append((target_name,a,v,pod))
 if len(matches)!=1:raise ValueError('expected one runner matching the actual task')
-pod=matches[0];name=pod.metadata.name;uid=pod.metadata.uid
+target_name,a,v,pod=matches[0];name=pod.metadata.name;uid=pod.metadata.uid
 def execute(command):
  w=stream(v.connect_get_namespaced_pod_exec,name,namespace,container='dind',command=command,
           stderr=True,stdin=False,stdout=True,tty=False,_preload_content=False)
@@ -286,10 +306,11 @@ if fresh.metadata.uid!=uid or freshspec!=spec or any(state[k]!=freshstate[k] for
 container=next(x for x in spec['containers'] if x['name']=='dind')
 again=execute(['docker','inspect','--type=container','--format',p['inspect'],inner])
 if again!=nested:raise ValueError('inner identity changed during observation')
-print(json.dumps({'pod':name,'pod_uid':uid,'spec_sha256':hashlib.sha256(json.dumps(spec,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
+print(json.dumps({'cluster':target_name,'pod':name,'pod_uid':uid,'spec_sha256':hashlib.sha256(json.dumps(spec,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
  'image':container['image'],'container_id':state['containerID'],'image_id':state['imageID'],'restart_count':state['restartCount'],
  'docker':nested,'worker':observation}))
 '''
+OBSERVE = "TARGETS = " + repr(broker.TARGETS) + "\n" + OBSERVE
 
 INSIDE = r'''
 import hashlib,json,os,pathlib,subprocess,sys
@@ -321,10 +342,18 @@ print(json.dumps({'request_sha256':hashlib.sha256(public('/work/finalization-req
 
 def observe(c, job, run_id, attempt):
     # Existing broker credentials stay in memory/stdin; never exported in receipts.
-    token = json.loads(execute(['runuser', '-u', 'benn1x', '--', 'aws', 'eks', 'get-token',
-        '--profile', 'tilo-eks-operator', '--region', 'eu-central-1',
-        '--cluster-name', 'podesta-agent-burst'], timeout=30))['status']['token']
-    payload = dict(token=token, task=job['task_id'], repository=c['repository'],
+    auth = {}
+    for name, target in broker.TARGETS.items():
+        if target['mode'] == 'in-cluster':
+            auth[name] = None
+            continue
+        token = json.loads(execute(['runuser', '-u', 'benn1x', '--', 'aws', 'eks', 'get-token',
+            '--profile', 'tilo-eks-operator', '--region', target['region'],
+            '--cluster-name', target['cluster']], timeout=30))['status']['token']
+        require(isinstance(token, str) and token.startswith('k8s-aws-v1.') and len(token) <= 32768,
+                'existing operator token unavailable')
+        auth[name] = token
+    payload = dict(auth=auth, task=job['task_id'], repository=c['repository'],
         inner_name=f'tilo-finalization-{run_id}-{attempt}', tools=c['tools_image_id'],
         inspect=broker.INSPECT, inside=INSIDE,
         helper_files={name: digest for name, digest in c['files'].items() if name.startswith('helpers/')})
