@@ -91,6 +91,7 @@ fi
 export TILO_BOOT_WAIT_ATTEMPTS="${TILO_BOOT_WAIT_ATTEMPTS:-600}"
 
 phase=installer
+browser_fixture_server=""
 copy_evidence() {
   local label="$1"
   # The install backend's private stdout includes the one-time recovery key.
@@ -137,6 +138,10 @@ rm -f -- "$out/.artifact-secret-canary.txt" "$out/artifact-secret-redaction.txt"
 cleanup() {
   local rc=$?
   trap - EXIT
+  if [ -n "$browser_fixture_server" ]; then
+    kill "$browser_fixture_server" >/dev/null 2>&1 || true
+    wait "$browser_fixture_server" 2>/dev/null || true
+  fi
   rm -f -- "$run/private-observe.png" "$run/private-observe.ppm"
   copy_evidence "$phase" || true
   "$vm" stop >/dev/null 2>&1 || true
@@ -545,6 +550,65 @@ sleep 8
 "$vm" keys ret
 wait_screen 15-desktop-config 'cycle.?tilo' 60 2 \
   || die "desktop terminal did not report the installed hostname"
+
+# Exercise the installed Browser in this same target-only cold boot. The page
+# is served by the isolated QEMU worker through user networking's local gateway;
+# it contains no external resources and therefore proves the browser engine can
+# launch and paint useful content without Internet or registry access. Keep the
+# exact fixture digest and visible framebuffer/OCR as durable evidence.
+browser_fixture_port="${TILO_INSTALLER_CYCLE_BROWSER_PORT:-18765}"
+[[ "$browser_fixture_port" =~ ^[0-9]+$ ]] \
+  && [ "$browser_fixture_port" -ge 1024 ] && [ "$browser_fixture_port" -le 65535 ] \
+  || die "browser fixture port must be between 1024 and 65535"
+browser_fixture_dir="$run/browser-fixture"
+install -d -m 0700 "$browser_fixture_dir"
+cat > "$browser_fixture_dir/index.html" <<'EOF'
+<!doctype html>
+<meta charset="utf-8">
+<title>Tilo browser offline acceptance</title>
+<style>body{background:#183245;color:#fff;font:32px sans-serif;padding:48px}h1{font-size:64px}</style>
+<h1>Tilo browser offline ready</h1>
+<p>This page came from the local ARM VM acceptance fixture.</p>
+EOF
+browser_fixture_sha256="$(sha256sum "$browser_fixture_dir/index.html" | awk '{print $1}')"
+cp "$browser_fixture_dir/index.html" "$out/browser-offline-fixture.html"
+browser_fixture_url="http://10.0.2.2:$browser_fixture_port/index.html"
+printf 'url=%s\nsha256=%s\ntransport=qemu-user-local-gateway\nexternal_references=none\n' \
+  "$browser_fixture_url" "$browser_fixture_sha256" > "$out/browser-offline-fixture.txt"
+python3 -m http.server "$browser_fixture_port" --bind 0.0.0.0 \
+  --directory "$browser_fixture_dir" > "$out/browser-fixture-server.log" 2>&1 &
+browser_fixture_server=$!
+fixture_ready=0
+for _ in $(seq 1 50); do
+  kill -0 "$browser_fixture_server" 2>/dev/null \
+    || die "local browser fixture server exited during startup"
+  if python3 -c 'import hashlib,sys,urllib.request; body=urllib.request.urlopen(sys.argv[1],timeout=1).read(); assert hashlib.sha256(body).hexdigest()==sys.argv[2]' \
+      "http://127.0.0.1:$browser_fixture_port/index.html" "$browser_fixture_sha256" 2>/dev/null; then
+    fixture_ready=1
+    break
+  fi
+  sleep 0.1
+done
+[ "$fixture_ready" -eq 1 ] || die "local browser fixture server did not become ready"
+
+# Super+Space opens the compositor's global palette. Launch Browser through the
+# same installed-package route a user receives, focus its address field, then
+# navigate to the local fixture. The final OCR assertion is page content, not
+# browser chrome or a process check, so startup without a rendered web view
+# cannot pass.
+"$vm" keys meta_l-spc
+sleep 2
+"$vm" type browser
+wait_screen 16-browser-picker 'Browser' 60 1 \
+  || die "installed Browser was absent from the desktop app picker"
+"$vm" keys ret
+wait_screen 17-browser-open 'Search[[:space:]]+or[[:space:]]+enter[[:space:]]+address' 120 2 \
+  || die "installed Browser did not launch into the desktop session"
+"$vm" keys ctrl-l ctrl-a backspace
+"$vm" type "$browser_fixture_url"
+"$vm" keys ret
+wait_screen 18-browser-offline 'Tilo[[:space:]]+browser[[:space:]]+offline[[:space:]]+ready' 120 2 \
+  || die "installed Browser did not render the local offline acceptance page"
 
 copy_evidence target
 [ "$install_mode" = erase ] || { "$vm" stop; verify_alongside_target; }
