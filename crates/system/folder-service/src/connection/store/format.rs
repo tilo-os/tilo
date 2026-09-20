@@ -318,6 +318,178 @@ pub(super) enum DirectoryChainControlTransitionV1 {
     Retire,
 }
 
+// Immutable review facts are device-local consent evidence, never live grants.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewNameKeyV1 {
+    pub path: NativePath,
+    pub components: Vec<Vec<u8>>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum ReviewNamePolicyV1 {
+    Exact {},
+    Canonical { keys: Vec<ReviewNameKeyV1> },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialChainReviewV1 {
+    pub version: u8,
+    pub connection: [u8; 16],
+    pub original_revision: u64,
+    pub fence: u64,
+    pub preview: [u8; 32],
+    pub endpoints: [storage::Identity; 2],
+    pub encodings: [u8; 2],
+    pub policies: [ReviewNamePolicyV1; 2],
+    pub counts: [u32; 2],
+    pub count: u32,
+    pub root: [u8; 32],
+    pub original: Vec<u8>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialReviewSideV1 {
+    pub ordinal: u32,
+    #[serde(deserialize_with = "strict_review_state")]
+    pub state: State,
+}
+// Empty side uses an explicit tag: omitted fields/null never invent absence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum InitialReviewEntrySideV1 {
+    Absent {},
+    Present { entry: InitialReviewSideV1 },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialChainReviewEntryV1 {
+    pub version: u8,
+    pub connection: [u8; 16],
+    pub origin: u64,
+    pub ordinal: u32,
+    pub path: NativePath,
+    pub sides: [InitialReviewEntrySideV1; 2],
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum InitialReviewCurrentV1 {
+    None {},
+    Chain {
+        step: u32,
+        entry: u32,
+        anchor: ChainOperationIdV1,
+        digest: [u8; 32],
+        operation: ChainOperationIdV1,
+    },
+    Equality {
+        step: u32,
+        entry: u32,
+        operation: ChainOperationIdV1,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialReviewCursorV1 {
+    pub version: u8,
+    pub connection: [u8; 16],
+    pub review: [u8; 32],
+    pub origin: u64,
+    pub progress_revision: u64,
+    pub schedule_revision: u64,
+    pub control_sequence: u64,
+    pub state: DirectoryChainScheduleState,
+    pub next_step: u32,
+    pub current: InitialReviewCurrentV1,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum InitialReviewLinkKindV1 {
+    Chain {
+        anchor: ChainOperationIdV1,
+        digest: [u8; 32],
+        review_revision: u64,
+    },
+    Equality {},
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialReviewLinkV1 {
+    pub version: u8,
+    pub connection: [u8; 16],
+    pub review: [u8; 32],
+    pub origin: u64,
+    pub step: u32,
+    pub entry: u32,
+    pub entry_digest: [u8; 32],
+    pub operation: ChainOperationIdV1,
+    pub kind: InitialReviewLinkKindV1,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum InitialReviewControlTransitionV1 {
+    StopRequested { reason: PauseOrCancel },
+    StopAcknowledged {},
+    Resume {},
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct InitialReviewControlV1 {
+    pub version: u8,
+    pub connection: [u8; 16],
+    pub review: [u8; 32],
+    pub origin: u64,
+    pub expected_progress: u64,
+    pub expected_schedule: u64,
+    pub control_sequence: u64,
+    pub current: InitialReviewCurrentV1,
+    pub transition: InitialReviewControlTransitionV1,
+}
+// Closed canonical inner control body, not a serializable Change wrapper.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewedInnerControlV1 {
+    pub connection: [u8; 16],
+    pub anchor: ChainOperationIdV1,
+    pub digest: [u8; 32],
+    pub expected_progress: u64,
+    pub expected_schedule: u64,
+    pub control_sequence: u64,
+    pub transition: DirectoryChainControlTransitionV1,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EqualityUntouchedV1 {
+    pub version: u8,
+    pub connection: [u8; 16],
+    pub review: [u8; 32],
+    pub origin: u64,
+    pub step: u32,
+    pub entry: u32,
+    pub operation: ChainOperationIdV1,
+    pub admission_digest: [u8; 32],
+    pub intent_digest: [u8; 32],
+    pub before_revision: u64,
+    pub before_progress: u64,
+    pub schedule_revision: u64,
+    pub control_sequence: u64,
+    pub fence: u64,
+    pub stage: u8,
+    pub resulting_revision: u64,
+    pub resulting_progress: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub(super) enum InitialReviewStopBoundaryV1 {
+    EqualityUntouched { fact: EqualityUntouchedV1 },
+}
+impl InitialReviewStopBoundaryV1 {
+    pub fn fact(&self) -> &EqualityUntouchedV1 {
+        let Self::EqualityUntouched { fact } = self;
+        fact
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Connection {
@@ -1445,6 +1617,11 @@ impl NativeRecoveryFact {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "table", content = "value", deny_unknown_fields)]
 pub(super) enum Row {
+    InitialChainReview(InitialChainReviewV1),
+    InitialChainReviewEntry(InitialChainReviewEntryV1),
+    InitialReviewCursor(InitialReviewCursorV1),
+    InitialReviewLink(InitialReviewLinkV1),
+    InitialReviewStop(InitialReviewStopBoundaryV1),
     Connection(Connection),
     Operation(Operation),
     Recovery(Recovery),
@@ -1456,6 +1633,15 @@ pub(super) enum Row {
 impl Row {
     pub fn key(&self) -> Vec<u8> {
         match self {
+            Self::InitialChainReview(r) => key(7, r.connection, r.original_revision),
+            Self::InitialChainReviewEntry(r) => {
+                let mut k = key(8, r.connection, r.origin);
+                k.extend(r.ordinal.to_be_bytes());
+                k
+            }
+            Self::InitialReviewCursor(r) => key(9, r.connection, r.origin),
+            Self::InitialReviewLink(r) => key(10, r.connection, r.operation.serial),
+            Self::InitialReviewStop(r) => key(11, r.fact().connection, r.fact().operation.serial),
             Self::NativeRegistration(n) => n.key(),
             Self::NativeRecoveryFact(n) => n.key(),
             Self::Connection(c) => key(0, c.id, 0),
@@ -1471,6 +1657,11 @@ impl Row {
     }
     pub fn validate(&self) -> Result<(), StoreError> {
         match self {
+            Self::InitialChainReview(r) => r.validate()?,
+            Self::InitialChainReviewEntry(r) => r.validate()?,
+            Self::InitialReviewCursor(r) => r.validate()?,
+            Self::InitialReviewLink(r) => r.validate()?,
+            Self::InitialReviewStop(r) => r.validate()?,
             Self::NativeRegistration(n) => {
                 n.validate_history_candidate()?;
             }
@@ -1539,6 +1730,27 @@ pub(in crate::connection) struct InitialEmptyBaselineV1 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
 pub(super) enum Change {
+    InitialReviewAccepted {
+        review: InitialChainReviewV1,
+        cursor: InitialReviewCursorV1,
+    },
+    ReviewedIntent {
+        operation: Operation,
+        link: InitialReviewLinkV1,
+        expected_progress: u64,
+        expected_schedule: u64,
+        control_sequence: u64,
+    },
+    ReviewedChainControl {
+        control: InitialReviewControlV1,
+        inner: ReviewedInnerControlV1,
+    },
+    InitialReviewControl {
+        control: InitialReviewControlV1,
+    },
+    ReviewedOrdinaryStopBoundary {
+        boundary: InitialReviewStopBoundaryV1,
+    },
     InitialEmptyBaseline {
         fact: InitialEmptyBaselineV1,
     },
@@ -2280,4 +2492,31 @@ impl<'de> Deserialize<'de> for DirectoryChainControlTransitionV1 {
             Wire::Retire {} => Self::Retire,
         })
     }
+}
+
+fn strict_review_state<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<State, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(tag = "kind", deny_unknown_fields)]
+    enum Wire {
+        Directory {},
+        File {
+            sha256: [u8; 32],
+            bytes: u64,
+            executable: bool,
+        },
+    }
+    Ok(match Wire::deserialize(deserializer)? {
+        Wire::Directory {} => State::Directory,
+        Wire::File {
+            sha256,
+            bytes,
+            executable,
+        } => State::File {
+            sha256,
+            bytes,
+            executable,
+        },
+    })
 }

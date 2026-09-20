@@ -46,7 +46,7 @@ pub(super) fn write_record<T: Serialize>(
 // A partial last frame may be an interrupted write. A complete frame with a
 // bad checksum/sequence/schema is corruption and must never be skipped.
 pub(super) fn read_record<T: serde::de::DeserializeOwned>(
-    file: &mut File,
+    file: &mut impl Read,
     sequence: u64,
 ) -> io::Result<Option<T>> {
     use sha2::{Digest, Sha256};

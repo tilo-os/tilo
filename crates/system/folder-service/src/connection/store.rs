@@ -1,5 +1,6 @@
 //! Private durable Connected metadata. Persisted records never grant endpoint access.
 mod chain;
+mod chain_review;
 #[cfg(test)]
 mod chain_tests;
 mod directory;
@@ -14,6 +15,7 @@ mod worker_projection;
 #[cfg(test)]
 pub(super) use worker_projection::test_support as worker_projection_tests;
 mod storage;
+pub(super) use storage::ReadLease as ReviewReadLease;
 #[cfg(test)]
 mod tests;
 
@@ -594,19 +596,15 @@ impl ConnectionStore {
         storage: storage::Storage,
         current: storage::Current,
     ) -> Result<Self, StoreError> {
+        let _read_lease = storage.read_lease(false)?;
         let log_name = format!("log-{}", current.log);
         let mut log = storage::open_file(&storage.root, &log_name, false)?;
         let log_identity = storage::regular(&log)?;
         if log_identity.len() > 16 * 1024 * 1024 {
             return Err(StoreError::LimitExceeded);
         }
-        let mut magic = [0; 8];
-        log.read_exact(&mut magic)?;
-        if &magic != b"QOSCON1\n" {
-            return Err(StoreError::Corrupt);
-        }
-        let header: format::LogHeader = framing::read_record(&mut log, 0)
-            .map_err(|_| StoreError::Corrupt)?
+        storage.read_log_magic(&mut log)?;
+        let header: format::LogHeader = storage.read_log_record(&mut log, 0)?
             .ok_or(StoreError::Corrupt)?;
         if header.schema != 1
             || header.identity != storage.identity
@@ -661,11 +659,11 @@ impl ConnectionStore {
             return Err(StoreError::LimitExceeded);
         }
         store.validate_chain_history(&[])?;
+        store.validate_review_history(&[])?;
         loop {
             let offset = store.log.stream_position()?;
             let event: Option<Event> =
-                framing::read_record(&mut store.log, format::next(store.sequence)?)
-                    .map_err(|_| StoreError::Corrupt)?;
+                store.storage.read_log_record(&mut store.log, format::next(store.sequence)?)?;
             let Some(event) = event else {
                 if offset != store.log.metadata()?.len() {
                     store.validate()?;
@@ -693,6 +691,7 @@ impl ConnectionStore {
             store.digest = format::digest(&bytes);
         }
         store.validate_chain_history(&[])?;
+        store.validate_review_history(&[])?;
         store.resume_gc()?;
         Ok(store)
     }
@@ -741,6 +740,7 @@ impl ConnectionStore {
             return self.worker_projection_row(key);
         }
         if let Some(value) = self.overlay.get(key) {
+            self.storage.review_charge(0, 0, 1, 1)?;
             return Ok(Some(value.clone()));
         }
         self.storage.find(self.current.root, key)
@@ -792,6 +792,9 @@ impl ConnectionStore {
         let mut old = storage::TreeIter::new(&self.storage, self.current.root)?.peekable();
         let mut overlay = self.overlay.values().peekable();
         Ok(std::iter::from_fn(move || {
+            if let Err(error) = self.storage.review_charge(0, 0, 1, 1) {
+                return Some(Err(error));
+            }
             match (old.peek(), overlay.peek()) {
                 (Some(Err(_)), _) | (Some(_), None) => old.next(),
                 (Some(Ok(a)), Some(b)) => match a.key().cmp(&b.key()) {
@@ -941,6 +944,7 @@ impl ConnectionStore {
         destination: &super::model::ObservedTree,
     ) -> Result<(ConnectionRecord, std::sync::Weak<()>, [u8; 32]), StoreError> {
         use sha2::{Digest, Sha256};
+        self.require_no_review_or_chain_history(id)?;
         let record = self.load_connection(id)?;
         if record.lifecycle != Lifecycle::Active
             || record.baseline_revision.is_some()
@@ -992,6 +996,7 @@ impl ConnectionStore {
         &self,
         intent: &OperationIntent,
     ) -> Result<(ConnectionRecord, std::sync::Weak<()>, u8), StoreError> {
+        self.require_no_review_or_chain_history(intent.connection)?;
         let connection = self.connection(intent.connection)?;
         let record = connection.decode()?;
         if record.lifecycle != Lifecycle::Active
@@ -3183,7 +3188,12 @@ impl ConnectionStore {
     ) -> Result<Vec<Row>, StoreError> {
         let mut rows = Vec::new();
         for mut previous in self.selected_attention(connection, path)? {
-            if carry.is_some_and(|carry| carry.prior.iter().any(|fact| fact.operation == previous.serial)) {
+            if carry.is_some_and(|carry| {
+                carry
+                    .prior
+                    .iter()
+                    .any(|fact| fact.operation == previous.serial)
+            }) {
                 continue;
             }
             previous.selected_applied.as_mut().ok_or(StoreError::Corrupt)?.attention = false;
@@ -3528,11 +3538,36 @@ impl ConnectionStore {
         if event.schema != 1 || event.predecessor != self.digest {
             return Err(StoreError::Corrupt);
         }
-        self.chain_event_guard(&event.change)?;
-        let mut rows = match &event.change {
+        self.review_event_guard(&event.change)?;
+        let canonical = chain_review::canonical_component(&event.change);
+        let change = canonical.as_ref().unwrap_or(&event.change);
+        self.chain_event_guard(change)?;
+        let mut rows = self.reduce_rows(change, recovery_checks)?;
+        self.update_chain_progress(change, &mut rows)?;
+        if let Change::Intent { operation } = change {
+            self.preflight_chain_intent(operation, &rows)?;
+        }
+        self.complete_review_rows(&event.change, &mut rows)?;
+        self.validate_chain_history(&rows)?;
+        self.validate_review_history(&rows)?;
+        Ok(rows)
+    }
+    // Canonical row derivation only. Wrappers add their complete outer rows before
+    // the single common prospective-history epilogue above.
+    fn reduce_rows(
+        &self,
+        change: &Change,
+        recovery_checks: &mut RecoveryChecks,
+    ) -> Result<Vec<Row>, StoreError> {
+        match change {
+            Change::InitialReviewAccepted { .. }
+            | Change::ReviewedIntent { .. }
+            | Change::ReviewedChainControl { .. }
+            | Change::InitialReviewControl { .. }
+            | Change::ReviewedOrdinaryStopBoundary { .. } => self.reduce_review_change(change),
             Change::InitialEmptyBaseline { fact } => self.reduce_initial_empty(fact),
-            Change::DirectoryChainControl { .. } => self.reduce_chain_control(&event.change),
-            Change::DirectoryChainStopBoundary { .. } => self.reduce_chain_stop(&event.change),
+            Change::DirectoryChainControl { .. } => self.reduce_chain_control(change),
+            Change::DirectoryChainStopBoundary { .. } => self.reduce_chain_stop(change),
             Change::NativeConflictComplete {
                 connection,
                 serial,
@@ -3579,10 +3614,10 @@ impl ConnectionStore {
                 kind,
             } => self.reduce_native_capture(snapshot, displaced, *expected, *kind),
             Change::NativeDrain { .. } | Change::SelectedDrain { .. } => {
-                self.reduce_native_drain(&event.change, recovery_checks)
+                self.reduce_native_drain(change, recovery_checks)
             }
             Change::SelectedCaptureDrain { .. } | Change::NativeCaptureDrain { .. } => {
-                self.reduce_captured_drain(&event.change, recovery_checks)
+                self.reduce_captured_drain(change, recovery_checks)
             }
             Change::DirectoryBoundary {
                 connection,
@@ -3747,7 +3782,7 @@ impl ConnectionStore {
             } => self.reduce_native_registration(
                 registration,
                 *expected,
-                matches!(event.change, Change::NativePrepared { .. }),
+                matches!(*change, Change::NativePrepared { .. }),
             ),
             Change::Published {
                 connection,
@@ -3768,7 +3803,7 @@ impl ConnectionStore {
                 *expected,
                 source,
                 destination,
-                matches!(event.change, Change::Verified { .. }),
+                matches!(*change, Change::Verified { .. }),
                 recovery_checks,
             ),
             Change::BaselineCommit {
@@ -3810,7 +3845,7 @@ impl ConnectionStore {
                 entry,
                 *expected,
                 *fence,
-                matches!(event.change, Change::Bytes { .. }),
+                matches!(*change, Change::Bytes { .. }),
             ),
             Change::Fence {
                 connection,
@@ -3826,7 +3861,7 @@ impl ConnectionStore {
                 if record.revision != *expected {
                     return Err(StoreError::StaleRevision);
                 }
-                if matches!(event.change, Change::Fence { .. }) {
+                if matches!(*change, Change::Fence { .. }) {
                     if record.lifecycle != 0 || *generation != format::next(record.fence)? {
                         return Err(StoreError::Disconnected);
                     }
@@ -3844,13 +3879,7 @@ impl ConnectionStore {
                 record.revision = format::next(record.revision)?;
                 Ok(vec![Row::Connection(record)])
             }
-        }?;
-        self.update_chain_progress(&event.change, &mut rows)?;
-        if let Change::Intent { operation } = &event.change {
-            self.preflight_chain_intent(operation, &rows)?;
         }
-        self.validate_chain_history(&rows)?;
-        Ok(rows)
     }
 
     fn reduce_create(&self, record: &format::Connection) -> Result<Vec<Row>, StoreError> {
@@ -3939,8 +3968,13 @@ impl ConnectionStore {
                         let mut equality = operation.clone();
                         equality.stage = 3;
                         let mut accepted = false;
-                        for applied in self.selected_attention(ConnectionId(operation.connection), &operation.path)? {
-                            accepted |= self.joined_selected_equality_conflict_matches(&equality, &applied, &conflict)?;
+                        for applied in self.selected_attention(
+                            ConnectionId(operation.connection),
+                            &operation.path,
+                        )? {
+                            accepted |= self.joined_selected_equality_conflict_matches(
+                                &equality, &applied, &conflict,
+                            )?;
                         }
                         if !accepted { return Err(StoreError::RecoveryRequired); }
                     }
@@ -4095,10 +4129,34 @@ impl ConnectionStore {
         if matches!(event.change, Change::Fence { .. }) && framed > 512 {
             return Err(StoreError::LimitExceeded);
         }
-        let control = matches!(
-            event.change,
-            Change::Fence { .. } | Change::Disconnect { .. } | Change::DirectoryChainControl { .. }
-        );
+        let reviewed_control = match &event.change {
+            Change::InitialReviewControl { control }
+            | Change::ReviewedChainControl { control, .. } => {
+                control.validate()?;
+                if let Change::ReviewedChainControl { inner, .. } = &event.change {
+                    if inner.connection != control.connection {
+                        return Err(StoreError::Corrupt);
+                    }
+                    inner.anchor.operation()?;
+                }
+                true
+            }
+            Change::ReviewedOrdinaryStopBoundary { boundary } => {
+                boundary.validate()?;
+                true
+            }
+            _ => false,
+        };
+        if reviewed_control && framed > 4096 {
+            return Err(StoreError::LimitExceeded);
+        }
+        let control = reviewed_control
+            || matches!(
+                event.change,
+                Change::Fence { .. }
+                    | Change::Disconnect { .. }
+                    | Change::DirectoryChainControl { .. }
+            );
         let bound = if control {
             16 * 1024 * 1024
         } else {
@@ -4445,15 +4503,21 @@ impl ConnectionStore {
         mut recovery_checks: RecoveryChecks<'_>,
         mut baseline: BaselineAppendCheck<'_, '_>,
     ) -> Result<(), StoreError> {
-        // An implicit checkpoint may collect pages before this event is durable.
-        self.candidate_pin = match &change {
-            Change::BaselineCommit { root, .. } => *root,
-            _ => None,
-        };
+        let _read_lease = self.storage.read_lease(false)?;
         let live_append = baseline.live_append();
+        let consent = matches!(&baseline, BaselineAppendCheck::InitialReview(_));
+        if matches!(change, Change::InitialReviewAccepted { .. }) && live_append && !consent {
+            return Err(StoreError::RecoveryRequired);
+        }
         if matches!(change, Change::InitialEmptyBaseline { .. }) && !baseline.initial_empty() {
             return Err(StoreError::RecoveryRequired);
         }
+        // An implicit checkpoint may collect pages before this event is durable.
+        self.candidate_pin = match &change {
+            Change::InitialReviewAccepted { review, .. } => Some(review.root),
+            Change::BaselineCommit { root, .. } => *root,
+            _ => None,
+        };
         let mut touched = false;
         let result = (|| {
             self.validate()?;
@@ -4465,7 +4529,14 @@ impl ConnectionStore {
             // Keep actual byte guards through checkpoint, refreshed reduction,
             // append, flush and in-memory commit. At most two reductions each
             // verify the operation's bounded (128) recovery slots.
-            self.validate_verification_mode(&event.change, &recovery_checks, live_append)?;
+            if consent {
+                baseline.validate(self, &event.change)?;
+            }
+            self.validate_verification_mode(
+                &event.change,
+                &recovery_checks,
+                live_append && !consent,
+            )?;
             let mut prepared = self.prepare_rows(self.reduce(&event, &mut recovery_checks)?)?;
             let bytes = format::encode(&event)?;
             if matches!(event.change, Change::Fence { .. }) && bytes.len() + 44 > 512 {
@@ -4476,7 +4547,14 @@ impl ConnectionStore {
                 // can also update retention fields read by the reducer.
                 drop(prepared);
                 self.checkpoint()?;
-                self.validate_verification_mode(&event.change, &recovery_checks, live_append)?;
+                if consent {
+                    baseline.validate(self, &event.change)?;
+                }
+                self.validate_verification_mode(
+                    &event.change,
+                    &recovery_checks,
+                    live_append && !consent,
+                )?;
                 prepared = self.prepare_rows(self.reduce(&event, &mut recovery_checks)?)?;
             }
             if !prepared.fits_overlay() {
@@ -4484,7 +4562,14 @@ impl ConnectionStore {
             }
             self.check_event_capacity(&event, bytes.len())?;
             self.validate()?;
-            self.validate_verification_mode(&event.change, &recovery_checks, live_append)?;
+            if consent {
+                baseline.validate(self, &event.change)?;
+            }
+            self.validate_verification_mode(
+                &event.change,
+                &recovery_checks,
+                live_append && !consent,
+            )?;
             let committed_sequence = format::next(self.sequence)?;
             let mut sequence = committed_sequence;
             // All page/recovery rereads and any checkpoint/second reduction are
@@ -4497,7 +4582,14 @@ impl ConnectionStore {
             storage::sync_file(&self.log)?;
             self.log_identity = storage::regular(&self.log)?;
             self.validate()?;
-            self.validate_verification_mode(&event.change, &recovery_checks, live_append)?;
+            if consent {
+                baseline.validate(self, &event.change)?;
+            }
+            self.validate_verification_mode(
+                &event.change,
+                &recovery_checks,
+                live_append && !consent,
+            )?;
             // Keep the actual native proof and Windows recovery readers alive
             // through fsync. A failure here poisons the owner: reopen may show
             // the already durable event; returning Err cannot roll it back.
@@ -4534,9 +4626,11 @@ impl ConnectionStore {
         reason = "Checkpoint selection, native replay validation, pins and durable root publication must remain ordered."
     )]
     pub(super) fn checkpoint(&mut self) -> Result<DurableAck<u64>, StoreError> {
+        let _read_lease = self.storage.read_lease(false)?;
         let result = (|| {
             self.validate()?;
             self.validate_chain_history(&[])?;
+            self.validate_review_history(&[])?;
             let sampled = std::time::Instant::now();
             let mut selected_pins = std::collections::BTreeSet::new();
             for row in self.rows()? {
@@ -4734,6 +4828,7 @@ enum VerificationMode<'a> {
 }
 // The host-only variant probes shared append ordering, never native validity.
 enum BaselineAppendCheck<'a, 'proof> {
+    InitialReview(&'a super::transaction::ReviewedInitialSet),
     None(std::marker::PhantomData<&'a &'proof ()>),
     #[cfg(target_os = "linux")]
     InitialEmpty(&'a mut super::transaction::InitialEmptyProof<'proof>),
@@ -4817,6 +4912,19 @@ impl BaselineAppendCheck<'_, '_> {
         // Non-Linux production builds have only the no-op legacy variant.
         let _ = (store, change);
         match self {
+            Self::InitialReview(owner) => {
+                let Change::InitialReviewAccepted { review, .. } = change else {
+                    return Err(StoreError::StaleRevision);
+                };
+                owner.validate(store)?;
+                if review.original.as_slice() != owner.original()
+                    || review.preview != owner.preview()
+                    || review.connection != owner.record().id.0
+                {
+                    return Err(StoreError::StaleRevision);
+                }
+                Ok(())
+            }
             Self::None(_) => Ok(()),
             #[cfg(target_os = "linux")]
             Self::InitialEmpty(proof) => {
@@ -5045,7 +5153,9 @@ impl ConnectionStore {
                 self.attention_conflict_origin(&conflict)?;
                 let mut accepted = false;
                 for applied in &selected {
-                    accepted |= self.joined_selected_equality_conflict_matches(&operation, applied, &conflict)?;
+                    accepted |= self.joined_selected_equality_conflict_matches(
+                        &operation, applied, &conflict,
+                    )?;
                 }
                 if !accepted { return Err(StoreError::RecoveryRequired); }
             }
@@ -6512,6 +6622,7 @@ impl ConnectionStore {
         id: ConnectionId,
         session: &super::transaction::TransactionSession,
     ) -> Result<(), StoreError> {
+        self.require_no_review_or_chain_history(id)?;
         session.validate(id, &self.native_lifetime)
     }
 }

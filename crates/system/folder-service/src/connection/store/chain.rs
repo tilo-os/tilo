@@ -216,6 +216,12 @@ use format::{
 /// Exhaustive routing prevents a future event from silently becoming chain progress.
 pub(super) fn change_connection(change: &Change) -> Result<[u8; 16], StoreError> {
     Ok(match change {
+        Change::InitialReviewAccepted { review, .. } => review.connection,
+        Change::ReviewedIntent { operation, .. } => operation.connection,
+        Change::ReviewedChainControl { control, .. } | Change::InitialReviewControl { control } => {
+            control.connection
+        }
+        Change::ReviewedOrdinaryStopBoundary { boundary } => boundary.fact().connection,
         Change::InitialEmptyBaseline { fact } => fact.connection,
         Change::Create { record } => record.id,
         Change::Intent { operation } => operation.connection,
@@ -1207,23 +1213,7 @@ impl ConnectionStore {
 
 impl ConnectionStore {
     pub(super) fn require_no_chain_history(&self, id: ConnectionId) -> Result<(), StoreError> {
-        let connection = self.connection(id)?;
-        if connection.directory_chain.is_some() || connection.directory_chain_schedule.is_some() {
-            return Err(StoreError::RecoveryRequired);
-        }
-        for row in self.rows()? {
-            if let Row::Operation(operation) = row? {
-                if operation.connection == id.0
-                    && (operation.directory_chain_anchor.is_some()
-                        || operation.directory_chain_ref.is_some()
-                        || operation.directory_chain_retired.is_some()
-                        || operation.directory_chain_stop_boundary.is_some())
-                {
-                    return Err(StoreError::RecoveryRequired);
-                }
-            }
-        }
-        Ok(())
+        self.require_no_review_or_chain_history(id)
     }
     pub(super) fn validate_live_chain_change(&self, change: &Change) -> Result<(), StoreError> {
         match change {
@@ -1237,7 +1227,13 @@ impl ConnectionStore {
                     Err(StoreError::RecoveryRequired)
                 };
             }
-            Change::DirectoryChainControl { .. } | Change::DirectoryChainStopBoundary { .. } => {
+            Change::InitialReviewAccepted { .. }
+            | Change::ReviewedIntent { .. }
+            | Change::ReviewedChainControl { .. }
+            | Change::InitialReviewControl { .. }
+            | Change::ReviewedOrdinaryStopBoundary { .. }
+            | Change::DirectoryChainControl { .. }
+            | Change::DirectoryChainStopBoundary { .. } => {
                 return Err(StoreError::RecoveryRequired);
             }
             Change::Intent { operation }

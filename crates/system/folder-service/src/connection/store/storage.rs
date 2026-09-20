@@ -68,7 +68,101 @@ pub(super) struct Current {
     pub digest: [u8; 32],
     pub log: u64,
 }
+type ReadBudgetSlot =
+    Arc<std::sync::Mutex<Option<std::sync::Weak<std::sync::Mutex<ReviewReadBudget>>>>>;
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct ReviewReadStats {
+    pub bytes: u64,
+    pub pages: u64,
+    pub rows: u64,
+    pub work: u64,
+}
+struct ReviewReadBudget {
+    used: ReviewReadStats,
+    limits: ReviewReadStats,
+    started: std::time::Instant,
+    deadline: std::time::Instant,
+}
+/// Move-only finite store lease. It authorizes no event or endpoint access.
+pub(in crate::connection) struct ReadLease {
+    slot: ReadBudgetSlot,
+    budget: Arc<std::sync::Mutex<ReviewReadBudget>>,
+}
+// The slot is weak: the final owning/nested lease's drop ends the budget. An
+// earlier owner's drop cannot detach a still-live nested acceptance lease.
+impl ReadLease {
+    pub(in crate::connection) fn check(&self) -> Result<(), StoreError> {
+        if !self
+            .slot
+            .lock()
+            .map_err(|_| StoreError::RecoveryRequired)?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .is_some_and(|active| Arc::ptr_eq(&active, &self.budget))
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let budget = self
+            .budget
+            .lock()
+            .map_err(|_| StoreError::RecoveryRequired)?;
+        if std::time::Instant::now() >= budget.deadline
+            || budget.used.bytes > budget.limits.bytes
+            || budget.used.pages > budget.limits.pages
+            || budget.used.rows > budget.limits.rows
+            || budget.used.work > budget.limits.work
+        {
+            return Err(StoreError::LimitExceeded);
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn limits_for_test(&self, limits: ReviewReadStats) {
+        self.budget.lock().unwrap().limits = limits;
+    }
+    #[cfg(test)]
+    pub(super) fn expire_for_test(&self) {
+        self.budget.lock().unwrap().deadline = std::time::Instant::now();
+    }
+    #[cfg(test)]
+    pub(super) fn stats(&self) -> ReviewReadStats {
+        self.budget.lock().unwrap().used
+    }
+}
+
+/// Preserve the store refusal outside io::Error: the shared framing reader may
+/// treat UnexpectedEof as a torn last frame, but never a refused read allowance.
+struct LogRead<'a, R> {
+    storage: &'a Storage,
+    reader: &'a mut R,
+    refusal: Option<StoreError>,
+}
+impl<R: Read> Read for LogRead<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.refusal.is_some() {
+            return Err(std::io::Error::other("bounded log read refused"));
+        }
+        if let Err(error) = self.storage.review_charge(buffer.len() as u64, 0, 0, 1) {
+            self.refusal = Some(error);
+            return Err(std::io::Error::other("bounded log read refused"));
+        }
+        self.reader.read(buffer)
+    }
+}
+impl<R> LogRead<'_, R> {
+    fn complete<T>(self, result: Result<T, StoreError>) -> Result<T, StoreError> {
+        if let Some(error) = self.refusal {
+            return Err(error);
+        }
+        let value = result?;
+        // A final successful or EOF read may itself have crossed the deadline.
+        self.storage.review_charge(0, 0, 0, 0)?;
+        Ok(value)
+    }
+}
+
 pub(super) struct Storage {
+    read_budget: ReadBudgetSlot,
     pub root: Arc<Directory>,
     pub pages: Arc<Directory>,
     pub recovery: Arc<Directory>,
@@ -247,6 +341,7 @@ impl Storage {
         let recovery = child(&root, "recovery", fresh)?;
         let quarantine = child(&root, "quarantine", fresh)?;
         let storage = Self {
+            read_budget: Arc::new(std::sync::Mutex::new(None)),
             root,
             pages,
             recovery,
@@ -308,6 +403,7 @@ impl Storage {
         Ok(current)
     }
     pub fn validate(&self) -> Result<(), StoreError> {
+        self.review_charge(0, 0, 0, 1)?;
         #[cfg(windows)]
         {
             destination_security::require_private_protected(&self.root.file)?;
@@ -327,6 +423,130 @@ impl Storage {
         )?;
         Ok(())
     }
+    pub(super) fn read_lease(&self, consent: bool) -> Result<ReadLease, StoreError> {
+        let mut slot = self
+            .read_budget
+            .lock()
+            .map_err(|_| StoreError::RecoveryRequired)?;
+        let budget = if let Some(active) = slot.as_ref().and_then(std::sync::Weak::upgrade) {
+            active
+        } else {
+            let (limits, seconds) = if consent {
+                (
+                    ReviewReadStats {
+                        bytes: 512 * 1024 * 1024,
+                        pages: 65_536,
+                        rows: 1_048_576,
+                        work: 4_194_304,
+                    },
+                    30,
+                )
+            } else {
+                (
+                    ReviewReadStats {
+                        bytes: 1024 * 1024 * 1024,
+                        pages: 131_072,
+                        rows: 4_456_448,
+                        work: 8_388_608,
+                    },
+                    60,
+                )
+            };
+            let started = std::time::Instant::now();
+            let budget = Arc::new(std::sync::Mutex::new(ReviewReadBudget {
+                used: ReviewReadStats::default(),
+                limits,
+                started,
+                deadline: started
+                    .checked_add(std::time::Duration::from_secs(seconds))
+                    .ok_or(StoreError::LimitExceeded)?,
+            }));
+            *slot = Some(Arc::downgrade(&budget));
+            budget
+        };
+        drop(slot);
+        if consent {
+            // A nested acceptance tightens the existing lease; it cannot reset
+            // counters or borrow the larger replay allowance/deadline.
+            let mut active = budget.lock().map_err(|_| StoreError::RecoveryRequired)?;
+            active.limits.bytes = active.limits.bytes.min(512 * 1024 * 1024);
+            active.limits.pages = active.limits.pages.min(65_536);
+            active.limits.rows = active.limits.rows.min(1_048_576);
+            active.limits.work = active.limits.work.min(4_194_304);
+            active.deadline = active.deadline.min(
+                active
+                    .started
+                    .checked_add(std::time::Duration::from_secs(30))
+                    .ok_or(StoreError::LimitExceeded)?,
+            );
+        }
+        let lease = ReadLease {
+            slot: Arc::clone(&self.read_budget),
+            budget,
+        };
+        lease.check()?;
+        Ok(lease)
+    }
+    pub(super) fn review_charge(
+        &self,
+        bytes: u64,
+        pages: u64,
+        rows: u64,
+        work: u64,
+    ) -> Result<(), StoreError> {
+        let active = self
+            .read_budget
+            .lock()
+            .map_err(|_| StoreError::RecoveryRequired)?
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade);
+        if let Some(active) = active {
+            let mut b = active.lock().map_err(|_| StoreError::RecoveryRequired)?;
+            if std::time::Instant::now() >= b.deadline {
+                return Err(StoreError::LimitExceeded);
+            }
+            let add = |used: u64, amount: u64, max: u64| {
+                used.checked_add(amount)
+                    .filter(|n| *n <= max)
+                    .ok_or(StoreError::LimitExceeded)
+            };
+            b.used = ReviewReadStats {
+                bytes: add(b.used.bytes, bytes, b.limits.bytes)?,
+                pages: add(b.used.pages, pages, b.limits.pages)?,
+                rows: add(b.used.rows, rows, b.limits.rows)?,
+                work: add(b.used.work, work, b.limits.work)?,
+            };
+        }
+        Ok(())
+    }
+    pub(super) fn read_log_record<T: serde::de::DeserializeOwned>(
+        &self,
+        reader: &mut impl Read,
+        sequence: u64,
+    ) -> Result<Option<T>, StoreError> {
+        let mut metered = LogRead {
+            storage: self,
+            reader,
+            refusal: None,
+        };
+        let result =
+            super::framing::read_record(&mut metered, sequence).map_err(|_| StoreError::Corrupt);
+        metered.complete(result)
+    }
+    pub(super) fn read_log_magic(&self, reader: &mut impl Read) -> Result<(), StoreError> {
+        let mut metered = LogRead {
+            storage: self,
+            reader,
+            refusal: None,
+        };
+        let mut magic = [0; 8];
+        let result = metered.read_exact(&mut magic).map_err(StoreError::from);
+        metered.complete(result)?;
+        if &magic != b"QOSCON1\n" {
+            return Err(StoreError::Corrupt);
+        }
+        Ok(())
+    }
     pub fn read_bytes(
         &self,
         parent: &Arc<Directory>,
@@ -339,10 +559,9 @@ impl Storage {
         if before.len() > max {
             return Err(StoreError::LimitExceeded);
         }
-        let mut bytes = Vec::new();
-        Read::by_ref(&mut file)
-            .take(max.checked_add(1).ok_or(StoreError::LimitExceeded)?)
-            .read_to_end(&mut bytes)?;
+        let bytes = read_metered(&mut file, max, &|requested| {
+            self.review_charge(requested as u64, 0, 0, 0)
+        })?;
         if bytes.len() as u64 > max {
             return Err(StoreError::LimitExceeded);
         }
@@ -493,6 +712,7 @@ impl Storage {
         hash: [u8; 32],
         before_read: &dyn Fn(usize) -> Result<(), StoreError>,
     ) -> Result<format::PageNode, StoreError> {
+        self.review_charge(0, 1, 0, 1)?;
         let bytes = self.read_bytes_metered(
             &self.pages,
             &format::hex(&hash),
@@ -504,6 +724,18 @@ impl Storage {
         }
         let page: format::PageNode =
             serde_json::from_slice(&bytes).map_err(|_| StoreError::Corrupt)?;
+        self.review_charge(
+            0,
+            0,
+            match &page.node {
+                format::Node::Leaf(rows) => rows.len() as u64,
+                _ => 0,
+            },
+            match &page.node {
+                format::Node::Leaf(rows) => rows.len() as u64,
+                format::Node::Index(children) => children.len() as u64,
+            },
+        )?;
         page.reference(hash)?;
         Ok(page)
     }
@@ -520,7 +752,10 @@ impl Storage {
         if before.len() > max {
             return Err(StoreError::LimitExceeded);
         }
-        let bytes = read_metered(&mut file, max, before_read)?;
+        let bytes = read_metered(&mut file, max, &|requested| {
+            self.review_charge(requested as u64, 0, 0, 0)?;
+            before_read(requested)
+        })?;
         validate_file(parent, name, &file, &before)?;
         if !same_snapshot(&before, &regular(&file)?) {
             return Err(StoreError::IdentityChanged);
@@ -528,12 +763,25 @@ impl Storage {
         Ok(bytes)
     }
     pub fn page(&self, hash: [u8; 32]) -> Result<format::PageNode, StoreError> {
+        self.review_charge(0, 1, 0, 1)?;
         let bytes = self.read_bytes(&self.pages, &format::hex(&hash), format::MAX_BYTES as u64)?;
         if format::digest(&bytes) != hash {
             return Err(StoreError::Corrupt);
         }
         let page: format::PageNode =
             serde_json::from_slice(&bytes).map_err(|_| StoreError::Corrupt)?;
+        self.review_charge(
+            0,
+            0,
+            match &page.node {
+                format::Node::Leaf(rows) => rows.len() as u64,
+                _ => 0,
+            },
+            match &page.node {
+                format::Node::Leaf(rows) => rows.len() as u64,
+                format::Node::Index(children) => children.len() as u64,
+            },
+        )?;
         page.reference(hash)?;
         Ok(page)
     }
@@ -545,6 +793,7 @@ impl Storage {
         page: &format::PageNode,
         meter: Option<&dyn Fn(usize) -> Result<(), StoreError>>,
     ) -> Result<format::Child, StoreError> {
+        self.review_charge(0, 0, 0, 1)?;
         let bytes = format::encode(page)?;
         let hash = format::digest(&bytes);
         let name = format::hex(&hash);
@@ -633,6 +882,21 @@ impl<'a> TreeIter<'a> {
             meter: None,
         })
     }
+    pub(super) fn new_review(
+        storage: &'a Storage,
+        root: [u8; 32],
+        count: u32,
+    ) -> Result<Self, StoreError> {
+        if count == 0 || count > 4096 {
+            return Err(StoreError::LimitExceeded);
+        }
+        let mut iter = Self::new(storage, Some(root))?;
+        iter.page_limit = u64::from(count)
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(1))
+            .ok_or(StoreError::LimitExceeded)?;
+        Ok(iter)
+    }
     pub fn new_metered_baseline(
         storage: &'a Storage,
         root: Option<[u8; 32]>,
@@ -675,7 +939,7 @@ impl Iterator for TreeIter<'_> {
         }
         loop {
             if let Some(row) = self.rows.next() {
-                return Some(Ok(row));
+                return Some(self.storage.review_charge(0, 0, 1, 1).map(|()| row));
             }
             let child = self.stack.pop()?;
             self.visited = self.visited.saturating_add(1);
@@ -739,6 +1003,7 @@ pub(super) fn build_pages_with(
     let mut previous = None;
     for result in rows {
         let row = result?;
+        storage.review_charge(0, 0, 1, 1)?;
         let key = row.key();
         if previous.as_ref().is_some_and(|p| p >= &key) {
             return Err(StoreError::Corrupt);
@@ -975,7 +1240,11 @@ pub(super) fn capture_no_replace(
         Err(StoreError::UnsupportedDurability)
     }
 }
-fn file_digest(file: &mut File, max: u64) -> Result<([u8; 32], u64), StoreError> {
+fn file_digest(
+    file: &mut File,
+    max: u64,
+    before_read: &dyn Fn(usize) -> Result<(), StoreError>,
+) -> Result<([u8; 32], u64), StoreError> {
     use sha2::{Digest, Sha256};
     use std::io::{Seek, SeekFrom};
     file.seek(SeekFrom::Start(0))?;
@@ -983,6 +1252,7 @@ fn file_digest(file: &mut File, max: u64) -> Result<([u8; 32], u64), StoreError>
     let mut length = 0_u64;
     let mut buffer = vec![0; 256 * 1024];
     loop {
+        before_read(buffer.len())?;
         let count = file.read(&mut buffer)?;
         if count == 0 {
             break;
@@ -1038,9 +1308,12 @@ impl Storage {
                 format::Node::Index(children) => stack.extend(children.into_iter().rev()),
                 format::Node::Leaf(rows) if baselines => {
                     for row in rows {
-                        if let format::Row::Connection(connection) = row
-                            && self.contains_page(connection.baseline_root, wanted, false)?
-                        {
+                        let root = match row {
+                            format::Row::Connection(connection) => connection.baseline_root,
+                            format::Row::InitialChainReview(review) => Some(review.root),
+                            _ => None,
+                        };
+                        if self.contains_page(root, wanted, false)? {
                             return Ok(true);
                         }
                     }
@@ -1052,7 +1325,7 @@ impl Storage {
     }
 }
 impl super::ConnectionStore {
-    fn page_referenced(&self, wanted: [u8; 32]) -> Result<bool, StoreError> {
+    pub(super) fn page_referenced(&self, wanted: [u8; 32]) -> Result<bool, StoreError> {
         use std::io::{Seek, SeekFrom};
         if self
             .storage
@@ -1069,17 +1342,26 @@ impl super::ConnectionStore {
         // Earlier candidate roots in this active log remain replay dependencies,
         // even if a later baseline event superseded the connection's pointer.
         let mut log = reread_file(&self.storage.root, &format!("log-{}", self.current.log))?;
+        let length = log.metadata()?.len();
+        if length > 16 * 1024 * 1024 {
+            return Err(StoreError::LimitExceeded);
+        }
         log.seek(SeekFrom::Start(8))?;
-        let _: format::LogHeader = super::framing::read_record(&mut log, 0)
-            .map_err(|_| StoreError::Corrupt)?
+        let _: format::LogHeader = self
+            .storage
+            .read_log_record(&mut log, 0)?
             .ok_or(StoreError::Corrupt)?;
         let mut sequence = format::next(self.current.sequence)?;
-        while let Some(event) = super::framing::read_record::<format::Event>(&mut log, sequence)
-            .map_err(|_| StoreError::Corrupt)?
+        while let Some(event) = self
+            .storage
+            .read_log_record::<format::Event>(&mut log, sequence)?
         {
-            if let format::Change::BaselineCommit { root, .. } = event.change
-                && self.storage.contains_page(root, wanted, false)?
-            {
+            let root = match event.change {
+                format::Change::BaselineCommit { root, .. } => root,
+                format::Change::InitialReviewAccepted { review, .. } => Some(review.root),
+                _ => None,
+            };
+            if self.storage.contains_page(root, wanted, false)? {
                 return Ok(true);
             }
             sequence = format::next(sequence)?;
@@ -1095,13 +1377,10 @@ impl super::ConnectionStore {
             return Err(StoreError::LimitExceeded);
         }
         file.seek(SeekFrom::Start(0))?;
-        let mut magic = [0; 8];
-        file.read_exact(&mut magic)?;
-        if &magic != b"QOSCON1\n" {
-            return Err(StoreError::Corrupt);
-        }
-        let header: format::LogHeader = super::framing::read_record(file, 0)
-            .map_err(|_| StoreError::Corrupt)?
+        self.storage.read_log_magic(file)?;
+        let header: format::LogHeader = self
+            .storage
+            .read_log_record(file, 0)?
             .ok_or(StoreError::Corrupt)?;
         if header.schema != 1
             || header.identity != self.storage.identity
@@ -1114,8 +1393,9 @@ impl super::ConnectionStore {
         let mut predecessor = header.predecessor;
         loop {
             let offset = file.stream_position()?;
-            let Some(event) = super::framing::read_record::<format::Event>(file, sequence)
-                .map_err(|_| StoreError::Corrupt)?
+            let Some(event) = self
+                .storage
+                .read_log_record::<format::Event>(file, sequence)?
             else {
                 if offset != file.metadata()?.len() {
                     return Err(StoreError::RecoveryRequired);
@@ -1134,6 +1414,7 @@ impl super::ConnectionStore {
         Ok(true)
     }
     pub(super) fn collect_garbage(&mut self) -> Result<usize, StoreError> {
+        let _read_lease = self.storage.read_lease(false)?;
         self.resume_gc()?;
         let mut scan = match self.gc_scan.take() {
             Some(scan) => scan,
@@ -1200,6 +1481,7 @@ impl super::ConnectionStore {
                 } else {
                     16 * 1024 * 1024
                 },
+                &|requested| self.storage.review_charge(requested as u64, 0, 0, 1),
             )?;
             validate_file(&parent, name, &file, &metadata)?;
             self.validate()?;
@@ -1228,6 +1510,7 @@ impl super::ConnectionStore {
         Ok(removed)
     }
     pub(super) fn resume_gc(&self) -> Result<(), StoreError> {
+        let _read_lease = self.storage.read_lease(false)?;
         match metadata_nofollow(&self.storage.quarantine.file, Path::new("intent")) {
             Ok(_) => {
                 let bytes = self
@@ -1297,7 +1580,10 @@ impl super::ConnectionStore {
                     validate_file(&parent, &intent.name, &source, &metadata)?;
                     #[cfg(windows)]
                     {
-                        let (digest, length) = file_digest(&mut source, intent.length)?;
+                        let (digest, length) =
+                            file_digest(&mut source, intent.length, &|requested| {
+                                self.storage.review_charge(requested as u64, 0, 0, 1)
+                            })?;
                         if digest != intent.digest || length != intent.length {
                             return Err(StoreError::RecoveryRequired);
                         }
@@ -1324,7 +1610,9 @@ impl super::ConnectionStore {
                 if file_identity(&metadata) != intent.file_id || metadata.len() != intent.length {
                     return Err(StoreError::RecoveryRequired);
                 }
-                let (digest, length) = file_digest(&mut captured, intent.length)?;
+                let (digest, length) = file_digest(&mut captured, intent.length, &|requested| {
+                    self.storage.review_charge(requested as u64, 0, 0, 1)
+                })?;
                 if digest != intent.digest || length != intent.length {
                     return Err(StoreError::RecoveryRequired);
                 }

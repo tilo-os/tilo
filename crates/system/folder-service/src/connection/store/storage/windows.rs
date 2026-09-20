@@ -209,6 +209,7 @@ impl Storage {
         let recovery = child(&root, "recovery", fresh)?;
         let quarantine = child(&root, "quarantine", fresh)?;
         let storage = Self {
+            read_budget: Arc::new(std::sync::Mutex::new(None)),
             root,
             pages,
             recovery,
