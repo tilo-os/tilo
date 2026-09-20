@@ -48,10 +48,11 @@ For an actual installer VM cycle with an already prepared medium, continue using
 session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
 artifact-backed VM orchestration remain planned work.
 
-For CI timing, use an explicit internal run ID from the Forgejo API:
+For CI timing, use the repository run number from the Forgejo URL or `fgj actions
+run list`, not the Forgejo API's internal database ID:
 
 ```sh
-python3 tools/ci/timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
+python3 tools/ci/timing_report.py --repo qos/qos --run 11408 --output target/ci-timing.json
 ```
 
 For an automatic before/after view of the newest comparable runs, no run IDs or
