@@ -31,7 +31,8 @@ jobs:
         run: |
           set -euo pipefail
           bash os/dev/assert-native-arch.sh aarch64
-          image=ghcr.io/tilo-os/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06
+          source <(grep '^BASE_REF=' os/base-snapshot.env)
+          image=$BASE_REF
           name="tilo-disk-environment-${GITHUB_RUN_ID}"
           evidence="$PWD/disk-environment-evidence"
           mkdir -p "$evidence"
