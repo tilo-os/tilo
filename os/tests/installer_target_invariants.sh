@@ -61,14 +61,25 @@ fi
 karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
    && grep -Fq 'append root=tilo-auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && grep -Fq 'append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
+   && grep -Fq 'target UKI lacks the signed TILO_BOOT mount contract' "$backend" \
    && ! grep -Fq 'tilo-uki-cmdline set "tilo.root=' "$backend"; then
   ok "encrypted installs atomically promote a target-independent UKI without per-machine measured bytes"
 else
   bad "target-independent UKI handoff is incomplete (legacy deletions: $karg_deletes)"
+fi
+
+if grep -Fq 'mkfs.ext4 -q -L TILO_BOOT "$boot_part"' "$encryptor" \
+   && grep -Fq -- '--boot-mount-spec "$ENC_BOOT_MOUNT_SPEC"' "$backend" \
+   && grep -Fq 'tilo-boot-mount-contract' "$backend" \
+   && bash "$repo_root/os/tests/encrypted_boot_mount_contract.sh"; then
+  ok "encrypted installs bind the signed TILO_BOOT mount contract to one prepared partition"
+else
+  bad "encrypted /boot mount contract can be missing, substituted, or ambiguous"
 fi
 
 if grep -Fq 'tilo-uki-cmdline remove systemd.show_status' "$containerfile" \

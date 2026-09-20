@@ -227,7 +227,10 @@ EOF
 
   log "  ESP=$esp  boot=$boot_part  root(LUKS)=$luks_part"
   mkfs.vfat -n EFI-SYSTEM "$esp" >/dev/null
-  mkfs.ext4 -q -L boot "$boot_part"
+  # The signed target UKI mounts this exact installer-owned label at /boot.
+  # It must remain deterministic because its command line is covered by the
+  # release signature and PCR prediction.
+  mkfs.ext4 -q -L TILO_BOOT "$boot_part"
 
   # The throwaway key authorises every enrolment below and is removed by
   # `finish`. 64 random bytes, so it is never the weakest slot while it exists.

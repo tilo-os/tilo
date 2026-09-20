@@ -70,9 +70,14 @@ RUN test -x /usr/bin/tilo-installer \
     && /usr/libexec/tilo-uki-cmdline remove tilo.install /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline append root=tilo-auto /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi \
+    # The encrypted installer creates a dedicated ext4 /boot with this unique
+    # label.  Keep it in the signed target UKI: bootc's composefs Type2 path
+    # cannot synthesize per-machine kernel arguments during installation.
+    && /usr/libexec/tilo-uki-cmdline append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.mode=normal \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.install \
     && /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw root=tilo-auto \
+    && /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec \
     && ! /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw tilo.install \
     && systemctl enable tilo-firstboot-user.service tilo-installer-setup.service tilo-live-recovery.service \
     && if [ "$TILO_INSTALLER_DEV_SSH" = 1 ]; then \
