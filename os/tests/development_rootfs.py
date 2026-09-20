@@ -9,8 +9,6 @@ from datetime import datetime
 import os
 from pathlib import Path
 import platform
-import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -20,24 +18,13 @@ BASE = 'registry.fedoraproject.org/fedora@sha256:61beafd34111e1cb85fb49377ceadee
 REVISION = 'b' * 40
 EPOCH = 1700000000
 ENVIRONMENT = os.environ.copy()
-CRYPTO = Path('/usr/local/bin/tilo-crypto')
 
 
 def raw_rootfs_containerfile():
     return (f'FROM {BASE}\n'
             'RUN dnf -y install python3 systemd-boot-unsigned && dnf clean all\n'
-            'COPY tilo-crypto /usr/local/bin/tilo-crypto\n'
             'COPY rootfs/ /\n'
             f'LABEL org.opencontainers.image.revision={REVISION}\n')
-
-
-def stage_rootfs_crypto(context, source=CRYPTO):
-    if not source.is_file() or not source.stat().st_mode & (
-            stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
-        raise RuntimeError(f'native rootfs verifier missing executable {source}')
-    destination = context / 'tilo-crypto'
-    shutil.copy2(source, destination)
-    return destination
 
 
 def run(*arguments, env=None, error=None):
@@ -87,7 +74,6 @@ def main():
             target = f'code.sandbox.example/qos/tilo-development:fixture-{architecture}'
             context = root / 'context'
             context.mkdir()
-            stage_rootfs_crypto(context)
             image_root = context / 'rootfs'
             run('python3', str(DEV / 'install-public-trust.py'), '--source', str(bundle),
                 '--official', str(bundle), '--destination', str(image_root / 'usr/share/tilo'),
