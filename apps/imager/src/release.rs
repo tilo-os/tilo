@@ -733,7 +733,7 @@ mod tests {
                 "version": "1.0.0",
                 "channel": "stable",
                 "arch": arch,
-                "url": format!("https://code.podesta.ai/tilo/releases/releases/download/imager-v1.0.0/tilo-{arch}.img.zst"),
+                "url": format!("https://code.podesta.ai/qos/releases/releases/download/imager-v1.0.0/tilo-{arch}.img.zst"),
                 "archive_sha256": "a".repeat(64),
                 "archive_size": 32,
                 "image_sha256": "b".repeat(64),
@@ -937,7 +937,7 @@ mod tests {
             hardware_profile: "generic".into(),
             local_path: String::new(),
             url:
-                "https://code.podesta.ai/tilo/releases/releases/download/imager-v1.0.0/tilo.img.zst"
+                "https://code.podesta.ai/qos/releases/releases/download/imager-v1.0.0/tilo.img.zst"
                     .into(),
             archive_sha256: "a".repeat(64),
             archive_size: 1,

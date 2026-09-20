@@ -4,7 +4,7 @@ set -euo pipefail
 
 # Match the mock server's public repository, independently of the caller's CI
 # release configuration. Individual negative cases override this explicitly.
-export TILO_RELEASE_REPOSITORY=tilo/releases
+export TILO_RELEASE_REPOSITORY=qos/releases
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 publisher="$repo/apps/imager/packaging/publish-forgejo-release.sh"
@@ -45,8 +45,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         global release
         path = urlsplit(self.path).path
-        if path == "/api/v1/repos/tilo/releases":
-            self.send_json(200, {"full_name": "tilo/releases", "private": False, "archived": False})
+        if path == "/api/v1/repos/qos/releases":
+            self.send_json(200, {"full_name": "qos/releases", "private": False, "archived": False})
         elif path == "/api/v1/repos/tilo/private-downloads":
             self.send_json(200, {"full_name": "tilo/private-downloads", "private": True, "archived": False})
         elif path.endswith("/releases/tags/imager-v1.2.3"):
@@ -140,7 +140,7 @@ printf 'AAAAAAAAAAAAAAAA\n' >"$work/assets/tilo-imager-test.bin"
 
 publish() {
   GITHUB_SERVER_URL="$server_url" \
-  GITHUB_REPOSITORY='tilo/tilo' \
+  GITHUB_REPOSITORY='qos/qos' \
   GITHUB_REF_NAME='imager-v1.2.3' \
   FORGEJO_TOKEN='test-token' \
     "$publisher" "$work/assets"
@@ -152,7 +152,7 @@ grep -Fq 'published and verified tilo-imager-test.bin' <<<"$first" \
 grep -Fq 'published complete release imager-v1.2.3' <<<"$first" \
   || { printf 'verified draft was not promoted after upload\n' >&2; exit 1; }
 
-if TILO_RELEASE_REPOSITORY=tilo/tilo publish >"$work/source.out" 2>"$work/source.err"; then
+if TILO_RELEASE_REPOSITORY=qos/qos publish >"$work/source.out" 2>"$work/source.err"; then
   printf 'publisher accepted the source repository as its binary target\n' >&2
   exit 1
 fi
