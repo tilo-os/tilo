@@ -259,13 +259,80 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
         run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py
-      - name: Prepare exact coordinator baseline history
-        if: github.event.inputs.coordinator_intent != '' && github.event.inputs.baseline_sha != ''
+      - name: Prepare exact release comparison history
+        if: "github.event_name != 'workflow_dispatch' || (github.event.inputs.coordinator_intent != '' && github.event.inputs.baseline_sha != '')"
+        # This step intentionally uses only the pinned job image and inline
+        # commands. PR-controlled checkout tools never receive SOURCE_TOKEN.
         env:
+          SOURCE_TOKEN: ${{ github.token }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
           BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
         run: |
-          python3 -I tools/ci/python.py tools/ci/app_release_history.py \
-            fetch-base "$BASELINE_SHA" "$GITHUB_SHA"
+          set -euo pipefail
+          base=
+          if [[ -n ${COORDINATOR_INTENT:-} ]]; then
+            base=${BASELINE_SHA:-}
+          elif [[ $GITHUB_EVENT_NAME != workflow_dispatch ]]; then
+            base='${{ github.event.pull_request.base.sha }}'
+            [[ -n $base && $base != null ]] || base='${{ github.event.before }}'
+          fi
+          if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
+            unset SOURCE_TOKEN
+            exit 0
+          fi
+          [[ $base =~ ^[0-9a-f]{40}$ && $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
+          origin=$(/usr/bin/git remote get-url origin)
+          [[ $origin == https://code.sandbox.example/qos/qos || \
+             $origin == https://code.sandbox.example/qos/qos.git ]]
+          token=$SOURCE_TOKEN
+          unset SOURCE_TOKEN
+          credential=$(printf 'x-access-token:%s' "$token" | \
+            /usr/bin/env -u SOURCE_TOKEN /usr/bin/base64 -w0)
+          unset token
+          auth=(/usr/bin/env -u SOURCE_TOKEN GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://code.sandbox.example/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential")
+          connected=false
+          for depth in 2 32 128 512 2048; do
+            "${auth[@]}" /usr/bin/git fetch --no-tags --no-write-fetch-head \
+              --depth="$depth" origin \
+              "+$base:refs/ci/app-release-base" \
+              "+$GITHUB_SHA:refs/ci/app-release-head"
+            [[ $(/usr/bin/git rev-parse refs/ci/app-release-base) == "$base" ]]
+            [[ $(/usr/bin/git rev-parse refs/ci/app-release-head) == "$GITHUB_SHA" ]]
+            /usr/bin/git cat-file -e "$base^{commit}"
+            /usr/bin/git cat-file -e "$GITHUB_SHA^{commit}"
+            if /usr/bin/git merge-base "$base" "$GITHUB_SHA" >/dev/null; then
+              connected=true
+              break
+            fi
+          done
+          unset credential auth
+          $connected || { printf 'cannot establish bounded release comparison\n' >&2; exit 1; }
+      - name: Authorize current main for publication planning
+        if: "(github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event.inputs.publish == 'true'"
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
+          origin=$(/usr/bin/git remote get-url origin)
+          [[ $origin == https://code.sandbox.example/qos/qos || \
+             $origin == https://code.sandbox.example/qos/qos.git ]]
+          token=$SOURCE_TOKEN
+          unset SOURCE_TOKEN
+          credential=$(printf 'x-access-token:%s' "$token" | \
+            /usr/bin/env -u SOURCE_TOKEN /usr/bin/base64 -w0)
+          unset token
+          output=$(/usr/bin/env -u SOURCE_TOKEN GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://code.sandbox.example/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential" \
+            /usr/bin/git ls-remote --exit-code --refs origin refs/heads/main)
+          unset credential
+          mapfile -t rows <<<"$output"
+          [[ ${#rows[@]} -eq 1 ]]
+          read -r observed ref extra <<<"${rows[0]}"
+          [[ -z ${extra:-} && $ref == refs/heads/main && $observed == "$GITHUB_SHA" ]]
       - name: Validate prepared nonpublishing coordinator qualification
         env:
           COORDINATOR_ENABLED: ${{ vars.TILO_APP_COORDINATOR_QUALIFICATION }}
@@ -340,8 +407,6 @@ jobs:
               printf 'manual app publication is restricted to main\n' >&2
               exit 1
             fi
-            python3 -I tools/ci/python.py tools/ci/app_release_history.py \
-              require-main-tip "$GITHUB_SHA"
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
             matrix=$(python3 -I tools/ci/python.py tools/apps/app_release.py --architecture-matrix \
@@ -443,9 +508,28 @@ jobs:
         run: bash tools/ci/sccache.sh prepare
       - name: Revalidate publication source immediately before signing
         if: needs.plan.outputs.publish == 'true'
+        env:
+          SOURCE_TOKEN: ${{ github.token }}
         run: |
-          python3 -I tools/ci/python.py tools/ci/app_release_history.py \
-            require-main-tip "$GITHUB_SHA"
+          set -euo pipefail
+          [[ $GITHUB_SHA =~ ^[0-9a-f]{40}$ ]]
+          origin=$(/usr/bin/git remote get-url origin)
+          [[ $origin == https://code.sandbox.example/qos/qos || \
+             $origin == https://code.sandbox.example/qos/qos.git ]]
+          token=$SOURCE_TOKEN
+          unset SOURCE_TOKEN
+          credential=$(printf 'x-access-token:%s' "$token" | \
+            /usr/bin/env -u SOURCE_TOKEN /usr/bin/base64 -w0)
+          unset token
+          output=$(/usr/bin/env -u SOURCE_TOKEN GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0=http.https://code.sandbox.example/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $credential" \
+            /usr/bin/git ls-remote --exit-code --refs origin refs/heads/main)
+          unset credential
+          mapfile -t rows <<<"$output"
+          [[ ${#rows[@]} -eq 1 ]]
+          read -r observed ref extra <<<"${rows[0]}"
+          [[ -z ${extra:-} && $ref == refs/heads/main && $observed == "$GITHUB_SHA" ]]
       - name: Build and verify selected qpkgs once for this architecture
         env:
           TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
