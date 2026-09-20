@@ -34,10 +34,16 @@ set +e   # this script reports rather than aborts; _common.sh sets -e
 OUT="${OUT:-$TILO_RUN/measured-boot}"
 mkdir -p "$OUT"
 
-SSHOPTS=(-p "$TILO_SSH_PORT" -o StrictHostKeyChecking=no
-         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR)
+SSHOPTS=(-F /dev/null -p "$TILO_SSH_PORT" -o StrictHostKeyChecking=no
+         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR
+         -o BatchMode=no -o NumberOfPasswordPrompts=1
+         -o PreferredAuthentications=password -o PubkeyAuthentication=no
+         -o KbdInteractiveAuthentication=no)
 GUEST="$TILO_USER@127.0.0.1"
-g() { sshpass -p "$TILO_PASS" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
+g() {
+  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE \
+    sshpass -p "$TILO_PASS" ssh "${SSHOPTS[@]}" "$GUEST" "$@"
+}
 groot() { g "echo $TILO_PASS | sudo -S -p '' $*" ; }
 
 say() { printf '\n\033[1;35m### %s\033[0m\n' "$*"; }
