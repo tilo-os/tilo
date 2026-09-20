@@ -42,6 +42,7 @@ NON_COMPILING_DOCS = {
 # inputs. Keep exact source/test pairs: unknown tools, deleted files, workflows,
 # compiler wrappers and packaging implementation changes retain native coverage.
 QUALITY_ONLY_HELPERS = {
+    "scripts/ci-run.sh": "tools/tests/test_ci_run.py",
     "tools/ci/check-changed-rustfmt.sh": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/check_changed_rust_allows.py": "tools/tests/test_changed_rust_comparison.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
@@ -125,6 +126,10 @@ HEAVY_PACKAGES = {
 # rebuilding shared dependencies than it saves in wall time. Shard timing and
 # CPU figures are emitted by tools/ci/measure.sh so this can be tuned from runs.
 SHARD_COST_BUDGET = 1_000
+# Ordinary global-input checks use at most two existing x86 runners (four
+# Cargo workers each). Keep small/reverse-closure changes on one warm target;
+# explicit full qualification retains its native architecture matrix.
+MAX_DEVELOPER_SHARDS = 2
 
 
 def run(*args: str, cwd: Path) -> str:
@@ -415,7 +420,9 @@ def make_plan(
     # on x86, but links tests only for changed crates and the existing contract
     # suites. Global/unowned workspace inputs retain complete test coverage.
     tested = (selected if full else (seeds | ALWAYS_PACKAGES) & selected)
-    effective_shards = useful_shard_count(selected, packages, shard_count if force_full else 1)
+    shard_limit = (shard_count if force_full else
+                   min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
+    effective_shards = useful_shard_count(selected, packages, shard_limit)
     runners = NATIVE_RUNNERS if force_full else {"x86_64": NATIVE_RUNNERS["x86_64"]}
     matrix = []
     for arch, runner in runners.items():

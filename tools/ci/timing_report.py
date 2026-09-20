@@ -172,9 +172,10 @@ def extract_job_metrics(log):
             if match and key not in sccache:
                 sccache[key] = int(match.group(1))
 
-    if "cache_hits" in sccache and "compile_requests" in sccache:
-        requests = sccache["compile_requests"]
-        sccache["hit_percent"] = None if requests == 0 else round(100 * sccache["cache_hits"] / requests, 1)
+    if "cache_hits" in sccache and "cache_misses" in sccache:
+        # Compiler probes and uncacheable requests are not cache lookups.
+        lookups = sccache["cache_hits"] + sccache["cache_misses"]
+        sccache["hit_percent"] = None if lookups == 0 else round(100 * sccache["cache_hits"] / lookups, 1)
     return {"events": events, "measurements": measurements, "steps": steps,
             "sccache": sccache or None, "last_timestamp": last_timestamp}
 
