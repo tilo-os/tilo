@@ -8,6 +8,7 @@ pub const PRIVATE_ROOT_MARKER: &str = ".qos-private-root-v1";
 pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "qos-browser-owned-private-root-v1\n";
 pub const PRIVATE_ROOT_LOCK: &str = ".qos-private-root.lock";
 const PRIVATE_ROOT_OWNER: &str = ".qos-private-owner-pid";
+#[cfg(unix)]
 const PRIVATE_ROOT_HELPER: &str = ".qos-private-helper-pid";
 /// Configure the optional browser data root once for this process.
 ///
@@ -155,6 +156,10 @@ pub(crate) fn private_root_write_guard(directory: &Path) -> Result<Option<std::f
 }
 
 #[cfg(not(unix))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "platform implementations share a fallible guard signature"
+)]
 pub(crate) fn private_root_write_guard(_directory: &Path) -> Result<Option<std::fs::File>, String> {
     Ok(None)
 }

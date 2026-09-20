@@ -1254,6 +1254,10 @@ impl BrowserWidget {
         self.progress = progress;
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "browser operations share navigation admission and state transitions"
+    )]
     fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
         if matches!(
             &operation,
@@ -2328,13 +2332,6 @@ impl BrowserWidget {
         let large_text = theme.text_scale >= 1.5;
         let compact_layout = self.compact_chrome || large_text;
         let action_height = if large_text { 56.0 } else { 36.0 };
-        let section_width = if self.compact_chrome && large_text {
-            ((self.rect.width() as f32 - 36.0) / 2.0).max(150.0)
-        } else if large_text {
-            220.0
-        } else {
-            132.0
-        };
         // At intermediate desktop widths, retain one coherent panel but never
         // force a fixed 920px card past the viewport. Compact chrome remains
         // fully fluid below its own breakpoint.
@@ -2462,7 +2459,7 @@ impl BrowserWidget {
         let filter_input = TextInput::from_state(&self.library_filter)
             .with_id(LIBRARY_FILTER_INPUT_ID)
             .with_kind(TextInputKind::Search)
-            .with_accessible_name(&format!("Filter {section_label}"))
+            .with_accessible_name(format!("Filter {section_label}"))
             .with_placeholder(&format!("Filter {section_label}"));
         let clear_filter = self.bind_button(
             Button::new("browser.library.clear-filter", "Clear", None)
@@ -2714,7 +2711,10 @@ impl BrowserWidget {
                     )
                 }
             }
-            LibrarySection::Downloads if self.downloads.entries().is_empty() => {
+            LibrarySection::Downloads
+                if !self.capabilities.owns_download_presentation()
+                    && self.downloads.entries().is_empty() =>
+            {
                 if self.compact_chrome && large_text {
                     Box::new(
                         Container::new()
@@ -2745,7 +2745,7 @@ impl BrowserWidget {
                     )
                 }
             }
-            LibrarySection::Downloads => {
+            LibrarySection::Downloads if !self.capabilities.owns_download_presentation() => {
                 let mut rows = Column::new().with_no_padding().with_intrinsic_height();
                 let mut matched = 0;
                 for entry in self.downloads.entries().iter().rev().take(40) {
@@ -2753,7 +2753,7 @@ impl BrowserWidget {
                     let display_name = entry.display_name();
                     if !library_filter_matches(
                         &filter_query,
-                        &[&display_name, &entry.source_url, &status],
+                        &[display_name.as_str(), &entry.source_url, &status],
                     ) {
                         continue;
                     }
