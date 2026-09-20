@@ -78,6 +78,31 @@ class QueueReliefTests(unittest.TestCase):
                     self.assertNotRegex(push, r"(?m)^    branches(?:-ignore)?:")
                 self.assertRegex(events, r"(?m)^  workflow_dispatch:")
 
+    def test_only_heavy_fuse_pr_runs_replace_their_own_previous_run(self):
+        concurrency = section(workflow("fs-fuse"), "concurrency")
+        group = re.search(r"(?m)^  group: (.+)$", concurrency).group(1)
+        cancel = re.search(r"(?m)^  cancel-in-progress: (.+)$", concurrency).group(1)
+        self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
+        self.assertNotIn("github.sha", group)
+
+        def render(event, ref, number=""):
+            context = {"github.event_name": event, "github.ref": ref,
+                       "github.event.pull_request.number": number}
+            def expression(match):
+                values = [context[key.strip()] for key in match.group(1).split("||")]
+                return next(value for value in values if value)
+            return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", expression, group)
+
+        first = render("pull_request", "refs/pull/172/head", "172")
+        # A new head/ref spelling on this PR must supersede the old native run.
+        self.assertEqual(first, render("pull_request", "refs/pull/172/merge", "172"))
+        others = [render("pull_request", "refs/pull/173/head", "173"),
+                  render("workflow_dispatch", "refs/heads/main"),
+                  render("schedule", "refs/heads/main"),
+                  render("push", "refs/heads/main"),
+                  render("workflow_dispatch", "refs/heads/hardware-bringup")]
+        self.assertEqual(len({first, *others}), 6)
+
     def test_os_full_build_is_not_a_pr_gate(self):
         events = section(workflow("build-image"), "on")
         self.assertNotRegex(events, r"(?m)^  pull_request(?:_target)?:")

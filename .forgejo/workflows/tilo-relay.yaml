@@ -18,6 +18,8 @@ on:
       - "os/base-snapshot.env"
       - "os/rpms-snapshot.env"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
+      - "os/dev/verify-rpm-snapshot-buildkit.py"
+      - "os/tests/test_rpm_snapshot_buildkit.py"
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/collab/tilo-user-identity/**"
@@ -54,6 +56,8 @@ on:
       - "os/base-snapshot.env"
       - "os/rpms-snapshot.env"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
+      - "os/dev/verify-rpm-snapshot-buildkit.py"
+      - "os/tests/test_rpm_snapshot_buildkit.py"
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/collab/tilo-user-identity/**"
@@ -289,16 +293,19 @@ jobs:
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
           echo "rpms=$RPMS_REF"
 
-      - name: Verify the frozen RPM package set
-        run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
-
       - name: Set up buildx for registry cache export
+        id: buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
           # The compiler cache is a cluster-local service. The default nested
           # Docker bridge cannot resolve Kubernetes service DNS.
           driver-opts: network=host
+
+      - name: Verify the frozen RPM package set
+        env:
+          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -320,6 +327,7 @@ jobs:
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
