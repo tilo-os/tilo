@@ -67,12 +67,18 @@ pub enum Event<T: 'static> {
     /// See [`ApplicationHandler::window_event`] for details.
     ///
     /// [`ApplicationHandler::window_event`]: crate::application::ApplicationHandler::window_event
-    WindowEvent { window_id: WindowId, event: WindowEvent },
+    WindowEvent {
+        window_id: WindowId,
+        event: WindowEvent,
+    },
 
     /// See [`ApplicationHandler::device_event`] for details.
     ///
     /// [`ApplicationHandler::device_event`]: crate::application::ApplicationHandler::device_event
-    DeviceEvent { device_id: DeviceId, event: DeviceEvent },
+    DeviceEvent {
+        device_id: DeviceId,
+        event: DeviceEvent,
+    },
 
     /// See [`ApplicationHandler::user_event`] for details.
     ///
@@ -131,11 +137,17 @@ pub enum StartCause {
     /// guaranteed to be equal to or after the requested resume time.
     ///
     /// [`ControlFlow::WaitUntil`]: crate::event_loop::ControlFlow::WaitUntil
-    ResumeTimeReached { start: Instant, requested_resume: Instant },
+    ResumeTimeReached {
+        start: Instant,
+        requested_resume: Instant,
+    },
 
     /// Sent if the OS has new events to send to the window, after a wait was requested. Contains
     /// the moment the wait was requested and the resume time, if requested.
-    WaitCancelled { start: Instant, requested_resume: Option<Instant> },
+    WaitCancelled {
+        start: Instant,
+        requested_resume: Option<Instant>,
+    },
 
     /// Sent if the event loop is being resumed after the loop's control flow was set to
     /// [`ControlFlow::Poll`].
@@ -151,11 +163,17 @@ pub enum StartCause {
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
     /// The activation token was delivered back and now could be used.
-    #[cfg_attr(not(any(x11_platform, wayland_platform)), allow(rustdoc::broken_intra_doc_links))]
+    #[cfg_attr(
+        not(any(x11_platform, wayland_platform)),
+        allow(rustdoc::broken_intra_doc_links)
+    )]
     /// Delivered in response to [`request_activation_token`].
     ///
     /// [`request_activation_token`]: crate::platform::startup_notify::WindowExtStartupNotify::request_activation_token
-    ActivationTokenDone { serial: AsyncRequestSerial, token: ActivationToken },
+    ActivationTokenDone {
+        serial: AsyncRequestSerial,
+        token: ActivationToken,
+    },
 
     /// The size of the window has changed. Contains the client area's new dimensions.
     Resized(PhysicalSize<u32>),
@@ -272,10 +290,33 @@ pub enum WindowEvent {
     CursorLeft { device_id: DeviceId },
 
     /// A mouse wheel movement or touchpad scroll occurred.
-    MouseWheel { device_id: DeviceId, delta: MouseScrollDelta, phase: TouchPhase },
+    MouseWheel {
+        device_id: DeviceId,
+        delta: MouseScrollDelta,
+        phase: TouchPhase,
+    },
 
     /// An mouse button press has been received.
-    MouseInput { device_id: DeviceId, state: ElementState, button: MouseButton },
+    MouseInput {
+        device_id: DeviceId,
+        state: ElementState,
+        button: MouseButton,
+    },
+
+    /// A completed three-finger trackpad swipe.
+    ///
+    /// Unlike scrolling or panning, this is one discrete event per swipe.
+    /// The direction is a unit vector: positive x is right, positive y is down.
+    /// It is independent of display scaling and the natural scrolling preference.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - Only available on **macOS**, when enabled in the system trackpad settings.
+    #[cfg(target_os = "macos")]
+    SwipeGesture {
+        device_id: DeviceId,
+        delta: PhysicalPosition<f64>,
+    },
 
     /// Two-finger pinch gesture, often used for magnification.
     ///
@@ -347,10 +388,18 @@ pub enum WindowEvent {
     /// At the moment, only supported on Apple forcetouch-capable macbooks.
     /// The parameters are: pressure level (value between 0 and 1 representing how hard the
     /// touchpad is being pressed) and stage (integer representing the click level).
-    TouchpadPressure { device_id: DeviceId, pressure: f32, stage: i64 },
+    TouchpadPressure {
+        device_id: DeviceId,
+        pressure: f32,
+        stage: i64,
+    },
 
     /// Motion on some analog axis. May report data redundant to other, more specific events.
-    AxisMotion { device_id: DeviceId, axis: AxisId, value: f64 },
+    AxisMotion {
+        device_id: DeviceId,
+        axis: AxisId,
+        value: f64,
+    },
 
     /// Touch event has been received
     ///
@@ -655,6 +704,57 @@ pub struct KeyEvent {
     pub(crate) platform_specific: platform_impl::KeyEventExtra,
 }
 
+impl KeyEvent {
+    /// Construct a complete synthetic key event for deterministic input
+    /// drivers. Every public field and available platform supplement is explicit.
+    #[doc(hidden)]
+    pub fn synthetic(
+        raw: RawKeyEvent,
+        logical_key: keyboard::Key,
+        text: Option<SmolStr>,
+        location: keyboard::KeyLocation,
+        repeat: bool,
+        text_with_all_modifiers: Option<SmolStr>,
+        key_without_modifiers: keyboard::Key,
+    ) -> Self {
+        #[cfg(any(
+            macos_platform,
+            x11_platform,
+            wayland_platform,
+            windows_platform,
+            orbital_platform,
+        ))]
+        let platform_specific = platform_impl::KeyEventExtra {
+            text_with_all_modifiers,
+            key_without_modifiers,
+        };
+
+        #[cfg(any(android_platform, ios_platform))]
+        let platform_specific = {
+            drop(text_with_all_modifiers);
+            drop(key_without_modifiers);
+            platform_impl::KeyEventExtra {}
+        };
+
+        #[cfg(web_platform)]
+        let platform_specific = {
+            drop(text_with_all_modifiers);
+            drop(key_without_modifiers);
+            platform_impl::KeyEventExtra
+        };
+
+        Self {
+            physical_key: raw.physical_key,
+            logical_key,
+            text,
+            location,
+            state: raw.state,
+            repeat,
+            platform_specific,
+        }
+    }
+}
+
 /// Describes keyboard modifiers event.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Modifiers {
@@ -723,7 +823,10 @@ impl Modifiers {
 
 impl From<ModifiersState> for Modifiers {
     fn from(value: ModifiersState) -> Self {
-        Self { state: value, pressed_mods: Default::default() }
+        Self {
+            state: value,
+            pressed_mods: Default::default(),
+        }
     }
 }
 
@@ -897,13 +1000,17 @@ impl Force {
     /// consistent across devices.
     pub fn normalized(&self) -> f64 {
         match self {
-            Force::Calibrated { force, max_possible_force, altitude_angle } => {
+            Force::Calibrated {
+                force,
+                max_possible_force,
+                altitude_angle,
+            } => {
                 let force = match altitude_angle {
                     Some(altitude_angle) => force / altitude_angle.sin(),
                     None => *force,
                 };
                 force / max_possible_force
-            },
+            }
             Force::Normalized(force) => *force,
         }
     }
@@ -1036,7 +1143,12 @@ mod tests {
                 x(Resumed);
 
                 // Window events.
-                let with_window_event = |wev| x(WindowEvent { window_id: wid, event: wev });
+                let with_window_event = |wev| {
+                    x(WindowEvent {
+                        window_id: wid,
+                        event: wev,
+                    })
+                };
 
                 with_window_event(CloseRequested);
                 with_window_event(Destroyed);
@@ -1047,7 +1159,10 @@ mod tests {
                 with_window_event(HoveredFile("x.txt".into()));
                 with_window_event(HoveredFileCancelled);
                 with_window_event(Ime(Enabled));
-                with_window_event(CursorMoved { device_id: did, position: (0, 0).into() });
+                with_window_event(CursorMoved {
+                    device_id: did,
+                    position: (0, 0).into(),
+                });
                 with_window_event(ModifiersChanged(event::Modifiers::default()));
                 with_window_event(CursorEntered { device_id: did });
                 with_window_event(CursorLeft { device_id: did });
@@ -1066,6 +1181,11 @@ mod tests {
                     delta: 0.0,
                     phase: event::TouchPhase::Started,
                 });
+                #[cfg(target_os = "macos")]
+                with_window_event(SwipeGesture {
+                    device_id: did,
+                    delta: PhysicalPosition::new(-1.0, 0.0),
+                });
                 with_window_event(DoubleTapGesture { device_id: did });
                 with_window_event(RotationGesture {
                     device_id: did,
@@ -1077,8 +1197,16 @@ mod tests {
                     delta: PhysicalPosition::<f32>::new(0.0, 0.0),
                     phase: event::TouchPhase::Started,
                 });
-                with_window_event(TouchpadPressure { device_id: did, pressure: 0.0, stage: 0 });
-                with_window_event(AxisMotion { device_id: did, axis: 0, value: 0.0 });
+                with_window_event(TouchpadPressure {
+                    device_id: did,
+                    pressure: 0.0,
+                    stage: 0,
+                });
+                with_window_event(AxisMotion {
+                    device_id: did,
+                    axis: 0,
+                    value: 0.0,
+                });
                 with_window_event(Touch(event::Touch {
                     device_id: did,
                     phase: event::TouchPhase::Started,
@@ -1094,17 +1222,29 @@ mod tests {
             {
                 use event::DeviceEvent::*;
 
-                let with_device_event =
-                    |dev_ev| x(event::Event::DeviceEvent { device_id: did, event: dev_ev });
+                let with_device_event = |dev_ev| {
+                    x(event::Event::DeviceEvent {
+                        device_id: did,
+                        event: dev_ev,
+                    })
+                };
 
                 with_device_event(Added);
                 with_device_event(Removed);
-                with_device_event(MouseMotion { delta: (0.0, 0.0).into() });
+                with_device_event(MouseMotion {
+                    delta: (0.0, 0.0).into(),
+                });
                 with_device_event(MouseWheel {
                     delta: event::MouseScrollDelta::LineDelta(0.0, 0.0),
                 });
-                with_device_event(Motion { axis: 0, value: 0.0 });
-                with_device_event(Button { button: 0, state: event::ElementState::Pressed });
+                with_device_event(Motion {
+                    axis: 0,
+                    value: 0.0,
+                });
+                with_device_event(Button {
+                    button: 0,
+                    state: event::ElementState::Pressed,
+                });
             }
         }};
     }
@@ -1136,8 +1276,11 @@ mod tests {
         let force = event::Force::Normalized(0.0);
         assert_eq!(force.normalized(), 0.0);
 
-        let force2 =
-            event::Force::Calibrated { force: 5.0, max_possible_force: 2.5, altitude_angle: None };
+        let force2 = event::Force::Calibrated {
+            force: 5.0,
+            max_possible_force: 2.5,
+            altitude_angle: None,
+        };
         assert_eq!(force2.normalized(), 2.0);
 
         let force3 = event::Force::Calibrated {
@@ -1176,8 +1319,11 @@ mod tests {
             force: Some(event::Force::Normalized(0.0)),
         }
         .clone();
-        let _ =
-            event::Force::Calibrated { force: 0.0, max_possible_force: 0.0, altitude_angle: None }
-                .clone();
+        let _ = event::Force::Calibrated {
+            force: 0.0,
+            max_possible_force: 0.0,
+            altitude_angle: None,
+        }
+        .clone();
     }
 }
