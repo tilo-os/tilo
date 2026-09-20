@@ -35,9 +35,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::{AccessNode, Role};
-use crate::accesskit_bridge::{
-    build_presentation_tree_bound, build_tree_update_with_resources_bound,
-};
+use crate::accesskit_bridge::{build_presentation_tree_bound, build_tree_update_bound};
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -1863,12 +1861,11 @@ impl FrameHarness {
         self.drain_component_wakes();
         let exported = self.bindings.exported_nodes(&self.node_map);
         if self.history.is_none() {
-            return build_tree_update_with_resources_bound(
+            return build_tree_update_bound(
                 self.root.as_ref(),
                 &exported.nodes,
                 exported.focus(self.focused),
                 1.0,
-                &[],
             )
             .nodes;
         }
