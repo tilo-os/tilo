@@ -3,6 +3,27 @@
 Current deployment and measured startup results are recorded in the
 [emergency runbook](ci-emergency-relief.md). CI has three complementary paths:
 
+## GitHub migration baseline (2026-09-20)
+
+The repository, workflow control plane, and OCI builder publication now run on
+GitHub. Two documentation/control-plane quality runs on GitHub-hosted
+`ubuntu-24.04` runners queued for three seconds and then executed for 309 and
+300 seconds respectively (runs
+[35528852887](https://github.com/tilo-os/tilo/actions/runs/35528852887) and
+[35529520616](https://github.com/tilo-os/tilo/actions/runs/35529520616)). The
+documented warm Forgejo quality path took about 128 seconds, so ordinary GitHub
+runners are not an acceptable blanket replacement for compilation-heavy or
+high-frequency work.
+
+The first source build of `ghcr.io/tilo-os/tilo-builder` used GitHub's native
+x86-64 and ARM64 runners, published both child images plus the combined
+manifest, and attached GitHub provenance. With an empty GitHub BuildKit cache,
+x86-64 took 19 minutes 56 seconds and ARM64 took 15 minutes 5 seconds in run
+[35528852874](https://github.com/tilo-os/tilo/actions/runs/35528852874). Treat
+those as cold publication measurements, not routine-CI targets. Keep queue
+time, execution time, cache state, and billed runner time separate in every
+provider comparison.
+
 - `check.yml` uses one x86-64 shard for targeted push/PR feedback. It checks all
   targets in the affected reverse-dependency closure, while linking and running
   tests for directly changed packages plus `collab-types`, `pkg`, and `qdoc`.
