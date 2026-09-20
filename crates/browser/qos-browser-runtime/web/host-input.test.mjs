@@ -65,6 +65,20 @@ test('mounted canceled IME tail cannot commit through end, beforeinput or native
  assert.equal(f.delivered.some(([kind])=>kind==='commit'),false);
  target=f.host.editor;send('compositionstart');send('compositionupdate',{data:'new'});send('compositionend',{data:'new'});assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[['commit','new']]);
 });
+test('mounted dead key composes one caret and retains the following numeric input',async()=>{
+ const f=await fixture();f.host.editor.focus();f.delivered.length=0;const old=f.host.editor,canvasKeys=[];
+ f.host.canvas.addEventListener('keydown',event=>canvasKeys.push(event.key));
+ const dead=new DomEvent('keydown',{key:'Dead',code:'Digit6'});old.dispatchEvent(dead);
+ assert.equal(dead.defaultPrevented,false,'dead key remains native so Safari can start composition');
+ old.dispatchEvent(new DomEvent('compositionstart'));old.dispatchEvent(new DomEvent('compositionupdate',{data:'^'}));old.dispatchEvent(new DomEvent('compositionend',{data:'^'}));
+ assert.notEqual(f.host.editor,old,'the committed composition retires its editor');
+ const staleTail=new DomEvent('beforeinput',{inputType:'insertCompositionText',data:'^'});old.dispatchEvent(staleTail);
+ assert.equal(staleTail.defaultPrevented,true,'the retired editor rejects Safari composition tails');
+ f.host.editor.dispatchEvent(new DomEvent('beforeinput',{inputType:'insertText',data:'2'}));
+ assert.deepEqual(f.delivered.filter(([kind])=>kind==='commit'),[['commit','^'],['commit','2']]);
+ assert.deepEqual(canvasKeys,[],'the dead key is not forwarded as a Winit command');
+ assert.equal(f.host.editor.value,'','the hidden editor retains no committed value');
+});
 test('Rust-internal Search selection hands off only for a local surface gesture',async()=>{
  const f=await fixture();f.host.canvas.focus();
  f.host.canvas.addEventListener('keydown',()=>{f.state={sequence:'2',activation:'2',owner:'chat',ime:{x:0,y:0,height:20}};});
