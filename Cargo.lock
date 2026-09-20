@@ -13472,6 +13472,7 @@ dependencies = [
  "futures",
  "futures-lite",
  "futures-util",
+ "gbm",
  "greeter",
  "hex",
  "image",
