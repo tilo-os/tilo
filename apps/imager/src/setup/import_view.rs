@@ -21,6 +21,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{Modifiers, WindowEvent};
 
+use super::connection_actions::{self, ConnectionOperation};
+use super::connection_controller::Navigation as ConnectionNavigation;
+use super::connection_view::ConnectionView;
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
 use super::import_actions::{
@@ -39,6 +42,13 @@ use crate::rhythm::px::{GROUP, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
 static NEXT_OPERATION: AtomicU64 = AtomicU64::new(0);
 
 type CommandSink = Rc<RefCell<Vec<ImportCommand>>>;
+type ConnectionLauncher = fn(u64) -> ConnectionView;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImportRoute {
+    Imports,
+    Connections,
+}
 
 #[derive(Clone, Copy, Debug)]
 enum PickTarget {
@@ -87,6 +97,10 @@ pub struct ImportApp {
     picker_launcher: fn() -> ui::PortalChannel,
     identity_checker: fn() -> Result<(), String>,
     commands: CommandSink,
+    route: ImportRoute,
+    connection_generation: u64,
+    connection_launcher: ConnectionLauncher,
+    connection_view: Option<ConnectionView>,
     status: String,
     status_is_error: bool,
     composed: Option<Box<dyn Widget>>,
@@ -139,6 +153,10 @@ impl ImportApp {
             picker_launcher: folders::pick_folder,
             identity_checker: desktop_continuation::trusted_identity_complete,
             commands: Rc::new(RefCell::new(Vec::new())),
+            route: ImportRoute::Imports,
+            connection_generation: 1,
+            connection_launcher: ConnectionView::new,
+            connection_view: None,
             status: format!("Folder imports are unavailable: {error}"),
             status_is_error: true,
             composed: None,
@@ -490,6 +508,10 @@ impl ImportApp {
             picker_launcher: folders::pick_folder,
             identity_checker: desktop_continuation::trusted_identity_complete,
             commands: Rc::new(RefCell::new(Vec::new())),
+            route: ImportRoute::Imports,
+            connection_generation: 1,
+            connection_launcher: ConnectionView::new,
+            connection_view: None,
             status,
             status_is_error: false,
             composed: None,
@@ -2086,6 +2108,30 @@ impl ImportApp {
         // `GROUP` after the previous one; cards inside a group keep the
         // sibling step.
         let mut body = page(header);
+        let connection_entry =
+            connection_actions::entry_resource(self.current_connection_generation());
+        let open_connections = connection_entry
+            .actions
+            .iter()
+            .find(|action| action.id == "open-management")
+            .expect("the Connected entry exports its canonical open action");
+        let open_binding =
+            tilo_actions::ActionBinding::unit_for(&connection_entry, "open-management")
+                .expect("the Connected entry action is nullary");
+        body = body.push(Box::new(Card::titled(
+            super::strings::t("imager-connected-import-title"),
+            Box::new(
+                stack()
+                    .push(Box::new(Text::new(&super::strings::t(
+                        "imager-connected-import-detail",
+                    ))))
+                    .push(Box::new(
+                        Button::new("import.connections.open", &open_connections.label, None)
+                            .on_action(open_binding)
+                            .with_enabled(open_connections.contract.availability.is_available()),
+                    )),
+            ),
+        )));
         if let Err(error) = durable_copy_available() {
             body = body.push(Box::new(Card::titled(
                 "Folder copying unavailable",
@@ -2256,13 +2302,83 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+impl ImportApp {
+    fn current_connection_generation(&self) -> u64 {
+        self.connection_view
+            .as_ref()
+            .map_or(self.connection_generation, ConnectionView::generation)
+    }
+
+    fn synchronize_connection_generation(&mut self) {
+        self.connection_generation = self.current_connection_generation();
+    }
+
+    fn ensure_connection_view(&mut self) -> &mut ConnectionView {
+        self.connection_view
+            .get_or_insert_with(|| (self.connection_launcher)(self.connection_generation))
+    }
+
+    fn invoke_connection_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        operation: ConnectionOperation,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        connection_actions::validate_kind(&operation, kind)?;
+        match self.route {
+            ImportRoute::Imports
+                if !matches!(operation, ConnectionOperation::OpenManagement { .. }) =>
+            {
+                return Err(super::strings::t("imager-connected-error-stale-route"));
+            }
+            ImportRoute::Connections
+                if matches!(operation, ConnectionOperation::OpenManagement { .. }) =>
+            {
+                return Err(super::strings::t("imager-connected-error-stale-route"));
+            }
+            _ => {}
+        }
+        let result = self
+            .ensure_connection_view()
+            .invoke_operation(kind, operation)?;
+        self.connection_generation = self
+            .connection_view
+            .as_ref()
+            .map_or(self.connection_generation, ConnectionView::generation);
+        match result.navigation {
+            Some(ConnectionNavigation::OpenManagement) => self.route = ImportRoute::Connections,
+            Some(ConnectionNavigation::BackToImports) => self.route = ImportRoute::Imports,
+            None => {}
+        }
+        self.structure_dirty = true;
+        Ok(result.output)
+    }
+}
+
 impl Widget for ImportApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[import_actions::IMPORT_OPERATION_TYPE]
+        &[
+            import_actions::IMPORT_OPERATION_TYPE,
+            connection_actions::CONNECTION_OPERATION_TYPE,
+        ]
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![import_actions::resource(&self.import_projection())]
+        match self.route {
+            ImportRoute::Imports => {
+                let mut root = import_actions::resource(&self.import_projection());
+                root.children.insert(
+                    0,
+                    connection_actions::entry_resource(self.current_connection_generation()),
+                );
+                vec![root]
+            }
+            ImportRoute::Connections => self
+                .connection_view
+                .as_ref()
+                .map(ConnectionView::resource)
+                .into_iter()
+                .collect(),
+        }
     }
 
     fn invoke_resource_operation_v2(
@@ -2273,6 +2389,9 @@ impl Widget for ImportApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if let Some(operation) = connection_actions::decode(type_id, payload)? {
+            return self.invoke_connection_operation(kind, operation).map(Some);
+        }
         let Some(operation) = import_actions::decode(type_id, payload)? else {
             for child in self.children_mut() {
                 if let Some(output) =
@@ -2283,6 +2402,9 @@ impl Widget for ImportApp {
             }
             return Ok(None);
         };
+        if self.route == ImportRoute::Connections {
+            return Err(super::strings::t("imager-connected-error-stale-route"));
+        }
         if kind != tilo_actions::OperationKind::View {
             return Err(super::strings::t("imager-import-error-operation-kind"));
         }
@@ -2292,14 +2414,31 @@ impl Widget for ImportApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.poll_background();
         self.drain_commands();
-        if let Some(composed) = &mut self.composed {
+        if let Some(view) = &mut self.connection_view {
+            view.sync(state, path);
+        }
+        self.synchronize_connection_generation();
+        if self.route == ImportRoute::Imports
+            && let Some(composed) = &mut self.composed
+        {
             composed.sync(state, path);
         }
     }
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
-        if let Some(composed) = &mut self.composed {
+        if let Some(view) = &mut self.connection_view {
+            changed |= view.update(state, path);
+        }
+        let generation = self.current_connection_generation();
+        if generation != self.connection_generation {
+            self.connection_generation = generation;
+            self.structure_dirty = true;
+            changed = true;
+        }
+        if self.route == ImportRoute::Imports
+            && let Some(composed) = &mut self.composed
+        {
             changed |= composed.update(state, path);
         }
         changed
@@ -2311,6 +2450,11 @@ impl Widget for ImportApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if self.route == ImportRoute::Connections
+            && let Some(view) = &mut self.connection_view
+        {
+            return view.build_layout(taffy, theme, node_map);
+        }
         let mut composed = self.build_composition();
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
@@ -2333,6 +2477,12 @@ impl Widget for ImportApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if self.route == ImportRoute::Connections
+            && let Some(view) = &mut self.connection_view
+        {
+            view.apply_layout(taffy, node, origin);
+            return;
+        }
         let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -2356,6 +2506,12 @@ impl Widget for ImportApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.route == ImportRoute::Connections
+            && let Some(view) = &mut self.connection_view
+        {
+            view.draw(scene, transform, text_renderer, theme, presence);
+            return;
+        }
         scene.fill(
             Fill::NonZero,
             transform,
@@ -2380,6 +2536,22 @@ impl Widget for ImportApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if self.route == ImportRoute::Connections
+            && let Some(view) = &mut self.connection_view
+        {
+            view.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            return;
+        }
         if let Some(composed) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&child) = children.first()
@@ -2399,6 +2571,11 @@ impl Widget for ImportApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        if self.route == ImportRoute::Connections
+            && let Some(view) = &self.connection_view
+        {
+            return vec![view as &dyn Widget];
+        }
         self.composed
             .as_ref()
             .map(|child| child.as_ref() as &dyn Widget)
@@ -2407,6 +2584,11 @@ impl Widget for ImportApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.route == ImportRoute::Connections
+            && let Some(view) = &mut self.connection_view
+        {
+            return vec![view as &mut dyn Widget];
+        }
         self.composed
             .as_mut()
             .map(|child| child.as_mut() as &mut (dyn Widget + '_))
@@ -2429,10 +2611,18 @@ impl Widget for ImportApp {
             || self.picker.is_some()
             || !self.pending_saves.is_empty()
             || self.detail_request.is_some()
+            || self
+                .connection_view
+                .as_ref()
+                .is_some_and(Widget::needs_idle_sync)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty)
+            || self
+                .connection_view
+                .as_mut()
+                .is_some_and(Widget::take_structure_dirty)
             || self
                 .composed
                 .as_mut()
@@ -2443,6 +2633,18 @@ impl Widget for ImportApp {
 #[must_use]
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImportApp::new())
+}
+
+#[cfg(test)]
+pub(crate) fn connected_catalog_test_app() -> ImportApp {
+    fn catalog(generation: u64) -> ConnectionView {
+        let mut view = ConnectionView::for_shot("connected-catalog");
+        view.set_generation(generation);
+        view
+    }
+    let mut app = ImportApp::for_shot("import-first-login-later");
+    app.connection_launcher = catalog;
+    app
 }
 
 #[cfg(test)]
@@ -2505,6 +2707,14 @@ mod tests {
         app: &mut ImportApp,
         action: &tilo_actions::ActionSpec,
     ) -> Result<serde_json::Value, String> {
+        invoke_action_with_doc(app, action, &AutoCommit::new())
+    }
+
+    fn invoke_action_with_doc(
+        app: &mut ImportApp,
+        action: &tilo_actions::ActionSpec,
+        document: &AutoCommit,
+    ) -> Result<serde_json::Value, String> {
         let encoded = action
             .build_json(&serde_json::Map::new())
             .map_err(|error| error.to_string())?;
@@ -2513,7 +2723,7 @@ mod tests {
             action.kind,
             &encoded.type_id,
             &encoded.payload,
-            &AutoCommit::new(),
+            document,
             &automerge::ROOT,
         )?
         .and_then(|output| output.value)
@@ -2608,9 +2818,10 @@ mod tests {
 
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].kind, "imager.import");
-        assert_eq!(resources[0].children.len(), 1);
-        assert_eq!(resources[0].children[0].kind, "imager.import.operation");
-        assert!(resources[0].children[0].id.0.ends_with(&operation_id));
+        assert_eq!(resources[0].children.len(), 2);
+        assert_eq!(resources[0].children[0].kind, "imager.connections.entry");
+        assert_eq!(resources[0].children[1].kind, "imager.import.operation");
+        assert!(resources[0].children[1].id.0.ends_with(&operation_id));
         let exposed = resources[0]
             .children
             .iter()
@@ -3677,6 +3888,169 @@ mod tests {
         assert!(
             summary < details && details < toggle && toggle < next && next < retry,
             "{order:?}"
+        );
+    }
+
+    fn connected_fixture(generation: u64) -> super::super::connection_view::ConnectionView {
+        let mut view = super::super::connection_view::ConnectionView::for_shot("connected-status");
+        view.set_generation(generation);
+        view
+    }
+
+    fn connected_catalog_fixture(generation: u64) -> super::super::connection_view::ConnectionView {
+        let mut view = super::super::connection_view::ConnectionView::for_shot("connected-catalog");
+        view.set_generation(generation);
+        view
+    }
+
+    fn connected_held_fixture(generation: u64) -> super::super::connection_view::ConnectionView {
+        super::super::connection_view::ConnectionView::for_controlled_open(generation)
+    }
+
+    #[test]
+    fn connected_route_changes_resources_before_layout_and_retains_one_owner() {
+        let (_temp, mut app, _source, _destination_parent) = fixture();
+        app.connection_launcher = connected_fixture;
+        let document = AutoCommit::new();
+        let imports = Widget::resources(&app, &document).pop().unwrap();
+        let entry = imports
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.connections.entry")
+            .unwrap();
+        let open = action(entry, "open-management");
+        invoke_action(&mut app, &open).unwrap();
+
+        let connected = Widget::resources(&app, &document).pop().unwrap();
+        assert_eq!(connected.kind, "imager.connections");
+        let owner = app.connection_view.as_ref().unwrap() as *const _;
+        let back = action(&connected, "back");
+        invoke_action(&mut app, &back).unwrap();
+
+        let imports_again = Widget::resources(&app, &document).pop().unwrap();
+        assert_eq!(imports_again.kind, "imager.import");
+        assert_eq!(owner, app.connection_view.as_ref().unwrap() as *const _);
+        assert!(invoke_action(&mut app, &action(&connected, "observe")).is_err());
+        assert!(
+            app.needs_idle_sync(),
+            "hidden retained observer still polls"
+        );
+    }
+
+    #[test]
+    fn hidden_completion_republishes_a_current_open_action_before_layout() {
+        let (_temp, mut app, _source, _destination_parent) = fixture();
+        app.connection_launcher = connected_catalog_fixture;
+        let mut document = AutoCommit::new();
+        let before_bytes = document.save();
+        let before_heads = document.get_heads();
+        let imports = Widget::resources(&app, &document).pop().unwrap();
+        let entry = imports
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.connections.entry")
+            .unwrap();
+        invoke_action_with_doc(&mut app, &action(entry, "open-management"), &document).unwrap();
+
+        let connected = Widget::resources(&app, &document).pop().unwrap();
+        invoke_action_with_doc(
+            &mut app,
+            &action(&connected, "first-connections"),
+            &document,
+        )
+        .unwrap();
+        invoke_action_with_doc(&mut app, &action(&connected, "back"), &document).unwrap();
+        assert!(Widget::update(&mut app, &mut document, &automerge::ROOT));
+
+        let imports = Widget::resources(&app, &document).pop().unwrap();
+        let entry = imports
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.connections.entry")
+            .unwrap();
+        invoke_action_with_doc(&mut app, &action(entry, "open-management"), &document).unwrap();
+        assert_eq!(
+            Widget::resources(&app, &document)[0].kind,
+            "imager.connections"
+        );
+        assert_eq!(document.get_heads(), before_heads);
+        assert_eq!(document.save(), before_bytes);
+    }
+
+    #[test]
+    fn imports_composition_exposes_the_published_connected_entry_action() {
+        let (_temp, mut app, _source, _destination_parent) = fixture();
+        app.connection_launcher = connected_catalog_fixture;
+        let composition = app.build_composition();
+        let bindings = composition.control_action_bindings();
+        assert!(bindings.iter().any(|binding| matches!(
+            &binding.kind,
+            ui::widget::ControlBindingKind::Action(address)
+                if address.resource == "imager.connections.entry"
+                    && address.action == "open-management"
+        )));
+        let document = AutoCommit::new();
+        let imports = Widget::resources(&app, &document).pop().unwrap();
+        let entry = imports
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.connections.entry")
+            .unwrap();
+        invoke_action(&mut app, &action(entry, "open-management")).unwrap();
+        assert_eq!(
+            Widget::resources(&app, &document)[0].kind,
+            "imager.connections"
+        );
+        let owner = app.connection_view.as_ref().unwrap();
+        assert_eq!(owner.service_submission_count(), 0);
+        assert!(!owner.opener_pending_for_test());
+    }
+
+    #[test]
+    fn repeated_published_open_is_refused_while_the_controlled_opener_is_held() {
+        let (_temp, mut app, _source, _destination_parent) = fixture();
+        app.connection_launcher = connected_held_fixture;
+        let document = AutoCommit::new();
+        let imports = Widget::resources(&app, &document).pop().unwrap();
+        let entry = imports
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.connections.entry")
+            .unwrap();
+        let open = action(entry, "open-management");
+        invoke_action_with_doc(&mut app, &open, &document).unwrap();
+        let owner = app.connection_view.as_ref().unwrap();
+        assert!(owner.opener_pending_for_test());
+        assert_eq!(owner.service_submission_count(), 0);
+
+        let error = invoke_action_with_doc(&mut app, &open, &document).unwrap_err();
+        assert!(error.contains("no longer current"), "{error}");
+        let owner = app.connection_view.as_ref().unwrap();
+        assert!(owner.opener_pending_for_test());
+        assert_eq!(owner.service_submission_count(), 0);
+    }
+
+    #[test]
+    fn copy_bookkeeping_keeps_polling_while_connected_management_is_visible() {
+        let (_temp, mut app, _source, _destination_parent) = fixture();
+        app.connection_launcher = connected_fixture;
+        let imports = Widget::resources(&app, &AutoCommit::new()).pop().unwrap();
+        let entry = imports
+            .children
+            .iter()
+            .find(|child| child.kind == "imager.connections.entry")
+            .unwrap();
+        invoke_action(&mut app, &action(entry, "open-management")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut state = AutoCommit::new();
+        while !app.pending_saves.is_empty() {
+            let _ = Widget::update(&mut app, &mut state, &automerge::ROOT);
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            Widget::resources(&app, &state)[0].kind,
+            "imager.connections"
         );
     }
 }
