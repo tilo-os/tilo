@@ -153,6 +153,9 @@ pub struct DrmPresenter {
 }
 
 const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
+/// A page-flip event should arrive within one refresh interval. Give even a
+/// 24 Hz panel several intervals, while still failing boundedly if KMS wedges.
+const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DirectEligibility<'a> {
@@ -434,7 +437,7 @@ impl DrmPresenter {
         if self.blanked || self.paused {
             return;
         }
-        paint_scanouts(
+        let direct_queued = paint_scanouts(
             &mut self.scanouts,
             &self.outputs,
             &mut self.paint,
@@ -443,6 +446,10 @@ impl DrmPresenter {
             None,
             Some(&mut self.phase_window),
         );
+        if direct_queued {
+            self.retire_direct_flip();
+        }
+        self.emit_phase_profile();
     }
 
     fn render_frame(&mut self, frame: &FramePaint) {
@@ -450,7 +457,7 @@ impl DrmPresenter {
         if self.blanked || self.paused {
             return;
         }
-        paint_scanouts(
+        let direct_queued = paint_scanouts(
             &mut self.scanouts,
             &self.outputs,
             &mut self.paint,
@@ -463,7 +470,44 @@ impl DrmPresenter {
             }),
             Some(&mut self.phase_window),
         );
+        if direct_queued {
+            self.retire_direct_flip();
+        }
         self.emit_phase_profile();
+    }
+
+    /// Tighten `Presenter::present_frame`'s completion boundary to the KMS
+    /// page-flip event for direct scanout. `PresentPipe` only frees producer
+    /// capacity after this method returns, so no second frame is rendered
+    /// while both double-buffered targets remain owned by KMS.
+    fn retire_direct_flip(&mut self) {
+        let Some(index) = self
+            .scanouts
+            .iter()
+            .position(|entry| entry.direct_targets.is_some())
+        else {
+            return;
+        };
+        let (retirement, completions) = self.scanouts[index]
+            .scanout
+            .wait_flip_completions(DIRECT_RETIREMENT_TIMEOUT);
+        self.phase_window.record_flip_completions(completions.len());
+        for crtc in completions {
+            let entry = &mut self.scanouts[index];
+            if let Some(targets) = entry.direct_targets.as_mut() {
+                entry.scanout.mark_direct_flip_complete(targets, crtc);
+            }
+        }
+        if retirement == scanout::DirectRetirement::TimedOut {
+            let entry = &mut self.scanouts[index];
+            tracing::error!(
+                timeout_ms = DIRECT_RETIREMENT_TIMEOUT.as_millis(),
+                "DRM direct page flip did not retire; disabling direct scanout"
+            );
+            entry.scanout.restore_legacy_front();
+            entry.direct_targets = None;
+            entry.direct_unavailable = Some("page-flip retirement timed out".to_owned());
+        }
     }
 
     fn emit_phase_profile(&mut self) {
@@ -632,13 +676,13 @@ fn paint_scanouts(
     scene: &Scene,
     damage: Option<SceneDamage<'_>>,
     mut phase_window: Option<&mut PhaseWindow>,
-) {
+) -> bool {
     if scanouts.is_empty() {
-        return;
+        return false;
     }
     let target_size = combined_geometry(outputs);
     if target_size.0 == 0 || target_size.1 == 0 {
-        return;
+        return false;
     }
     if paint.is_none() {
         match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
@@ -651,7 +695,7 @@ fn paint_scanouts(
             }
             Err(e) => {
                 tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
-                return;
+                return false;
             }
         }
     }
@@ -661,13 +705,13 @@ fn paint_scanouts(
         // already returned on failure — a miss here would mean that
         // silently didn't stick, so skip this frame rather than panic.
         let Some(bridge) = paint.as_mut() else {
-            return;
+            return false;
         };
         if bridge.size() != target_size {
             bridge_resized = true;
             if let Err(e) = bridge.resize(target_size.0, target_size.1) {
                 tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
-                return;
+                return false;
             }
         }
     }
@@ -704,7 +748,7 @@ fn paint_scanouts(
         // `fast_path` only goes true when `scanouts.first()` matched above,
         // so neither `first_mut()` nor `paint.as_mut()` can miss here.
         let (Some(entry), Some(bridge)) = (scanouts.first_mut(), paint.as_mut()) else {
-            return;
+            return false;
         };
 
         // The direct path is deliberately narrow until every transformed,
@@ -798,13 +842,13 @@ fn paint_scanouts(
                                         framebuffer_staging_bytes = stats.framebuffer_staging_bytes,
                                         "DRM direct frame submitted"
                                     );
-                                    return;
+                                    return true;
                                 }
                                 scanout::DirectSubmit::Busy => {
                                     if let Some(window) = phase_window.as_deref_mut() {
                                         window.record_direct_drop();
                                     }
-                                    return;
+                                    return false;
                                 }
                                 scanout::DirectSubmit::Failed(error) => {
                                     tracing::warn!(%error, "DRM direct submit failed; disabling direct targets");
@@ -824,7 +868,7 @@ fn paint_scanouts(
                         if let Some(window) = phase_window.as_deref_mut() {
                             window.record_direct_drop();
                         }
-                        return;
+                        return false;
                     }
                 }
             }
@@ -846,7 +890,7 @@ fn paint_scanouts(
                     error => tracing::error!("DRM backend: history-aware XRGB paint: {error}"),
                 }
             }
-            return;
+            return false;
         }
         if entry.scanout.xrgb_damage_requested() {
             entry.scanout.invalidate_xrgb_history();
@@ -864,7 +908,7 @@ fn paint_scanouts(
                 e => tracing::error!("DRM backend: paint_into_xrgb8888: {e}"),
             }
         }
-        return;
+        return false;
     }
 
     // Multi-output path: scanouts on one card share an open file
@@ -879,7 +923,7 @@ fn paint_scanouts(
     // each output's sub-rect into its own scanout's dumb buffer (fused
     // single-pass, per output).
     let Some(bridge) = paint.as_mut() else {
-        return;
+        return false;
     };
     let rgba = match bridge.paint(scene) {
         Ok(b) => b,
@@ -890,13 +934,14 @@ fn paint_scanouts(
                 }
                 e => tracing::error!("DRM backend: paint (combined): {e}"),
             }
-            return;
+            return false;
         }
     };
     let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
     for e in scanouts.iter_mut() {
         paint_one_scanout(e, outputs, rgba, cw, ch, pointer);
     }
+    false
 }
 
 /// Drain one page-flip event stream per KMS device and route each completion
