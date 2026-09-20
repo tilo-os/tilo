@@ -106,6 +106,14 @@ else
   bad "installer target UKI selection is traversal-order dependent"
 fi
 
+if grep -Fq 'set -- /boot/EFI/Linux/*.efi' "$prediction_signer" \
+   && grep -Fq 'ambiguous live UKI set; cannot bind a PCR prediction' "$prediction_signer" \
+   && ! grep -Fq 'source="$(find /boot/EFI/Linux -type f -name "*.efi" -print -quit)"' "$prediction_signer"; then
+  ok "PCR prediction signing rejects an ambiguous live UKI fallback"
+else
+  bad "PCR prediction signing can bind the wrong live UKI"
+fi
+
 if grep -Fq '"$INSTALLER_CONTEXT/rootfs/usr/share/tilo/greetd-config.toml"' "$builder" \
    && grep -Fq 'COPY rootfs/ /' "$containerfile" \
    && grep -Fq 'install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"' "$backend" \
