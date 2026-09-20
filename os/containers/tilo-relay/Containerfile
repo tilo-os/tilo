@@ -31,16 +31,50 @@ ARG BASE_REF
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
+FROM scratch AS external-assets
+COPY --from=github-assets / /
+
 # ---- Stage 1: builder --------------------------------------------------------
 FROM ${BASE_REF} AS builder
 
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        rust cargo sccache capnproto \
+        rust cargo capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang clang-devel pkgconf-pkg-config \
     && dnf clean all
 
+# Fedora's sccache RPM omits S3 support. Install the same checksum-pinned,
+# full-feature static client as the canonical OS builder.
+ARG SCCACHE_VERSION=0.17.0
+ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
+ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
+RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+    case "$(uname -m)" in \
+      x86_64) sccache_arch=x86_64; sccache_sha="$SCCACHE_SHA256_X86_64" ;; \
+      aarch64) sccache_arch=aarch64; sccache_sha="$SCCACHE_SHA256_AARCH64" ;; \
+      *) echo "unsupported sccache architecture: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+    && archive="sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl.tar.gz" \
+    && echo "${sccache_sha}  /tilo-assets/${archive}" | sha256sum -c - \
+    && tar -xzf "/tilo-assets/${archive}" -C /tmp \
+    && install -m 0755 \
+       "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl/sccache" \
+       /usr/local/bin/sccache \
+    && rm -rf "/tmp/sccache-v${SCCACHE_VERSION}-${sccache_arch}-unknown-linux-musl" \
+    && /usr/local/bin/sccache --version
+
 WORKDIR /build
+
+# This build uses a repository-root context. Prove the Dockerfile-specific
+# ignore file removed checkout credentials and unrelated CI metadata before any
+# source enters an image layer. The bind is read-only and its contents are never
+# printed or copied by this check.
+RUN --mount=type=bind,source=.,target=/context,ro \
+    test ! -e /context/.git/config \
+    && test ! -e /context/.forgejo \
+    && test -f /context/Cargo.lock \
+    && test -f /context/crates/hosting/tilo-relay/Cargo.toml
+
 COPY . /build
 
 # BuildKit's default RUN env doesn't include a writable HOME, so cargo
@@ -48,6 +82,14 @@ COPY . /build
 # os/Containerfile.host — pin CARGO_HOME + SCCACHE_DIR into the
 # repo-mounted /build.
 ARG SOURCE_DATE_EPOCH=0
+ARG SCCACHE_BUCKET=""
+ARG SCCACHE_ENDPOINT=""
+ARG SCCACHE_REGION="auto"
+ARG SCCACHE_S3_KEY_PREFIX="tilo/relay/v1"
+ARG SCCACHE_S3_USE_SSL="false"
+ARG TILO_COMPILER_CACHE_CONFIGURED=0
+ARG TILO_REQUIRE_COMPILER_CACHE=0
+ARG TILO_CACHE_PROBE_NONCE=""
 # No RUSTFLAGS here, deliberately. The variable REPLACES `build.rustflags`
 # from .cargo/config.toml rather than appending to it, so setting it for the
 # `--remap-path-prefix` alone silently drops target-cpu=x86-64-v3 and every
@@ -58,6 +100,14 @@ ARG SOURCE_DATE_EPOCH=0
 # cargo reads that config from /build.
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
+    SCCACHE_BUCKET=${SCCACHE_BUCKET} \
+    SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT} \
+    SCCACHE_REGION=${SCCACHE_REGION} \
+    SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
+    SCCACHE_S3_USE_SSL=${SCCACHE_S3_USE_SSL} \
+    SCCACHE_IGNORE_SERVER_IO_ERROR=1 \
+    TILO_CACHE_PROBE_NONCE=${TILO_CACHE_PROBE_NONCE} \
+    RUSTC_WRAPPER=/usr/local/bin/sccache \
     CARGO_BUILD_JOBS=2 \
     CARGO_PROFILE_RELEASE_LTO=thin \
     CARGO_INCREMENTAL=0 \
@@ -65,15 +115,31 @@ ENV CARGO_HOME=/build/.cargo-home \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Build tilo-relay and the authenticated filesystem replica — trims build time to
-# minutes rather than tens. Match os/Containerfile.host's cache
-# mounts so incremental builds actually pick up on the runner.
+# Build the relay and authenticated filesystem replica in one feature-resolution
+# graph. Separate Cargo invocations recompile shared dependencies whose selected
+# features differ by package root. Match os/Containerfile.host's cache mounts so
+# subsequent builds can reuse compiler results as well.
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
-    sed -i '/"apps\/browser",/d' Cargo.toml \
-    && cargo build --release -p tilo-relay --bins \
-    && cargo build --release -p fs --bin fs \
+    --mount=type=secret,id=aws_access_key_id \
+    --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_session_token \
+    export AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
+    && export AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)" \
+    && export AWS_SESSION_TOKEN="$(cat /run/secrets/aws_session_token 2>/dev/null || true)" \
+    && if [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
+         test "$TILO_COMPILER_CACHE_CONFIGURED" = 1 || { \
+           printf '%s\n' 'required compiler cache configuration is unavailable' >&2; exit 1; \
+         }; \
+         SCCACHE_IGNORE_SERVER_IO_ERROR=0 python3 /build/os/containers/tilo-relay/probe-sccache.py; \
+       elif [ "$TILO_COMPILER_CACHE_CONFIGURED" != 1 ] || ! sccache --start-server; then \
+         export RUSTC_WRAPPER=; \
+         printf '%s\n' 'sccache backend unavailable; compiling normally' >&2; \
+       fi \
+    && { sccache --zero-stats 2>/dev/null || true; } \
+    && cargo build --locked --release -p tilo-relay -p fs --bins \
+    && { sccache --show-stats 2>/dev/null || true; } \
     && mkdir -p /out \
     && cp target/release/tilo-relay \
           target/release/tilo-relay-admin \
