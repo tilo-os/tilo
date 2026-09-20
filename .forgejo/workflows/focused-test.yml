@@ -1,10 +1,9 @@
 name: Development / focused native test
 
-permissions:
-  contents: read
-
 # Diagnostic evidence, not a replacement for required PR checks. Workflow code
 # comes from the dispatch ref; source_sha selects only the code being tested.
+# Forgejo ignores workflow permissions keys. Checkout credentials are removed;
+# no publication or signing secret is passed to the source build.
 on:
   workflow_dispatch:
     inputs:
