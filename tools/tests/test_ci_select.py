@@ -42,6 +42,19 @@ class SelectorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_native_dependency_selection_tracks_build_and_observer_inputs(self):
+        for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
+                     "vendor/openh264-sys2/build.rs"):
+            with self.subTest(path=path):
+                plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
+                self.assertTrue(plan["native_dependencies_required"])
+        self.assertFalse(ci_select.native_dependencies_required(["apps/calculator/src/actions.rs"]))
+        self.assertFalse(ci_select.native_dependencies_required(["DEVELOPMENT.md"]))
+        self.assertFalse(ci_select.native_dependencies_required([
+            ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py",
+            "os/tests/test_openh264_source_order.py"]))
+        self.assertTrue(ci_select.native_dependencies_required([], force_full=True))
+
     def test_reverse_dependency_closure(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
         self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "qdoc", "pkg", "collab-types"})
