@@ -231,14 +231,19 @@ those subsystems. `DEVELOPMENT.md` for the build environment.
 Use a task branch and a pull request for routine integration. Group related,
 tested changes into small coherent increments; do not push work-in-progress or
 minute-by-minute fixups directly to main. Keep the PR updated rather than opening
-another PR for each iteration. Obtain an independent review and successful
-applicable CI for the current head before merging. Routine integration does not
+another PR for each iteration. Obtain successful applicable CI for the current
+head and post the author's `/merge <full-head-sha>` intent. Independent review is
+optional for ordinary product changes; a requested review holds that head until
+approval or cancellation, and change requests block. CI policy, publication,
+signing and named security-boundary changes require the reviewed operator path.
+Follow `DEVELOPMENT.md` and the controller's scope decision. Routine integration does not
 need an extra human approval unless the change's policy requires one. Explicitly
 authorized emergency CI/infra fixes may be integrated directly.
 
-Keep check/lint results for every main commit. Full OS, desktop distribution and
-app packaging builds are currently explicit or scheduled; do not restore broad
-per-push triggers to obtain a development artifact. Use the existing workflow's
+Keep check/lint results for every main commit. Affected qOS/Linux apps package
+after relevant main changes; unchanged collection members are reused. Full OS
+and desktop distribution builds remain explicit or scheduled; do not restore
+broad per-push full builds to obtain a development artifact. Use the existing workflow's
 manual dispatch and the smallest applicable app/architecture inputs instead.
 
 The existing CI scheduler owns runner slots, admission and queue order. Submit
