@@ -427,6 +427,7 @@ pub fn provide_account_resource(
             } else {
                 "Set up".into()
             }),
+            preview: None,
         });
 
     child = child.with_action(

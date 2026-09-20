@@ -4,8 +4,8 @@
 //! width, and read especially poorly on mobile).
 //!
 //! `NotesApp` refreshes a [`StatusBarState`] snapshot and, when it changes,
-//! pokes the bubble so it surfaces briefly (a save flipping to "Saving…",
-//! a page switch, a word-count tick while typing) then quietly fades. The
+//! pokes the bubble for save or navigation changes, then quietly fades.
+//! Word counts update without reopening it; failures remain visible. The
 //! bubble also appears while the pointer hovers the bottom-right corner.
 //!
 //! This type owns no CRDT state and does no rendering — it holds the
@@ -82,8 +82,8 @@ impl StatusModel {
 
     pub fn right_text(&self) -> String {
         let pages = match self.state.page_count {
-            1 => "1 page".to_string(),
-            n => format!("{n} pages"),
+            1 => "1 note".to_string(),
+            n => format!("{n} notes"),
         };
         match self.state.word_count {
             Some(w) => {
@@ -146,14 +146,14 @@ mod tests {
             page_count: 1,
             word_count: Some(1),
         });
-        assert_eq!(bar.right_text(), "1 page · 1 word");
+        assert_eq!(bar.right_text(), "1 note · 1 word");
         bar.set_state(StatusBarState {
             save_status: SaveStatus::Saved,
             page_path: "Welcome".into(),
             page_count: 4,
             word_count: Some(142),
         });
-        assert_eq!(bar.right_text(), "4 pages · 142 words");
+        assert_eq!(bar.right_text(), "4 notes · 142 words");
     }
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
             page_count: 3,
             word_count: None,
         });
-        assert_eq!(bar.right_text(), "3 pages");
+        assert_eq!(bar.right_text(), "3 notes");
     }
 
     #[test]
