@@ -223,7 +223,6 @@ struct FillDrag {
 struct CellTextStyle {
     size: f32,
     color: Color,
-    right_align: bool,
 }
 
 /// Text and band metrics for the grid, resolved from the renderer that paints
@@ -2217,7 +2216,6 @@ impl Grid {
                         &CellTextStyle {
                             size: text_size,
                             color,
-                            right_align: false,
                         },
                         cell,
                         false,
@@ -2248,7 +2246,6 @@ impl Grid {
                         &CellTextStyle {
                             size: text_size,
                             color,
-                            right_align,
                         },
                         cell,
                         right_align,
