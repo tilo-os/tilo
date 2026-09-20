@@ -1,8 +1,12 @@
 #!/bin/sh
-# Cosign's AWS KMS provider does not infer the SDK region from every supported
-# awskms URI form. Derive it from the already trusted key ARN so workflows do
-# not need a second, independently configurable region secret.
+# Configure the selected Cosign signing provider. GitHub uses a repository
+# secret during the migration bootstrap; AWS KMS remains supported for the
+# later non-exportable production authority.
 case ${COSIGN_KEY_REF:-} in
+  env://COSIGN_PRIVATE_KEY)
+    : "${COSIGN_PRIVATE_KEY:?COSIGN_PRIVATE_KEY is required}"
+    : "${COSIGN_PASSWORD:?COSIGN_PASSWORD is required}"
+    ;;
   awskms://*)
     : "${AWS_SIGNING_ROLE_ARN:?AWS signing role ARN is required}"
     : "${ACTIONS_ID_TOKEN_REQUEST_URL:?Forgejo OIDC request URL is required}"

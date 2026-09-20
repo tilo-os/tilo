@@ -50,6 +50,10 @@ concurrency:
   group: build-kernel-${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && 'publication' || github.ref }}
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) }}
 
+env:
+  COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+  COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
@@ -95,8 +99,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+            env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name the configured signing authority"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
           resolved="$RUNNER_TEMP/kernel-release-signing-authority.pub"
@@ -311,8 +315,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+            env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name the configured signing authority"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
           ref="ghcr.io/tilo-os/tilo-kernel@${{ steps.build.outputs.digest }}"

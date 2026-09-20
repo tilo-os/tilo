@@ -61,15 +61,16 @@ promote_line="$(grep -n 'Assemble, sign, attest, and promote the OS index' "$wor
   && ok 'channel tags are promoted only after signing and attestation' \
   || bad 'release channels can expose an unsigned candidate'
 
-grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$workflow" \
-  && ! grep -Fq 'COSIGN_PRIVATE_KEY' "$workflow" \
-  && ok 'release signing requires a non-exportable KMS/HSM key' \
-  || bad 'release signing still accepts an exportable private key secret'
+grep -Fq 'COSIGN_KEY_REF must name the configured signing authority' "$workflow" \
+  && grep -Fq 'env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*' "$workflow" \
+  && grep -Fq 'COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}' "$workflow" \
+  && ok 'release signing requires the pinned GitHub bootstrap or production KMS authority' \
+  || bad 'release signing can bypass its configured signing authority'
 
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
    && grep -Fq 'needs: [plan, signing-preflight]' "$workflow"; then
-  ok 'OS construction starts only after release KMS identity preflight'
+  ok 'OS construction starts only after release signing-identity preflight'
 else
   bad 'OS release construction can start before its signing authority is identity-bound'
 fi

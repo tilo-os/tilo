@@ -44,6 +44,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+  COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
   RPM_SNAPSHOT_INPUTS: |
     os/Containerfile
     os/base-snapshot.env
@@ -103,8 +105,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+            env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name the configured signing authority"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
           resolved="$RUNNER_TEMP/rpm-snapshot-signing-authority.pub"
@@ -221,8 +223,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+            env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name the configured signing authority"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
           cosign sign --yes --key "$COSIGN_KEY_REF" "ghcr.io/tilo-os/rpms@${CHILD_DIGEST}"
@@ -289,8 +291,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+            env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name the configured signing authority"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
           # The containerized runner's root filesystem is overlayfs, so a
@@ -327,8 +329,8 @@ jobs:
             exit 1
           }
           case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+            env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name the configured signing authority"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
           source os/base-snapshot.env

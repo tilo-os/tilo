@@ -92,7 +92,7 @@ fi
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$kernel_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$kernel_workflow" \
    && grep -Fq 'needs: [signing-preflight, applicability]' "$kernel_workflow"; then
-  printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
+  printf 'ok    release kernel compilation starts only after signing identity preflight\n'
 else
   printf 'release kernel compilation can start before its signing authority is identity-bound\n' >&2
   fail=1
@@ -102,7 +102,7 @@ relay_workflow="$workflows/tilo-relay.yaml"
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$relay_workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$relay_workflow" \
    && grep -Fq 'needs: [signing-preflight, applicability]' "$relay_workflow"; then
-  printf 'ok    release relay build starts only after KMS identity preflight\n'
+  printf 'ok    release relay build starts only after signing identity preflight\n'
 else
   printf 'release relay build can start before its signing authority is identity-bound\n' >&2
   fail=1
@@ -217,17 +217,18 @@ if grep -R -q 'sigstore/cosign-installer' "$workflows"; then
   fail=1
 fi
 for workflow in "${release_signed_workflows[@]}"; do
-  if grep -Eq -- 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|--tlog-upload=false|--insecure-ignore-tlog' \
-      "$workflow" \
-     || ! grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$workflow" \
+  if grep -Eq -- '--tlog-upload=false|--insecure-ignore-tlog' "$workflow" \
+     || ! grep -Fq 'COSIGN_KEY_REF must name the configured signing authority' "$workflow" \
+     || ! grep -Fq 'env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*' "$workflow" \
+     || ! grep -Fq 'COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}' "$workflow" \
      || ! grep -Eq 'cosign verify --key keys/cosign\.pub "\$(ref|image)"' "$workflow"; then
-    printf 'release artifact bypasses KMS, transparency, or digest verification: %s\n' \
+    printf 'release artifact bypasses signing authority, transparency, or digest verification: %s\n' \
       "${workflow#$repo/}" >&2
     fail=1
   fi
 done
 if [ "$fail" = 0 ]; then
-  printf 'ok    OS, kernel, RPM, and relay releases use KMS signing, transparency, and digest verification\n'
+  printf 'ok    OS, kernel, RPM, and relay releases use pinned signing, transparency, and digest verification\n'
 fi
 builder_workflow="$workflows/build-builder-image.yml"
 if grep -Fq 'uses: actions/attest-build-provenance@' "$builder_workflow" \

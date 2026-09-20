@@ -102,8 +102,10 @@ has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --he
   'snapshot pin updates reject build-input changes while allowing unrelated commits'
 has "$workflow" 'git checkout --detach FETCH_HEAD' \
   'snapshot promotion applies its pin on the current branch tip'
-has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
-  'snapshot signing requires a non-exportable key'
+has "$workflow" 'COSIGN_KEY_REF must name the configured signing authority' \
+  'snapshot signing requires an explicitly configured authority'
+has "$workflow" 'env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*' \
+  'snapshot signing supports the GitHub bootstrap identity and production KMS providers'
 has "$workflow" '. os/dev/configure-cosign-kms.sh' \
   'snapshot signing configures the KMS provider from its trusted key reference'
 oidc_fixture="$(mktemp -d)"
@@ -140,7 +142,7 @@ fi
 if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
    && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
    && grep -Fq 'needs: signing-preflight' "$workflow"; then
-  ok 'snapshot construction starts only after KMS authority matches the pinned public key'
+  ok 'snapshot construction starts only after the signing authority matches the pinned public key'
 else
   bad 'snapshot construction can start before its signing authority is identity-bound'
 fi

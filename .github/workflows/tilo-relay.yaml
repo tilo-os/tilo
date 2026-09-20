@@ -93,6 +93,10 @@ concurrency:
   group: tilo-relay-image-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'publication' || github.ref }}
   cancel-in-progress: ${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
 
+env:
+  COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+  COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
@@ -138,8 +142,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+            env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name the configured signing authority"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
           resolved="$RUNNER_TEMP/relay-release-signing-authority.pub"
@@ -273,8 +277,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
+            env://COSIGN_PRIVATE_KEY|gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo "::error::COSIGN_KEY_REF must name the configured signing authority"; exit 1 ;;
           esac
           . os/dev/configure-cosign-kms.sh
           ref="ghcr.io/tilo-os/tilo-relay@${{ steps.build.outputs.digest }}"
