@@ -135,6 +135,8 @@ static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedS
 static WINDOWS_COMPAT_ENTRY_IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+static SURFACE_LAUNCH_KEYS: std::sync::LazyLock<Mutex<HashMap<u64, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(target_os = "linux")]
 fn proc_stat(pid: u32) -> Option<(u32, u64)> {
@@ -2358,11 +2360,26 @@ pub(crate) fn launch_key_for_app_id(app_id: &str) -> Option<String> {
 /// is claimed by the concrete surface during adoption, so the relationship is
 /// authoritative even when the runtime toolkit id was undeclared.
 pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
+    if let Some(key) = lock(&SURFACE_LAUNCH_KEYS).get(&surface_id).cloned() {
+        return Some(key);
+    }
     let pending = lock(&PENDING_PLACEMENT);
     pending
         .iter()
         .find(|note| note.claimed_by == Some(surface_id))
         .map(|note| note.key.clone())
+}
+
+/// Bind an accepted surface to the kernel-authenticated launch identity of
+/// its Wayland connection. Host applications may announce an undeclared
+/// toolkit app-id, so this mapping is intentionally independent of protocol
+/// strings and pending-placement matching.
+pub(crate) fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
+    lock(&SURFACE_LAUNCH_KEYS).insert(surface_id, launch_key.to_string());
+}
+
+pub(crate) fn forget_surface_launch(surface_id: u64) {
+    lock(&SURFACE_LAUNCH_KEYS).remove(&surface_id);
 }
 
 /// Forget every launch this session has recorded — for tests asserting
@@ -2371,6 +2388,10 @@ pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
 #[cfg(test)]
 pub(crate) fn clear_launched_for_test() {
     LAUNCHED.lock().expect("LAUNCHED poisoned").clear();
+    SURFACE_LAUNCH_KEYS
+        .lock()
+        .expect("SURFACE_LAUNCH_KEYS poisoned")
+        .clear();
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
