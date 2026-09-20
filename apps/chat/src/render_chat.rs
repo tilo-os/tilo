@@ -1653,6 +1653,7 @@ impl ChatApp {
             call_btn.x0 + call_pad,
             line_top(cy, f64::from(call_lh)),
         );
+        ChatApp::push_hit(hits, call_btn, Hit::StartCall);
 
         // members pill — toggles the right flap (members / thread).
         let mem_label = format!("👥 {}", self.users.len());
@@ -1677,6 +1678,7 @@ impl ChatApp {
             mem.x0 + mem_pad,
             line_top(cy, f64::from(mem_lh)),
         );
+        ChatApp::push_hit(hits, mem, Hit::ToggleRightFlap);
         mem_x0
     }
 
@@ -2109,11 +2111,6 @@ impl ChatApp {
         let att_h = m.attachment.as_ref().map_or(0.0, |attachment| {
             attachment_flow_height(attachment, f64::from(text_w), scale)
         });
-        let react_h = if m.reactions.is_empty() {
-            0.0
-        } else {
-            32.0 * scale
-        };
         // The header, reaction and thread bands are measured through the same
         // helpers the draw pass uses, so the reserved height is the painted
         // height at every text scale.
@@ -2131,11 +2128,6 @@ impl ChatApp {
         // editor's own controls row.
         let edited_h = if m.edited && !editing {
             edited_row_h(tr, theme)
-        } else {
-            0.0
-        };
-        let thread_h = if model::reply_count(&self.messages, &m.id) > 0 {
-            thread_bar_h(tr, theme) + THREAD_BAR_GAP
         } else {
             0.0
         };
@@ -2768,7 +2760,6 @@ impl ChatApp {
         let (img_w, img_h) = dimensions;
         let Point { x, y } = layout.origin;
         let text_w = layout.max_width;
-        let scale = f64::from(theme.text_scale.max(1.0));
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let (tw, th) = image_thumb_size(img_w, img_h, f64::from(text_w));
@@ -2874,7 +2865,6 @@ impl ChatApp {
         let (vid_w, vid_h) = dimensions;
         let Point { x, y } = layout.origin;
         let text_w = layout.max_width;
-        let scale = f64::from(theme.text_scale.max(1.0));
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let (tw, th) = video_card_size(vid_w, vid_h, f64::from(text_w));
@@ -3033,7 +3023,6 @@ impl ChatApp {
         } = paint;
         let Point { x, y } = layout.origin;
         let text_w = layout.max_width;
-        let scale = f64::from(theme.text_scale.max(1.0));
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale);
         let (card_w, card_h) = attachment_card_size(att, f64::from(text_w), scale);
@@ -3285,7 +3274,6 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let scale = f64::from(self.layout_text_scale);
         let Some(parent_id) = self.thread_open.clone() else {
             return;
         };
@@ -3438,7 +3426,7 @@ impl ChatApp {
         head: Rect,
         composer_top: f64,
         parent_id: &str,
-        hits: &mut Vec<(Rect, Hit)>,
+        _hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale.max(1.0));
