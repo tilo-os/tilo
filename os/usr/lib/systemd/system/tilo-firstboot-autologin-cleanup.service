@@ -1,0 +1,48 @@
+[Unit]
+Description=Expire the installer one-boot graphical handoff
+# greetd has parsed initial_session before it is active.  Cleanup must happen
+# after that first parse, never before it.
+Wants=greetd.service
+After=greetd.service
+ConditionPathExists=/etc/tilo/firstboot-autologin-pending
+StartLimitIntervalSec=60s
+StartLimitBurst=12
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-firstboot-autologin-cleanup
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectSystem=full
+ReadWritePaths=/etc/greetd /etc/tilo
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+KeyringMode=private
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER CAP_MAC_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @keyring @module @mount @network-io @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=graphical.target

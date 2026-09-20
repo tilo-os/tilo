@@ -30,8 +30,8 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 RemoveIPC=yes
 KeyringMode=private
-# useradd/chpasswd need to create and own the home and atomically replace the
-# local account databases, but they do not need mount, network, module, raw-I/O,
+# useradd needs to create and own the home and atomically update the local
+# account databases, but it does not need mount, network, module, raw-I/O,
 # reboot, or audit-control authority.
 CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID
 AmbientCapabilities=

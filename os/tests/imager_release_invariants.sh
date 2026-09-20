@@ -434,7 +434,8 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'customization modified the released installer medium' "$cycle" \
   && grep -Fq 'install_mode=%s' "$cycle" \
   && grep -Fq '"$unlock" "$install_mode" "$storage"' "$cycle" \
-  && grep -Fq 'cold_boot_to_greeter_seconds=' "$cycle" \
+  && grep -Fq 'cold_boot_to_oobe_seconds=' "$cycle" \
+  && grep -Fq 'cold_reboot_to_greeter_seconds=' "$cycle" \
   && grep -Fq 'boot-timing.txt' "$cycle" \
   && grep -Fq 'Windows filesystem bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Linux filesystem bytes changed during alongside install' "$cycle" \
@@ -462,14 +463,17 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && ! grep -Fq 'cp -f "$run/serial.log" "$out/installer-serial.log"' "$cycle" \
   && grep -Fq "wait_screen 08-oobe-intro" "$cycle" \
   && grep -Fq "wait_screen 09-oobe-backup" "$cycle" \
+  && grep -Fq "wait_screen 10-oobe-backup-resumed" "$cycle" \
   && grep -Fq '"$vm" keys tab tab tab spc tab ret' "$cycle" \
-  && grep -Fq "wait_screen 10-oobe-ready" "$cycle" \
+  && grep -Fq "wait_screen 11-oobe-ready" "$cycle" \
   && grep -Fq '"$vm" keys tab tab ret' "$cycle" \
-  && grep -Fq "wait_screen 11-tour-move" "$cycle" \
-  && grep -Fq "wait_screen 12-tour-arrange" "$cycle" \
-  && grep -Fq "wait_screen 13-tour-share" "$cycle" \
-  && grep -Fq "wait_screen 14-tour-start" "$cycle" \
-  && grep -Fq "wait_screen 15-desktop-config" "$cycle" \
+  && grep -Fq "wait_screen 12-tour-move" "$cycle" \
+  && grep -Fq "wait_screen 13-tour-arrange" "$cycle" \
+  && grep -Fq "wait_screen 14-tour-share" "$cycle" \
+  && grep -Fq "wait_screen 15-tour-start" "$cycle" \
+  && grep -Fq "wait_screen 16-desktop-config" "$cycle" \
+  && grep -Fq "wait_screen 17-reboot-greeter" "$cycle" \
+  && grep -Fq "wait_screen 18-reboot-login" "$cycle" \
   && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
   ok 'trusted main and tagged media must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
 else

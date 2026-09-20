@@ -104,9 +104,11 @@ grep -Fq 'python3 -m http.server "$browser_fixture_port"' "$installer_cycle" \
   || bad 'the installed-target cold boot lacks durable Browser render evidence'
 
 if grep -Fq "wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity'" "$installer_cycle" \
+  && grep -Fq "wait_screen 10-oobe-backup-resumed 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity'" "$installer_cycle" \
+  && grep -Fq 'OOBE did not resume after an interrupted first boot' "$installer_cycle" \
   && grep -Fq '"$vm" keys tab tab tab spc tab ret' "$installer_cycle" \
-  && grep -Fq "wait_screen 10-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready'" "$installer_cycle" \
-  && grep -Fq "wait_screen 14-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes'" "$installer_cycle" \
+  && grep -Fq "wait_screen 11-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready'" "$installer_cycle" \
+  && grep -Fq "wait_screen 15-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes'" "$installer_cycle" \
   && grep -Fq '"$vm" keys tab tab ret' "$installer_cycle"; then
   ok 'graphical cycle acknowledges backup loss and completes all four tutorial pages'
 else
