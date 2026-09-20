@@ -263,21 +263,21 @@ fn prepare_fixture_owned(
         }
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = std::fs::metadata(&document)
-                .map_err(|error| LaunchError::Operation(error.to_string()))?
-                .permissions();
-            permissions.set_mode(0o400);
-            std::fs::set_permissions(&document, permissions)
+            // CI runs as root, so removing write permission does not reliably
+            // make the atomic replacement fail. A directory at the document
+            // path does, regardless of privileges.
+            let backup = document.with_extension("capture-save-fault");
+            std::fs::rename(&document, &backup)
                 .map_err(|error| LaunchError::Operation(error.to_string()))?;
+            if let Err(error) = std::fs::create_dir(&document) {
+                let _ = std::fs::rename(&backup, &document);
+                return Err(LaunchError::Operation(error.to_string()));
+            }
             let (signal, wait) = std::sync::mpsc::channel();
             let release = std::thread::spawn(move || {
                 let _ = wait.recv_timeout(std::time::Duration::from_secs(30));
-                if let Ok(metadata) = std::fs::metadata(&document) {
-                    let mut permissions = metadata.permissions();
-                    permissions.set_mode(0o600);
-                    let _ = std::fs::set_permissions(&document, permissions);
-                }
+                let _ = std::fs::remove_dir(&document);
+                let _ = std::fs::rename(&backup, &document);
             });
             SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
             *directory.failed_save_signal.borrow_mut() = Some(signal);
