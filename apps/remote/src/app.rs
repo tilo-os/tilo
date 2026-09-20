@@ -2256,12 +2256,6 @@ struct ToolSpec<'a> {
     label: &'a str,
 }
 
-struct SegmentSpec<'a> {
-    rect: Rect,
-    label: &'a str,
-    active: bool,
-}
-
 #[derive(Clone, Copy)]
 struct SessionSpec {
     content: Rect,
@@ -6369,7 +6363,6 @@ impl RemoteApp {
         bar: Rect,
         c: &Connection,
     ) {
-        let tokens = &theme.tokens;
         let mut x = bar.x1 - 12.0;
         let disconnect = Rect::new(x - 110.0, bar.center().y - 16.0, x, bar.center().y + 16.0);
         // The shared outlined-danger face instead of a neutral face with a
