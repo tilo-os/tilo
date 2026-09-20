@@ -139,7 +139,7 @@ def remote_sign(config_path, operation, source, destination):
     binding = context(config['context'])
     spool = private_directory(config['spool'])
     timeout = config['timeout_seconds']
-    if type(timeout) is not int or not 1 <= timeout <= 1800:
+    if type(timeout) is not int or not 1 <= timeout <= 7200:
         raise ValueError('invalid remote signing timeout')
     if operation == 'export-efi-cert':
         data = snapshot(signer.trusted(Path(config['public_certificate'])), 65536)
