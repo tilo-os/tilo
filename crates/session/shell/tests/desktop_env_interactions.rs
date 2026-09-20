@@ -104,7 +104,10 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
 
 struct Layout {
     taffy: TaffyTree<()>,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "The fixture retains the root layout node even when a test inspects only its child."
+    )]
     root_node: NodeId,
     child_node: NodeId,
 }

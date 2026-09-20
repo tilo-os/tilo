@@ -1401,7 +1401,10 @@ pub fn build_launch_command(
 /// instance. The tab id is passed through the launcher environment and becomes
 /// the record component of the app's authenticated collaboration route, so a
 /// later continuation capture can attach metadata to this exact tab.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The launch command binds the installed app, sandbox endpoints and exact durable tab route together."
+)]
 pub fn build_launch_command_for_tab(
     app: &InstalledApp,
     launcher_bin: &Path,
@@ -4039,5 +4042,8 @@ pub fn spawn_launch(
     .to_string())
 }
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
 use crate::shell::state::WorkspaceExt as _;

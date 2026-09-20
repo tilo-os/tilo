@@ -444,7 +444,10 @@ mod tests {
             _p: &PresenceCtx,
         ) {
         }
-        #[allow(clippy::too_many_arguments)]
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "The test widget must implement the complete Widget event-handler signature."
+        )]
         fn handle_event(
             &mut self,
             _e: &WindowEvent,

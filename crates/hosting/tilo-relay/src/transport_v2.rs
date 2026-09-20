@@ -307,12 +307,18 @@ mod tests {
 
     #[test]
     fn broker_extensions_keep_an_actual_frozen_v2_reader_compatible() {
-        #[allow(dead_code)]
+        #[allow(
+            dead_code,
+            reason = "The frozen historical enum is a decoder fixture; its fields need not be read after deserialization."
+        )]
         #[derive(Deserialize)]
         enum OldCapability {
             TransportOnly,
         }
-        #[allow(dead_code)]
+        #[allow(
+            dead_code,
+            reason = "The frozen historical enum is a decoder fixture; its fields need not be read after deserialization."
+        )]
         #[derive(Deserialize)]
         enum OldV2 {
             State(Envelope),

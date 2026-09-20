@@ -4390,5 +4390,8 @@ mod tests {
     }
 }
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
 use shell::shell::state::WorkspaceExt as _;

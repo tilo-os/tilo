@@ -77,7 +77,10 @@ impl TestDevice {
 pub struct TestRelay {
     pub relay: Relay,
     pub state_root: PathBuf,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Holding the temporary directory preserves relay state until the test handle is dropped."
+    )]
     tmp: TempDir,
 }
 
@@ -167,7 +170,10 @@ pub async fn wait_for(mut cond: impl FnMut() -> bool, attempts: u32) -> bool {
     cond()
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "The shared fixture module is included by integration targets with different helper requirements."
+)]
 pub fn _keep_symbols_used(_h: &RelayHandle) {}
 
 fn phase_bytes() -> &'static std::sync::Mutex<std::collections::VecDeque<u8>> {

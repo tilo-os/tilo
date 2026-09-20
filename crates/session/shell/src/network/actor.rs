@@ -1440,7 +1440,10 @@ impl ActorState {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Publishing a nearby transfer binds workspace, certified user, target and signed transfer inputs together."
+    )]
     fn publish_nearby_transfer(
         &self,
         ws: WorkspaceId,

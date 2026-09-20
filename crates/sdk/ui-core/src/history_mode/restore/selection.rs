@@ -341,7 +341,10 @@ enum ProtectedTask {
     },
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Projection validates document, parent, key and protected selection context in one recursive operation."
+)]
 fn protected_map(
     builder: &mut ProjectionBuilder,
     doc: &AutoCommit,

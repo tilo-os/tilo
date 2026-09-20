@@ -407,5 +407,8 @@ fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
     );
 }
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
 use shell::shell::state::WorkspaceExt as _;

@@ -5,11 +5,17 @@ use crate::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 const SEGMENT_INSET_PX: f64 = 2.0;
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "Item counts become approximate display geometry rather than durable numeric state."
+)]
 fn usize_to_f64_lossy(n: usize) -> f64 {
     n as f64
 }
-#[allow(clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "Painting uses f32 coordinates after layout computes f64 geometry."
+)]
 fn f64_to_f32_lossy(n: f64) -> f32 {
     n as f32
 }
@@ -76,7 +82,10 @@ impl SearchFilters {
         self.active_scope = active_scope;
     }
     /// Paint into the CommandPalette host strip. Return the row reservation for the next layout.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The draw operation receives the shared renderer, geometry, theme and current filter state."
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -860,7 +869,10 @@ pub fn share_row(natural: &[f64], available: f64, gap: f64) -> Vec<f64> {
 
 /// One pill in the search card's filter band, shared by the kind chips
 /// and the "All" reset chip.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "A chip is painted from one consistent geometry, selection, text and theme context."
+)]
 /// One filter chip: a Selector (HIG §9.1) whose body is its selection tier
 /// (§9.3 — idle transparent, hover `lift(0.5)`, chosen `lift(1.0)` with a
 /// hairline and inner glow) and whose label is ink chosen against whatever

@@ -57,8 +57,14 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
     clippy::restriction,
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
-#[allow(unused)]
-#[allow(dead_code)]
+#[allow(
+    unused,
+    reason = "Generated Capnp bindings include schema members unused by this host."
+)]
+#[allow(
+    dead_code,
+    reason = "Generated Capnp bindings include schema members unused by this host."
+)]
 pub mod collab_capnp {
     include!(concat!(env!("OUT_DIR"), "/collab_capnp.rs"));
 }

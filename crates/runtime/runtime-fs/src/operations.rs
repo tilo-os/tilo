@@ -1382,7 +1382,10 @@ struct VerifiedRemoval {
     content: Option<Fingerprint>,
     children: Vec<(EntryName, Self)>,
 }
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Source removal keeps pinned directories, grants, identity and transaction evidence together at the mutation boundary."
+)]
 fn remove_source_object(
     ctx: &Context<'_>,
     entry: &GrantedEntry,

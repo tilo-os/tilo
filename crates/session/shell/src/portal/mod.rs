@@ -1258,7 +1258,10 @@ pub async fn serve_with_inhibit_and_clipboard(
 #[cfg(target_os = "linux")]
 pub struct ServerHandle {
     // Never read on purpose: holding the `Connection` IS the job — dropping it releases the bus name and tears the object server down.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "Holding the D-Bus connection owns the service registration until this handle is dropped."
+    )]
     connection: zbus::Connection,
     owns_name: bool,
 }
@@ -1645,5 +1648,8 @@ mod tests {
     }
 }
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
 use crate::shell::state::WorkspaceExt as _;

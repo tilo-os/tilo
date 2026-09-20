@@ -297,7 +297,10 @@ fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
     true
 }
 
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "Ranking normalizes integer priorities into approximate floating-point scores, not durable identifiers."
+)]
 pub fn rank<Row: SearchRow>(rows: Vec<(Row, i32)>) -> Vec<Row> {
     let mut merged: Vec<(Row, f32)> = rows
         .into_iter()

@@ -332,7 +332,10 @@ impl AppActionBroker {
         self.state.dispatch_workspace_task(room, task_id)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Confirmation binds the complete invocation route and caller evidence in one operation."
+    )]
     /// Prepare a one-use confirmation token for the exact invocation inputs.
     ///
     /// # Errors
@@ -351,7 +354,10 @@ impl AppActionBroker {
             .prepare_confirmation(peer_id, resource, action, argument, actor, phrase)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Starting a confirmed action must retain the exact invocation inputs used to issue its token."
+    )]
     /// Start a published action using a previously prepared confirmation token.
     ///
     /// # Errors

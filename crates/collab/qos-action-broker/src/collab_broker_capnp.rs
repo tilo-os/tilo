@@ -1072,7 +1072,10 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Resolution carries the complete authenticated route and bounded invocation inputs to the broker."
+    )]
     /// # Errors
     ///
     /// Returns an error when the target is invalid, the bounded broker queue
@@ -1116,7 +1119,10 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Confirmed invocation preserves the resolved target, caller context and confirmation token together."
+    )]
     /// # Errors
     ///
     /// Returns an error when invocation inputs are invalid, the bounded broker
@@ -2282,7 +2288,11 @@ impl CapnpBrokerState {
     /// Atomically resolve and start a directory action on the broker
     /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
     /// thread participates in admission.
-    #[allow(clippy::too_many_arguments, clippy::future_not_send)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::future_not_send,
+        reason = "Admission needs the complete authenticated route and runs on the broker LocalSet with non-Send Capnp state."
+    )]
     async fn start_action_directory_for_actor(
         &self,
         directories: &LocalActionDirectoryRegistry,
@@ -2373,7 +2383,10 @@ impl CapnpBrokerState {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The token binds all confirmation evidence to the exact caller, target and invocation."
+    )]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
@@ -2877,7 +2890,10 @@ impl CapnpBrokerState {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Dispatch retains the authenticated peer and complete offered action contract without reconstructing authority."
+    )]
     fn dispatch_invocation_from_offered(
         &self,
         peer_id: u64,
@@ -9897,7 +9913,10 @@ pub mod tests {
     }
 }
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "The shared policy extension trait is needed by host-specific workspace implementations."
+)]
 use crate::policy::WorkspacePolicy as _;
 
 impl CapnpBrokerState {

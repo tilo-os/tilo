@@ -1823,7 +1823,10 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Refreshing records keeps persisted history, live tree state and replay boundaries in one coherent update."
+    )]
     fn refresh_records_inner<T: ActivityTree>(
         &mut self,
         tree: &mut T,

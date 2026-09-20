@@ -405,7 +405,10 @@ where
                 }
             }
         }
-        #[allow(unreachable_code)]
+        #[allow(
+            unreachable_code,
+            reason = "The terminal Ok fixes the async loop result type although every exit currently returns an error."
+        )]
         Ok::<(), PeerError>(())
     };
     let outcome = tokio::select! {

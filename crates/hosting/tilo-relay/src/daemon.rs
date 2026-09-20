@@ -1713,7 +1713,10 @@ fn spawn_peer_relay_dial(
 /// gap is `1s, 2s, 4s, 8s, …, capped at 60s`. While connected it
 /// holds a `RelayClient` session and admits inbound deltas through the
 /// same ordered persistence owner used by device peers.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The relay task receives its complete endpoint, enrollment and persistence context at spawn."
+)]
 fn spawn_peer_relay_dial_at(
     addr: EndpointAddr,
     label: String,
@@ -1743,7 +1746,10 @@ fn spawn_peer_relay_dial_at(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Reconnect attempts retain the same endpoint, enrollment and persistence context for the task lifetime."
+)]
 async fn peer_relay_dial_loop(
     addr: EndpointAddr,
     label: String,

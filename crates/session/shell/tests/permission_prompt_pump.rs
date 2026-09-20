@@ -422,12 +422,18 @@ fn host_has_no_prompt(host: &ShellOverlayHost) -> bool {
 }
 
 // Imported for symmetry with the wider chrome-state API, unused here.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "The fixture keeps these chrome-state helper types typechecked with the surrounding API."
+)]
 fn _suppress_unused() {
     let _ = OverlayFlags::default();
     let _ = Duration::from_secs(1);
     let _: VecDeque<u8> = VecDeque::new();
 }
 
-#[allow(unused_imports)]
+#[allow(
+    unused_imports,
+    reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
+)]
 use shell::shell::state::WorkspaceExt as _;

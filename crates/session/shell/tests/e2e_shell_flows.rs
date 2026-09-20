@@ -109,7 +109,10 @@ struct Harness {
     taffy: TaffyTree<()>,
     // Kept alive so the raw `*mut dyn Widget` pointers `build_layout` stashed
     // stay valid; read indirectly via the measure closures during re-layout.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "The fixture retains widget pointers used indirectly by measurement closures during relayout."
+    )]
     node_map: HashMap<NodeId, *mut dyn Widget>,
     root_node: NodeId,
     theme: Theme,
@@ -225,7 +228,10 @@ impl Harness {
 
     /// Unused on `tilo-shell` — the sidebar wheel swallows clicks at the
     /// topbar hit regions — kept for when that regression is fixed.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "The shared interaction fixture retains a pointer-click driver for scenarios using that input route."
+    )]
     fn click(&mut self, x: f64, y: f64) {
         self.pump(&WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },

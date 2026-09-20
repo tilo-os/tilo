@@ -1387,7 +1387,10 @@ impl Widget for ReleasableLifecycleProbe {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The test observes hidden-owner lifecycle and exactly-once settlement across one retained session."
+)]
 fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
@@ -2109,7 +2112,10 @@ fn refused_transition_does_not_repoll_an_undrained_stream_update() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The test keeps old-owner release and new-owner admission in one ordered lifecycle."
+)]
 fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_work() {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
@@ -3081,7 +3087,10 @@ fn newer_root_release_refusal_supersedes_available_target_queued_by_item() {
     assert_newer_refused_bind_supersedes_queued_target(true);
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "The assertion helper compares queued and refused bindings across one custody transition."
+)]
 fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));

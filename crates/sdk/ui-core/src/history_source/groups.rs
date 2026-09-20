@@ -210,7 +210,10 @@ pub fn move_named_boundary(
 /// projections. Missing records are materialized with the titles and bounds
 /// the person saw, then the bordering action is moved in the same document
 /// transaction. The atomic history entries themselves are never rewritten.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Both adjacent history groups and their exact entry bounds must be changed in one document transaction."
+)]
 pub fn materialize_and_move_boundary(
     doc: &mut AutoCommit,
     left_record: Option<&str>,
