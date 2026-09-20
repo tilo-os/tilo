@@ -364,7 +364,10 @@ fn write_clock(path: &Path, now_ms: u64) {
 
 // This mandatory release scenario keeps process lifecycle, eviction evidence,
 // restart, expiry, and rehydration barriers in one linear auditable trace.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps process lifecycle and restart recovery barriers in one auditable trace"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
@@ -414,10 +417,13 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         std::fs::create_dir_all(path).unwrap();
     }
     std::fs::write(seed.join("shared.bin"), PAYLOAD).unwrap();
-    install_identity(&host_identity, [0x31; 32], [0x32; 32], true);
-    install_identity(&viewer_identity, [0x41; 32], [0x42; 32], false);
-    install_identity(&loss_identity, [0x43; 32], [0x44; 32], false);
-    let host_device = SigningKey::from_bytes(&[0x32; 32])
+    // The real processes advertise their Iroh identities beyond this guest.
+    // Keep concurrent CI runs distinct while binding assertions to these keys.
+    let host_seed: [u8; 32] = rand::random();
+    install_identity(&host_identity, rand::random(), host_seed, true);
+    install_identity(&viewer_identity, rand::random(), rand::random(), false);
+    install_identity(&loss_identity, rand::random(), rand::random(), false);
+    let host_device = SigningKey::from_bytes(&host_seed)
         .verifying_key()
         .to_bytes();
 
