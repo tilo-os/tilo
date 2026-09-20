@@ -110,6 +110,19 @@ class WorkerContract(unittest.TestCase):
     def test_exact_public_contract(self):
         self.assertEqual(json.loads(self.check(self.request())), self.request())
 
+    def test_initial_operator_gate_uses_the_request_bound_human_window(self):
+        with tempfile.TemporaryDirectory(prefix='tilo-finalizer-gate-') as temporary:
+            request = Path(temporary) / 'request.json'
+            value = self.request()
+            value['signing_response_timeout_seconds'] = 7200
+            request.write_text(json.dumps(value))
+            self.assertEqual(worker.operator_gate_timeout(request), 7200)
+            for invalid in (59, 7201, True, '7200'):
+                value['signing_response_timeout_seconds'] = invalid
+                request.write_text(json.dumps(value))
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'preparation timeout'):
+                    worker.operator_gate_timeout(request)
+
     def test_reviewed_assembly_source_and_epoch_bound_together(self):
         request = self.request()
         request.update(source_revision='8fff1d6001b64a80bc730e87d3ffc529d2d9e70a', source_date_epoch=1789733507)
