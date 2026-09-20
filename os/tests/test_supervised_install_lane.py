@@ -68,5 +68,16 @@ class LaneAdmission(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'running worker image'):
             lane.binding(pod,n)
 
+    def test_finalized_layer_audit_must_bind_creation(self):
+        creation={'source':{'image_id':'sha256:'+'a'*64,'hardware_profile':'generic-arm64'},
+                  'boot':{'target_uki_sha256':'b'*64}}
+        receipt={'layer_material_audit':{'status':'passed-scoped-scan','image_id':'sha256:'+'a'*64},
+                 'hardware_profile':'generic-arm64','prediction':creation['boot'],
+                 'selected_boot':{'source_path':'boot/EFI/Linux/live.efi'}}
+        self.assertIsNone(lane.validate_finalized_verification(receipt,creation))
+        receipt['layer_material_audit']['status']='rejected-private-material'
+        with self.assertRaisesRegex(ValueError,'source-layer'):
+            lane.validate_finalized_verification(receipt,creation)
+
 
 if __name__=='__main__':unittest.main()

@@ -150,6 +150,7 @@ def private_input(path, *, limit):
     path = Path(path)
     before = path.lstat()
     if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+            or before.st_uid != os.geteuid() or before.st_mode & 0o077
             or before.st_size < 2 or before.st_size > limit):
         raise ValueError('private input must be a populated bounded regular file')
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)

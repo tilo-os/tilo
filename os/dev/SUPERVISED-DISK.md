@@ -94,6 +94,7 @@ python3 os/dev/run-supervised-install-lane.py \
   --disk-args PRIVATE/media-disk-args.json \
   --public-bundle PRIVATE/public-trust \
   --host-pins PRIVATE/reviewed-host-pins.json \
+  --finalized-verification PRIVATE/07-finalized-verification.json \
   --helper-revision "$(git rev-parse HEAD)" \
   --acceptance-id FRESH_DNS_SAFE_ID \
   --registry-secret forgejo-pull-secret

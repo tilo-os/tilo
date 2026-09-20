@@ -179,6 +179,7 @@ class ControllerAdmission(unittest.TestCase):
     def test_private_registry_auth_rejects_symlink_and_reads_regular_file(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); regular=root/'auth.json'; regular.write_text('{"auths":{}}')
+            regular.chmod(0o600)
             self.assertEqual(controller.private_input(regular,limit=1024),b'{"auths":{}}')
             link=root/'redirected'; link.symlink_to(regular)
             with self.assertRaises((ValueError,OSError)):
