@@ -34,7 +34,7 @@ class FocusedTests(unittest.TestCase):
     def test_real_failure_retained_and_command_is_exact_locked_argv(self):
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()) as read, \
              patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess([], 101, 'FAILED\n')) as run:
-            self.assertEqual(focused.execute(Path('.'), self.values), 101)
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), self.values), 101)
         self.assertEqual(run.call_args.args[0], ['cargo', 'test', '--locked', '-p', 'shell',
                          '--test', 'it', '--', 'module::case', '--exact', '--nocapture'])
         self.assertNotIn('shell', run.call_args.kwargs)
@@ -43,7 +43,7 @@ class FocusedTests(unittest.TestCase):
     def test_zero_match_fails_before_running(self):
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads('other: test\n')), \
              patch.object(focused.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'absent'):
-            focused.execute(Path('.'), self.values)
+            focused.execute(Path('/focused-test-fixture'), self.values)
         run.assert_not_called()
 
     def test_ignored_test_is_not_a_pass(self):
@@ -51,29 +51,29 @@ class FocusedTests(unittest.TestCase):
              patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess(
                  [], 0, 'test result: ok. 0 passed; 0 failed; 1 ignored;\n')), \
              self.assertRaisesRegex(ValueError, 'non-ignored'):
-            focused.execute(Path('.'), self.values)
+            focused.execute(Path('/focused-test-fixture'), self.values)
 
     def test_one_passing_test_is_accepted(self):
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
              patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess(
                  [], 0, 'test result: ok. 1 passed; 0 failed; 0 ignored;\n')):
-            self.assertEqual(focused.execute(Path('.'), self.values), 0)
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), self.values), 0)
 
     def test_wrong_source_or_nonmember_fails_closed(self):
         with patch.object(focused.subprocess, 'check_output', return_value='b' * 40), \
              self.assertRaisesRegex(ValueError, 'source differs'):
-            focused.execute(Path('.'), self.values)
+            focused.execute(Path('/focused-test-fixture'), self.values)
         self.metadata['workspace_members'] = []
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
              self.assertRaisesRegex(ValueError, 'workspace member'):
-            focused.execute(Path('.'), self.values)
+            focused.execute(Path('/focused-test-fixture'), self.values)
 
     def test_check_tests_is_package_scoped_and_preserves_failure(self):
         values = dict(self.values, OPERATION='check-tests', TEST_NAME='', TEST_TARGET='')
         focused.request(values)
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
              patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess([], 101)) as run:
-            self.assertEqual(focused.execute(Path('.'), values), 101)
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), values), 101)
         self.assertEqual(run.call_args.args[0], ['cargo', 'check', '--locked', '-p', 'shell', '--tests'])
         with self.assertRaises(ValueError):
             focused.request(dict(self.values, OPERATION='check-tests'))
