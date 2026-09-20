@@ -667,6 +667,24 @@ impl WindowGroup {
         self.bar.active_id()
     }
 
+    /// Painted maximize target for the active tab, if that tab currently has
+    /// one. This is immutable presentation geometry used by accessibility and
+    /// optional developer diagnostics.
+    pub fn active_maximize_rect(&self) -> Option<Rect> {
+        let active = self.bar.active_id();
+        self.bar
+            .tabs()
+            .iter()
+            .position(|tab| tab.id == active)
+            .and_then(|index| self.bar.max_rects_internal().get(index).copied())
+    }
+
+    /// Painted restore target for a maximized group. A zero rectangle means
+    /// the control is not currently visible.
+    pub fn restore_rect(&self) -> Rect {
+        self.restore_rect
+    }
+
     /// Drain an explicit user selection from the tab bar. Model-driven
     /// `set_active_tab` calls never create this edge.
     pub fn take_tab_activation(&mut self) -> Option<u64> {
@@ -780,11 +798,6 @@ impl WindowGroup {
     #[cfg(any(test, debug_assertions))]
     pub fn bar_for_tests(&self) -> &crate::widget::TabBar {
         &self.bar
-    }
-
-    #[cfg(any(test, debug_assertions))]
-    pub fn restore_rect_for_tests(&self) -> Rect {
-        self.restore_rect
     }
 
     #[cfg(test)]
