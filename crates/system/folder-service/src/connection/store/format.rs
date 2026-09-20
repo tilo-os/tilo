@@ -643,6 +643,57 @@ impl SelectedAction {
         Ok(())
     }
 }
+/// Exact historical consents retained by a new completion, never live authority.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SelectedAttentionRefV1 {
+    pub operation: u64,
+    pub operation_revision: u64,
+    pub applied_revision: u64,
+    pub fence: u64,
+    pub outcome: [u8; 32],
+    pub conflict: u64,
+    pub conflict_revision: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SelectedAttentionCarryV1 {
+    pub version: u8,
+    pub prior: Vec<SelectedAttentionRefV1>,
+}
+impl SelectedAttentionCarryV1 {
+    pub fn validate(&self) -> Result<(), StoreError> {
+        let mut previous = 0;
+        let mut conflicts = std::collections::BTreeSet::new();
+        if self.version != 1 || self.prior.is_empty() || self.prior.len() > 127 {
+            return Err(StoreError::Corrupt);
+        }
+        for fact in &self.prior {
+            if fact.operation <= previous
+                || fact.applied_revision == 0
+                || fact.operation_revision < fact.applied_revision
+                || fact.outcome == [0; 32]
+                || fact.conflict == 0
+                || fact.conflict_revision == 0
+                || !conflicts.insert(fact.conflict)
+            {
+                return Err(StoreError::Corrupt);
+            }
+            previous = fact.operation;
+        }
+        Ok(())
+    }
+}
+fn selected_attention_carry<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<SelectedAttentionCarryV1, D::Error> {
+    let value = SelectedAttentionCarryV1::deserialize(deserializer)?;
+    value
+        .validate()
+        .map_err(|_| serde::de::Error::custom("invalid selected attention carry"))?;
+    Ok(value)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SelectedAppliedFact {
@@ -1530,6 +1581,16 @@ pub(super) enum Change {
         fence: u64,
         attempt: u32,
         outcome: [u8; 32],
+    },
+    SelectedAppliedCarryV1 {
+        connection: [u8; 16],
+        serial: u64,
+        expected: u64,
+        fence: u64,
+        attempt: u32,
+        outcome: [u8; 32],
+        #[serde(deserialize_with = "selected_attention_carry")]
+        carry: SelectedAttentionCarryV1,
     },
     NativeCaptureDrain {
         entry: Recovery,

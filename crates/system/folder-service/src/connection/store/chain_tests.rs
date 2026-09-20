@@ -2421,6 +2421,7 @@ fn chain_progress_closure_excluded_events_and_budget_exhaustion_are_atomic() {
         "IncompleteRecovery",
         "SelectedUntouched",
         "SelectedApplied",
+        "SelectedAppliedCarryV1",
         "NativeConflictComplete",
         "SelectedCollisionComplete",
         "NativeBoundary",
@@ -2446,7 +2447,13 @@ fn chain_progress_closure_excluded_events_and_budget_exhaustion_are_atomic() {
                     value["fact"] = serde_json::json!({"kind":"Untouched"});
                 }
             }
-            "SelectedApplied" => {
+            "SelectedApplied" | "SelectedAppliedCarryV1" => {
+                if event == "SelectedAppliedCarryV1" {
+                    value["carry"] = serde_json::json!({"version":1,"prior":[{
+                        "operation":1,"operation_revision":2,"applied_revision":2,"fence":0,
+                        "outcome":([1u8;32]),"conflict":1,"conflict_revision":1
+                    }]});
+                }
                 value["fence"] = 0.into();
                 value["attempt"] = 1.into();
                 value["outcome"] = serde_json::json!(([1u8; 32]));

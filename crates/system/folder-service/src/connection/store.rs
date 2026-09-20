@@ -10,6 +10,9 @@ pub(super) use format::InitialEmptyBaselineV1;
 mod initial_baseline_tests;
 pub(super) use format::NativeOperationKind;
 mod recovery;
+mod worker_projection;
+#[cfg(test)]
+pub(super) use worker_projection::test_support as worker_projection_tests;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -496,6 +499,7 @@ pub(super) struct ConnectionStore {
     log_identity: storage::Metadata,
     overlay: BTreeMap<Vec<u8>, Row>,
     overlay_bytes: usize,
+    projection: std::cell::RefCell<Option<worker_projection::Budget>>,
     sequence: u64,
     digest: [u8; 32],
     session: Arc<()>,
@@ -623,6 +627,7 @@ impl ConnectionStore {
             log_identity,
             overlay: BTreeMap::new(),
             overlay_bytes: 0,
+            projection: std::cell::RefCell::new(None),
             sequence,
             digest,
             session: Arc::new(()),
@@ -692,6 +697,9 @@ impl ConnectionStore {
         Ok(store)
     }
     fn validate(&self) -> Result<(), StoreError> {
+        if self.projection.borrow().is_some() {
+            return self.worker_projection_validate();
+        }
         if self.poisoned {
             return Err(StoreError::RecoveryRequired);
         }
@@ -729,6 +737,9 @@ impl ConnectionStore {
         result
     }
     fn row(&self, key: &[u8]) -> Result<Option<Row>, StoreError> {
+        if self.projection.borrow().is_some() {
+            return self.worker_projection_row(key);
+        }
         if let Some(value) = self.overlay.get(key) {
             return Ok(Some(value.clone()));
         }
@@ -748,16 +759,12 @@ impl ConnectionStore {
         cursor: Option<PageCursor>,
         limit: usize,
     ) -> Result<Page<ConflictRecord>, StoreError> {
-        let rows = self.table_page(id, 3, cursor, limit)?;
+        let rows = self.worker_table_page(id, 3, cursor, limit)?;
         Ok(Page {
-            entries: rows
-                .entries
-                .into_iter()
-                .map(|row| match row {
-                    Row::Conflict(conflict) => conflict.decode(),
-                    _ => Err(StoreError::Corrupt),
-                })
-                .collect::<Result<_, _>>()?,
+            entries: rows.entries.into_iter().map(|row| match row {
+                Row::Conflict(conflict) => conflict.decode(),
+                _ => Err(StoreError::Corrupt),
+            }).collect::<Result<_, _>>()?,
             next: rows.next,
         })
     }
@@ -2667,7 +2674,8 @@ impl ConnectionStore {
             .map_err(|_| StoreError::Corrupt)?;
         let context = self.native_read_context(live, proof.deadline(), cancel)?;
         let previous = live.revision();
-        self.append_native(
+        let prior = self.selected_attention_carry(&self.operation(live.id())?, previous)?;
+        let change = if prior.is_empty() {
             Change::SelectedApplied {
                 connection: live.id.connection.0,
                 serial: live.id.serial,
@@ -2675,9 +2683,19 @@ impl ConnectionStore {
                 fence: live.fence,
                 attempt: registration.attempt,
                 outcome: outcome.digest,
-            },
-            &context,
-        )?;
+            }
+        } else {
+            Change::SelectedAppliedCarryV1 {
+                connection: live.id.connection.0,
+                serial: live.id.serial,
+                expected: previous,
+                fence: live.fence,
+                attempt: registration.attempt,
+                outcome: outcome.digest,
+                carry: format::SelectedAttentionCarryV1 { version: 1, prior },
+            }
+        };
+        self.append_native(change, &context)?;
         live.revision = format::next(previous)?;
         proof.after_applied(live, previous)?;
         let receipt = self.operation(live.id())?.decode()?;
@@ -3048,6 +3066,7 @@ impl ConnectionStore {
         fence: u64,
         attempt: u32,
         outcome: [u8; 32],
+        carry: Option<&format::SelectedAttentionCarryV1>,
         checks: &mut RecoveryChecks<'_>,
     ) -> Result<Vec<Row>, StoreError> {
         let id = OperationId {
@@ -3055,6 +3074,9 @@ impl ConnectionStore {
             serial,
         };
         let operation = self.operation(id)?;
+        if let Some(carry) = carry {
+            self.validate_selected_attention_carry(&operation, expected, carry)?;
+        }
         let Some(format::SelectedAction::Restore { conflict, .. }) = &operation.action else {
             return Err(StoreError::RecoveryRequired);
         };
@@ -3148,12 +3170,23 @@ impl ConnectionStore {
             entry.retained = 0;
             rows.push(Row::Recovery(entry));
         }
-        // A newly reviewed selected operation supersedes an earlier selected
-        // attention marker for this path, but never deletes its versions.
-        for mut previous in self.selected_attention(id.connection, &operation.path)? {
-            if let Some(fact) = &mut previous.selected_applied {
-                fact.attention = false;
+        // Legacy events unconditionally supersede all earlier markers. Only an
+        // already validated versioned event retains the exact named true facts.
+        rows.extend(self.superseded_attention_rows(id.connection, &operation.path, carry)?);
+        Ok(rows)
+    }
+    fn superseded_attention_rows(
+        &self,
+        connection: ConnectionId,
+        path: &format::NativePath,
+        carry: Option<&format::SelectedAttentionCarryV1>,
+    ) -> Result<Vec<Row>, StoreError> {
+        let mut rows = Vec::new();
+        for mut previous in self.selected_attention(connection, path)? {
+            if carry.is_some_and(|carry| carry.prior.iter().any(|fact| fact.operation == previous.serial)) {
+                continue;
             }
+            previous.selected_applied.as_mut().ok_or(StoreError::Corrupt)?.attention = false;
             rows.push(Row::Operation(previous));
         }
         Ok(rows)
@@ -3640,7 +3673,14 @@ impl ConnectionStore {
                 *fence,
                 *attempt,
                 *outcome,
+                None,
                 recovery_checks,
+            ),
+            Change::SelectedAppliedCarryV1 {
+                connection, serial, expected, fence, attempt, outcome, carry,
+            } => self.reduce_selected_applied(
+                *connection, *serial, *expected, *fence, *attempt, *outcome,
+                Some(carry), recovery_checks,
             ),
             Change::NativeOutcome {
                 registration,
@@ -3893,9 +3933,17 @@ impl ConnectionStore {
                     && previous.path == operation.path
                     && previous.action.is_some()
                     && previous.native_capture.is_some()
-                    && !self.selected_collision_join(&previous)?.resolved
                 {
-                    return Err(StoreError::RecoveryRequired);
+                    let conflict = self.selected_collision_join(&previous)?;
+                    if !conflict.resolved {
+                        let mut equality = operation.clone();
+                        equality.stage = 3;
+                        let mut accepted = false;
+                        for applied in self.selected_attention(ConnectionId(operation.connection), &operation.path)? {
+                            accepted |= self.joined_selected_equality_conflict_matches(&equality, &applied, &conflict)?;
+                        }
+                        if !accepted { return Err(StoreError::RecoveryRequired); }
+                    }
                 }
             }
             for previous in
@@ -4275,6 +4323,9 @@ impl ConnectionStore {
             | Change::SelectedApplied {
                 connection, serial, ..
             }
+            | Change::SelectedAppliedCarryV1 {
+                connection, serial, ..
+            }
             | Change::NativeConflictComplete {
                 connection, serial, ..
             }
@@ -4458,6 +4509,7 @@ impl ConnectionStore {
                 event.change,
                 Change::BaselineCommit { .. }
                     | Change::SelectedApplied { .. }
+                    | Change::SelectedAppliedCarryV1 { .. }
                     | Change::SelectedCollisionComplete { .. }
             ) {
                 self.retention_sample = std::time::Instant::now();
@@ -4989,11 +5041,13 @@ impl ConnectionStore {
                 && conflict.connection == connection.id
                 && !conflict.resolved
                 && conflict.path == operation.path
-                && !selected.iter().any(|applied| {
-                    selected_equality_conflict_matches(&operation, applied, &conflict)
-                })
             {
-                return Err(StoreError::RecoveryRequired);
+                self.attention_conflict_origin(&conflict)?;
+                let mut accepted = false;
+                for applied in &selected {
+                    accepted |= self.joined_selected_equality_conflict_matches(&operation, applied, &conflict)?;
+                }
+                if !accepted { return Err(StoreError::RecoveryRequired); }
             }
         }
         let mut entries = if let Some(revision) = connection.baseline {
@@ -5580,6 +5634,295 @@ impl ConnectionStore {
 
 // Metadata exception only: the caller must already hold and validate the fresh
 // owning comparison, and commit still independently pays for retained versions.
+impl ConnectionStore {
+    /// Canonical ordinary conflict metadata, including independently typed capture.
+    /// Neither this join nor a checkpoint row provides current native evidence.
+    fn ordinary_conflict_join(
+        &self,
+        conflict: &format::ConflictData,
+    ) -> Result<format::Operation, StoreError> {
+        conflict.decode()?;
+        let operation = self.operation(OperationId {
+            connection: ConnectionId(conflict.connection),
+            serial: conflict.serial,
+        })?;
+        operation.decode()?;
+        if operation.connection != conflict.connection
+            || operation.serial != conflict.serial
+            || operation.action.is_some()
+            || operation.path != conflict.path
+            || operation.source != conflict.source
+            || operation.destination != conflict.destination
+            || conflict.revision < format::next(operation.expected)?
+            || conflict.preserved.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(StoreError::Corrupt);
+        }
+        match (&operation.native_capture, &conflict.native_capture) {
+            (None, None)
+                if matches!(operation.decision, 10..=14)
+                    && conflict.kind == operation.decision - 10 => {}
+            (Some(recorded), Some(captured)) if recorded == captured => {
+                let snapshot =
+                    super::transaction::native::descriptor::ConflictSnapshot::decode(recorded)
+                        .map_err(|_| StoreError::Corrupt)?;
+                operation.validate_capture(&snapshot)?;
+                if !matches!(operation.stage, 0 | 1 | 7 | 8)
+                    || (operation.stage == 8
+                        && conflict.revision
+                            > operation
+                                .revision
+                                .saturating_add(u64::from(conflict.resolved)))
+                {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+            _ => return Err(StoreError::Corrupt),
+        }
+        for slot in &conflict.preserved {
+            if !operation.recovery.contains(slot) {
+                return Err(StoreError::Corrupt);
+            }
+            let id = RecoveryId {
+                operation: OperationId {
+                    connection: ConnectionId(conflict.connection),
+                    serial: conflict.serial,
+                },
+                slot: *slot,
+            };
+            let Some(Row::Recovery(entry)) = self.row(&recovery::recovery_key(id))? else {
+                return Err(StoreError::Corrupt);
+            };
+            entry.decode()?;
+            if entry.id() != id
+                || entry.path != conflict.path
+                || entry.reason != 2
+                || !matches!(entry.state, 1..=4)
+            {
+                return Err(StoreError::Corrupt);
+            }
+            if let Some(origin) = &entry.captured {
+                let snapshot = super::transaction::native::descriptor::ConflictSnapshot::decode(
+                    &origin.snapshot,
+                )
+                .map_err(|_| StoreError::Corrupt)?;
+                operation.validate_capture(&snapshot)?;
+                let version = snapshot
+                    .versions
+                    .get(usize::from(origin.version))
+                    .ok_or(StoreError::Corrupt)?;
+                let super::transaction::native::descriptor::State::Regular { content, .. } =
+                    &version.state
+                else {
+                    return Err(StoreError::Corrupt);
+                };
+                if entry.content
+                    != Some(format::State::File {
+                        sha256: content.digest,
+                        bytes: content.length,
+                        executable: content.executable,
+                    })
+                {
+                    return Err(StoreError::Corrupt);
+                }
+            }
+        }
+        Ok(operation)
+    }
+    fn attention_conflict_origin(
+        &self,
+        conflict: &format::ConflictData,
+    ) -> Result<format::Operation, StoreError> {
+        let operation = self.operation(OperationId {
+            connection: ConnectionId(conflict.connection),
+            serial: conflict.serial,
+        })?;
+        if operation.action.is_some() {
+            if self.selected_collision_join(&operation)? != *conflict {
+                return Err(StoreError::Corrupt);
+            }
+            Ok(operation)
+        } else {
+            self.ordinary_conflict_join(conflict)
+        }
+    }
+    fn attention_selection_join(
+        &self,
+        applied: &format::Operation,
+        conflict: &format::ConflictData,
+    ) -> Result<bool, StoreError> {
+        applied.decode()?;
+        let origin = self.attention_conflict_origin(conflict)?;
+        let Some(
+            action @ format::SelectedAction::Restore {
+                selected,
+                conflict: Some(bound),
+                ..
+            },
+        ) = &applied.action
+        else {
+            return Err(StoreError::Corrupt);
+        };
+        if applied.connection != conflict.connection
+            || bound.serial != conflict.serial
+            || applied.path != origin.path
+            || applied.source_binding != origin.source_binding
+            || applied.destination_binding != origin.destination_binding
+        {
+            return Err(StoreError::Corrupt);
+        }
+        self.selected_descriptor(applied, action)?;
+        if let format::SelectedVersion::Recovery {
+            operation, slot, ..
+        } = selected
+        {
+            if !self.conflict_contains_selection(
+                conflict,
+                RecoveryId {
+                    operation: OperationId {
+                        connection: ConnectionId(applied.connection),
+                        serial: *operation,
+                    },
+                    slot: *slot,
+                },
+            )? {
+                return Err(StoreError::Corrupt);
+            }
+        }
+        Ok(origin.native_capture.is_none()
+            || (origin.action.is_none() && origin.stage == 8)
+            || (origin.action.is_some() && origin.stage == 10))
+    }
+    fn validate_selected_attention_carry(
+        &self,
+        operation: &format::Operation,
+        expected: u64,
+        carry: &format::SelectedAttentionCarryV1,
+    ) -> Result<(), StoreError> {
+        carry.validate()?;
+        if operation.native_budget.is_none()
+            || self.selected_attention_carry(operation, expected)? != carry.prior
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        Ok(())
+    }
+    fn selected_attention_carry(
+        &self,
+        operation: &format::Operation,
+        expected: u64,
+    ) -> Result<Vec<format::SelectedAttentionRefV1>, StoreError> {
+        operation.decode()?;
+        let Some(format::SelectedAction::Restore {
+            selected,
+            conflict: Some(bound),
+            ..
+        }) = &operation.action
+        else {
+            return Ok(Vec::new());
+        };
+        if operation.native_budget.is_none() || operation.native_kind.is_some() {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let Some(Row::Conflict(current)) =
+            self.row(&format::key(3, operation.connection, bound.serial))?
+        else {
+            return Err(StoreError::Corrupt);
+        };
+        if !self.attention_selection_join(operation, &current)?
+            || current.resolved
+            || current.revision != bound.revision
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        let content = |selected: &format::SelectedVersion| match selected {
+            format::SelectedVersion::Recovery { content, .. } => Some(content.clone()),
+            format::SelectedVersion::Tombstone { .. } => None,
+        };
+        let mut prior = Vec::new();
+        let mut conflicts = std::collections::BTreeSet::new();
+        for previous in
+            self.selected_attention(ConnectionId(operation.connection), &operation.path)?
+        {
+            let fact = previous
+                .selected_applied
+                .as_ref()
+                .ok_or(StoreError::Corrupt)?;
+            let Some(format::SelectedAction::Restore {
+                selected: earlier,
+                conflict: Some(old_bound),
+                ..
+            }) = &previous.action
+            else {
+                continue;
+            };
+            if previous.native_budget.is_none() {
+                return Err(StoreError::Corrupt);
+            }
+            let Some(Row::Conflict(old_conflict)) =
+                self.row(&format::key(3, operation.connection, old_bound.serial))?
+            else {
+                return Err(StoreError::Corrupt);
+            };
+            // Structural validity is checked even for subsequently superseded consent.
+            let complete = self.attention_selection_join(&previous, &old_conflict)?;
+            if !complete || old_conflict.resolved || old_conflict.revision != old_bound.revision {
+                continue;
+            }
+            if !conflicts.insert(old_bound.serial) {
+                return Err(StoreError::Corrupt);
+            }
+            if old_bound.serial == bound.serial
+                || content(earlier) != content(selected)
+                || previous.source_binding != operation.source_binding
+                || previous.destination_binding != operation.destination_binding
+            {
+                continue;
+            }
+            if previous.serial >= operation.serial
+                || previous.revision > expected
+                || fact.revision > expected
+            {
+                return Err(StoreError::Corrupt);
+            }
+            if prior.len() >= 127 {
+                return Err(StoreError::LimitExceeded);
+            }
+            prior.push(format::SelectedAttentionRefV1 {
+                operation: previous.serial,
+                operation_revision: previous.revision,
+                applied_revision: fact.revision,
+                fence: fact.fence,
+                outcome: fact.outcome,
+                conflict: old_bound.serial,
+                conflict_revision: old_bound.revision,
+            });
+        }
+        prior.sort_by_key(|fact| fact.operation);
+        Ok(prior)
+    }
+    fn joined_selected_equality_conflict_matches(
+        &self,
+        comparison: &format::Operation,
+        applied: &format::Operation,
+        conflict: &format::ConflictData,
+    ) -> Result<bool, StoreError> {
+        self.attention_conflict_origin(conflict)?;
+        let Some(format::SelectedAction::Restore {
+            conflict: Some(bound),
+            ..
+        }) = &applied.action
+        else {
+            return Ok(false);
+        };
+        if bound.serial != conflict.serial || applied.connection != conflict.connection {
+            return Ok(false);
+        }
+        Ok(self.attention_selection_join(applied, conflict)?
+            && selected_equality_conflict_matches(comparison, applied, conflict))
+    }
+}
+
 fn selected_equality_conflict_matches(
     comparison: &format::Operation,
     applied: &format::Operation,
@@ -6149,12 +6492,12 @@ impl ConnectionStore {
             let mut equality = proposed.clone();
             equality.stage = 3;
             let selected = self.selected_attention(intent.connection, &proposed.path)?;
-            if !selected
-                .iter()
-                .any(|applied| selected_equality_conflict_matches(&equality, applied, &conflict))
-            {
-                return Ok(false);
+            self.attention_conflict_origin(&conflict)?;
+            let mut accepted = false;
+            for applied in &selected {
+                accepted |= self.joined_selected_equality_conflict_matches(&equality, applied, &conflict)?;
             }
+            if !accepted { return Ok(false); }
         }
         Ok(true)
     }

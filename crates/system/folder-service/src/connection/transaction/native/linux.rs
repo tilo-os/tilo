@@ -16575,7 +16575,8 @@ impl<'e> super::NativeRestore<'e> {
             || self.relocated.is_some()
             || self.sealed.is_some()
             || self.published
-            || !store.native_namespace_records(live)?.is_empty()
+            || store.native_namespace_records(live)?.iter()
+                .any(|record| record.operation() == live.id())
         {
             return Err(StoreError::RecoveryRequired);
         }
