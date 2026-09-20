@@ -914,6 +914,9 @@ mod desktop_migration_tests {
         use ui::automerge::{ROOT, transaction::Transactable};
         let mut doc = owner.peer().admitted_room().unwrap().clone();
         doc.delete(ROOT, "writer_notes_split_v1").unwrap();
+        // Real workspaces can have a high durable allocator even when the
+        // corresponding closed topology ids are no longer visible.
+        doc.put(ROOT, "desktop_counter_v1", 50_000_u64).unwrap();
         let routes = RoomProjection::record_routes(&doc);
         let mut strips = RoomProjection::contents_of(&doc)
             .into_iter()
@@ -1014,18 +1017,31 @@ mod desktop_migration_tests {
     }
 
     #[test]
-    fn reopening_legacy_shared_documents_splits_once_without_reidentifying_them() {
+    fn reopening_bound_legacy_notes_splits_once_without_rebinding_its_record() {
         use qos_desktop::projection::RoomProjection;
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy-shared-documents");
         let mut owner = SessionOwner::initialize(&path).unwrap();
         let initial = topology(&owner);
-        let tab_ids = initial[0]
+        let tab = |app| {
+            initial[0]
+                .groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .find(|candidate| app_id(candidate) == Some(app))
+                .unwrap()
+                .id
+        };
+        let writer_tab = tab("dev.qos.word-processor");
+        let notes_tab = tab("dev.qos.notes");
+        let chat_tab = tab("dev.qos.chat");
+        let writer_group = initial[0]
             .groups
             .iter()
-            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
-            .collect::<std::collections::BTreeSet<_>>();
+            .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.word-processor"))
+            .unwrap()
+            .id;
         let chat_group = initial[0]
             .groups
             .iter()
@@ -1033,6 +1049,14 @@ mod desktop_migration_tests {
             .unwrap()
             .id;
         let routes = RoomProjection::record_routes(owner.peer().admitted_room().unwrap());
+        let notes_record = routes
+            .get(&notes_tab)
+            .expect("legacy Notes tab must carry an explicit durable route")
+            .clone();
+        let notes_bytes = owner
+            .peer()
+            .document("dev.qos.notes", &notes_record)
+            .unwrap();
         persist_legacy_shared_writer_notes(&mut owner);
         assert_eq!(topology(&owner)[0].groups.len(), 2);
         let generation = owner.status().generation;
@@ -1042,13 +1066,28 @@ mod desktop_migration_tests {
         let migrated = topology(&owner);
         assert_eq!(migrated[0].groups.len(), 3);
         assert!(migrated[0].groups.iter().all(|group| group.tabs.len() == 1));
+        let migrated_tab = |app| {
+            migrated[0]
+                .groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .find(|candidate| app_id(candidate) == Some(app))
+                .unwrap()
+                .id
+        };
+        assert_eq!(migrated_tab("dev.qos.word-processor"), writer_tab);
+        assert_eq!(migrated_tab("dev.qos.chat"), chat_tab);
+        let migrated_notes_tab = migrated_tab("dev.qos.notes");
+        assert_ne!(migrated_notes_tab, notes_tab);
+        assert!(qos_desktop::identity::counter_of(migrated_notes_tab) >= 50_000);
         assert_eq!(
             migrated[0]
                 .groups
                 .iter()
-                .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
-                .collect::<std::collections::BTreeSet<_>>(),
-            tab_ids
+                .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.word-processor"))
+                .unwrap()
+                .id,
+            writer_group
         );
         assert_eq!(
             migrated[0]
@@ -1059,9 +1098,27 @@ mod desktop_migration_tests {
                 .id,
             chat_group
         );
+        let migrated_notes_group = migrated[0]
+            .groups
+            .iter()
+            .find(|group| app_id(&group.tabs[0]) == Some("dev.qos.notes"))
+            .unwrap()
+            .id;
+        assert!(qos_desktop::identity::counter_of(migrated_notes_group) >= 50_000);
+        let migrated_routes = RoomProjection::record_routes(owner.peer().admitted_room().unwrap());
+        assert_eq!(migrated_routes.get(&writer_tab), routes.get(&writer_tab));
+        assert_eq!(migrated_routes.get(&chat_tab), routes.get(&chat_tab));
+        assert!(!migrated_routes.contains_key(&notes_tab));
         assert_eq!(
-            RoomProjection::record_routes(owner.peer().admitted_room().unwrap()),
-            routes
+            migrated_routes.get(&migrated_notes_tab),
+            Some(&notes_record)
+        );
+        assert_eq!(
+            owner
+                .peer()
+                .document("dev.qos.notes", &notes_record)
+                .unwrap(),
+            notes_bytes
         );
         assert_eq!(owner.status().generation, generation + 1);
         let durable = owner.peer().durable().unwrap();

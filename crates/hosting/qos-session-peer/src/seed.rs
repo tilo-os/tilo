@@ -14,6 +14,7 @@ struct LegacyWriterNotesSplit {
     notes_group: u64,
     notes_tab: u64,
     notes_record: String,
+    next_counter: u64,
 }
 
 fn legacy_writer_notes_split(
@@ -97,30 +98,40 @@ fn legacy_writer_notes_split(
         .map(identity::counter_of)
         .max()
         .unwrap_or(0);
-    let mut counter = maximum
-        .checked_add(1)
-        .ok_or("topology identities exhausted")?;
+    let stored_counter = doc
+        .get(ROOT, "desktop_counter_v1")
+        .map_err(|e| e.to_string())?
+        .and_then(|(value, _)| value.to_u64())
+        .unwrap_or(1);
+    let mut counter = stored_counter.max(
+        maximum
+            .checked_add(1)
+            .ok_or("topology identities exhausted")?,
+    );
     let notes_group = identity::mint_in_namespace(salt, &mut counter)?;
+    let fresh_notes_tab = identity::mint_in_namespace(salt, &mut counter)?;
     let writer_group = strips[strip_index].window_groups[group_index].id;
     let notes = strips[strip_index].window_groups[group_index]
         .tabs
         .remove(notes_index);
-    let notes_tab = notes.id;
-    let notes_record = routes.get(&notes_tab).cloned().unwrap_or_else(|| {
+    let old_notes_tab = notes.id;
+    let notes_record = routes.get(&old_notes_tab).cloned().unwrap_or_else(|| {
         qos_desktop::records::component_record(
             "dev.qos.notes",
-            notes_tab,
+            old_notes_tab,
             notes::definition().record_kind.clone(),
         )
         .id
         .as_str()
         .to_owned()
     });
+    let mut notes = notes;
+    notes.id = fresh_notes_tab;
     strips[strip_index].window_groups.insert(
         group_index + 1,
         qos_desktop::WindowGroup {
             id: notes_group,
-            active_tab: notes_tab,
+            active_tab: fresh_notes_tab,
             tabs: vec![notes],
             width: qos_desktop::WindowWidth::Normal,
             maximized: false,
@@ -132,8 +143,9 @@ fn legacy_writer_notes_split(
         salt,
         writer_group,
         notes_group,
-        notes_tab,
+        notes_tab: fresh_notes_tab,
         notes_record,
+        next_counter: counter,
     }))
 }
 pub(crate) fn seed(
@@ -193,9 +205,10 @@ pub(crate) fn seed(
     })
 }
 
-/// One-time migration for the durable native authority. Existing records,
-/// tabs, and unrelated topology retain their identities. Caller commits the
-/// candidate behind the same signed aggregate barrier before publishing it.
+/// One-time migration for the durable native authority. The Notes record and
+/// unrelated topology retain their identities; Notes receives fresh topology
+/// ids so its old bound route is never rebound. Caller commits the candidate
+/// behind the same signed aggregate barrier before publishing it.
 pub(crate) fn bootstrap_desktop(
     peer: &mut qos_peer_state::StatePeer,
     key: &ed25519_dalek::SigningKey,
@@ -248,6 +261,8 @@ pub(crate) fn bootstrap_desktop(
         // The original group and its Writer binding remain at the same ids.
         debug_assert_ne!(split.writer_group, split.notes_group);
         doc.put(ROOT, "writer_notes_split_v1", 1_u64)
+            .map_err(|e| e.to_string())?;
+        doc.put(ROOT, "desktop_counter_v1", split.next_counter)
             .map_err(|e| e.to_string())?;
         doc.commit();
         let seed = SeedState {
