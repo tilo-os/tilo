@@ -75,9 +75,12 @@ class AppReleaseWorkflowContract(unittest.TestCase):
 
     def test_publisher_does_not_receive_registry_token_in_steps(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
-        before, publish = source.split('\n  publish:\n', 1)
-        publish = publish.replace('    steps:', '    steps:\n      - run: echo token\n        env:\n          FORBIDDEN: ${{ secrets.REGISTRY_TOKEN }}', 1)
-        self.assertNotEqual(self.check(before + '\n  publish:\n' + publish), 0)
+        for job in ('publish', 'submit-catalogue'):
+            with self.subTest(job=job):
+                boundary = '\n  ' + job + ':\n'
+                before, publish = source.split(boundary, 1)
+                publish = publish.replace('    steps:', '    steps:\n      - run: echo token\n        env:\n          FORBIDDEN: ${{ secrets.REGISTRY_TOKEN }}', 1)
+                self.assertNotEqual(self.check(before + boundary + publish), 0)
 
     def test_persisted_collection_urls_use_the_configured_public_origin(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
@@ -94,8 +97,13 @@ class AppReleaseWorkflowContract(unittest.TestCase):
     def test_verifier_package_secret_is_narrow_and_artifact_token_stays_job_scoped(self):
         source = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
         binding = '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}'
-        self.assertEqual(source.count(binding), 2)
-        for occurrence in (0, 1):
+        jobs = ('qualify-collection', 'publish', 'submit-catalogue')
+        self.assertEqual(source.count(binding), len(jobs))
+        for job in jobs:
+            block = source.split('\n  ' + job + ':\n', 1)[1]
+            block = re.split(r'\n  [\w-]+:\n', block, maxsplit=1)[0]
+            self.assertEqual(block.count(binding), 1, job)
+        for occurrence in range(len(jobs)):
             for replacement in ('${{ github.token }}', '${{ secrets.REGISTRY_TOKEN }}',
                                 '${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN || secrets.REGISTRY_TOKEN }}'):
                 with self.subTest(occurrence=occurrence, replacement=replacement):
