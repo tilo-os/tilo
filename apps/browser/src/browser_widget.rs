@@ -530,10 +530,14 @@ pub struct BrowserWidget {
 }
 
 impl BrowserWidget {
-    /// Live-mode widget with the default engine (WPE `WebKit` where the
-    /// backend is available, the deterministic test engine otherwise).
-    pub fn new() -> Self {
-        Self::with_engine(default_engine(), false)
+    /// Live-mode widget with the production WPE `WebKit` engine.
+    ///
+    /// The deterministic test engine is deliberately available only through
+    /// [`Self::with_engine`] and [`Self::new_headless`]. A missing or broken
+    /// WPE runtime must stop the live browser rather than making a synthetic
+    /// page look like a successful launch.
+    pub fn try_new() -> Result<Self, String> {
+        Ok(Self::with_engine(default_engine()?, false))
     }
 
     /// Headless widget for `--shots`: test engine, pre-navigated to a
@@ -3044,25 +3048,21 @@ impl BrowserWidget {
     }
 }
 
-impl Default for BrowserWidget {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// The engine a live browser window runs on: WPE `WebKit` when the `wpe`
-/// feature is compiled in (and its libraries boot), the deterministic
-/// test engine otherwise — so the chrome stays fully drivable in
-/// hermetic builds.
-fn default_engine() -> SharedEngine {
+/// feature is compiled in and its libraries boot. There is intentionally no
+/// test-engine fallback here: the live path must prove that it is running the
+/// real web engine.
+fn default_engine() -> Result<SharedEngine, String> {
     #[cfg(feature = "wpe")]
     {
-        match ui::webview::wpe::WpeEngine::new() {
-            Ok(engine) => return engine,
-            Err(err) => tracing::warn!("WPE engine unavailable, using test engine: {err}"),
-        }
+        return ui::webview::wpe::WpeEngine::new()
+            .map_err(|err| format!("WPE engine unavailable: {err}"));
     }
-    TestEngine::new()
+
+    #[cfg(not(feature = "wpe"))]
+    {
+        Err("Browser live mode was built without the WPE engine".into())
+    }
 }
 
 impl Widget for BrowserWidget {
@@ -5503,12 +5503,23 @@ mod tests {
         assert!(frame.width > 0 && frame.height > 0);
     }
 
+    #[cfg(feature = "wpe")]
     #[test]
     fn default_engine_is_shareable() {
         // The engine handle must be cloneable/shareable between widget,
         // app, and blocker thread.
-        let engine: SharedEngine = default_engine();
+        let engine: SharedEngine = default_engine().expect("WPE engine should initialize");
         let _clone: SharedEngine = Arc::clone(&engine);
+    }
+
+    #[cfg(not(feature = "wpe"))]
+    #[test]
+    fn production_engine_refuses_builds_without_wpe() {
+        let error = match default_engine() {
+            Ok(_) => panic!("live mode must not use TestEngine"),
+            Err(error) => error,
+        };
+        assert!(error.contains("built without the WPE engine"), "{error}");
     }
 
     #[test]
