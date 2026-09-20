@@ -72,18 +72,8 @@ def git(root, *args):
     ).stdout
 
 
-def routine_errors(root, base, head):
+def routine_scope_errors(root, base, head):
     errors = []
-    if not SHA.fullmatch(base) or not SHA.fullmatch(head):
-        return ["missing full base or head SHA"]
-    try:
-        git(root, "merge-base", "--is-ancestor", base, head)
-    except subprocess.CalledProcessError:
-        errors.append("candidate does not contain current main")
-    if git(root, "rev-parse", "HEAD").decode().strip() != base:
-        errors.append("trusted checkout is not current main")
-    if git(root, "status", "--porcelain", "--untracked-files=all").strip():
-        errors.append("trusted checkout is not clean")
     records = git(root, "diff", "--raw", "-z", "--no-renames", base, head).split(b"\0")
     paths = []
     for index in range(0, len(records) - 1, 2):
@@ -113,6 +103,38 @@ def routine_errors(root, base, head):
     if not paths:
         errors.append("candidate has no changes")
     return errors
+
+
+def routine_errors(root, base, head):
+    errors = []
+    if not SHA.fullmatch(base) or not SHA.fullmatch(head):
+        return ["missing full base or head SHA"]
+    try:
+        git(root, "merge-base", "--is-ancestor", base, head)
+    except subprocess.CalledProcessError:
+        errors.append("candidate does not contain current main")
+    if git(root, "rev-parse", "HEAD").decode().strip() != base:
+        errors.append("trusted checkout is not current main")
+    if git(root, "status", "--porcelain", "--untracked-files=all").strip():
+        errors.append("trusted checkout is not clean")
+    return errors + routine_scope_errors(root, base, head)
+
+
+def routine_prefilter_errors(root, base, head):
+    """Return only safe candidate rejections; raise on controller-state faults."""
+    if not SHA.fullmatch(base) or not SHA.fullmatch(head):
+        raise ValueError("missing full base or head SHA")
+    if git(root, "rev-parse", "HEAD").decode().strip() != base:
+        raise ValueError("trusted checkout moved during scan")
+    if git(root, "status", "--porcelain", "--untracked-files=all").strip():
+        raise ValueError("trusted checkout became dirty during scan")
+    try:
+        git(root, "merge-base", "--is-ancestor", base, head)
+    except subprocess.CalledProcessError as error:
+        if error.returncode == 1:
+            return ["candidate does not contain current main"]
+        raise
+    return routine_scope_errors(root, base, head)
 
 
 def pages(api, path, field=None):
@@ -164,6 +186,38 @@ def protection_errors(branch):
     return errors
 
 
+def protection_rule_errors(rule):
+    expected = {
+        "enable_push": False,
+        "apply_to_admins": True,
+        "enable_merge_whitelist": False,
+        "merge_whitelist_usernames": [],
+        "merge_whitelist_teams": [],
+        "enable_status_check": True,
+        "status_check_contexts": REQUIRED_CONTEXTS,
+        "enable_approvals_whitelist": True,
+        "approvals_whitelist_username": sorted(REVIEWERS),
+        "approvals_whitelist_teams": [],
+        "block_on_rejected_reviews": True,
+        "block_on_official_review_requests": True,
+        "block_on_outdated_branch": True,
+        "dismiss_stale_approvals": True,
+    }
+    errors = []
+    for key, wanted in expected.items():
+        actual = rule.get(key)
+        if isinstance(wanted, set):
+            matches = isinstance(actual, list) and set(actual) == wanted
+        else:
+            matches = actual == wanted
+        if not matches:
+            errors.append("branch protection rule mismatch: " + key)
+    approvals = rule.get("required_approvals")
+    if type(approvals) is not int or approvals < 1:
+        errors.append("branch protection rule requires no independent approval")
+    return errors
+
+
 def run_errors(api, runs, head, workflow, required_job):
     choices = [run for run in runs if run.get("workflow_id") == workflow
                and run.get("event") == "pull_request" and run.get("commit_sha") == head]
@@ -186,6 +240,7 @@ def observe(api, number, root):
     _, repository = api("")
     _, pr = api(f"/pulls/{number}")
     _, branch = api(f"/branches/{BRANCH}")
+    _, rule = api(f"/branch_protections/{BRANCH}")
     head = pr.get("head", {}).get("sha", "")
     base = branch.get("commit", {}).get("id", "")
     errors = []
@@ -197,6 +252,7 @@ def observe(api, number, root):
     if pr.get("user", {}).get("login") in REVIEWERS | {INTEGRATOR}:
         errors.append("author is not independent of reviewer and integrator")
     errors += protection_errors(branch)
+    errors += protection_rule_errors(rule)
     errors += routine_errors(root, base, head)
     reviews = pages(api, f"/pulls/{number}/reviews")
     approved = {review.get("user", {}).get("login") for review in reviews
