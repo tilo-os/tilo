@@ -812,6 +812,42 @@ impl ActionRuntime {
     }
 }
 
+/// Host-owned accessibility state and semantic projection.
+struct AccessibilityRuntime {
+    /// `None` makes every narration call site a no-op, so a reader-off build
+    /// remains unaffected.
+    screen_reader: Option<crate::screen_reader::ScreenReader>,
+    /// winit doesn't expose the Insert reader modifier as a `Modifiers` bit.
+    screen_reader_modifier_down: bool,
+    live_region_last: std::collections::HashMap<String, String>,
+    focus_trap_active: bool,
+    focus_before_trap: Option<NodeId>,
+    /// Kept separate from the effective theme so disabling high contrast
+    /// restores the configured theme exactly.
+    base_theme: Theme,
+    a11y: crate::a11y::A11ySettings,
+    text_scale: f32,
+    ui_scale: f32,
+    semantic_tree: crate::a11y_tree::SemanticTree,
+}
+
+impl AccessibilityRuntime {
+    fn new(base_theme: Theme, screen_reader: Option<crate::screen_reader::ScreenReader>) -> Self {
+        Self {
+            screen_reader,
+            screen_reader_modifier_down: false,
+            live_region_last: std::collections::HashMap::new(),
+            focus_trap_active: false,
+            focus_before_trap: None,
+            base_theme,
+            a11y: crate::a11y::A11ySettings::default(),
+            text_scale: 1.0,
+            ui_scale: 1.0,
+            semantic_tree: crate::a11y_tree::SemanticTree::new(),
+        }
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independently toggled, orthogonal opt-in/state bit with its own doc comment; grouping them into sub-structs would ripple through every read/write site in this file for no behavioural gain"
@@ -903,29 +939,7 @@ pub struct App {
     current_cursor: CursorIcon,
 
     tooltip_host: crate::widget::TooltipHost,
-
-    /// `None` makes every narration call site a no-op, so a reader-off
-    /// build is byte-for-byte unaffected.
-    screen_reader: Option<crate::screen_reader::ScreenReader>,
-    /// winit doesn't expose the **Insert** key (the NVDA/Orca reader
-    /// modifier) as a [`Modifiers`](winit::event::Modifiers) bit, so
-    /// press/release is tracked here for the `Insert + <key>` command layer.
-    screen_reader_modifier_down: bool,
-    live_region_last: std::collections::HashMap<String, String>,
-
-    /// Tracked to detect the open→close transition and restore focus.
-    focus_trap_active: bool,
-    focus_before_trap: Option<NodeId>,
-
-    /// Kept separate from the live [`Self::theme`] so disabling high
-    /// contrast restores it exactly.
-    base_theme: Theme,
-    a11y: crate::a11y::A11ySettings,
-    text_scale: f32,
-    /// Composes on top of the per-output device scale
-    /// ([`Theme::with_ui_scale`]) so the result stays crisp at any
-    /// fractional scale.
-    ui_scale: f32,
+    accessibility: AccessibilityRuntime,
 
     /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
     /// frame so a steady desired state issues one `set_fullscreen` call —
@@ -955,8 +969,6 @@ pub struct App {
     /// Generic view restoration waits until the first layout has built the
     /// focus order. App-specific projections still apply before first sync.
     pending_continuation_view: Option<crate::view::View>,
-    semantic_tree: crate::a11y_tree::SemanticTree,
-
     profiler: Option<crate::profiling::FrameProfiler>,
 
     /// Wins over the automatic env/package-id/binary-name resolution.
@@ -1460,16 +1472,7 @@ impl App {
             frame_tick: None,
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
-            // Auto-enable if the shell mirrored TILO_A11Y_* into this sandbox.
-            screen_reader: (inputs.screen_reader)(),
-            screen_reader_modifier_down: false,
-            live_region_last: std::collections::HashMap::new(),
-            focus_trap_active: false,
-            focus_before_trap: None,
-            base_theme: configured_theme,
-            a11y: crate::a11y::A11ySettings::default(),
-            text_scale: 1.0,
-            ui_scale: 1.0,
+            accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
@@ -1487,7 +1490,6 @@ impl App {
             last_playback_publish: None,
             pending_continuation_restore: (inputs.pending_continuation_restore)(),
             pending_continuation_view: None,
-            semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: (inputs.profiler)(),
             window_title: None,
             window_app_id: None,
@@ -1500,18 +1502,18 @@ impl App {
             floating_host_messages: Vec::new(),
         };
 
-        app.a11y.high_contrast = (inputs.high_contrast)();
-        app.a11y.reduce_motion = match app.palette_source {
-            PaletteSource::Host => app.base_theme.reduce_motion,
+        app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
+        app.accessibility.a11y.reduce_motion = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.reduce_motion,
             PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
         };
-        app.a11y.screen_reader = app.screen_reader.is_some();
-        app.text_scale = match app.palette_source {
+        app.accessibility.a11y.screen_reader = app.accessibility.screen_reader.is_some();
+        app.accessibility.text_scale = match app.palette_source {
             PaletteSource::Host => app.text_renderer.text_scale(),
             PaletteSource::Owned { .. } => (inputs.text_scale)(),
         };
-        app.ui_scale = match app.palette_source {
-            PaletteSource::Host => app.base_theme.ui_scale,
+        app.accessibility.ui_scale = match app.palette_source {
+            PaletteSource::Host => app.accessibility.base_theme.ui_scale,
             PaletteSource::Owned { .. } => (inputs.ui_scale)(),
         };
         app.rebuild_theme();
@@ -1538,24 +1540,28 @@ impl App {
     fn rebuild_theme(&mut self) {
         self.theme = match self.palette_source {
             PaletteSource::Host => {
-                self.text_renderer.set_text_scale(self.text_scale);
-                self.text_scale = self.text_renderer.text_scale();
-                let base = if self.a11y.high_contrast {
+                self.text_renderer
+                    .set_text_scale(self.accessibility.text_scale);
+                self.accessibility.text_scale = self.text_renderer.text_scale();
+                let base = if self.accessibility.a11y.high_contrast {
                     Theme::high_contrast()
                 } else {
-                    self.base_theme.clone()
+                    self.accessibility.base_theme.clone()
                 };
                 let theme = base
-                    .with_component_scales(self.text_scale, self.ui_scale)
-                    .with_reduce_motion(self.a11y.reduce_motion);
-                self.ui_scale = theme.ui_scale;
+                    .with_component_scales(
+                        self.accessibility.text_scale,
+                        self.accessibility.ui_scale,
+                    )
+                    .with_reduce_motion(self.accessibility.a11y.reduce_motion);
+                self.accessibility.ui_scale = theme.ui_scale;
                 theme
             }
-            PaletteSource::Owned { .. } => {
-                self.base_theme
-                    .clone()
-                    .with_a11y(&self.a11y, self.text_scale, self.ui_scale)
-            }
+            PaletteSource::Owned { .. } => self.accessibility.base_theme.clone().with_a11y(
+                &self.accessibility.a11y,
+                self.accessibility.text_scale,
+                self.accessibility.ui_scale,
+            ),
         };
         // Deliver motion policy before the event loop consults
         // `needs_animation_frame`. This lets custom roots settle their own
@@ -2165,7 +2171,11 @@ impl App {
             .with_native_presentation(|root, _, _, _| root.control_action_bindings())
             .unwrap_or_default();
         for binding in bindings {
-            for path in self.semantic_tree.control_paths(&binding.control_id) {
+            for path in self
+                .accessibility
+                .semantic_tree
+                .control_paths(&binding.control_id)
+            {
                 let Some(semantic_id) = path.last() else {
                     continue;
                 };
@@ -2177,6 +2187,7 @@ impl App {
                 );
                 let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                     && self
+                        .accessibility
                         .semantic_tree
                         .action(semantic_id, &address.action)
                         .is_some();
@@ -2188,7 +2199,7 @@ impl App {
                 if !matches_address {
                     continue;
                 }
-                let Some(node) = self.semantic_tree.node(semantic_id) else {
+                let Some(node) = self.accessibility.semantic_tree.node(semantic_id) else {
                     continue;
                 };
                 routes.push(ActionUiRoute {
@@ -4714,32 +4725,32 @@ impl App {
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
     pub fn a11y_settings(&self) -> crate::a11y::A11ySettings {
-        let mut s = self.a11y;
-        s.screen_reader = self.screen_reader.is_some();
+        let mut s = self.accessibility.a11y;
+        s.screen_reader = self.accessibility.screen_reader.is_some();
         s
     }
 
     pub fn text_scale(&self) -> f32 {
-        self.text_scale
+        self.accessibility.text_scale
     }
 
     /// Layout grows to fit so text never clips; the value is clamped to a
     /// sane range by the theme.
     pub fn set_text_scale(&mut self, factor: f32) {
         let _entry = self.enter_wake_scope();
-        self.text_scale = factor;
+        self.accessibility.text_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
     }
 
     pub fn ui_scale(&self) -> f32 {
-        self.ui_scale
+        self.accessibility.ui_scale
     }
 
     pub fn set_ui_scale(&mut self, factor: f32) {
         let _entry = self.enter_wake_scope();
-        self.ui_scale = factor;
+        self.accessibility.ui_scale = factor;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -4783,16 +4794,16 @@ impl App {
     }
 
     pub fn high_contrast(&self) -> bool {
-        self.a11y.high_contrast
+        self.accessibility.a11y.high_contrast
     }
 
     /// Off restores the captured base theme, not a hard-coded default.
     pub fn set_high_contrast(&mut self, on: bool) {
         let _entry = self.enter_wake_scope();
-        if self.a11y.high_contrast == on {
+        if self.accessibility.a11y.high_contrast == on {
             return;
         }
-        self.a11y.high_contrast = on;
+        self.accessibility.a11y.high_contrast = on;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -4800,20 +4811,20 @@ impl App {
 
     pub fn toggle_high_contrast(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
-        self.set_high_contrast(!self.a11y.high_contrast);
-        self.a11y.high_contrast
+        self.set_high_contrast(!self.accessibility.a11y.high_contrast);
+        self.accessibility.a11y.high_contrast
     }
 
     pub fn reduce_motion(&self) -> bool {
-        self.a11y.reduce_motion
+        self.accessibility.a11y.reduce_motion
     }
 
     pub fn set_reduce_motion(&mut self, on: bool) {
         let _entry = self.enter_wake_scope();
-        if self.a11y.reduce_motion == on {
+        if self.accessibility.a11y.reduce_motion == on {
             return;
         }
-        self.a11y.reduce_motion = on;
+        self.accessibility.a11y.reduce_motion = on;
         self.rebuild_theme();
     }
 
@@ -4821,7 +4832,7 @@ impl App {
     /// theme doesn't discard them.
     pub fn set_theme(&mut self, theme: Theme) {
         let _entry = self.enter_wake_scope();
-        self.base_theme = theme;
+        self.accessibility.base_theme = theme;
         self.rebuild_theme();
         self.layout.layout_dirty = true;
         self.layout.structure_dirty = true;
@@ -4831,24 +4842,24 @@ impl App {
     /// site to a no-op.
     pub fn set_screen_reader_enabled(&mut self, enabled: bool) {
         let _entry = self.enter_wake_scope();
-        match (enabled, self.screen_reader.is_some()) {
+        match (enabled, self.accessibility.screen_reader.is_some()) {
             (true, false) => {
-                self.screen_reader = Some(Self::configured_screen_reader());
+                self.accessibility.screen_reader = Some(Self::configured_screen_reader());
                 self.announce_current_focus();
             }
             (false, true) => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.stop();
                 }
-                self.screen_reader = None;
-                self.live_region_last.clear();
+                self.accessibility.screen_reader = None;
+                self.accessibility.live_region_last.clear();
             }
             _ => {}
         }
     }
 
     pub fn screen_reader_enabled(&self) -> bool {
-        self.screen_reader.is_some()
+        self.accessibility.screen_reader.is_some()
     }
 
     /// Installs a caller-provided reader (e.g. over a test `NullSpeaker` so
@@ -4856,12 +4867,12 @@ impl App {
     #[doc(hidden)]
     pub fn set_screen_reader(&mut self, reader: Option<crate::screen_reader::ScreenReader>) {
         let _entry = self.enter_wake_scope();
-        self.screen_reader = reader;
+        self.accessibility.screen_reader = reader;
     }
 
     #[doc(hidden)]
     pub fn screen_reader(&self) -> Option<&crate::screen_reader::ScreenReader> {
-        self.screen_reader.as_ref()
+        self.accessibility.screen_reader.as_ref()
     }
 
     fn announce_current_focus(&mut self) {
@@ -4870,7 +4881,7 @@ impl App {
             .inspect_node(id, |widget| widget.accessibility())
             .ok()
             .flatten();
-        if let (Some(node), Some(sr)) = (node, self.screen_reader.as_mut()) {
+        if let (Some(node), Some(sr)) = (node, self.accessibility.screen_reader.as_mut()) {
             sr.announce_focus(&node);
         }
     }
@@ -4896,7 +4907,7 @@ impl App {
         use winit::event::ElementState;
         use winit::keyboard::{Key, NamedKey};
 
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return false;
         }
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
@@ -4904,11 +4915,11 @@ impl App {
         };
 
         if let Key::Named(NamedKey::Insert) = ke.logical_key {
-            self.screen_reader_modifier_down = ke.state == ElementState::Pressed;
+            self.accessibility.screen_reader_modifier_down = ke.state == ElementState::Pressed;
             return false;
         }
 
-        if ke.state != ElementState::Pressed || !self.screen_reader_modifier_down {
+        if ke.state != ElementState::Pressed || !self.accessibility.screen_reader_modifier_down {
             return false;
         }
 
@@ -4918,7 +4929,7 @@ impl App {
             let shift = self.modifiers.state().shift_key();
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
-                    if let Some(sr) = self.screen_reader.as_mut() {
+                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                         if shift {
                             sr.read_prev_heading(self.root_widget.as_ref());
                         } else {
@@ -4928,7 +4939,7 @@ impl App {
                     return true;
                 }
                 "f" => {
-                    if let Some(sr) = self.screen_reader.as_mut() {
+                    if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                         if shift {
                             sr.read_prev_control(self.root_widget.as_ref());
                         } else {
@@ -4946,19 +4957,19 @@ impl App {
         };
         match named {
             NamedKey::ArrowDown => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_all(self.root_widget.as_ref());
                 }
                 true
             }
             NamedKey::ArrowRight => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_next(self.root_widget.as_ref());
                 }
                 true
             }
             NamedKey::ArrowLeft => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.read_prev(self.root_widget.as_ref());
                 }
                 true
@@ -4968,7 +4979,7 @@ impl App {
                 true
             }
             NamedKey::Escape => {
-                if let Some(sr) = self.screen_reader.as_mut() {
+                if let Some(sr) = self.accessibility.screen_reader.as_mut() {
                     sr.stop();
                 }
                 true
@@ -5043,24 +5054,24 @@ impl App {
             return false;
         };
         let mut changed = false;
-        if intent.base_theme.name != self.base_theme.name {
-            self.base_theme = intent.base_theme;
+        if intent.base_theme.name != self.accessibility.base_theme.name {
+            self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
-        if intent.high_contrast != self.a11y.high_contrast {
-            self.a11y.high_contrast = intent.high_contrast;
+        if intent.high_contrast != self.accessibility.a11y.high_contrast {
+            self.accessibility.a11y.high_contrast = intent.high_contrast;
             changed = true;
         }
-        if intent.reduce_motion != self.a11y.reduce_motion {
-            self.a11y.reduce_motion = intent.reduce_motion;
+        if intent.reduce_motion != self.accessibility.a11y.reduce_motion {
+            self.accessibility.a11y.reduce_motion = intent.reduce_motion;
             changed = true;
         }
-        if (intent.text_scale - self.text_scale).abs() > f32::EPSILON {
-            self.text_scale = intent.text_scale;
+        if (intent.text_scale - self.accessibility.text_scale).abs() > f32::EPSILON {
+            self.accessibility.text_scale = intent.text_scale;
             changed = true;
         }
-        if (intent.ui_scale - self.ui_scale).abs() > f32::EPSILON {
-            self.ui_scale = intent.ui_scale;
+        if (intent.ui_scale - self.accessibility.ui_scale).abs() > f32::EPSILON {
+            self.accessibility.ui_scale = intent.ui_scale;
             changed = true;
         }
         if changed {
@@ -5109,17 +5120,17 @@ impl App {
     }
 
     fn apply_configured_theme(&mut self) {
-        self.base_theme = Theme::configured();
+        self.accessibility.base_theme = Theme::configured();
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.
         let configured_reader = Self::persisted_accessibility_bool("screen_reader")
             || Self::screen_reader_env_enabled();
         self.set_screen_reader_enabled(configured_reader);
-        if let Some(reader) = self.screen_reader.as_mut() {
+        if let Some(reader) = self.accessibility.screen_reader.as_mut() {
             Self::configure_screen_reader(reader);
         }
-        self.a11y.screen_reader = self.screen_reader.is_some();
+        self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
     /// The smallest-area matching rect wins, so a nested child beats its
@@ -6056,10 +6067,10 @@ impl App {
             })
             .unwrap_or_default();
         self.focusable_order = order;
-        match (self.focus_trap_active, trap_active) {
+        match (self.accessibility.focus_trap_active, trap_active) {
             (false, true) => {
                 // Modal just opened: remember prior focus, move into the trap.
-                self.focus_before_trap = self.focused_node;
+                self.accessibility.focus_before_trap = self.focused_node;
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
                 } else {
@@ -6071,6 +6082,7 @@ impl App {
             (true, false) => {
                 // Modal closed: restore only if that element still exists.
                 let restore = self
+                    .accessibility
                     .focus_before_trap
                     .take()
                     .filter(|id| self.focusable_order.contains(id));
@@ -6088,7 +6100,7 @@ impl App {
             }
             (false, false) => {}
         }
-        self.focus_trap_active = trap_active;
+        self.accessibility.focus_trap_active = trap_active;
     }
 
     /// The decode lives on [`crate::presence::PresenceCtx`] so the
@@ -6135,7 +6147,7 @@ impl App {
             RemotePresenceEffect::InteractionAdvanced => {
                 if let Some(interaction) = interaction
                     && let Some(text) = self.presence_ctx.interaction_announcement(&interaction)
-                    && let Some(reader) = self.screen_reader.as_mut()
+                    && let Some(reader) = self.accessibility.screen_reader.as_mut()
                 {
                     let assertive = matches!(
                         interaction.phase,
@@ -6300,12 +6312,14 @@ impl App {
             self.focused_node = new_id;
             if let Some(node) = new_id {
                 let _ = self.mutate_node(node, |widget| widget.set_focus(true));
-                if self.screen_reader.is_some() {
+                if self.accessibility.screen_reader.is_some() {
                     let access = self
                         .inspect_node(node, |widget| widget.accessibility())
                         .ok()
                         .flatten();
-                    if let (Some(access), Some(reader)) = (access, self.screen_reader.as_mut()) {
+                    if let (Some(access), Some(reader)) =
+                        (access, self.accessibility.screen_reader.as_mut())
+                    {
                         reader.announce_focus(&access);
                     }
                 }
@@ -6353,7 +6367,7 @@ impl App {
     }
 
     fn focused_state_snapshot(&self) -> Option<(NodeId, String)> {
-        self.screen_reader.as_ref()?;
+        self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
         let node = self
             .inspect_node(id, |widget| widget.accessibility())
@@ -6371,7 +6385,7 @@ impl App {
         if self.focused_node != Some(pre_id) {
             return;
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         let Some(node) = self
@@ -6385,13 +6399,13 @@ impl App {
         if now.is_empty() || now == pre_state {
             return;
         }
-        if let Some(sr) = self.screen_reader.as_mut() {
+        if let Some(sr) = self.accessibility.screen_reader.as_mut() {
             sr.announce_value_change(now);
         }
     }
 
     fn text_review_snapshot(&self) -> Option<(NodeId, usize, String)> {
-        self.screen_reader.as_ref()?;
+        self.accessibility.screen_reader.as_ref()?;
         let id = self.focused_node?;
         let (caret, text) = self
             .inspect_node(id, |widget| widget.text_review())
@@ -6409,7 +6423,7 @@ impl App {
         if self.focused_node != Some(pre_id) {
             return;
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         let Some((now_caret, now_text)) = self
@@ -6434,11 +6448,11 @@ impl App {
                         .get(..now_caret)
                         .and_then(|s| s.chars().next_back())
                 });
-            if let (Some(ch), Some(sr)) = (ch, self.screen_reader.as_mut()) {
+            if let (Some(ch), Some(sr)) = (ch, self.accessibility.screen_reader.as_mut()) {
                 sr.echo_char(ch);
             }
         } else if let Some(word) = word_at(&now_text, now_caret)
-            && let Some(sr) = self.screen_reader.as_mut()
+            && let Some(sr) = self.accessibility.screen_reader.as_mut()
         {
             sr.echo_word(&word);
         }
@@ -6458,7 +6472,7 @@ impl App {
             }
             w.for_each_child(&mut |child| visit(child, out));
         }
-        if self.screen_reader.is_none() {
+        if self.accessibility.screen_reader.is_none() {
             return;
         }
         // A live region without an accessible name can't be tracked stably
@@ -6470,8 +6484,10 @@ impl App {
         let mut to_announce: Vec<(crate::a11y::Politeness, String)> = Vec::new();
         for (key, politeness, text) in seen {
             current_keys.insert(key.clone());
-            let changed = self.live_region_last.get(&key) != Some(&text);
-            self.live_region_last.insert(key, text.clone());
+            let changed = self.accessibility.live_region_last.get(&key) != Some(&text);
+            self.accessibility
+                .live_region_last
+                .insert(key, text.clone());
             // Clearing a region to empty updates the snapshot silently.
             if changed && !text.is_empty() {
                 to_announce.push((politeness, text));
@@ -6479,10 +6495,11 @@ impl App {
         }
         // Drop snapshots for regions that left the tree, so a region that
         // reappears with the same text announces afresh.
-        self.live_region_last
+        self.accessibility
+            .live_region_last
             .retain(|k, _| current_keys.contains(k));
 
-        if let Some(sr) = self.screen_reader.as_mut() {
+        if let Some(sr) = self.accessibility.screen_reader.as_mut() {
             for (politeness, text) in to_announce {
                 let (priority, interrupt) = match politeness {
                     // Assertive cuts in; polite is queued at notification
@@ -6543,7 +6560,7 @@ impl App {
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
     fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
-        modal_rect.is_none() || self.focus_trap_active
+        modal_rect.is_none() || self.accessibility.focus_trap_active
     }
 
     /// Tab normally belongs to the host's focus order. A focused editor-like
@@ -6863,7 +6880,7 @@ impl App {
         )
         .unwrap_or_default();
         let mut tree = std::mem::replace(
-            &mut self.semantic_tree,
+            &mut self.accessibility.semantic_tree,
             crate::a11y_tree::SemanticTree::new(),
         );
         let delta = self
@@ -6879,11 +6896,11 @@ impl App {
                     &components,
                 )
             });
-        self.semantic_tree = tree;
+        self.accessibility.semantic_tree = tree;
         delta
     }
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
-        &self.semantic_tree
+        &self.accessibility.semantic_tree
     }
 
     /// A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) routes through
@@ -6909,10 +6926,10 @@ impl App {
 
         let _entry = self.enter_wake_scope();
         // Cloned so the mutation below is free to borrow doc/registry/transport.
-        let Some(action) = self.semantic_tree.action(id, name).cloned() else {
+        let Some(action) = self.accessibility.semantic_tree.action(id, name).cloned() else {
             return Ok(false);
         };
-        if let Some(target) = self.semantic_tree.bound_target(id, name) {
+        if let Some(target) = self.accessibility.semantic_tree.bound_target(id, name) {
             let actor = self.local_author.0.clone();
             match self.invoke_bound_target(&target, arg, &actor, false, false, None, None, None) {
                 Ok(_) => return Ok(true),
@@ -6938,7 +6955,11 @@ impl App {
             }
             SemanticActionKind::AppPrompted { .. } => {
                 let arg = arg.unwrap_or("");
-                let Some(encoded) = self.semantic_tree.build_prompted(id, name, arg) else {
+                let Some(encoded) = self
+                    .accessibility
+                    .semantic_tree
+                    .build_prompted(id, name, arg)
+                else {
                     return Ok(false);
                 };
                 if self.is_history_encoded_local(&encoded) {
@@ -6955,7 +6976,7 @@ impl App {
                     other => other,
                 };
                 let Some((taffy_raw, semantic_target, bounds)) =
-                    self.semantic_tree.node(id).and_then(|n| {
+                    self.accessibility.semantic_tree.node(id).and_then(|n| {
                         n.widget_taffy_id
                             .map(|taffy| (taffy, n.semantic_target.clone(), n.bounds))
                     })
@@ -7128,7 +7149,7 @@ impl App {
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
-        if self.autofocus_on_structure_change && !self.focus_trap_active {
+        if self.autofocus_on_structure_change && !self.accessibility.focus_trap_active {
             if focus_reset {
                 if let Some(&first) = self.focusable_order.first() {
                     self.set_focused_node(Some(first));
@@ -8080,7 +8101,7 @@ fn run_layout_pass(
                         Some(&app.focusable_order),
                     )
                 };
-                if app.focus_trap_active && app.focused_node.is_none() {
+                if app.accessibility.focus_trap_active && app.focused_node.is_none() {
                     app.set_focused_node(app.focusable_order.first().copied());
                 }
             }
@@ -9107,9 +9128,10 @@ impl AppHandler {
                     (progress.pending, palette.take_search_announcement())
                 });
         needs_followup_redraw |= search_pending;
-        if let (Some(reader), Some(announcement)) =
-            (app.screen_reader.as_mut(), search_announcement)
-        {
+        if let (Some(reader), Some(announcement)) = (
+            app.accessibility.screen_reader.as_mut(),
+            search_announcement,
+        ) {
             reader.announce(announcement, tts::Priority::Notification, false);
         }
 
@@ -11892,7 +11914,10 @@ mod focus_trap_tests {
     fn closed_modal_does_not_trap_focus() {
         let (mut app, _open) = host_app();
         app.init_layout();
-        assert!(!app.focus_trap_active, "no trap while the modal is closed");
+        assert!(
+            !app.accessibility.focus_trap_active,
+            "no trap while the modal is closed"
+        );
         assert_eq!(
             app.focusable_order.len(),
             2,
@@ -11909,7 +11934,10 @@ mod focus_trap_tests {
         open.set(true);
         app.refresh_focus_order();
 
-        assert!(app.focus_trap_active, "an open modal traps focus");
+        assert!(
+            app.accessibility.focus_trap_active,
+            "an open modal traps focus"
+        );
         assert_eq!(
             app.focusable_order.len(),
             2,
@@ -11928,7 +11956,7 @@ mod focus_trap_tests {
         app.init_layout();
         open.set(true);
         app.refresh_focus_order();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
         let modal_set: std::collections::HashSet<_> = app.focusable_order.iter().copied().collect();
         let first = app.focusable_order[0];
@@ -11973,7 +12001,7 @@ mod focus_trap_tests {
         // switch off the App's own Tab/arrow navigation.
         let (mut app, _open) = host_app();
         app.init_layout();
-        assert!(!app.focus_trap_active);
+        assert!(!app.accessibility.focus_trap_active);
         assert!(
             app.keyboard_nav_allowed(None),
             "with no modal, Tab runs normally"
@@ -11993,13 +12021,13 @@ mod focus_trap_tests {
 
         open.set(true);
         app.refresh_focus_order();
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         assert_ne!(app.focused_node, Some(outer), "focus moved into the modal");
 
         open.set(false);
         app.refresh_focus_order();
         assert!(
-            !app.focus_trap_active,
+            !app.accessibility.focus_trap_active,
             "trap released when the modal closes"
         );
         assert_eq!(
@@ -16917,7 +16945,11 @@ mod bound_component_tests {
     fn task4_semantic_and_palette_targets_keep_equal_id_lifetimes() {
         let mut fixture = ActionFixture::new();
         fixture.app.refresh_semantic_tree();
-        let targets = fixture.app.semantic_tree.bound_actions_for_test();
+        let targets = fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .bound_actions_for_test();
         let (id, _) = targets
             .iter()
             .find(|(_, target)| {
@@ -18154,9 +18186,9 @@ mod prepared_runner_tests {
             },
             |app| {
                 applies.set(applies.get() + 1);
-                app.base_theme = Theme::light();
+                app.accessibility.base_theme = Theme::light();
                 // This controlled stand-in never creates a narrator or reads settings.
-                app.a11y.screen_reader = true;
+                app.accessibility.a11y.screen_reader = true;
             },
         );
         draw_prepared_component_test_frame(&mut app);
@@ -18168,9 +18200,9 @@ mod prepared_runner_tests {
         assert_eq!(applies.get(), 0);
         assert!(!changed);
         assert!(app.theme_store_stamp.is_none());
-        assert!(app.screen_reader.is_none());
-        assert!(!app.a11y.screen_reader);
-        assert_presentation(&app.base_theme, 2.0, 1.25);
+        assert!(app.accessibility.screen_reader.is_none());
+        assert!(!app.accessibility.a11y.screen_reader);
+        assert_presentation(&app.accessibility.base_theme, 2.0, 1.25);
         let observation = observed.borrow();
         let (theme, renderer_scale) = observation.draws.last().unwrap();
         assert_eq!(*renderer_scale, 1.5);
@@ -18203,7 +18235,7 @@ mod prepared_runner_tests {
                 },
                 |app| {
                     applies.set(applies.get() + 1);
-                    app.base_theme = Theme::light();
+                    app.accessibility.base_theme = Theme::light();
                 },
             );
             assert_eq!(changed, expected_changed);
@@ -18211,7 +18243,7 @@ mod prepared_runner_tests {
             assert_eq!(applies.get(), expected_applies);
             assert_eq!(app.layout.layout_dirty, expected_changed);
             assert_eq!(app.layout.structure_dirty, expected_changed);
-            assert!(app.screen_reader.is_none());
+            assert!(app.accessibility.screen_reader.is_none());
         }
         assert!(app.theme_store_stamp.is_none());
         assert_eq!(app.theme.name, Theme::light().name);
@@ -18740,6 +18772,7 @@ mod prepared_runner_tests {
     fn activate_palette_action(app: &mut App, action: &str) {
         app.refresh_semantic_tree();
         let target = app
+            .accessibility
             .semantic_tree
             .bound_actions_for_test()
             .into_iter()
@@ -19887,7 +19920,7 @@ mod viewport_composition_tests {
             .unwrap();
         for width in [920, 600, 1200] {
             frame(&mut app, width);
-            assert!(app.focus_trap_active);
+            assert!(app.accessibility.focus_trap_active);
             let focused = app.focused_node.expect("modal editor remains focused");
             assert!(app.focusable_order.contains(&focused));
             assert_eq!(
@@ -19996,13 +20029,13 @@ mod viewport_composition_tests {
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         app.init_layout();
         frame(&mut app, 1200);
-        assert!(!app.focus_trap_active);
+        assert!(!app.accessibility.focus_trap_active);
         let outside = app.focusable_order[0];
         app.set_focused_node(Some(outside));
         app.mutate_node(outside, |widget| widget.set_state("5:b:1"))
             .unwrap();
         frame(&mut app, 920);
-        assert!(app.focus_trap_active);
+        assert!(app.accessibility.focus_trap_active);
         let focused = app.focused_node.expect("modal owns focus");
         assert!(app.focusable_order.contains(&focused));
         assert!(
