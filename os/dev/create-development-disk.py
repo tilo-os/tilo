@@ -11,6 +11,8 @@ disposability or device isolation. Privileged Podman can access guest devices;
 the runner must enforce the no-passthrough boundary outside this program.
 """
 import argparse
+import base64
+import hashlib
 from contextlib import ExitStack
 import importlib.util
 import json
@@ -43,10 +45,47 @@ TRANSIENT_CRUN_NAMESPACE_ERROR = (
     b'error: reading /proc/1/ns/ipc: No such file or directory (os error 2)')
 
 
-def command(argv):
+DIAGNOSTIC_STREAM_LIMIT = 256 * 1024
+
+
+def _bounded_stream(data):
+    if len(data) <= DIAGNOSTIC_STREAM_LIMIT:
+        return data, False
+    half = DIAGNOSTIC_STREAM_LIMIT // 2
+    return data[:half] + data[-half:], True
+
+
+def write_failure_diagnostic(path, argv, result):
+    stdout, stdout_truncated = _bounded_stream(result.stdout)
+    stderr, stderr_truncated = _bounded_stream(result.stderr)
+    document = {
+        'schema': 1,
+        'purpose': 'tilo-supervised-bootc-install-failure',
+        'stage': 'bootc-install-to-disk',
+        'argv_sha256': hashlib.sha256(json.dumps(argv, separators=(',', ':')).encode()).hexdigest(),
+        'returncode': result.returncode,
+        'stdout_base64': base64.b64encode(stdout).decode(),
+        'stderr_base64': base64.b64encode(stderr).decode(),
+        'stdout_truncated': stdout_truncated,
+        'stderr_truncated': stderr_truncated,
+    }
+    encoded = (json.dumps(document, sort_keys=True, separators=(',', ':')) + '\n').encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(encoded); stream.flush(); os.fsync(stream.fileno())
+    except BaseException:
+        try: os.unlink(path)
+        except FileNotFoundError: pass
+        raise
+
+
+def command(argv, *, failure_diagnostic=None):
     result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
     if result.returncode:
+        if failure_diagnostic is not None:
+            write_failure_diagnostic(failure_diagnostic, argv, result)
         # Registry/tool diagnostics may contain credentials; do not echo them.
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout.decode('utf-8', 'strict')
@@ -232,7 +271,8 @@ def _create_verified_disk(args):
                 '--composefs-backend', '--bootloader=systemd', '--filesystem=btrfs',
                 '--source-imgref=docker://' + args.source,
                 '--target-imgref=' + args.target,
-                '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'])
+                '--enforce-container-sigpolicy', '--run-fetch-check', '/output/disk.raw'],
+                failure_diagnostic=args.output.with_name('bootc-install.failure.json'))
             disk.validate()
             if media:
                 media_receipt = materialize_created_media(disk, verified, args)

@@ -1,6 +1,9 @@
 """Command/lifecycle proof only: no image or disk installer is executed."""
 from contextlib import contextmanager
 import importlib.util
+import base64
+import hashlib
+import json
 import os
 import stat
 from pathlib import Path
@@ -15,6 +18,45 @@ sys.path.insert(0, str(DEV))
 spec = importlib.util.spec_from_file_location('disk_creator', DEV / 'create-development-disk.py')
 disk_creator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(disk_creator)
+
+
+class FailureDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / 'failure.json'
+        self.result = SimpleNamespace(returncode=7, stdout=b'progress', stderr=b'failure')
+
+    def test_writes_private_structured_bounded_failure_without_printing(self):
+        with patch.object(disk_creator.subprocess, 'run', return_value=self.result):
+            with self.assertRaisesRegex(ValueError, r'podman failed \(exit 7\)'):
+                disk_creator.command(['/usr/bin/podman', 'run'], failure_diagnostic=self.path)
+        document = json.loads(self.path.read_text())
+        self.assertEqual(document['purpose'], 'tilo-supervised-bootc-install-failure')
+        self.assertEqual(document['returncode'], 7)
+        self.assertEqual(base64.b64decode(document['stdout_base64']), b'progress')
+        self.assertEqual(base64.b64decode(document['stderr_base64']), b'failure')
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(document['argv_sha256'], hashlib.sha256(
+            b'["/usr/bin/podman","run"]').hexdigest())
+        self.assertNotIn('/usr/bin/podman', self.path.read_text())
+
+    def test_never_overwrites_existing_failure_evidence(self):
+        self.path.write_bytes(b'preserve')
+        with patch.object(disk_creator.subprocess, 'run', return_value=self.result):
+            with self.assertRaises(FileExistsError):
+                disk_creator.command(['/usr/bin/podman'], failure_diagnostic=self.path)
+        self.assertEqual(self.path.read_bytes(), b'preserve')
+
+    def test_streams_are_strictly_bounded_with_truncation_receipts(self):
+        data = b'a' * (disk_creator.DIAGNOSTIC_STREAM_LIMIT + 10)
+        result = SimpleNamespace(returncode=1, stdout=data, stderr=data)
+        disk_creator.write_failure_diagnostic(self.path, ['/usr/bin/bootc'], result)
+        document = json.loads(self.path.read_text())
+        self.assertEqual(len(base64.b64decode(document['stdout_base64'])),
+                         disk_creator.DIAGNOSTIC_STREAM_LIMIT)
+        self.assertTrue(document['stdout_truncated'])
+        self.assertTrue(document['stderr_truncated'])
+        self.assertLess(self.path.stat().st_size, 800 * 1024)
 
 
 class FuseDeviceTests(unittest.TestCase):
@@ -278,7 +320,7 @@ class CreationTests(unittest.TestCase):
         self.addCleanup(self.verify.stop)
 
     def execute(self, fail=False, help_text=None):
-        def command(argv):
+        def command(argv, **kwargs):
             self.calls.append(argv)
             if argv[-1] == '--help':
                 return ' '.join(disk_creator.FLAGS) if help_text is None else help_text
