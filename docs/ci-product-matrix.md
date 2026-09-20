@@ -1,29 +1,35 @@
 # Product packaging coverage and next Windows qualification
 
-Source audit: main `97fde6687`, 2026-09-19. A defined workflow is not evidence
+Source audit: main `d780529df`, 2026-09-20. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
 artifact.
+
+See the [CI and packaging roadmap](ci-production-roadmap.md) for the build graph,
+promotion model, service levels and phased production plan.
 
 ## Routine change lifecycle
 
 Routine work starts on a task branch and lands through one updated pull request.
-The exact head needs independent review and the protected check and lint
-contexts before merge.
+The protected check and lint contexts must pass for the exact head before merge.
 `check.yml` and `lint.yml` preserve a result for every `main` commit; dependency
 selection keeps the Rust lane focused while nightly CI remains the full-workspace
 backstop.
 
-The trusted merge dispatcher completes eligible routine app PRs automatically,
-one at a time. Its current allowlist is deliberately narrow: Rust source changes
-inside an existing `apps/<app>/src/` package. It fails closed when the branch is
-out of date, author/reviewer/integrator identities overlap, branch protection
-drifts, or exact-head check, lint or independent approval is missing. Other PRs
-still need an explicit merge. See [Release pipeline](release-pipeline.md) for the
-enabled heavy-build and publication triggers.
+The trusted merge controller pilots review-optional integration only for Rust
+source changes inside an existing `apps/<app>/src/` package. The author must post
+`/merge <full-head-sha>` after exact-head checks pass. An official review request
+holds that head until it is cancelled or receives an allowed exact-head approval;
+current change requests block, and every push invalidates the prior decision.
+Documentation, tools, workflow YAML and supported `dist/`/`os/` scripts require
+an official approval for the current head, author intent and the deployed reviewed
+operator command. Paths outside both allowlists are not yet admitted. See
+[Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow) for the
+command and limits, and [Release pipeline](release-pipeline.md) for heavy-build
+and publication triggers.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |
-| Linux/qOS native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed qpkg and runtime collection on x86-64 and ARM64 | Main rebuilds changed qpkgs and reuses immutable collection members. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. qOS ISA policy is explicit; this is not a universal Linux standalone installer. |
+| Linux/qOS native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed qpkg and runtime collection on x86-64 and ARM64 | Main compiles and packages selected app binaries and reuses immutable collection members; full-collection dependency features preserve the shared runtime ABI. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. qOS ISA policy is explicit; this is not a universal Linux standalone installer. |
 | Whole desktop / Linux distributions | `package-desktop.yml`: Arch, Nix, Ubuntu 24.04, Debian 13, Fedora 44; architecture jobs run distro builds serially | PR contracts remain cheap; weekly/manual distribution builds and main payload publication remain. ARM requires the workflow's native capability gate. Distribution install tests do not establish bootable OS/device acceptance. |
 | Setup application, Linux | `release-imager.yml`: default explicit Linux x86 smoke; full native/tag lanes add ARM64, AppImage and release checks | Catalog, signing, installation and physical-media qualification remain distinct. |
 | Setup application, Windows | Existing x86-64/ARM64 jobs use `imager-windows-x86_64` / `imager-windows-aarch64`, MSVC targets, imager tests, package build and signature checks | Enabled for imager tags or explicit `full_native=true`, not ordinary pushes. Actual native host availability must be checked before dispatch. |

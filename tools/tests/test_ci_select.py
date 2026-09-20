@@ -20,6 +20,7 @@ class SelectorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        (self.root / "Cargo.toml").write_text("[workspace]\n")
         def package(name: str, rel: str, deps: list[str] | None = None) -> dict:
             directory = self.root / rel
             return {
@@ -42,16 +43,38 @@ class SelectorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def test_native_dependency_selection_tracks_build_and_observer_inputs(self):
+    def test_native_dependency_selection_tracks_declared_build_and_observer_inputs(self):
+        (self.root / "Cargo.toml").write_text(
+            '[patch.crates-io]\nopenh264-sys2 = { path = "vendor/openh264-sys2" }\n')
+        # No vendor payload or fixture exists: declaration still selects the job,
+        # whose production command must fail rather than convert absence to skip.
         for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
                      "vendor/openh264-sys2/build.rs", "os/tests/test_openh264_source_order.py",
                      ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py"):
             with self.subTest(path=path):
                 plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
                 self.assertTrue(plan["native_dependencies_required"])
-        self.assertFalse(ci_select.native_dependencies_required(["apps/calculator/src/actions.rs"]))
-        self.assertFalse(ci_select.native_dependencies_required(["DEVELOPMENT.md"]))
-        self.assertTrue(ci_select.native_dependencies_required([], force_full=True))
+        self.assertFalse(ci_select.native_dependencies_required(self.root, ["apps/calculator/src/actions.rs"]))
+        self.assertFalse(ci_select.native_dependencies_required(self.root, ["DEVELOPMENT.md"]))
+        self.assertTrue(ci_select.native_dependencies_required(self.root, [], force_full=True))
+
+    def test_native_contract_bootstrap_does_not_break_other_dependencies_or_full_runs(self):
+        for changes in (["Cargo.lock"], ["Cargo.toml"], ["rust-toolchain.toml"],
+                        [".forgejo/workflows/check.yml", "tools/ci/affected_packages.py",
+                         "os/tests/test_openh264_source_order.py"], []):
+            with self.subTest(changes=changes):
+                self.assertFalse(ci_select.native_dependencies_required(self.root, changes))
+                self.assertFalse(ci_select.native_dependencies_required(self.root, changes, force_full=True))
+        # Removing the declaration together with native files cannot hide the check.
+        self.assertTrue(ci_select.native_dependencies_required(self.root, ["vendor/openh264-sys2/build.rs"]))
+
+    def test_unreadable_native_declaration_fails_selection(self):
+        (self.root / "Cargo.toml").write_text("[malformed")
+        with self.assertRaises(ValueError):
+            ci_select.native_dependencies_required(self.root, ["Cargo.lock"])
+        (self.root / "Cargo.toml").unlink()
+        with self.assertRaises(FileNotFoundError):
+            ci_select.native_dependencies_required(self.root, ["Cargo.lock"])
 
     def test_reverse_dependency_closure(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
