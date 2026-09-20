@@ -5,6 +5,9 @@ use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use peniko::ImageData;
+use smallvec::SmallVec;
+
+pub type ResourceBindings = SmallVec<[ResourceProxy; 8]>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ShaderId(pub usize);
@@ -80,8 +83,8 @@ pub enum Command {
     // Discussion question: third argument is vec of resources?
     // Maybe use tricks to make more ergonomic?
     // Alternative: provide bufs & images as separate sequences
-    Dispatch(ShaderId, (u32, u32, u32), Vec<ResourceProxy>),
-    DispatchIndirect(ShaderId, BufferProxy, u64, Vec<ResourceProxy>),
+    Dispatch(ShaderId, (u32, u32, u32), ResourceBindings),
+    DispatchIndirect(ShaderId, BufferProxy, u64, ResourceBindings),
     #[cfg(feature = "debug_layers")]
     Draw(DrawParams),
 }
@@ -114,6 +117,19 @@ pub struct DrawParams {
 }
 
 impl Recording {
+    /// Clear the command stream while retaining both its command capacity and
+    /// the previous frame's packed scene upload for the next resolve pass.
+    pub(crate) fn reset_reusing_scene_upload(&mut self, scene_upload: &mut Vec<u8>) {
+        for command in self.commands.drain(..) {
+            if let Command::Upload(proxy, mut data) = command
+                && proxy.name == "vello.scene"
+            {
+                data.clear();
+                *scene_upload = data;
+            }
+        }
+    }
+
     /// Appends a [`Command`] to the back of the [`Recording`].
     pub fn push(&mut self, cmd: Command) {
         self.commands.push(cmd);
@@ -256,6 +272,38 @@ impl ImageFormat {
             wgpu::TextureFormat::Bgra8Unorm => Some(Self::Bgra8),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, Recording};
+
+    #[test]
+    fn reset_retains_commands_and_recycles_the_packed_scene_upload() {
+        let mut recording = Recording::default();
+        let scene_bytes = vec![7_u8; 4096];
+        let scene_ptr = scene_bytes.as_ptr();
+        let scene_capacity = scene_bytes.capacity();
+        recording.upload("vello.scene", scene_bytes);
+        recording.upload_uniform("vello.config", vec![1_u8; 64]);
+        let command_capacity = recording.commands.capacity();
+
+        let mut recycled = Vec::new();
+        recording.reset_reusing_scene_upload(&mut recycled);
+
+        assert!(recording.commands.is_empty());
+        assert!(recording.commands.capacity() >= command_capacity);
+        assert!(recycled.is_empty());
+        assert_eq!(recycled.capacity(), scene_capacity);
+        assert_eq!(recycled.as_ptr(), scene_ptr);
+
+        recycled.resize(4096, 9);
+        recording.upload("vello.scene", std::mem::take(&mut recycled));
+        let Some(Command::Upload(_, bytes)) = recording.commands.first() else {
+            panic!("scene upload should remain an upload command");
+        };
+        assert_eq!(bytes.as_ptr(), scene_ptr);
     }
 }
 
