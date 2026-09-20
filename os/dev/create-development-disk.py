@@ -69,6 +69,38 @@ def bootc_help(argv, attempts=3, delay_seconds=2):
     raise AssertionError('unreachable')
 
 
+def ensure_private_device(path, kind, major, minor):
+    expected = os.makedev(major, minor)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        os.mknod(path, kind | 0o600, expected)
+        info = path.lstat()
+    if (stat.S_IFMT(info.st_mode) != kind or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_uid != 0 or info.st_gid != 0 or info.st_rdev != expected):
+        raise ValueError(f'{path} is not the expected root-owned private device')
+
+
+def ensure_loop_devices(devices=Path('/dev'), sys_block=Path('/sys/block'),
+                        sys_control=Path('/sys/class/misc/loop-control/dev'),
+                        proc_devices=Path('/proc/devices')):
+    expected = {f'loop{index}' for index in range(8)}
+    observed = {path.name for path in sys_block.glob('loop*')}
+    rows = [line.split() for line in proc_devices.read_text().splitlines()]
+    if observed != expected or rows.count(['7', 'loop']) != 1:
+        raise ValueError('kernel does not expose the expected loop block devices')
+    if sys_control.read_text().strip() != '10:237':
+        raise ValueError('kernel does not expose the expected loop control device')
+    ensure_private_device(devices / 'loop-control', stat.S_IFCHR, 10, 237)
+    for index in range(8):
+        if (sys_block / f'loop{index}' / 'dev').read_text().strip() != f'7:{index}':
+            raise ValueError('kernel loop block device identity differs from expected')
+        ensure_private_device(devices / f'loop{index}', stat.S_IFBLK, 7, index)
+    available = command(['/usr/sbin/losetup', '--find']).strip()
+    if available not in {f'/dev/loop{index}' for index in range(8)}:
+        raise ValueError('loop setup did not return an exact provisioned device')
+
+
 def ensure_fuse_device(device=Path('/dev/fuse'), misc=Path('/proc/misc'),
                        sys_device=Path('/sys/class/misc/fuse/dev')):
     expected = os.makedev(10, 229)
@@ -122,6 +154,7 @@ def guest_inputs(args, *, supervised=False):
     # store, even belonging to the temporary build guest.
     reject_firmware_access()
     ensure_fuse_device()
+    ensure_loop_devices()
     if ':' in str(args.output):
         raise ValueError('disk output path cannot contain volume option delimiters')
     source.inputs(args.source, args.target, args.architecture, args.revision)

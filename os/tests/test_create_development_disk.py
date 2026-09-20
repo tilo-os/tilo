@@ -86,6 +86,95 @@ class FuseDeviceTests(unittest.TestCase):
 
 
 
+class LoopDeviceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.devices = root / 'dev'; self.devices.mkdir()
+        self.sys_block = root / 'sys-block'; self.sys_block.mkdir()
+        for index in range(8):
+            path = self.sys_block / f'loop{index}'; path.mkdir()
+            (path / 'dev').write_text(f'7:{index}\n')
+        self.sys_control = root / 'loop-control-dev'
+        self.sys_control.write_text('10:237\n')
+        self.proc_devices = root / 'devices'
+        self.proc_devices.write_text('Character devices:\n 10 misc\nBlock devices:\n  7 loop\n')
+
+    def test_provisions_exact_devices_and_requires_unused_loop(self):
+        with patch.object(disk_creator, 'ensure_private_device') as ensure, \
+                patch.object(disk_creator, 'command', return_value='/dev/loop3\n'):
+            disk_creator.ensure_loop_devices(
+                self.devices, self.sys_block, self.sys_control, self.proc_devices)
+        expected = [((self.devices / 'loop-control', stat.S_IFCHR, 10, 237),)]
+        expected += [((self.devices / f'loop{i}', stat.S_IFBLK, 7, i),) for i in range(8)]
+        self.assertEqual([call.args for call in ensure.call_args_list], [row[0] for row in expected])
+
+    def test_rejects_missing_extra_or_wrong_kernel_identity(self):
+        cases = ('missing', 'extra', 'wrong-control', 'wrong-loop', 'duplicate-proc')
+        for case in cases:
+            with self.subTest(case=case):
+                if case == 'missing': (self.sys_block / 'loop7').rename(self.sys_block / 'held')
+                if case == 'extra':
+                    extra = self.sys_block / 'loop8'; extra.mkdir(); (extra / 'dev').write_text('7:8\n')
+                if case == 'wrong-control': self.sys_control.write_text('10:238\n')
+                if case == 'wrong-loop': (self.sys_block / 'loop4' / 'dev').write_text('7:5\n')
+                if case == 'duplicate-proc': self.proc_devices.write_text('7 loop\n7 loop\n')
+                with patch.object(disk_creator, 'ensure_private_device'), \
+                        self.assertRaisesRegex(ValueError, 'expected|differs'):
+                    disk_creator.ensure_loop_devices(
+                        self.devices, self.sys_block, self.sys_control, self.proc_devices)
+                self.setUp()
+
+    def test_rejects_losetup_lost_result(self):
+        with patch.object(disk_creator, 'ensure_private_device'), \
+                patch.object(disk_creator, 'command', return_value='/dev/loop0 (lost)\n'):
+            with self.assertRaisesRegex(ValueError, 'exact provisioned'):
+                disk_creator.ensure_loop_devices(
+                    self.devices, self.sys_block, self.sys_control, self.proc_devices)
+
+    def test_creates_missing_private_device_and_restats_it(self):
+        valid = SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_uid=0, st_gid=0,
+                                st_rdev=os.makedev(7, 0))
+        path = self.devices / 'loop0'
+        with patch.object(Path, 'lstat', side_effect=[FileNotFoundError(), valid]), \
+                patch.object(os, 'mknod') as mknod:
+            disk_creator.ensure_private_device(path, stat.S_IFBLK, 7, 0)
+        mknod.assert_called_once_with(path, stat.S_IFBLK | 0o600, os.makedev(7, 0))
+
+    def test_accepts_exact_existing_device_without_recreating_it(self):
+        valid = SimpleNamespace(st_mode=stat.S_IFCHR | 0o600, st_uid=0, st_gid=0,
+                                st_rdev=os.makedev(10, 237))
+        with patch.object(Path, 'lstat', return_value=valid), \
+                patch.object(os, 'mknod') as mknod:
+            disk_creator.ensure_private_device(
+                self.devices / 'loop-control', stat.S_IFCHR, 10, 237)
+        mknod.assert_not_called()
+
+    def test_private_device_creation_failure_propagates(self):
+        path = self.devices / 'loop0'
+        with patch.object(Path, 'lstat', side_effect=FileNotFoundError()), \
+                patch.object(os, 'mknod', side_effect=PermissionError('denied')):
+            with self.assertRaisesRegex(PermissionError, 'denied'):
+                disk_creator.ensure_private_device(path, stat.S_IFBLK, 7, 0)
+
+    def test_rejects_hostile_existing_device_metadata(self):
+        valid = dict(st_mode=stat.S_IFBLK | 0o600, st_uid=0, st_gid=0,
+                     st_rdev=os.makedev(7, 0))
+        hostile = (
+            dict(valid, st_mode=stat.S_IFREG | 0o600),
+            dict(valid, st_mode=stat.S_IFBLK | 0o660),
+            dict(valid, st_uid=1), dict(valid, st_gid=1),
+            dict(valid, st_rdev=os.makedev(7, 1)),
+        )
+        for metadata in hostile:
+            with self.subTest(metadata=metadata), \
+                    patch.object(Path, 'lstat', return_value=SimpleNamespace(**metadata)):
+                with self.assertRaisesRegex(ValueError, 'root-owned private device'):
+                    disk_creator.ensure_private_device(
+                        self.devices / 'loop0', stat.S_IFBLK, 7, 0)
+
+
 class BootcHelpTests(unittest.TestCase):
     def result(self, returncode, stdout=b'', stderr=b''):
         return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
