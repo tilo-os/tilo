@@ -161,6 +161,156 @@ fn stale_or_forged_caller_rejection_does_not_change_durable_owner() {
     assert_eq!(owner.status(), fresh);
 }
 
+async fn record_effect_receipt(owner: &mut SessionOwner) {
+    let invocation = uuid::Uuid::new_v4();
+    let receipt = qos_desktop::WorkspaceEffectReceipt {
+        invocation: serde_json::from_value(serde_json::json!(invocation)).unwrap(),
+        actor: hex::encode(owner.peer().authority().user_public_key),
+        context: Default::default(),
+        status: serde_json::from_value(serde_json::json!({"status":"succeeded"})).unwrap(),
+        completed_at: 42,
+    };
+    let request = OwnerCommitRequest {
+        room: owner.peer().room().into(),
+        operation: CommitOperation::EffectReceipt {
+            invocation,
+            redacted: serde_json::to_vec(&receipt).unwrap(),
+        },
+    };
+    let (service, mut mailbox) = qos_session_peer::owner_commit::OwnerCommitMailbox::bounded(1);
+    let acknowledgement = tokio::spawn(service.commit(request.clone()));
+    mailbox.recv().await.unwrap().apply(owner).unwrap();
+    acknowledgement
+        .await
+        .unwrap()
+        .unwrap()
+        .validate_for(&request)
+        .unwrap();
+}
+
+#[tokio::test]
+async fn restart_and_unrelated_room_receipts_do_not_invalidate_open_or_close() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("owner");
+    let mut owner = SessionOwner::initialize(&path).unwrap();
+    let strip = tree(&owner).workspaces[0].strips[0].id.0;
+    let opening = request(
+        &owner,
+        DesktopCommand::OpenTab {
+            app: "dev.qos.notes".into(),
+            placement: TabPlacement::NewGroup { strip, after: None },
+        },
+    );
+    record_effect_receipt(&mut owner).await;
+    drop(owner);
+    let mut owner = SessionOwner::open(&path).unwrap();
+    owner
+        .commit_desktop_command(&opening)
+        .unwrap()
+        .validate_for(&opening)
+        .unwrap();
+    let snapshot = tree(&owner);
+    let group = snapshot.workspaces[0].strips[0]
+        .window_groups
+        .last()
+        .unwrap();
+    let closing = request(
+        &owner,
+        DesktopCommand::CloseTab {
+            location: TabLocation {
+                strip,
+                group: group.id,
+                tab: group.tabs[0].id,
+            },
+        },
+    );
+    record_effect_receipt(&mut owner).await;
+    drop(owner);
+    let mut owner = SessionOwner::open(&path).unwrap();
+    owner
+        .commit_desktop_command(&closing)
+        .unwrap()
+        .validate_for(&closing)
+        .unwrap();
+    assert!(
+        !tree(&owner).workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .any(|g| g.id == group.id)
+    );
+}
+
+#[test]
+fn unknown_desktop_source_revision_is_rejected_without_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+    let mut command = request(
+        &owner,
+        DesktopCommand::CreateStrip {
+            name: "Unknown".into(),
+        },
+    );
+    if let CommitOperation::DesktopCommand { command, .. } = &mut command.operation {
+        command.source.heads = vec![[55; 32]];
+    }
+    let before = owner.status();
+    assert!(matches!(
+        owner.commit_desktop_command(&command),
+        Err(DesktopCommandError::Rejected(_))
+    ));
+    assert_eq!(owner.status(), before);
+}
+
+#[test]
+fn changed_nested_desktop_contents_are_rejected_even_without_an_allocator_change() {
+    use ui::automerge::{ActorId, ROOT, ReadDoc, transaction::Transactable};
+    let root = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+    let command = request(
+        &owner,
+        DesktopCommand::CloseTab {
+            location: notes(&owner),
+        },
+    );
+    let author = owner.peer().authority().device_public_key;
+    let mut doc = owner.peer().admitted_room().unwrap().clone();
+    let counter_before = doc
+        .get(ROOT, "desktop_counter_v1")
+        .unwrap()
+        .map(|(v, id)| (v.into_owned(), id));
+    let contents = doc.get(ROOT, "contents").unwrap().unwrap().1;
+    let strip = doc.keys(&contents).next().unwrap();
+    let strip = doc.get(&contents, strip).unwrap().unwrap().1;
+    doc.set_actor(ActorId::from(author.to_vec()));
+    doc.put(&strip, "name", "Changed elsewhere").unwrap();
+    doc.commit();
+    assert_eq!(doc.get(ROOT, "desktop_counter_v1").unwrap(), counter_before);
+    let mut candidate = owner.peer().clone();
+    candidate
+        .receive_from(
+            qos_peer_state::TransportOrigin::RelayDelta(author),
+            qos_peer_state::NeighbourMsg::SyncResp {
+                room: owner.peer().room().into(),
+                changes: doc
+                    .get_changes(&[])
+                    .iter()
+                    .map(|c| c.raw_bytes().to_vec())
+                    .collect(),
+            },
+            web_time::SystemTime::now(),
+        )
+        .unwrap();
+    owner
+        .commit_mutation_candidate(candidate, owner.directory().to_vec())
+        .unwrap();
+    let before = owner.status();
+    assert!(matches!(
+        owner.commit_desktop_command(&command),
+        Err(DesktopCommandError::Rejected(_))
+    ));
+    assert_eq!(owner.status(), before);
+}
+
 fn execute(owner: &mut SessionOwner, command: DesktopCommand) {
     let command = request(owner, command);
     owner

@@ -2,7 +2,50 @@
 use crate::SessionOwner;
 use qos_desktop::{projection::RoomProjection, session_commands::*, *};
 use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use ui::automerge::{ROOT, ReadDoc, transaction::Transactable};
+use ui::automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc, Value, transaction::Transactable};
+
+/// Room heads also advance for receipts, enrollment and document durability.
+/// Those changes must not invalidate a gesture against an unchanged desktop.
+/// Compare the original admitted desktop with the current one, without
+/// rebinding the command or weakening the current caller/target checks.
+fn desktop_source_matches(doc: &AutoCommit, heads: &[[u8; 32]]) -> Result<bool, String> {
+    let heads = heads.iter().copied().map(ChangeHash).collect::<Vec<_>>();
+    if heads.is_empty()
+        || heads
+            .iter()
+            .any(|head| doc.get_change_by_hash(head).is_none())
+    {
+        return Ok(false);
+    }
+    for key in [
+        "room",
+        "owner",
+        "name",
+        "contents",
+        "contents_owners_v1",
+        // Also prevents an old launch from being reused after its tab closes.
+        "desktop_counter_v1",
+    ] {
+        let previous = doc
+            .get_all_at(ROOT, key, &heads)
+            .map_err(|e| e.to_string())?;
+        let current = doc.get_all(ROOT, key).map_err(|e| e.to_string())?;
+        if previous != current {
+            return Ok(false);
+        }
+        for (value, object) in current {
+            if matches!(value, Value::Object(_))
+                && doc
+                    .hydrate(&object, Some(&heads))
+                    .map_err(|e| e.to_string())?
+                    != doc.hydrate(&object, None).map_err(|e| e.to_string())?
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
 
 impl SessionOwner {
     /// Host-local broker capability. Definite validation refusals never enter
@@ -55,11 +98,14 @@ impl SessionOwner {
             .admitted_room()
             .ok_or_else(|| rejected("room governance missing".into()))?
             .clone();
+        let base_heads = doc.get_heads();
         let mut current = doc.get_heads().into_iter().map(|h| h.0).collect::<Vec<_>>();
         let mut expected = command.source.heads.clone();
         current.sort_unstable();
         expected.sort_unstable();
-        if current != expected {
+        if current != expected
+            && !desktop_source_matches(&doc, &command.source.heads).map_err(rejected)?
+        {
             return Err(rejected("desktop source revision is stale".into()));
         }
         let owners = doc
@@ -322,7 +368,7 @@ impl SessionOwner {
                 qos_peer_state::NeighbourMsg::SyncResp {
                     room: request.room.clone(),
                     changes: doc
-                        .get_changes(&[])
+                        .get_changes(&base_heads)
                         .iter()
                         .map(|c| c.raw_bytes().to_vec())
                         .collect(),
