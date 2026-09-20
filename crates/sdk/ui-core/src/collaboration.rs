@@ -2272,7 +2272,15 @@ impl CollaborationManager {
                 }
                 manager
             }
-            Err(_) => Self::disabled(),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    %app_id,
+                    %cluster_id,
+                    "collab: SDK connection unavailable; disabling collaboration"
+                );
+                Self::disabled()
+            }
         }
     }
 

@@ -1442,6 +1442,10 @@ pub struct ForeignSurfaceWidget {
     /// GPU-uploadable copy of the last frame we drew, plus the store sequence it came from.
     cached: Option<ImageData>,
     cached_seq: u64,
+    /// Layout moved or resized the client since the last composed frame.
+    /// Even when the client has not committed new pixels yet, the retained
+    /// scene must be rebuilt so its cached image is drawn into the new rect.
+    placement_dirty: bool,
     /// Stable, human-addressable name so `FrameBuilder::widget_registry` (and the shell's click/rect resolver) can find the tile.
     test_id: String,
     /// The app's own name, resolved on the frame that first needs it.
@@ -1460,6 +1464,7 @@ impl ForeignSurfaceWidget {
             rect: Rect::ZERO,
             cached: None,
             cached_seq: 0,
+            placement_dirty: true,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
@@ -1566,7 +1571,13 @@ impl ForeignSurfaceWidget {
     /// leaves it at zero, matching the cache, so the strip is judged
     /// unchanged; the ten-second backstop is only read from a draw — without this the window sits invisible until an unrelated repaint.
     fn awaiting_first_paint(&self) -> bool {
-        !store().is_presented(self.surface_id)
+        // The native paint gate asks `needs_animation_frame` before it calls
+        // `draw`.  Merely reading the old latch here creates a permanent
+        // redraw loop: the first fitting frame is already visible, but only
+        // `presented()` (normally reached from draw) used to settle it.  Judge
+        // the same live rect here so the first client frame produces one
+        // final paint and then lets a static desktop sleep.
+        !store().mark_presented(self.surface_id, self.rect)
     }
 
     /// Destination rect for the client image inside `self.rect`, preserving
@@ -1691,12 +1702,16 @@ impl Widget for ForeignSurfaceWidget {
         };
         let x = origin.x + f64::from(l.location.x);
         let y = origin.y + f64::from(l.location.y);
-        self.rect = Rect::new(
+        let next_rect = Rect::new(
             x,
             y,
             x + f64::from(l.size.width),
             y + f64::from(l.size.height),
         );
+        if self.rect != next_rect {
+            self.rect = next_rect;
+            self.placement_dirty = true;
+        }
         // Publish the laid-out rect so the configure pass can tell the client what resolution to render at — the shell-to-wayland seam.
         if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             store().note_placement(self.surface_id, self.rect);
@@ -1841,13 +1856,21 @@ impl Widget for ForeignSurfaceWidget {
         self.rect
     }
 
-    /// A pending frame in the store is the only reason this widget needs a repaint — cheap to poll, `false` when idle, so paint-gating is unaffected.
+    /// A pending client frame keeps animation cadence alive. A placement-only
+    /// change is edge-triggered through `needs_redraw` instead, so resizing a
+    /// static client repaints once without creating an idle frame loop.
     fn needs_animation_frame(&self) -> bool {
         self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
     }
 
     fn needs_redraw(&self) -> bool {
-        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
+        self.placement_dirty
+            || self.awaiting_first_paint()
+            || store().frame_seq(self.surface_id) != self.cached_seq
+    }
+
+    fn mark_drawn(&mut self) {
+        self.placement_dirty = false;
     }
 }
 
@@ -2552,6 +2575,56 @@ mod tests {
         store().forget(id);
     }
 
+    #[test]
+    fn moving_a_static_foreign_surface_requests_one_repaint() {
+        use std::collections::HashMap;
+        use taffy::prelude::TaffyMaxContent;
+        use ui::widget::TaffyTreeExt;
+
+        let id = sid(430);
+        store().forget(id);
+        store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
+        let mut widget = ForeignSurfaceWidget::new(id, "dev.tilo.static".into());
+
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = widget.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        let root = taffy.parent_node(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(1200.0),
+                    height: taffy::Dimension::length(800.0),
+                },
+                ..Default::default()
+            },
+            &[node],
+        );
+        taffy
+            .compute_layout(root, taffy::Size::MAX_CONTENT)
+            .unwrap();
+        widget.apply_layout(&taffy, node, Point::ZERO);
+        assert!(widget.needs_redraw(), "first placement must paint");
+        assert!(
+            widget.refresh_cache(),
+            "the first draw consumes the staged client frame",
+        );
+        widget.mark_drawn();
+        assert!(!widget.needs_redraw(), "an unchanged static client idles");
+
+        widget.apply_layout(&taffy, node, Point::new(248.0, 136.0));
+        assert!(
+            widget.needs_redraw(),
+            "moving cached client pixels must invalidate the retained scene",
+        );
+        assert!(
+            !widget.needs_animation_frame(),
+            "a placement edge repaints once rather than starting an animation loop",
+        );
+        widget.mark_drawn();
+        assert!(!widget.needs_redraw());
+        store().forget(id);
+    }
+
     /// An app that cannot be shown must say so rather than be an invisible hole in the strip.
     #[test]
     fn a_surface_whose_capture_failed_is_shown_so_it_can_say_why() {
@@ -2742,11 +2815,14 @@ mod tests {
         );
         store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
         assert!(
+            !w.awaiting_first_paint(),
+            "the paint gate itself must settle a fitting first frame; native asks it before draw"
+        );
+        assert!(
             w.needs_animation_frame(),
             "a fresh frame requests a repaint"
         );
         assert!(w.refresh_cache(), "cache picks up the new frame");
-        assert!(w.presented(), "a frame that fits the tab is on screen");
         assert!(
             !w.needs_animation_frame(),
             "once drawn, an idle client must not keep the paint loop awake"

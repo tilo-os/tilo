@@ -219,6 +219,14 @@ pub trait Backend {
         None
     }
 
+    /// Earliest time at which [`Self::poll_events`] can synthesize an event
+    /// without any backend fd becoming readable. DRM uses this for native
+    /// keyboard repeat: libinput wakes the first physical press/release, but
+    /// repeat ticks are compositor-owned timers rather than kernel events.
+    fn next_service_deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+
     fn outputs(&self) -> &[Output];
 
     /// The presentation interval of the display this backend drives, if

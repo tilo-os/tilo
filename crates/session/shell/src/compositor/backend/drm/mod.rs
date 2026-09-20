@@ -624,6 +624,10 @@ impl Backend for DrmBackend {
         }
     }
 
+    fn next_service_deadline(&self) -> Option<std::time::Instant> {
+        self.inner.next_service_deadline()
+    }
+
     /// The hardware cursor plane composites itself; where there is none, the scanout draws the
     /// fallback into the framebuffer (`scanout::draw_cursor`) — either way the pointer is on screen without the scene carrying it.
     fn has_cursor_plane(&self) -> bool {
@@ -732,7 +736,14 @@ impl Backend for DrmBackend {
             scanouts,
             outputs: self.outputs.clone(),
             pointer: self.inner.dispatch.pointer,
-            paint: self.paint.take(),
+            // wgpu/Vulkan devices must be created on the thread which will
+            // drive them.  An inline frame can initialise `self.paint`
+            // before this split (for example during startup or a future
+            // backend probe); moving that live device to the render thread
+            // wedges Mesa software adapters after the first submissions.
+            // Drop any inline bridge here and let `paint_scanouts` construct
+            // a fresh one on the dedicated presentation thread.
+            paint: None,
             blanked: self.blanked,
             paused: self.paused,
             // The scanouts and the commands addressed to them travel together: whoever owns one owns the other.
@@ -954,6 +965,32 @@ mod tests {
         assert!(
             !struct_def.contains("warned_about_vello"),
             "Phase 5.2: DrmBackend struct must drop the legacy latch field. Got:\n{struct_def}"
+        );
+    }
+
+    #[test]
+    fn drm_presenter_starts_without_a_cross_thread_gpu_device() {
+        // `take_presenter` is the ownership boundary.  Constructing the
+        // bridge before this point and moving it with the scanouts can wedge
+        // software Vulkan adapters after their first submissions.  Keep the
+        // invariant visible in the production initializer without requiring
+        // a DRM seat or a wgpu adapter in this unit test.
+        let src = include_str!("mod.rs");
+        let start = src
+            .find("fn take_presenter(&mut self)")
+            .expect("DRM backend must expose its presenter");
+        let body = &src[start..];
+        let initializer = body
+            .split("fn set_dpms")
+            .next()
+            .expect("presenter initializer must precede set_dpms");
+        assert!(
+            initializer.contains("paint: None"),
+            "the render thread must construct its own wgpu bridge"
+        );
+        assert!(
+            !initializer.contains("paint: self.paint.take()"),
+            "a live wgpu bridge must never cross the thread boundary"
         );
     }
 }
