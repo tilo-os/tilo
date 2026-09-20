@@ -36,7 +36,7 @@ EVIDENCE = ('01-rebind.json', '02-loader.json', '03-provisional.json',
             '04-composefs.json', '05-reseal.json', '06-prediction.json',
             '07-verified.json', '08-published.json', 'result.json', 'status.json',
             'failure.json', 'signing-pending.json')
-STAGE5_EVIDENCE = EVIDENCE[:5]
+CHECKPOINT_STAGES = (2, 5)
 # The initial gate is an operator authorization window. It is deliberately
 # independent of the request-bound signing and build execution deadlines.
 OPERATOR_READY_TIMEOUT_SECONDS = 7200
@@ -174,32 +174,34 @@ def request_bytes(raw, digest, helpers):
     return data
 
 
-def stage5_checkpoint(directory):
-    """Read one explicitly selected public stage-5 receipt chain, without adopting partial state."""
+def registry_checkpoint(directory, stage):
+    """Read one explicitly selected public receipt chain, without adopting partial state."""
+    if stage not in CHECKPOINT_STAGES:
+        raise ValueError('unsupported registry checkpoint stage')
     directory = Path(directory)
     if (not directory.is_absolute() or directory.resolve() != directory or directory.is_symlink()
             or not directory.is_dir()):
-        raise ValueError('canonical stage-5 checkpoint directory required')
+        raise ValueError('canonical registry checkpoint directory required')
     result = {}
     try:
         directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            for name in STAGE5_EVIDENCE:
+            for name in EVIDENCE[:stage]:
                 descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
                 with os.fdopen(descriptor, 'rb') as source:
                     info = os.fstat(source.fileno())
                     if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 1024 * 1024:
-                        raise ValueError('complete bounded stage-5 checkpoint receipts required')
+                        raise ValueError('complete bounded registry checkpoint receipts required')
                     raw = source.read(1024 * 1024 + 1)
                 if len(raw) != info.st_size:
-                    raise ValueError('stage-5 checkpoint receipt changed while reading')
+                    raise ValueError('registry checkpoint receipt changed while reading')
                 if not isinstance(json.loads(raw, object_pairs_hook=unique), dict):
-                    raise ValueError('stage-5 checkpoint receipt object required')
+                    raise ValueError('registry checkpoint receipt object required')
                 result[name] = raw
         finally:
             os.close(directory_fd)
     except OSError as error:
-        raise ValueError('complete bounded stage-5 checkpoint receipts required') from error
+        raise ValueError('complete bounded registry checkpoint receipts required') from error
     return result
 
 
@@ -280,8 +282,9 @@ def main():
     parser.add_argument('--source', type=Path)
     parser.add_argument('--helpers', type=Path)
     parser.add_argument('--evidence', type=Path)
-    parser.add_argument('--restore-stage5', type=Path,
-                        help='explicit prior public 01-05 receipt directory; never inferred or retried')
+    parser.add_argument('--restore-checkpoint', type=Path,
+                        help='explicit prior public stage-2 or stage-5 receipt directory')
+    parser.add_argument('--restore-stage', type=int, choices=CHECKPOINT_STAGES)
     args = parser.parse_args()
     if args.snapshot_spool:
         snapshot_spool()
@@ -347,8 +350,10 @@ def main():
             auth.write_text(json.dumps({'auths': {'code.sandbox.example': credentials}}))
             auth.chmod(0o600)
             run('docker', 'cp', str(auth), container + ':/work/registry-auth.json')
-            if args.restore_stage5:
-                for receipt, raw in stage5_checkpoint(args.restore_stage5).items():
+            if bool(args.restore_checkpoint) != bool(args.restore_stage):
+                raise ValueError('restore checkpoint directory and stage are required together')
+            if args.restore_checkpoint:
+                for receipt, raw in registry_checkpoint(args.restore_checkpoint, args.restore_stage).items():
                     checkpoint = stage / receipt
                     checkpoint.write_bytes(raw)
                     run('docker', 'cp', str(checkpoint), container + ':/evidence/' + receipt)
