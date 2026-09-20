@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 ACTION_PATH = ".forgejo/actions/install-cosign"
 CONSUMERS = {
-    "build-builder-image.yml": 1,
+    "build-builder-image.yml": 2,
     "build-image.yml": 1,
     "build-kernel.yml": 2,
     "snapshot-rpms.yml": 1,

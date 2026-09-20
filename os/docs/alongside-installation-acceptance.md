@@ -93,7 +93,7 @@ selection pre-judges whether the real framebuffer checks will pass.
 ## Profile encoder on the acceptance host
 
 Build the headless production-shared encoder once using
-`apps/imager/profile-tool/README.md`, then put the native executable in the tools
+`tools/imager-profile/README.md`, then put the native executable in the tools
 image. Set both `TILO_PROFILE_ENCODER=/absolute/path/to/tilo-imager-profile` and
 `TILO_PROFILE_ENCODER_SHA256=<independently recorded SHA256>` for each cycle.
 The cycle checks the digest before preparation and again immediately before

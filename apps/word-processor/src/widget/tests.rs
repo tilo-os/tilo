@@ -6632,3 +6632,122 @@ fn unsupported_link_save_as_keeps_source_identity_and_bytes() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn close_requirement_survives_cancelled_save_as_and_failed_canonical_save() {
+    let dir = temp_dir("close-admission");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.md");
+    std::fs::write(&source, "original source").unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    wp.set_recovery_dir(dir.clone());
+    wp.sync(&mut state.doc, &state.root);
+    assert!(wp.unsaved_documents(&state.doc).is_empty());
+    wp.model_mut().insert_str(&mut state.doc, "unsaved ");
+    wp.save_status = DocumentSaveStatus::Modified;
+    let before = wp.unsaved_documents(&state.doc);
+    assert_eq!(before.len(), 1);
+    let pending_ops = state.doc.pending_ops();
+    let invocation = tilo_actions::InvocationId::new();
+    wp.resource_file_invocation = Some(invocation);
+    wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Cancelled));
+    wp.portal_purpose = Some(PortalPurpose::SaveAs);
+    wp.sync(&mut state.doc, &state.root);
+    assert!(matches!(
+        wp.poll_resource_operation(invocation, false, &state.doc, &state.root),
+        Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+    ));
+    assert_eq!(wp.unsaved_documents(&state.doc), before);
+    assert_eq!(state.doc.pending_ops(), pending_ops);
+    let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::SaveAs {
+        path: Some(dir.to_string_lossy().into_owned()),
+    })
+    .unwrap();
+    assert!(
+        wp.start_resource_operation(
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+            &payload,
+            &state.doc,
+            &state.root
+        )
+        .is_err()
+    );
+    assert_eq!(wp.unsaved_documents(&state.doc), before);
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "original source");
+    let payload =
+        serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None }).unwrap();
+    assert!(matches!(
+        wp.start_resource_operation(
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
+            &payload,
+            &state.doc,
+            &state.root
+        )
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
+    assert!(wp.unsaved_documents(&state.doc).is_empty());
+    assert!(
+        std::fs::read_to_string(&source)
+            .unwrap()
+            .contains("unsaved")
+    );
+    // The render cache also follows uncommitted edits and their rollback,
+    // without creating an undo boundary just to observe either state.
+    state.commit_action(None, None);
+    let saved_projection = wp.blocks.clone();
+    wp.model_mut().insert_str(&mut state.doc, "temporary ");
+    let pending = state.doc.pending_ops();
+    assert!(pending > 0);
+    wp.sync(&mut state.doc, &state.root);
+    assert_eq!(state.doc.pending_ops(), pending);
+    assert!(
+        wp.blocks
+            .iter()
+            .any(|block| block.text.contains("temporary"))
+    );
+    assert!(state.doc.rollback() > 0);
+    wp.sync(&mut state.doc, &state.root);
+    assert_eq!(state.doc.pending_ops(), 0);
+    assert_eq!(wp.blocks, saved_projection);
+    assert!(wp.unsaved_documents(&state.doc).is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn close_requirement_detects_host_undo_after_successful_save_without_widget_dirty_flag() {
+    let dir = temp_dir("close-host-undo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.md");
+    std::fs::write(&source, "before editing").unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    wp.set_recovery_dir(dir.clone());
+    wp.sync(&mut state.doc, &state.root);
+    state.commit_action(None, None);
+    wp.model_mut().insert_str(&mut state.doc, "saved edit ");
+    state.commit_action(None, None);
+    wp.try_write_to_current_path(&state.doc).unwrap();
+    let saved_bytes = std::fs::read(&source).unwrap();
+    assert!(wp.unsaved_documents(&state.doc).is_empty());
+    assert!(
+        state.undo(None, None).is_some(),
+        "use the host State undo service"
+    );
+    assert!(
+        wp.save_status == DocumentSaveStatus::Clean,
+        "host undo bypasses widget event bookkeeping"
+    );
+    let before = state.doc.pending_ops();
+    assert_eq!(wp.unsaved_documents(&state.doc).len(), 1);
+    assert_eq!(
+        state.doc.pending_ops(),
+        before,
+        "close inspection must not commit the undo transaction"
+    );
+    assert_eq!(std::fs::read(&source).unwrap(), saved_bytes);
+    std::fs::remove_dir_all(dir).unwrap();
+}

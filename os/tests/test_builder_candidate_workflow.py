@@ -5,6 +5,7 @@ import os
 import importlib.util
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import textwrap
@@ -32,7 +33,92 @@ def step_script(workflow, name):
     return textwrap.dedent('\n'.join(body))
 
 
+def step_block(workflow, name):
+    block = workflow.split(f'      - name: {name}\n', 1)[1]
+    return block.split('\n      - name: ', 1)[0]
+
+
+def action_input(block, name):
+    marker = f'          {name}: '
+    value = block.split(marker, 1)[1]
+    first, *remaining = value.splitlines()
+    if first != '|':
+        return first
+    continuation = []
+    for line in remaining:
+        if line and not line.startswith('            '):
+            break
+        continuation.append(line.removeprefix('            '))
+    return '\n'.join(continuation).rstrip()
+
+
+def action_inputs(block):
+    return {
+        match.group(1): action_input(block, match.group(1))
+        for match in re.finditer(r'^          ([a-z][a-z0-9-]*):', block, re.MULTILINE)
+    }
+
+
 class BuilderCandidates(unittest.TestCase):
+    def test_native_registry_writers_are_serialized(self):
+        build_job = BUILD.split('\n  build:\n', 1)[1].split('\n  images:\n', 1)[0]
+        self.assertEqual(build_job.count('\n      max-parallel: 1\n'), 1)
+
+    def test_image_push_finishes_before_the_same_graph_exports_cache(self):
+        image = step_block(BUILD, 'Build and push')
+        cache = step_block(BUILD, 'Export build cache')
+        signing = step_block(BUILD, 'Sign and describe the native builder')
+
+        self.assertIn('id: build', image)
+        self.assertEqual(action_input(image, 'push'), 'true')
+        self.assertNotIn('cache-to:', image)
+        self.assertEqual(action_input(cache, 'push'), 'false')
+        self.assertIn('cache-to:', cache)
+        self.assertLess(BUILD.index('- name: Build and push'),
+                        BUILD.index('- name: Export build cache'))
+        self.assertLess(BUILD.index('- name: Export build cache'),
+                        BUILD.index('- name: Sign and describe the native builder'))
+
+        # The second invocation resolves entirely from the BuildKit state made
+        # by the first. Compare every action input so a future graph option
+        # cannot drift between the two exporters unnoticed.
+        image_inputs = action_inputs(image)
+        cache_inputs = action_inputs(cache)
+        self.assertEqual(set(cache_inputs) - set(image_inputs), {'cache-to'})
+        self.assertEqual(set(image_inputs) - set(cache_inputs), set())
+        for name in sorted(set(image_inputs) - {'push'}):
+            self.assertEqual(cache_inputs[name], image_inputs[name], name)
+
+        # Signing remains bound to the pushed image, never to cache metadata.
+        self.assertIn('CHILD_DIGEST: ${{ steps.build.outputs.digest }}', signing)
+
+    def test_legacy_subjects_are_installed_only_for_e2e_and_cannot_be_skipped(self):
+        subjects = ['gnome-text-editor', 'qt6-qtbase-examples', 'libreoffice-writer']
+        recipe = (ROOT / 'os/Containerfile.builder').read_text()
+        for subject in subjects[1:]:
+            self.assertNotIn(subject, recipe)
+        self.assertIn("gnome-text-editor", recipe)
+        legacy = (ROOT / '.forgejo/workflows/legacy-app-e2e.yml').read_text()
+        script = step_script(legacy, 'Install and verify real app subjects')
+        # Execute the workflow script with package installation and subject
+        # discovery intercepted. Missing subjects must still fail after dnf.
+        stubs = r'''dnf() { printf '%s\n' "$@" > dnf-args; test "$FAIL_AT" != dnf; }
+        rpm() { printf '%s\n' "$@" > rpm-args; test "$FAIL_AT" != rpm; }
+        command() { test "$2" != "$FAIL_AT"; }
+        find() { test "$FAIL_AT" != qt || return 1; echo /qt/widgets/lineedits/lineedits/lineedits; }
+        '''
+        for failure in ('none', 'dnf', 'rpm', 'gnome-text-editor', 'libreoffice', 'qt'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                result = subprocess.run(['bash', '-e', '-c', stubs + script], cwd=work,
+                                        env={**os.environ, 'FAIL_AT': failure},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
+                self.assertEqual((work / 'dnf-args').read_text().splitlines(),
+                                 ['install', '-y', '--setopt=install_weak_deps=False', *subjects])
+                if failure == 'none':
+                    self.assertEqual((work / 'rpm-args').read_text().splitlines(), ['-q', *subjects])
+
     def resolve(self, requested):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'outputs'
@@ -121,7 +207,7 @@ class BuilderCandidates(unittest.TestCase):
                     self.assertFalse(output.exists())
 
     def test_both_architectures_and_builder_consumers_keep_acceptance_gates(self):
-        self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
+        self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
         self.assertIn('runner: runner-arm64', BUILD)
         self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
         # Native acceptance consumers must honor the resolved builder override.
@@ -138,8 +224,10 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
         self.assertIn('run: python3 tools/policy/check_repository_layout.py', select_job)
         self.assertIn('python3 tools/ci/affected_packages.py --base "$base" --shards 2', select_job)
-        self.assertIn('  select:\n    needs: builder', CHECK)
-        self.assertIn('  security:\n    needs: builder', CHECK)
+        self.assertNotRegex(select_job, r'(?m)^    needs:')
+        self.assertNotIn('needs.', select_job)
+        self.assertIn("if: needs.select.outputs.security_required == 'true'", security_job)
+        self.assertIn('needs: [builder, select]', security_job)
         self.assertNotIn('needs.builder.outputs.image', select_job)
         affected_job = CHECK.split('  affected:\n', 1)[1].split('\n  checks:\n', 1)[0]
         self.assertIn('    needs: [builder, select]', affected_job)
@@ -245,12 +333,27 @@ class CanaryIdentity(unittest.TestCase):
         self.assertEqual(BUILD.count('image: ${{ matrix.image }}'), 2)
         self.assertEqual(BUILD.count('matrix: ${{ fromJSON(needs.images.outputs.matrix) }}'), 2)
         self.assertIn('needs: [images, cache-cold]', BUILD)
-        self.assertIn('needs: [build, images, cache-cold, cache-warm]', BUILD)
+        self.assertIn('  accept-builder:', BUILD)
+        self.assertIn('needs: [plan, build, images, cache-cold, cache-warm]', BUILD)
+        self.assertIn('needs: [plan, build, images, accept-builder]', BUILD)
         self.assertIn('builder-canary-inputs.py verify acceptance-receipts', BUILD)
         self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh cold'),
                         BUILD.index('name: Retain only successful cold acceptance'))
         self.assertLess(BUILD.index('bash tools/ci/sccache-canary.sh warm'),
                         BUILD.index('name: Retain only successful warm acceptance'))
+
+    def test_reuse_never_reaches_signing_or_promotion(self):
+        signing = BUILD.split('  signing-preflight:', 1)[1].split('\n  build:', 1)[0]
+        build = BUILD.split('  build:', 1)[1].split('\n  images:', 1)[0]
+        promotion = BUILD.split('  promote-builder:', 1)[1]
+        acceptance = BUILD.split('  accept-builder:', 1)[1].split('\n  promote-builder:', 1)[0]
+        self.assertIn("if: needs.plan.outputs.mode == 'build'", signing)
+        self.assertIn("needs.plan.outputs.mode == 'build'", build)
+        self.assertIn("needs.plan.outputs.mode == 'build'", promotion)
+        self.assertNotIn('COSIGN_KEY_REF', acceptance)
+        self.assertNotIn('enable-openid-connect', acceptance)
+        self.assertNotIn('promote-native-index.py', acceptance)
+        self.assertIn("needs.plan.outputs.mode == 'reuse'", acceptance)
 
 
 if __name__ == '__main__':
