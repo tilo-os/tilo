@@ -10,13 +10,15 @@ compose="$root/compose.yaml"
 config="$root/relay.toml.example"
 readme="$root/README.md"
 containerfile="$root/Containerfile"
+dockerignore="$root/Containerfile.dockerignore"
+workflow="$root/../../../.forgejo/workflows/tilo-relay.yaml"
 compose="$root/compose.yaml"
 entrypoint="$root/tilo-home-peer"
 
 fail() { echo "tilo-relay container contract: FAIL: $*" >&2; exit 1; }
 need() { grep -Fq -- "$2" "$1" || fail "$(basename "$1") lacks: $2"; }
 
-for path in "$compose" "$config" "$readme"; do
+for path in "$compose" "$config" "$readme" "$dockerignore" "$workflow"; do
   [ -f "$path" ] || fail "missing $(basename "$path")"
 done
 
@@ -46,11 +48,28 @@ need "$readme" "filesystem peer"
 need "$readme" "selected workspace IDs"
 need "$readme" "Pair home server"
 need "$containerfile" "target/release/fs"
-need "$containerfile" "rust cargo sccache capnproto"
+need "$containerfile" "rust cargo capnproto"
 need "$containerfile" "CARGO_BUILD_JOBS=2"
 need "$containerfile" "CARGO_PROFILE_RELEASE_LTO=thin"
-need "$containerfile" "cargo build --release -p tilo-relay --bins"
-need "$containerfile" "cargo build --release -p fs --bin fs"
+need "$containerfile" "RUSTC_WRAPPER=/usr/local/bin/sccache"
+need "$containerfile" "SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"
+need "$containerfile" "SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77"
+need "$containerfile" 'SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT}'
+need "$containerfile" "--mount=type=secret,id=aws_access_key_id"
+need "$containerfile" "--mount=type=secret,id=aws_secret_access_key"
+need "$containerfile" "--mount=type=secret,id=aws_session_token"
+need "$containerfile" "sccache --zero-stats"
+need "$containerfile" "! sccache --start-server"
+need "$containerfile" "export RUSTC_WRAPPER="
+need "$containerfile" "sccache backend unavailable; compiling normally"
+need "$containerfile" "required compiler cache configuration is unavailable"
+need "$containerfile" "probe-sccache.py"
+need "$containerfile" "test ! -e /context/.git/config"
+need "$containerfile" "test ! -e /context/.forgejo"
+need "$containerfile" "cargo build --locked --release -p tilo-relay -p fs --bins"
+if grep -Fq 'sed -i' "$containerfile"; then
+  fail "Containerfile mutates the locked workspace before compiling"
+fi
 need "$containerfile" 'ENTRYPOINT ["/usr/bin/tilo-home-peer"]'
 need "$compose" "./config:/etc/tilo:Z"
 need "$compose" "tilo-full-replica"
@@ -61,5 +80,21 @@ need "$entrypoint" "/usr/bin/tilo-enroll pair"
 need "$entrypoint" "/var/lib/tilo-relay/decommissioned"
 need "$entrypoint" "exec /usr/bin/busybox sleep infinity"
 need "$entrypoint" "wait -n"
+need "$workflow" "persist-credentials: false"
+need "$workflow" "SOURCE_DATE_EPOCH=0"
+need "$workflow" 'SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}'
+need "$workflow" "aws_access_key_id=AWS_ACCESS_KEY_ID"
+need "$workflow" "aws_session_token=AWS_SESSION_TOKEN"
+need "$workflow" "Bind the runner compiler-cache configuration"
+need "$workflow" "TILO_REQUIRE_COMPILER_CACHE="
+need "$workflow" "TILO_COMPILER_CACHE_CONFIGURED="
+need "$workflow" "TILO_CACHE_PROBE_NONCE="
+need "$workflow" 'github-assets=os/external-assets/cache'
+need "$workflow" 'cache-github-assets.sh "sccache-v0.17.0-${target}-unknown-linux-musl.tar.gz"'
+need "$workflow" "driver-opts: network=host"
+
+for excluded in .git .forgejo target os/output; do
+  grep -qxF "$excluded" "$dockerignore" || fail "Docker build context includes $excluded"
+done
 
 echo "tilo-relay container contract: PASS"
