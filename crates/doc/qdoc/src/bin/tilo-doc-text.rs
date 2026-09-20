@@ -235,8 +235,10 @@ mod tests {
         );
     }
 
-    /// The document a real word processor answered with, captured byte-for-byte from a running
-    /// packaged app (headless session, text typed, a client asking for the document) — makes the tests below claims about the product, not guesses about Automerge's encoder.
+    /// The document a real word processor answered with, captured from a running packaged app
+    /// (headless session, text typed, a client asking for the document) and migrated to the Tilo
+    /// schema ID — makes the tests below claims about the product, not guesses about Automerge's
+    /// encoder.
     const FROM_A_RUNNING_APP: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/data/word-processor-typed.automerge"
@@ -276,7 +278,7 @@ mod tests {
         assert!(
             found
                 .iter()
-                // This captured pre-rename document deliberately retains its persisted schema ID.
+                // Both captured documents use the current persisted schema ID.
                 .any(|(p, t)| p == "schema" && t == "tilo.richtext"),
             "and it is a word-processor document all the same, so the negative \
              above is an answer and not an empty walk",
