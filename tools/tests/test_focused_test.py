@@ -46,6 +46,44 @@ class FocusedTests(unittest.TestCase):
             focused.execute(Path('/focused-test-fixture'), self.values)
         run.assert_not_called()
 
+    def test_library_test_uses_existing_exact_guard(self):
+        values = dict(self.values, OPERATION='test-lib', TEST_TARGET='')
+        self.metadata['packages'][0]['targets'].append({'name': 'shell', 'kind': ['lib']})
+        self.assertEqual(focused.request(values), values)
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()) as read, \
+             patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                 [], 0, 'test result: ok. 1 passed; 0 failed; 0 ignored;\n')) as run:
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), values), 0)
+        self.assertEqual(read.call_args.args[0], ['cargo', 'test', '--locked', '-p', 'shell',
+                         '--lib', '--', 'module::case', '--exact', '--list'])
+        self.assertEqual(run.call_args.args[0], ['cargo', 'test', '--locked', '-p', 'shell',
+                         '--lib', '--', 'module::case', '--exact', '--nocapture'])
+        for output in ('', 'other::case: test\n'):
+            with patch.object(focused.subprocess, 'check_output', side_effect=self.reads(output)), \
+                 patch.object(focused.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'absent'):
+                focused.execute(Path('/focused-test-fixture'), values)
+            run.assert_not_called()
+
+    def test_library_test_rejects_wrong_target_and_ignored_case(self):
+        values = dict(self.values, OPERATION='test-lib', TEST_TARGET='')
+        with self.assertRaisesRegex(ValueError, 'integration target'):
+            focused.request(dict(values, TEST_TARGET='it'))
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+             self.assertRaisesRegex(ValueError, 'no library'):
+            focused.execute(Path('/focused-test-fixture'), values)
+
+        self.metadata['packages'][0]['targets'].append({'name': 'shell', 'kind': ['lib']})
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+             patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                 [], 0, 'test result: ok. 0 passed; 0 failed; 1 ignored;\n')), \
+             self.assertRaisesRegex(ValueError, 'non-ignored'):
+            focused.execute(Path('/focused-test-fixture'), values)
+
+    def test_fuse_consumer_selects_helper_changes(self):
+        workflow = (PATH.parents[2] / '.forgejo/workflows/fs-fuse.yml').read_text()
+        pr_paths = workflow.split('  pull_request:', 1)[1].split('  schedule:', 1)[0]
+        self.assertIn('"tools/ci/focused_test.py"', pr_paths)
+
     def test_ignored_test_is_not_a_pass(self):
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
              patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess(
