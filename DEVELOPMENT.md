@@ -62,6 +62,23 @@ Pass two runs in baseline/current order with `--compare` to print queue, wall an
 same-named job deltas directly. Job names appear beside Forgejo's numeric IDs, so
 the report can be read without a second API lookup.
 
+For a failing pull request, start with the exact-head contexts and then open only
+the failed run:
+
+```sh
+fgj pr checks <pr-number>
+fgj actions run view <run-number>
+fgj actions run logs <run-number>
+```
+
+The app plan and affected-package selector are workflow summaries, so inspect
+them before assuming CI built the whole workspace or app fleet. Main-branch
+check receipts are recorded out of band by `tools/ci/receipt.sh`; they do not
+modify `main` and are evidence for one source SHA and run ID only. A successful
+receipt does not qualify a package, OS release, registry deployment or hardware
+target. For queue/startup regressions, preserve the run number and compare it
+with `timing_report.py` instead of estimating from the web UI.
+
 ## Preview affected applications
 
 When an app packaging selection is surprising, inspect the existing selector
