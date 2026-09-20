@@ -346,6 +346,10 @@ impl SessionOwner {
     pub fn peer(&self) -> &StatePeer {
         &self.peer
     }
+    /// Advances only after the owner's aggregate durability barrier succeeds.
+    pub(crate) fn committed_generation(&self) -> u64 {
+        self.aggregate.generation
+    }
     pub fn directory(&self) -> &[u8] {
         &self.aggregate.directory
     }

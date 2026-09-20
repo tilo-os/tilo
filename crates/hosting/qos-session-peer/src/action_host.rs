@@ -47,6 +47,8 @@ impl WorkspaceAuthority for Authority {
     }
 }
 fn project(peer: &StatePeer) -> Result<qos_desktop::WorkspaceTree, String> {
+    #[cfg(test)]
+    PROJECTION_CALLS.with(|count| count.set(count.get() + 1));
     let doc = peer.admitted_room().ok_or("admitted room missing")?;
     let mut tree = qos_desktop::WorkspaceTree::default();
     let room = uuid::Uuid::parse_str(peer.room()).map_err(|e| e.to_string())?;
@@ -63,6 +65,8 @@ fn project(peer: &StatePeer) -> Result<qos_desktop::WorkspaceTree, String> {
     workspace.effect_receipts = qos_desktop::projection::workspace_effect_receipts_of(doc);
     Ok(tree)
 }
+#[cfg(test)]
+thread_local! { static PROJECTION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 struct NetworkSink {
     sender: tokio::sync::mpsc::Sender<NeighbourMsg>,
     signing: HostSigning,
@@ -113,6 +117,34 @@ struct Worker {
     app: ui::App,
     permissions: Rc<RefCell<ui::permissions::PermissionContext>>,
 }
+/// Cache policy data, never its time-sensitive role or permission decision.
+struct WorkerPolicy {
+    room: String,
+    owner: Option<String>,
+    capabilities: Vec<collab_types::caps::CapOverride>,
+}
+impl WorkerPolicy {
+    fn context_at(&self, principal: &str, now: u64) -> ui::permissions::PermissionContext {
+        let role = qos_peer_state::room::role_of(
+            self.owner.as_deref(),
+            &self.capabilities,
+            principal,
+            now,
+        );
+        ui::permissions::PermissionContext::from_capabilities(
+            collab_types::caps::Actor::person(role, principal).in_room(self.room.clone()),
+            self.capabilities.clone(),
+        )
+        .at_unix_time(now)
+    }
+    fn context(&self, principal: &str) -> ui::permissions::PermissionContext {
+        let now = web_time::SystemTime::now()
+            .duration_since(web_time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.context_at(principal, now)
+    }
+}
 pub(crate) struct ActionHost {
     pub broker: BrokerHandle,
     workers: Vec<Worker>,
@@ -123,6 +155,7 @@ pub(crate) struct ActionHost {
     owners: RecordOwners,
     views: Rc<ui::application_view::InstanceViewStore>,
     publication: RefCell<crate::publication::PublicationCursor>,
+    reconciled_policy: Option<(u64, WorkerPolicy)>,
 }
 impl ActionHost {
     pub fn start(
@@ -188,6 +221,7 @@ impl ActionHost {
             owners,
             views,
             publication: Default::default(),
+            reconciled_policy: None,
         };
         let result = this.reconcile(owner);
         this.finish_start(owner, result)
@@ -229,6 +263,14 @@ impl ActionHost {
         }
     }
     fn reconcile(&mut self, owner: &SessionOwner) -> Result<()> {
+        let generation = owner.committed_generation();
+        if self
+            .reconciled_policy
+            .as_ref()
+            .is_some_and(|(cached, _)| *cached == generation)
+        {
+            return Ok(());
+        }
         let _timing = crate::action_timing::Timing::slow("action_reconcile");
         let cert = &owner.identity.native_cert;
         let room: uuid::Uuid = owner.peer().room().parse()?;
@@ -387,6 +429,16 @@ impl ActionHost {
                 permissions,
             });
         }
+        // A partial setup failure must retry this generation, preserving any
+        // workers already installed and their original recovery custody.
+        self.reconciled_policy = Some((
+            generation,
+            WorkerPolicy {
+                room: workspace.room.to_string(),
+                owner: workspace.owner.clone(),
+                capabilities: workspace.capabilities.clone(),
+            },
+        ));
         Ok(())
     }
 
@@ -395,14 +447,13 @@ impl ActionHost {
         self.signing.health()?;
         self.reconcile(owner)
             .map_err(|e| self.signing.fail(e.to_string()))?;
-        let tree = project(owner.peer())?;
-        let workspace = &tree.workspaces[0];
+        let policy = &self
+            .reconciled_policy
+            .as_ref()
+            .expect("successful reconciliation installs policy")
+            .1;
         for worker in &mut self.workers {
-            *worker.permissions.borrow_mut() =
-                ui::permissions::PermissionContext::from_capabilities(
-                    workspace.actor_for_person(&self.principal),
-                    workspace.capabilities.clone(),
-                );
+            *worker.permissions.borrow_mut() = policy.context(&self.principal);
             let _timing = crate::action_timing::Timing::slow("worker_pump");
             worker.app.pump_collab_presence();
             if !worker.app.collaboration_is_connected() {
@@ -427,7 +478,13 @@ impl ActionHost {
         let surfaces = self.broker.published_action_surfaces();
         self.signing.health().is_ok()
             && !self.workers.is_empty()
-            && self.workers.iter().all(|worker| surfaces.iter().any(|surface| surface.live && surface.app_id == worker.app_id && surface.route.record_id == worker.record_id))
+            && self.workers.iter().all(|worker| {
+                surfaces.iter().any(|surface| {
+                    surface.live
+                        && surface.app_id == worker.app_id
+                        && surface.route.record_id == worker.record_id
+                })
+            })
     }
     fn acknowledge_committed(&self, owner: &SessionOwner) -> Result<(), String> {
         for write in self.cache.pending_writes() {
@@ -594,6 +651,218 @@ fn ensure_private(path: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test(flavor = "current_thread")]
+    async fn idle_pumps_reuse_projection_and_committed_generations_invalidate_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
+        let (signing, _signatures) = HostSigning::new(handle);
+        let (sender, _network) = tokio::sync::mpsc::channel(64);
+        let mut runtime = ActionHost::start(&owner, authority, signing, sender).unwrap();
+        let projections = PROJECTION_CALLS.get();
+        for _ in 0..5 {
+            runtime.pump(&owner).unwrap();
+        }
+        assert_eq!(
+            PROJECTION_CALLS.get(),
+            projections,
+            "idle pumps must keep collaboration running without reprojecting room history"
+        );
+        owner.refresh_checkpoint().unwrap();
+        runtime.pump(&owner).unwrap();
+        assert_eq!(
+            PROJECTION_CALLS.get(),
+            projections + 1,
+            "one fresh projection serves reconciliation and worker permissions"
+        );
+        runtime.pump(&owner).unwrap();
+        assert_eq!(PROJECTION_CALLS.get(), projections + 1);
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn changed_generation_admits_new_workers_and_failed_setup_is_not_cached() {
+        use qos_peer_state::{
+            desktop_command::{BoundCommand, CommandSource, DesktopCommand, TabPlacement},
+            owner_commit::{CommitOperation, OwnerCommitRequest},
+        };
+        for fail_setup in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+            let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+            let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
+            let (signing, _signatures) = HostSigning::new(handle);
+            let (sender, _network) = tokio::sync::mpsc::channel(64);
+            let mut runtime = ActionHost::start(&owner, authority, signing, sender).unwrap();
+            let initial_workers = runtime.workers.len();
+            let strip = project(owner.peer()).unwrap().workspaces[0].strips[0].id.0;
+            owner
+                .commit_desktop_command(&OwnerCommitRequest {
+                    room: owner.peer().room().into(),
+                    operation: CommitOperation::DesktopCommand {
+                        invocation: uuid::Uuid::new_v4(),
+                        caller: owner.identity.native_cert.clone(),
+                        command: BoundCommand {
+                            source: CommandSource {
+                                room: owner.peer().room().into(),
+                                heads: owner
+                                    .peer()
+                                    .admitted_room()
+                                    .unwrap()
+                                    .clone()
+                                    .get_heads()
+                                    .iter()
+                                    .map(|head| head.0)
+                                    .collect(),
+                            },
+                            command: DesktopCommand::OpenTab {
+                                app: "dev.qos.notes".into(),
+                                placement: TabPlacement::NewGroup { strip, after: None },
+                            },
+                        },
+                    },
+                })
+                .unwrap();
+            let row = owner
+                .peer()
+                .rows()
+                .into_iter()
+                .find(|row| {
+                    !runtime.workers.iter().any(|worker| {
+                        worker.app_id == row.app_id && worker.record_id == row.record_id
+                    })
+                })
+                .unwrap();
+            let instance = u64::from_be_bytes(
+                blake3::hash(
+                    format!("{}/{}/{}", owner.peer().room(), row.app_id, row.record_id).as_bytes(),
+                )
+                .as_bytes()[..8]
+                    .try_into()
+                    .unwrap(),
+            );
+            let invalid_view = owner
+                .root()
+                .join("actions/views")
+                .join(format!("{instance}.bin"));
+            if fail_setup {
+                std::fs::create_dir_all(&invalid_view).unwrap();
+                assert!(
+                    runtime
+                        .reconcile(&owner)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("regular file")
+                );
+                assert_eq!(runtime.workers.len(), initial_workers);
+                let projections = PROJECTION_CALLS.get();
+                // Failed setup retains its hydrated custody. A second attempt must
+                // still fail, never report a falsely cached successful generation.
+                assert!(runtime.reconcile(&owner).is_err());
+                assert_eq!(PROJECTION_CALLS.get(), projections + 1);
+                continue;
+            }
+            runtime.reconcile(&owner).unwrap();
+            assert!(
+                runtime
+                    .workers
+                    .iter()
+                    .any(|worker| worker.app_id == row.app_id && worker.record_id == row.record_id)
+            );
+            assert_eq!(runtime.workers.len(), initial_workers + 1);
+            let projections = PROJECTION_CALLS.get();
+            runtime.reconcile(&owner).unwrap();
+            assert_eq!(PROJECTION_CALLS.get(), projections);
+        }
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn committed_permission_change_refreshes_existing_worker_policy() {
+        use collab_types::caps::{CapDecision, CapOverride, ResourceRef, Scope, Subject, Verb};
+        use ui::automerge::{ROOT, ReadDoc, transaction::Transactable};
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let authority = Authority(Arc::new(Mutex::new(Some(owner.peer().clone()))));
+        let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
+        let (signing, _signatures) = HostSigning::new(handle);
+        let (sender, _network) = tokio::sync::mpsc::channel(64);
+        let mut runtime = ActionHost::start(&owner, authority, signing, sender).unwrap();
+        let app = runtime.workers[0].app_id.clone();
+        let resource = ResourceRef::App(app.clone());
+        assert_eq!(
+            runtime.workers[0]
+                .permissions
+                .borrow()
+                .decide(&resource, Verb::Write),
+            CapDecision::Allow
+        );
+        let mut doc = owner.peer().admitted_room().unwrap().clone();
+        let before = doc.get_heads();
+        let capabilities = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
+        let restriction = CapOverride::new(
+            Subject::person(&runtime.principal),
+            Scope::App(app),
+            collab_types::caps::Effect::Restrict,
+            Verb::Read,
+        );
+        doc.put(
+            &capabilities,
+            "worker-read-only",
+            serde_json::to_vec(&restriction).unwrap(),
+        )
+        .unwrap();
+        doc.commit();
+        let mut candidate = owner.peer().clone();
+        candidate
+            .receive_from(
+                qos_peer_state::TransportOrigin::RelayDelta(
+                    owner.identity.native_cert.device_public_key,
+                ),
+                NeighbourMsg::SyncResp {
+                    room: owner.peer().room().into(),
+                    changes: doc
+                        .get_changes(&before)
+                        .iter()
+                        .map(|change| change.raw_bytes().to_vec())
+                        .collect(),
+                },
+                web_time::SystemTime::now(),
+            )
+            .unwrap();
+        owner
+            .commit_mutation_candidate(candidate, owner.directory().to_vec())
+            .unwrap();
+        runtime.pump(&owner).unwrap();
+        assert_eq!(
+            runtime.workers[0]
+                .permissions
+                .borrow()
+                .decide(&resource, Verb::Write),
+            CapDecision::DeniedByRestriction
+        );
+    }
+    #[test]
+    fn cached_policy_recomputes_capability_and_membership_expiry() {
+        use collab_types::caps::{CapDecision, CapOverride, ResourceRef, Scope, Subject, Verb};
+        let policy = WorkerPolicy {
+            room: "room".into(),
+            owner: Some("owner".into()),
+            capabilities: vec![
+                CapOverride::grant(Subject::person("member"), Scope::Workspace, Verb::Write)
+                    .with_expiry(100),
+            ],
+        };
+        let before = policy.context_at("member", 99);
+        assert_eq!(before.role(), Some(collab_types::Role::Editor));
+        assert_eq!(
+            before.decide(&ResourceRef::Workspace, Verb::Write),
+            CapDecision::Allow
+        );
+        let after = policy.context_at("member", 100);
+        assert_eq!(after.role(), None);
+        assert_eq!(
+            after.decide(&ResourceRef::Workspace, Verb::Write),
+            CapDecision::DeniedByRole
+        );
+    }
     fn runtime() -> (tempfile::TempDir, SessionOwner, ActionHost) {
         let root = tempfile::tempdir().unwrap();
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
@@ -682,7 +951,16 @@ mod tests {
         let (handle, _commits) = crate::owner_commit::OwnerCommitMailbox::bounded(8);
         let (signing, _signatures) = HostSigning::new(handle);
         let (sender, _network) = tokio::sync::mpsc::channel(64);
-        let restarted = ActionHost::start(&owner, authority, signing, sender).unwrap();
+        let before_restart = PROJECTION_CALLS.get();
+        let mut restarted = ActionHost::start(&owner, authority, signing, sender).unwrap();
+        assert!(
+            PROJECTION_CALLS.get() > before_restart,
+            "new runtime must reconcile even the same persisted generation"
+        );
+        assert_eq!(restarted.workers.len(), owner.peer().rows().len());
+        let after_restart = PROJECTION_CALLS.get();
+        restarted.reconcile(&owner).unwrap();
+        assert_eq!(PROJECTION_CALLS.get(), after_restart);
         let fresh = Arc::new(Mutex::new(Vec::new()));
         let sink = fresh.clone();
         let _subscription = restarted.broker.subscribe_rooms(
