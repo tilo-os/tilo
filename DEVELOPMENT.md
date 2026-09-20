@@ -70,6 +70,17 @@ disabled during alpha; tags do not enable those lanes.
 
 ## Fast checks before assembly
 
+For a native integration test without a full workspace dispatch, use
+**Development / focused native test** (`focused-test.yml`). Select a full source
+commit SHA, one Cargo package, integration target and exact Rust test path. For
+example: package `shell`, target `it`, test
+`concept_parity_spec::overview_add_workspace::overview_add_workspace_click_appends_workspace`.
+Use operation `check-tests` with the target/name empty to compile that package's
+test targets. Both modes use `--locked` on one native x86-64 runner and share the
+normal download/compiler caches. Missing or ignored tests fail. The job records
+source SHA, workflow SHA, builder digest and exit status; its diagnostic result
+does not replace required PR checks or trigger publication.
+
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
 
 ```sh
