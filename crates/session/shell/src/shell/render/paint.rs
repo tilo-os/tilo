@@ -22,6 +22,7 @@ use vello::peniko::Color;
 // `ui::gpu`'s context, not `vello::util`'s: this device is shared with every other client on the machine, so it needs the same memory hint — see the header of `crates/sdk/ui-core/src/gpu.rs`.
 use ui::gpu::RenderContext;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
+use wgpu::util::TextureBlitter;
 
 use super::xrgb_history::XrgbWritePlan;
 pub use super::xrgb_history::{
@@ -53,6 +54,9 @@ pub enum BridgeError {
 
     #[error("invalid internal device handle: {0}")]
     InvalidDevice(String),
+
+    #[error("failed to import direct scanout render target: {0}")]
+    Import(String),
 
     #[error("GPU-only absolute deadline exceeded")]
     DeadlineExceeded,
@@ -553,6 +557,7 @@ impl RetainedGpuTarget {
             FrameOutput::GpuOnly,
             CompletionPolicy::Absolute(deadline),
             None,
+            |_, _, _| {},
         )?;
         Ok(GpuFrameStats {
             revision: damage.revision,
@@ -591,21 +596,25 @@ impl RetainedGpuTarget {
         self.completion_markers = 0;
     }
 
-    fn render(
+    fn render<F>(
         &mut self,
         scene: &Scene,
         damage: Option<SceneDamage<'_>>,
         output: FrameOutput<'_>,
         policy: CompletionPolicy,
         timing: Option<&mut BridgePhaseTiming>,
-    ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError> {
+        post_render: F,
+    ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError>
+    where
+        F: Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    {
         let sparse = damage.and_then(|damage| self.eligible_sparse_damage(damage));
         self.invalidate();
         self.reset_attempts();
         self.check_live(policy)?;
         // Once encoding starts, even a pre-submit abort leaves renderer-owned downloads and
         // timestamp bookkeeping unusable. Clear poison only after both completion facts hold.
-        let result = self.render_attempts(scene, sparse, output, policy, timing);
+        let result = self.render_attempts(scene, sparse, output, policy, timing, post_render);
         if result.is_ok() {
             self.retained_target_valid = true;
             self.last_successful_revision = damage.map(|damage| damage.revision);
@@ -626,6 +635,7 @@ impl RetainedGpuTarget {
         output: FrameOutput<'_>,
         policy: CompletionPolicy,
         mut timing: Option<&mut BridgePhaseTiming>,
+        post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError> {
         while self.last_render_attempts < RESILIENT_RENDER_ATTEMPTS {
             self.check_live(policy)?;
@@ -656,6 +666,7 @@ impl RetainedGpuTarget {
             };
             let append = |encoder: &mut wgpu::CommandEncoder| {
                 output.append(encoder, &self.texture, self.size, regions.as_deref());
+                post_render(&self.device, encoder, &self.view);
             };
             let submitted = if let Some(regions) = regions.as_deref() {
                 self.renderer
@@ -1170,6 +1181,7 @@ impl RetainedGpuTarget {
 pub struct VelloDrmBridge {
     context: RenderContext,
     target: RetainedGpuTarget,
+    bgra_blitter: TextureBlitter,
     dev_id: usize,
 
     /// Readback buffer (padded to the wgpu row alignment requirement).
@@ -1239,11 +1251,13 @@ impl VelloDrmBridge {
         );
 
         let target = RetainedGpuTarget::new(dev_handle, width, height)?;
+        let bgra_blitter = TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm);
         let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
 
         Ok(Self {
             context,
             target,
+            bgra_blitter,
             dev_id,
 
             readback_buf,
@@ -1275,6 +1289,55 @@ impl VelloDrmBridge {
         // full-frame change even if the scene recording itself is unchanged.
         self.invalidate_retained();
         self.bump_xrgb_history_epoch();
+    }
+
+    /// Import a compositor-owned linear XRGB dma-buf on this bridge's exact wgpu device.
+    ///
+    /// Keeping import here prevents a target created by another device from reaching the render
+    /// callback. Retain the returned alias while the scanout allocation remains alive.
+    pub fn import_bgra8_target(
+        &self,
+        image: &ui::dmabuf_import::DmabufRef<'_>,
+    ) -> Result<ui::dmabuf_import::ImportedRenderTarget, BridgeError> {
+        ui::dmabuf_import::import_render_target(&self.target.device, image)
+            .map_err(|error| BridgeError::Import(error.to_string()))
+    }
+
+    /// Render and blit into an imported direct-scanout target in one submission, then wait for
+    /// the existing completion marker before returning.
+    pub fn paint_imported_bgra8_until(
+        &mut self,
+        scene: &Scene,
+        damage: SceneDamage<'_>,
+        target: &ui::dmabuf_import::ImportedRenderTarget,
+        deadline: Instant,
+    ) -> Result<GpuFrameStats, BridgeError> {
+        if (target.width, target.height) != self.target.size {
+            return Err(BridgeError::InvalidSize(format!(
+                "imported BGRA target is {}x{}, expected {}x{}",
+                target.width, target.height, self.target.size.0, self.target.size.1
+            )));
+        }
+        let blitter = &self.bgra_blitter;
+        let view = &target.view;
+        let (_, admitted) = self.target.render(
+            scene,
+            Some(damage),
+            FrameOutput::GpuOnly,
+            CompletionPolicy::Absolute(deadline),
+            None,
+            |device, encoder, source| blitter.copy(device, encoder, source, view),
+        )?;
+        Ok(GpuFrameStats {
+            revision: damage.revision,
+            damage_admitted: admitted,
+            render_attempts: self.target.last_render_attempts,
+            sparse_attempts: self.target.last_sparse_render_attempts,
+            full_attempts: self.target.last_full_render_attempts,
+            completion_markers: self.target.completion_markers,
+            framebuffer_copy_bytes: 0,
+            framebuffer_staging_bytes: 0,
+        })
     }
 
     fn next_xrgb_history_generation() -> Option<u64> {
@@ -2708,6 +2771,7 @@ impl VelloDrmBridge {
             },
             CompletionPolicy::LinuxPerPhase,
             timing,
+            |_, _, _| {},
         );
         // The bridge publishes only after CPU output succeeds as well. A swizzle error remains
         // its deliberately stricter invalidate-both boundary, independent of GPU completion.
@@ -4392,6 +4456,48 @@ mod tests {
             .unwrap();
         assert_eq!(stats.completion_markers, stats.render_attempts);
         assert!(stats.completion_markers > 0 && replacement.completed_view().is_some());
+    }
+
+    #[test]
+    fn gpu_target_post_render_is_covered_by_existing_completion_marker() {
+        let mut target = required_target(8, 4);
+        let output = target.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("retained-bgra-test-output"),
+            size: wgpu::Extent3d {
+                width: 8,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Marker);
+        let deadline = test.start + Duration::from_secs(1);
+        target.completion_test = Some(test);
+
+        assert!(matches!(
+            target.render(
+                &Scene::new(),
+                Some(version(1, None, None)),
+                FrameOutput::GpuOnly,
+                CompletionPolicy::Absolute(deadline),
+                None,
+                |device, encoder, source| {
+                    TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm)
+                        .copy(device, encoder, source, &view);
+                },
+            ),
+            Err(BridgeError::DeadlineExceeded)
+        ));
+        assert_eq!(target.last_render_attempts, 1);
+        assert_eq!(target.completion_markers, 1);
+        assert!(target.completed_view().is_none() && target.poisoned);
     }
 
     #[test]

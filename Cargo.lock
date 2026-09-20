@@ -13118,6 +13118,7 @@ dependencies = [
  "futures",
  "futures-lite",
  "futures-util",
+ "gbm",
  "getrandom 0.4.1",
  "greeter",
  "hex",
