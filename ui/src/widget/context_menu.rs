@@ -906,6 +906,8 @@ impl Widget for ContextMenu {
                 Some(
                     AccessNode::new(Role::MenuItem)
                         .with_name(label.clone())
+                        .with_action_target(format!("context-menu:item:{index}"))
+                        .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
                         .with_position(action_position, action_count)
                         .with_state(AccessState {
                             focusable: true,
@@ -926,6 +928,32 @@ impl Widget for ContextMenu {
                 })
                 .with_children(children),
         )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> bool {
+        let Some(index) = target
+            .strip_prefix("context-menu:item:")
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        if !self.open || !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        let selectable = self
+            .items
+            .get(index)
+            .is_some_and(|item| matches!(item, MenuItem::Action { .. }));
+        if selectable {
+            self.click_item(index);
+        }
+        selectable
     }
 }
 

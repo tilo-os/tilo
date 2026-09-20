@@ -16,6 +16,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod host;
+pub use host::{ApplicationHost, NativeProcessHost};
+
 pub type InstanceId = u64;
 pub type ComponentFactory =
     fn(HostContext, LaunchTarget, RestoreInput) -> Result<AppComponent, LaunchError>;
@@ -71,6 +74,14 @@ pub struct ComponentRunnerInputs {
     pub text_renderer: crate::TextRenderer,
 }
 
+impl ComponentRunnerInputs {
+    /// Explicit native-runner discovery of the system's presentation settings
+    /// and fonts. Factories and capture hosts should use supplied inputs instead.
+    pub fn from_native_process() -> Self {
+        crate::App::native_component_presentation()
+    }
+}
+
 /// Explicit host preparation completed before invoking the application factory.
 pub struct PreparedComponentInputs {
     pub context: HostContext,
@@ -99,6 +110,72 @@ impl HostContext {
         action_context: tilo_actions::ActionContext,
         target: &LaunchTarget,
     ) -> Result<Self, LaunchError> {
+        Self::prepare_scoped(
+            definition,
+            records,
+            views,
+            device_id,
+            instance_id,
+            permissions,
+            author,
+            action_context,
+            target,
+            None,
+        )
+    }
+
+    /// Reserve a host-named new record through the same checked construction
+    /// path. Useful for a workspace's default document, whose identity must
+    /// survive a restart even before the first local View has been saved.
+    /// Existing records are never adopted or reinitialized by this operation.
+    ///
+    /// # Errors
+    /// Rejects foreign namespaces, denied authority and occupied identities.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit authenticated host inputs"
+    )]
+    pub fn prepare_new_record(
+        definition: &ApplicationDefinition,
+        records: RecordStore,
+        views: Rc<InstanceViewStore>,
+        device_id: String,
+        instance_id: InstanceId,
+        permissions: Rc<RefCell<PermissionContext>>,
+        author: UserId,
+        action_context: tilo_actions::ActionContext,
+        record_id: RecordId,
+    ) -> Result<Self, LaunchError> {
+        Self::prepare_scoped(
+            definition,
+            records,
+            views,
+            device_id,
+            instance_id,
+            permissions,
+            author,
+            action_context,
+            &LaunchTarget::New,
+            Some(record_id),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one validation path for minted and host-named records"
+    )]
+    fn prepare_scoped(
+        definition: &ApplicationDefinition,
+        records: RecordStore,
+        views: Rc<InstanceViewStore>,
+        device_id: String,
+        instance_id: InstanceId,
+        permissions: Rc<RefCell<PermissionContext>>,
+        author: UserId,
+        action_context: tilo_actions::ActionContext,
+        target: &LaunchTarget,
+        new_record_id: Option<RecordId>,
+    ) -> Result<Self, LaunchError> {
         validate_identity(definition.app_id).map_err(LaunchError::Restore)?;
         validate_identity(definition.record_kind.as_str()).map_err(LaunchError::Restore)?;
         validate_identity(&device_id).map_err(LaunchError::Restore)?;
@@ -118,15 +195,22 @@ impl HostContext {
         }
         let (record, reservation) = match target {
             LaunchTarget::New => {
-                let checkout =
-                    RecordCheckout::new(RecordId::minted(), definition.record_kind.clone());
+                let checkout = RecordCheckout::new(
+                    new_record_id.unwrap_or_else(RecordId::minted),
+                    definition.record_kind.clone(),
+                );
+                if RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id) {
+                    return Err(LaunchError::BindingMismatch);
+                }
                 let reservation = records
                     .reserve_record(&checkout)
                     .map_err(LaunchError::Record)?;
                 (checkout, Some(reservation))
             }
             LaunchTarget::Record { checkout, .. } => {
-                if checkout.kind != definition.record_kind {
+                if checkout.kind != definition.record_kind
+                    || RecordId::parse(checkout.id.as_str()).as_ref() != Some(&checkout.id)
+                {
                     return Err(LaunchError::BindingMismatch);
                 }
                 records

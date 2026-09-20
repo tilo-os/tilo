@@ -47,6 +47,7 @@ fn welcome_body_contains_every_block_kind() {
             BlockSpec::CodeBlock { .. } => "code",
             BlockSpec::Table { .. } => "table",
             BlockSpec::Divider => "divider",
+            BlockSpec::Nested { .. } => "nested",
         };
         seen.insert(tag);
     }

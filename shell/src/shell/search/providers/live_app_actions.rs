@@ -1377,7 +1377,13 @@ impl LiveAppActionsProvider {
         let presentation_text = presentation
             .as_ref()
             .into_iter()
-            .flat_map(|value| [value.detail.as_deref(), value.badge.as_deref()])
+            .flat_map(|value| {
+                [
+                    value.detail.as_deref(),
+                    value.badge.as_deref(),
+                    value.preview.as_deref(),
+                ]
+            })
             .flatten()
             .collect::<Vec<_>>()
             .join(" ");
@@ -2923,6 +2929,7 @@ mod tests {
                         &tilo_actions::ResourcePresentation {
                             detail: Some("Chapter 7".into()),
                             badge: Some("2 collaborators".into()),
+                            preview: None,
                         },
                     )
                     .unwrap(),

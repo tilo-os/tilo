@@ -546,6 +546,7 @@ fn store_app_resource(item: &StoreItem, flatpak_available: bool) -> Resource {
         .with_presentation(ResourcePresentation {
             detail: (!detail.is_empty()).then_some(detail),
             badge: Some(badge),
+            preview: None,
         });
     if let Ok(show) = ActionSpec::operation(
         "show-details",

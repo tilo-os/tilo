@@ -21,6 +21,7 @@
 //! [`DataTable`]: crate::widget::data_table::DataTable
 //! [`DocumentViewport`]: crate::widget::DocumentViewport
 
+use crate::color_compat::ColorCompat;
 use vello::kurbo::{Point, Rect};
 
 /// Minimum thumb length (logical px) so a near-infinite content still
@@ -174,6 +175,49 @@ impl Scrollbar {
     /// dragging).
     pub fn is_active(&self) -> bool {
         self.hover || self.drag.is_some()
+    }
+
+    /// Paint the shared quiet thumb for hosts with a custom content viewport.
+    /// Geometry is identical to pointer hit-testing and follows the host's metrics.
+    pub fn draw(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        track: Rect,
+        metrics: ScrollMetrics,
+        theme: &crate::theme::Theme,
+        focused: bool,
+    ) {
+        let Some(thumb) = self.thumb_rect(track, metrics) else {
+            return;
+        };
+        let radius = thumb.width().min(thumb.height()) / 2.0;
+        let color =
+            theme
+                .tokens
+                .colors
+                .text_dim
+                .with_alpha_factor(if self.is_active() || focused {
+                    0.85
+                } else {
+                    0.55
+                });
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            color,
+            None,
+            &vello::kurbo::RoundedRect::from_rect(thumb, radius),
+        );
+        if focused {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.border_focus,
+                None,
+                &vello::kurbo::RoundedRect::from_rect(thumb.inflate(2.0, 2.0), radius + 2.0),
+            );
+        }
     }
 
     // --- axis helpers --------------------------------------------------

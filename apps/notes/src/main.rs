@@ -38,8 +38,7 @@
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-use notes::NotesApp;
-use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
+use notes::shots::DEFAULT_SHOTS_VIEWPORT;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 const SHOT_SCENARIOS: &[&str] = &[
@@ -47,12 +46,27 @@ const SHOT_SCENARIOS: &[&str] = &[
     "drawer",
     "drag",
     "block_drag",
+    "block_type_menu",
     "menu",
+    "sidebar_hover",
+    "note_menu",
     "rename",
     "rename_commit",
     "slash",
     "slash_applied",
     "heading",
+    "fenced_code",
+    "fenced_code_opening",
+    "code_keyboard",
+    "code_keyboard_active",
+    "typed_lists",
+    "multiline_typing",
+    "mixed_outline",
+    "rich_outline",
+    "paragraph_click",
+    "code_group_drag",
+    "code_group_drop",
+    "adjacent_code_fences",
     "quote",
     "title_edit",
     "recipes",
@@ -60,14 +74,21 @@ const SHOT_SCENARIOS: &[&str] = &[
     "transclusion",
     "external_link",
     "table",
+    "table_large",
+    "table_large_scrolled",
+    "table_cell_edit",
     "image",
+    "image_edit",
     "status",
     "saving",
     "save_error",
     "import_success",
     "presence",
     "shortcuts",
+    "shortcuts_bottom",
+    "find",
     "tag_palette",
+    "fulltext_search",
     "scrolled",
     "sidebar_scroll",
 ];
@@ -78,52 +99,33 @@ const SHOT_SCENARIOS: &[&str] = &[
 /// to spawn against its workspace.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
-        &LaunchSpec::new_with_args("dev.tilo.notes", live_root)
-            .open_state_with_args(open_state)
-            .shot_handler(render_shot)
-            .scenarios(SHOT_SCENARIOS)
-            .configure_app(configure_app),
+        &LaunchSpec::from_definition(notes::definition())
+            .component_host(prepare_component)
+            .native_services()
+            .capture_scenario(capture_scenario)
+            .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
+            .scenarios(SHOT_SCENARIOS),
     )?;
     Ok(())
 }
 
-fn peer_id() -> &'static str {
-    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    ID.get_or_init(|| {
-        std::env::var("QUICK_APP_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string())
-    })
+fn prepare_component(
+    _definition: &ui::application::ApplicationDefinition,
+    args: &LaunchArgs,
+) -> Result<ui::application::PreparedComponentInputs, LaunchError> {
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    if args.shots.is_some() || args.responsive_matrix.is_some() {
+        notes::capture::prepare_fixture(args.scenario.as_deref(), inputs)
+    } else if args.native_audit {
+        notes::capture::prepare_fixture(Some("first_note"), inputs)
+    } else {
+        notes::hosting::prepare_native(inputs)
+    }
 }
 
-fn live_root(_args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
-    let mut app = NotesApp::spawn_default().map_err(LaunchError::Operation)?;
-    app.set_local_author(Some(peer_id().to_owned()));
-    Ok(Box::new(app))
-}
-
-fn open_state(_app_id: &'static str, _args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
-    let mut state = ui::State::new();
-    state
-        .doc
-        .set_actor(automerge::ActorId::from(peer_id().as_bytes()));
-    (
-        state,
-        ui::persist::Autosave::disabled("Notes owns its workspace persistence"),
-    )
-}
-
-fn configure_app(app: &mut ui::App) {
-    notes::actions::register(app.action_registry_mut());
-}
-
-fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let out = args.shots.as_deref().ok_or_else(|| {
-        LaunchError::Operation("Notes screenshot handler called without --shots".into())
-    })?;
-    shots::render_to_path(
-        args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        out,
-        args.scenario.as_deref(),
-        args.text_scale,
-    )
-    .map_err(|error| LaunchError::Operation(error.to_string()))
+fn capture_scenario(
+    driver: &mut ui::headless::FrameHarness,
+    args: &LaunchArgs,
+) -> Result<(), LaunchError> {
+    notes::capture::drive_fixture(driver, args.scenario.as_deref())
 }

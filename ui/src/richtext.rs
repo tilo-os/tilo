@@ -13,7 +13,7 @@ use crate::text_break::OffsetMap;
 use crate::text_selection::{TextAffinity, TextPosition};
 
 /// A generic font family the toolkit can resolve from system fonts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub enum FontFamily {
     #[default]
     Sans,
@@ -53,7 +53,7 @@ impl FontFamily {
 /// ([`BaselineShift::SCALE`]) and drawn with a vertical offset
 /// ([`BaselineShift::offset`]) — up for super, down for sub — relative to the
 /// surrounding text's baseline. `None` leaves the run on the normal baseline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub enum BaselineShift {
     #[default]
     None,
@@ -85,7 +85,7 @@ impl BaselineShift {
 }
 
 /// A styled inline run. `size`/`family` override the block defaults per run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RichSpan {
     pub text: String,
     pub bold: bool,
