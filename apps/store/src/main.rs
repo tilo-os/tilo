@@ -121,16 +121,6 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
-fn shot_reduce_motion() -> bool {
-    ["TILO_A11Y_REDUCE_MOTION", "TILO_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| {
-            let value = value.trim();
-            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::parse_store_uri;
