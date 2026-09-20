@@ -3030,8 +3030,7 @@ impl ShellOverlayHost {
                     "shell-fixture".into(),
                 ),
                 history_narrator: None,
-                status_narrator:
-                    crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
+                status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
                 portal_dialogs: PortalDialogController::new(
                     crate::shell::portal_dialog::PortalDialogQueue::default(),
                 ),
