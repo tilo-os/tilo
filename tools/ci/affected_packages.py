@@ -304,6 +304,15 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     return min(max(1, maximum), len(names), cost_limited)
 
 
+def native_dependencies_required(changes: list[str], force_full: bool = False) -> bool:
+    """Run native archive regressions when their source or build contract changes."""
+    # Workflow/observer changes bootstrap the trusted check separately from the
+    # dependency candidate. A selected dependency never skips missing fixtures.
+    files = {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "os/Containerfile.builder"}
+    prefixes = ("vendor/openh264-sys2/", ".cargo/")
+    return force_full or any(path in files or path.startswith(prefixes) for path in changes)
+
+
 def make_plan(
     metadata: dict,
     root: Path,
@@ -409,6 +418,7 @@ def make_plan(
         "full": full,
         "rust_required": bool(selected),
         "security_required": not security_not_applicable,
+        "native_dependencies_required": native_dependencies_required(changes, force_full),
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -430,6 +440,7 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"full={'true' if plan['full'] else 'false'}\n")
         handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
+        handle.write(f"native_dependencies_required={str(plan['native_dependencies_required']).lower()}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")
