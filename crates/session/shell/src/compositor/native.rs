@@ -1780,7 +1780,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             // a person sees. Zero-area means the hover-revealed maximize or
             // maximized restore control is not currently painted.
             "active_window_controls": self.fb.host()
-                .active_window_control_rects_for_tests()
+                .active_window_control_rects()
                 .map(|(maximize, restore)| serde_json::json!({
                     "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
                     "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
