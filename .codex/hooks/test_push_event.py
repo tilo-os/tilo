@@ -1,0 +1,93 @@
+"""Observed push code, reconstructed hook envelopes; no CI or message calls."""
+
+import importlib.util
+import io
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from push_event import literal_call, push_target, pushes_current_branch
+
+SPEC = importlib.util.spec_from_file_location("watch_ci", Path(__file__).with_name("watch_ci.py"))
+watch_ci = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(watch_ci)
+
+
+class PushEventTests(unittest.TestCase):
+    def event(self, code=None):
+        return {
+            "tool_name": "exec", "session_id": "01a0bfbb-8102-7371-97ff-b025f1181eca",
+            "cwd": "C:/Users/xaver/.codex/worktrees/9245/qos",
+            "tool_input": {"code": code or 'text(await tools.exec_command({cmd:"git push origin HEAD:refs/heads/codex/dev-package-identity; git status --short",workdir:"C:/Users/xaver/qos-registry-submission",max_output_tokens:1500}));'},
+            "tool_response": {"content": [{"type": "text", "text": "completed"}]},
+        }
+
+    def test_actual_pr157_code_selects_child_worktree_not_outer_root(self):
+        target = push_target(self.event())
+        self.assertEqual(str(target[0]).replace("\\", "/"), "C:/Users/xaver/qos-registry-submission")
+        self.assertTrue(pushes_current_branch(target[1], "codex/dev-package-identity"))
+        self.assertFalse(pushes_current_branch(target[1], "main"))
+
+    def test_plain_exec_command(self):
+        event = self.event()
+        event.update(tool_name="functions.exec_command", tool_input={"cmd": "git push", "workdir": "C:/repo"})
+        self.assertEqual(str(push_target(event)[0]).replace("\\", "/"), "C:/repo")
+
+    def test_ambiguous_and_dynamic_code_is_not_interpreted(self):
+        for code in [
+            'await tools.exec_command({cmd: command})',
+            'await tools.exec_command({cmd:"git push", workdir: location})',
+            'await tools.exec_command({cmd:`git push`})',
+            'if (false) await tools.exec_command({cmd:"git push"})',
+            'text("await tools.exec_command({cmd: git push})")',
+            'await tools.exec_command({cmd:"git push"}); await tools.exec_command({cmd:"git push"});',
+            'await tools.exec_command({cmd:"git push",cmd:"echo fake"})',
+        ]:
+            with self.subTest(code=code):
+                self.assertIsNone(push_target(self.event(code)))
+
+    def test_ambiguous_shell_or_other_remote_is_rejected(self):
+        for command in ["cd elsewhere; git push", "git -C elsewhere push", "git push; git push", "git switch other; git push", "echo 'git push'", "git push $remote"]:
+            code = 'await tools.exec_command({"cmd":' + json.dumps(command) + '});'
+            self.assertIsNone(push_target(self.event(code)), command)
+        for args in [["--mirror"], ["--delete", "origin", "main"], ["upstream", "main"], ["origin", "other"]]:
+            self.assertFalse(pushes_current_branch(args, "main"))
+
+    def test_explicit_failure_or_running_command_does_not_start(self):
+        for response in [{"exit_code": 1}, {"session_id": 123}, {"isError": True}]:
+            event = self.event()
+            event["tool_response"] = response
+            self.assertIsNone(push_target(event))
+
+    def test_main_delivers_to_author_once_with_nested_workdir(self):
+        event = self.event()
+        with tempfile.TemporaryDirectory() as directory:
+            calls = []
+            def run(args, *, cwd, **kwargs):
+                calls.append((args, str(cwd)))
+                if args == ["git", "rev-parse", "HEAD"]:
+                    output = "0fcfa04598dc324fa17875497a987570a372232a"
+                elif args == ["git", "branch", "--show-current"]:
+                    output = "codex/dev-package-identity"
+                elif args == ["git", "rev-parse", "--git-common-dir"]:
+                    output = directory
+                else:
+                    self.fail(f"Unexpected command: {args}")
+                return subprocess.CompletedProcess(args, 0, output, "")
+            with patch.object(watch_ci, "run", side_effect=run), patch.object(watch_ci, "branch_is_on_remote", return_value=True), patch.object(watch_ci, "forgejo_target", return_value=("code.podesta.ai", "qos/qos")), patch.object(watch_ci, "watch", return_value=("complete", [{"status": "success", "index_in_repo": 42}] )) as watch, patch.object(watch_ci, "deliver") as deliver:
+                for _ in range(2):
+                    with patch("sys.stdin", io.StringIO(json.dumps(event))):
+                        self.assertEqual(watch_ci.main(), 0)
+                self.assertEqual(watch.call_count, 1)
+                self.assertEqual(deliver.call_count, 1)
+                self.assertEqual(deliver.call_args.args[0], event["session_id"])
+                self.assertTrue(all(cwd.replace("\\", "/") == "C:/Users/xaver/qos-registry-submission" for _, cwd in calls))
+                receipt = next((Path(directory) / "codex-ci-watch").glob("*.json"))
+                self.assertEqual(json.loads(receipt.read_text())["state"], "reported")
+
+
+if __name__ == "__main__":
+    unittest.main()
