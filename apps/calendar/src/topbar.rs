@@ -4,15 +4,12 @@
 //! and pointer hit map. `CalendarApp` keeps the navigation policy: it applies
 //! the small [`Action`] values emitted here to the current view and anchor.
 
-use crate::draw_util::PaintContext;
 use chrono::{Datelike, NaiveDate};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
-
-use ui::icons::{Icon, draw_icon};
 
 use crate::app::{center_text, draw_chevron, draw_hamburger, draw_icon_button, draw_plus};
 use crate::draw_util::{fill_rect, fill_round, selected_row};

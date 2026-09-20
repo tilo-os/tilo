@@ -4,7 +4,6 @@
 //! with the controls that operate that state. Calendar-specific lists and
 //! tasks remain in `CalendarApp`; the mini-month is its own footer component.
 
-use crate::draw_util::PaintContext;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::Scene;
@@ -43,26 +42,6 @@ pub(crate) enum Action {
 pub(crate) struct Chrome {
     pub(crate) body_y: f64,
     pub(crate) hits: Vec<(Rect, Action)>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ChromeModel {
-    pub(crate) window: Rect,
-    pub(crate) content: Rect,
-    pub(crate) detail: Rect,
-    pub(crate) switcher_in_topbar: bool,
-    pub(crate) view: View,
-    pub(crate) pointer: Point,
-}
-
-#[derive(Clone, Copy)]
-struct ChromeLayout {
-    rect: Rect,
-    window: Rect,
-    overlay: bool,
-    pointer: Point,
-    pad: f64,
-    y: f64,
 }
 
 pub(crate) struct Sidebar {
