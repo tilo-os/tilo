@@ -57,6 +57,12 @@ running image digest. The controller binds the actual virtiofs server's shared
 root, socket owner and complete export inventory, rejects missing observations,
 and checks pod/container identity again after execution before reporting success.
 
+The inner installer container receives a fresh tmpfs at `/run/udev`. Its
+entrypoint requires that `/run/udev/data` is absent and that the mount belongs
+to the inner PID 1 namespace before bootc starts. This makes bootc use direct
+block-device probing for guest-local loop partitions instead of trusting a
+stale image-owned udev database.
+
 Root/native architecture/user-namespace/remote-container/EFI/TPM checks and all
 source, signature, boot-prediction and cleanup checks remain enforced. Success
 means disk creation only. Installed-byte verification and VM boot remain
