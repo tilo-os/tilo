@@ -67,7 +67,8 @@ def execute(root, values, outcomes=None):
         print(json.dumps({'source_sha': actual, 'command': command}), flush=True)
         return subprocess.run(command, cwd=root).returncode
     if values.get('TARGET_KIND', 'integration') == 'lib':
-        if not any('lib' in t['kind'] or 'proc-macro' in t['kind'] for t in packages[0]['targets']):
+        library_kinds = {'lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro'}
+        if not any(library_kinds.intersection(t['kind']) for t in packages[0]['targets']):
             raise ValueError('package has no library test target')
         target = ['--lib']
     else:

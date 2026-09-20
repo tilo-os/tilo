@@ -23,7 +23,7 @@ class NativeFocusedTests(unittest.TestCase):
         (cls.root / 'src').mkdir()
         (cls.root / 'tests').mkdir()
         (cls.root / 'Cargo.toml').write_text(
-            '[package]\nname="focused-fixture"\nversion="0.1.0"\nedition="2024"\n')
+            '[package]\nname="focused-fixture"\nversion="0.1.0"\nedition="2024"\n[lib]\ncrate-type=["dylib"]\n')
         (cls.root / 'src/lib.rs').write_text('''
 #[cfg(test)] mod tests {
     #[test] fn passes() { assert_eq!(2 + 2, 4); }
