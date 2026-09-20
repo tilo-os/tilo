@@ -5639,6 +5639,33 @@ pub fn run() {
     while !close_requested {
         let iter_t0 = Instant::now();
         metrics.begin_tick(iter_t0);
+        if let Some((serial, retired_at)) = present_pipe
+            .as_ref()
+            .and_then(present::PresentPipe::latest_retirement)
+        {
+            metrics.note_retirement(serial, retired_at);
+        }
+        // The previous `event_loop.dispatch` only establishes readiness for
+        // nested DRM/libinput and test-control fds. Drain the backend now,
+        // before any frame decision, so its level-triggered poll fd is cleared
+        // in this same iteration instead of immediately waking calloop again.
+        backend.poll_events(&mut |event| pending_events.push(event));
+        let t_backend_poll_done = iter_t0.elapsed();
+        if slow_prepaint_phase(t_backend_poll_done) {
+            tracing::warn!(
+                target: "tilo::latency",
+                elapsed_ms = t_backend_poll_done.as_secs_f64() * 1_000.0,
+                queued_events = pending_events.len(),
+                "backend poll stalled compositor input"
+            );
+        }
+        // Capture workers wake this loop through their eventfd. Apply released
+        // Smithay transactions before deciding whether there is app content
+        // to paint; doing this after painting strands the newly committed
+        // frame until an unrelated event, and a continuously committing client
+        // can deadlock behind its first transaction barrier.
+        let foreign_capture_changed =
+            state.pump_foreign_capture_barriers(&display_handle_for_outputs);
         // Logout is requested from an off-thread power-menu action. Exit the
         // compositor through this normal cleanup path; its package wrapper
         // then stops Tilo's graphical targets and clears the shared user-manager
@@ -7451,12 +7478,14 @@ pub fn run() {
             }
             let t_submit_start = Instant::now();
             let mut render_thread_lost = false;
+            let mut submitted_serial = None;
             let async_present = if let Some(pipe) = present_pipe.as_mut() {
-                render_thread_lost = !pipe.submit_frame_with_input_age(
+                submitted_serial = pipe.submit_frame_with_input_age(
                     frame_paint,
                     OutputId(0),
                     metrics.pending_input_age(t_submit_start),
                 );
+                render_thread_lost = submitted_serial.is_none();
                 // This serial belongs to the scene submitted above.  Do not
                 // use a before/after presentation count here: an older
                 // desktop frame can be in flight when sleep locks, and its
@@ -7498,6 +7527,7 @@ pub fn run() {
                 submit_done.saturating_duration_since(t_submit_start),
                 async_present,
                 submit_done,
+                submitted_serial,
             );
             // Advance the deadline series off the moment the frame was handed to the
             // display — the clock paces *production*; the render thread's vsync paces consumption behind it.
