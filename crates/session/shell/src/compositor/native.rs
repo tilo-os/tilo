@@ -3438,6 +3438,13 @@ fn load_session_tree(
     // Carried out to `run`, which has the chrome to show it — silently handing
     // someone a bootstrapped demo tree is indistinguishable from losing their work.
     let (mut tree, state_notice) = persist::load_or_default(&path);
+    // Recover cards written by builds that mistook a host window's toolkit
+    // identity for an uninstalled package. The host catalogue is available
+    // before the frame loop starts, so this one-shot migration can distinguish
+    // a now-resolvable local app from a genuinely missing one without making
+    // the latter retry forever.
+    let recovered_host_apps =
+        crate::shell::peer_windows::retry_resolvable_host_app_errors(&mut tree);
     // Past every id already in the tree, so a restart won't re-mint one in use. No-op on a first boot.
     tree.seed_next_id_from_self();
 
@@ -3449,6 +3456,13 @@ fn load_session_tree(
         None
     };
     tree.fs_acl_path = Some(persist::fs_capability_export_path());
+    if recovered_host_apps {
+        tracing::info!(
+            target: "tilo::session_restore",
+            "retrying legacy host-app cards that now resolve to installed desktop entries"
+        );
+        tree.flush_to_disk();
+    }
 
     let roomless = tree.adopt_roomless_workspaces();
     if !roomless.is_empty() {
