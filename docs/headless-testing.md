@@ -465,11 +465,13 @@ desktop session (or enter the development container first):
 
 ```bash
 cargo build -p shell
-cargo test -p shell --test control_socket_test -- --ignored --test-threads 1
+cargo test --locked -p shell --test it control_socket_test:: -- --ignored --test-threads 1
 ```
 
 The test spawns the binary itself. It is intentionally separate from the
 offscreen lanes until the native compositor can run without a host display.
+`control_socket_test` is a module inside the shared `it` test binary, not a
+separate Cargo target. Keep the module filter when opting into ignored tests.
 
 ## Desktop UX journeys
 

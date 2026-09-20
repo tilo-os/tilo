@@ -245,6 +245,33 @@ class TimingTests(unittest.TestCase):
         })
         self.assertNotIn(secret, str(run))
 
+    def test_sccache_hit_rate_excludes_requests_without_cache_lookups(self):
+        # Run 11622 includes compiler probes and other uncacheable requests.
+        log = "\n".join([
+            "2026-09-20T13:24:11Z Compile requests                    1369",
+            "2026-09-20T13:24:11Z Compile requests executed           1111",
+            "2026-09-20T13:24:11Z Cache hits                          1102",
+            "2026-09-20T13:24:11Z Cache hits (Rust)                    939",
+            "2026-09-20T13:24:11Z Cache misses                           4",
+            "2026-09-20T13:24:11Z Cache misses (Rust)                    4",
+        ])
+        stats = timing.extract_job_metrics(log)["sccache"]
+        self.assertEqual(stats["compile_requests"], 1369)
+        self.assertEqual(stats["hit_percent"], 99.6)
+
+    def test_sccache_hit_rate_requires_complete_nonempty_lookup_counts(self):
+        prefix = "2026-09-20T13:24:11Z "
+        for lines, expected in [
+            (["Cache hits 0", "Cache misses 0"], None),
+            (["Cache hits 0", "Cache misses 4"], 0.0),
+            (["Cache hits 4", "Cache misses 0"], 100.0),
+        ]:
+            with self.subTest(lines=lines):
+                stats = timing.extract_job_metrics("\n".join(prefix + line for line in lines))["sccache"]
+                self.assertEqual(stats["hit_percent"], expected)
+        incomplete = timing.extract_job_metrics(prefix + "Compile requests 20\n" + prefix + "Cache hits 15")
+        self.assertNotIn("hit_percent", incomplete["sccache"])
+
     def test_log_derived_names_are_replaced_with_fixed_labels(self):
         secret = "ghp_DO_NOT_RETAIN_THIS_CREDENTIAL_1234567890"
         log = "\n".join([
