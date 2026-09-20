@@ -305,8 +305,8 @@ for artifact in \
 done
 grep -Fq 'runner":"ubuntu-24.04-arm"' "$workflow" \
   && grep -Fq 'runner: macos-15-intel' "$workflow" \
-  && grep -Fq 'runner: macos-15' "$workflow" \
-  && grep -Fq 'runner: windows-2025' "$workflow" \
+  && grep -Fq 'runner: blacksmith-6vcpu-macos-15' "$workflow" \
+  && grep -Fq 'runner: blacksmith-4vcpu-windows-2025' "$workflow" \
   && grep -Fq 'runner: windows-11-arm' "$workflow" \
   && ok 'Linux, Windows, and macOS have native x86-64 and ARM64 lanes' \
   || bad 'the requested native release architecture matrix is incomplete'

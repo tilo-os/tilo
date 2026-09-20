@@ -589,7 +589,7 @@ jobs:
       matrix:
         include:
           - arch: x86_64
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15-intel
           - arch: aarch64
             runner: blacksmith-6vcpu-macos-15
     runs-on: ${{ matrix.runner }}
@@ -884,7 +884,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: blacksmith-6vcpu-macos-15
+          - runner: macos-15-intel
             package_kind: cask
           - runner: blacksmith-6vcpu-macos-15
             package_kind: cask
