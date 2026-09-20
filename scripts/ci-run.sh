@@ -69,6 +69,13 @@ fi
 # failed crate and is usually the most useful line in the log.
 pattern='^error(\[E[0-9]+\])?:|^error: |could not compile|^thread .* panicked at|^test result: FAILED|^---- .* stdout ----|The system library .* was not found|^failures:$'
 distilled="$(grep -nE "$pattern" "$log" | head -40)"
+# clippy-diff deliberately prints newly introduced lints as warnings: Cargo ran
+# successfully, but the diagnostic ratchet rejected the new sites. Preserve the
+# warning, source location and lint name when that explicit verdict is present.
+if [ -z "$distilled" ] && grep -qE '^introduced [0-9]+ Clippy diagnostic site\(s\):$' "$log"; then
+    clippy_pattern='^introduced [0-9]+ Clippy diagnostic site\(s\):$|^warning: |^[[:space:]]+--> .*:[0-9]+:[0-9]+$|^[[:space:]]+= (help|note):.*(rust-clippy|clippy::)'
+    distilled="$(grep -nE "$clippy_pattern" "$log" | head -40)"
+fi
 # Annotations get the lines that identify the fault, not the structural markers a
 # test harness prints around it ("failures:", "---- x stdout ----"). Those stay
 # in the block below, where their surrounding context makes them worth reading.
@@ -97,6 +104,9 @@ failed_tests="$(awk '/^failures:$/{f=1;next} /^test result:/{f=0} f && /^ /{prin
 
 # Annotations: the forge shows these against the run itself.
 annotations="$(grep -E "$headline" "$log" | head -5)"
+if [ -z "$annotations" ] && grep -qE '^introduced [0-9]+ Clippy diagnostic site\(s\):$' "$log"; then
+    annotations="$(grep -E '^warning: ' "$log" | head -5)"
+fi
 if [ -n "$annotations" ]; then
     echo "$annotations" | while IFS= read -r line; do
         echo "::error::${label}: ${line}"
