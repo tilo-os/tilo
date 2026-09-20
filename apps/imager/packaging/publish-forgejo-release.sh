@@ -45,7 +45,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
     repository = json.load(source)
 if repository.get("full_name") != sys.argv[2]:
     raise SystemExit("Forgejo returned a different release repository")
-if repository.get("private") is not False:
+if repository.get("private") is not False or repository.get("internal") is not False:
     raise SystemExit("release repository must be public")
 if repository.get("archived") is True:
     raise SystemExit("release repository must not be archived")
