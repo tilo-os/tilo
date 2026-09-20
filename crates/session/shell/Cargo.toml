@@ -99,7 +99,7 @@ blake3.workspace = true
 # `--backend drm` path to fail cleanly with a useful diagnostic.
 thiserror.workspace = true
 
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
 tilo-actions = { path = "../../collab/actions" }
 # The record/room-index store. The compositor keeps one document per room
@@ -299,6 +299,7 @@ smithay = { version = "0.7", default-features = false, features = [
     "backend_session_libseat",
     "renderer_gl",
 ] }
+gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
 # Host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
 # latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
 # aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
