@@ -30,8 +30,12 @@
       (loop $L (br $L))
       unreachable
     )
+    ;; The fixture only needs one allocation for the input list before the
+    ;; exported function spins. Return a suitably aligned address well inside
+    ;; the first page so canonical lowering reaches `detect` instead of
+    ;; trapping while copying its argument.
     (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32)
-      i32.const 65536
+      i32.const 1024
     )
     (func (export "cabi_post_detect") (param i32))
     (func (export "cabi_post_import_doc") (param i32))
