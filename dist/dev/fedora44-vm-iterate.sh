@@ -28,6 +28,8 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 container=${TILO_FEDORA44_CONTAINER:-tilo-dev-fedora44}
 image=${TILO_FEDORA44_IMAGE:-localhost/tilo-dev-fedora44:current}
 target_rel=${TILO_FEDORA44_TARGET_REL:-target/fedora44-dev}
+target_host=$repo_root/$target_rel
+target_container=$target_rel
 vm_host=${TILO_VM_HOST:-127.0.0.1}
 vm_user=${TILO_VM_USER:-quickuser}
 vm_root=${TILO_VM_DEV_ROOT:-.local/share/tilo-dev}
@@ -39,6 +41,10 @@ vm_root=${TILO_VM_DEV_ROOT:-.local/share/tilo-dev}
 repo_cache_id=$(printf '%s' "$repo_root" | cksum | awk '{print $1}')
 sccache_port=${TILO_FEDORA44_SCCACHE_PORT:-$((43000 + repo_cache_id % 2000))}
 sccache_cache_name="tilo-fedora44-$repo_cache_id"
+rustc_workspace_wrapper=
+if [[ ${TILO_FEDORA44_USE_SCCACHE:-0} == 1 ]]; then
+    rustc_workspace_wrapper=sccache
+fi
 
 die() { printf 'fedora44-vm-iterate: %s\n' "$*" >&2; exit 2; }
 note() { printf 'fedora44-vm-iterate: %s\n' "$*" >&2; }
@@ -60,10 +66,12 @@ safe_target_rel() {
 }
 
 ensure_target_visible_in_container() {
-    local target=$repo_root/$target_rel
-    if [[ -L $target ]]; then
+    target_host=$repo_root/$target_rel
+    target_container=$target_rel
+    if [[ -L $target_host ]]; then
         local resolved
-        resolved=$(readlink -f -- "$target") || die "cannot resolve target cache symlink: $target"
+        resolved=$(readlink -f -- "$target_host") \
+            || die "cannot resolve target cache symlink: $target_host"
         case "$resolved" in
             /var/tmp/*|/var/home/*|/home/*) ;;
             *) die "target cache symlink resolves outside host-mounted development paths: $resolved" ;;
@@ -72,7 +80,8 @@ ensure_target_visible_in_container() {
         # given that visible path directly; otherwise mkdir follows a host
         # symlink to /var/tmp *inside the container* and reports the existing
         # cache as an uncreatable directory.
-        target_rel=/run/host$resolved
+        target_host=$resolved
+        target_container=/run/host$resolved
     fi
 }
 
@@ -131,7 +140,7 @@ cmd_bootstrap() {
         grep -Fq spa_buffer_has_meta_features \
             /usr/include/spa-0.2/spa/buffer/buffer.h
         printf "Fedora %s development container ready\\n" "$VERSION_ID"'
-    note "ready; target cache is $repo_root/$target_rel"
+    note "ready; target cache is $target_host"
 }
 
 build_one() {
@@ -163,25 +172,25 @@ build_one() {
         # helper output depends on live Fedora headers (notably PipeWire SPA),
         # and sccache can otherwise return an object generated for older ones.
         export CC=/usr/bin/gcc CXX=/usr/bin/g++
-        mkdir -p '$target_rel'
-        mkdir -p '$target_rel/tmp'
-        export TMPDIR='$target_rel/tmp'
+        mkdir -p '$target_container'
+        mkdir -p '$target_container/tmp'
+        export TMPDIR='$target_container/tmp'
         # This is a persistent, disposable build cache rather than source. The
         # standard tag keeps backup/indexing tools from treating it as project
         # content when a developer snapshots the checkout.
-        if [ ! -e '$target_rel/CACHEDIR.TAG' ]; then
+        if [ ! -e '$target_container/CACHEDIR.TAG' ]; then
           printf '%s\\n' 'Signature: 8a477f597d28d172789f06886806bc55' \\
             '# This file is a cache directory tag created by Tilo.' \\
             '# For information about cache directory tags, see:' \\
-            '#       http://www.brynosaurus.com/cachedir/' > '$target_rel/CACHEDIR.TAG'
+            '#       http://www.brynosaurus.com/cachedir/' > '$target_container/CACHEDIR.TAG'
         fi
         # flock stays behind as the lock owner while Cargo runs. Its --close
         # mode prevents Cargo, rustc, and sccache's long-lived server from
         # inheriting the lock descriptor and wedging every later build.
-        exec flock --close '$target_rel/.build.lock' env \\
-          CARGO_TARGET_DIR='$target_rel' \\
+        exec flock --close '$target_container/.build.lock' env \\
+          CARGO_TARGET_DIR='$target_container' \\
           RUSTC_WRAPPER= \\
-          RUSTC_WORKSPACE_WRAPPER=sccache \\
+          RUSTC_WORKSPACE_WRAPPER='$rustc_workspace_wrapper' \\
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
           cargo build --locked$quoted"
 }
@@ -194,19 +203,19 @@ build_shell_pair() {
         export SCCACHE_DIRECT=false
         export QCARGO_BYPASS=1
         export CC=/usr/bin/gcc CXX=/usr/bin/g++
-        mkdir -p '$target_rel'
-        mkdir -p '$target_rel/tmp'
-        export TMPDIR='$target_rel/tmp'
-        if [ ! -e '$target_rel/CACHEDIR.TAG' ]; then
+        mkdir -p '$target_container'
+        mkdir -p '$target_container/tmp'
+        export TMPDIR='$target_container/tmp'
+        if [ ! -e '$target_container/CACHEDIR.TAG' ]; then
           printf '%s\\n' 'Signature: 8a477f597d28d172789f06886806bc55' \\
             '# This file is a cache directory tag created by Tilo.' \\
             '# For information about cache directory tags, see:' \\
-            '#       http://www.brynosaurus.com/cachedir/' > '$target_rel/CACHEDIR.TAG'
+            '#       http://www.brynosaurus.com/cachedir/' > '$target_container/CACHEDIR.TAG'
         fi
-        exec flock --close '$target_rel/.build.lock' env \\
-          CARGO_TARGET_DIR='$target_rel' \\
+        exec flock --close '$target_container/.build.lock' env \\
+          CARGO_TARGET_DIR='$target_container' \\
           RUSTC_WRAPPER= \\
-          RUSTC_WORKSPACE_WRAPPER=sccache \\
+          RUSTC_WORKSPACE_WRAPPER='$rustc_workspace_wrapper' \\
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
           cargo build --locked -p shell --bin shell --no-default-features --features dev-session \\
             -p launcher --bin tilo-launcher"
@@ -253,11 +262,11 @@ cmd_test() {
         export SCCACHE_NO_DAEMON=1
         command -v mold >/dev/null
         command -v sccache >/dev/null
-        mkdir -p '$target_rel'
-        exec flock --close '$target_rel/.build.lock' env \\
-          CARGO_TARGET_DIR='$target_rel' \\
+        mkdir -p '$target_container'
+        exec flock --close '$target_container/.build.lock' env \\
+          CARGO_TARGET_DIR='$target_container' \\
           RUSTC_WRAPPER= \\
-          RUSTC_WORKSPACE_WRAPPER=sccache \\
+          RUSTC_WORKSPACE_WRAPPER='$rustc_workspace_wrapper' \\
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-C target-cpu=x86-64-v3 -C force-frame-pointers=yes -C relro-level=full -C link-arg=-Wl,-z,noexecstack -C link-arg=-Wl,-z,shstk -C link-arg=-fuse-ld=mold --remap-path-prefix=/build=.' \\
           cargo test --locked -p '$package'$filter_arg -- --test-threads 1"
 }
@@ -281,9 +290,9 @@ ssh_base() {
     fi
     if [[ -n ${TILO_VM_PASSWORD:-} ]]; then
         require_command sshpass
-        env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE sshpass -p "$TILO_VM_PASSWORD" ssh "${opts[@]}" -o BatchMode=no -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password -o PubkeyAuthentication=no "$vm_user@$vm_host" "$@"
+        env -u SSH_ASKPASS SSH_ASKPASS_REQUIRE=never sshpass -p "$TILO_VM_PASSWORD" ssh "${opts[@]}" -o BatchMode=no -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password -o PubkeyAuthentication=no "$vm_user@$vm_host" "$@"
     else
-        env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE ssh "${opts[@]}" -o BatchMode=yes -o NumberOfPasswordPrompts=0 "$vm_user@$vm_host" "$@"
+        env -u SSH_ASKPASS SSH_ASKPASS_REQUIRE=never ssh "${opts[@]}" -o BatchMode=yes -o NumberOfPasswordPrompts=0 -o PasswordAuthentication=no "$vm_user@$vm_host" "$@"
     fi
 }
 
@@ -386,12 +395,19 @@ deploy_one() {
     [[ $package == shell ]] && binary=shell
     [[ $package == ush ]] && binary=tilo-ush
     safe_name "$binary"
-    local source="$repo_root/$target_rel/debug/$binary"
+    safe_target_rel
+    ensure_target_visible_in_container
+    local source="$target_host/debug/$binary"
+    local source_sha
+    source_sha=$(sha256sum -- "$source" | cut -d' ' -f1)
     local transfer
     transfer=$(mktemp "${TMPDIR:-/tmp}/tilo-$binary.XXXXXX")
     dev_transfer_image "$source" "$transfer"
     assert_vm_runtime_compatible "$transfer" "$binary"
     remote_install "$transfer" "$binary"
+    ssh_base "set -eu
+        printf '%s\n' '$source_sha' > \"\$HOME/$vm_root/$binary.source.sha256\"
+        chmod 600 \"\$HOME/$vm_root/$binary.source.sha256\""
     if [[ $package == ush ]]; then
         local unit=$repo_root/os/usr/lib/systemd/user/tilo-ush.service
         [[ -f $unit ]] || die "ush user unit is missing: $unit"
@@ -497,7 +513,7 @@ deploy_one() {
     if [[ $package == shell ]]; then
         local launcher_transfer
         launcher_transfer=$(mktemp "${TMPDIR:-/tmp}/tilo-launcher.XXXXXX")
-        dev_transfer_image "$repo_root/$target_rel/debug/tilo-launcher" "$launcher_transfer"
+        dev_transfer_image "$target_host/debug/tilo-launcher" "$launcher_transfer"
         assert_vm_runtime_compatible "$launcher_transfer" tilo-launcher
         remote_install "$launcher_transfer" tilo-launcher
         rm -f -- "$launcher_transfer"
@@ -588,12 +604,20 @@ cmd_handoff() {
 }
 
 cmd_verify() {
+    safe_target_rel
+    ensure_target_visible_in_container
+    local source="$target_host/debug/shell"
+    [[ -x $source ]] || die "built executable not found: $source"
+    local source_sha
+    source_sha=$(sha256sum -- "$source" | cut -d' ' -f1)
     assert_disposable_guest
     # This is proof after the user has completed the normal UI logout/login.
     # The trusted developer wrapper records the canonical target and its
     # launch-time digest. This works under Fedora's /proc restrictions and also
     # detects when a newer binary was atomically deployed after login.
     ssh_base "set -euo pipefail
+        test \"\$(cat \"\$HOME/$vm_root/shell.source.sha256\")\" = '$source_sha' \
+          || { echo 'deployed developer shell came from an older build cache entry' >&2; exit 1; }
         wanted=\$(readlink -e \"\$HOME/$vm_root/shell\")
         test -n \"\$wanted\"
         grep -aFq 'tilo-dev-session-build-marker-v1' \"\$wanted\"
@@ -622,6 +646,12 @@ cmd_diagnose() {
         if test -r "$runtime/tilo-dev-session/active"; then
             echo "attestation=present"
             sed -n "1,12p" "$runtime/tilo-dev-session/active"
+            session_pid=$(sed -n "s/^pid=//p" "$runtime/tilo-dev-session/active")
+            if test -r "/proc/$session_pid/environ"; then
+                tr "\0" "\n" < "/proc/$session_pid/environ" \
+                  | grep -E "^(TILO_REDUCE_MOTION|WGPU_BACKEND|WGPU_ADAPTER_NAME)=" \
+                  | sort || true
+            fi
         else
             echo "attestation=absent"
         fi
@@ -640,6 +670,12 @@ cmd_diagnose() {
         else
             echo "developer-app-environment=absent"
         fi
+        echo "-- drm drivers --"
+        for drm_device in /sys/class/drm/card*/device; do
+            test -e "$drm_device" || continue
+            printf "%s=" "$(basename "$(dirname "$drm_device")")"
+            basename "$(readlink -f "$drm_device/driver" 2>/dev/null || true)"
+        done
         test -S "$runtime/tilo-dev-session/control.sock"
         printf "control-socket=%s\n" "$?"
         if test -S "$runtime/tilo-dev-session/control.sock"; then

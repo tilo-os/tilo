@@ -66,7 +66,12 @@ EOF
 cat >"$work/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 printf 'ssh %s\n' "$*" >>"$FAST_LOOP_LOG"
-command=${!#}
+command=
+previous=
+for argument in "$@"; do
+  if [[ $previous == *@* ]]; then command=$argument; break; fi
+  previous=$argument
+done
 if [[ $command == sha256sum* ]]; then
   name=$(printf '%s' "$command" | sed -n 's#.*\.local/share/tilo-dev/\([^"/]*\)".*#\1#p')
   cat "$FAST_LOOP_DEPLOY_SHA_FILE.$name"
@@ -95,6 +100,7 @@ grep -Fq -- '--bin shell' "$log"
 grep -Fq -- '-p launcher --bin tilo-launcher' "$log"
 grep -Fq -- '--no-default-features' "$log"
 grep -Fq 'SCCACHE_SERVER_PORT=' "$log"
+grep -Fq "RUSTC_WORKSPACE_WRAPPER=''" "$log"
 grep -Fq 'tilo-fedora44-' "$log"
 ! grep -Fq 'SCCACHE_SERVER_PORT=4226' "$log"
 ! grep -Fq 'sccache-distrobox' "$log"
@@ -103,8 +109,9 @@ grep -Fq 'tilo-fedora44-' "$log"
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
     TILO_FEDORA44_CONTAINER=test-container TILO_FEDORA44_TARGET_REL="$target_rel" \
-    TILO_FEDORA44_SCCACHE_PORT=45555 "$tool" build shell
+    TILO_FEDORA44_SCCACHE_PORT=45555 TILO_FEDORA44_USE_SCCACHE=1 "$tool" build shell
 grep -Fq "SCCACHE_SERVER_PORT='45555'" "$log"
+grep -Fq "RUSTC_WORKSPACE_WRAPPER='sccache'" "$log"
 
 : >"$log"
 grep -Fq 'cargo test --locked -p' "$tool"
@@ -141,7 +148,8 @@ chmod 600 "$work/test_vm_key"
 grep -Fq -- '-F /dev/null' "$tool"
 grep -Fq -- '-o NumberOfPasswordPrompts=0' "$tool"
 grep -Fq -- '-o KbdInteractiveAuthentication=no' "$tool"
-grep -Fq 'env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE' "$tool"
+grep -Fq 'env -u SSH_ASKPASS SSH_ASKPASS_REQUIRE=never' "$tool"
+grep -Fq -- '-o PasswordAuthentication=no' "$tool"
 grep -Fq 'sudo install -m 0755 \"\$wrapper\" /usr/libexec/tilo-session-dev' "$tool"
 grep -Fq 'tilo-session-runner' "$tool"
 grep -Fq '/usr/libexec/tilo-session-runner' "$tool"
@@ -171,6 +179,14 @@ grep -Fq 'TILO_APPS_SYSTEM_PAYLOAD_DIR' "$repo_root/dist/session/tilo-session-de
 grep -Fq ': "${TILO_REDUCE_MOTION:=1}"' "$repo_root/dist/session/tilo-session-dev"
 grep -Fq 'export WGPU_BACKEND WGPU_ADAPTER_NAME VK_DRIVER_FILES TILO_REDUCE_MOTION' \
     "$repo_root/dist/session/tilo-session-dev"
+
+# Build and deploy share one canonical host path even when target/ is a symlink
+# into the persistent cache. Verification also checks the unstripped source SHA
+# because the transfer copy is intentionally stripped before upload.
+grep -Fq 'target_host=$resolved' "$tool"
+grep -Fq 'local source="$target_host/debug/$binary"' "$tool"
+grep -Fq 'shell.source.sha256' "$tool"
+grep -Fq 'deployed developer shell came from an older build cache entry' "$tool"
 
 rm -rf "$repo_root/$target_rel"
 echo 'fedora44-vm-iterate: PASS'

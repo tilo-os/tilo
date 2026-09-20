@@ -159,7 +159,9 @@ export TILO_TEST_CONTROL
 VIRTUAL_DRM=0
 for _drm_device in /sys/class/drm/card*/device; do
     [ -e "$_drm_device" ] || continue
-    if udevadm info -q property -p "$_drm_device" 2>/dev/null \
+    _drm_driver=$(basename "$(readlink -f "$_drm_device/driver" 2>/dev/null || true)")
+    if [ "$_drm_driver" = virtio-pci ] || \
+        udevadm info -q property -p "$_drm_device" 2>/dev/null \
         | grep -Eq '^(DRIVER=virtio-pci|PCI_ID=1AF4:1050)$'; then
         VIRTUAL_DRM=1
         break
@@ -202,7 +204,9 @@ esac
 TILO_DEV_ATTEST_DIR=$ATTEST_DIR
 TILO_DEV_ATTEST_PATH=$TARGET_REAL
 TILO_DEV_ATTEST_SHA256=$TARGET_SHA256
-export TILO_DEV_ATTEST_DIR TILO_DEV_ATTEST_PATH TILO_DEV_ATTEST_SHA256
+TILO_DEV_ATTEST_REDUCE_MOTION=${TILO_REDUCE_MOTION:-0}
+export TILO_DEV_ATTEST_DIR TILO_DEV_ATTEST_PATH TILO_DEV_ATTEST_SHA256 \
+    TILO_DEV_ATTEST_REDUCE_MOTION
 
 # From this point on the developer session has the exact same lifecycle as the
 # installed session: graphical targets and services, activation environment,

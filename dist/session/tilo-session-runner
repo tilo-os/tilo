@@ -330,6 +330,10 @@ if [ -n "${TILO_DEV_ATTEST_DIR:-}${TILO_DEV_ATTEST_PATH:-}${TILO_DEV_ATTEST_SHA2
         echo 'tilo-session: malformed developer attestation digest' >&2
         exit 1
     }
+    case "${TILO_DEV_ATTEST_REDUCE_MOTION:-0}" in
+        0|1) ;;
+        *) echo 'tilo-session: malformed developer motion attestation' >&2; exit 1 ;;
+    esac
 fi
 "$TILO_SHELL" --host-desktop-session --firstboot --backend drm "$@" \
     >"$flight_pipe" 2>&1 &
@@ -344,6 +348,7 @@ if [ -n "${TILO_DEV_ATTEST_DIR:-}${TILO_DEV_ATTEST_PATH:-}${TILO_DEV_ATTEST_SHA2
         printf 'pid=%s\n' "$shell_pid"
         printf 'path=%s\n' "$TILO_DEV_ATTEST_PATH"
         printf 'sha256=%s\n' "$TILO_DEV_ATTEST_SHA256"
+        printf 'reduce_motion=%s\n' "${TILO_DEV_ATTEST_REDUCE_MOTION:-0}"
     } >"$attest_tmp"
     chmod 600 -- "$attest_tmp"
     dev_attestation="$TILO_DEV_ATTEST_DIR/active"
