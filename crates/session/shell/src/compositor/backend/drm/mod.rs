@@ -25,6 +25,7 @@ mod xrgb_history;
 
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use vello::Scene;
 
@@ -145,6 +146,124 @@ pub struct DrmPresenter {
     /// hard reset still leaves exact phase costs in the flight record.
     profile_phases: bool,
     profile_seq: u64,
+    /// Bounded aggregate diagnostics are always collected. They make a slow physical session
+    /// actionable even when its wrapper forgot the opt-in per-frame trace environment: one log
+    /// record every two seconds is cheap enough for production and survives a hard reset.
+    phase_window: PhaseWindow,
+}
+
+const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
+struct PhaseWindow {
+    started: Instant,
+    frames: u64,
+    submit_us: u128,
+    gpu_readback_map_us: u128,
+    settle_us: u128,
+    cpu_swizzle_us: u128,
+    readback_bytes: u64,
+    output_bytes: u64,
+}
+
+impl Default for PhaseWindow {
+    fn default() -> Self {
+        Self {
+            started: Instant::now(),
+            frames: 0,
+            submit_us: 0,
+            gpu_readback_map_us: 0,
+            settle_us: 0,
+            cpu_swizzle_us: 0,
+            readback_bytes: 0,
+            output_bytes: 0,
+        }
+    }
+}
+
+impl PhaseWindow {
+    fn record(&mut self, timing: paint::BridgePhaseTiming) {
+        self.frames = self.frames.saturating_add(1);
+        self.submit_us = self.submit_us.saturating_add(timing.submit_us);
+        self.gpu_readback_map_us = self
+            .gpu_readback_map_us
+            .saturating_add(timing.completed_readback_map_us);
+        self.settle_us = self.settle_us.saturating_add(timing.settle_us);
+        self.cpu_swizzle_us = self
+            .cpu_swizzle_us
+            .saturating_add(timing.cpu_copy_swizzle_us);
+        self.readback_bytes = self.readback_bytes.saturating_add(timing.readback_bytes);
+        self.output_bytes = self.output_bytes.saturating_add(timing.cpu_output_bytes);
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started) >= PHASE_WINDOW_INTERVAL
+    }
+
+    fn reset(&mut self, now: Instant) {
+        *self = Self {
+            started: now,
+            ..Self::default()
+        };
+    }
+}
+
+#[cfg(test)]
+mod phase_window_tests {
+    use super::*;
+
+    fn timing(value: u64) -> paint::BridgePhaseTiming {
+        paint::BridgePhaseTiming {
+            submit_us: u128::from(value),
+            completed_readback_map_us: u128::from(value.saturating_mul(2)),
+            settle_us: u128::from(value.saturating_mul(3)),
+            cpu_copy_swizzle_us: u128::from(value.saturating_mul(4)),
+            readback_bytes: value.saturating_mul(5),
+            cpu_output_bytes: value.saturating_mul(6),
+        }
+    }
+
+    #[test]
+    fn phase_window_accumulates_completed_frame_costs() {
+        let mut window = PhaseWindow::default();
+        window.record(timing(2));
+        window.record(timing(3));
+
+        assert_eq!(window.frames, 2);
+        assert_eq!(window.submit_us, 5);
+        assert_eq!(window.gpu_readback_map_us, 10);
+        assert_eq!(window.settle_us, 15);
+        assert_eq!(window.cpu_swizzle_us, 20);
+        assert_eq!(window.readback_bytes, 25);
+        assert_eq!(window.output_bytes, 30);
+    }
+
+    #[test]
+    fn phase_window_is_due_only_after_the_bounded_interval() {
+        let mut window = PhaseWindow::default();
+        let started = Instant::now();
+        window.started = started;
+
+        assert!(!window.due(started + PHASE_WINDOW_INTERVAL - Duration::from_nanos(1)));
+        assert!(window.due(started + PHASE_WINDOW_INTERVAL));
+    }
+
+    #[test]
+    fn phase_window_reset_discards_the_previous_sample_without_moving_its_clock() {
+        let mut window = PhaseWindow::default();
+        window.record(timing(7));
+        let now = Instant::now();
+        window.reset(now);
+
+        assert_eq!(window.started, now);
+        assert_eq!(window.frames, 0);
+        assert_eq!(window.submit_us, 0);
+        assert_eq!(window.gpu_readback_map_us, 0);
+        assert_eq!(window.settle_us, 0);
+        assert_eq!(window.cpu_swizzle_us, 0);
+        assert_eq!(window.readback_bytes, 0);
+        assert_eq!(window.output_bytes, 0);
+    }
 }
 
 impl DrmPresenter {
@@ -191,9 +310,6 @@ impl DrmPresenter {
     }
 
     fn emit_phase_profile(&mut self) {
-        if !self.profile_phases {
-            return;
-        }
         let Some(timing) = self
             .paint
             .as_ref()
@@ -201,6 +317,27 @@ impl DrmPresenter {
         else {
             return;
         };
+        self.phase_window.record(timing);
+        let now = Instant::now();
+        if self.phase_window.due(now) {
+            let frames = self.phase_window.frames.max(1);
+            tracing::info!(
+                target: "tilo::render_phase_summary",
+                frames = self.phase_window.frames,
+                window_us = now.saturating_duration_since(self.phase_window.started).as_micros(),
+                avg_submit_us = self.phase_window.submit_us / u128::from(frames),
+                avg_gpu_readback_map_us = self.phase_window.gpu_readback_map_us / u128::from(frames),
+                avg_settle_us = self.phase_window.settle_us / u128::from(frames),
+                avg_cpu_swizzle_us = self.phase_window.cpu_swizzle_us / u128::from(frames),
+                readback_bytes = self.phase_window.readback_bytes,
+                output_bytes = self.phase_window.output_bytes,
+                "DRM readback phase summary"
+            );
+            self.phase_window.reset(now);
+        }
+        if !self.profile_phases {
+            return;
+        }
         self.profile_seq = self.profile_seq.saturating_add(1);
         tracing::info!(
             target: "tilo::render_phase",
@@ -334,7 +471,10 @@ fn paint_scanouts(
     if paint.is_none() {
         match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
             Ok(mut bridge) => {
-                bridge.set_phase_timing_enabled(std::env::var_os("TILO_DRM_PHASE_TRACE").is_some());
+                // Four `Instant` samples per completed frame buy the minimum useful physical
+                // performance record. Verbose per-frame output remains opt-in in DrmPresenter;
+                // ordinary sessions emit only one aggregate every two seconds.
+                bridge.set_phase_timing_enabled(true);
                 *paint = Some(bridge);
             }
             Err(e) => {
@@ -786,6 +926,7 @@ impl Backend for DrmBackend {
             present_gate: self.inner.dispatch.present_gate.clone(),
             profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some(),
             profile_seq: 0,
+            phase_window: PhaseWindow::default(),
         }))
     }
 
