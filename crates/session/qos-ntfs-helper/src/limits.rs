@@ -184,7 +184,10 @@ pub(crate) fn run_cancellable(
     }
     std::mem::forget(child);
     if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
-        return Err(io::Error::other(format!("native child failed: {status}")));
+        return Err(io::Error::other(format!(
+            "native child failed: {status}; output: {}",
+            String::from_utf8_lossy(&bytes)
+        )));
     }
     if CANCELLED.load(std::sync::atomic::Ordering::Acquire) {
         return Err(io::Error::other("cancelled native completion"));

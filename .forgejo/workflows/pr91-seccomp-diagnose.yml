@@ -1,0 +1,34 @@
+name: PR 91 seccomp diagnosis
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: runner
+    timeout-minutes: 30
+    container:
+      image: code.podesta.ai/qos/tilo-builder@sha256:04cbd8634531963ff8efa77723aeafa02e2854830f1d04dee9d691742833a6e6
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - uses: ./.forgejo/actions/prepare-rust-build
+      - name: Install vendored native build prerequisites
+        run: dnf install -y autoconf automake libtool libgcrypt-devel gettext-devel strace
+      - name: Generate native NTFS fixtures
+        run: |
+          fixtures=$(mktemp -d /tmp/qos-ntfs-fixtures.XXXXXX)
+          rmdir "$fixtures"
+          python3 crates/session/qos-ntfs-helper/tests/build_native_fixtures.py --output "$fixtures"
+          printf 'QOS_NTFS_FIXTURES=%s\n' "$fixtures" >> "$GITHUB_ENV"
+      - name: Report blocked x86_64 syscall
+        run: |
+          set +e
+          strace -ff -o /tmp/ntfs-seccomp.trace cargo test --locked -p qos-ntfs-helper --test native_images native_clean_image_returns_serial_root_generation_and_content_metadata -- --exact --nocapture
+          status=$?
+          grep -h -B 3 -A 3 SIGSYS /tmp/ntfs-seccomp.trace.* || true
+          exit "$status"
