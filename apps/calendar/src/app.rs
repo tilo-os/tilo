@@ -61,14 +61,14 @@ use crate::draw_util::{
     selection_fill, stroke_line, stroke_round,
 };
 use crate::event_popovers::{
-    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover, PopoverRenderModel,
+    EventPopovers, PopoverAnchors, PopoverEdit, PopoverKind as FormPopover,
 };
 use crate::ics;
 use crate::input_context::InputContext;
 use crate::metrics;
 use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
 use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
-use crate::sidebar::{Action as SidebarAction, ChromeModel, Mode as SidebarMode, Sidebar};
+use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineInteraction, TimelineRenderEvent,
     TimelineRenderModel, TimelineSpan,
@@ -118,6 +118,7 @@ const NOTES_TOP_OFFSET: f64 = 296.0;
 /// Base label size of a metadata chip (repeat / reminder / colour); the
 /// renderer applies the text scale. The chip's height is the theme's compact
 /// selector height, see `event_form_chip_h`.
+#[cfg(test)]
 const EVENT_FORM_CHIP_TEXT: f32 = 12.0;
 /// Base size of the "EVENT · SAVES AUTOMATICALLY" / "NOTES" section labels.
 const SECTION_LABEL_TEXT: f32 = 11.0;
@@ -3420,82 +3421,6 @@ impl CalendarApp {
         )
     }
 
-    fn redraw_narrow_sticky_header(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if !matches!(self.detail_mode, DetailMode::FullScreen) {
-            return;
-        }
-        let header = Rect::new(
-            self.detail_rect.x0,
-            self.detail_rect.y0,
-            self.detail_rect.x1,
-            self.detail_rect.y0 + 80.0,
-        );
-        fill_rect(
-            scene,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            header,
-        );
-        let mut ignored_hits = Vec::new();
-        {
-            let mut paint = PaintContext {
-                scene,
-                transform,
-                text,
-                theme,
-            };
-            let _ = self.draw_detail_back_button(
-                paint.scene,
-                paint.transform,
-                paint.text,
-                paint.theme,
-                self.detail_rect,
-                &mut ignored_hits,
-            );
-            self.draw_detail_header_controls(
-                paint.scene,
-                paint.transform,
-                paint.theme,
-                self.detail_rect,
-                false,
-                &mut ignored_hits,
-            );
-        }
-        // Once content has moved under the sticky bar, keep the bar to the
-        // actual navigation controls. At 200% text the event eyebrow's ascent
-        // otherwise reaches into the Back label even though the body itself is
-        // clipped correctly. The eyebrow remains visible at the top of the
-        // sheet, where it provides useful context without competing with Back.
-        if self.detail_scroll_y <= f64::EPSILON
-            && let Some(Sel::Event(id)) = self.selection
-            && let Some(event) = self.model.event(id)
-        {
-            let x = self.detail_rect.x0 + DETAIL_PAD;
-            let y = self.detail_rect.y0 + 52.0;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                event.color.color(theme),
-                None,
-                &Circle::new(Point::new(x + 6.0, y + 8.0), 6.0),
-            );
-            text.draw_text(
-                scene,
-                "EVENT · SAVES AUTOMATICALLY",
-                11.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 20.0, y + 2.0)),
-                None,
-            );
-        }
-    }
-
     /// Names of locally-known events that overlap the edited event's first
     /// occurrence. Calendar does not have a free/busy endpoint, so this is
     /// intentionally limited to the events already saved in this device's
@@ -3741,19 +3666,6 @@ impl CalendarApp {
             DETAIL_HEADER_MIN_H,
             metrics::line_h(SECTION_LABEL_TEXT, self.text_scale) + f64::from(self.spacing.s2),
         )
-    }
-
-    /// Vertical extent of the NOTES section header measured from the label's
-    /// top to the editor's first line: label line, label→rule gap (`s1`),
-    /// rule→editor gap (`s2`), rounded up to a whole pixel (26 at 1×).
-    /// `form_layout` reserves it; `draw_detail_notes_header` walks back from
-    /// the editor origin with the same two theme gaps plus the measured label,
-    /// so reserve and paint read one set of tokens and cannot drift apart.
-    fn notes_header_h(&self) -> f64 {
-        (metrics::line_h(SECTION_LABEL_TEXT, self.text_scale)
-            + f64::from(self.spacing.s1)
-            + f64::from(self.spacing.s2))
-        .ceil()
     }
 
     #[allow(
@@ -8190,14 +8102,6 @@ pub(crate) fn draw_upload(scene: &mut Scene, t: Affine, color: Color, center: Po
 /// value and an optional trailing disclosure caret. Backs the date/time/
 /// calendar fields, mirroring the `TextInput` chrome so the whole form looks
 /// uniformly editable.
-#[derive(Clone, Copy)]
-struct FieldButtonFace<'a> {
-    rect: Rect,
-    label: &'a str,
-    active: bool,
-    trailing_caret: bool,
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "The field-button painter combines scene, transform, text, and theme with bounds, label, active state, and optional caret."
@@ -8246,94 +8150,17 @@ fn draw_field_button(
     }
 }
 
-/// Draw a small pill chip and return its rect.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter is an independently-meaningful piece of the chip's own geometry/label"
-)]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "t is the paint transform, x/y are the chip's position, and c/r are the \
-              theme's colour set and the resulting rect — conventional short names for \
-              this draw step"
-)]
-fn chip(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x: f64,
-    y: f64,
-    label: &str,
-    filled: bool,
-) -> Rect {
-    chip_with_lead(scene, t, tr, theme, x, y, label, filled, 0.0)
-}
-
 /// Height of a metadata chip for the current text scale: the theme's compact
 /// selector height (28px at 1×), or the measured label line plus the `s3`
 /// pad the painter leaves — rounded up — once scaled type needs more. Shared
 /// by `form_layout` (no renderer; reads the cached theme tokens) and `chip`
 /// (renderer) so the reserved row and the painted pill agree.
+#[cfg(test)]
 fn event_form_chip_h(selector_h: f64, pad_y: f64, text_scale: f32) -> f64 {
     metrics::at_least_whole(
         selector_h,
         metrics::line_h(EVENT_FORM_CHIP_TEXT, text_scale) + pad_y,
     )
-}
-
-/// A metadata chip with `lead` extra logical pixels reserved after the left
-/// padding — room for a painted marker (the colour swatch) that must not
-/// share pixels with the label glyphs.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "a painting primitive; every argument is a distinct drawing input"
-)]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "t is the paint transform, x/y the chip origin, r its rect and h its height — \
-              conventional short names for a painting primitive"
-)]
-fn chip_with_lead(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x: f64,
-    y: f64,
-    label: &str,
-    filled: bool,
-    lead: f64,
-) -> Rect {
-    let c = &theme.tokens.colors;
-    let pad = f64::from(theme.tokens.spacing.s3);
-    let (tw, th) = tr.measure(label, EVENT_FORM_CHIP_TEXT, None);
-    let h = event_form_chip_h(
-        f64::from(theme.tokens.metrics.selector_height),
-        pad,
-        tr.text_scale(),
-    );
-    let r = Rect::new(x, y, x + pad + lead + f64::from(tw) + pad, y + h);
-    let radius = f64::from(theme.tokens.radii.md);
-    if filled {
-        fill_round(scene, t, c.accent[5], r, radius);
-    } else {
-        // Chip quiet (HIG §9.5): the raised tier with its derived edge.
-        card(scene, t, r, radius, c.surfaces.raised);
-    }
-    tr.draw_text(
-        scene,
-        label,
-        EVENT_FORM_CHIP_TEXT,
-        if filled {
-            c.on_accent(4.5)
-        } else {
-            c.text_primary
-        },
-        t * Affine::translate((r.x0 + pad + lead, r.y0 + (h - f64::from(th)) / 2.0)),
-        None,
-    );
-    r
 }
 
 /// The immediate-mode shared chip measures its label against the renderer's
@@ -8345,17 +8172,6 @@ fn event_form_chip_height(text_scale: f32) -> f64 {
 
 fn event_form_chip_row_pitch(text_scale: f32) -> f64 {
     event_form_chip_height(text_scale) + EVENT_FORM_CHIP_GAP * f64::from(text_scale).max(1.0)
-}
-
-/// Position the NOTES heading above its rule using the shaped label height.
-/// At 200% text, a fixed baseline offset made the rule cut across the label.
-/// The editor starts eight pixels below the rule, preserving its prior visual
-/// rhythm while making the heading's clearance explicit.
-fn notes_header_positions(notes_origin_y: f64, label_h: f64) -> (f64, f64) {
-    const RULE_TO_EDITOR_GAP: f64 = 8.0;
-    const LABEL_TO_RULE_GAP: f64 = 6.0;
-    let rule_y = notes_origin_y - RULE_TO_EDITOR_GAP;
-    (rule_y - LABEL_TO_RULE_GAP - label_h, rule_y)
 }
 
 fn elide(s: &str, max: usize) -> String {

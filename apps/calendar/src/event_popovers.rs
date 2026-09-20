@@ -5,7 +5,6 @@
 //! pointer input.  The root calendar only receives semantic edits to apply to
 //! its model; it does not need to coordinate picker focus or backing scrims.
 
-use crate::draw_util::PaintContext;
 use crate::input_context::InputContext;
 use chrono::{NaiveDate, Timelike};
 use ui::text_render::TextRenderer;
@@ -49,16 +48,6 @@ pub(crate) struct PopoverAnchors {
     pub start_time: Rect,
     pub end_time: Rect,
     pub calendar: Rect,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct PopoverRenderModel<'a> {
-    pub(crate) presence: &'a PresenceCtx,
-    pub(crate) panel: Rect,
-    pub(crate) anchors: PopoverAnchors,
-    pub(crate) pointer: Point,
-    pub(crate) calendar_options: &'a [(CalTarget, String)],
-    pub(crate) current_calendar: Option<&'a str>,
 }
 
 #[derive(Clone, Debug)]

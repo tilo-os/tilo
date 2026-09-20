@@ -4,7 +4,6 @@
 //! and semantic row actions. `CalendarApp` supplies the model and translates
 //! those actions into its document mutations/navigation.
 
-use crate::draw_util::PaintContext;
 use crate::input_context::InputContext;
 use std::collections::HashSet;
 use ui::text_render::TextRenderer;
@@ -139,25 +138,6 @@ pub(crate) enum AgendaAction {
     OpenEvent(Id),
     OpenTask(Id),
     ToggleTask(Id),
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct AgendaRenderModel<'a> {
-    pub(crate) area: Rect,
-    pub(crate) model: &'a Model,
-    pub(crate) anchor: NaiveDate,
-    pub(crate) today: NaiveDate,
-    pub(crate) hidden_calendars: &'a HashSet<String>,
-    pub(crate) calendar_filter: Option<&'a str>,
-    pub(crate) pointer: Point,
-}
-
-#[derive(Clone, Copy)]
-struct RowLayout {
-    area: Rect,
-    x0: f64,
-    pointer: Point,
-    scale: f64,
 }
 
 pub(crate) struct AgendaView {
