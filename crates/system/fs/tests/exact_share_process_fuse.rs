@@ -364,7 +364,10 @@ fn write_clock(path: &Path, now_ms: u64) {
 
 // This mandatory release scenario keeps process lifecycle, eviction evidence,
 // restart, expiry, and rehydration barriers in one linear auditable trace.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps process lifecycle and restart recovery barriers in one auditable trace"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
