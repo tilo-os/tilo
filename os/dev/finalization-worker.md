@@ -55,12 +55,13 @@ registry credentials or keys are uploaded.
 Cleanup always attempts the exact created Docker ID and only volumes created by
 this invocation; `cleanup.json` lists failures. Existing resource names cause
 rejection and are never adopted or deleted. CI teardown can also destroy the
-guest: no image-store persistence is promised. Stage 5 therefore publishes its
-resealed image under a request-owned staging tag and records the registry
-manifest/config digests in `05-reseal.json`. After an interruption beyond stage
-5, inspect public receipts and resolve the local signer's pending/used state.
-An explicit new invocation may pass the prior public receipt directory with
-`--restore-stage5`; the launcher admits exactly receipts 01-05 and the driver
+guest: no image-store persistence is promised. Stages 2 and 5 therefore publish
+their images under request-owned staging tags and record the registry
+manifest/config digests in `02-loader.json` and `05-reseal.json`. After an
+interruption, inspect public receipts and resolve the local signer's pending/used
+state. An explicit new invocation may pass the prior public receipt directory
+with `--restore-checkpoint` and `--restore-stage`; the launcher admits exactly
+receipts 01-02 or 01-05 and the driver
 revalidates their chain, stable request/source/helper identities, the fresh
 worker context, and the immutable registry bytes before pulling the digest.
 Producer and consumer pod/job IDs may differ; each context must independently
@@ -69,14 +70,15 @@ later signing stage still blocks rather than retrying implicitly.
 
 The workflow exposes restore only as three all-or-none dispatch inputs: the
 prior internal run ID, its attempt, and an independently recorded canonical
-SHA256 of its stage-5 receipt. A task-scoped repository token reads that terminal failed
+SHA256 of its selected stage-2 or stage-5 receipt, plus the selected stage. A
+task-scoped repository token reads that terminal failed
 or cancelled run and its uniquely named `finalization-RUN-ATTEMPT` artifact.
 Retrieval refuses the current/active run, redirects, expired or ambiguous
 artifacts, oversized responses, unexpected ZIP members, request/receipt-chain
-mismatches and legacy stage-5 receipts without immutable registry identities.
-It materializes only public receipts 01-05 into a new owner-only directory.
+mismatches and receipts without immutable registry identities. It materializes
+only public receipts 01-02 or 01-05 into a new owner-only directory.
 When the three inputs are empty the workflow neither calls the retrieval helper
-nor passes `--restore-stage5`.
+nor passes a restore checkpoint.
 
 Contract tests: `python3 os/tests/test_finalization_worker.py`. These test input,
 argv, directory-mode, bounded-receipt and cleanup behavior; they do not establish
