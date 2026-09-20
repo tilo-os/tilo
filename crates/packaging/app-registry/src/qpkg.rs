@@ -14,6 +14,7 @@
 //! ```
 
 use std::io::Read;
+use std::path::{Component, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -61,6 +62,20 @@ pub fn validate_payload_shape(meta: &QpkgMeta) -> Result<()> {
         .get(&signed.payload_root_hash)?
         .ok_or_else(|| anyhow!("payload collection missing"))?;
     let collection = pkg::Collection::decode(&collection_bytes)?;
+    let payload_paths: Vec<PathBuf> = collection.entries.keys().map(PathBuf::from).collect();
+    if payload_paths.iter().any(|path| {
+        path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+    }) {
+        bail!("payload collection contains an unsafe path");
+    }
+    pkg::validate_manifest_with_payload(&meta.manifest, &payload_paths)
+        .map_err(|error| anyhow!("manifest/payload validation: {error}"))?;
     pkg::validate_materialized_payload(&meta.manifest, &collection, &meta.store)?;
     Ok(())
 }
@@ -253,6 +268,9 @@ pub(crate) mod test_fixture {
 id = "dev.tilo.editor"
 version = "1.0.0"
 kind = "app"
+
+[package.isa]
+x86_64 = "v3"
 
 [publisher]
 identity = "ed25519:{pubhex}"
