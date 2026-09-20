@@ -38,11 +38,14 @@ feedback after the coordinator is in service.
 
 Every reusable node gets an input fingerprint containing:
 
-- source revision and the transitive source dependency closure;
+- content hashes of the transitive source dependency closure;
 - locked Rust, system-package and external-asset inputs;
 - builder image, compiler, linker, target triple and native SDK identity;
 - architecture, minimum ISA, runtime ABI and hardware profile where applicable;
 - build recipe and the policy version that accepts the output.
+
+Record the source revision in provenance separately; an unrelated commit must
+not invalidate reusable build inputs.
 
 The output receipt binds that fingerprint to immutable artifact digests, logs,
 test results, SBOM and provenance. A cache hit may accelerate a build, but only
