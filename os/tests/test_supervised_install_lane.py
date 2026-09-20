@@ -18,8 +18,11 @@ def node(name,*,disk=False,kvm=False,ready=True):
 
 class LaneAdmission(unittest.TestCase):
     def test_selects_separate_current_workers(self):
-        disk,vm=lane.select_nodes({'items':[node('disk',disk=True),node('vm',kvm=True)]})
+        document={'items':[node('disk',disk=True),node('verify',disk=True),node('vm',kvm=True)]}
+        disk,vm=lane.select_nodes(document)
+        verifier=lane.select_verifier_node(document,disk,vm)
         self.assertEqual((disk['metadata']['name'],vm['metadata']['name']),('disk','vm'))
+        self.assertEqual(verifier['metadata']['name'],'verify')
         self.assertEqual(lane.disk_manifest('tilo-disk-run1',disk)['spec']['containers'][0]['env'],
                          [{'name':'REGISTRY_AUTH_FILE','value':'/work/registry-auth.json'}])
         self.assertEqual(lane.vm_manifest('tilo-vm-run1',vm)['spec']['containers'][0]
@@ -32,6 +35,9 @@ class LaneAdmission(unittest.TestCase):
             lane.select_nodes({'items':[node('both',disk=True,kvm=True)]},'both','both')
         with self.assertRaisesRegex(ValueError,'ready ARM'):
             lane.select_nodes({'items':[node('disk',disk=True,ready=False),node('vm',kvm=True)]},'disk')
+        disk=node('disk',disk=True);vm=node('vm',kvm=True)
+        with self.assertRaisesRegex(ValueError,'verifier'):
+            lane.select_verifier_node({'items':[disk,vm]},disk,vm)
 
     def test_disk_arguments_bind_the_exact_media_lane(self):
         value={'source':'registry.invalid/os@sha256:'+'a'*64,'target':'registry.invalid/os:dev',

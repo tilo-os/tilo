@@ -92,13 +92,34 @@ def select_nodes(document, disk_name=None, vm_name=None):
                    and int(node['status'].get('allocatable', {}).get('devic.es/kvm', '0')) >= 1]
         if not choices:
             raise ValueError('no separate ready ARM KVM node exists')
-        vm = sorted(choices, key=lambda row: row['metadata']['name'])[0]
+        vm = sorted(choices, key=lambda row: (
+          bool(row['metadata'].get('labels',{}).get('agent-sandbox.podesta.ai/disk-kernel')),
+          row['metadata']['name']))[0]
     if vm['metadata']['name'] == disk['metadata']['name']:
         raise ValueError('disk and KVM acceptance workers must use separate nodes')
     return disk, vm
 
 
-def disk_manifest(name, node, image=DISK_IMAGE):
+def select_verifier_node(document, disk, vm, verifier_name=None):
+    nodes=[node for node in document['items'] if ready(node)
+           and node['metadata'].get('labels',{}).get('kubernetes.io/arch')=='arm64']
+    kernel=disk['metadata'].get('labels',{}).get('agent-sandbox.podesta.ai/disk-kernel')
+    if verifier_name:
+        choices=[node for node in nodes if node['metadata']['name']==verifier_name
+                 and node['metadata'].get('labels',{}).get('agent-sandbox.podesta.ai/disk-kernel')==kernel]
+    else:
+        excluded={disk['metadata']['name'],vm['metadata']['name']}
+        choices=[node for node in nodes
+                 if node['metadata']['name'] not in excluded
+                 and node['metadata'].get('labels',{}).get('agent-sandbox.podesta.ai/disk-kernel')==kernel]
+    if len(choices)!=1 and verifier_name:
+        raise ValueError('requested verifier node is not a ready ARM disk-kernel node')
+    if not choices:
+        raise ValueError('no separate ready ARM verifier node exists')
+    return sorted(choices,key=lambda row:row['metadata']['name'])[0]
+
+
+def disk_manifest(name, node, image=DISK_IMAGE, deadline=21600):
     if not digest_reference(image) or not re.fullmatch(r'[a-z0-9](?:[-a-z0-9]*[a-z0-9])?', name):
         raise ValueError('invalid disk worker identity')
     kernel = node['metadata'].get('labels', {}).get('agent-sandbox.podesta.ai/disk-kernel')
@@ -106,7 +127,7 @@ def disk_manifest(name, node, image=DISK_IMAGE):
         raise ValueError('disk node lacks the reviewed kernel label')
     return {'apiVersion':'v1','kind':'Pod','metadata':{'name':name,'namespace':'kata-system'},
       'spec':{'runtimeClassName':'kata-qemu-runtime-rs','restartPolicy':'Never',
-       'activeDeadlineSeconds':21600,'automountServiceAccountToken':False,
+       'activeDeadlineSeconds':deadline,'automountServiceAccountToken':False,
        'nodeSelector':{'kubernetes.io/hostname':node['metadata']['name'],
                        'kubernetes.io/arch':'arm64','agent-sandbox.podesta.ai/disk-kernel':kernel},
        'tolerations':[{'key':'agent-sandbox.podesta.ai/dedicated','operator':'Equal','value':'true','effect':'NoSchedule'},
@@ -293,13 +314,13 @@ def host_agent(context, node):
     return matches[0]
 
 
-def controller(root, args, disk, agent, inspect_only):
+def controller(root, args, disk, agent, inspect_only, evidence_name='creator-environment.json'):
     argv = ['python3', str(root/'os/dev/create-supervised-kata-disk.py'),
       '--context',args.context,'--namespace',disk['namespace'],'--pod',disk['pod'],
       '--pod-uid',disk['pod_uid'],'--node',disk['node'],'--node-uid',disk['node_uid'],
       '--host-agent',agent['metadata']['name'],'--guest-image',DISK_IMAGE,
       '--pins',str(args.host_pins),'--disk-args',str(args.disk_args),
-      '--evidence',str(args.operation_dir/'disk-environment.json'),
+      '--evidence',str(args.operation_dir/evidence_name),
       '--helper-revision',args.helper_revision]
     if inspect_only:
         argv.append('--inspect-only')
@@ -309,7 +330,7 @@ def controller(root, args, disk, agent, inspect_only):
     return command(argv, timeout=7200)
 
 
-def verify_disk(context, disk, values):
+def verify_disk(context, disk, values, auth):
     argv = ['python3','-B','/work/verifier/os/dev/verify-installed-development-disk.py']
     mapping = [('source','source'),('target','target'),('architecture','architecture'),
       ('revision','revision'),('manifest-sha256','manifest_sha256'),('generation','generation'),
@@ -318,8 +339,26 @@ def verify_disk(context, disk, values):
     argv += ['--public-bundle','/work/public-trust','--disk','/work/disk-output/disk.raw',
       '--creation-receipt','/work/disk-output/creation.json','--boot-profile','installer-media',
       '--source-live-uki',values['source_live_uki'],'--offline-key-signature']
-    return command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--',
-                           '/usr/bin/unshare','--mount','--propagation','private','--',*argv),timeout=7200)
+    cleanup="umask 077; trap 'rm -f -- /work/registry-auth.json' EXIT HUP INT TERM; cat > /work/registry-auth.json; test -s /work/registry-auth.json; \"$@\""
+    output=command(kubectl(context,'-n',disk['namespace'],'exec','-i',disk['pod'],'-c','disk','--',
+      'sh','-ceu',cleanup,'sh','/usr/bin/unshare','--mount','--propagation','private','--',*argv),
+      auth,timeout=7200,text=False).decode()
+    command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--',
+                    'sh','-ceu','test ! -e /work/registry-auth.json'),timeout=30)
+    return output
+
+
+def verify_finalized_source(context, verifier, values, creation):
+    argv=['python3','-B','/work/verifier/os/dev/verify-finalized-development-image.py',
+      '--helpers','/work/verifier','--image-id',creation['source']['image_id'],
+      '--target',values['target'],'--public-bundle','/work/public-trust',
+      '--manifest-sha256',values['manifest_sha256'],'--architecture','aarch64',
+      '--generation',str(values['generation']),'--composefs-digest',values['composefs_digest'],
+      '--systemd-version',values['systemd_version'],'--boot-profile','installer-media']
+    document=json.loads(command(kubectl(context,'-n',verifier['namespace'],'exec',verifier['pod'],
+      '-c','disk','--',*argv),timeout=7200))
+    validate_finalized_verification(document,creation)
+    return document
 
 
 def validate_finalized_verification(document, creation, composefs_digest=None):
@@ -336,10 +375,10 @@ def validate_finalized_verification(document, creation, composefs_digest=None):
         raise ValueError('finalized source-layer verification does not bind the created medium')
 
 
-def raw_identity(context, disk):
-    script = "import hashlib,json,os; p='/work/disk-output/disk.raw'; s=os.stat(p); h=hashlib.sha256(); f=open(p,'rb'); [h.update(c) for c in iter(lambda:f.read(8*1024*1024),b'')]; print(json.dumps({'size':s.st_size,'sha256':h.hexdigest()}))"
-    value = json.loads(command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk',
-                                       '--','python3','-c',script),timeout=7200))
+def raw_identity(context, disk, container='disk', path='/work/disk-output/disk.raw'):
+    script = "import hashlib,json,os,sys; p=sys.argv[1]; s=os.stat(p); h=hashlib.sha256(); f=open(p,'rb'); [h.update(c) for c in iter(lambda:f.read(8*1024*1024),b'')]; print(json.dumps({'size':s.st_size,'sha256':h.hexdigest()}))"
+    value = json.loads(command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c',container,
+                                       '--','python3','-c',script,path),timeout=7200))
     if value.get('size') != 64*1024**3 or not re.fullmatch(r'[0-9a-f]{64}',value.get('sha256','')):
         raise ValueError('created raw media identity is invalid')
     return value
@@ -350,12 +389,12 @@ def freeze_raw(context, disk):
                     'chmod','0400','/work/disk-output/disk.raw'),timeout=30)
 
 
-def sparse_transfer(context, disk, vm):
-    source = subprocess.Popen(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk',
+def sparse_transfer(context, source_worker, target_worker, *, target_container, target_directory, target_name):
+    source = subprocess.Popen(kubectl(context,'-n',source_worker['namespace'],'exec',source_worker['pod'],'-c','disk',
       '--','tar','--sparse','-C','/work/disk-output','-cf','-','disk.raw'),stdout=subprocess.PIPE)
-    script = 'set -eu; umask 077; mkdir -p /work/verified; test ! -e /work/verified/installer.raw; tar --sparse --no-same-owner -C /work/verified -xf -; mv /work/verified/disk.raw /work/verified/installer.raw'
-    target = subprocess.Popen(kubectl(context,'-n',vm['namespace'],'exec','-i',vm['pod'],'-c','qemu',
-      '--','sh','-ceu',script),stdin=source.stdout,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    script = 'set -eu; umask 077; mkdir -p "$1"; test ! -e "$1/$2"; tar --sparse --no-same-owner -C "$1" -xf -; if [ "$2" != disk.raw ]; then mv "$1/disk.raw" "$1/$2"; fi'
+    target = subprocess.Popen(kubectl(context,'-n',target_worker['namespace'],'exec','-i',target_worker['pod'],'-c',target_container,
+      '--','sh','-ceu',script,'sh',target_directory,target_name),stdin=source.stdout,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     source.stdout.close()
     try:
         target.communicate(timeout=7200);source_rc=source.wait(timeout=30)
@@ -464,9 +503,9 @@ def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
             'required_files':sorted(required)}
 
 
-def remove_remote_auth(context,disk):
-    command(kubectl(context,'-n',disk['namespace'],'exec',disk['pod'],'-c','disk','--',
-                    'rm','-f','--','/work/registry-auth.json'),timeout=30)
+def delete_worker(context,worker):
+    command(kubectl(context,'-n',worker['namespace'],'delete','pod',worker['pod'],
+                    '--wait=true','--timeout=2m'),timeout=150)
 
 
 def main():
@@ -474,8 +513,7 @@ def main():
     p.add_argument('--context',required=True);p.add_argument('--operation-dir',type=Path,required=True)
     p.add_argument('--disk-args',type=Path,required=True);p.add_argument('--public-bundle',type=Path,required=True)
     p.add_argument('--host-pins',type=Path,required=True);p.add_argument('--helper-revision',required=True)
-    p.add_argument('--finalized-verification',type=Path,required=True)
-    p.add_argument('--acceptance-id',required=True);p.add_argument('--disk-node');p.add_argument('--vm-node')
+    p.add_argument('--acceptance-id',required=True);p.add_argument('--disk-node');p.add_argument('--verifier-node');p.add_argument('--vm-node')
     auth=p.add_mutually_exclusive_group(required=True)
     auth.add_argument('--registry-auth',type=Path);auth.add_argument('--registry-secret',default=None)
     p.add_argument('--registry-secret-namespace',default='kata-system')
@@ -493,54 +531,70 @@ def main():
     atexit.register(cleanup_auth)
     nodes=api_json(args.context,'get','nodes','-l','kubernetes.io/arch=arm64','--request-timeout=20s')
     disk_node,vm_node=select_nodes(nodes,args.disk_node,args.vm_node)
+    verifier_node=select_verifier_node(nodes,disk_node,vm_node,args.verifier_node)
     disk=create_worker(args.context,disk_manifest('tilo-disk-'+args.acceptance_id,disk_node))
-    vm=create_worker(args.context,vm_manifest('tilo-vm-'+args.acceptance_id,vm_node))
     write_private(args.operation_dir/'worker-bindings.json',
-                  (json.dumps({'disk':disk,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
+                  (json.dumps({'creator':disk},indent=2,sort_keys=True)+'\n').encode())
     agent=host_agent(args.context,disk['node'])
     stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/helpers',helpers)
-    stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/public-trust',public)
-    stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
-    stream_file(args.context,disk['namespace'],disk['pod'],'disk','/work/registry-auth.json',auth_bytes)
-    remote_auth_cleanup=lambda: remove_remote_auth(args.context,disk)
-    atexit.register(remote_auth_cleanup)
     controller(root,args,disk,agent,True)
     controller(root,args,disk,agent,False)
     creation=(args.operation_dir/'creation.json').read_bytes()
-    stream_file(args.context,disk['namespace'],disk['pod'],'disk','/work/disk-output/creation.json',creation)
-    # The verifier tree is introduced only after the privileged source installer
-    # has exited, so it was never writable by that workload.
-    stream_tree(args.context,disk['namespace'],disk['pod'],'disk','/work/verifier',helpers)
-    verification=verify_disk(args.context,disk,values)
+    freeze_raw(args.context,disk)
+    identity=raw_identity(args.context,disk)
+    write_private(args.operation_dir/'raw-identity.json',(json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
+    # Only now provision the verifier. It has a distinct new Kata sandbox and
+    # never coexisted with the privileged image execution.
+    verifier=create_worker(args.context,disk_manifest('tilo-verify-'+args.acceptance_id,verifier_node,deadline=7200))
+    write_private(args.operation_dir/'worker-bindings.json',
+                  (json.dumps({'creator':disk,'verifier':verifier},indent=2,sort_keys=True)+'\n').encode())
+    verifier_agent=host_agent(args.context,verifier['node'])
+    controller(root,args,verifier,verifier_agent,True,'verifier-environment.json')
+    require_same_worker(args.context,disk);require_same_worker(args.context,verifier)
+    sparse_transfer(args.context,disk,verifier,target_container='disk',
+                    target_directory='/work/disk-output',target_name='disk.raw')
+    if raw_identity(args.context,verifier)!=identity:
+        raise ValueError('independent verifier received different raw media')
+    delete_worker(args.context,disk)
+    stream_tree(args.context,verifier['namespace'],verifier['pod'],'disk','/work/verifier',helpers)
+    stream_tree(args.context,verifier['namespace'],verifier['pod'],'disk','/work/public-trust',public)
+    stream_file(args.context,verifier['namespace'],verifier['pod'],'disk','/work/disk-output/creation.json',creation)
+    # One authenticated exec installs its cleanup trap before reading the
+    # credential stream, then removes the file on success, error or disconnect.
+    verification=verify_disk(args.context,verifier,values,auth_bytes)
+    cleanup_auth();atexit.unregister(cleanup_auth);del auth_bytes
     parsed=json.loads(verification)
     if (parsed.get('purpose') != 'tilo-installed-boot-and-root-verification'
             or not parsed.get('checks') or not all(parsed['checks'].values())):
         raise ValueError('independent installed-disk verification did not pass')
     write_private(args.operation_dir/'installed-verification.json',(json.dumps(parsed,indent=2,sort_keys=True)+'\n').encode())
-    finalized_bytes=args.finalized_verification.read_bytes()
-    if not 16<=len(finalized_bytes)<=128*1024*1024:
-        raise ValueError('finalized verification receipt exceeds bound')
-    finalized=json.loads(finalized_bytes)
-    validate_finalized_verification(finalized,json.loads(creation),values['composefs_digest'])
+    finalized=verify_finalized_source(args.context,verifier,values,json.loads(creation))
+    finalized_bytes=(json.dumps(finalized,indent=2,sort_keys=True)+'\n').encode()
+    write_private(args.operation_dir/'finalized-verification.json',finalized_bytes)
     finalization_verification_sha256=hashlib.sha256(finalized_bytes).hexdigest()
-    remove_remote_auth(args.context,disk);atexit.unregister(remote_auth_cleanup)
-    cleanup_auth();atexit.unregister(cleanup_auth)
-    freeze_raw(args.context,disk)
-    identity=raw_identity(args.context,disk)
-    write_private(args.operation_dir/'raw-identity.json',(json.dumps(identity,indent=2,sort_keys=True)+'\n').encode())
-    require_same_worker(args.context,disk);require_same_worker(args.context,vm)
-    sparse_transfer(args.context,disk,vm)
-    require_same_worker(args.context,disk);require_same_worker(args.context,vm)
+    vm=create_worker(args.context,vm_manifest('tilo-vm-'+args.acceptance_id,vm_node))
+    stream_tree(args.context,vm['namespace'],vm['pod'],'qemu','/work/source',helpers)
+    write_private(args.operation_dir/'worker-bindings.json',
+                  (json.dumps({'creator':disk,'verifier':verifier,'vm':vm},indent=2,sort_keys=True)+'\n').encode())
+    require_same_worker(args.context,verifier);require_same_worker(args.context,vm)
+    sparse_transfer(args.context,verifier,vm,target_container='qemu',
+                    target_directory='/work/verified',target_name='installer.raw')
+    if raw_identity(args.context,vm,'qemu','/work/verified/installer.raw')!=identity:
+        raise ValueError('KVM worker received different verified raw media')
+    delete_worker(args.context,verifier)
+    require_same_worker(args.context,vm)
     cycle=convert_and_cycle(args.context,vm,identity,args.acceptance_id)
     require_same_worker(args.context,vm)
     cycle_evidence=acceptance_evidence(args.context,vm,cycle)
     write_private(args.operation_dir/'cycle-evidence.json',
                   (json.dumps(cycle_evidence,indent=2,sort_keys=True)+'\n').encode())
     archive=collect_cycle_archive(args.context,vm,cycle,args.operation_dir/'cycle-evidence.tar')
+    require_same_worker(args.context,vm)
     result={'schema':1,'purpose':'tilo-arm-installer-prepared-alongside-acceptance',
       'helper_revision':args.helper_revision,'source':values['source'],'raw_media':identity,
       'finalized_verification_sha256':finalization_verification_sha256,
-      'disk_worker':disk,'vm_worker':vm,'cycle':cycle,'cold_boot_verified':True,
+      'creator_worker':disk,'verifier_worker':verifier,'vm_worker':vm,
+      'creator_and_verifier_released':True,'cycle':cycle,'cold_boot_verified':True,
       'prepared_alongside_verified':True,'cycle_evidence_file':'cycle-evidence.json',
       'cycle_evidence_archive':archive,
       'workers_retained_for_followup':True}
