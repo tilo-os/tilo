@@ -6113,6 +6113,25 @@ pub fn run() {
             eprintln!("tilo compositor: input flush_clients error: {err}");
             break;
         }
+        // Click-to-focus persistence serialises the full workspace tree and
+        // performs two durability barriers (file + containing directory).
+        // Keep that I/O out of `route_mouse_input`: queue and flush
+        // wl_keyboard.enter/wl_pointer.button first so a slow filesystem can
+        // never delay the focused application seeing the click or the next
+        // already-buffered key. Durability still completes in this iteration,
+        // before any paint or event-loop park.
+        if state.client_input.take_focus_persistence_pending() {
+            let started = Instant::now();
+            state.workspace_tree.read().flush_to_disk();
+            let elapsed = started.elapsed();
+            if elapsed > Duration::from_millis(10) {
+                tracing::warn!(
+                    target: "tilo::latency",
+                    elapsed_ms = elapsed.as_secs_f64() * 1_000.0,
+                    "click-focus persistence was slow after input delivery"
+                );
+            }
+        }
 
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
