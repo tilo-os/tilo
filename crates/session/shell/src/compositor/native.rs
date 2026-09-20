@@ -4702,6 +4702,21 @@ fn xwayland_starting_precedes_frame_pump(source: &str) -> bool {
     starting < pump
 }
 
+#[cfg(test)]
+fn backend_nested_loop_uses_edge_wake(source: &str) -> bool {
+    let Some(start) = source.rfind("let backend_event_wake = if let Some(fd) = backend.event_fd()")
+    else {
+        return false;
+    };
+    let tail = &source[start..];
+    let Some(end) = tail.find("let (capture_ping, capture_ping_source)") else {
+        return false;
+    };
+    let registration = &tail[..end];
+    registration.contains("Generic::new(fd, Interest::READ, Mode::Edge)")
+        && !registration.contains("Generic::new(fd, Interest::READ, Mode::Level)")
+}
+
 /// Entry point for the smithay-on-Wayland compositor. Fatal setup errors are
 /// logged and end the process immediately, but an ordinary logout returns so
 /// backend/libseat/KMS resources unwind through RAII before the display manager
@@ -4797,7 +4812,15 @@ pub fn run() {
     let backend_event_wake = if let Some(fd) = backend.event_fd() {
         match event_loop
             .handle()
-            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+            // `event_fd` is the poll fd of the DRM backend's nested calloop.
+            // Treat it as a wake *edge*, then let `Backend::poll_events`
+            // drain that inner loop at the start of the next iteration.  A
+            // level-triggered registration can remain readable after the
+            // inner dispatch consumed its source, making the outer calloop
+            // return immediately forever.  The resulting idle storm was
+            // measured at ~12,000 iterations per two seconds while no frame
+            // was dirty and the presenter counters did not move.
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Edge), |_, _, _| {
                 Ok(PostAction::Continue)
             }) {
             Ok(_) => true,
@@ -9570,8 +9593,8 @@ mod vt_chord_tests {
 #[cfg(test)]
 mod gesture_wireup_tests {
     use super::{
-        apply_shell_gesture, refresh_mhz_of, xwayland_start_follows_public_socket_registration,
-        xwayland_starting_precedes_frame_pump,
+        apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of,
+        xwayland_start_follows_public_socket_registration, xwayland_starting_precedes_frame_pump,
     };
     use crate::compositor::backend::drm::gestures::GestureAction;
     use crate::compositor::backend::{Backend, BackendEvent, HeadlessBackend, Output, OutputId};
@@ -9663,6 +9686,15 @@ mod gesture_wireup_tests {
         assert!(
             xwayland_starting_precedes_frame_pump(source),
             "the first frame pump must see Xwayland Starting and defer persisted host apps until DISPLAY is published"
+        );
+    }
+
+    #[test]
+    fn drm_nested_loop_readiness_is_coalesced_to_one_outer_wake() {
+        let source = include_str!("native.rs");
+        assert!(
+            backend_nested_loop_uses_edge_wake(source),
+            "the nested DRM calloop fd is only a wake token; level readiness can spin the outer loop thousands of times after the inner source was drained"
         );
     }
 
