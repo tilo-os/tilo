@@ -726,6 +726,29 @@ impl LayoutRuntime {
     }
 }
 
+/// Host-owned input modality, gesture, cursor, and tooltip state.
+struct InputRuntime {
+    modifiers: winit::event::Modifiers,
+    interaction: crate::interaction::InteractionEnvironment,
+    platform: crate::platform::PlatformConventions,
+    nav_gestures: crate::gesture::NavGestureRecognizer,
+    current_cursor: CursorIcon,
+    tooltip_host: crate::widget::TooltipHost,
+}
+
+impl InputRuntime {
+    fn new() -> Self {
+        Self {
+            modifiers: winit::event::Modifiers::default(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
+            platform: crate::platform::PlatformConventions::default(),
+            nav_gestures: crate::gesture::NavGestureRecognizer::new(),
+            current_cursor: CursorIcon::Default,
+            tooltip_host: crate::widget::TooltipHost::new(),
+        }
+    }
+}
+
 /// Host-owned action discovery, dispatch, and invocation state.
 ///
 /// Actions remain directly connected to the retained widget tree; this
@@ -889,12 +912,7 @@ pub struct App {
     /// Studio. Throttled so the render loop does not stat the file per frame.
     theme_store_stamp: Option<std::time::SystemTime>,
     last_theme_store_check: Instant,
-    modifiers: winit::event::Modifiers,
-
-    interaction: crate::interaction::InteractionEnvironment,
-    platform: crate::platform::PlatformConventions,
-
-    nav_gestures: crate::gesture::NavGestureRecognizer,
+    input: InputRuntime,
 
     // Stable state for Undo/Redo tracking
     last_stable_focus_idx: Option<usize>,
@@ -938,11 +956,6 @@ pub struct App {
     /// [`PresenceCtx::remote_cursors`] without App knowing about Iroh.
     frame_tick: Option<FrameTick>,
 
-    /// Only calls into winit when it changes, keeping the hot pointer path
-    /// cheap.
-    current_cursor: CursorIcon,
-
-    tooltip_host: crate::widget::TooltipHost,
     accessibility: AccessibilityRuntime,
 
     /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
@@ -1526,7 +1539,7 @@ impl App {
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             component_close_reports: vec![],
             close_admission: crate::close_admission::Admission::default(),
-            nav_gestures: crate::gesture::NavGestureRecognizer::new(),
+            input: InputRuntime::new(),
             needs_sync: true,
             theme: configured_theme.clone(),
             debug_mode: (inputs.debug_mode)(),
@@ -1537,9 +1550,6 @@ impl App {
             appearance_reconcile: false,
             theme_store_stamp: (inputs.theme_store_stamp)(),
             last_theme_store_check: Instant::now(),
-            modifiers: winit::event::Modifiers::default(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
-            platform: crate::platform::PlatformConventions::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager: inputs.collab_manager,
@@ -1556,8 +1566,6 @@ impl App {
             last_view_presence: None,
             presence_broadcast_sink: None,
             frame_tick: None,
-            current_cursor: CursorIcon::Default,
-            tooltip_host: crate::widget::TooltipHost::new(),
             accessibility: AccessibilityRuntime::new(configured_theme, (inputs.screen_reader)()),
             fullscreen_requested: false,
             fullscreen_active: false,
@@ -4619,7 +4627,7 @@ impl App {
             return false;
         };
         let root = self.state.root.clone();
-        let consumed = palette.handle_key(event, &self.modifiers, &mut self.state.doc, &root);
+        let consumed = palette.handle_key(event, &self.input.modifiers, &mut self.state.doc, &root);
         // An operation row may have fired. Document mutations go through the
         // deterministic executor; effects/views route to the owning widget.
         let pending = self
@@ -4849,34 +4857,34 @@ impl App {
         environment: crate::interaction::InteractionEnvironment,
     ) {
         let _entry = self.enter_wake_scope();
-        if self.interaction == environment {
+        if self.input.interaction == environment {
             return;
         }
-        self.interaction = environment;
+        self.input.interaction = environment;
         self.root_widget.set_interaction_environment(environment);
         self.invalidate_widget_resource_cache();
         self.layout.layout_dirty = true;
     }
 
     pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
-        self.interaction
+        self.input.interaction
     }
 
     /// Override platform HIG conventions for a native shell or deterministic
     /// cross-platform test. Ordinary apps use the host default.
     pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         let _entry = self.enter_wake_scope();
-        if self.platform == conventions {
+        if self.input.platform == conventions {
             return;
         }
-        self.platform = conventions;
+        self.input.platform = conventions;
         self.root_widget.set_platform_conventions(conventions);
         self.invalidate_widget_resource_cache();
         self.layout.layout_dirty = true;
     }
 
     pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
-        self.platform
+        self.input.platform
     }
 
     pub fn high_contrast(&self) -> bool {
@@ -5012,7 +5020,7 @@ impl App {
         // Handled before the named-key arm since winit delivers H/F as
         // character keys, not named keys.
         if let Key::Character(ref c) = ke.logical_key {
-            let shift = self.modifiers.state().shift_key();
+            let shift = self.input.modifiers.state().shift_key();
             match c.to_ascii_lowercase().as_str() {
                 "h" => {
                     if let Some(sr) = self.accessibility.screen_reader.as_mut() {
@@ -5247,7 +5255,7 @@ impl App {
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
-        if !self.interaction.supports_hover() {
+        if !self.input.interaction.supports_hover() {
             return None;
         }
         let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
@@ -6685,7 +6693,7 @@ impl App {
             if event.state == winit::event::ElementState::Pressed
                 && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
         {
-            return self.focus_tab(self.modifiers.state().shift_key());
+            return self.focus_tab(self.input.modifiers.state().shift_key());
         }
         false
     }
@@ -8018,8 +8026,9 @@ fn draw_frame_content(
             &app.presence_ctx,
         );
     }
-    app.tooltip_host.tick(Instant::now());
+    app.input.tooltip_host.tick(Instant::now());
     if let Some((text, anchor)) = app
+        .input
         .tooltip_host
         .visible()
         .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
@@ -9099,7 +9108,7 @@ impl AppHandler {
         app.root_widget.handle_event(
             &event,
             scale,
-            &app.modifiers,
+            &app.input.modifiers,
             &mut app.state.doc,
             &app.state.root,
             &mut handled,
@@ -9331,7 +9340,10 @@ impl AppHandler {
             height,
             scale_factor,
             structure_rebuilt,
-            Some(&crate::widget::NativeViewHost::live(window, app.platform)),
+            Some(&crate::widget::NativeViewHost::live(
+                window,
+                app.input.platform,
+            )),
         ) else {
             return;
         };
@@ -9359,8 +9371,8 @@ impl AppHandler {
         damage_regions.clear();
         full_redraw_required |= app.debug_mode
             || app.actions.action_palette.is_some()
-            || app.tooltip_host.needs_frame()
-            || app.tooltip_host.visible().is_some()
+            || app.input.tooltip_host.needs_frame()
+            || app.input.tooltip_host.visible().is_some()
             || !app.presence_ctx.remote_cursors.is_empty()
             || app
                 .profiler
@@ -9592,10 +9604,12 @@ impl AppHandler {
             None
         } else {
             match &event {
-                WindowEvent::Touch(_) => Some(app.interaction.with_touch_modality()),
+                WindowEvent::Touch(_) => Some(app.input.interaction.with_touch_modality()),
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => Some(app.interaction.with_pointer_modality()),
+                | WindowEvent::MouseWheel { .. } => {
+                    Some(app.input.interaction.with_pointer_modality())
+                }
                 WindowEvent::KeyboardInput {
                     event:
                         winit::event::KeyEvent {
@@ -9603,7 +9617,7 @@ impl AppHandler {
                             ..
                         },
                     ..
-                } => Some(app.interaction.with_keyboard_modality()),
+                } => Some(app.input.interaction.with_keyboard_modality()),
                 _ => None,
             }
         };
@@ -9690,7 +9704,10 @@ impl AppHandler {
                     },
                     ..
                 } if (c.as_str() == "k" || c.as_str() == "K")
-                    && app.platform.command_modifier_down(app.modifiers.state())
+                    && app
+                        .input
+                        .platform
+                        .command_modifier_down(app.input.modifiers.state())
             );
             if !is_ctrl_k
                 && matches!(event, WindowEvent::KeyboardInput { .. })
@@ -9746,7 +9763,10 @@ impl AppHandler {
         }
 
         if !handled
-            && app.platform.command_modifier_down(app.modifiers.state())
+            && app
+                .input
+                .platform
+                .command_modifier_down(app.input.modifiers.state())
             && let WindowEvent::KeyboardInput {
                 event:
                     winit::event::KeyEvent {
@@ -9757,7 +9777,7 @@ impl AppHandler {
                 ..
             } = event
         {
-            let shift = app.modifiers.state().shift_key();
+            let shift = app.input.modifiers.state().shift_key();
             let history_request = crate::undo::shortcut(c, true, shift);
             if let Some(request) = history_request {
                 if app.root_widget.handle_local_undo_request(request) {
@@ -9843,7 +9863,7 @@ impl AppHandler {
             };
             if let (Some(d), true, true) = (
                 dir,
-                app.modifiers.state().alt_key(),
+                app.input.modifiers.state().alt_key(),
                 app.keyboard_nav_allowed(modal_rect),
             ) {
                 app.navigate_focus(d);
@@ -9868,10 +9888,11 @@ impl AppHandler {
                             (f64::from(*x), f64::from(*y), false)
                         }
                     };
-                    app.nav_gestures
+                    app.input
+                        .nav_gestures
                         .on_scroll(dx, dy, map_phase(*phase), precise)
                 }
-                WindowEvent::PanGesture { delta, phase, .. } => app.nav_gestures.on_scroll(
+                WindowEvent::PanGesture { delta, phase, .. } => app.input.nav_gestures.on_scroll(
                     f64::from(delta.x),
                     f64::from(delta.y),
                     map_phase(*phase),
@@ -9879,7 +9900,7 @@ impl AppHandler {
                 ),
                 WindowEvent::Touch(t) => {
                     let width = f64::from(window.inner_size().width);
-                    app.nav_gestures.on_touch(
+                    app.input.nav_gestures.on_touch(
                         t.id,
                         t.location.x,
                         t.location.y,
@@ -9980,8 +10001,11 @@ impl AppHandler {
             } = event
         {
             use crate::a11y::Action;
-            let ctrl = app.platform.command_modifier_down(app.modifiers.state());
-            let shift = app.modifiers.state().shift_key();
+            let ctrl = app
+                .input
+                .platform
+                .command_modifier_down(app.input.modifiers.state());
+            let shift = app.input.modifiers.state().shift_key();
             // (action to repeat, how many times)
             let (action, times) = match named {
                 winit::keyboard::NamedKey::ArrowLeft if ctrl => {
@@ -10098,14 +10122,14 @@ impl AppHandler {
             let scale = window.scale_factor();
             let logical = Point::new(position.x / scale, position.y / scale);
             let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
-            if app.current_cursor != desired {
-                app.current_cursor = desired;
+            if app.input.current_cursor != desired {
+                app.input.current_cursor = desired;
                 window.set_cursor(desired);
             }
             // `on_pointer` keeps the dwell running over the same
             // region and restarts it on a new one.
             let target = app.tooltip_target_at(logical);
-            if app.tooltip_host.on_pointer(target, Instant::now()) {
+            if app.input.tooltip_host.on_pointer(target, Instant::now()) {
                 window.request_redraw();
             }
         }
@@ -10119,7 +10143,7 @@ impl AppHandler {
                 | WindowEvent::KeyboardInput { .. }
                 | WindowEvent::Touch(_)
                 | WindowEvent::CursorLeft { .. }
-        ) && app.tooltip_host.dismiss()
+        ) && app.input.tooltip_host.dismiss()
         {
             window.request_redraw();
         }
@@ -10320,7 +10344,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         ));
         crate::widget::mount_native_views(
             self.app.root_widget.as_mut(),
-            &crate::widget::NativeViewHost::live(&window, self.app.platform),
+            &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
         );
         // Windows otherwise exposes an empty white client area while GPU
         // pipelines compile. Prepare those before revealing the window; the
@@ -10421,7 +10445,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         }
                     }
                 }
-                WindowEvent::ModifiersChanged(modifiers) => self.app.modifiers = modifiers,
+                WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
                 other => {
                     let handled = self.app.root_widget.handle_audience_presentation_event(
                         &other,
@@ -10477,7 +10501,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         }
                     }
                 }
-                WindowEvent::ModifiersChanged(modifiers) => self.app.modifiers = modifiers,
+                WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
                 other => self.dispatch_floating_event(&window, desktop_rect, other),
             }
             return;
@@ -10494,7 +10518,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         if let WindowEvent::Touch(touch) = &event {
             self.app
-                .set_interaction_environment(self.app.interaction.with_touch_modality());
+                .set_interaction_environment(self.app.input.interaction.with_touch_modality());
             let pointer_events = self.touch_pointer.events(touch);
             self.dispatching_touch_pointer = true;
             for pointer_event in pointer_events {
@@ -10546,14 +10570,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // so we just need to invalidate layout and redraw.
                 crate::widget::mount_native_views(
                     self.app.root_widget.as_mut(),
-                    &crate::widget::NativeViewHost::live(&window, self.app.platform),
+                    &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
                 );
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, &window),
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.app.modifiers = modifiers;
+                self.app.input.modifiers = modifiers;
             }
             other => self.handle_other_window_event(&window, other),
         }
@@ -10724,7 +10748,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
-        let tooltip_pending = app.tooltip_host.needs_frame();
+        let tooltip_pending = app.input.tooltip_host.needs_frame();
         if tooltip_pending {
             window.request_redraw();
         }
@@ -20113,7 +20137,7 @@ mod viewport_composition_tests {
         let oscillate = root.oscillate.clone();
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
-        let host = crate::widget::NativeViewHost::headless(app.platform, 1.0);
+        let host = crate::widget::NativeViewHost::headless(app.input.platform, 1.0);
         crate::widget::mount_native_views(app.root_widget.as_mut(), &host);
         for width in [1200, 920] {
             let mounts = calls
