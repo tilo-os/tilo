@@ -24,3 +24,16 @@ and compiles a small native archive fixture. It does not build the codec or OS.
 This fixes an uncontrolled input, not a claim that the observed complete-runtime
 hash difference has already been fully attributed or resolved. Native runtime
 qualification and the existing exact signed-runtime guard remain required.
+
+Live packaging evidence (2026-09-20): runs 11397 and 11410 used builder
+`sha256:04cbd8634531963ff8efa77723aeafa02e2854830f1d04dee9d691742833a6e6`.
+Their source commits differed only in Calculator action documentation. The
+runtime manifests differed only in `libruntime_dylib.so` (212465816 versus
+212466072 bytes). Rust metadata and exported symbol names/sizes were identical;
+the first exported-address shift followed the hidden OpenH264 code region.
+Within that region, 757 unique 32-byte instruction blocks matched between the
+binaries, with 16 out-of-order transitions. All C/C++ and assembler compilations
+were cache hits in the second run. This supports native archive ordering as the
+cause; it does not establish complete-runtime reproducibility. After landing,
+qualify a fresh full collection followed by a selected-app publication with the
+same builder and require the existing exact runtime-root check to pass.
