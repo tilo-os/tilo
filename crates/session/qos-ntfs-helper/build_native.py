@@ -26,9 +26,13 @@ def build(output, fixture=False):
         (src / ".qos-bootstrap-ok").touch()
     compiler = env.get("QOS_NTFS_CC", "cc")
     archiver = env.get("QOS_NTFS_AR", "ar")
+    # Cargo links this static archive into PIEs and shared test artifacts.
+    # Compile every vendored object as position independent so stricter
+    # linkers do not reject architecture-specific absolute relocations.
+    env["CFLAGS"] = " ".join(filter(None, [env.get("CFLAGS"), "-fPIC"]))
     env["CC"] = compiler; env["AR"] = archiver
     env["RANLIB"] = env.get("QOS_NTFS_RANLIB", "ranlib")
-    settings={"cc":compiler,"ar":archiver,"host":env.get("QOS_NTFS_HOST"),"ranlib":env["RANLIB"],"fixture":fixture}
+    settings={"cc":compiler,"ar":archiver,"host":env.get("QOS_NTFS_HOST"),"ranlib":env["RANLIB"],"cflags":env["CFLAGS"],"fixture":fixture}
     stamp=src / ".qos-config.json"
     if stamp.exists() and json.loads(stamp.read_text()) != settings:
         raise RuntimeError("native build configuration changed; use a new output directory")
