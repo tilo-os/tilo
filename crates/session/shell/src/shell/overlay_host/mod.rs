@@ -6122,10 +6122,11 @@ impl ShellOverlayHost {
     }
 
     /// Live pointer targets for the active group's maximize/restore actions.
-    /// Kept on the explicit debug control surface so VM acceptance can click
-    /// the same geometry a person sees instead of mutating persisted state.
-    #[cfg(any(test, debug_assertions))]
-    pub fn active_window_control_rects_for_tests(&self) -> Option<(Rect, Rect)> {
+    ///
+    /// This is read-only presentation state. The developer control transport
+    /// serialises it when that transport is enabled, while normal production
+    /// sessions never bind the transport at all.
+    pub fn active_window_control_rects(&self) -> Option<(Rect, Rect)> {
         let chrome = self.chrome.clone()?;
         let (strip_id, group_id) = {
             let st = chrome.borrow();
@@ -26613,6 +26614,24 @@ mod tests {
         let content = Box::new(StubContent::new());
         let host = ShellOverlayHost::with_fixture_content(content).with_chrome(chrome.clone());
         build_harness_with_host(host, chrome)
+    }
+
+    #[test]
+    fn active_window_controls_report_the_live_painted_geometry() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree.clone());
+        let records = chrome.borrow().records().clone();
+        let (content, ptrs, scene_parts) =
+            crate::shell::build_workspace_root_with_scene_parts(&tree, &records, &chrome);
+        let host = ShellOverlayHost::new(content)
+            .with_chrome(chrome)
+            .with_group_row_ptrs(ptrs)
+            .with_workspace_scene_parts(scene_parts);
+        let (maximize, restore) = host
+            .active_window_control_rects()
+            .expect("demo workspace has an active group");
+        assert!(maximize.width() >= 0.0 && maximize.height() >= 0.0);
+        assert!(restore.width() >= 0.0 && restore.height() >= 0.0);
     }
 
     fn build_harness_with_host(
