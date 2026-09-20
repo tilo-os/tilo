@@ -591,16 +591,6 @@ impl Widget for Root {
         self.mark("control-drain");
         QUEUED_CONTROL.with_borrow_mut(Option::take)
     }
-    fn mount_native_views(&mut self, host: &tilo_ui::widget::native_view::NativeViewHost<'_>) {
-        assert!(host.window().is_none());
-        self.mark("native-mount");
-    }
-    fn native_view_frame_start(&mut self) {
-        self.mark("native-frame");
-    }
-    fn unmount_native_views(&mut self) {
-        self.mark("native-unmount");
-    }
     fn view_state(&self) -> Option<tilo_ui::view::ViewContribution> {
         assert!(!PANIC_VIEW.replace(false), "controlled capture unwind");
         self.mark("capture-view");
@@ -1121,9 +1111,6 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
         Search,
         External,
         Control,
-        Mount,
-        Frame,
-        Unmount,
         Capture,
         Restore,
         HostIntent,
@@ -1159,9 +1146,6 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
         (Callback::Search, "search-activate"),
         (Callback::External, "external"),
         (Callback::Control, "control-drain"),
-        (Callback::Mount, "native-mount"),
-        (Callback::Frame, "native-frame"),
-        (Callback::Unmount, "native-unmount"),
         (Callback::Capture, "capture-view"),
         (Callback::Restore, "restore-view"),
         (Callback::HostIntent, "host-intent"),
@@ -1209,14 +1193,6 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
             Callback::Control => {
                 tile.take_control_invocation();
             }
-            Callback::Mount => {
-                tile.mount_native_views(&tilo_ui::widget::native_view::NativeViewHost::headless(
-                    tilo_ui::platform::PlatformConventions::default(),
-                    1.0,
-                ));
-            }
-            Callback::Frame => tile.native_view_frame_start(),
-            Callback::Unmount => tile.unmount_native_views(),
             Callback::Capture => {
                 tile.view_state();
             }
