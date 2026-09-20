@@ -16,6 +16,7 @@ use std::sync::{
 
 /// Read-only complete planning preview. Observation never implies acceptance.
 pub(super) struct InitialPreview {
+    original: Vec<u8>,
     record: super::store::ConnectionRecord,
     lifetime: Weak<()>,
     digest: [u8; 32],
@@ -65,6 +66,75 @@ pub(super) struct ReviewedInitial {
     destination: super::model::ObservedTree,
 }
 impl InitialPreview {
+    fn check_fresh(
+        &self,
+        store: &ConnectionStore,
+        source: &super::model::ObservedTree,
+        destination: &super::model::ObservedTree,
+    ) -> Result<(), StoreError> {
+        let (_, _, digest) = store.initial_review_basis(self.record.id, source, destination)?;
+        if digest != self.digest
+            || *source != self.source
+            || *destination != self.destination
+            || store.initial_review_preimage(self.record.id)? != self.original
+        {
+            return Err(StoreError::StaleRevision);
+        }
+        Ok(())
+    }
+    /// Private complete-comparison acceptance. The worker route is intentionally unchanged.
+    pub(super) fn accept_complete(
+        self,
+        store: &ConnectionStore,
+        session: &TransactionSession,
+        source: &super::endpoint::PinnedEndpoint,
+        destination: &super::endpoint::PinnedEndpoint,
+        cancel: &AtomicBool,
+    ) -> Result<ReviewedInitialSet, StoreError> {
+        let lease = store.review_read_lease()?;
+        lease.check()?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(StoreError::Cancelled);
+        }
+        let fresh_source = super::endpoint::observe(source, cancel);
+        lease.check()?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(StoreError::Cancelled);
+        }
+        let fresh_destination = super::endpoint::observe(destination, cancel);
+        lease.check()?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(StoreError::Cancelled);
+        }
+        self.accept_complete_observed(store, session, fresh_source, fresh_destination, lease)
+    }
+    fn accept_complete_observed(
+        self,
+        store: &ConnectionStore,
+        session: &TransactionSession,
+        source: super::model::ObservedTree,
+        destination: super::model::ObservedTree,
+        lease: super::store::ReviewReadLease,
+    ) -> Result<ReviewedInitialSet, StoreError> {
+        self.check_fresh(store, &source, &destination)?;
+        store.executor_session(self.record.id, session)?;
+        session.require_idle()?;
+        if self.worker_len() == 0 || self.worker_len() > 4096 {
+            return Err(StoreError::LimitExceeded);
+        }
+        let owner = ReviewedInitialSet {
+            record: self.record,
+            lifetime: self.lifetime,
+            gate: Arc::downgrade(&session.gate),
+            original: self.original,
+            preview: self.digest,
+            source: self.source,
+            destination: self.destination,
+            lease,
+        };
+        owner.validate(store)?;
+        Ok(owner)
+    }
     fn worker_paths(&self) -> std::collections::BTreeSet<&super::model::RelativePath> {
         self.source
             .entries()
@@ -115,14 +185,7 @@ impl InitialPreview {
         use super::model::{Conflict, Decision, EntryState, Side};
         let fresh_source = super::endpoint::observe(source, cancel);
         let fresh_destination = super::endpoint::observe(destination, cancel);
-        let (_, _, digest) =
-            store.initial_review_basis(self.record.id, &fresh_source, &fresh_destination)?;
-        if digest != self.digest
-            || fresh_source != self.source
-            || fresh_destination != self.destination
-        {
-            return Err(StoreError::StaleRevision);
-        }
+        self.check_fresh(store, &fresh_source, &fresh_destination)?;
         if self.worker_len() == 0 {
             return self
                 .accept_empty(store, session)
@@ -193,6 +256,7 @@ impl InitialPreview {
     ) -> Result<Self, StoreError> {
         let (record, lifetime, digest) = store.initial_review_basis(id, &source, &destination)?;
         Ok(Self {
+            original: store.initial_review_preimage(id)?,
             record,
             lifetime,
             digest,
@@ -274,6 +338,51 @@ pub(super) fn initial_preview_for_test(
     destination: super::model::ObservedTree,
 ) -> Result<InitialPreview, StoreError> {
     InitialPreview::from_observations(store, id, source, destination)
+}
+
+/// Move-only, nonserializable consent owner; persisted review pages cannot mint it.
+pub(super) struct ReviewedInitialSet {
+    record: super::store::ConnectionRecord,
+    lifetime: Weak<()>,
+    gate: Weak<AdmissionGate>,
+    original: Vec<u8>,
+    preview: [u8; 32],
+    source: super::model::ObservedTree,
+    destination: super::model::ObservedTree,
+    lease: super::store::ReviewReadLease,
+}
+impl ReviewedInitialSet {
+    pub(super) fn record(&self) -> &super::store::ConnectionRecord {
+        &self.record
+    }
+    pub(super) fn original(&self) -> &[u8] {
+        &self.original
+    }
+    pub(super) fn preview(&self) -> [u8; 32] {
+        self.preview
+    }
+    pub(super) fn trees(&self) -> [&super::model::ObservedTree; 2] {
+        [&self.source, &self.destination]
+    }
+
+    pub(super) fn validate(&self, store: &ConnectionStore) -> Result<(), StoreError> {
+        self.lease.check()?;
+        store.validate_review_owner(&self.record, &self.lifetime, &self.gate, &self.original)?;
+        self.lease.check()
+    }
+}
+#[cfg(test)]
+pub(super) fn complete_review_for_test(
+    store: &ConnectionStore,
+    session: &TransactionSession,
+    preview: InitialPreview,
+    source: super::model::ObservedTree,
+    destination: super::model::ObservedTree,
+) -> Result<ReviewedInitialSet, StoreError> {
+    // Host fixture for the exact production post-observation acceptance checks.
+    // It is not evidence that endpoint::observe ran or a native effect is authorized.
+    let lease = store.review_read_lease()?;
+    preview.accept_complete_observed(store, session, source, destination, lease)
 }
 
 /// Closes admission without waiting for the serialized store owner or its I/O.

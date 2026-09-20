@@ -136,7 +136,31 @@ impl DirectoryChainSelectionV1 {
         }
         Ok(value)
     }
+    pub(in crate::connection) fn checked(mut self) -> Result<Self, StoreError> {
+        let bytes = self.encode_preimage()?;
+        let mut hash = Sha256::new();
+        hash.update(DOMAIN);
+        hash.update(bytes);
+        self.selection_digest = hash.finalize().into();
+        self.encode()?;
+        Ok(self)
+    }
     pub(in crate::connection) fn encode(&self) -> Result<Vec<u8>, StoreError> {
+        let mut bytes = self.encode_preimage()?;
+        let mut hash = Sha256::new();
+        hash.update(DOMAIN);
+        hash.update(&bytes);
+        let digest: [u8; 32] = hash.finalize().into();
+        if self.selection_digest != digest {
+            return Err(StoreError::Corrupt);
+        }
+        bytes.extend(digest);
+        if bytes.len() > MAX_SELECTION_BYTES {
+            return Err(StoreError::LimitExceeded);
+        }
+        Ok(bytes)
+    }
+    fn encode_preimage(&self) -> Result<Vec<u8>, StoreError> {
         self.validate_structure()?;
         let count = self
             .path
@@ -226,17 +250,6 @@ impl DirectoryChainSelectionV1 {
             self.missing_prefixes,
         ] {
             b.extend(mask.to_le_bytes());
-        }
-        let mut h = Sha256::new();
-        h.update(DOMAIN);
-        h.update(&b);
-        let digest: [u8; 32] = h.finalize().into();
-        if self.selection_digest != digest {
-            return Err(StoreError::Corrupt);
-        }
-        b.extend(digest);
-        if b.len() > MAX_SELECTION_BYTES {
-            return Err(StoreError::LimitExceeded);
         }
         Ok(b)
     }
