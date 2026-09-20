@@ -46,6 +46,12 @@ local `os/dev/*.py` implementation fingerprint. Keep this checkout for the
 operation's lifetime. A changed input or implementation requires a new operation;
 existing partial directories are never overwritten. No credentials enter this config.
 
+When a reviewed operator correction must continue an already initialized operation,
+pass `--compatible-operation-sha256` with the SHA-256 of that operation's exact
+immutable `operation.json`. Compatibility remains explicit and operation-specific:
+without the option, changed operator code still fails closed; a digest for another
+config is rejected. The config and its pinned snapshots are never rewritten.
+
 ## Bind an actual attempt and stage
 
 Dispatch through the existing finalization workflow, then use its **API run ID**
