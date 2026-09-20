@@ -121,6 +121,27 @@ fn blocker_is_send_and_sync() {
 }
 
 #[test]
+fn one_blocker_serves_multiple_calling_threads() {
+    let blocker = Blocker::new("||ads.example^");
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                assert_eq!(
+                    blocker
+                        .check(
+                            "https://ads.example/banner",
+                            "https://news.example",
+                            "image",
+                        )
+                        .unwrap()["blocked"],
+                    true
+                );
+            });
+        }
+    });
+}
+
+#[test]
 fn oversized_foreign_inputs_are_rejected_before_dereference() {
     unsafe {
         let handle = qos_blocker_create(std::ptr::null(), 0);
@@ -155,10 +176,7 @@ fn oversized_foreign_inputs_are_rejected_before_dereference() {
 #[test]
 fn poisoned_matcher_is_an_explicit_cosmetic_failure() {
     let blocker = Blocker::new("");
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = blocker.engine.lock().unwrap();
-        panic!("simulated matcher panic");
-    }));
+    blocker.panic_worker_for_test();
     assert!(blocker.cosmetics("https://example.org", &[], &[]).is_none());
 }
 
