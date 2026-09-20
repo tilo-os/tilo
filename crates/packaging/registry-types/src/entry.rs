@@ -37,6 +37,28 @@ pub struct RegistryVersion {
     pub qpkg_size_bytes: u64,
     /// Unix seconds when the publisher released this version.
     pub released_at_unix: u64,
+    /// BLAKE3 of the complete `.qpkg` byte stream. The package root above
+    /// authenticates the logical package; this additionally pins the exact
+    /// transport artifact fetched by clients and reviewed by moderators.
+    /// `None` exists only for signed legacy snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qpkg_blake3_hex: Option<String>,
+    /// Execution target authenticated by the publisher. Absence is accepted
+    /// only for signed legacy snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<RegistryTarget>,
+}
+
+/// The machine/runtime contract for one package artifact.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryTarget {
+    /// Architecture wire name.
+    pub architecture: String,
+    /// Minimum ISA level, e.g. `x86_64-baseline` or `x86_64-v3`.
+    pub isa: String,
+    /// Runtime ABI required by the package, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
 }
 
 /// One package entry inside a registry — everything the client needs to render a store card and start a download.
@@ -198,6 +220,8 @@ mod tests {
                 qpkg_root_hash_hex: "cd".repeat(32),
                 qpkg_size_bytes: 12_345_678,
                 released_at_unix: 1_800_000_000,
+                qpkg_blake3_hex: None,
+                target: None,
             }],
             updated_at_unix: 1_800_000_100,
             signature_hex: String::new(),
@@ -235,6 +259,19 @@ mod tests {
             let mut alt = sample_entry();
             alt.versions[0].qpkg_root_hash_hex = "ff".repeat(32);
             assert_ne!(alt.signing_message(), base_msg);
+        }
+        {
+            let mut bound = sample_entry();
+            bound.versions[0].qpkg_blake3_hex = Some("ef".repeat(32));
+            bound.versions[0].target = Some(RegistryTarget {
+                architecture: "x86_64".into(),
+                isa: "x86_64-v3".into(),
+                runtime: Some("tilo-runtime/2026.07".into()),
+            });
+            let bound_msg = bound.signing_message();
+            assert_ne!(bound_msg, base_msg);
+            bound.versions[0].qpkg_blake3_hex = Some("fe".repeat(32));
+            assert_ne!(bound.signing_message(), bound_msg);
         }
         {
             let mut alt = sample_entry();

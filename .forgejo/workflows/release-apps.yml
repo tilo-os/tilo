@@ -32,7 +32,7 @@ on:
       - "tools/app_packaging_qualification.py"
       - "tools/app_packaging_plan.py"
       - "tools/ci/__init__.py"
-      - "tools/ci/affected_packages.py"
+      - "tools/ci/workspace_graph.py"
       - "tools/ci/check-build-env.sh"
       - "tools/ci/python.py"
       - "tools/ci/resolve_builder.py"
