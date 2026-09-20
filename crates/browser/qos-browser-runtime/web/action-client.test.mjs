@@ -68,3 +68,91 @@ test('queued deadline settles the caller while retaining the serial operation gu
  let time=0;const callbacks=new Set(),clock={now:()=>time,setTimeout:fn=>{callbacks.add(fn);return fn;},clearTimeout:fn=>callbacks.delete(fn)};const hold=deferred(),sent=[];let saved;
  const c=await createActionClient({clock,context:()=>context,load:async()=>undefined,commit:async v=>saved=v,request:async m=>{sent.push(m);await hold.promise;return{type:'broker_catalogue',host,catalogue};}});const first=c.catalogue(),queued=c.invoke({...route,invocation:id},{deadlineAtMs:100});await drain();time=100;for(const fn of [...callbacks])fn();await assert.rejects(queued,/not sent/);hold.resolve();await first;await c.close();assert.equal(saved,undefined);assert.equal(sent.length,1);
 });
+
+
+test('fresh catalogue selection and invocation share one serial turn and one discovery',async()=>{
+ const f=fixture(),c=await f.open();
+ await c.invokeSelected(current=>{assert.equal(current.host,host);return {...route,invocation:id};});
+ assert.deepEqual(f.calls.map(m=>m.type),['catalogue_refresh','invoke_bound']);
+ assert.equal(f.bytes.entries[0].invocation,id);
+ await c.close();
+});
+test('selected invocation checks binding again after selection and after durable admission',async()=>{
+ const f=fixture(),c=await f.open();
+ await assert.rejects(c.invokeSelected(()=>{f.context={...context,certificate:'replacement'};return {...route,invocation:id};}),/identity/i);
+ assert.equal(f.bytes,undefined);assert.equal(f.calls.filter(m=>m.type==='invoke_bound').length,0);
+ await c.close();
+});
+test('foreground work runs between retained recovery observations and concurrent recovery is coalesced',async()=>{
+ const gate=deferred(),entered=deferred(),sent=[];let disk,hold=false;
+ const ids=[id,'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'];
+ const c=await createActionClient({context:()=>context,load:async()=>disk,commit:async value=>{disk=value;},request:async m=>{
+  sent.push(m.type+(m.invocation?':'+m.invocation:''));
+  if(m.type==='catalogue_refresh')return {type:'broker_catalogue',host,catalogue};
+  if(hold&&m.type==='status'&&m.invocation===id){entered.resolve();await gate.promise;}
+  return {type:'observation',host,invocation:m.invocation,update:null,uncertain:true};
+ }});
+ for(const invocation of ids)await c.invoke({...route,invocation});
+ sent.length=0;hold=true;const recovery=c.recover();await entered.promise;
+ const duplicate=c.recover(),foreground=c.catalogue();gate.resolve();
+ await Promise.all([recovery,duplicate,foreground]);
+ assert.equal(sent.filter(type=>type==='status:'+id).length,1);
+ assert.equal(sent.filter(type=>type==='status:'+ids[1]).length,1);
+ const first=sent.indexOf('status:'+id),second=sent.indexOf('status:'+ids[1]);
+ assert.equal(sent[first+1],'catalogue_refresh','foreground discovery must not wait for the second retained status');
+ assert(second>first+1);
+ await c.close();
+});
+
+test('a background status round trip cannot block a new invocation or overwrite its durable row',async t=>{
+ const gate=deferred(),entered=deferred();let disk,hold=false;
+ const fresh='ffffffff-ffff-4fff-8fff-ffffffffffff';
+ const c=await createActionClient({context:()=>context,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async m=>{
+  if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+  if(hold&&m.type==='status'&&m.invocation===id){entered.resolve();await gate.promise;}
+  return{type:'observation',host,invocation:m.invocation,update:m.invocation===fresh||hold?{state:'succeeded',invocation:m.invocation}:null,uncertain:false};
+ }});
+ t.after(async()=>{gate.resolve();await c.close();});
+ await c.invoke({...route,invocation:id});hold=true;
+ const recovery=c.recover();await entered.promise;
+ let opened=false;const opening=c.invoke({...route,invocation:fresh}).then(()=>{opened=true;});
+ for(let i=0;i<100;i++)await Promise.resolve();
+ assert.equal(opened,true,'foreground command must not wait for an unrelated status response');
+ gate.resolve();await Promise.all([recovery,opening]);
+ assert.deepEqual(disk.entries.map(row=>[row.invocation,row.terminal]),[[id,true],[fresh,true]]);
+});
+
+test('late background observations cannot replace a newer terminal result',async t=>{
+ const gate=deferred(),entered=deferred();let disk,statuses=0;
+ const c=await createActionClient({context:()=>context,load:async()=>disk,commit:async value=>{disk=structuredClone(value);},request:async m=>{
+  if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+  if(m.type==='invoke_bound')return{type:'observation',host,invocation:id,update:null,uncertain:false};
+  const first=++statuses===1;if(first){entered.resolve();await gate.promise;}
+  return{type:'observation',host,invocation:id,update:{state:first?'running':'succeeded',sequence:first?'1':'2',invocation:id},uncertain:false};
+ }});
+ t.after(async()=>{gate.resolve();await c.close();});
+ await c.invoke({...route,invocation:id});const recovery=c.recover();await entered.promise;
+ await c.status(id);gate.resolve();await recovery;
+ assert.equal(disk.entries[0].state,'succeeded');assert.equal(disk.entries[0].update.sequence,'2');
+});
+test('closing during background network work prevents late persistence',async()=>{
+ const gate=deferred(),entered=deferred();let disk,writes=0;
+ const c=await createActionClient({context:()=>context,load:async()=>disk,commit:async value=>{writes++;disk=value;},request:async m=>{
+  if(m.type==='catalogue_refresh')return{type:'broker_catalogue',host,catalogue};
+  if(m.type==='status'){entered.resolve();await gate.promise;}
+  return{type:'observation',host,invocation:id,update:null,uncertain:false};
+ }});
+ await c.invoke({...route,invocation:id});const recovery=c.recover();await entered.promise;
+ await c.close();const before=writes;gate.resolve();await recovery;assert.equal(writes,before);
+});
+
+test('background discovery cannot send status after a subscriber replaces the identity',async()=>{
+ let binding={...context},disk;const sent=[];
+ const c=await createActionClient({context:()=>binding,load:async()=>disk,commit:async value=>{disk=value;},request:async m=>{
+  sent.push(m.type);return m.type==='catalogue_refresh'?{type:'broker_catalogue',host,catalogue}:{type:'observation',host,invocation:id,update:null,uncertain:false};
+ }});
+ await c.invoke({...route,invocation:id});sent.length=0;
+ c.subscribe(snapshot=>{if(snapshot.capability.state==='ready')binding={...context,target:'replacement'};});
+ await c.recover().catch(()=>{});
+ assert.deepEqual(sent,['catalogue_refresh']);await c.close();
+});

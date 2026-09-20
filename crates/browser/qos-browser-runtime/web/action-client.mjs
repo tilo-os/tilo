@@ -26,6 +26,7 @@ export function actionControl({signal,parentSignal,deadlineAtMs,isCurrent}={},cl
 }
 export async function createActionClient({context,load,commit,request,clock={}}){
   let disk=await load()??{version:1,entries:[]},serial=Promise.resolve(),pending=0,closed=false,recoveryCursor=0,capability={state:'unavailable',reason:'not-discovered'};
+  let recovery;
   const listeners=new Set(),lifetime=new AbortController(),admissions=new Map();
   if(disk.version!==1||!Array.isArray(disk.entries)||disk.entries.length>MAX_ENTRIES||encoder.encode(JSON.stringify(disk)).length>MAX_BYTES)throw Error('Unsupported private action outbox');
   const identities=new Set();
@@ -64,7 +65,10 @@ export async function createActionClient({context,load,commit,request,clock={}})
   async function bound(row,control){if(!equal(row.binding,context()))throw Error('Action identity changed');const current=await discover(control);if(current.host!==row.host)throw Error('Action host changed; original invocation retained');return current;}
   async function observe(row,message,control){
     let response;
-    try{control.check();response=await request(message,control);}catch(error){const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);if(!item.terminal){item.state='unknown';item.reason=String(error.message??error);}await save(next);throw error;}
+    try{control.check();if(!equal(row.binding,context()))throw Error('Action identity changed before request');response=await request(message,control);}catch(error){const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);if(!item.terminal){item.state='unknown';item.reason=String(error.message??error);}await save(next);throw error;}
+    return applyObservation(row,response);
+  }
+  async function applyObservation(row,response){
     if(response.type==='observation'&&(response.host!==row.host||response.invocation!==row.invocation||(response.update&&response.update.invocation!==row.invocation)))throw Error('Action response correlation mismatch');
     const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);
     if(!item.terminal){
@@ -94,17 +98,13 @@ export async function createActionClient({context,load,commit,request,clock={}})
     if(!['none','confirm','phrase'].includes(declared?.mode))throw Error('Unsupported confirmation mechanism');
     return offered[0];
   }
-  return {version:1,getBinding:()=>copy(context()),getSnapshot:snapshot,subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
-    invalidate(reason){capability={state:'unavailable',reason};notify();},
-    getInvocationStage:id=>disk.entries.some(row=>row.invocation===id)?'retained':admissions.has(id)?'admitting':'none',
-    settleAdmission:id=>admissions.get(id)?.promise??Promise.resolve(),
-    catalogue:options=>enqueue(discover,options),
-    invoke:(input,options)=>{input=copy(input);return enqueue(async control=>{
+  async function invoke(input,control,current){
       input.invocation??=crypto.randomUUID();if(!uuid(input.invocation))throw Error('Full invocation UUID required');
       const existing=disk.entries.find(row=>row.invocation===input.invocation);
       if(existing){control.setStage('observation');if(!equal(existing.intent,intent(input,existing.host)))throw Error('Invocation intent changed');await bound(existing,control);return observe(existing,{type:'status',invocation:existing.invocation},control);}
       if(disk.entries.length>=MAX_ENTRIES)throw Error('Action outbox capacity exceeded; retained work is never evicted');
-      const current=await discover(control);
+      current??=await discover(control);
+      control.check();if(!equal(current.binding,context()))throw Error('Action identity changed during selection');
       const value=intent(input,current.host),descriptor=resolve(current,value);
       if(input.expected&&(!equal(input.expected.binding,current.binding)||input.expected.host!==current.host||!equal(input.expected.descriptor,descriptor)))throw Error('Action binding or catalogue changed');
       const row={invocation:input.invocation,host:current.host,binding:current.binding,intent:value,state:'unknown',reason:'may-have-dispatched',update:null,terminal:false,cancellationRequested:false};
@@ -113,20 +113,52 @@ export async function createActionClient({context,load,commit,request,clock={}})
       try{await save({...disk,entries:[...disk.entries,row]},control);}catch(error){reservation.error=error;throw error;}finally{admissions.delete(input.invocation);settle(reservation.error);}
       control.check();if(!equal(row.binding,context()))throw Error('Action identity changed after commit');
       control.setStage('observation');return observe(row,value,control);
-    },options);},
+  }
+  return {version:1,getBinding:()=>copy(context()),getSnapshot:snapshot,subscribe(listener){listeners.add(listener);return()=>listeners.delete(listener);},
+    invalidate(reason){capability={state:'unavailable',reason};notify();},
+    getInvocationStage:id=>disk.entries.some(row=>row.invocation===id)?'retained':admissions.has(id)?'admitting':'none',
+    settleAdmission:id=>admissions.get(id)?.promise??Promise.resolve(),
+    catalogue:options=>enqueue(discover,options),
+    invoke:(input,options)=>{input=copy(input);return enqueue(control=>invoke(input,control),options);},
+    // Resolve a new command synchronously inside the fresh discovery turn. This
+    // avoids a second round trip without caching authority across user gestures.
+    invokeSelected:(select,options)=>enqueue(async control=>{
+      const current=await discover(control);
+      const input=copy(select(copy(current)));
+      return invoke(input,control,current);
+    },options),
     status:(id,options)=>enqueue(async control=>{const row=find(id);await bound(row,control);return observe(row,{type:'status',invocation:id},control);},options,'observation'),
     cancel:(id,options)=>enqueue(async control=>{const row=find(id);await bound(row,control);return observe(row,{type:'cancel',invocation:id},control);},options,'observation'),
-    recover:()=>enqueue(async control=>{
-      const rows=disk.entries.filter(row=>!row.terminal);if(!rows.length)return snapshot();
-      const current=await discover(control);
-      // One recovery turn is bounded; rotate fairly over retained uncertain work.
-      for(let count=0;count<Math.min(16,rows.length);count++){
-        control.check();const row=rows[(recoveryCursor+count)%rows.length];
-        if(!equal(row.binding,current.binding)||row.host!==current.host){const next=copy(disk),item=next.entries.find(item=>item.invocation===row.invocation);item.state='unknown';item.reason=!equal(row.binding,current.binding)?'identity-changed':'host-changed';await save(next);continue;}
-        try{await observe(row,{type:'status',invocation:row.invocation},control);}catch{ /* Keep original identity and durable uncertainty. */ }
-      }
-      recoveryCursor=rows.length?(recoveryCursor+16)%rows.length:0;return snapshot();
-    }),
+    recover:()=>{
+      if(recovery)return recovery;
+      recovery=(async()=>{
+        const rows=await enqueue(()=>disk.entries.filter(row=>!row.terminal).map(row=>row.invocation));
+        for(let count=0;count<Math.min(16,rows.length);count++){
+          const id=rows[(recoveryCursor+count)%rows.length];
+          // Background network waits must not occupy the mutation lane used
+          // by a new user command. Only applying the result is serialized.
+          const row=copy(find(id));if(row.terminal)continue;
+          const control=actionControl({parentSignal:lifetime.signal},clock,'observation');
+          try{
+            const current=await control.wait(discover(control));
+            if(!equal(row.binding,current.binding)||row.host!==current.host){
+              await enqueue(async()=>{const next=copy(disk),item=next.entries.find(item=>item.invocation===id);if(!item.terminal){item.state='unknown';item.reason=!equal(row.binding,current.binding)?'identity-changed':'host-changed';await save(next);}});
+              continue;
+            }
+            if(find(id).terminal)continue;
+            let response;
+            try{control.check();if(!equal(row.binding,context()))throw Error('Action identity changed before request');response=await control.wait(request({type:'status',invocation:id},control));}
+            catch(error){
+              if(!closed)await enqueue(async()=>{const next=copy(disk),item=next.entries.find(item=>item.invocation===id);if(!item.terminal){item.state='unknown';item.reason=String(error.message??error);await save(next);}});
+              continue;
+            }
+            await enqueue(()=>{control.check();if(!equal(row.binding,context()))throw Error('Action identity changed during observation');return applyObservation(row,response);});
+          }finally{control.dispose();}
+        }
+        recoveryCursor=rows.length?(recoveryCursor+16)%rows.length:0;return snapshot();
+      })().finally(()=>{recovery=undefined;});
+      return recovery;
+    },
     async close(){closed=true;lifetime.abort();await serial.catch(()=>{});listeners.clear();},
   };
 }
