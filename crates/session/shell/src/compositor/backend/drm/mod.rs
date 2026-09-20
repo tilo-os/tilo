@@ -688,6 +688,12 @@ fn paint_scanouts(
                 if entry.direct_targets.is_none() && entry.direct_unavailable.is_none() {
                     match scanout::DirectScanoutTargets::new(&entry.scanout, bridge) {
                         Ok(targets) => {
+                            eprintln!(
+                                "tilo compositor: DRM direct scanout enabled \
+                                 (renderer_pci={}, drm_bus_id={})",
+                                adapter.pci_bus_id,
+                                drm_bus_id.as_deref().unwrap_or("unavailable"),
+                            );
                             tracing::info!(
                                 renderer_pci = %adapter.pci_bus_id,
                                 drm_bus_id = drm_bus_id.as_deref().unwrap_or("unavailable"),
