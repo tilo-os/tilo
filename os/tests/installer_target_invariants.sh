@@ -458,7 +458,7 @@ else
   bad "live-medium SSH mask/enablement can leak into the target"
 fi
 
-if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$DEPLOY_ETC/greetd/config.toml"' "$backend"; then
+if grep -Fq 'chcon --reference=/etc/greetd/config.toml "$GREETD_CONFIG_TMP"' "$backend"; then
   ok "installed greeter configuration receives an enforcing-compatible /etc label"
 else
   bad "installed greeter configuration can retain a transient /run SELinux label"
