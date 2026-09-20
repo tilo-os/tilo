@@ -485,9 +485,9 @@ fn cache_put(key: String, value: Option<Lyrics>) {
 }
 
 /// An async lyrics worker: a background thread that resolves lyrics off the UI
-/// thread and delivers them over a channel. The default (no `lyrics` feature)
-/// build still uses it — it resolves the always-present bundled lyrics — so
-/// the UI code path is identical with or without live fetch.
+/// thread and delivers them over a channel. The default live build can fetch
+/// network lyrics; builds without `live` and `lyrics` resolve bundled lyrics
+/// through the same worker interface.
 pub struct LyricsWorker {
     tx: std::sync::mpsc::Sender<TrackMeta>,
     rx: std::sync::mpsc::Receiver<(String, Lyrics)>,

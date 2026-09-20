@@ -24,7 +24,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 accounts = { path = "../../crates/system/accounts" }
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
@@ -34,7 +34,7 @@ zeroize.workspace = true
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }
 collab-types = { path = "../../crates/collab/collab-types" }
-tilo-user-identity = { path = "../../crates/identity/tilo-user-identity" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
@@ -73,6 +73,8 @@ unic-langid.workspace = true
 # Needed by `FileExplorerWidget`'s `Widget` impl — matches the crate set
 # terminal pulls in for the same reason.
 automerge.workspace = true
+cap-std = "3.4.6"
+cap-fs-ext = "3.4.6"
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
@@ -84,7 +86,7 @@ tempfile.workspace = true
 xattr = "1.6.1"
 
 [target.'cfg(unix)'.dev-dependencies]
-fs = { path = "../../fs" }
+fs = { path = "../../crates/system/fs" }
 fuser.workspace = true
 iroh.workspace = true
 

@@ -19,12 +19,13 @@ use ui::search::{
 };
 
 use crate::actions::{
-    PhotoResourceSeed, album_resource_from_fields, folder_resource, folder_resource_id,
-    library_root_resource, metadata_label_counts, object_resource, object_resource_id,
-    person_resource, person_resource_id, pet_resource, pet_resource_id, photo_resource_from_seed,
-    place_counts, place_resource, place_resource_id, places_resource_from_count, tag_resource,
-    tag_resource_id, timeline_boundaries, timeline_day_resource, timeline_day_resource_id,
-    timeline_month_resource, timeline_month_resource_id, timeline_resource_from_search,
+    PhotoResourceSeed, album_resource_from_fields, albums_resource_from_count, folder_resource,
+    folder_resource_id, library_root_resource, metadata_label_counts, object_resource,
+    object_resource_id, person_resource, person_resource_id, pet_resource, pet_resource_id,
+    photo_resource_from_seed, place_counts, place_resource, place_resource_id,
+    places_resource_from_count, tag_resource, tag_resource_id, timeline_boundaries,
+    timeline_day_resource, timeline_day_resource_id, timeline_month_resource,
+    timeline_month_resource_id, timeline_resource_from_search,
 };
 use crate::doc::PhotosDoc;
 
@@ -67,6 +68,9 @@ enum MaterializationSeed {
     },
     Places {
         located_count: usize,
+    },
+    Albums {
+        count: usize,
     },
     Photo(Box<PhotoResourceSeed>),
     Album {
@@ -111,6 +115,7 @@ impl MaterializationSeed {
             Self::TimelineMonth { month, count } => timeline_month_resource(&month, count),
             Self::TimelineDay { day, count } => timeline_day_resource(&day, count),
             Self::Places { located_count } => places_resource_from_count(located_count),
+            Self::Albums { count } => albums_resource_from_count(count),
             Self::Photo(photo) => photo_resource_from_seed(&photo),
             Self::Album {
                 id,
@@ -176,6 +181,50 @@ impl PhotosSearchProvider {
             .get(id)?
             .clone();
         Some(seed.materialize())
+    }
+
+    /// One bounded page of canonical photograph ids matching the same
+    /// filename, metadata, OCR and description index used by system search.
+    /// The in-app timeline consumes these pages incrementally instead of
+    /// rebuilding and scanning a lowercase string for every photo on every
+    /// frame.
+    pub(crate) fn photo_matches_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+    ) -> (Vec<String>, Option<SearchCursor>, usize) {
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let page = state.catalog.query_page(
+            query,
+            cursor,
+            DEFAULT_SEARCH_CANDIDATE_LIMIT,
+            DEFAULT_SEARCH_RESULT_LIMIT,
+        );
+        let ids = page
+            .results
+            .iter()
+            .filter_map(|result| result.action_address())
+            .filter(|address| {
+                matches!(
+                    state.seeds.get(&address.resource),
+                    Some(MaterializationSeed::Photo(_))
+                )
+            })
+            .map(|address| address.resource.clone())
+            .collect();
+        (ids, page.next, page.inspected)
+    }
+
+    pub(crate) fn generation(&self) -> u64 {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .stats()
+            .generation
     }
 
     #[cfg(test)]
@@ -300,7 +349,12 @@ impl PhotosSearchProvider {
         let located_count = library
             .photos
             .iter()
-            .filter(|photo| photo.location.is_some())
+            .filter(|photo| {
+                photo
+                    .location
+                    .as_ref()
+                    .is_some_and(crate::model::PhotoLocation::is_valid)
+            })
             .count();
         let places = SearchResult::for_action(
             PHOTO_SEARCH_KIND,
@@ -314,6 +368,28 @@ impl PhotosSearchProvider {
             format!("Places\0photos.places\0map\0location\0{located_count} photographs\0open"),
             places,
             MaterializationSeed::Places { located_count },
+        );
+        let albums = SearchResult::for_action(
+            PHOTO_SEARCH_KIND,
+            "Albums",
+            ActionAddress::new("photos.albums", "open"),
+        )
+        .with_subtitle(if library.albums.len() == 1 {
+            "1 shared album".to_owned()
+        } else {
+            format!("{} shared albums", library.albums.len())
+        })
+        .with_icon(Icon::Image);
+        insert(
+            "photos.albums".to_owned(),
+            format!(
+                "Albums\0photos.albums\0collection\0{} shared albums\0open\0browse",
+                library.albums.len()
+            ),
+            albums,
+            MaterializationSeed::Albums {
+                count: library.albums.len(),
+            },
         );
         for photo in &library.photos {
             let result = SearchResult::for_action(
@@ -621,7 +697,7 @@ mod tests {
     use super::*;
     use crate::actions::PhotosResources;
     use crate::doc::PhotosDoc;
-    use crate::model::OpenImage;
+    use crate::model::{LocationProvenance, OpenImage, PhotoLocation};
     use tilo_actions::ActionAddress;
     use tilo_actions::ResourceProvider;
 
@@ -677,6 +753,55 @@ mod tests {
                 .actions
                 .iter()
                 .any(|action| ActionAddress::new(&resource.id.0, &action.id) == address)
+        );
+    }
+
+    #[test]
+    fn a_place_search_result_materializes_the_exact_shared_collection() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let location = PhotoLocation {
+            latitude: 48.8566,
+            longitude: 2.3522,
+            label: Some("Offline Paris".to_owned()),
+            provenance: LocationProvenance::default(),
+        };
+        let mut first = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            "/pictures/one.png",
+            64,
+            64,
+        ));
+        first.location = Some(location.clone());
+        let mut second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            "/pictures/two.png",
+            64,
+            64,
+        ));
+        second.location = Some(location.clone());
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first, second],
+                albums: Vec::new(),
+            },
+        );
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        let address = provider
+            .search("Offline Paris")
+            .into_iter()
+            .filter_map(|result| result.action_address())
+            .find(|address| address.resource.starts_with("photos.place:"))
+            .expect("place is globally searchable");
+        assert_eq!(address.resource, place_resource_id(&location.place_key()));
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("exact search target materializes");
+        assert_eq!(resource.kind, "photos.place");
+        assert!(
+            resource
+                .children
+                .iter()
+                .any(|child| child.label == "2 photographs")
         );
     }
 
@@ -756,6 +881,42 @@ mod tests {
             .resource(&doc, &address.resource)
             .expect("the late stable album id resolves lazily");
         assert!(resource.actions.iter().any(|action| action.id == "open"));
+    }
+
+    #[test]
+    fn albums_collection_is_searchable_and_materializes_its_canonical_action() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let library = crate::model::PhotoLibrary {
+            photos: Vec::new(),
+            albums: vec![crate::model::Album {
+                id: "photos.album:journey".into(),
+                name: "Journey".into(),
+                photo_ids: Vec::new(),
+            }],
+        };
+        PhotosDoc::set_library(&mut doc, &library);
+
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        let address = provider
+            .search("shared albums")
+            .into_iter()
+            .find_map(|hit| {
+                hit.action_address()
+                    .filter(|address| address.resource == "photos.albums")
+            })
+            .expect("album browsing is a global-search destination");
+        assert_eq!(address.action, "open");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("the compact search seed materializes the album collection");
+        assert_eq!(resource.kind, crate::actions::ALBUMS_KIND);
+        assert!(
+            resource
+                .children
+                .iter()
+                .any(|child| { child.id.0 == "photos.albums#count" && child.label == "1 album" })
+        );
     }
 
     #[test]
@@ -859,6 +1020,7 @@ mod tests {
                 scope: "shared".into(),
                 ..crate::model::AnalysisProvenance::default()
             },
+            ..crate::model::ImageAnalysis::default()
         });
         PhotosDoc::set_library(&mut doc, &library);
 
@@ -880,6 +1042,10 @@ mod tests {
                 });
             assert!(provider.resolve_action_resource(&address).is_some());
         }
+        let (ids, next, inspected) = provider.photo_matches_page("invoice 42", None);
+        assert_eq!(ids, [library.photos[0].id.clone()]);
+        assert!(next.is_none());
+        assert!(inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
     }
 
     #[test]
@@ -966,7 +1132,7 @@ mod tests {
             ));
         }
         let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
-        let expected_records = library.photos.len() + 2; // library + People roots
+        let expected_records = library.photos.len() + 4; // library + timeline + places + albums
         assert_eq!(provider.stats().records, expected_records);
         let page = provider.search_page("needle-beyond-100k-夏", None, 2, 1);
         assert_eq!(page.results.len(), 1);

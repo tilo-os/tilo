@@ -121,7 +121,7 @@ for kver in "${kvers[@]}"; do
         bad "initramfs has no $want module — it cannot unlock an encrypted root"
       fi
     done
-    for unwanted in network network-legacy network-manager nfs iscsi nbde clevis crypt-ssh; do
+    for unwanted in network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh; do
       if grep -qx "$unwanted" "$mods"; then
         bad "initramfs carries unsupported network-root module $unwanted"
       fi

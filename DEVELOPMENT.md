@@ -3,6 +3,136 @@
 Build dependencies, local development and testing. See `AGENTS.md` for repository
 conventions.
 
+## Fast checks before assembly
+
+Run these from the checkout on Linux (including WSL), using Python 3.11+:
+
+```sh
+tools/policy/run.sh
+python3 tools/dev.py check installer
+python3 tools/dev.py check app-packaging
+```
+
+The repository-policy command is the same deterministic suite used by the
+fast-quality workflow. It checks live workflow triggers and timeouts in
+addition to running the policy unit tests, so testing a checker without
+auditing the current repository cannot produce a false-green result.
+
+The installer checks exercise target-mode logic, artifact materialization and the
+installer overlay. The app checks exercise selection, collection membership and
+the actual packaging/upload/assembly layout with fixture build/signing tools.
+Neither command compiles the workspace, builds an OS, creates a VM or changes a
+device. They do not replace native package, VM install or hardware acceptance.
+
+Use `--plan` to see the commands and required tools without running them.
+Use `--step target-modes` to rerun just one installer contract; repeat `--step`
+to select more. Receipts explicitly list omitted checks and identify subset runs.
+`--keep-going` runs the remaining independent checks after a failure. Each run
+writes `target/dev-runs/<id>/run.json` with per-stage timings, results and unrun
+steps; `--out <new-directory>` chooses the receipt location. Existing evidence is
+never overwritten. Output stays live in the terminal; receipts do not collect the
+environment or credentials and are not release attestations.
+
+App packaging checks need Bash, jq, tar, sha256sum and python3. Installer checks
+need Bash; non-root developers also need `unshare` and enabled unprivileged user
+namespaces. The materialization test then sees root-owned fixtures inside a
+private user namespace, without sudo or weakening the production ownership check.
+If the environment prohibits user namespaces, use the existing isolated Linux
+builder where these tests can run as container root. Missing capabilities fail
+the command and are recorded in its receipt.
+
+CI's repository policy tests discover the same app-packaging tests, including
+the build-to-collection handoff regression.
+For an actual installer VM cycle with an already prepared medium, continue using
+`os/dev/test-installer-cycle.sh`; for the disposable Fedora desktop development
+session use `dist/dev/fedora44-vm-iterate.sh`. Baseline discovery and one-command
+artifact-backed VM orchestration remain planned work.
+
+For CI timing, use an explicit internal run ID from the Forgejo API:
+
+```sh
+python3 tools/ci/timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
+```
+
+This uses your configured `fgj` authentication and reports queue time separately
+from run duration and the observed container pull-to-create interval. It does not
+sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
+credentials are not written to the report; use `--input` for saved local fixtures.
+Pass two runs in baseline/current order with `--compare` to print queue, wall and
+same-named job deltas directly. Job names appear beside Forgejo's numeric IDs, so
+the report can be read without a second API lookup.
+
+## Preview affected applications
+
+When an app packaging selection is surprising, inspect the existing selector
+without compiling or dispatching CI. From a branch with committed changes and
+an up-to-date `origin/main`:
+
+```sh
+python3 -I tools/ci/python.py tools/apps/app_release.py --base origin/main
+```
+
+The JSON lists selected apps, count and input classification. Selection includes
+apps that transitively depend on changed workspace crates; shared runtime,
+lockfile, toolchain or packaging changes can select the whole app fleet. This
+command needs the pinned Rust toolchain for `cargo metadata --locked --no-deps`.
+It compares committed Git revisions and does not include uncommitted edits.
+
+The selected list describes package output. Native packaging currently builds
+the full default Cargo graph even for a partial package selection, preserving
+the shared Rust runtime ABI; this preview does not promise fewer compile targets.
+
+A zero count means no app package is selected; check/lint and relevant tests
+still apply. Packaging automation compares against its last independently
+verified collection baseline, which can differ from this branch-to-main preview.
+
+## Linux builds in WSL: keep the checkout on the Linux filesystem
+
+Use a separate Linux checkout under your WSL home directory for sustained Rust
+development. On the investigated WSL host, `/mnt/c` preserves fractional mtimes
+on normal writes but truncates explicitly restored mtimes to whole seconds.
+Cargo restores fingerprint timestamps, so generated files and proc-macro outputs
+can appear newer on every unchanged check. A 2026-09-19 no-edit Cargo trace showed
+`serde_derive` 633 ms and `tracing_attributes` 500 ms newer than those truncated
+fingerprints. This causes real dependency recompilation; adding compiler cache
+capacity does not repair local freshness checks.
+
+Start a new, independent checkout **inside a WSL shell**, leaving any running
+Windows-hosted checkout in place:
+
+```bash
+mkdir -p "$HOME/src"
+git clone ssh://git@code.sandbox.example/qos/qos.git "$HOME/src/tilo-linux"
+cd "$HOME/src/tilo-linux"
+git switch -c codex/my-change
+findmnt -T "$PWD" -o FSTYPE,TARGET
+tools/ci/check-build-env.sh
+cargo check -p shell --tests --locked
+```
+
+The destination must be new, and the mount should be a native Linux filesystem
+(normally ext4), not a Windows drive mounted under `/mnt/c` or another `/mnt`
+drive. Set up SSH authentication and the native packages described below first.
+Rustup uses the checked-in toolchain. This clone contains committed remote state;
+uncommitted changes from another checkout are not copied automatically. Bring
+over the intended branch or reviewed patch explicitly before testing it.
+
+Each checkout owns its ordinary `target/`. Never set `CARGO_TARGET_DIR`, share
+target directories, or relocate an active checkout. The first native-filesystem
+build can be cold; the benefit is reliable reuse on later unchanged invocations.
+Native Windows builds remain in their Windows checkout.
+
+To diagnose unexpected rebuilding after an already successful check, run the
+same command with fingerprint logging and inspect the reported dirty inputs:
+
+```bash
+CARGO_LOG=cargo::core::compiler::fingerprint=info \
+  cargo check -p shell --tests --locked 2>target/cargo-fingerprint.log
+```
+
+Do not rewrite source or fingerprint timestamps to force freshness. The trace
+may identify a genuine source, configuration or generated-input change instead.
+
 ## What the build needs
 
 Install Rust through rustup and the native dependencies below, either on the host
@@ -10,7 +140,7 @@ or in your build container or Nix shell. Rustup reads `rust-toolchain.toml`.
 Check dependencies with:
 
 ```bash
-tools/check-build-env.sh
+tools/ci/check-build-env.sh
 ```
 
 Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
@@ -115,17 +245,17 @@ the executables. Native renderers load and validate that catalog once per proces
 then share its font data. Cargo-run binaries use the checked-in catalog instead.
 
 Passwords is available as an explicit Windows preview with
-`./tools/install-windows-apps.ps1 -Apps passwords`. It is not yet included in the
+`./tools/windows/install-apps.ps1 -Apps passwords`. It is not yet included in the
 default verified-app set: native backup/import/export and failure reporting are
 verified, but successful Windows clipboard copying still needs verification.
 The automated session currently receives an access-denied error from Windows.
 Mail is available as an explicit preview with
-`./tools/install-windows-apps.ps1 -Apps mail`. Native empty-state setup, protected
+`./tools/windows/install-apps.ps1 -Apps mail`. Native empty-state setup, protected
 password fields, responsive provider discovery, and cancellation of stalled
 credential verification are verified. Configured-account reading and sending
 still need native end-to-end verification, so Mail remains outside the default set.
 Typst is also available as an explicit preview with
-`./tools/install-windows-apps.ps1 -Apps typst-editor`; native source editing,
+`./tools/windows/install-apps.ps1 -Apps typst-editor`; native source editing,
 Save/Open, and PDF export have been verified, including reduced-motion settings
 and emoji export through the shared font catalog. It remains outside the
 default set while startup measurements and Start integration checks finish. The
@@ -135,14 +265,22 @@ The installer verifies the real Windows Start catalog and reports an error if
 Windows has not indexed the shortcut, even when the executable was copied.
 
 Install the currently verified native apps into your Windows user profile, with
-Start menu entries under **Tilo**:
+Start menu entries under **Tilo**. Run the installer from an ordinary,
+unpackaged PowerShell session: packaged terminals or agents can redirect
+AppData writes into their private package cache. Such files look installed
+inside that process but are invisible to Explorer. Check the actual executable
+and shortcut paths from outside the packaged process before diagnosing a stale
+Start catalog; restarting Explorer cannot expose private package files.
+Before building, the installer creates and immediately removes a temporary
+probe in each destination and checks its physical path. Redirected package
+cache writes fail this check; merely resolving the directory is insufficient.
 
 ```powershell
-./tools/install-windows-apps.ps1
+./tools/windows/install-apps.ps1
 # Or select applications (optimized release builds are the default):
-./tools/install-windows-apps.ps1 -Apps calculator,notes
+./tools/windows/install-apps.ps1 -Apps calculator,notes
 # Use dev explicitly when debugging, rather than for everyday installed apps:
-./tools/install-windows-apps.ps1 -Apps calculator -Profile dev
+./tools/windows/install-apps.ps1 -Apps calculator -Profile dev
 ```
 
 This builds before copying executables to `%LOCALAPPDATA%\Tilo\Applications`.
@@ -152,7 +290,7 @@ applies to the Windows notification helper build.
 Unoptimized builds spend substantially longer validating and loading fonts at
 startup. The installer includes Microsoft's pinned DXC 1.8.2505.1 compiler and
 its MIT/LLVM notices beside the apps. Without DXC, wgpu's FXC fallback spends
-seconds compiling UI shaders on every launch. `install-windows-dxc.ps1` can
+seconds compiling UI shaders on every launch. `install-dxc.ps1` can
 update this shared runtime independently of app builds; it verifies the
 release archive against Microsoft's published SHA-256 digest. The separate
 DXIL validator and command-line compiler are not installed.
@@ -167,13 +305,19 @@ Both controls are optional: installed apps use DXC and parallel initialization
 without environment configuration. To measure startup,
 set `TILO_STARTUP_METRICS_PATH` to a writable JSON filename before launching an
 app; it records font setup, GPU initialization, and the first presented frame.
+The same variable works with `--headless-drive`: the launcher flushes metrics
+before its explicit process exit, including failed actions. Headless events
+separate harness setup, actions, output and persistence. These measure the
+production headless path, not native window creation or time to first visible
+content; use an isolated app data directory when benchmarking startup so a test
+does not load or modify personal documents.
 Close an installed app before updating its executable. Application documents
 remain in their normal user data locations; the installer does not move them.
 The installer also checks both Windows' application catalog and `Get-StartApps`
 against the installed executable paths and intended app names. A shortcut on disk alone is insufficient:
-Explorer can retain a stale catalog. If this check fails after copying succeeds,
-restart Windows Explorer when no file operations are running, or sign out and
-back in, then run `./tools/check-windows-start-apps.ps1 -Apps hex-editor` (substitute
+First rule out redirected AppData writes as described above. If the real files
+exist, investigate Explorer's catalog, then run
+`./tools/windows/check-start-apps.ps1 -Apps hex-editor` (substitute
 the affected package names). The installer does not restart the desktop shell.
 
 Private identity files and local account-vault keys use the shared `private-fs`
@@ -255,8 +399,8 @@ its published SHA-256 digest, and installs `pdfium.dll` beside the executables i
 separately or reuse an already downloaded archive:
 
 ```powershell
-./tools/install-windows-pdfium.ps1
-./tools/install-windows-pdfium.ps1 -ArchivePath C:/Downloads/pdfium-win-arm64.tgz
+./tools/windows/install-pdfium.ps1
+./tools/windows/install-pdfium.ps1 -ArchivePath C:/Downloads/pdfium-win-arm64.tgz
 $env:TILO_PDFIUM_LIB = "$env:LOCALAPPDATA/Tilo/Applications/pdfium.dll"
 $env:TILO_REQUIRE_PDFIUM = '1'
 cargo test --locked -p pdf-viewer --all-targets -- --test-threads=1
@@ -289,7 +433,7 @@ that the project survives a new process. Its offscreen scenarios support
 
 ```powershell
 cargo test --locked -p image-editor --all-targets
-./tools/install-windows-apps.ps1 -Apps image-editor
+./tools/windows/install-apps.ps1 -Apps image-editor
 ```
 
 Photos uses the native file picker and keeps imported image bytes in the shared
@@ -306,7 +450,7 @@ analysis unavailable instead of bypassing that service with direct network acces
 ```powershell
 cargo test --locked -p photos --all-targets
 cargo test --locked -p qdoc --lib blobstore::
-./tools/install-windows-apps.ps1 -Apps photos
+./tools/windows/install-apps.ps1 -Apps photos
 ```
 
 Hex Editor is installed as **Hex Editor** (`hex-editor.exe`). Open a file through
@@ -318,7 +462,7 @@ checks both the resulting file and the collaboration document.
 
 ```powershell
 cargo test --locked -p hex-editor --all-targets
-./tools/install-windows-apps.ps1 -Apps hex-editor
+./tools/windows/install-apps.ps1 -Apps hex-editor
 ```
 
 Code Editor is installed as **Code Editor** (`code-editor.exe`). Pass a file or
@@ -331,7 +475,7 @@ diagnostics and definition locations match the opened buffers.
 
 ```powershell
 cargo test --locked -p code-editor --all-targets
-./tools/install-windows-apps.ps1 -Apps code-editor
+./tools/windows/install-apps.ps1 -Apps code-editor
 ```
 
 API Tester is installed as **API Tester** (`api-tester.exe`). Requests run on a
@@ -342,7 +486,7 @@ suite exercises the resource Send operation against a real loopback HTTP server.
 
 ```powershell
 cargo test --locked -p api-tester --all-targets
-./tools/install-windows-apps.ps1 -Apps api-tester
+./tools/windows/install-apps.ps1 -Apps api-tester
 ```
 
 Snippets uses the shared multiline code editor for snippet bodies. Editing,
@@ -353,7 +497,7 @@ actions through the same semantic interface used by Windows accessibility.
 
 ```powershell
 cargo test --locked -p snippets --all-targets
-./tools/install-windows-apps.ps1 -Apps snippets
+./tools/windows/install-apps.ps1 -Apps snippets
 ```
 
 Database Client supports SQLite files, including Unicode Windows paths, and the
@@ -365,7 +509,7 @@ an existing trusted tunnel.
 
 ```powershell
 cargo test --locked -p db-client --lib
-./tools/install-windows-apps.ps1 -Apps db-client
+./tools/windows/install-apps.ps1 -Apps db-client
 ```
 
 The live database tests require the server flags and connection settings described
@@ -399,7 +543,7 @@ undo a remote change. Cooperative cancellation is not yet implemented.
 
 ```powershell
 cargo test --locked -p git-client --all-targets
-./tools/install-windows-apps.ps1 -Apps git-client
+./tools/windows/install-apps.ps1 -Apps git-client
 ```
 
 Authenticator (`totp`) supports native account entry and QR-image import, including
@@ -424,7 +568,7 @@ RFC-key calculation.
 
 ```powershell
 cargo test --locked -p totp --all-targets
-./tools/install-windows-apps.ps1 -Apps totp
+./tools/windows/install-apps.ps1 -Apps totp
 ```
 
 Feeds runs natively on Windows with asynchronous feed fetching, persisted
@@ -439,7 +583,7 @@ background fetches and file-picker results are polled with reduced motion enable
 
 ```powershell
 cargo test --locked -p feeds --all-targets
-./tools/install-windows-apps.ps1 -Apps feeds
+./tools/windows/install-apps.ps1 -Apps feeds
 ```
 
 Unchanged shared fonts are preserved during installation, so a running Tilo app
@@ -525,13 +669,45 @@ establish Windows hardware decoding, zero-copy presentation or audio-device
 routing. GStreamer DLLs and codec plugins must also be available when running an
 app; this development setup is not a standalone installer runtime bundle.
 
+The installer bundles a shared, manifest-verified runtime for Music and Video
+Player. Check installed apps from an ordinary, unpackaged PowerShell session:
+
+```powershell
+./tools/windows/test-installed-media.ps1
+./tools/windows/test-gstreamer.ps1 -RuntimeDirectory "$env:LOCALAPPDATA/Tilo/Applications" -MediaPath ./apps/video-player/tests/fixtures/h264-aac.mp4
+```
+
+The first check rejects package-private installation paths, uses isolated
+profiles and a system-only `PATH`, and opens no visible windows. It runs Music's
+CPU widget benchmark and decodes the local H.264/AAC fixture in Video Player
+into an offscreen PNG. Its output directory retains stdout, stderr, the PNG and
+JSON results. Reported durations cover the entire test process, not time to the
+first visible frame. The second check verifies runtime hashes, plugin origins
+and decoding to completion; it needs `llvm-readobj.exe` on `PATH`. Neither
+check proves audible output or Windows hardware decoding.
+
+Music constructs its empty UI without initializing GStreamer. Loading a source
+starts one background initializer; track replacement, pause, volume and seek
+requests retain their latest intent while it runs. Stopping cancels delivery
+without waiting for native initialization. Playback errors remain explicit,
+and handoff readiness requires decoded audio rather than a requested URI.
+The same lifecycle is used on every supported platform.
+
+Music can open an audio path or `file:` URI passed on the command line. Its
+empty Home view and `music.library/open-file` action use the shared native
+picker; remote callers cannot supply a raw filesystem path through that action.
+The current local source and resume position live in the device profile, outside
+the collaborative library. Local files are not advertised as cross-device
+handoffs or uploaded into the shared catalogue. Picker cancellation, decoder
+failure and confirmed playback have distinct operation results.
+
 ### If you build in a container (optional)
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the
 libraries cannot be installed without `rpm-ostree` layering plus a reboot per base
 update. Create a local `.build-container` containing your distrobox name (for
 example, `printf '%s\n' tilo-build > .build-container`). This file is ignored by
-Git; there is no shared machine-specific default. Install `tools/cargo-shim`
+Git; there is no shared machine-specific default. Install `tools/ci/cargo-shim`
 as `cargo` on PATH; every invocation from the tree or a worktree routes into it.
 
 It also selects the sccache server, which this route requires: sccache's server
@@ -838,7 +1014,7 @@ The compositor starts on a Bazzite host without `/var/workspace`, `/etc/tilo`,
   provisioning returns early once the record exists. Start the compositor by
   hand (`./target/debug/shell`) and you get the warning, because you skipped
   the wrapper.
-- **`shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
+- **`crates/session/shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
   it looks for `/etc/tilo-desktop/desktop.toml` while the image ships
   `/etc/tilo/desktop.toml`. So `desktop.toml` configures nothing today, on a host
   or on the image. The host package omits this file.
@@ -866,7 +1042,7 @@ Release builds ignore `TILO_UNLOCK_HELPER`,
 `TILO_LAUNCHER_BIN`. On a systemd desktop the session environment comes from
 `~/.config/environment.d/`, so an installed binary that honoured those would let
 anything able to write a file in your home decide what unlocks your screen. See
-`shell/src/compositor/dev_env.rs`.
+`crates/session/shell/src/compositor/dev_env.rs`.
 
 
 ## Headless testing
@@ -893,3 +1069,28 @@ git config core.hooksPath .githooks
 manifest and rejects missing, duplicate, excluded, or stale workspace members.
 Nested fixture workspaces and explicit `[workspace].exclude` entries are ignored.
 Compilation and tests run in CI (`.forgejo/workflows/check.yml`).
+
+### Linux PDF capture tests
+
+The PDF capture integration test requires native PDFium; text extraction alone
+does not qualify page rendering. CI uses Chromium/8057 on x86_64 and aarch64,
+matching the Windows runtime version. Both Linux archives and their published
+SHA-256 digests are pinned in `os/external-assets/github-assets.tsv`.
+
+The builder stages the runtime from its verified external asset context. The
+affected-PDF and nightly test workflows also stage that same runtime for older
+or explicitly selected builder images without changing installed OS packages.
+To prepare the native runtime in a disposable local directory:
+
+```sh
+asset=$(bash tools/ci/install-pdfium.sh --asset-name)
+./os/dev/cache-github-assets.sh "$asset"
+export TILO_PDFIUM_LIB=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /tmp/tilo-pdfium/8057 os/external-assets/github-assets.tsv)
+cargo test --locked -p pdf-viewer --test capture
+```
+
+The installer verifies the archive before writing, retains its license files,
+and requires the shared library to load on the native architecture. The capture
+test additionally observes the production worker's raster backend before testing
+unavailable imported content and its later arrival. Missing PDFium fails rather
+than skipping coverage or qualifying the text fallback as a raster result.

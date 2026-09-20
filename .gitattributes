@@ -5,5 +5,10 @@
 *.cmd text eol=crlf
 
 # Font licenses are content-addressed by the canonical font manifest.
-ui/assets/fonts/LICENSES/*.txt -text
-ui/assets/fonts/manifest.toml text eol=lf
+crates/sdk/ui-core/assets/fonts/LICENSES/*.txt -text
+crates/sdk/ui-core/assets/fonts/manifest.toml text eol=lf
+
+# Media license notices retain the bytes verified by sources.json.
+tools/windows/gstreamer-licenses/*.txt -text
+tools/windows/gstreamer-licenses/*-COPYING -text
+tools/windows/gstreamer-licenses/*-LICENSE -text

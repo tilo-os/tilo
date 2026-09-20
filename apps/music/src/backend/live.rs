@@ -17,7 +17,7 @@
 //!   `PoToken`** (see [`crate::backend::potoken`]).
 //!
 //! Search and metadata stay pure Rust through rustypipe. Stream resolution
-//! first queries the keyless Android VR InnerTube client directly, then falls
+//! first queries the keyless Android VR `InnerTube` client directly, then falls
 //! back to rustypipe's direct player response.
 
 #![cfg(feature = "live")]
@@ -152,7 +152,8 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 fn cache_dir() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .filter(|path| path.is_absolute())
+        .or_else(dirs::cache_dir)
         .unwrap_or_else(std::env::temp_dir);
     let dir = base.join("tilo-music");
     let _ = std::fs::create_dir_all(&dir);
@@ -732,6 +733,25 @@ impl MusicBackend for RustyPipeBackend {
 #[cfg(test)]
 mod bounded_transport_tests {
     use super::*;
+
+    #[cfg(all(windows, target_arch = "aarch64"))]
+    #[test]
+    fn native_quickjs_bindings_execute_stream_signature_operations() {
+        let runtime = rquickjs::Runtime::new().expect("native QuickJS runtime");
+        let context = rquickjs::Context::full(&runtime).expect("JavaScript context");
+        context.with(|ctx| {
+            // Stream resolvers pass strings into JavaScript and read strings
+            // back. Exercise that ABI, including allocation and Unicode.
+            let result: String = ctx
+                .eval("Array.from('a🎵bc').reverse().join('')")
+                .expect("evaluate signature-style string transform");
+            assert_eq!(result, "cb🎵a");
+            assert!(
+                ctx.eval::<String, _>("throw new Error('invalid signature')")
+                    .is_err()
+            );
+        });
+    }
 
     #[test]
     fn live_request_deadline_cancels_a_stalled_future() {

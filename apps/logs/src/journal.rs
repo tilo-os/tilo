@@ -100,7 +100,10 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(641)),
         "stdout",
         "Mounting collaborative workspace at /var/workspace (iroh node starting)",
-        &[("CODE_FILE", "fs/src/mount.rs"), ("THREAD", "main")],
+        &[
+            ("CODE_FILE", "crates/system/fs/src/mount.rs"),
+            ("THREAD", "main"),
+        ],
     ),
     (
         930,
@@ -110,7 +113,7 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(641)),
         "stdout",
         "iroh endpoint bound: relay=eu-central, node_id=k51qzi5… (4 candidate paths)",
-        &[("CODE_FILE", "fs/src/p2p.rs")],
+        &[("CODE_FILE", "crates/system/fs/src/p2p.rs")],
     ),
     (
         1180,
@@ -120,7 +123,10 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(641)),
         "stdout",
         "metadata gossip slow: 1820ms for 3 peers (TTL 10s) — degraded projection",
-        &[("CODE_FILE", "fs/src/gossip.rs"), ("PEER_COUNT", "3")],
+        &[
+            ("CODE_FILE", "crates/system/fs/src/gossip.rs"),
+            ("PEER_COUNT", "3"),
+        ],
     ),
     (
         1400,
@@ -150,7 +156,7 @@ const ROWS_BOOT: &[Row] = &[
         Some(very(820)),
         "stdout",
         "compositor: smithay DRM backend up; output eDP-1 2560x1600@60 (hw cursor)",
-        &[("CODE_FILE", "shell/src/backend/drm.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/backend/drm.rs")],
     ),
 ];
 
@@ -164,7 +170,7 @@ const ROWS_SERVICES: &[Row] = &[
         Some(very(820)),
         "stdout",
         "loaded 2D-cluster workspace tree: 3 clusters, 7 windows restored",
-        &[("CODE_FILE", "shell/src/shell/state.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/shell/state.rs")],
     ),
     (
         2240,
@@ -175,7 +181,7 @@ const ROWS_SERVICES: &[Row] = &[
         "stdout",
         "sandbox: cluster 'web' requested /home/user/Downloads — prompting user",
         &[
-            ("CODE_FILE", "shell/src/portal/access.rs"),
+            ("CODE_FILE", "crates/session/shell/src/portal/access.rs"),
             ("CLUSTER", "web"),
         ],
     ),
@@ -217,7 +223,10 @@ const ROWS_SERVICES: &[Row] = &[
         Some(very(820)),
         "stdout",
         "collab: peer 'mara@thinkpad' invited to cluster 'design' (gossip topic ok)",
-        &[("CODE_FILE", "shell/src/collab/mod.rs"), ("PEER", "mara")],
+        &[
+            ("CODE_FILE", "crates/session/shell/src/collab/mod.rs"),
+            ("PEER", "mara"),
+        ],
     ),
     (
         3650,
@@ -227,7 +236,10 @@ const ROWS_SERVICES: &[Row] = &[
         Some(very(641)),
         "stdout",
         "hydrated blob bafyb… (1.4MB) on first read of /var/workspace/notes/spec.md",
-        &[("CODE_FILE", "fs/src/hydrate.rs"), ("SIZE", "1466368")],
+        &[
+            ("CODE_FILE", "crates/system/fs/src/hydrate.rs"),
+            ("SIZE", "1466368"),
+        ],
     ),
     (
         3900,
@@ -262,7 +274,7 @@ const ROWS_SESSION: &[Row] = &[
         "stdout",
         "wgpu: surface lost (Outdated) during cluster crossfade — recreating swapchain",
         &[
-            ("CODE_FILE", "shell/src/render/frame.rs"),
+            ("CODE_FILE", "crates/session/shell/src/render/frame.rs"),
             ("BACKEND", "vulkan"),
         ],
     ),
@@ -274,7 +286,7 @@ const ROWS_SESSION: &[Row] = &[
         Some(very(820)),
         "stdout",
         "renderer stalled 2 frames recreating swapchain; input queue depth 14",
-        &[("CODE_FILE", "shell/src/render/frame.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/render/frame.rs")],
     ),
     (
         4900,
@@ -285,7 +297,7 @@ const ROWS_SESSION: &[Row] = &[
         "stdout",
         "conflict copy written: spec.md ⇒ spec.conflict-mara.md (concurrent edit)",
         &[
-            ("CODE_FILE", "fs/src/conflict.rs"),
+            ("CODE_FILE", "crates/system/fs/src/conflict.rs"),
             ("PATH", "notes/spec.md"),
         ],
     ),
@@ -317,7 +329,7 @@ const ROWS_SESSION: &[Row] = &[
         Some(very(820)),
         "stdout",
         "focus moved: cluster[1].window[2] 'terminal' — directional nav (ArrowRight)",
-        &[("CODE_FILE", "shell/src/focus.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/focus.rs")],
     ),
     (
         6300,
@@ -338,7 +350,7 @@ const ROWS_SESSION: &[Row] = &[
         "stdout",
         "collab: remote cursor stream from 'mara@thinkpad' attached (12 fps)",
         &[
-            ("CODE_FILE", "shell/src/collab/cursor.rs"),
+            ("CODE_FILE", "crates/session/shell/src/collab/cursor.rs"),
             ("PEER", "mara"),
         ],
     ),
@@ -360,7 +372,7 @@ const ROWS_SESSION: &[Row] = &[
         Some(very(641)),
         "stdout",
         "anti-entropy sweep complete: 0 divergent objects across 3 peers (820ms)",
-        &[("CODE_FILE", "fs/src/anti_entropy.rs")],
+        &[("CODE_FILE", "crates/system/fs/src/anti_entropy.rs")],
     ),
     (
         7900,
@@ -370,7 +382,7 @@ const ROWS_SESSION: &[Row] = &[
         Some(very(820)),
         "stdout",
         "workspace snapshot persisted: 3 clusters → ~/.local/state/tilo/wheel.json",
-        &[("CODE_FILE", "shell/src/persist.rs")],
+        &[("CODE_FILE", "crates/session/shell/src/persist.rs")],
     ),
 ];
 

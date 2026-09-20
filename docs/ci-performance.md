@@ -1,14 +1,21 @@
 # CI performance and cache budget
 
-CI has two distinct feedback paths:
+Current deployment and measured startup results are recorded in the
+[emergency runbook](ci-emergency-relief.md). CI has three complementary paths:
 
-- `check.yml` selects affected packages (including reverse dependencies) and
-  balances them across two shards. It is the required per-change path.
+- `check.yml` uses one x86-64 shard for ordinary push/PR feedback. It checks all
+  targets in the affected reverse-dependency closure, while linking and running
+  tests for directly changed packages plus `collab-types`, `pkg`, and `qdoc`.
+  Repository-wide build inputs and unmapped workspace paths retain full-workspace
+  check/test selection. Manual dispatch and the explicit desktop release branch
+  request full checks on both native architectures (x86-64 and ARM64).
+- `lint.yml` runs formatting, repository policy, dependency policy and dependency
+  usage checks on the reserved quality lane with its pinned lean tools image.
 - `nightly.yml` runs the complete workspace, all targets, examples, and live
   integration coverage. It is the coverage backstop rather than duplicated on
   every push.
 
-Software-Vulkan golden tests are omitted from the two affected-package shards
+Software-Vulkan golden tests are omitted from the affected-package check jobs
 and run once at the end of the nightly test job. A nextest test group can
 serialize goldens with each other, but it cannot make them exclusive of the
 thousands of ordinary tests in the same invocation (or of the other shard).
@@ -27,18 +34,100 @@ references together only after reviewing the new image's candidate bundle.
 The candidate workflow uploads changed PNGs, a binary patch, its SHA-256, and a
 diff inventory; it deliberately has no repository-write step.
 
-Two affected shards are intentional. A third, permanently dedicated "heavy
-apps" shard was measured as the wrong trade-off for this workspace: it repeats
-large shared dependency graphs and adds runner CPU even when a change does not
-touch those apps. `tools/ci_select.py` already weights costly packages while
-preserving dependency-correct selection, so heavy packages receive their own
-capacity when they are affected without creating an always-on third compile.
+Ordinary feedback uses one target tree to avoid recompiling shared dependencies
+across shards. Full native qualification may use up to two weighted shards per
+architecture; small selections use fewer. Do not manually dispatch `check.yml`
+as a cheap repeat of ordinary feedback: dispatch explicitly selects the entire
+workspace on both architectures. Submit the updated task branch/PR normally;
+the [scheduler owns admission and runner slots](../AGENTS.md#ci).
+
+To inspect the committed branch's selection locally, without starting a build
+or requesting a runner, run from the checkout:
+
+```sh
+git fetch origin main
+python3 tools/ci/affected_packages.py --base origin/main --head HEAD
+```
+
+This reads locked Cargo metadata and Git changes; it does not compile Rust.
+The JSON distinguishes `selected` packages to check from `tested` packages to
+link and run. Use a clean checkout: the changed-file list covers committed
+changes, while metadata comes from the working tree. The preview does not replace
+CI for the exact pushed head. Routine feedback is separate from the
+[continuous app packaging and manual OS release roadmap](ci-product-matrix.md).
+
+## Documentation and audited helper feedback
+
+Rust compilation is explicitly inapplicable when the complete change consists
+only of `docs/designs/*.md` and/or the audited files `AGENTS.md`, `DEVELOPMENT.md`,
+`docs/ci-performance.md`, and `docs/ci-emergency-relief.md`. This is an allowlist,
+not an exemption for all Markdown. Compiled docs such as
+`crates/sdk/ui-core/CHARTS.md`, packaging
+contracts and unknown paths keep normal selection. Mixed Rust changes still
+select their affected closure, and manual full checks override the exception.
+
+The exact source/test pairs in
+[`QUALITY_ONLY_HELPERS`](../tools/ci/affected_packages.py) also use mandatory
+quality CI without Rust compilation. This includes `check-changed-rustfmt.sh`,
+`check_changed_rust_allows.py`, and their shared
+`tools/tests/test_changed_rust_comparison.py`. Both the mapped source and test
+must exist; deleting either restores normal Rust selection. Unknown helpers,
+workflows and compiler wrappers retain normal selection, and mixing an audited
+helper with Rust or global build inputs still selects the affected closure or
+full workspace. Do not dispatch a full native check just to replace an intentional
+skipped Rust row for an audited helper edit.
+
+On pull requests only, that same existing-file prose allowlist and the exact
+`QUALITY_ONLY_HELPERS` source/test pairs may also make the independent security
+suite inapplicable. This security exception is narrower than the Rust exception:
+workflow and other `QUALITY_ONLY_CONTROL_INPUTS`, OS or security files, manifests,
+unknown paths, mixed changes, deletions, and helpers whose mapped observer is
+missing all keep the security suite required. Main pushes and manual dispatches
+always require it. The selector emits `security_required=true` by default and
+only the pull-request workflow enables the audited exception.
+
+For a change to either lint helper, run its production-path regression tests
+locally without compiling Rust:
+
+```sh
+python3 -m unittest discover -s tools/tests -p 'test_changed_rust*.py'
+```
+
+This covers the original Rust-allow and rustfmt checks as well as their shared
+PR comparison regressions. CI's `tools/policy/run.sh` still discovers all
+`tools/tests/test_*.py`; the local subset does not replace required quality CI.
+
+The workflow retains a skipped sentinel matrix row because a literally empty
+matrix removed the job and stranded its aggregate on this Forgejo installation.
+The builder and selector must succeed before the aggregate accepts any
+intentional skip. It accepts a skipped security job only for a pull request with
+an exact `security_required=false` selector output; missing or malformed outputs
+fail. Repository policy, cargo-deny and cargo-machete remain active, so an
+allowlisted change can still expose a broken baseline; skipped native and
+security jobs do not certify those independent checks.
+
+For local documentation of installer or packaging behavior, run the relevant
+existing contract directly before waiting for CI:
+
+```sh
+python3 tools/dev.py check installer --step target-modes
+python3 tools/dev.py check app-packaging --plan
+```
+
+Use the reported step names to select the contract you changed. Subset receipts
+list omitted coverage and do not replace the full required CI result. The warm
+production lint result in the runbook still took about 128 seconds including
+policy/dependency checks. A future dependency-audit reuse optimization must bind
+an accepted result to all relevant source/manifests, policy and tool identities;
+path-only skipping of cargo-machete would hide pre-existing failures. That reuse
+is not implemented or claimed here.
 
 ## Cache layers
 
-- sccache stores compiler outputs in the repository-scoped S3 prefix
-  `tilo/v1/`. This is the main cross-runner Rust cache. The builder
-  workflow proves a cold write and a warm read in separate containers against
+- sccache stores compiler outputs in S3 namespaces configured by the runner,
+  builder and `tools/ci/sccache.sh`. Inspect the effective namespace rather than
+  assuming every lane has a separate prefix. This is the main cross-runner Rust
+  cache. The builder workflow proves a cold write and a warm read in separate containers against
   an isolated canary prefix whenever the image changes.
 - `actions/cache` stores only Cargo registry indexes, crate archives, and Git
   checkouts. We deliberately do not archive `target/`: it is large, expensive
@@ -51,6 +140,33 @@ capacity when they are affected without creating an always-on third compile.
 The layers solve different problems; replacing them with a single target-tree
 archive would duplicate compiler storage and spend runner CPU compressing
 revision-specific linker outputs.
+
+### Compiler-cache trust
+
+Namespaces organize compiler outputs and select the objects a build can reuse;
+they do not restrict who can write them. The September 2026 review of the broker
+configuration and infrastructure IAM policy found ordinary CI jobs and
+interactive agents sharing cache credentials with bucket-wide object access.
+This was a source/configuration audit, not a live IAM attestation. Changing a
+prefix alone therefore does not establish a trusted writer boundary. Compiler
+cache keys distinguish incompatible inputs; they do not authenticate the
+producer of a cached object.
+
+Ordinary development builds already use this shared cache trust model. Before
+extending reuse to a security check or release gate that requires stronger
+provenance, enforce writer isolation with separate credentials and storage
+permissions, or promote verified objects into a cache whose writers are
+restricted. Otherwise retain uncached verification for that gate. Keep the
+[OS release's second no-cache build](security/threat-model.md#abuse-case-analysis-and-current-controls)
+as a separate requirement; a cold-write/warm-read cache canary proves reuse,
+not writer isolation.
+
+The [kernel module signing fixture](../os/tests/kernel_module_signing_test.sh)
+currently clears `RUSTC_WRAPPER` when building its helper. Retain that bypass
+until its cache trust requirements are reviewed; the separate libkmod parser
+checks runtime interoperability, not compiler-cache provenance. See
+[local compiler-cache guidance](../DEVELOPMENT.md#sizing-the-compilation-cache)
+and [packaging cache usage](packaging.md) for the existing reuse paths.
 
 ## Build-profile reuse
 
@@ -85,7 +201,15 @@ hits and 200 misses among 3,015 executed requests (Rust 90.60%, C/C++ 99.86%).
 Older fully warm runs reached 100% and completed compilation in roughly two
 minutes; cold run 944 was effectively uncached at 0.07%.
 
-These are operational baselines, not permanent targets. Keep `ci-measure.sh`
+These are operational baselines, not permanent targets. Keep `tools/ci/measure.sh`
 around the test/check commands and compare wall time *and* total CPU before
 adding shards or caches; a faster wall clock that doubles runner CPU is a
 regression for this installation.
+
+For current workflow startup, `tools/ci/timing_report.py` on main at `d86e8f437`
+also reports task receipt to container creation (`runner_to_create_seconds`).
+This interval remains measurable when no Docker pull event is logged; the
+pull-to-create interval then remains unavailable instead of becoming zero.
+Absence of a pull event alone does not prove a cache hit. Match the exact run,
+image digest and worker/isolated-seed evidence before attributing startup savings
+to reuse. Queue time, container setup and check execution remain separate costs.

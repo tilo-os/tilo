@@ -50,11 +50,11 @@ Most user-facing design questions reduce to that one decision:
 
 Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
 
-- `shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
+- `crates/session/shell/` — Wayland compositor (`smithay` + `vello`/`wgpu` + Iroh): workspaces, strips,
   sandboxing, collaboration. Also the `tilo-control` CLI and the `shots` renderer.
-- `ui/` — the toolkit: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
+- `crates/sdk/ui-core/` — the internal toolkit behind `tilo-app`: retained-mode, CRDT-native. `wgpu`+`vello` (render), `taffy` (layout),
   `cosmic-text` (text), `automerge` (state), `winit` (windowing), `fluent` (i18n).
-- `fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/tilo-fs`.
+- `crates/system/fs/` — FUSE3 + Iroh, mounted at `/var/workspace`, cache at `/var/cache/tilo-fs`.
 - `apps/` — ~40 app crates built on `ui`.
 - `crates/<domain>/` — collab, doc, runtime, packaging, session, system, text, format.
 - `os/` — Containerfile, systemd units, image build scripts.
@@ -62,7 +62,7 @@ Single Cargo workspace, no submodules. Prefer explicit paths over `git add -A`.
 ## Build & Test
 
 Run plain `cargo`. The toolchain is pinned in `rust-toolchain.toml` and the whole workspace is
-edition 2024 — don't add a crate on an older edition. `tools/check-build-env.sh` names any
+edition 2024 — don't add a crate on an older edition. `tools/ci/check-build-env.sh` names any
 missing native library, which Rust otherwise reports as `pkg-config exited with status code 1`
 inside a `-sys` crate. How those libraries get there is per-machine and `DEVELOPMENT.md`'s
 business, not this file's.
@@ -90,7 +90,7 @@ Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `tester` /
 
 ### `ui` — five passes per frame
 
-Every widget implements `Widget` (`ui/src/widget/mod.rs`):
+Every widget implements `Widget` (`crates/sdk/ui-core/src/widget/mod.rs`):
 
 1. `sync(state, path)` — pull visual state from the Automerge document
 2. `build_layout(taffy, theme, node_map)` — build the Taffy tree; self-sizing widgets
@@ -106,7 +106,7 @@ There is no message-passing layer. Consequences:
 - Undo/redo snapshot the whole document (`State::commit_action`). Widgets mark undo points
   with `needs_commit()`/`on_commit()` and restore ephemeral state (caret, selection) via
   `get_state`/`set_state`.
-- Focus is 2D and directional — `App::focusable_order` in `ui/src/app.rs`, not tab order.
+- Focus is 2D and directional — `App::focusable_order` in `crates/sdk/ui-core/src/app.rs`, not tab order.
 - **Theming is OS-controlled.** Read every colour and spacing value from the `Theme` passed
   to `draw`; never hard-code. Same for strings: pass `fluent` keys, never literals.
 - **Never hand-roll a text input, button, dialog or control.** Extend the shared widget — it
@@ -200,9 +200,9 @@ lock change as a real change: read the diff and rebuild before pushing. `--locke
 
 ## Traps that have cost real time
 
-- **Adding a field to `Workspace`/`WorkspaceTree`/`Strip` in `shell/src/shell/state.rs`
+- **Adding a field to `Workspace`/`WorkspaceTree`/`Strip` in `crates/session/shell/src/shell/state.rs`
   ripples to every by-field test fixture.** Symptom `E0063: missing field`;
-  `shell/tests/concept_parity_spec.rs` is 2200+ lines.
+  `crates/session/shell/tests/concept_parity_spec.rs` is 2200+ lines.
 - **`git worktree remove --force` permanently deletes untracked files.** `git status --short`
   and commit before removing.
 - **`git stash` is unsafe here** — the stash stack is shared across worktrees and concurrent
@@ -216,16 +216,35 @@ lock change as a real change: read the diff and rebuild before pushing. `--locke
 
 ## Verification covenant
 
-Declared in the header of `shell/tests/concept_parity_spec.rs` and applying to **all** tests:
+Declared in the header of `crates/session/shell/tests/concept_parity_spec.rs` and applying to **all** tests:
 never `#[ignore]` a failing test, never weaken an assertion, always assert on the production
 path rather than a tautological helper.
 
 ## Where to read first
 
-`docs/architecture.md`, `docs/headless-testing.md`, `ui/HIG.md`, and
-`plan/{architecture,collaboration,compositor,security}.md` before non-trivial changes in
+`docs/architecture/{README,overview,collaboration,compositor,security}.md`,
+`docs/headless-testing.md`, and `crates/sdk/ui-core/HIG.md` before non-trivial changes in
 those subsystems. `DEVELOPMENT.md` for the build environment.
 
 ## CI
+
+Use a task branch and a pull request for routine integration. Group related,
+tested changes into small coherent increments; do not push work-in-progress or
+minute-by-minute fixups directly to main. Keep the PR updated rather than opening
+another PR for each iteration. Obtain an independent review and successful
+applicable CI for the current head before merging. Routine integration does not
+need an extra human approval unless the change's policy requires one. Explicitly
+authorized emergency CI/infra fixes may be integrated directly.
+
+Keep check/lint results for every main commit. Full OS, desktop distribution and
+app packaging builds are currently explicit or scheduled; do not restore broad
+per-push triggers to obtain a development artifact. Use the existing workflow's
+manual dispatch and the smallest applicable app/architecture inputs instead.
+
+The existing CI scheduler owns runner slots, admission and queue order. Submit
+work normally; do not negotiate build slots with other agents, reserve workers,
+or repeatedly poll a queued job. Use automatic completion notifications and
+investigate concrete failures. Infrastructure maintenance coordination is a
+bounded operator task, never a prerequisite for ordinary development.
 
 After a successful normal `git push`, final CI status is automatically sent to this task when its runs finish. Keep relevant CI green before merging; use `fgj actions` to investigate failures.

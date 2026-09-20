@@ -22,7 +22,7 @@ thin = ["dep:runtime-dylib"]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 app-state = { path = "../../crates/system/app-state" }
-ui = { package = "tilo-app", path = "../../crates/app/tilo-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true

@@ -158,7 +158,7 @@ fi
 
 mac_broker="$repo/apps/imager/packaging/acquire-release-credentials.sh"
 token_broker="$repo/apps/imager/packaging/acquire-release-token.sh"
-runner_launcher="$repo/tools/run-imager-ephemeral-runner.sh"
+runner_launcher="$repo/tools/ci/runners/imager-ephemeral-linux.sh"
 homebrew_publish="$repo/apps/imager/packaging/publish-homebrew-tap.sh"
 site_publish="$repo/apps/imager/packaging/publish-site-release.sh"
 if ! grep -Fq 'declare -A' "$mac_broker" \
@@ -227,12 +227,16 @@ grep -Fq 'AppImage.asc' "$workflow" \
 
 for artifact in \
   tilo-imager-windows-x86_64.zip \
-  tilo-imager-macos-x86_64.zip \
-  tilo-imager-macos-aarch64.zip; do
+  tilo-imager-windows-aarch64.zip; do
   grep -Fq "            $artifact" "$workflow" \
     && ok "$artifact is an explicit publication prerequisite" \
     || bad "$artifact is linked by the website but absent from the publication gate"
 done
+if python3 -m unittest discover -s "$repo/tools/tests" -p test_imager_enabled_platforms.py; then
+  ok 'enabled Linux/Windows releases retain strict artifacts and disabled macOS workflows'
+else
+  bad 'enabled platform matrix or deferred macOS preservation failed'
+fi
 grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
   && ok 'every required release sidecar is validated before publication' \
   || bad 'release digest sidecars are checked for existence but not content'
@@ -419,7 +423,7 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'name: tilo-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
   && grep -Fxq 'os/tests/installer_cycle_graphics.py' "$repo/tools/security-boundary-invariants.txt" \
   && grep -Fq 'Build and pin the isolated installer profile encoder' "$workflow" \
-  && grep -Fq -- '--manifest-path apps/imager/profile-tool/Cargo.toml' "$workflow" \
+  && grep -Fq -- '--manifest-path tools/imager-profile/Cargo.toml' "$workflow" \
   && grep -Fq 'encoder_sha256="$(sha256sum "$encoder"' "$workflow" \
   && grep -Fq 'TILO_PROFILE_ENCODER=%s\nTILO_PROFILE_ENCODER_SHA256=%s\n' "$workflow" \
   && grep -Fq '"$vm" login --passcode-only "$TILO_PASS"' "$cycle" \

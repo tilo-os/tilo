@@ -7,7 +7,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -865,6 +866,9 @@ pub struct WordProcessorWidget {
     rect: Rect,
     lifecycle: EditorLifecycle,
     save_status: DocumentSaveStatus,
+    // Full read-only content projection, including formatting/comments/media.
+    // Host undo and remote document actions need not touch the UI status enum.
+    saved_document: Option<serde_json::Value>,
     /// Framework-owned action dispatch: brackets the undo boundary and dispatches
     /// each action through the executor (so a test can prove parity with Ctrl+K).
     actions: ui::ActionHost,
@@ -890,6 +894,8 @@ pub struct WordProcessorWidget {
     /// Heads for which the body order and non-body snapshot data were loaded.
     /// Avoids re-materializing on every paint of an unchanged document.
     materialized_heads: Vec<ChangeHash>,
+    /// A pending transaction has no committed head and may later be rolled back.
+    materialized_pending: bool,
     /// Page-header block sequence (drawn in every page's top-margin band). A
     /// `page-number` field marker is substituted with the page number per page.
     header: Vec<BlockView>,
@@ -1100,6 +1106,7 @@ impl WordProcessorWidget {
                 needs_commit: false,
             },
             save_status: DocumentSaveStatus::Clean,
+            saved_document: None,
             actions: ui::ActionHost::new(),
             pointer: Point::ZERO,
             drag: DragSelect::new(),
@@ -1113,6 +1120,7 @@ impl WordProcessorWidget {
             body_order: Vec::new(),
             body_window_start: 0,
             materialized_heads: Vec::new(),
+            materialized_pending: false,
             header: Vec::new(),
             footer: Vec::new(),
             laid: Vec::new(),
@@ -2046,6 +2054,13 @@ impl WordProcessorWidget {
         &mut self.inner
     }
 
+    fn remember_saved_document(&mut self, state: &AutoCommit) {
+        self.saved_document = serde_json::to_value(automerge::AutoSerde::from(state)).ok();
+    }
+    pub(crate) fn remember_open_document(&mut self, state: &AutoCommit) {
+        self.remember_saved_document(state);
+    }
+
     pub fn set_file(&mut self, path: PathBuf, format: WpFormat) {
         self.path = Some(path);
         self.format = Some(format);
@@ -2228,8 +2243,7 @@ impl WordProcessorWidget {
                         }
                         Some(PortalPurpose::SaveAs) => {
                             let format = WpFormat::from_path(&path);
-                            self.set_file(path, format);
-                            self.try_write_to_current_path(state)
+                            self.try_write_to_path(state, &path, format)
                         }
                         None => Ok(()),
                     }
@@ -2296,11 +2310,13 @@ impl WordProcessorWidget {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
+                self.toast = Some((t("toast-open-failed"), ToastKind::Error));
                 return Err(format!("could not open {}: {e}", path.display()));
             }
         };
         let format = WpFormat::from_path(path);
         if !self.inner.replace_with_format(state, &bytes, format) {
+            self.toast = Some((t("toast-open-failed"), ToastKind::Error));
             return Err(format!("could not parse {}", path.display()));
         }
         self.set_file(path.to_path_buf(), format);
@@ -2310,9 +2326,10 @@ impl WordProcessorWidget {
         self.spell_cache.clear();
         // A freshly-opened document is not "modified" — it matches its file.
         self.save_status = DocumentSaveStatus::Clean;
+        self.remember_saved_document(state);
         self.lifecycle.needs_commit = true;
         self.lifecycle.dirty = true;
-        self.clear_recovery();
+        self.check_for_recovery();
         Ok(())
     }
 
@@ -2336,20 +2353,29 @@ impl WordProcessorWidget {
     }
 
     fn try_write_to_current_path(&mut self, state: &AutoCommit) -> Result<(), String> {
-        if let (Some(path), Some(format), Some(c)) = (
-            self.path.as_ref(),
-            self.format,
-            self.inner.containers.as_ref(),
-        ) {
+        let (Some(path), Some(format)) = (self.path.clone(), self.format) else {
+            return Err("document has no writable path or initialized body".into());
+        };
+        self.try_write_to_path(state, &path, format)
+    }
+
+    /// Adopt a Save-As destination only once the write succeeds. Export-only
+    /// formats leave the editable document and its recovery copy intact.
+    fn try_write_to_path(
+        &mut self,
+        state: &AutoCommit,
+        path: &std::path::Path,
+        format: WpFormat,
+    ) -> Result<(), String> {
+        if let Some(c) = self.inner.containers.as_ref() {
             let dr = qdoc::DocRef { doc: state, c };
             match format.export(dr) {
                 Ok(bytes) => {
-                    std::fs::write(path, bytes).map_err(|e| {
+                    atomic_file::write_preserving_target(path, &bytes).map_err(|e| {
                         eprintln!("word-processor: could not write {}: {e}", path.display());
                         self.toast = Some((t("toast-save-failed"), ToastKind::Error));
                         format!("could not write {}: {e}", path.display())
                     })?;
-                    self.save_status = DocumentSaveStatus::Clean;
                     self.toast = Some((t("toast-saved"), ToastKind::Success));
                 }
                 Err(e) => {
@@ -2361,9 +2387,14 @@ impl WordProcessorWidget {
         } else {
             return Err("document has no writable path or initialized body".into());
         }
-        // A successful real save supersedes any recovery copy — drop it so a later
-        // session doesn't re-offer stale unsaved changes.
-        self.clear_recovery();
+        if !matches!(format, WpFormat::Pdf | WpFormat::Epub) {
+            // Clear the old identity's recovery before adopting the new path.
+            self.clear_recovery();
+            self.set_file(path.to_path_buf(), format);
+            self.clear_recovery();
+            self.save_status = DocumentSaveStatus::Clean;
+            self.remember_saved_document(state);
+        }
         Ok(())
     }
 
@@ -2581,8 +2612,12 @@ impl WordProcessorWidget {
         let Some(c) = self.inner.containers.as_ref() else {
             return;
         };
-        let heads = state.get_heads();
-        let changed = self.materialized_heads != heads;
+        // Rendering must not close a typing transaction. Pending edits have no
+        // committed head, so refresh while they exist and once after they leave
+        // (including rollback); the host alone chooses the commit boundary.
+        let heads = state.base_heads();
+        let pending = state.pending_ops() > 0;
+        let changed = self.materialized_heads != heads || pending || self.materialized_pending;
         if changed {
             self.body_order = qdoc::model::blocks_in_order(state, c);
         }
@@ -2603,6 +2638,7 @@ impl WordProcessorWidget {
                 qdoc::model::materialize_changes(state, c),
             );
             self.materialized_heads = heads;
+            self.materialized_pending = pending;
         }
         let ids = self.body_order.get(start..end).unwrap_or(&[]);
         self.blocks = qdoc::model::materialize_blocks(state, c, ids);
@@ -8606,6 +8642,34 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
+        let current = serde_json::to_value(automerge::AutoSerde::from(doc)).ok();
+        if current
+            .as_ref()
+            .zip(self.saved_document.as_ref())
+            .is_some_and(|(current, saved)| current == saved)
+        {
+            return Vec::new();
+        }
+        if self.saved_document.is_none()
+            && self.inner.containers.is_none()
+            && doc.length(&automerge::ROOT) == 0
+        {
+            return Vec::new();
+        }
+        vec![ui::close_admission::UnsavedDocument {
+            save: tilo_actions::ActionAddress::new("word-processor.document", "save"),
+            // The host may discard only the exact document the user reviewed.
+            // Serializing a clone does not commit the live typing transaction.
+            revision: doc.clone().save(),
+            identity: self
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }]
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::WORD_PROCESSOR_OPERATION_TYPE]
     }
@@ -8712,8 +8776,7 @@ impl Widget for WordProcessorWidget {
         if let Some(destination) = destination {
             let destination = std::path::PathBuf::from(destination);
             let format = WpFormat::from_path(&destination);
-            self.set_file(destination, format);
-            self.try_write_to_current_path(doc)?;
+            self.try_write_to_path(doc, &destination, format)?;
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))
@@ -8760,7 +8823,22 @@ impl Widget for WordProcessorWidget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let pristine = self.saved_document.is_none()
+            && self.inner.containers.is_none()
+            && state.length(root) == 0;
+        // First binding adds built-in styles/an empty paragraph. Rebase only
+        // if the full imported projection is unchanged; a pre-sync remote edit
+        // must remain unsaved. Bind on the live path after the host sets actor.
+        let unchanged_open = self.inner.containers.is_none()
+            && self.saved_document.is_some()
+            && serde_json::to_value(automerge::AutoSerde::from(&*state))
+                .ok()
+                .as_ref()
+                == self.saved_document.as_ref();
         self.inner.bind(state, root);
+        if pristine || unchanged_open {
+            self.remember_saved_document(state);
+        }
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
             self.resource_file_result =
                 Some(match self.try_open_document_in_place(state, &open_path) {

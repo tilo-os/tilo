@@ -10,17 +10,17 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # A branch push and its pull_request synchronization describe the same head.
-  # Normalize both event shapes so the later event cancels duplicate work.
-  group: lint-${{ github.event.pull_request.head.ref || github.ref_name }}
-  cancel-in-progress: true
+  # Push and pull-request checks are distinct required evidence. Include both
+  # event and commit so neither can replace another result.
+  group: lint-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   quality:
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: code.sandbox.example/qos/tilo-builder:latest
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -32,54 +32,30 @@ jobs:
           fetch-depth: 2
           fetch-tags: false
 
+      - name: Verify native fast-quality toolchain
+        run: |
+          test "$(uname -m)" = x86_64
+          cargo --version
+          rustc --version
+          rustfmt --version
+          cargo deny --version
+          cargo machete --version
+
       - name: Check formatting of changed Rust files
         shell: bash
         run: >-
-          bash tools/check-changed-rustfmt.sh
+          bash tools/ci/check-changed-rustfmt.sh
           '${{ github.event.pull_request.base.sha }}'
           '${{ github.event.before }}'
 
-      - name: Require reasons for new Rust lint exceptions
+      - name: Require reasons for Rust lint exceptions in changed files
         run: >-
-          python3 tools/check_changed_rust_allows.py
+          python3 tools/ci/check_changed_rust_allows.py
           '${{ github.event.pull_request.base.sha }}'
           '${{ github.event.before }}'
 
-      - name: Repository policy unit tests
-        run: |
-          python3 -m unittest discover -s tools/tests -p 'test_*.py'
-          bash tools/tests/ci_sccache.sh
-          bash tools/tests/cargo_shim.sh
-          bash tools/tests/test_ci_receipt.sh
-
-      - name: Immutable workflow dependency contract
-        run: |
-          bash os/tests/workflow_dependency_invariants.sh
-
-      - name: RPM snapshot scheduling contract
-        run: |
-          workflow=.forgejo/workflows/snapshot-rpms.yml
-          grep -Fq "github.event_name == 'workflow_dispatch' && 'publication'" "$workflow"
-          grep -Fq 'cancel-in-progress:' "$workflow"
-          grep -Fq "github.event_name != 'workflow_dispatch'" "$workflow"
-          grep -Fq 'git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- "${snapshot_inputs[@]}"' "$workflow"
-          grep -Fq 'for attempt in 1 2 3 4 5; do' "$workflow"
-
-      - name: Codex CI watcher unit tests
-        run: |
-          python3 -m json.tool .codex/hooks.json >/dev/null
-          python3 .codex/hooks/test_watch_ci.py
-
-      - name: Application text-stack contract
-        run: |
-          python3 tools/check_app_text_contract.py
-
-      - name: Application resource/action contract
-        run: |
-          python3 tools/check_app_resource_action_contract.py
-
-      - name: AT-SPI endpoint contract
-        run: python3 tools/check_atspi_endpoint_contract.py
+      - name: Repository policy suite
+        run: bash tools/policy/run.sh
 
       - name: cargo deny
         run: cargo deny --workspace check
