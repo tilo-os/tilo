@@ -67,17 +67,22 @@ for another pod.
 ## Complete disposable ARM lane
 
 `run-supervised-install-lane.py` is the durable controller for the steps after a
-finalized digest exists. It selects fresh ARM disk and KVM nodes (or accepts
-explicit current node names), creates two pinned-image workers without host
+finalized digest exists. It selects fresh ARM creation, verification and KVM
+nodes (or accepts explicit current node names), creates three pinned-image workers without host
 paths or service-account tokens, stages the exact Git archive and public trust
 bundle, and invokes the supervised creator first in inspection mode and then in
 creation mode. Registry credentials are read from a named Docker config Secret
 or a private local file and streamed to the disk worker; they never enter a Pod
 manifest, command argument, receipt, disk, or retained operation evidence.
 
-The same controller runs the independent read-only installed-disk verifier,
-freezes and hashes the 64 GiB raw file, rechecks both worker identities, and
-uses GNU tar sparse transport between their private emptyDirs. The KVM worker
+After creation, it freezes and hashes the 64 GiB raw file and sparsely transfers
+it into a fresh Kata sandbox. That independent worker receives fresh committed
+helpers only after the creator has been deleted; it repeats source signatures,
+the read-only installed-disk checks and the full source-layer material audit.
+Registry auth is introduced only for that bounded verifier command and a guest
+shell trap deletes it on every normal, error, signal and timeout path. The raw
+file is then sparsely transferred into the KVM worker after both identities are
+rechecked. The KVM worker
 checks the received length and digest, converts raw to qcow2 exactly once,
 requires `qemu-img compare`, verifies the pinned firmware/profile encoder, and
 runs the existing prepared-alongside graphical cycle. That cycle performs the
@@ -94,13 +99,12 @@ python3 os/dev/run-supervised-install-lane.py \
   --disk-args PRIVATE/media-disk-args.json \
   --public-bundle PRIVATE/public-trust \
   --host-pins PRIVATE/reviewed-host-pins.json \
-  --finalized-verification PRIVATE/07-finalized-verification.json \
   --helper-revision "$(git rev-parse HEAD)" \
   --acceptance-id FRESH_DNS_SAFE_ID \
   --registry-secret forgejo-pull-secret
 ```
 
-The operation directory retains mode-0600 worker bindings, creation and
+The operation directory retains mode-0600 worker bindings, creation, source-layer and
 verification receipts, raw identity, conversion/cycle evidence and the final
 acceptance receipt. The temporary local registry-auth snapshot is removed on
 success and interpreter exit. A successful run deliberately leaves the KVM
