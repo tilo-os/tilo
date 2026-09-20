@@ -66,13 +66,36 @@ For CI timing, use an explicit internal run ID from the Forgejo API:
 python3 tools/ci/timing_report.py --repo qos/qos --run 22684 --output target/ci-timing.json
 ```
 
+For an automatic before/after view of the newest comparable runs, no run IDs or
+manual receipts are needed:
+
+```sh
+python3 tools/ci/timing_report.py --repo qos/qos --recent 30 \
+  --workflow check.yml --compare-latest --output target/ci-experience.json
+```
+
 This uses your configured `fgj` authentication and reports queue time separately
 from run duration and the observed container pull-to-create interval. It does not
 sum parallel jobs into elapsed time or invent missing timestamps. Raw job logs and
 credentials are not written to the report; use `--input` for saved local fixtures.
+Forgejo reruns retain the original run creation time, so the report labels the
+attempt and leaves its queue time unknown unless that attempt's creation is present.
+Schema 3 keeps the deprecated run-created-to-runner field for first attempts and
+reports it as unknown for reruns; its replacement is explicitly attempt-scoped.
 Pass two runs in baseline/current order with `--compare` to print queue, wall and
 same-named job deltas directly. Job names appear beside Forgejo's numeric IDs, so
 the report can be read without a second API lookup.
+The recent view is keyed by workflow, event and exact commit. It separates queue,
+runner assignment, image pull/create, checkout, measured compile/test phases and
+total time, and includes sccache hit indicators when the job reports them. Its
+snapshot also flags superseded active runs, terminal runs with active tasks, runs
+which started without a runner, and observed runner time discarded by cancellation. These
+markers identify work to inspect; the runner broker remains authoritative for
+whether a Kubernetes runner resource is actually orphaned.
+An unavailable run or log is retained with a `collection_errors` evidence gap;
+it does not discard the remaining snapshot or become a comparison baseline.
+When too little complete evidence remains, the report records that the optional
+comparison is unavailable and still exits successfully with the snapshot.
 
 ## Preview affected applications
 
