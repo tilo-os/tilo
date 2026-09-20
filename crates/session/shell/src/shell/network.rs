@@ -6731,10 +6731,10 @@ mod tests {
             target_key.public().as_bytes(),
         ))
         .unwrap();
-        net.registered_home_peer_ids
+        net.registered_home_device_ids
             .lock()
             .unwrap()
-            .insert(target_key.public());
+            .insert(*target_key.public().as_bytes());
         let request_id = net
             .send_personal_fabric_action(
                 &target,
