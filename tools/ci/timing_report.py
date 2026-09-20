@@ -216,21 +216,35 @@ def phase_seconds(metrics):
     return round(checkout, 3), round(compile_test, 3)
 
 
+def attempt_identity(run):
+    """Return the current attempt and its observable creation timestamp."""
+    attempts = [job.get("attempt") for job in run.get("jobs", [])
+                if isinstance(job.get("attempt"), int) and job["attempt"] > 0]
+    attempt = max(attempts, default=1)
+    if attempt == 1:
+        return attempt, run.get("created")
+    candidates = [job.get("created_at") for job in run.get("jobs", [])
+                  if job.get("attempt") == attempt and stamp(job.get("created_at")) is not None]
+    return attempt, min(candidates, key=stamp) if candidates else None
+
+
 def report(evidence):
     observed_at = evidence.get("observed_at")
-    output = {"schema_version": 2, "observed_at": observed_at, "runs": []}
+    output = {"schema_version": 3, "observed_at": observed_at, "runs": []}
     for run in evidence["runs"]:
         created, started, stopped = (run.get(key) for key in ("created", "started", "stopped"))
+        attempt, attempt_created = attempt_identity(run)
         item = {"id": run["id"], "workflow_id": run.get("workflow_id"),
                 "commit_sha": run.get("commit_sha"), "event": run.get("event"),
                 "ref": run.get("prettyref", run.get("ref")), "status": run.get("status"),
                 "collection_errors": run.get("collection_errors", []),
-                "created": created, "started": started,
-                "stopped": stopped, "queue_seconds": elapsed(created, started),
-                "current_queue_seconds": (elapsed(created, observed_at)
+                "attempt": attempt, "created": created, "attempt_created": attempt_created,
+                "started": started, "stopped": stopped,
+                "queue_seconds": elapsed(attempt_created, started),
+                "current_queue_seconds": (elapsed(attempt_created, observed_at)
                     if run.get("status") in ACTIVE and stamp(started) is None else None),
                 "wall_seconds": elapsed(started, stopped),
-                "total_seconds": elapsed(created, stopped), "jobs": []}
+                "total_seconds": elapsed(attempt_created, stopped), "jobs": []}
         for job in run.get("jobs", []):
             metrics = extract_job_metrics(job.get("log", ""))
             events = metrics["events"]
@@ -246,7 +260,9 @@ def report(evidence):
                 "startup_pull_observed": (None if job.get("collection_error")
                                             else "pull_requested" in events),
                 "queue_seconds": elapsed(job.get("created_at"), job.get("started_at")),
-                "run_created_to_runner_received_seconds": elapsed(created, events.get("runner_received")),
+                "attempt_created_to_runner_received_seconds": elapsed(
+                    attempt_created, events.get("runner_received")
+                ),
                 "run_started_to_runner_received_seconds": elapsed(started, events.get("runner_received")),
                 "runner_to_create_seconds": elapsed(events.get("runner_received"), events.get("container_create")),
                 "pull_to_create_seconds": elapsed(events.get("pull_requested"), events.get("container_create")),
@@ -488,7 +504,8 @@ def human_summary(result):
     lines = []
     for run in result["runs"]:
         identity = " / ".join(value for value in (run.get("workflow_id"), run.get("commit_sha")) if value)
-        lines.append(f"Run {run['id']} ({identity or 'unknown'}): queue {fmt(run['queue_seconds'])}; wall {fmt(run['wall_seconds'])}")
+        attempt = f" attempt {run['attempt']}" if run.get("attempt", 1) > 1 else ""
+        lines.append(f"Run {run['id']}{attempt} ({identity or 'unknown'}): queue {fmt(run['queue_seconds'])}; wall {fmt(run['wall_seconds'])}")
         if run["collection_errors"]:
             gaps = ", ".join(f"{gap['stage']}:{gap['kind']}" for gap in run["collection_errors"])
             lines.append(f"  Evidence gap: {gaps}")
