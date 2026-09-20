@@ -4,12 +4,7 @@
 //! become public. Rejection intentionally accepts malformed/revoked requests,
 //! preserving their original bytes in an audit record while draining the queue.
 
-use std::sync::{Arc, Mutex, OnceLock};
-
-#[cfg(unix)]
-use std::fs::{File, OpenOptions};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
+use std::sync::{Arc, Mutex};
 
 use registry_types::{
     EntryAction, EntryChangeRequest, RegistryEntry, VerifyError, verify_change_request,
@@ -19,7 +14,8 @@ use thiserror::Error;
 
 use crate::allowlist::PublisherAllowlist;
 use crate::storage::{
-    PendingSubmission, ReviewDecision, ReviewRecord, ReviewSubject, Storage, StorageError,
+    PendingSubmission, ReviewDecision, ReviewRecord, ReviewSubject, SnapshotLock, Storage,
+    StorageError,
 };
 
 /// Thread-safe moderation façade. Clones share the in-process transition lock.
@@ -53,17 +49,22 @@ impl ModerationService {
         change: EntryChangeRequest,
         submitted_at_unix: u64,
     ) -> Result<PendingSubmission, ModerationError> {
+        let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
-        let _process_guard = ProcessGuard::acquire(&self.storage)?;
         let package_id = &change.entry.package_id;
         let public = self.storage.load_entry(package_id)?;
         let pending = self.storage.load_pending(package_id)?;
+        let deferred = self.storage.load_deferred_pending(package_id)?;
         if let Some(existing) = pending.as_ref()
             && existing.change == change
         {
             return Ok(existing.clone());
         }
-        validate_submission(&change, public.as_ref(), pending.as_ref())?;
+        validate_submission(
+            &change,
+            public.as_ref(),
+            deferred.as_ref().or(pending.as_ref()),
+        )?;
         let submission = PendingSubmission {
             // The package id is a single atomic pending slot: replacing a
             // revision is one rename rather than a delete/create window.
@@ -71,7 +72,20 @@ impl ModerationService {
             submitted_at_unix,
             change,
         };
-        self.storage.save_pending(&submission)?;
+        let reserved = self
+            .storage
+            .load_promotion_transaction()?
+            .is_some_and(|journal| {
+                journal
+                    .submissions
+                    .iter()
+                    .any(|selected| selected.submission_id == submission.submission_id)
+            });
+        if reserved {
+            self.storage.save_deferred_pending(&submission)?;
+        } else {
+            self.storage.save_pending(&submission)?;
+        }
         Ok(submission)
     }
 
@@ -111,8 +125,235 @@ impl ModerationService {
         reviewed_at_unix: u64,
         allowlist: &PublisherAllowlist,
     ) -> Result<ReviewRecord, ModerationError> {
+        let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
-        let _process_guard = ProcessGuard::acquire(&self.storage)?;
+        self.approve_locked(
+            reviewed_submission,
+            reviewer.into(),
+            reason.into(),
+            reviewed_at_unix,
+            allowlist,
+        )
+    }
+
+    /// Approve an exact bounded batch under one moderation lock. Every pending
+    /// slot is compared and validated before the first mutation. Missing slots
+    /// are accepted only when a previous crash durably completed the exact
+    /// review and public state, which makes promotion-journal replay safe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any selected submission changed, disappeared
+    /// without a completed review, fails trust validation, conflicts with the
+    /// public index, or cannot be persisted.
+    pub fn approve_batch(
+        &self,
+        reviewed_submissions: &[PendingSubmission],
+        reviewer: &str,
+        reason: &str,
+        reviewed_at_unix: u64,
+        allowlist: &PublisherAllowlist,
+    ) -> Result<Vec<ReviewRecord>, ModerationError> {
+        let _transaction = self.storage.lock_snapshot()?;
+        let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.approve_batch_locked(
+            reviewed_submissions,
+            reviewer,
+            reason,
+            reviewed_at_unix,
+            allowlist,
+            false,
+        )
+    }
+
+    /// Approve a batch while the caller retains the registry mutation lock.
+    /// This joins promotion selection, its durable journal, moderation, and
+    /// snapshot publication into one cross-process transaction boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::approve_batch`].
+    pub fn approve_batch_in_transaction(
+        &self,
+        _transaction: &SnapshotLock<'_>,
+        reviewed_submissions: &[PendingSubmission],
+        reviewer: &str,
+        reason: &str,
+        reviewed_at_unix: u64,
+        allowlist: &PublisherAllowlist,
+    ) -> Result<Vec<ReviewRecord>, ModerationError> {
+        let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.approve_batch_locked(
+            reviewed_submissions,
+            reviewer,
+            reason,
+            reviewed_at_unix,
+            allowlist,
+            true,
+        )
+    }
+
+    fn approve_batch_locked(
+        &self,
+        reviewed_submissions: &[PendingSubmission],
+        reviewer: &str,
+        reason: &str,
+        reviewed_at_unix: u64,
+        allowlist: &PublisherAllowlist,
+        recover_replaced_slots: bool,
+    ) -> Result<Vec<ReviewRecord>, ModerationError> {
+        let mut displaced = Vec::new();
+        for reviewed in reviewed_submissions {
+            match self.storage.load_pending(&reviewed.submission_id)? {
+                Some(pending) if pending == *reviewed => {
+                    verify_pending(&pending, allowlist)?;
+                    let public = self.storage.load_entry(&pending.change.entry.package_id)?;
+                    let _already_applied = validate_approval(&pending.change, public.as_ref())?;
+                }
+                Some(pending) => {
+                    if self.completed_review(reviewed)?.is_some() {
+                        continue;
+                    }
+                    if !recover_replaced_slots {
+                        return Err(ModerationError::PendingChanged(
+                            reviewed.submission_id.clone(),
+                        ));
+                    }
+                    self.validate_deferred_successor(reviewed, &pending)?;
+                    displaced.push((reviewed.clone(), pending));
+                }
+                None if self.completed_review(reviewed)?.is_some() => {}
+                None => {
+                    return Err(ModerationError::NoPendingSubmission(
+                        reviewed.submission_id.clone(),
+                    ));
+                }
+            }
+        }
+        for (reviewed, pending) in &displaced {
+            self.storage.save_deferred_pending(pending)?;
+            self.storage.save_pending(reviewed)?;
+        }
+        reviewed_submissions
+            .iter()
+            .map(|reviewed| {
+                if let Some(review) = self.completed_review(reviewed)? {
+                    return Ok(review);
+                }
+                self.approve_locked(
+                    reviewed,
+                    reviewer.to_string(),
+                    reason.to_string(),
+                    reviewed_at_unix,
+                    allowlist,
+                )
+            })
+            .collect()
+    }
+
+    /// Restore submissions that arrived while a durable promotion was active.
+    /// Calling this repeatedly is safe, including after a crash between the
+    /// pending write and deferred-file removal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deferred state cannot be read or moved atomically.
+    pub fn activate_deferred_in_transaction(
+        &self,
+        _transaction: &SnapshotLock<'_>,
+        reviewed_submissions: &[PendingSubmission],
+    ) -> Result<(), ModerationError> {
+        let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.activate_deferred_locked(reviewed_submissions)
+    }
+
+    fn activate_deferred_locked(
+        &self,
+        reviewed_submissions: &[PendingSubmission],
+    ) -> Result<(), ModerationError> {
+        for reviewed in reviewed_submissions {
+            let Some(deferred) = self
+                .storage
+                .load_deferred_pending(&reviewed.submission_id)?
+            else {
+                continue;
+            };
+            match self.storage.load_pending(&reviewed.submission_id)? {
+                Some(current) if current != deferred => {
+                    return Err(ModerationError::PendingChanged(
+                        reviewed.submission_id.clone(),
+                    ));
+                }
+                None => self.storage.save_pending(&deferred)?,
+                Some(_) => {}
+            }
+            let _deleted = self
+                .storage
+                .delete_deferred_pending(&reviewed.submission_id)?;
+        }
+        Ok(())
+    }
+
+    /// Restore deferred successors and consume the completed promotion's
+    /// journal and staged manifest while the registry mutation lock is held.
+    /// New submissions cannot observe a journal that cleanup will remove.
+    /// Replaying this after a crash is safe because every transition and
+    /// deletion is idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if deferred state cannot be restored or durable
+    /// promotion state cannot be removed.
+    pub fn complete_promotion_in_transaction(
+        &self,
+        _transaction: &SnapshotLock<'_>,
+        reviewed_submissions: &[PendingSubmission],
+    ) -> Result<(), ModerationError> {
+        let _thread_guard = thread_lock(&self.transition_lock)?;
+        self.activate_deferred_locked(reviewed_submissions)?;
+        let _deleted = self.storage.delete_staged_promotion()?;
+        let _deleted = self.storage.delete_promotion_transaction()?;
+        Ok(())
+    }
+
+    fn validate_deferred_successor(
+        &self,
+        reviewed: &PendingSubmission,
+        successor: &PendingSubmission,
+    ) -> Result<(), ModerationError> {
+        if reviewed.submission_id != successor.submission_id {
+            return Err(ModerationError::PendingChanged(
+                reviewed.submission_id.clone(),
+            ));
+        }
+        let public = self.storage.load_entry(&reviewed.submission_id)?;
+        validate_submission(&successor.change, public.as_ref(), Some(reviewed))
+    }
+
+    fn ensure_not_reserved_by_promotion(&self, package_id: &str) -> Result<(), ModerationError> {
+        if self
+            .storage
+            .load_promotion_transaction()?
+            .is_some_and(|journal| {
+                journal
+                    .submissions
+                    .iter()
+                    .any(|selected| selected.submission_id == package_id)
+            })
+        {
+            return Err(ModerationError::PromotionInProgress(package_id.into()));
+        }
+        Ok(())
+    }
+
+    fn approve_locked(
+        &self,
+        reviewed_submission: &PendingSubmission,
+        reviewer: String,
+        reason: String,
+        reviewed_at_unix: u64,
+        allowlist: &PublisherAllowlist,
+    ) -> Result<ReviewRecord, ModerationError> {
         let pending = self.require_pending(&reviewed_submission.submission_id)?;
         if &pending != reviewed_submission {
             return Err(ModerationError::PendingChanged(
@@ -147,8 +388,8 @@ impl ModerationService {
         let review = ReviewRecord {
             review_id,
             decision: ReviewDecision::Approved,
-            reviewer: reviewer.into(),
-            reason: reason.into(),
+            reviewer,
+            reason,
             reviewed_at_unix,
             subject: ReviewSubject::Submission(pending),
         };
@@ -159,6 +400,35 @@ impl ModerationService {
             .storage
             .delete_pending(&reviewed_submission.submission_id)?;
         Ok(review)
+    }
+
+    fn completed_review(
+        &self,
+        submission: &PendingSubmission,
+    ) -> Result<Option<ReviewRecord>, ModerationError> {
+        let Some(review) = self
+            .storage
+            .load_review(&submission_review_id(submission))?
+        else {
+            return Ok(None);
+        };
+        let applied = match submission.change.action {
+            EntryAction::Add | EntryAction::Update => {
+                self.storage
+                    .load_entry(&submission.change.entry.package_id)?
+                    .as_ref()
+                    == Some(&submission.change.entry)
+            }
+            EntryAction::Delete => self
+                .storage
+                .load_entry(&submission.change.entry.package_id)?
+                .is_none(),
+        };
+        if applied && review.decision == ReviewDecision::Approved {
+            Ok(Some(review))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Reject a pending request without changing public state.
@@ -177,8 +447,9 @@ impl ModerationService {
         reason: impl Into<String>,
         reviewed_at_unix: u64,
     ) -> Result<ReviewRecord, ModerationError> {
+        let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
-        let _process_guard = ProcessGuard::acquire(&self.storage)?;
+        self.ensure_not_reserved_by_promotion(submission_id)?;
         let pending = self.require_pending(submission_id)?;
         let review_id = submission_review_id(&pending);
         let review = self
@@ -210,8 +481,9 @@ impl ModerationService {
         reason: impl Into<String>,
         reviewed_at_unix: u64,
     ) -> Result<ReviewRecord, ModerationError> {
+        let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
-        let _process_guard = ProcessGuard::acquire(&self.storage)?;
+        self.ensure_not_reserved_by_promotion(package_id)?;
         let reviewer = reviewer.into();
         let reason = reason.into();
         let public = self.storage.load_entry(package_id)?;
@@ -266,8 +538,9 @@ impl ModerationService {
         reviewed_at_unix: u64,
         allowlist: &PublisherAllowlist,
     ) -> Result<ReviewRecord, ModerationError> {
+        let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
-        let _process_guard = ProcessGuard::acquire(&self.storage)?;
+        self.ensure_not_reserved_by_promotion(package_id)?;
         let reviewer = reviewer.into();
         let reason = reason.into();
         let Some(entry) = self.storage.load_quarantined_entry(package_id)? else {
@@ -345,6 +618,9 @@ fn validate_submission(
 ) -> Result<(), ModerationError> {
     match change.action {
         EntryAction::Add if public.is_some() => {
+            if public == Some(&change.entry) {
+                return Ok(());
+            }
             return Err(ModerationError::EntryAlreadyExists(
                 change.entry.package_id.clone(),
             ));
@@ -368,7 +644,13 @@ fn validate_submission(
         }
         EntryAction::Add => {}
     }
+    if matches!(change.action, EntryAction::Add | EntryAction::Update) {
+        validate_version_history(&change.entry, public)?;
+    }
     if let Some(pending) = pending {
+        if pending.change == *change {
+            return Ok(());
+        }
         if !same_publisher(&pending.change.entry, &change.entry) {
             return Err(ModerationError::PendingOwnedByAnotherPublisher(
                 change.entry.package_id.clone(),
@@ -381,6 +663,9 @@ fn validate_submission(
                 proposed: change.entry.updated_at_unix,
             });
         }
+        if matches!(change.action, EntryAction::Add | EntryAction::Update) {
+            validate_version_history(&change.entry, Some(&pending.change.entry))?;
+        }
     }
     Ok(())
 }
@@ -389,6 +674,9 @@ fn validate_approval(
     change: &EntryChangeRequest,
     public: Option<&RegistryEntry>,
 ) -> Result<bool, ModerationError> {
+    if change.action == EntryAction::Add {
+        validate_version_history(&change.entry, None)?;
+    }
     match change.action {
         EntryAction::Add => match public {
             None => Ok(false),
@@ -401,6 +689,7 @@ fn validate_approval(
             Some(current) if current == &change.entry => Ok(true),
             Some(current) => {
                 validate_owner(current, &change.entry)?;
+                validate_version_history(&change.entry, Some(current))?;
                 if change.entry.updated_at_unix <= current.updated_at_unix {
                     return Err(ModerationError::StaleTimestamp {
                         package_id: change.entry.package_id.clone(),
@@ -453,6 +742,98 @@ fn verify_pending(
 ) -> Result<(), ModerationError> {
     verify_change_request(&pending.change, &allowlist.all_pubkey_bytes())
         .map_err(ModerationError::Verification)
+}
+
+fn validate_version_history(
+    proposed: &RegistryEntry,
+    baseline: Option<&RegistryEntry>,
+) -> Result<(), ModerationError> {
+    for (index, version) in proposed.versions.iter().enumerate() {
+        if proposed
+            .versions
+            .get(..index)
+            .unwrap_or_default()
+            .iter()
+            .any(|other| same_version_identity(other, version))
+        {
+            return Err(ModerationError::DuplicateVersionIdentity {
+                package_id: proposed.package_id.clone(),
+                version: version.version.clone(),
+            });
+        }
+        let preserved_legacy = baseline.is_some_and(|current| {
+            current
+                .versions
+                .iter()
+                .any(|old| old == version && old.qpkg_blake3_hex.is_none() && old.target.is_none())
+        });
+        if !preserved_legacy {
+            validate_bound_version(proposed, version)?;
+        }
+    }
+    if let Some(current) = baseline {
+        for old in &current.versions {
+            let Some(new) = proposed
+                .versions
+                .iter()
+                .find(|version| same_version_identity(version, old))
+            else {
+                return Err(ModerationError::VersionHistoryRemoved {
+                    package_id: proposed.package_id.clone(),
+                    version: old.version.clone(),
+                });
+            };
+            if new != old {
+                return Err(ModerationError::VersionIdentityReused {
+                    package_id: proposed.package_id.clone(),
+                    version: old.version.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn same_version_identity(
+    left: &registry_types::RegistryVersion,
+    right: &registry_types::RegistryVersion,
+) -> bool {
+    left.version == right.version
+        && left
+            .target
+            .as_ref()
+            .map(|target| target.architecture.as_str())
+            == right
+                .target
+                .as_ref()
+                .map(|target| target.architecture.as_str())
+}
+
+fn validate_bound_version(
+    entry: &RegistryEntry,
+    version: &registry_types::RegistryVersion,
+) -> Result<(), ModerationError> {
+    let hash_ok = version
+        .qpkg_blake3_hex
+        .as_ref()
+        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let target_ok = version.target.as_ref().is_some_and(|target| {
+        matches!(
+            (target.architecture.as_str(), target.isa.as_str()),
+            ("x86_64", "x86_64" | "x86_64-v2" | "x86_64-v3" | "x86_64-v4")
+                | (
+                    "aarch64",
+                    "aarch64" | "aarch64-v8.2" | "aarch64-v8.4" | "aarch64-v9"
+                )
+        )
+    });
+    if !hash_ok || !target_ok || version.qpkg_size_bytes == 0 {
+        return Err(ModerationError::UnsupportedPackageTarget {
+            package_id: entry.package_id.clone(),
+            version: version.version.clone(),
+        });
+    }
+    Ok(())
 }
 
 fn verify_restorable_entry(
@@ -520,75 +901,6 @@ fn thread_lock(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, Modera
         .map_err(|_| ModerationError::TransitionLockPoisoned)
 }
 
-// Covers separately-constructed services inside one process. The per-service
-// `Arc<Mutex<_>>` above covers normal AppState clones; this global guard closes
-// the remaining same-process gap before the OS-level lock is acquired.
-static PROCESS_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-
-/// The in-process mutex cannot serialize the server against a reviewer CLI.
-#[cfg(unix)]
-struct ProcessGuard {
-    _process_mutex: std::sync::MutexGuard<'static, ()>,
-    file: File,
-}
-
-#[cfg(unix)]
-impl ProcessGuard {
-    fn acquire(storage: &Storage) -> Result<Self, ModerationError> {
-        let process_mutex = PROCESS_MUTEX
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .map_err(|_| ModerationError::TransitionLockPoisoned)?;
-        let path = storage.moderation_lock_path();
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(|e| ModerationError::ProcessLock(format!("open {}: {e}", path.display())))?;
-        // Blocking exclusive advisory lock. The lock file is deliberately
-        // retained, so a crash releases only the lock—not evidence of state.
-        let status = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-        if status != 0 {
-            return Err(ModerationError::ProcessLock(format!(
-                "lock {}: {}",
-                path.display(),
-                std::io::Error::last_os_error()
-            )));
-        }
-        Ok(Self {
-            _process_mutex: process_mutex,
-            file,
-        })
-    }
-}
-
-#[cfg(unix)]
-impl Drop for ProcessGuard {
-    fn drop(&mut self) {
-        let _result = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
-    }
-}
-
-#[cfg(not(unix))]
-struct ProcessGuard {
-    _process_mutex: std::sync::MutexGuard<'static, ()>,
-}
-
-#[cfg(not(unix))]
-impl ProcessGuard {
-    fn acquire(_storage: &Storage) -> Result<Self, ModerationError> {
-        let guard = PROCESS_MUTEX
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .map_err(|_| ModerationError::TransitionLockPoisoned)?;
-        Ok(Self {
-            _process_mutex: guard,
-        })
-    }
-}
-
 /// Failures from moderation validation, persistence, or verification.
 #[derive(Debug, Error)]
 pub enum ModerationError {
@@ -598,12 +910,12 @@ pub enum ModerationError {
     Verification(VerifyError),
     #[error("the moderation transition lock was poisoned")]
     TransitionLockPoisoned,
-    #[error("moderation process lock: {0}")]
-    ProcessLock(String),
     #[error("no pending submission for {0}")]
     NoPendingSubmission(String),
     #[error("pending submission for {0} changed after review; inspect it again")]
     PendingChanged(String),
+    #[error("package {0} is reserved by an active first-party promotion")]
+    PromotionInProgress(String),
     #[error("entry {0} already exists")]
     EntryAlreadyExists(String),
     #[error("no public entry for {0}")]
@@ -626,6 +938,14 @@ pub enum ModerationError {
         current: u64,
         proposed: u64,
     },
+    #[error("entry {package_id} repeats version identity {version}")]
+    DuplicateVersionIdentity { package_id: String, version: String },
+    #[error("entry {package_id} removes immutable version {version}")]
+    VersionHistoryRemoved { package_id: String, version: String },
+    #[error("entry {package_id} reuses version identity {version} for different bytes")]
+    VersionIdentityReused { package_id: String, version: String },
+    #[error("entry {package_id} version {version} lacks a supported architecture artifact binding")]
+    UnsupportedPackageTarget { package_id: String, version: String },
     #[error("public entry {0} conflicts with the quarantined revision")]
     PublicEntryConflict(String),
     #[error("quarantined entry {0} has an invalid publisher signature")]
@@ -638,6 +958,7 @@ pub enum ModerationError {
 mod tests {
     use super::*;
     use crate::allowlist::PublisherRow;
+    use crate::storage::{PromotionJournal, StagedPromotion};
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
     use registry_types::{RegistryVersion, sign_change_request, sign_entry};
@@ -663,6 +984,12 @@ mod tests {
                 qpkg_root_hash_hex: "ab".repeat(32),
                 qpkg_size_bytes: 1,
                 released_at_unix: timestamp,
+                qpkg_blake3_hex: Some("cd".repeat(32)),
+                target: Some(registry_types::RegistryTarget {
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                }),
             }],
             updated_at_unix: timestamp,
             signature_hex: String::new(),
@@ -670,6 +997,22 @@ mod tests {
     }
     fn change(key: &SigningKey, action: EntryAction, timestamp: u64) -> EntryChangeRequest {
         sign_change_request(action, entry(key, timestamp), key)
+    }
+    fn append_change(
+        key: &SigningKey,
+        base: &EntryChangeRequest,
+        timestamp: u64,
+    ) -> EntryChangeRequest {
+        let mut next = base.entry.clone();
+        next.versions.extend(entry(key, timestamp).versions);
+        next.updated_at_unix = timestamp;
+        next.signature_hex.clear();
+        sign_change_request(base.action, next, key)
+    }
+    fn change_for(key: &SigningKey, package_id: &str, timestamp: u64) -> EntryChangeRequest {
+        let mut value = entry(key, timestamp);
+        value.package_id = package_id.to_string();
+        sign_change_request(EntryAction::Add, value, key)
     }
     fn allow(key: &SigningKey) -> PublisherAllowlist {
         PublisherAllowlist {
@@ -682,15 +1025,19 @@ mod tests {
     }
 
     #[test]
-    fn pending_replacement_requires_same_owner_and_newer_timestamp() {
+    fn pending_replacement_requires_append_only_history_and_same_owner() {
         let (_dir, service) = setup();
         let first = SigningKey::generate(&mut OsRng);
         let other = SigningKey::generate(&mut OsRng);
-        service
+        let first_pending = service
             .submit(change(&first, EntryAction::Add, 10), 100)
             .unwrap();
+        assert!(matches!(
+            service.submit(change(&first, EntryAction::Add, 11), 101),
+            Err(ModerationError::VersionHistoryRemoved { .. })
+        ));
         service
-            .submit(change(&first, EntryAction::Add, 11), 101)
+            .submit(append_change(&first, &first_pending.change, 11), 101)
             .unwrap();
         assert_eq!(
             service
@@ -706,6 +1053,27 @@ mod tests {
             service.submit(change(&other, EntryAction::Add, 12), 102),
             Err(ModerationError::PendingOwnedByAnotherPublisher(_))
         ));
+    }
+
+    #[test]
+    fn both_architectures_are_preserved_when_a_stale_submission_arrives() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut OsRng);
+        let mut aggregate = entry(&key, 10);
+        let mut arm = aggregate.versions[0].clone();
+        let target = arm.target.as_mut().unwrap();
+        target.architecture = "aarch64".into();
+        target.isa = "aarch64-v8.2".into();
+        aggregate.versions.push(arm);
+        sign_entry(&mut aggregate, &key);
+        let request = sign_change_request(EntryAction::Add, aggregate, &key);
+        let pending = service.submit(request, 100).unwrap();
+        assert_eq!(pending.change.entry.versions.len(), 2);
+        assert!(matches!(
+            service.submit(change(&key, EntryAction::Add, 11), 101),
+            Err(ModerationError::VersionHistoryRemoved { .. })
+        ));
+        assert_eq!(service.pending("dev.tilo.editor").unwrap(), Some(pending));
     }
 
     #[test]
@@ -799,7 +1167,7 @@ mod tests {
             .submit(change(&key, EntryAction::Add, 10), 100)
             .unwrap();
         service
-            .submit(change(&key, EntryAction::Add, 11), 101)
+            .submit(append_change(&key, &reviewed.change, 11), 101)
             .unwrap();
 
         assert!(matches!(
@@ -812,6 +1180,222 @@ mod tests {
                 .load_entry("dev.tilo.editor")
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn batch_preflight_prevents_partial_approval_when_any_slot_changed() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut OsRng);
+        let first = service
+            .submit(change_for(&key, "dev.tilo.a", 10), 100)
+            .unwrap();
+        let second = service
+            .submit(change_for(&key, "dev.tilo.b", 10), 100)
+            .unwrap();
+        service
+            .submit(append_change(&key, &second.change, 11), 101)
+            .unwrap();
+
+        assert!(matches!(
+            service.approve_batch(&[first.clone(), second], "auto", "", 102, &allow(&key)),
+            Err(ModerationError::PendingChanged(package)) if package == "dev.tilo.b"
+        ));
+        assert!(service.storage.load_entry("dev.tilo.a").unwrap().is_none());
+        assert_eq!(service.pending("dev.tilo.a").unwrap(), Some(first));
+    }
+
+    #[test]
+    fn batch_retry_recovers_an_approval_completed_before_a_crash() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut OsRng);
+        let first = service
+            .submit(change_for(&key, "dev.tilo.a", 10), 100)
+            .unwrap();
+        let second = service
+            .submit(change_for(&key, "dev.tilo.b", 10), 100)
+            .unwrap();
+        service
+            .approve(&first, "auto", "", 101, &allow(&key))
+            .unwrap();
+
+        let reviews = service
+            .approve_batch(&[first, second], "auto", "", 102, &allow(&key))
+            .unwrap();
+        assert_eq!(reviews.len(), 2);
+        assert!(service.pending_submissions().unwrap().is_empty());
+        assert!(service.storage.load_entry("dev.tilo.a").unwrap().is_some());
+        assert!(service.storage.load_entry("dev.tilo.b").unwrap().is_some());
+    }
+
+    #[test]
+    fn promotion_recovery_preserves_a_newer_submission_for_the_same_slot() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut OsRng);
+        let selected = service
+            .submit(change(&key, EntryAction::Add, 10), 100)
+            .unwrap();
+        let candidate = registry_types::SignedRegistrySnapshot {
+            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            sequence: 1,
+            issued_at_unix: 101,
+            expires_at_unix: 201,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: Vec::new(),
+            entries: vec![selected.change.entry.clone()],
+            owner_signature_hex: "test fixture".into(),
+            channel_authorization: None,
+        };
+        service
+            .storage
+            .save_promotion_transaction(&PromotionJournal {
+                publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
+                reviewer: "auto".into(),
+                reason: "first party".into(),
+                submissions: vec![selected.clone()],
+                candidate_snapshot: candidate,
+            })
+            .unwrap();
+
+        // A submit arriving after a crash sees the durable journal. It must
+        // not replace the selected slot and make the journal unreplayable.
+        let successor = service
+            .submit(append_change(&key, &selected.change, 11), 102)
+            .unwrap();
+        assert_eq!(
+            service.pending(&selected.submission_id).unwrap(),
+            Some(selected.clone())
+        );
+        assert_eq!(
+            service
+                .storage
+                .load_deferred_pending(&selected.submission_id)
+                .unwrap(),
+            Some(successor.clone())
+        );
+
+        let transaction = service.storage.lock_snapshot().unwrap();
+        let reviews = service
+            .approve_batch_in_transaction(
+                &transaction,
+                std::slice::from_ref(&selected),
+                "auto",
+                "first party",
+                103,
+                &allow(&key),
+            )
+            .unwrap();
+        service
+            .complete_promotion_in_transaction(&transaction, std::slice::from_ref(&selected))
+            .unwrap();
+        drop(transaction);
+
+        assert_eq!(reviews.len(), 1);
+        assert_eq!(
+            service.storage.load_entry(&selected.submission_id).unwrap(),
+            Some(selected.change.entry)
+        );
+        assert_eq!(
+            service.pending(&successor.submission_id).unwrap(),
+            Some(successor)
+        );
+        assert!(
+            service
+                .storage
+                .load_deferred_pending(&selected.submission_id)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            service
+                .storage
+                .load_promotion_transaction()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn promotion_cleanup_keeps_a_concurrent_successor_reachable() {
+        let (_dir, service) = setup();
+        let key = SigningKey::generate(&mut OsRng);
+        let selected = service
+            .submit(change(&key, EntryAction::Add, 10), 100)
+            .unwrap();
+        let candidate = registry_types::SignedRegistrySnapshot {
+            protocol: registry_types::SNAPSHOT_PROTOCOL,
+            sequence: 1,
+            issued_at_unix: 101,
+            expires_at_unix: 201,
+            previous_snapshot_hash_hex: String::new(),
+            moderation_head_hex: String::new(),
+            publishers: Vec::new(),
+            entries: vec![selected.change.entry.clone()],
+            owner_signature_hex: "test fixture".into(),
+            channel_authorization: None,
+        };
+        service
+            .storage
+            .save_promotion_transaction(&PromotionJournal {
+                publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
+                reviewer: "auto".into(),
+                reason: "first party".into(),
+                submissions: vec![selected.clone()],
+                candidate_snapshot: candidate,
+            })
+            .unwrap();
+        service
+            .storage
+            .save_staged_promotion(&StagedPromotion {
+                publisher_pubkey_hex: selected.change.entry.publisher_pubkey_hex.clone(),
+                collected_at_unix: 100,
+                submissions: vec![selected.clone()],
+                artifacts: Vec::new(),
+            })
+            .unwrap();
+
+        let transaction = service.storage.lock_snapshot().unwrap();
+        service
+            .approve_batch_in_transaction(
+                &transaction,
+                std::slice::from_ref(&selected),
+                "auto",
+                "first party",
+                102,
+                &allow(&key),
+            )
+            .unwrap();
+        let mut successor_entry = selected.change.entry.clone();
+        successor_entry.versions.extend(entry(&key, 11).versions);
+        successor_entry.updated_at_unix = 11;
+        successor_entry.signature_hex.clear();
+        let successor_change = sign_change_request(EntryAction::Update, successor_entry, &key);
+        let submitter_service = service.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let submitter = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            submitter_service.submit(successor_change, 103).unwrap()
+        });
+        ready_rx.recv().unwrap();
+
+        service
+            .complete_promotion_in_transaction(&transaction, std::slice::from_ref(&selected))
+            .unwrap();
+        assert!(
+            service
+                .storage
+                .load_promotion_transaction()
+                .unwrap()
+                .is_none()
+        );
+        assert!(service.storage.load_staged_promotion().unwrap().is_none());
+        drop(transaction);
+
+        let successor = submitter.join().unwrap();
+        assert_eq!(
+            service.pending(&successor.submission_id).unwrap(),
+            Some(successor)
         );
     }
 

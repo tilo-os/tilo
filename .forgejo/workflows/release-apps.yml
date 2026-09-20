@@ -34,7 +34,7 @@ on:
       - "tools/app_packaging_qualification.py"
       - "tools/app_packaging_plan.py"
       - "tools/ci/__init__.py"
-      - "tools/ci/affected_packages.py"
+      - "tools/ci/workspace_graph.py"
       - "tools/ci/check-build-env.sh"
       - "tools/ci/app_release_history.py"
       - "tools/ci/python.py"
@@ -156,7 +156,7 @@ jobs:
               ('tools/app_packaging_qualification.py', 3650, 'c6fd766344d1b18d9c365b2f667627d2102df741a8ab1d1e18e7304240e14063'),
               ('tools/app_packaging_contract.py', 4099, 'f0a5862a39aca5fd0a61bd7915ca87c0915420989c056df3c64151ab9b70989b'),
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
-              ('tools/ci/python.py', 4297, 'd85ce3ba686eca3241e4225e747fd75ffc6bdf1a640341564ac5bbbbf1699045'),
+              ('tools/ci/python.py', 4352, 'd376bc605d185b6a235db30dfac79d9f0825db96d38b19ac5e9f1e174a242a57'),
               ('tools/ci/resolve_builder.py', 5466, '4ba30c8d5f0171a91babca24a2bc526149c6f943a599f144257fc050978126d0'),
           )
 
