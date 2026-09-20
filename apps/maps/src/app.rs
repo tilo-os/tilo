@@ -3767,6 +3767,17 @@ impl MapsApp {
                 theme.text_dim,
                 TextWeight::Semibold,
             );
+            draw::text_right(
+                scene,
+                tr,
+                t,
+                clear_label,
+                right,
+                y,
+                11.0,
+                theme.accent_primary,
+            );
+            self.click_targets.push((clear, Hit::ClearRecents));
             y += label_advance;
             let recents = self.model.recents.clone();
             let recent_h = f64::from(self.spacing.s8);
