@@ -7,7 +7,7 @@ mod owner_commit_tests {
         fn authorize(
             &self,
             _: uuid::Uuid,
-            _: &qos_user_identity::DeviceCert,
+            _: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
             Ok(())
         }
@@ -131,7 +131,7 @@ mod owner_commit_tests {
                 ui::permissions::PermissionContext::permissive(),
             )),
             ui::permissions::UserId("worker".into()),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             &LaunchTarget::New,
         )
         .unwrap();
@@ -184,7 +184,7 @@ mod owner_commit_tests {
             .read(&record.id, |doc| doc.clone().get_heads())
             .unwrap();
         sent.borrow_mut().clear();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         events.borrow_mut().push(CollabEvent::Invocation {
             id: 1,
             invocation: Some(invocation),
@@ -204,7 +204,7 @@ mod owner_commit_tests {
         );
         let sent = sent.borrow();
         let terminal = sent.iter().position(|request| matches!(request,
-            CollabRequest::UpdateInvocation { update: qos_actions::InvocationUpdate::Succeeded { invocation: id, .. }, .. } if *id == invocation)).expect("Writer terminal result");
+            CollabRequest::UpdateInvocation { update: tilo_actions::InvocationUpdate::Succeeded { invocation: id, .. }, .. } if *id == invocation)).expect("Writer terminal result");
         assert!(
             sent[..terminal].iter().any(|request| matches!(
                 request,
@@ -220,7 +220,7 @@ mod owner_commit_tests {
         fn authorize(
             &self,
             room: uuid::Uuid,
-            cert: &qos_user_identity::DeviceCert,
+            cert: &tilo_user_identity::DeviceCert,
         ) -> Result<(), String> {
             if room.to_string() != self.0.room() || !self.0.certificates().contains(cert) {
                 return Err("certificate outside actual owner authority".into());
@@ -362,8 +362,8 @@ mod owner_commit_tests {
         doc.put(automerge::ROOT, "actual_worker_publication", true)
             .unwrap();
         doc.commit();
-        let key = qos_user_identity::persist::read_device_key(
-            &qos_user_identity::persist::IdentityPaths::under(f.owner.root().join("identity"))
+        let key = tilo_user_identity::persist::read_device_key(
+            &tilo_user_identity::persist::IdentityPaths::under(f.owner.root().join("identity"))
                 .device_privkey,
         )
         .unwrap();
@@ -482,7 +482,7 @@ mod owner_commit_tests {
         InvocationKey,
         std::sync::mpsc::Receiver<InvocationCompletion>,
     ) {
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let key = InvocationKey {
             room: f.route.cluster_id.clone(),
             host: f.state.invocation_host().unwrap(),
@@ -510,16 +510,16 @@ mod owner_commit_tests {
                 journal_key: Some(key.clone()),
                 peer_id: 72,
                 tx,
-                update: qos_actions::InvocationUpdate::Accepted { invocation },
+                update: tilo_actions::InvocationUpdate::Accepted { invocation },
                 last_sequence: 0,
                 actor: principal_id_for_root(f.owner.peer().authority().user_public_key),
                 cancellable: false,
                 retryable_on_disconnect: false,
-                execution: qos_actions::ExecutionMode::Immediate,
-                result: qos_actions::ResultSpec::None,
-                operation_kind: qos_actions::OperationKind::Effect,
+                execution: tilo_actions::ExecutionMode::Immediate,
+                result: tilo_actions::ResultSpec::None,
+                operation_kind: tilo_actions::OperationKind::Effect,
                 cluster_id: f.route.cluster_id.clone(),
-                context: qos_actions::ActionContext::for_resource(
+                context: tilo_actions::ActionContext::for_resource(
                     "Publish",
                     "record:bounded",
                     "document",
@@ -541,9 +541,9 @@ mod owner_commit_tests {
                     let (key, result) = admitted_effect(&f);
                     // A real external side effect has happened before the application reports its result.
                     std::fs::write(root.path().join("effect"), b"once").unwrap();
-                    let update = qos_actions::InvocationUpdate::Succeeded {
+                    let update = tilo_actions::InvocationUpdate::Succeeded {
                         invocation: key.invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     };
                     let mut request = f.client.update_invocation_request();
                     request.get().set_id(1);
@@ -567,7 +567,7 @@ mod owner_commit_tests {
                             .unwrap()
                             .unwrap()
                             .update,
-                        qos_actions::InvocationUpdate::Accepted { .. }
+                        tilo_actions::InvocationUpdate::Accepted { .. }
                     ));
                     if failure == 1 {
                         let path = f.owner.root().join("session.bin");
@@ -684,7 +684,7 @@ mod owner_commit_tests {
             fn authorize(
                 &self,
                 room: uuid::Uuid,
-                cert: &qos_user_identity::DeviceCert,
+                cert: &tilo_user_identity::DeviceCert,
             ) -> Result<(), String> {
                 let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
                 let peer = guard.as_ref().ok_or("owner authority unavailable")?;
@@ -732,8 +732,8 @@ mod owner_commit_tests {
         let mut remote = owner.peer().clone();
         let cert = owner.peer().authority().clone();
         let room: uuid::Uuid = owner.peer().room().parse().unwrap();
-        let key = qos_user_identity::persist::read_device_key(
-            &qos_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
+        let key = tilo_user_identity::persist::read_device_key(
+            &tilo_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
                 .device_privkey,
         )
         .unwrap();
@@ -860,7 +860,7 @@ mod owner_commit_tests {
                 ui::permissions::PermissionContext::permissive(),
             )),
             ui::permissions::UserId(principal.clone()),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             &target,
         )
         .unwrap();
@@ -924,7 +924,7 @@ mod owner_commit_tests {
         }
         assert!(matches!(
             actions.status(job.id),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert_eq!(
             published.load(Ordering::SeqCst),

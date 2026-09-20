@@ -45,11 +45,11 @@ pub struct WorkspaceViewDescriptor {
     pub request: WorkspaceViewRequest,
 }
 impl WorkspaceViewDescriptor {
-    pub fn action(&self) -> qos_actions::ActionSpec {
-        qos_actions::ActionSpec::operation(
+    pub fn action(&self) -> tilo_actions::ActionSpec {
+        tilo_actions::ActionSpec::operation(
             &self.id,
             &self.label,
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             OPERATION_TYPE,
             &self.request,
         )

@@ -31,7 +31,7 @@
 use automerge::{AutoCommit, ROOT};
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
     OperationKind, Resource, ResourceProvider,
 };
@@ -704,7 +704,7 @@ mod tests {
     use super::*;
     use crate::app::CameraApp;
     use automerge::transaction::Transactable;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -798,7 +798,7 @@ mod tests {
         let encoded = encode(&action).unwrap();
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -835,8 +835,8 @@ mod tests {
 
         let action = set_favorite_action("c5", true);
         let encoded = encode(&action).unwrap();
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -866,8 +866,8 @@ mod tests {
 
         let action = record_scan_action("https://qos.example/hello", 1234);
         let encoded = encode(&action).unwrap();
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "scan replayed identically");
         let scans = doc::read_scans(&b, &ROOT);
@@ -888,8 +888,8 @@ mod tests {
 
         let action = CameraAction::SetGrid { on: false };
         let encoded = encode(&action).unwrap();
-        let envelope = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
 
         assert!(!doc::read_settings(&a, &ROOT).grid);
         assert!(!doc::read_settings(&b, &ROOT).grid);
@@ -918,8 +918,8 @@ mod tests {
             label: "Peer photo".into(),
             facing: Facing::Back,
         };
-        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action).unwrap()).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action).unwrap()).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         assert_eq!(a.get_heads(), b.get_heads());
         let captures = doc::read_shared_captures(&b, &ROOT);
         assert_eq!(captures.len(), 1);
@@ -943,13 +943,13 @@ mod tests {
             label: "Remove me".into(),
             facing: Facing::Back,
         };
-        qos_actions::apply_local(&mut a, &register, encode(&register).unwrap()).unwrap();
+        tilo_actions::apply_local(&mut a, &register, encode(&register).unwrap()).unwrap();
         let mut b = AutoCommit::load(&a.save()).unwrap();
         let remove = CameraAction::RemoveCapture {
             id: "IMG_remove.jpg".into(),
         };
-        let envelope = qos_actions::apply_local(&mut a, &remove, encode(&remove).unwrap()).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &remove, encode(&remove).unwrap()).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         assert!(doc::read_shared_captures(&a, &ROOT).is_empty());
         assert!(doc::read_shared_captures(&b, &ROOT).is_empty());
         assert_eq!(
@@ -1089,7 +1089,7 @@ mod tests {
             .find(|a| a.id == "delete-file")
             .unwrap();
         assert!(delete.contract.availability.is_available());
-        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
 
         let available = provide_resources(
             &CameraResourceCtx {

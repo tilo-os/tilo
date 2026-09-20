@@ -59,10 +59,10 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
     fn record_effect(
         &self,
         room: &str,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         actor: &str,
-        context: qos_actions::ActionContext,
-        status: qos_actions::EffectReceiptStatus,
+        context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String> {
         let mut tree = self.write();
         let workspace = tree

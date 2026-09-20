@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{Doc, ResourceId};
+use tilo_actions::{Doc, ResourceId};
 
 /// What [`Span`]'s offsets count.
 ///

@@ -441,8 +441,8 @@ pub struct FeedsApp {
     // --- refresh progress + non-blocking drain --------------------------
     /// Live refresh progress shown in the list header.
     refresh: RefreshState,
-    resource_refresh_invocation: Option<qos_actions::InvocationId>,
-    resource_refresh_result: Option<qos_actions::InvocationUpdate>,
+    resource_refresh_invocation: Option<tilo_actions::InvocationId>,
+    resource_refresh_result: Option<tilo_actions::InvocationUpdate>,
     /// CRDT writes produced by the doc-less `draw`-time drain, flushed on the
     /// next pass that holds the document.
     pending_doc_writes: Vec<DocWrite>,
@@ -917,7 +917,7 @@ impl FeedsApp {
             doc,
             actions::FEEDS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Feeds", "Feeds", action),
+            tilo_actions::ActionContext::for_action("org.qos.Feeds", "Feeds", action),
         );
         // The action just mutated the document; keep the reload watermark ahead
         // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the
@@ -1645,9 +1645,9 @@ impl FeedsApp {
             self.refresh.finished_at = Some(Instant::now());
             if let Some(invocation) = self.resource_refresh_invocation.take() {
                 self.resource_refresh_result = Some(if self.refresh.failed_feeds > 0 {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "feeds.refresh_incomplete".into(),
                             message: format!(
                                 "{} of {} subscriptions failed to refresh",
@@ -1658,9 +1658,9 @@ impl FeedsApp {
                         },
                     }
                 } else {
-                    qos_actions::InvocationUpdate::Succeeded {
+                    tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     }
                 });
             }
@@ -4238,18 +4238,18 @@ impl Widget for FeedsApp {
 
     /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
     /// action palette scopes to them. Delegates to the [`ResourceProvider`]
-    /// (`qos_actions::ResourceProvider`) impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -4259,14 +4259,14 @@ impl Widget for FeedsApp {
             return Ok(false);
         };
         match (kind, operation) {
-            (qos_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
+            (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
                 if self.store.feeds.is_empty() {
                     return Err("there are no subscriptions to refresh".into());
                 }
                 self.refresh_all();
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::FeedsOperation::RevealFeed { id },
             ) => {
                 let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
@@ -4276,7 +4276,7 @@ impl Widget for FeedsApp {
                 self.set_filter(Filter::Feed(id));
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::FeedsOperation::RevealArticle { id },
             ) => {
                 let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
@@ -4295,7 +4295,7 @@ impl Widget for FeedsApp {
                 }
             }
             (
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::FeedsOperation::RevealTag { tag },
             ) => {
                 let tag = actions::normalize_tags([tag.as_str()])
@@ -4314,14 +4314,14 @@ impl Widget for FeedsApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect
+        if kind != tilo_actions::OperationKind::Effect
             || type_id != crate::actions::FEEDS_OPERATION_TYPE
         {
             return Ok(None);
@@ -4338,11 +4338,11 @@ impl Widget for FeedsApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.drain_fetches_live();
         if self
             .resource_refresh_result

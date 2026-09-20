@@ -1742,7 +1742,7 @@ fn checksum(rgba: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::ActionInput;
+    use tilo_actions::ActionInput;
 
     /// Regression for the live-launch boundary: an action emitted by Tube's
     /// production resource provider must be decodable by the registry installed
@@ -1754,7 +1754,7 @@ mod tests {
         let video_id = model.videos[0].id.clone();
         model.route = tube::model::Route::Watch(video_id);
         let resources = tube::actions::provide_resources(&model);
-        let published = qos_actions::flatten(&resources)
+        let published = tilo_actions::flatten(&resources)
             .into_iter()
             .find(|flat| {
                 flat.resource_id.0.starts_with("tube.current:") && flat.action.id == "like"

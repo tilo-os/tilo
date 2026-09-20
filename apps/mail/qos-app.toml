@@ -10,7 +10,7 @@
 #     cargo build -p mail -p pkg-cli -p install
 #     mkdir -p target/qpkg/mail/bin
 #     cp target/debug/mail target/qpkg/mail/bin/mail
-#     target/debug/qos-pkg pack --manifest apps/mail/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/mail/tilo-app.toml \
 #         --payload target/qpkg/mail --output target/mail.qpkg
 #     target/debug/qos-install install target/mail.qpkg --allow-self-signed
 

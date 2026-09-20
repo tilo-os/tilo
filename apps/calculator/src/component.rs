@@ -33,7 +33,7 @@ fn create(
         .read_record(crate::CalculatorApp::from_document)
         .map_err(LaunchError::Record)?
         .map_err(LaunchError::Operation)?;
-    let mut registry = qos_actions::ActionRegistry::new();
+    let mut registry = tilo_actions::ActionRegistry::new();
     crate::actions::register(&mut registry);
     let mut component = AppComponent::new(context, Box::new(root), registry);
     component

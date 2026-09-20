@@ -97,7 +97,7 @@ pub struct NewMessage {
     /// by selecting something. Minted by the publishing app at authoring
     /// time and carried verbatim, so it survives into the document instead
     /// of being lost at the composer.
-    pub reference: Option<qos_reference::ResourceRef>,
+    pub reference: Option<tilo_reference::ResourceRef>,
     /// An agent's record of what it is doing with the message this one
     /// replies to. Written by the agent at the moment it takes a summons, so
     /// the reply exists — and says so — before there is an outcome.
@@ -953,7 +953,7 @@ impl ChatDoc {
     fn write_reference(
         doc: &mut AutoCommit,
         block: &ObjId,
-        reference: Option<&qos_reference::ResourceRef>,
+        reference: Option<&tilo_reference::ResourceRef>,
     ) {
         if let Some(r) = reference
             && let Ok(json) = serde_json::to_string(r)
@@ -2093,7 +2093,7 @@ impl ChatDoc {
     /// message — and also for one whose stored address will not parse, which
     /// is deliberately not the same as a nearby address that does. A
     /// reference that cannot be read is no reference at all.
-    fn read_reference(doc: &AutoCommit, msg: &ObjId) -> Option<qos_reference::ResourceRef> {
+    fn read_reference(doc: &AutoCommit, msg: &ObjId) -> Option<tilo_reference::ResourceRef> {
         let raw = get_str(doc, msg, "reference");
         if raw.is_empty() {
             return None;
@@ -2286,7 +2286,7 @@ mod tests {
     #[test]
     fn a_messages_reference_round_trips_and_an_ordinary_message_carries_none() {
         let mut doc = seeded();
-        let about = qos_reference::ResourceRef::whole(
+        let about = tilo_reference::ResourceRef::whole(
             "files.entry",
             "files.entry:/var/workspace/harbour.png",
             "harbour.png",

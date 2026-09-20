@@ -2,7 +2,7 @@
 //! publication remains the recovery path; this lane never executes a command.
 use crate::SessionOwner;
 use qos_peer_state::{NeighbourMsg, desktop_command::DesktopCommandError, owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest}};
-use qos_relay::peer_actions::{ActionMessage, DirectedAction};
+use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
 
 impl SessionOwner {
     pub fn commit_desktop_command_with_delivery(&mut self, request: &OwnerCommitRequest)
@@ -37,7 +37,7 @@ impl SessionOwner {
             let action = DirectedAction {
                 room: request.room.parse().ok()?, request_id: *invocation,
                 source: self.peer().authority().device_public_key, target: caller.device_public_key,
-                message: ActionMessage::CommittedDesktop { invocation: qos_actions::InvocationId(*invocation), packets, opened },
+                message: ActionMessage::CommittedDesktop { invocation: tilo_actions::InvocationId(*invocation), packets, opened },
             };
             action.validate().then_some(action)
         })();
@@ -45,12 +45,12 @@ impl SessionOwner {
     }
 }
 
-fn tab_locations(state: &qos_peer_state::StatePeer) -> Vec<qos_relay::peer_actions::OpenedDesktopTab> {
+fn tab_locations(state: &qos_peer_state::StatePeer) -> Vec<tilo_relay::peer_actions::OpenedDesktopTab> {
     let mut tree = qos_desktop::WorkspaceTree::default();
     let Some(room) = qos_desktop::RoomId::parse(state.room()) else { return vec![] };
     let Some(doc) = state.admitted_room() else { return vec![] };
     if qos_desktop::projection::RoomProjection::apply_admitted_room(&mut tree, room, doc).is_err() { return vec![]; }
-    tree.workspaces.iter().flat_map(|w| &w.strips).flat_map(|s| s.window_groups.iter().flat_map(move |g| g.tabs.iter().map(move |t| qos_relay::peer_actions::OpenedDesktopTab {
+    tree.workspaces.iter().flat_map(|w| &w.strips).flat_map(|s| s.window_groups.iter().flat_map(move |g| g.tabs.iter().map(move |t| tilo_relay::peer_actions::OpenedDesktopTab {
         strip: s.id.0.to_string(), group: g.id.to_string(), tab: t.id.to_string(),
     }))).collect()
 }

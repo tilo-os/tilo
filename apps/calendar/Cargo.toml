@@ -17,7 +17,7 @@ path = "src/main.rs"
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The shared multi-account store + encrypted secret vault. Calendar reads its
 # CalDAV accounts from here (Settings owns the write lifecycle); credentials
 # are sealed in the vault, never in the plaintext store. Reading the one
@@ -26,7 +26,7 @@ accounts = { path = "../../crates/system/accounts" }
 # The qOS action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 chrono = { workspace = true, features = ["std", "clock"] }
 automerge.workspace = true
 serde.workspace = true

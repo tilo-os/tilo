@@ -1,7 +1,7 @@
 //! LocalSet half of the certified peer facade. Kept beside broker admission so
 //! no application capability or actor constructor crosses the network queue.
 use super::*;
-use qos_relay::peer_actions::{ActionMessage, Confirmation};
+use tilo_relay::peer_actions::{ActionMessage, Confirmation};
 
 impl CapnpBrokerState {
     pub(crate) fn peer_action_queue(&self) -> crate::peer_actions::PeerActionQueue {
@@ -10,7 +10,7 @@ impl CapnpBrokerState {
 
     pub(super) fn verify_network_action_caller(
         &self,
-        evidence: &qos_relay::client::CertifiedAction,
+        evidence: &tilo_relay::client::CertifiedAction,
     ) -> Result<VerifiedActionCaller, String> {
         let cert = evidence.certificate();
         let room = evidence.action().room.to_string();
@@ -19,7 +19,7 @@ impl CapnpBrokerState {
             .map_err(|_| "clock unavailable")?
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        qos_user_identity::verify_device_cert_at(cert, now).map_err(|_| "certificate rejected")?;
+        tilo_user_identity::verify_device_cert_at(cert, now).map_err(|_| "certificate rejected")?;
         if cert.capabilities.can_act_as_host || evidence.action().source != cert.device_public_key {
             return Err("device authority required".into());
         }
@@ -100,9 +100,9 @@ impl CapnpBrokerState {
     async fn peer_action(
         &self,
         directories: &LocalActionDirectoryRegistry,
-        evidence: &qos_relay::client::CertifiedAction,
-        poll: Option<qos_actions::InvocationId>,
-        notification: Option<qos_actions::InvocationUpdate>,
+        evidence: &tilo_relay::client::CertifiedAction,
+        poll: Option<tilo_actions::InvocationId>,
+        notification: Option<tilo_actions::InvocationUpdate>,
     ) -> Result<ActionMessage, String> {
         let caller = self.verify_network_action_caller(evidence)?;
         let host = self.invocation_host()?;
@@ -284,7 +284,7 @@ impl CapnpBrokerState {
     fn peer_observation(
         &self,
         caller: &VerifiedActionCaller,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<ActionMessage, String> {
         let record = self.verified_invocation_status(caller, invocation)?;
         Ok(ActionMessage::Observation {

@@ -9,7 +9,7 @@ use crate::{NeighbourMsg, coverage::Coverage, durability::DurableReceipt};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, Automerge, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::{DocumentMutation, RoutedDocumentPayload};
-use qos_user_identity::DeviceCert;
+use tilo_user_identity::DeviceCert;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -42,7 +42,7 @@ impl RetentionAuthority {
         {
             return Err("retention authority requires canonical room UUID".into());
         }
-        qos_user_identity::verify_device_cert(&governor).map_err(|e| e.to_string())?;
+        tilo_user_identity::verify_device_cert(&governor).map_err(|e| e.to_string())?;
         Ok(Self {
             room: room.into(),
             governor,
@@ -257,7 +257,7 @@ fn identities(
                 if id != hex::encode(identity.device_cert.device_public_key) {
                     return Err(ProofError::Unknown);
                 }
-                qos_user_identity::verify_device_cert(&identity.device_cert)
+                tilo_user_identity::verify_device_cert(&identity.device_cert)
                     .map_err(|_| ProofError::Unknown)?;
                 Ok((id, identity))
             })
@@ -272,7 +272,7 @@ fn identities(
     {
         return Err(ProofError::Unknown);
     }
-    let mut revoked = qos_user_identity::RevocationList::new();
+    let mut revoked = tilo_user_identity::RevocationList::new();
     for (id, identity) in &current {
         if prior
             .get(id)

@@ -11,7 +11,7 @@
 #     cargo build -p tube -p pkg-cli -p install
 #     mkdir -p target/qpkg/tube/bin
 #     cp target/debug/tube target/qpkg/tube/bin/tube
-#     target/debug/qos-pkg pack --manifest apps/tube/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/tube/tilo-app.toml \
 #         --payload target/qpkg/tube --output target/tube.qpkg
 #     target/debug/qos-install install target/tube.qpkg --allow-self-signed
 

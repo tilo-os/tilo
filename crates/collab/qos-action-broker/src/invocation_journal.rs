@@ -4,7 +4,7 @@
 //! validates the last atomic snapshot and turns every nonterminal into an
 //! uncertain observation. Recovery never returns a dispatch permit.
 
-use qos_actions::{InvocationId, InvocationUpdate};
+use tilo_actions::{InvocationId, InvocationUpdate};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
@@ -346,7 +346,7 @@ fn private_file(file: &File) -> Result<(), String> {
 pub(super) fn unknown(invocation: InvocationId) -> InvocationUpdate {
     InvocationUpdate::Failed {
         invocation,
-        error: qos_actions::ActionFailure {
+        error: tilo_actions::ActionFailure {
             code: "action_outcome_unknown".into(),
             message:
                 "The application outcome is unknown; this invocation will not be executed again."
@@ -369,7 +369,7 @@ mod tests {
                 root: [1; 32],
                 device: [2; 32],
             },
-            invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(
+            invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(
                 0xa5a5_a5a5_0000_0000_0000_0000_0000_0001,
             )),
         }
@@ -441,9 +441,9 @@ mod tests {
         let mut k = key();
         k.host = journal.host();
         let intent = serde_json::json!({"argument": null, "action": "write"});
-        let update = qos_actions::InvocationUpdate::Succeeded {
+        let update = tilo_actions::InvocationUpdate::Succeeded {
             invocation: k.invocation,
-            output: qos_actions::ActionOutput {
+            output: tilo_actions::ActionOutput {
                 value: Some(serde_json::json!({"private": "result"})),
                 resources: vec![],
             },
@@ -482,7 +482,7 @@ mod tests {
         let record = journal.lookup(&k).unwrap().unwrap();
         assert!(record.uncertain);
         assert!(
-            matches!(record.update, qos_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable)
+            matches!(record.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable)
         );
         assert_eq!(
             std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,

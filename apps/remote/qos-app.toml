@@ -10,7 +10,7 @@
 #     cargo build -p remote -p pkg-cli -p install
 #     mkdir -p target/qpkg/remote/bin
 #     cp target/debug/remote target/qpkg/remote/bin/remote
-#     target/debug/qos-pkg pack --manifest apps/remote/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/remote/tilo-app.toml \
 #         --payload target/qpkg/remote --output target/remote.qpkg
 #     target/debug/qos-install install target/remote.qpkg --allow-self-signed
 

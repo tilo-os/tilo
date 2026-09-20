@@ -32,7 +32,7 @@
 #     cargo build -p terminal -p pkg-cli -p install
 #     mkdir -p target/qpkg/terminal/bin
 #     cp target/debug/terminal target/qpkg/terminal/bin/terminal
-#     target/debug/qos-pkg pack --manifest apps/terminal/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/terminal/tilo-app.toml \
 #         --payload target/qpkg/terminal --output target/terminal.qpkg
 #     target/debug/qos-install install target/terminal.qpkg --allow-self-signed
 

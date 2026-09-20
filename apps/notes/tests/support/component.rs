@@ -41,7 +41,7 @@ pub fn try_restored_component(
         instance,
         f.authority.clone(),
         f.author.clone(),
-        qos_actions::ActionContext::default(),
+        tilo_actions::ActionContext::default(),
         &target,
     )
     .unwrap();
@@ -116,7 +116,7 @@ pub fn invoke(
         .invoke_bound_action(
             &ui::bound_dispatch::BoundActionAddress {
                 instance_id: instance,
-                address: qos_actions::ActionAddress::new(resource, action),
+                address: tilo_actions::ActionAddress::new(resource, action),
             },
             &arguments,
         )
@@ -270,7 +270,7 @@ pub fn invoke_confirmed(
 ) {
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: instance,
-        address: qos_actions::ActionAddress::new(resource, action),
+        address: tilo_actions::ActionAddress::new(resource, action),
     };
     driver
         .invoke_bound_action_confirmed(&address, &serde_json::Map::new())

@@ -1,0 +1,22 @@
+[package]
+name = "tilo-unlock-helper"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Privileged in-session password-verify helper the compositor spawns to unlock a locked session via PAM."
+
+[[bin]]
+name = "tilo-unlock-helper"
+path = "src/main.rs"
+
+[dependencies]
+# Only libc — for dlopen/dlsym/malloc/strdup. We deliberately do NOT link
+# libpam at build time (no `-lpam`, no pam-devel needed): the module is
+# loaded at runtime with dlopen("libpam.so.0"), which is always present on
+# a PAM system. This keeps the helper buildable on hosts without pam-devel
+# and keeps the OS image's compile-time deps unchanged.
+libc = "0.2"
+
+[lints]
+workspace = true

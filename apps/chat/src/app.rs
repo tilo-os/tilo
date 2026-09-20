@@ -681,21 +681,21 @@ pub struct ChatApp {
     // (raw NALUs: the local self-preview feeds them to `ui`'s VideoPlayer,
     // and they publish as the camera track). No second in-app codec.
     #[cfg(feature = "live-media")]
-    cam_encoder: Option<qos_callstream::H264Encoder>,
+    cam_encoder: Option<tilo_callstream::H264Encoder>,
     #[cfg(feature = "live-media")]
     screen: Option<crate::video::ScreenCapture>,
     // Screen-share encode + framing runs the shared stack's throttle +
     // encoder → `SurfaceFrame` sender seam — the same composition the
     // compositor's `SharedFlatpakSession` performs for a Wayland surface.
     #[cfg(feature = "live-media")]
-    screen_session: Option<qos_callstream::VideoStreamSender>,
+    screen_session: Option<tilo_callstream::VideoStreamSender>,
     // Remote **camera** decoders (raw-NALU H.264 → RGBA), keyed by sender.
     #[cfg(feature = "live-media")]
-    remote_decoders: HashMap<String, qos_callstream::H264Decoder>,
+    remote_decoders: HashMap<String, tilo_callstream::H264Decoder>,
     // Remote **screen-share** receivers (reframe + decode) → featured tile,
     // keyed by sender. The receive half of the shared stack.
     #[cfg(feature = "live-media")]
-    remote_screen_rx: HashMap<String, qos_callstream::VideoStreamReceiver>,
+    remote_screen_rx: HashMap<String, tilo_callstream::VideoStreamReceiver>,
     /// Highest accepted sequence per remote sender + track. The transport is
     /// deliberately lossy under pressure; rejecting late frames here prevents
     /// a delayed packet from visibly rewinding a peer's camera or screen.
@@ -940,11 +940,11 @@ impl ChatApp {
         );
     }
 
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the affordance == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical action.
     #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -1368,7 +1368,7 @@ impl ChatApp {
             self.camera =
                 crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
             // Camera encode reuses the shared stack's H.264 encoder.
-            self.cam_encoder = qos_callstream::H264Encoder::new(
+            self.cam_encoder = tilo_callstream::H264Encoder::new(
                 crate::video::DEFAULT_W,
                 crate::video::DEFAULT_H,
                 crate::video::DEFAULT_FPS,
@@ -1482,7 +1482,7 @@ impl ChatApp {
     }
 
     #[cfg(feature = "live-media")]
-    fn stop_screen_for_error(&mut self, error: &qos_callstream::FrameError) {
+    fn stop_screen_for_error(&mut self, error: &tilo_callstream::FrameError) {
         self.media_error = Some(format!("Screen sharing stopped: {error}"));
         self.call.sharing = false;
         self.release_screen();
@@ -1592,7 +1592,7 @@ impl ChatApp {
     /// shared voice membership.
     ///
     /// The source selection stays the xdg-desktop-portal `ScreenCast` picker;
-    /// the encode + framing route through [`qos_callstream::VideoStreamSender`]
+    /// the encode + framing route through [`tilo_callstream::VideoStreamSender`]
     /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
     /// `SharedFlatpakSession` performs — instead of a second in-app codec.
     #[cfg_attr(
@@ -1613,7 +1613,7 @@ impl ChatApp {
         {
             if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
                 self.screen = Some(scr);
-                self.screen_session = qos_callstream::VideoStreamSender::new(
+                self.screen_session = tilo_callstream::VideoStreamSender::new(
                     src.width,
                     src.height,
                     crate::video::DEFAULT_FPS,
@@ -1629,7 +1629,7 @@ impl ChatApp {
             // A fake portal source has no real PipeWire node. Tests still use
             // the production sender/transport contract, but must never block
             // opening a host device merely to verify the shared call state.
-            self.screen_session = qos_callstream::VideoStreamSender::new(
+            self.screen_session = tilo_callstream::VideoStreamSender::new(
                 src.width,
                 src.height,
                 crate::video::DEFAULT_FPS,
@@ -2745,11 +2745,11 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     Rect::new(x0, y0, x0 + f.2 * win.width(), y0 + f.3 * win.height())
 }
 
-fn chat_navigation_kind(kind: qos_actions::OperationKind) -> Result<bool, String> {
+fn chat_navigation_kind(kind: tilo_actions::OperationKind) -> Result<bool, String> {
     match kind {
-        qos_actions::OperationKind::Document => Ok(false),
-        qos_actions::OperationKind::View => Ok(true),
-        qos_actions::OperationKind::Effect => {
+        tilo_actions::OperationKind::Document => Ok(false),
+        tilo_actions::OperationKind::View => Ok(true),
+        tilo_actions::OperationKind::Effect => {
             Err("Chat navigation requires a View operation".into())
         }
     }
@@ -3174,15 +3174,15 @@ impl Widget for ChatApp {
 
     /// The resource tree Chat currently has open — the active workspace, its
     /// channels, and the open channel's messages — each exporting the actions
-    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](qos_actions::ResourceProvider)
+    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](tilo_actions::ResourceProvider)
     /// impl in [`crate::actions`], the same builder the affordance covenant tests
     /// drive. Recomputed each frame; empty until a workspace is selected.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -3429,7 +3429,7 @@ impl Widget for ChatApp {
     )]
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -3441,7 +3441,7 @@ impl Widget for ChatApp {
         match &operation {
             crate::actions::ChatOperation::ImportAttachment { .. } => {
                 if !self.external_services { return Err("attachment import unsupported: no host asset transport".into()); }
-                if kind != qos_actions::OperationKind::Effect {
+                if kind != tilo_actions::OperationKind::Effect {
                     return Err("attachment import requires an Effect operation".into());
                 }
             }
@@ -3751,7 +3751,7 @@ impl ChatApp {
 
 /// Wrap a decoded RGBA frame as a `peniko` image for painting into a call tile.
 #[cfg(feature = "live-media")]
-fn rgba_to_image(frame: &qos_callstream::DecodedFrame) -> vello::peniko::ImageData {
+fn rgba_to_image(frame: &tilo_callstream::DecodedFrame) -> vello::peniko::ImageData {
     use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
     ImageData {
         data: Blob::new(std::sync::Arc::new(frame.rgba.clone())),
@@ -3771,7 +3771,7 @@ fn rgba_to_image(frame: &qos_callstream::DecodedFrame) -> vello::peniko::ImageDa
 mod screenshare_reuse_tests {
     use super::*;
     use crate::media::{MediaEngine, MediaObject, TrackKind};
-    use qos_callstream::VideoStreamSender;
+    use tilo_callstream::VideoStreamSender;
     use ui::clock::{Duration, Instant};
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
@@ -3848,7 +3848,7 @@ mod screenshare_reuse_tests {
         app.screen_session = VideoStreamSender::new(96, 64, 30).ok();
         app.media.transport_mut().publish(TrackKind::Screen);
 
-        app.stop_screen_for_error(&qos_callstream::FrameError::SequenceExhausted);
+        app.stop_screen_for_error(&tilo_callstream::FrameError::SequenceExhausted);
 
         assert!(!app.call.sharing);
         assert!(app.screen_session.is_none());

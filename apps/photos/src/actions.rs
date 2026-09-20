@@ -37,7 +37,7 @@
 
 use automerge::AutoCommit;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
     ResultSpec, RetryPolicy,
@@ -136,7 +136,7 @@ pub fn export_edited_content(
     source_content: &str,
     expected_edits: Edits,
     doc: &AutoCommit,
-) -> Result<qos_actions::ActionOutput, String> {
+) -> Result<tilo_actions::ActionOutput, String> {
     let open = PhotosDoc::image(doc).ok_or_else(|| "no photograph is open".to_string())?;
     if resource_id(&open) != expected_resource_id
         || open.content.as_deref() != Some(source_content)
@@ -160,9 +160,9 @@ pub fn export_edited_content(
     if qdoc::blobstore::get(&hash).as_deref() != Some(encoded.as_slice()) {
         return Err("the stored edited photograph is unavailable".into());
     }
-    let address = qos_actions::content_resource(&hash)
+    let address = tilo_actions::content_resource(&hash)
         .ok_or_else(|| "the content provider returned an invalid address".to_string())?;
-    Ok(qos_actions::ActionOutput {
+    Ok(tilo_actions::ActionOutput {
         value: None,
         resources: vec![address],
     })
@@ -662,7 +662,7 @@ impl ResourceProvider for PhotosResources {
         {
             resource = resource.with_action(
                 spec.returns(ResultSpec::Resource {
-                    resource_kind: qos_actions::CONTENT_RESOURCE_KIND.into(),
+                    resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
                 })
                 .with_description(
                     "Render this photograph's current crop and rotation into immutable PNG content",
@@ -1189,7 +1189,7 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
                 },
             )
             .unwrap_or_else(|error| EncodedAction {
-                type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                 payload: format!("photos file operation could not be serialized: {error}")
                     .into_bytes(),
             })
@@ -1208,7 +1208,7 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
 /// under its own runtime directory, so one photograph had one address per
 /// participant — `…/qlva…/qos-opened/<hash>.png` here, `…/qlvx…/` there,
 /// `…/qlvq…/` in the third. An address is resolved by string equality
-/// ([`qos_actions::door::resolve`]), so an operation invoked on one of them
+/// ([`tilo_actions::door::resolve`]), so an operation invoked on one of them
 /// reached exactly one session: the one whose path had won. An agent cropped
 /// the editor in `qlva…` while the person watching the editor in `qlvx…` saw
 /// their picture sit there unchanged. The run before, the same invocation
@@ -1227,7 +1227,7 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
 /// was handed the same bytes staged as `<hash>.png` would be back to two
 /// addresses for one picture. What a person reads is the resource's **label**,
 /// which is the file's own name and travels beside the id everywhere one is
-/// rendered — the palette row, `qos_actions::FlatAction::resource_label`, the
+/// rendered — the palette row, `tilo_actions::FlatAction::resource_label`, the
 /// agent's survey line, the chip on a remark.
 ///
 /// # A photograph with no content hash
@@ -1282,7 +1282,7 @@ pub fn content_of(id: &str) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::model::OpenImage;
-    use qos_actions::flatten;
+    use tilo_actions::flatten;
 
     fn doc_with_image() -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -1405,7 +1405,7 @@ mod tests {
             .expect("the selected photo still offers removal");
         let mut registry = ActionRegistry::new();
         register(&mut registry);
-        let qos_actions::ActionInput::Immediate(encoded) = &remove.input else {
+        let tilo_actions::ActionInput::Immediate(encoded) = &remove.input else {
             panic!("removal is immediate");
         };
         registry.decode(encoded).unwrap().apply(&mut doc).unwrap();
@@ -1436,7 +1436,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "share-reference")
             .expect("an addressable library photo can be shared");
-        let qos_actions::ActionInput::Immediate(encoded) = &share.input else {
+        let tilo_actions::ActionInput::Immediate(encoded) = &share.input else {
             panic!("share is a local effect operation");
         };
         assert_eq!(
@@ -1623,7 +1623,7 @@ mod tests {
             " \t0.25, 0, 0.75, 1\n",
         ] {
             let value = serde_json::json!(region);
-            qos_actions::validate_json_schema(&value, schema)
+            tilo_actions::validate_json_schema(&value, schema)
                 .unwrap_or_else(|error| panic!("schema rejected {region:?}: {error}"));
             let supplied = serde_json::json!({ "region": region });
             ActionArgs::bind_json(params, supplied.as_object().unwrap())
@@ -1638,7 +1638,7 @@ mod tests {
             serde_json::json!("-0.1,0,0.5,1"),
         ] {
             assert!(
-                qos_actions::validate_json_schema(&value, schema).is_err(),
+                tilo_actions::validate_json_schema(&value, schema).is_err(),
                 "schema accepted invalid crop region {value}"
             );
             let supplied = serde_json::json!({ "region": value });
@@ -1661,7 +1661,7 @@ mod tests {
             .iter()
             .find(|a| a.id == "crop")
             .expect("crop is published");
-        let qos_actions::ActionInput::Prompted { build, .. } = &crop.input else {
+        let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
             panic!("crop collects an argument");
         };
         let mut registry = ActionRegistry::new();
@@ -1684,7 +1684,7 @@ mod tests {
         let mut doc = doc_with_image();
         let res = PhotosResources.resources(&doc);
         let crop = res[0].actions.iter().find(|a| a.id == "crop").unwrap();
-        let qos_actions::ActionInput::Prompted { build, .. } = &crop.input else {
+        let tilo_actions::ActionInput::Prompted { build, .. } = &crop.input else {
             panic!("crop collects an argument");
         };
         let mut registry = ActionRegistry::new();
@@ -1710,9 +1710,9 @@ mod tests {
         let open = res[0].actions.iter().find(|a| a.id == "open").unwrap();
         assert_eq!(
             open.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: false }
+            tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(open.contract.result, qos_actions::ResultSpec::Job);
+        assert_eq!(open.contract.result, tilo_actions::ResultSpec::Job);
         assert_eq!(open.params()[0].name.as_ref(), "path");
         let copy = res[0].actions.iter().find(|a| a.id == "copy").unwrap();
         assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);

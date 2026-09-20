@@ -13,7 +13,7 @@
 #     cargo build -p ebook -p pkg-cli -p install
 #     mkdir -p target/qpkg/ebook/bin
 #     cp target/debug/ebook target/qpkg/ebook/bin/ebook
-#     target/debug/qos-pkg pack --manifest apps/ebook/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/ebook/tilo-app.toml \
 #         --payload target/qpkg/ebook --output target/ebook.qpkg
 #     target/debug/qos-install install target/ebook.qpkg --allow-self-signed
 

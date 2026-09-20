@@ -121,7 +121,7 @@ impl FeedsSearchProvider {
         let result = SearchResult::for_action(
             TAG_KIND,
             format!("#{tag}"),
-            qos_actions::ActionAddress::new(crate::actions::tag_resource_id(tag), "open"),
+            tilo_actions::ActionAddress::new(crate::actions::tag_resource_id(tag), "open"),
         )
         .with_icon(Icon::Pin)
         .with_subtitle("Tagged articles");
@@ -337,13 +337,13 @@ mod tests {
         let hits = app.search_providers()[0].search_limited("", total);
         assert!(hits.iter().all(|hit| {
             hit.action_address().is_some_and(|address| {
-                qos_actions::door::resolve(&resources, &address)
-                    .is_some_and(|spec| spec.kind == qos_actions::OperationKind::View)
+                tilo_actions::door::resolve(&resources, &address)
+                    .is_some_and(|spec| spec.kind == tilo_actions::OperationKind::View)
                     || app
                         .resource(&doc, address.resource.as_str())
                         .is_some_and(|resource| {
-                            qos_actions::door::resolve(&[resource], &address)
-                                .is_some_and(|spec| spec.kind == qos_actions::OperationKind::View)
+                            tilo_actions::door::resolve(&[resource], &address)
+                                .is_some_and(|spec| spec.kind == tilo_actions::OperationKind::View)
                         })
             })
         }));
@@ -435,7 +435,7 @@ mod tests {
         let operation = palette
             .take_operation()
             .expect("canonical result queued a broker operation");
-        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
         assert!(palette.take_navigation().is_none());
         assert!(
             app.invoke_resource_operation(

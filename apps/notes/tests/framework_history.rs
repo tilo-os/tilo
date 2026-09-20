@@ -44,7 +44,7 @@ fn notebook_shared_history_previews_restores_and_undoes_saved_content() {
             11,
             canonical::PACKAGE,
             f.author.clone(),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             |doc, _| {
                 let mut page = NotesDoc::list_pages(doc)
                     .into_iter()
@@ -249,7 +249,7 @@ fn production_preparation_imports_once_preserves_sources_and_reopens_real_histor
             1,
             canonical::PACKAGE,
             f.author.clone(),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             |doc, _| {
                 let mut page = NotesDoc::list_pages(doc)
                     .into_iter()
@@ -278,7 +278,7 @@ fn production_preparation_imports_once_preserves_sources_and_reopens_real_histor
             2,
             canonical::PACKAGE,
             ui::permissions::UserId("second-owner-fixture".into()),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             |doc, _| {
                 let mut page = NotesDoc::list_pages(doc)
                     .into_iter()
@@ -419,7 +419,7 @@ fn notebook_restore_rechecks_stale_frontier_and_current_authority() {
                     12,
                     canonical::PACKAGE,
                     f.author.clone(),
-                    qos_actions::ActionContext::default(),
+                    tilo_actions::ActionContext::default(),
                     |doc, _| {
                         let mut page = NotesDoc::list_pages(doc)
                             .into_iter()
@@ -543,7 +543,7 @@ fn production_close_failure_retains_the_saved_record_owner_for_retry() {
             11,
             canonical::PACKAGE,
             f.author.clone(),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             |doc, _| {
                 let mut page = NotesDoc::list_pages(doc)
                     .into_iter()
@@ -675,7 +675,7 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
             11,
             canonical::PACKAGE,
             f.author.clone(),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             |doc, _| {
                 let mut page = NotesDoc::list_pages(doc)
                     .into_iter()

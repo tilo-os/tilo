@@ -35,7 +35,7 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
@@ -376,8 +376,8 @@ pub fn duplicate_subtree_action(doc: &AutoCommit, source: PageId) -> Result<Note
 }
 
 /// Durable, browseable history metadata for a Notes mutation.
-pub fn history_context(action: &NotesAction) -> qos_actions::ActionContext {
-    let mut context = qos_actions::ActionContext::for_action("org.qos.Notes", "Notes", action);
+pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
+    let mut context = tilo_actions::ActionContext::for_action("org.qos.Notes", "Notes", action);
     let (label, resource_id, kind, title) = match action {
         NotesAction::UpdatePageTree { .. } => (
             "Move page",
@@ -449,7 +449,7 @@ pub fn history_context(action: &NotesAction) -> qos_actions::ActionContext {
         ),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: resource_id,
         kind: kind.to_string(),
         label: title,
@@ -1174,7 +1174,7 @@ impl ResourceProvider for crate::app::NotesApp {
 mod tests {
     use super::*;
     use crate::model::Workspace;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
@@ -1333,7 +1333,7 @@ mod tests {
         );
         let resources = provide_resources(&ctx, &doc);
         assert!(
-            qos_actions::door::resolve(&resources, &open_block_address(projects, "obj-b"))
+            tilo_actions::door::resolve(&resources, &open_block_address(projects, "obj-b"))
                 .is_none()
         );
         let block = block_resource(projects, &ctx.blocks[&projects][1])
@@ -1373,7 +1373,7 @@ mod tests {
         );
         let resources = provide_resources(&ctx, &doc);
         assert!(
-            qos_actions::door::resolve(&resources, &open_block_address(projects, "block-9999"))
+            tilo_actions::door::resolve(&resources, &open_block_address(projects, "block-9999"))
                 .is_none()
         );
         assert!(block_resource(projects, &ctx.blocks[&projects][9_999]).is_some());
@@ -1450,7 +1450,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let left = NotesDoc::list_pages(&doc);
         assert_eq!(
@@ -1480,7 +1480,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1538,8 +1538,8 @@ mod tests {
         let action = rename_page_action(&meta, "Renamed via action");
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -1569,8 +1569,8 @@ mod tests {
 
         let action = delete_page_action(projects);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -1676,8 +1676,8 @@ mod tests {
 
         let action = upsert_page_action(&moved);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -1745,7 +1745,7 @@ mod tests {
         let dispatch_encoded = |doc: &mut AutoCommit, enc: EncodedAction| {
             let decoded = registry().decode(&enc).unwrap();
             let mut tx = LocalTransport::new();
-            qos_actions::dispatch(doc, decoded.as_ref(), enc, &mut tx).unwrap();
+            tilo_actions::dispatch(doc, decoded.as_ref(), enc, &mut tx).unwrap();
         };
         let (mut via_a11y, ..) = seeded();
         let (mut via_affordance, ..) = seeded();
@@ -1801,8 +1801,8 @@ mod tests {
                 text: "hé".into(),
             }],
         );
-        let envelope = qos_actions::apply_local(&mut first, &insert, encode(&insert)).unwrap();
-        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut first, &insert, encode(&insert)).unwrap();
+        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
 
         let splice = apply_block_ops_action(
             projects,
@@ -1815,8 +1815,8 @@ mod tests {
                 text: "x".into(),
             }],
         );
-        let envelope = qos_actions::apply_local(&mut first, &splice, encode(&splice)).unwrap();
-        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut first, &splice, encode(&splice)).unwrap();
+        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
         assert_eq!(
             first.get_heads(),
             second.get_heads(),
@@ -1834,7 +1834,7 @@ mod tests {
                 text: "!".into(),
             }],
         );
-        let error = qos_actions::apply_local(&mut second, &stale, encode(&stale))
+        let error = tilo_actions::apply_local(&mut second, &stale, encode(&stale))
             .expect_err("a stale byte range must refuse, never clamp");
         assert!(matches!(error, ActionError::Refused(_)));
         assert_eq!(second.save(), before, "refusal leaves no partial mutation");
@@ -1853,7 +1853,7 @@ mod tests {
                 text: "Original".into(),
             }],
         );
-        qos_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
+        tilo_actions::apply_local(&mut doc, &action, encode(&action)).unwrap();
         let resource = block_resource(
             projects,
             &NoteBlockResource {
@@ -1894,8 +1894,8 @@ mod tests {
             new_tag_action(tag, "Release"),
             set_tag_assignment_action(projects, tag, true),
         ] {
-            let envelope = qos_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
-            qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+            let envelope = tilo_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
+            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
         }
         assert_eq!(
             first.get_heads(),
@@ -1908,8 +1908,8 @@ mod tests {
         );
 
         let remove = delete_tag_action(tag);
-        let envelope = qos_actions::apply_local(&mut first, &remove, encode(&remove)).unwrap();
-        qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut first, &remove, encode(&remove)).unwrap();
+        tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
         assert_eq!(
             first.get_heads(),
             second.get_heads(),

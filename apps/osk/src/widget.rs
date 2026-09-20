@@ -47,7 +47,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
+use ui::tilo_actions::{ActionSpec, OperationKind, Resource, RetryPolicy};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;

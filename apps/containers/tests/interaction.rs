@@ -725,7 +725,7 @@ fn canonical_log_resource_opens_collaborative_detail_state() {
     assert!(
         d.app
             .invoke_resource_operation(
-                ui::qos_actions::OperationKind::View,
+                ui::tilo_actions::OperationKind::View,
                 "containers.logs",
                 &payload,
                 &d.doc,

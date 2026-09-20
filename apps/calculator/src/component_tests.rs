@@ -56,7 +56,7 @@ impl Fixture {
             instance,
             self.authority.clone(),
             self.author.clone(),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             &target,
         )?;
         crate::definition().instantiate(context, target, RestoreInput::None)
@@ -176,7 +176,7 @@ fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
         10,
         fixture.authority.clone(),
         fixture.author.clone(),
-        qos_actions::ActionContext::default(),
+        tilo_actions::ActionContext::default(),
         &LaunchTarget::New,
     ) {
         Ok(_) => panic!("foreign package namespace must be refused"),
@@ -203,7 +203,7 @@ fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
             11,
             fixture.authority.clone(),
             fixture.author.clone(),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             &existing(&wrong),
         ),
         Err(ui::launch::LaunchError::BindingMismatch)
@@ -225,7 +225,7 @@ fn checked_admission_refuses_wrong_package_kind_and_device_namespace() {
             12,
             fixture.authority,
             fixture.author,
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             &LaunchTarget::New,
         ),
         Err(ui::launch::LaunchError::BindingMismatch)
@@ -443,7 +443,7 @@ fn revoked_viewer_authority_refuses_real_calculator_mutation_without_record_chan
     .unwrap();
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: 45,
-        address: qos_actions::ActionAddress::new("calculator.workspace", "add-function"),
+        address: tilo_actions::ActionAddress::new("calculator.workspace", "add-function"),
     };
     driver
         .invoke_bound_action(

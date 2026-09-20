@@ -17,7 +17,7 @@ serde_json.workspace = true
 # handling of a relative `XDG_CONFIG_HOME` differs from the XDG basedir spec.
 dirs.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+atomic-file = { path = "../atomic-file" }
 
 [dev-dependencies]
 serial_test.workspace = true

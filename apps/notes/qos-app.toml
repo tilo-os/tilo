@@ -6,7 +6,7 @@
 #     mkdir -p target/notes-payload/bin
 #     cp target/release/notes  target/notes-payload/bin/notes
 #     target/release/qos-pkg pack \
-#         --manifest apps/notes/qos-app.toml \
+#         --manifest apps/notes/tilo-app.toml \
 #         --payload  target/notes-payload \
 #         --output   target/notes.qpkg
 #     target/release/qos-install install target/notes.qpkg --allow-self-signed

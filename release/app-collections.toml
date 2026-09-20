@@ -1,5 +1,5 @@
 # Named qpkg sets consumed by release-apps.yml. `*` is resolved from the
-# checked-in apps/*/qos-app.toml manifests, so adding an app cannot silently
+# checked-in apps/*/tilo-app.toml manifests, so adding an app cannot silently
 # leave the normal desktop/OS collection incomplete.
 
 [collections.default]
@@ -25,4 +25,4 @@ tube = ["live", "media"]
 chat = ["live-media"]
 mail = ["live"]
 disks = ["live"]
-video_editor = ["decode", "gst"]
+video-editor = ["decode", "gst"]

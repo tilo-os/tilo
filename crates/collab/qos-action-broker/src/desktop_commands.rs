@@ -37,17 +37,17 @@ impl CapnpBrokerState {
                         resource_label: "Desktop".into(),
                         action_label: "Change desktop".into(),
                         description: Some("Typed native current-room desktop command".into()),
-                        operation_kind: qos_actions::OperationKind::Effect,
-                        params: vec![qos_actions::ActionParam::required(
+                        operation_kind: tilo_actions::OperationKind::Effect,
+                        params: vec![tilo_actions::ActionParam::required(
                             "command",
-                            qos_actions::ParamType::Text,
+                            tilo_actions::ParamType::Text,
                             "Exact source-bound desktop command",
-                        ), qos_actions::ActionParam::optional(
-                            "committed_desktop_v2", qos_actions::ParamType::Boolean,
+                        ), tilo_actions::ActionParam::optional(
+                            "committed_desktop_v2", tilo_actions::ParamType::Boolean,
                             "Receive the committed desktop immediately; defaults to false",
                         )],
-                        contract: qos_actions::ActionContract {
-                            permission: qos_actions::PermissionRequirement::Write,
+                        contract: tilo_actions::ActionContract {
+                            permission: tilo_actions::PermissionRequirement::Write,
                             ..Default::default()
                         },
                         input: PublishedInput::None,
@@ -61,14 +61,14 @@ impl CapnpBrokerState {
                     .execute_desktop_command(peer_id, &envelope, service.as_ref())
                     .await;
                 let update = match outcome {
-                    Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                    Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                         invocation: envelope.invocation,
                         output: Default::default(),
                     },
                     Err(DesktopCommandError::Rejected(message)) => {
-                        qos_actions::InvocationUpdate::Failed {
+                        tilo_actions::InvocationUpdate::Failed {
                             invocation: envelope.invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "desktop_command_rejected".into(),
                                 message,
                                 details: None,

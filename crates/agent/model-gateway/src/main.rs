@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use accounts::{AccountId, Secret, SecretVault};
 use agent_provider_config::{ProviderConfig, ProviderProfile, ProviderProtocol};
 use clap::{Parser, Subcommand};
-use qos_model_gateway::{Frame, RPC_VERSION, Request, Response, read_frame, write_frame};
+use tilo_model_gateway::{Frame, RPC_VERSION, Request, Response, read_frame, write_frame};
 use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Parser)]
@@ -74,7 +74,7 @@ fn main() {
 }
 
 fn control(request: Request) -> Result<(), String> {
-    let response = qos_model_gateway::request(request).map_err(|error| error.to_string())?;
+    let response = tilo_model_gateway::request(request).map_err(|error| error.to_string())?;
     if let Some(configured) = response.configured {
         println!("{configured}");
     }

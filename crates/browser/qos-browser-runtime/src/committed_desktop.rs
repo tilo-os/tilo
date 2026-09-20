@@ -2,7 +2,7 @@
 //! The private relay authenticates the carrier; StatePeer still verifies every
 //! room change, signed record, causal prerequisite, permission and replay floor.
 use qos_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
-use qos_relay::{peer_actions::ActionMessage, transport_v2::EnvelopeV2};
+use tilo_relay::{peer_actions::ActionMessage, transport_v2::EnvelopeV2};
 use web_time::SystemTime;
 
 pub fn admit(state: &StatePeer, event: &EnvelopeV2, recipient: [u8; 32], now: SystemTime)

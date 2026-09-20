@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
-use qos_actions::InvocationId;
+use tilo_actions::InvocationId;
 
 use crate::frame::FrameBuf;
 use crate::model::{Capture, ScannedCode};

@@ -6,11 +6,11 @@
 //! operation, while the `select` document action retains the durable choice.
 //! Network refresh remains a separate [`Effect`] operation.
 //!
-//! [`View`]: qos_actions::OperationKind::View
-//! [`Effect`]: qos_actions::OperationKind::Effect
+//! [`View`]: tilo_actions::OperationKind::View
+//! [`Effect`]: tilo_actions::OperationKind::Effect
 
 use automerge::AutoCommit;
-use qos_actions::{Action, ActionAddress, ActionError, ActionRegistry, ExecutionLocus};
+use tilo_actions::{Action, ActionAddress, ActionError, ActionRegistry, ExecutionLocus};
 use serde::{Deserialize, Serialize};
 
 use crate::doc::WeatherDoc;
@@ -96,9 +96,9 @@ pub fn register(registry: &mut ActionRegistry) {
 
 /// Serialize a Weather mutation for direct replay tests and integrations that
 /// do not own a widget `ActionHost`.
-pub fn encode(action: &WeatherAction) -> qos_actions::EncodedAction {
-    qos_actions::EncodedAction::encode(WEATHER_ACTION_TYPE, action).unwrap_or_else(|_| {
-        qos_actions::EncodedAction {
+pub fn encode(action: &WeatherAction) -> tilo_actions::EncodedAction {
+    tilo_actions::EncodedAction::encode(WEATHER_ACTION_TYPE, action).unwrap_or_else(|_| {
+        tilo_actions::EncodedAction {
             type_id: WEATHER_ACTION_TYPE.to_string(),
             payload: Vec::new(),
         }
@@ -181,8 +181,8 @@ mod tests {
         ];
 
         for action in actions {
-            let envelope = qos_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
-            qos_actions::replay(&mut second, &envelope, &registry()).unwrap();
+            let envelope = tilo_actions::apply_local(&mut first, &action, encode(&action)).unwrap();
+            tilo_actions::replay(&mut second, &envelope, &registry()).unwrap();
         }
 
         assert_eq!(first.get_heads(), second.get_heads());

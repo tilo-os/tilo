@@ -22,13 +22,13 @@ tokio-util.workspace = true
 capnp.workspace = true
 runtime-collab = { path = "../../runtime/runtime-collab" }
 qos-desktop = { path = "../../session/qos-desktop" }
-ui = { path = "../../../ui" }
+ui = { path = "../../sdk/ui-core" }
 collab-types = { path = "../collab-types" }
 channel-crypto = { path = "../channel-crypto" }
-qos-actions = { path = "../actions" }
+tilo-actions = { path = "../actions" }
 qos-peer-state = { path = "../qos-peer-state" }
-qos-user-identity = { path = "../../identity/qos-user-identity" }
-qos-relay = { path = "../../hosting/qos-relay" }
+tilo-user-identity = { path = "../tilo-user-identity" }
+tilo-relay = { path = "../../hosting/tilo-relay" }
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 serde.workspace = true
 serde_json.workspace = true

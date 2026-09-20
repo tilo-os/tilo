@@ -54,9 +54,9 @@ pub(crate) fn preference_commit_context(
     slug: &str,
     label: &str,
     action_label: &str,
-) -> Option<ui::qos_actions::ActionContext> {
+) -> Option<ui::tilo_actions::ActionContext> {
     pending.then(|| {
-        ui::qos_actions::ActionContext::for_resource(
+        ui::tilo_actions::ActionContext::for_resource(
             action_label,
             format!("settings.preference:{slug}"),
             "settings.preference-pane",

@@ -14,7 +14,7 @@
 #     cargo build -p file-explorer -p pkg-cli -p install
 #     mkdir -p target/qpkg/file-explorer/bin
 #     cp target/debug/file-explorer target/qpkg/file-explorer/bin/file-explorer
-#     target/debug/qos-pkg pack --manifest apps/file-explorer/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/file-explorer/tilo-app.toml \
 #         --payload target/qpkg/file-explorer --output target/file-explorer.qpkg
 #     target/debug/qos-install install target/file-explorer.qpkg --allow-self-signed
 

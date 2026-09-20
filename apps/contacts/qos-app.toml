@@ -6,7 +6,7 @@
 #     mkdir -p target/contacts-payload/bin
 #     cp target/release/contacts  target/contacts-payload/bin/contacts
 #     target/release/qos-pkg pack \
-#         --manifest apps/contacts/qos-app.toml \
+#         --manifest apps/contacts/tilo-app.toml \
 #         --payload  target/contacts-payload \
 #         --output   target/contacts.qpkg
 #     target/release/qos-install install target/contacts.qpkg --allow-self-signed

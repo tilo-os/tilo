@@ -1,9 +1,9 @@
 use super::*;
-use qos_relay::daemon::{Relay, RelayIdentity};
-use qos_relay::peer_actions::{ActionMessage, DirectedAction};
-use qos_relay::transport_v2::EnvelopeV2;
-use qos_relay::{Envelope, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding};
-use qos_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+use tilo_relay::daemon::{Relay, RelayIdentity};
+use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
+use tilo_relay::transport_v2::EnvelopeV2;
+use tilo_relay::{Envelope, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use uuid::Uuid;
 
 struct LiveAuthority {
@@ -66,7 +66,7 @@ fn device(seed: u8, host: bool) -> (SigningKey, DeviceCert) {
         expires_at_ns: None,
         signature: [0; 64],
     };
-    qos_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
     (key, cert)
 }
 async fn client(relay: &Relay, seed: u8, room: Uuid) -> RelayClient {
@@ -88,7 +88,7 @@ async fn client(relay: &Relay, seed: u8, room: Uuid) -> RelayClient {
     .unwrap();
     client
         .send(Envelope::Subscribe {
-            workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+            workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -166,21 +166,21 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let (mut fixture, local_caller, mut request) = durable_fixture(root.path(), None);
         package_primary(&mut fixture, &mut request);
         let room = Uuid::parse_str(&fixture.cluster_id).unwrap();
-        let ws = qos_relay::room_workspace_id(&room.to_string()).unwrap();
+        let ws = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
         let authority = Arc::new(LiveAuthority { room, root: device(52, false).1.user_public_key, revocations: Mutex::new(RevocationList::new()) });
         assert!(fixture.state.certificate_authority.set(authority.clone()).is_ok());
         assert!(invoke(&request).validate(), "empty canonical package-primary record is valid");
         let (relay_key, relay_cert) = device(55, true);
-        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: qos_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
+        let relay = Relay::start(RelayConfig { state_root: relay_root.path().into(), workspaces: vec![WorkspaceBinding { id: ws, pin: true, replication: tilo_relay::ReplicationIntent::FullWorkspace, admitted_users: vec![], shell_authority: None }], ..Default::default() }, RelayIdentity { user_public_key: relay_cert.user_public_key, device_signing_key: relay_key, device_cert: relay_cert, revocations: RevocationList::new() }).await.unwrap();
         relay.set_workspace_membership(ws, true, vec![device(52, false).1.device_public_key, device(53, false).1.device_public_key, device(54, false).1.device_public_key], relay_root.path().into()).await.unwrap();
         let caller = client(&relay, 52, room).await;
         let other = client(&relay, 53, room).await;
         let host_client = client(&relay, 54, room).await;
         // Production transport stays unavailable before a healthy attachment.
         let denied = send(&caller, room, 52, invoke(&request));
-        assert!(matches!(caller.recv_action().await, Some(EnvelopeV2::Unavailable { request_id, reason: qos_relay::peer_actions::UnavailableReason::AdmissionUnavailable, .. }) if request_id == denied));
+        assert!(matches!(caller.recv_action().await, Some(EnvelopeV2::Unavailable { request_id, reason: tilo_relay::peer_actions::UnavailableReason::AdmissionUnavailable, .. }) if request_id == denied));
         let session = Arc::new(RelayCoeditSession::join(host_client, ws, device(54, false).1.device_public_key).unwrap());
-        assert!(matches!(session.recv().await, Some(qos_relay::Inbound::Ready { .. })));
+        assert!(matches!(session.recv().await, Some(tilo_relay::Inbound::Ready { .. })));
         let worker = fixture.state.start_peer_action_bridge(fixture.directories.clone()).unwrap();
         let (queue, host) = fixture.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
@@ -199,8 +199,8 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let dynamic = client(&relay, 56, room).await;
         let dynamic_catalogue = send(&dynamic, room, 56, ActionMessage::CatalogueRefresh);
         assert!(matches!(reply(&dynamic, dynamic_catalogue).await, ActionMessage::BrokerCatalogue { .. }));
-        let mut revocation = qos_user_identity::RevocationEntry { user_public_key: authority.root, revoked_device_public_key: device(56, false).1.device_public_key, revoked_at_ns: 1, reason: qos_user_identity::RevocationReason::Lost, signature: [0;64] };
-        qos_user_identity::sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[51;32])).unwrap();
+        let mut revocation = tilo_user_identity::RevocationEntry { user_public_key: authority.root, revoked_device_public_key: device(56, false).1.device_public_key, revoked_at_ns: 1, reason: tilo_user_identity::RevocationReason::Lost, signature: [0;64] };
+        tilo_user_identity::sign_revocation_entry(&mut revocation, &SigningKey::from_bytes(&[51;32])).unwrap();
         authority.revocations.lock().unwrap().insert(revocation).unwrap();
         let revoked = send(&dynamic, room, 56, ActionMessage::CatalogueRefresh);
         assert!(matches!(reply(&dynamic, revoked).await, ActionMessage::Rejected { .. }));
@@ -215,20 +215,20 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         let rejected = send(&caller, room, 52, invoke(&stale));
         assert!(matches!(reply(&caller, rejected).await, ActionMessage::Rejected { .. }));
         fixture.directory_state.borrow_mut().resolve_mode = DirectoryResolveMode::Found;
-        fixture.state.surfaces.lock().unwrap().get_mut(&71).unwrap().actions[0].contract.confirmation = qos_actions::ConfirmationPolicy::Phrase { phrase: "DO IT".into() };
-        fixture.state.surfaces.lock().unwrap().get_mut(&71).unwrap().actions[0].contract.execution = qos_actions::ExecutionMode::Streaming { cancellable: true, item_schema: serde_json::json!({"type":"string"}) };
+        fixture.state.surfaces.lock().unwrap().get_mut(&71).unwrap().actions[0].contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase { phrase: "DO IT".into() };
+        fixture.state.surfaces.lock().unwrap().get_mut(&71).unwrap().actions[0].contract.execution = tilo_actions::ExecutionMode::Streaming { cancellable: true, item_schema: serde_json::json!({"type":"string"}) };
         let rejected = send(&caller, room, 52, invoke(&request));
         assert!(matches!(reply(&caller, rejected).await, ActionMessage::Rejected { .. }));
         let mut confirmed = invoke(&request);
-        if let ActionMessage::InvokeBound { confirmation, .. } = &mut confirmed { *confirmation = Some(qos_relay::peer_actions::Confirmation::Phrase("wrong".into())); }
+        if let ActionMessage::InvokeBound { confirmation, .. } = &mut confirmed { *confirmation = Some(tilo_relay::peer_actions::Confirmation::Phrase("wrong".into())); }
         let rejected = send(&caller, room, 52, confirmed.clone());
         assert!(matches!(reply(&caller, rejected).await, ActionMessage::Rejected { .. }));
         assert!(fixture.invocation_rx.try_recv().is_err());
-        if let ActionMessage::InvokeBound { confirmation, .. } = &mut confirmed { *confirmation = Some(qos_relay::peer_actions::Confirmation::Phrase("DO IT".into())); }
+        if let ActionMessage::InvokeBound { confirmation, .. } = &mut confirmed { *confirmation = Some(tilo_relay::peer_actions::Confirmation::Phrase("DO IT".into())); }
         let first = send(&caller, room, 52, confirmed);
         let duplicate = send(&caller, room, 52, invoke(&request));
-        assert!(matches!(reply(&caller, first).await, ActionMessage::Observation { update: Some(qos_actions::InvocationUpdate::Accepted { invocation }), .. } if invocation == request.invocation));
-        assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(qos_actions::InvocationUpdate::Accepted { .. }), .. }));
+        assert!(matches!(reply(&caller, first).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { invocation }), .. } if invocation == request.invocation));
+        assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { .. }), .. }));
         let (_, empty_rx) = mpsc::unbounded_channel();
         let rx = Rc::new(AsyncMutex::new(std::mem::replace(&mut fixture.invocation_rx, empty_rx)));
         let stream: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer { rx: rx.clone() });
@@ -251,7 +251,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert_eq!(postcard::from_bytes::<SignedOp>(&signed_delivery.op_bytes).unwrap(), mutation);
         session.publish_retained_delta([7; 32], signed_delivery.op_bytes).unwrap();
         let Envelope::Delta { delta: payload, .. } = tokio::time::timeout(Duration::from_secs(5), caller.recv()).await.unwrap().unwrap() else { panic!("signed resulting state missing") };
-        let Some(qos_relay::CoeditPayload::RetainedDelta { body, .. }) = qos_relay::CoeditPayload::decode(&payload) else { panic!("retained signed state missing") };
+        let Some(tilo_relay::CoeditPayload::RetainedDelta { body, .. }) = tilo_relay::CoeditPayload::decode(&payload) else { panic!("retained signed state missing") };
         assert_eq!(postcard::from_bytes::<SignedOp>(&body).unwrap(), mutation);
 
         assert!(rx.lock().await.try_recv().is_err());
@@ -264,24 +264,24 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(matches!(reply(&caller, changed_id).await, ActionMessage::Rejected { .. }));
         let channel = fixture.invocation_channel();
         let mut deliberately_lagging = fixture.state.peer_action_queue.transitions_for_test();
-        update_app(&channel, wire_id, &qos_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "working".into(), completed: Some(1), total: Some(2), message: Some("private progress".into()) }).await.unwrap();
+        update_app(&channel, wire_id, &tilo_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "working".into(), completed: Some(1), total: Some(2), message: Some("private progress".into()) }).await.unwrap();
         // No status query is needed to receive the durable owner-directed update.
-        assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(qos_actions::InvocationUpdate::Progress { sequence: 1, .. }), .. }));
+        assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Progress { sequence: 1, .. }), .. }));
         for sequence in 2..=34 {
-            update_app(&channel, wire_id, &qos_actions::InvocationUpdate::Item { invocation: request.invocation, sequence, value: serde_json::json!(format!("private-item-{sequence}")) }).await.unwrap();
-            assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(qos_actions::InvocationUpdate::Item { sequence: delivered, .. }), .. } if delivered == sequence));
+            update_app(&channel, wire_id, &tilo_actions::InvocationUpdate::Item { invocation: request.invocation, sequence, value: serde_json::json!(format!("private-item-{sequence}")) }).await.unwrap();
+            assert!(matches!(reply(&caller, duplicate).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Item { sequence: delivered, .. }), .. } if delivered == sequence));
         }
         assert!(matches!(deliberately_lagging.recv().await, Err(tokio::sync::broadcast::error::RecvError::Lagged(_))), "bounded transition loss is explicit, never silent item coalescing");
         assert!(tokio::time::timeout(Duration::from_millis(100), other.recv_action()).await.is_err(), "other certified owner never receives private notifications");
         let status = send(&caller, room, 52, ActionMessage::Status { invocation: request.invocation });
-        assert!(matches!(reply(&caller, status).await, ActionMessage::Observation { update: Some(qos_actions::InvocationUpdate::Item { sequence: 34, .. }), .. }));
-        assert!(update_app(&channel, wire_id, &qos_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "invalid replay".into(), completed: None, total: None, message: None }).await.is_err());
-        assert!(update_app(&channel, wire_id, &qos_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: qos_actions::ActionOutput { value: Some(serde_json::json!("undeclared private value")), resources: vec![] } }).await.is_err());
+        assert!(matches!(reply(&caller, status).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Item { sequence: 34, .. }), .. }));
+        assert!(update_app(&channel, wire_id, &tilo_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "invalid replay".into(), completed: None, total: None, message: None }).await.is_err());
+        assert!(update_app(&channel, wire_id, &tilo_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: tilo_actions::ActionOutput { value: Some(serde_json::json!("undeclared private value")), resources: vec![] } }).await.is_err());
         let cancel = send(&caller, room, 52, ActionMessage::Cancel { invocation: request.invocation });
         assert!(matches!(reply(&caller, cancel).await, ActionMessage::CancellationRequested { .. }));
         let running = send(&caller, room, 52, ActionMessage::Status { invocation: request.invocation });
-        assert!(matches!(reply(&caller, running).await, ActionMessage::Observation { update: Some(qos_actions::InvocationUpdate::Item { sequence: 34, .. }), cancellation_requested: true, .. }));
-        let terminal = qos_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: qos_actions::ActionOutput::default() };
+        assert!(matches!(reply(&caller, running).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Item { sequence: 34, .. }), cancellation_requested: true, .. }));
+        let terminal = tilo_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: tilo_actions::ActionOutput::default() };
         update_app(&channel, wire_id, &terminal).await.unwrap();
         let done = send(&caller, room, 52, invoke(&request));
         assert!(matches!(reply(&caller, done).await, ActionMessage::Observation { update: Some(update), .. } if update == terminal));
@@ -305,10 +305,10 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         }
         membership.write().workspaces[0].set_owner(&local_caller.admitted.principal_id);
         // Silence is retained as uncertain and cannot re-admit an effect.
-        fixture.state.surfaces.lock().unwrap().get_mut(&71).unwrap().actions[0].contract.confirmation = qos_actions::ConfirmationPolicy::None;
-        let mut silent = request.clone(); silent.invocation = qos_actions::InvocationId::new();
+        fixture.state.surfaces.lock().unwrap().get_mut(&71).unwrap().actions[0].contract.confirmation = tilo_actions::ConfirmationPolicy::None;
+        let mut silent = request.clone(); silent.invocation = tilo_actions::InvocationId::new();
         let started = send(&caller, room, 52, invoke(&silent));
-        assert!(matches!(reply(&caller, started).await, ActionMessage::Observation { update: Some(qos_actions::InvocationUpdate::Accepted { .. }), .. }));
+        assert!(matches!(reply(&caller, started).await, ActionMessage::Observation { update: Some(tilo_actions::InvocationUpdate::Accepted { .. }), .. }));
         let silent_delivery = stream.read_request().send().promise.await.unwrap();
         let silent_wire = silent_delivery.get().unwrap().get_id();
         fixture.state.pending_invocations.lock().unwrap().get_mut(&silent_wire).unwrap().last_activity = std::time::Instant::now() - Duration::from_secs(2);
@@ -326,7 +326,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert_eq!(reopened.state.invocation_host().unwrap(), request.host);
         let host_client = client(&relay, 54, room).await;
         let session = Arc::new(RelayCoeditSession::join(host_client, ws, device(54, false).1.device_public_key).unwrap());
-        while !matches!(session.recv().await, Some(qos_relay::Inbound::Ready { .. })) {}
+        while !matches!(session.recv().await, Some(tilo_relay::Inbound::Ready { .. })) {}
         let worker = reopened.state.start_peer_action_bridge(reopened.directories.clone()).unwrap();
         let (queue, host) = reopened.broker.peer_action_attachment().unwrap();
         let server_session = session.clone();
@@ -344,7 +344,7 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         // A failed durable barrier withdraws the live broker lane. It cannot
         // claim Accepted or cause another application stream delivery.
         reopened.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(BarrierFailure::File);
-        let mut blocked = request.clone(); blocked.invocation = qos_actions::InvocationId::new();
+        let mut blocked = request.clone(); blocked.invocation = tilo_actions::InvocationId::new();
         let refused = send(&caller, room, 52, invoke(&blocked));
         assert!(tokio::time::timeout(Duration::from_secs(5), server).await.unwrap().unwrap().is_err());
         let unavailable = send(&caller, room, 52, ActionMessage::Status { invocation: blocked.invocation });
@@ -440,7 +440,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
             let (fixture, _, mut request) = durable_fixture(root.path(), None);
             request.revision = Some("directory-r1".into());
             let room = Uuid::parse_str(&fixture.cluster_id).unwrap();
-            let ws = qos_relay::room_workspace_id(&room.to_string()).unwrap();
+            let ws = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
             let (relay_key, relay_cert) = device(55, true);
             let relay = Relay::start(
                 RelayConfig {
@@ -448,7 +448,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                     workspaces: vec![WorkspaceBinding {
                         id: ws,
                         pin: true,
-                        replication: qos_relay::ReplicationIntent::FullWorkspace,
+                        replication: tilo_relay::ReplicationIntent::FullWorkspace,
                         admitted_users: vec![],
                         shell_authority: None,
                     }],
@@ -488,7 +488,7 @@ async fn native_peer_facade_draining_bridge_retains_inflight_permits() {
                 Some(EnvelopeV2::ActionsReady { .. })
             ));
             send(&caller, room, 52, invoke(&request));
-            let qos_relay::client::CertifiedActionEvent::Delivered(evidence) =
+            let tilo_relay::client::CertifiedActionEvent::Delivered(evidence) =
                 recipient.recv_certified_action().await.unwrap()
             else {
                 panic!("real certified request required")

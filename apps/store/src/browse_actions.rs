@@ -5,7 +5,7 @@
 //! agents can drive exactly the same catalogue state without creating a
 //! collaborative document mutation or history entry.
 
-use qos_actions::{
+use tilo_actions::{
     ActionArgs, ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
     Resource,
 };

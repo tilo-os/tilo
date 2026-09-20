@@ -24,7 +24,7 @@ runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # The blocking agent facade delegates to the toolkit's typed
 # `QOS_SVC_COLLAB_FD` client and consumes the same request/event model as a
 # windowed app.
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The word processor's exported actions: the agent edits with exactly the
 # ops the toolbar produces, never with its own idea of the document.
 word-processor = { path = "../word-processor" }
@@ -39,18 +39,18 @@ chat = { path = "../chat", default-features = false }
 # thing to put somewhere else. Its own decode and its own render, so "the
 # cropped photograph" means what the app means by it.
 photos = { path = "../photos" }
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 # The address a chat message carries when it was authored by selecting
 # something — what `listen`'s `Subject::Carried` reads, so the agent never
 # has to work out what "this" meant on its own.
-qos-reference = { path = "../../crates/collab/reference" }
+tilo-reference = { path = "../../crates/collab/reference" }
 # The runner reads the same provider profile Settings writes. Resolving the
 # profile's vault reference remains a desktop-secret-broker operation; no key
 # is linked into this binary through configuration.
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
-qos-model-gateway = { path = "../../crates/agent/model-gateway" }
+tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
 serde_json.workspace = true
@@ -63,8 +63,8 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 [dev-dependencies]
 tempfile.workspace = true
 hex.workspace = true
-shell = { path = "../../shell", default-features = false }
-qos-user-identity = { path = "../../crates/identity/qos-user-identity" }
+shell = { path = "../../crates/session/shell", default-features = false }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ed25519-dalek.workspace = true
 

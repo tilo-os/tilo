@@ -20,7 +20,7 @@
 //!
 //! ## Referenced whole, and why there is no span
 //!
-//! A [`Span`](qos_reference::Span) counts characters or bytes into text; a
+//! A [`Span`](tilo_reference::Span) counts characters or bytes into text; a
 //! photograph has neither. The framing a person happens to be looking at is
 //! local view state that never leaves the machine (see [`crate::actions`]), so
 //! a reference derived from it would name something no other peer can see. The
@@ -40,7 +40,7 @@
 
 use automerge::AutoCommit;
 
-use qos_reference::{Referent, ResourceRef};
+use tilo_reference::{Referent, ResourceRef};
 
 use crate::actions::{IMAGE_KIND, resource_id};
 use crate::app::PhotosApp;
@@ -74,7 +74,7 @@ mod tests {
     use super::*;
     use crate::actions::PhotosResources;
     use crate::model::OpenImage;
-    use qos_actions::ResourceProvider;
+    use tilo_actions::ResourceProvider;
 
     const PATH: &str = "/var/workspace/photos/harbour.png";
 

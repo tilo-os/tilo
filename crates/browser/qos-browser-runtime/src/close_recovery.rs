@@ -108,7 +108,7 @@ mod tests {
             instance,
             permissions,
             ui::permissions::UserId("author".into()),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             &LaunchTarget::New,
         )
         .unwrap();
@@ -186,7 +186,7 @@ mod tests {
             1,
             permissions,
             ui::permissions::UserId("author".into()),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             &LaunchTarget::New,
         )
         .unwrap();

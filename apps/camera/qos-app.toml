@@ -14,7 +14,7 @@
 #     cargo build -p camera -p pkg-cli -p install
 #     mkdir -p target/qpkg/camera/bin
 #     cp target/debug/camera target/qpkg/camera/bin/camera
-#     target/debug/qos-pkg pack --manifest apps/camera/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/camera/tilo-app.toml \
 #         --payload target/qpkg/camera --output target/camera.qpkg
 #     target/debug/qos-install install target/camera.qpkg --allow-self-signed
 

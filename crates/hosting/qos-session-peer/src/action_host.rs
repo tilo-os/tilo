@@ -29,7 +29,7 @@ impl CertificateAuthority for Authority {
     fn authorize(
         &self,
         room: uuid::Uuid,
-        cert: &qos_user_identity::DeviceCert,
+        cert: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
         let guard = self.0.lock().map_err(|_| "owner authority unavailable")?;
         let peer = guard.as_ref().ok_or("owner authority unavailable")?;
@@ -384,7 +384,7 @@ impl ActionHost {
                 instance,
                 permissions.clone(),
                 ui::permissions::UserId(self.principal.clone()),
-                qos_actions::ActionContext::default(),
+                tilo_actions::ActionContext::default(),
                 &target,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -1173,7 +1173,7 @@ mod tests {
         assert!(!runtime.ready());
         assert!(!matches!(
             broker.status(job.id),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert!(broker.peer_action_attachment().is_err());
         let committed = owner.status();

@@ -286,7 +286,7 @@ async fn catalogue_and_close_work_with_multiple_writers() {
 }
 
 async fn checked_application_catalogue(multiple_writers: bool) {
-    use qos_relay::{
+    use tilo_relay::{
         RelayClient,
         peer_actions::{ActionMessage, DirectedAction},
         transport::Envelope,
@@ -325,8 +325,8 @@ async fn checked_application_catalogue(multiple_writers: bool) {
     }
     // Persist a floor far ahead of any SDK wall-clock allocator, then reopen
     // through the ordinary executable before its actual checked workers sign.
-    let key = qos_user_identity::persist::read_device_key(
-        &qos_user_identity::persist::IdentityPaths::under(state.join("identity")).device_privkey,
+    let key = tilo_user_identity::persist::read_device_key(
+        &tilo_user_identity::persist::IdentityPaths::under(state.join("identity")).device_privkey,
     )
     .unwrap();
     let mut candidate = owner.peer().clone();
@@ -364,11 +364,11 @@ async fn checked_application_catalogue(multiple_writers: bool) {
     )
     .await;
     assert_eq!(code, 200, "{bootstrap}");
-    let cert: qos_user_identity::DeviceCert =
+    let cert: tilo_user_identity::DeviceCert =
         serde_json::from_value(bootstrap["certificate"].clone()).unwrap();
-    let host_cert: qos_user_identity::DeviceCert =
+    let host_cert: tilo_user_identity::DeviceCert =
         serde_json::from_value(bootstrap["host_certificate"].clone()).unwrap();
-    let native: qos_user_identity::DeviceCert =
+    let native: tilo_user_identity::DeviceCert =
         serde_json::from_value(bootstrap["bootstrap"]["directory_author"].clone()).unwrap();
     let packet: iroh_base::RelayUrl = metadata["packet_relay"].as_str().unwrap().parse().unwrap();
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -393,14 +393,14 @@ async fn checked_application_catalogue(multiple_writers: bool) {
         host_cert.device_public_key,
         cert.clone(),
         key,
-        qos_user_identity::RevocationList::new(),
+        tilo_user_identity::RevocationList::new(),
     )
     .await
     .unwrap();
     let room: uuid::Uuid = metadata["room"].as_str().unwrap().parse().unwrap();
     client
         .send(Envelope::Subscribe {
-            workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+            workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -504,7 +504,7 @@ async fn checked_application_catalogue(multiple_writers: bool) {
         .iter()
         .find(|a| a["action"] == "insert-table")
         .unwrap();
-    let invocation = qos_actions::InvocationId::new();
+    let invocation = tilo_actions::InvocationId::new();
     let operation = ActionMessage::InvokeBound {
         host: broker_host,
         invocation,
@@ -669,13 +669,13 @@ async fn checked_application_catalogue(multiple_writers: bool) {
         host_cert.device_public_key,
         cert.clone(),
         key,
-        qos_user_identity::RevocationList::new(),
+        tilo_user_identity::RevocationList::new(),
     )
     .await
     .unwrap();
     client
         .send(Envelope::Subscribe {
-            workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+            workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -790,7 +790,7 @@ async fn checked_application_catalogue(multiple_writers: bool) {
     let saved = state.join("session.saved");
     fs::rename(state.join("session.bin"), &saved).unwrap();
     fs::create_dir(state.join("session.bin")).unwrap();
-    let failed_invocation = qos_actions::InvocationId::new();
+    let failed_invocation = tilo_actions::InvocationId::new();
     let faulted = ActionMessage::InvokeBound {
         host: broker_host,
         invocation: failed_invocation,
@@ -849,7 +849,7 @@ async fn checked_application_catalogue(multiple_writers: bool) {
                     EnvelopeV2::Unavailable { request_id, .. } if probes.contains(&request_id) => break,
                     EnvelopeV2::Delivered { action, .. } if action.request_id == request_id => {
                         assert!(!matches!(action.message, ActionMessage::Observation {
-                            update: Some(qos_actions::InvocationUpdate::Succeeded { .. }), ..
+                            update: Some(tilo_actions::InvocationUpdate::Succeeded { .. }), ..
                         }), "failed durable commit produced successful effect terminal");
                     },
                     EnvelopeV2::Delivered { action, .. } if probes.contains(&action.request_id) => {
@@ -873,8 +873,8 @@ async fn checked_application_catalogue(multiple_writers: bool) {
         "failed commit replaced prior durable Writer state"
     );
 }
-fn apply_state(peer: &mut qos_peer_state::StatePeer, event: qos_relay::transport::Envelope) {
-    use qos_relay::{coedit::CoeditPayload, transport::Envelope};
+fn apply_state(peer: &mut qos_peer_state::StatePeer, event: tilo_relay::transport::Envelope) {
+    use tilo_relay::{coedit::CoeditPayload, transport::Envelope};
     if let Envelope::Delta {
         author_device_public_key,
         delta,
@@ -910,30 +910,30 @@ fn table_cells(peer: &qos_peer_state::StatePeer) -> usize {
         .count()
 }
 async fn invoke_and_observe(
-    client: &qos_relay::RelayClient,
+    client: &tilo_relay::RelayClient,
     remote: &mut qos_peer_state::StatePeer,
     room: uuid::Uuid,
-    cert: &qos_user_identity::DeviceCert,
-    native: &qos_user_identity::DeviceCert,
+    cert: &tilo_user_identity::DeviceCert,
+    native: &tilo_user_identity::DeviceCert,
     host: uuid::Uuid,
-    invocation: qos_actions::InvocationId,
-    operation: qos_relay::peer_actions::ActionMessage,
+    invocation: tilo_actions::InvocationId,
+    operation: tilo_relay::peer_actions::ActionMessage,
 ) {
     invoke_and_observe_until(client, remote, room, cert, native, host, invocation, operation, |remote| table_cells(remote) == 4).await;
 }
 
 async fn invoke_and_observe_until(
-    client: &qos_relay::RelayClient,
+    client: &tilo_relay::RelayClient,
     remote: &mut qos_peer_state::StatePeer,
     room: uuid::Uuid,
-    cert: &qos_user_identity::DeviceCert,
-    native: &qos_user_identity::DeviceCert,
+    cert: &tilo_user_identity::DeviceCert,
+    native: &tilo_user_identity::DeviceCert,
     host: uuid::Uuid,
-    invocation: qos_actions::InvocationId,
-    operation: qos_relay::peer_actions::ActionMessage,
+    invocation: tilo_actions::InvocationId,
+    operation: tilo_relay::peer_actions::ActionMessage,
     complete: impl Fn(&qos_peer_state::StatePeer) -> bool,
 ) {
-    use qos_relay::{
+    use tilo_relay::{
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
     };
@@ -954,7 +954,7 @@ async fn invoke_and_observe_until(
                     match pending.take(request_id).unwrap() {
                         ActionMessage::Observation { host: got, invocation: id, update, uncertain, .. } => {
                             assert_eq!(got, host); assert_eq!(id, invocation); assert!(!uncertain);
-                            if let Some(update)=update {if update.is_terminal(){assert!(matches!(update,qos_actions::InvocationUpdate::Succeeded{..}),"actual operation failed: {update:?}");success=true;}}
+                            if let Some(update)=update {if update.is_terminal(){assert!(matches!(update,tilo_actions::InvocationUpdate::Succeeded{..}),"actual operation failed: {update:?}");success=true;}}
                             if !success {
                                 // Same original full UUID: lost/pending response recovery is Status,
                                 // never another Invoke or another confirmation grant.
@@ -976,7 +976,7 @@ fn active_replacement_state_delta(signed: &qos_peer_state::NeighbourMsg) -> Vec<
     let (channel, kind) = qos_peer_state::transport::retention(signed, false)
         .expect("active replacement requires retained application state");
     assert_eq!(kind, qos_peer_state::transport::Retention::Delta);
-    qos_relay::coedit::CoeditPayload::RetainedDelta {
+    tilo_relay::coedit::CoeditPayload::RetainedDelta {
         channel,
         body: postcard::to_stdvec(signed).unwrap(),
     }
@@ -992,13 +992,13 @@ fn active_replacement_state_delta_is_a_provable_retained_tail() {
         retained_proof::{RetentionAuthority, RoomInput, verify_room, verify_snapshot},
         transport::retention,
     };
-    use qos_relay::coedit::CoeditPayload;
+    use tilo_relay::coedit::CoeditPayload;
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     let temp = tempfile::tempdir().unwrap();
     let owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
-    let key = qos_user_identity::persist::read_device_key(
-        &qos_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
+    let key = tilo_user_identity::persist::read_device_key(
+        &tilo_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
             .device_privkey,
     )
     .unwrap();
@@ -1070,19 +1070,19 @@ struct ObserverBinding {
     relay: iroh_base::EndpointAddr,
     root: [u8; 32],
     host: [u8; 32],
-    cert: qos_user_identity::DeviceCert,
+    cert: tilo_user_identity::DeviceCert,
     key: SigningKey,
 }
 
 #[cfg(feature = "test-support")]
 enum ObserverEvent {
-    State(qos_relay::transport::Envelope),
-    Action(qos_relay::transport_v2::EnvelopeV2),
+    State(tilo_relay::transport::Envelope),
+    Action(tilo_relay::transport_v2::EnvelopeV2),
     Ended,
 }
 
 #[cfg(feature = "test-support")]
-async fn observer_event(client: &qos_relay::RelayClient) -> ObserverEvent {
+async fn observer_event(client: &tilo_relay::RelayClient) -> ObserverEvent {
     tokio::select! {
         state = client.recv() => state.map(ObserverEvent::State).unwrap_or(ObserverEvent::Ended),
         action = client.recv_action() => action.map(ObserverEvent::Action).unwrap_or(ObserverEvent::Ended),
@@ -1095,23 +1095,23 @@ async fn connect_observer(
     room: uuid::Uuid,
     remote: &mut qos_peer_state::StatePeer,
     deadline: Instant,
-) -> Result<(qos_relay::RelayClient, usize), String> {
-    use qos_relay::{transport::Envelope, transport_v2::EnvelopeV2};
+) -> Result<(tilo_relay::RelayClient, usize), String> {
+    use tilo_relay::{transport::Envelope, transport_v2::EnvelopeV2};
     tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
-        let client = qos_relay::RelayClient::connect_v2_to_enrolled_home_peer(
+        let client = tilo_relay::RelayClient::connect_v2_to_enrolled_home_peer(
             binding.endpoint.clone(),
             binding.relay.clone(),
             binding.root,
             binding.host,
             binding.cert.clone(),
             binding.key.clone(),
-            qos_user_identity::RevocationList::new(),
+            tilo_user_identity::RevocationList::new(),
         )
         .await
         .map_err(|error| error.to_string())?;
         client
             .send(Envelope::Subscribe {
-                workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+                workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
             })
             .map_err(|_| "observer Subscribe failed")?;
         let mut frames = 0;
@@ -1144,13 +1144,13 @@ async fn connect_observer(
 
 #[cfg(feature = "test-support")]
 async fn replace_observer_after_eof(
-    ended: qos_relay::RelayClient,
+    ended: tilo_relay::RelayClient,
     binding: &ObserverBinding,
     room: uuid::Uuid,
     remote: &mut qos_peer_state::StatePeer,
     replacements: &mut u8,
     deadline: Instant,
-) -> Result<(qos_relay::RelayClient, usize), String> {
+) -> Result<(tilo_relay::RelayClient, usize), String> {
     if *replacements != 0 {
         return Err("second observer EOF".into());
     }
@@ -1164,7 +1164,7 @@ async fn replace_observer_after_eof(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
     use qos_session_peer::host::{LocalHost, publish};
-    use qos_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, persist};
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, persist};
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     // Capture a weak handle only: retaining a Connection would change drop semantics.
@@ -1203,11 +1203,11 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         device_public_key: key.verifying_key().to_bytes(),
         device_label: "observer recovery fixture".into(),
         capabilities: DeviceCapabilities::member(),
-        issued_at_ns: qos_relay::clock::now_ns(),
+        issued_at_ns: tilo_relay::clock::now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
     };
-    qos_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
+    tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
     let mut candidate = owner.peer().clone();
     candidate
         .admit_certificate(cert.clone(), &native_key, web_time::SystemTime::now())
@@ -1219,7 +1219,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
     let mut native = host.connect(&owner).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         while !native.is_ready() {
-            if let qos_relay::Inbound::Delta { author, data } = native.recv().await.unwrap() {
+            if let tilo_relay::Inbound::Delta { author, data } = native.recv().await.unwrap() {
                 owner
                     .receive(
                         qos_peer_state::TransportOrigin::RelayDelta(author),
@@ -1274,11 +1274,11 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         let mut omitted_chat = false;
         for _ in 0..owner.outgoing().len() {
             let event = client.recv().await.unwrap();
-            let qos_relay::transport::Envelope::Delta { delta, .. } = &event else {
+            let tilo_relay::transport::Envelope::Delta { delta, .. } = &event else {
                 panic!("expected the owner's retained publication");
             };
-            let qos_relay::coedit::CoeditPayload::Checkpoint { body, .. } =
-                qos_relay::coedit::CoeditPayload::decode(delta).unwrap() else {
+            let tilo_relay::coedit::CoeditPayload::Checkpoint { body, .. } =
+                tilo_relay::coedit::CoeditPayload::decode(delta).unwrap() else {
                     panic!("expected the initial checkpoint basis");
                 };
             if matches!(postcard::from_bytes::<qos_peer_state::NeighbourMsg>(&body).unwrap(),
@@ -1398,17 +1398,17 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
 async fn active_replacement(
     host: &mut Host,
     origin: &str,
-    client: qos_relay::RelayClient,
+    client: tilo_relay::RelayClient,
     binding: &ObserverBinding,
     remote: &mut qos_peer_state::StatePeer,
     room: uuid::Uuid,
-    cert: &qos_user_identity::DeviceCert,
-    native: &qos_user_identity::DeviceCert,
+    cert: &tilo_user_identity::DeviceCert,
+    native: &tilo_user_identity::DeviceCert,
     broker_host: uuid::Uuid,
-    invocation: qos_actions::InvocationId,
-    operation: qos_relay::peer_actions::ActionMessage,
-) -> qos_relay::RelayClient {
-    use qos_relay::{
+    invocation: tilo_actions::InvocationId,
+    operation: tilo_relay::peer_actions::ActionMessage,
+) -> tilo_relay::RelayClient {
+    use tilo_relay::{
         peer_actions::{ActionMessage, DirectedAction},
         transport::Envelope,
         transport_v2::EnvelopeV2,
@@ -1499,9 +1499,9 @@ async fn active_replacement(
         .unwrap();
     client
         .send(Envelope::Delta {
-            workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+            workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
             author_device_public_key: cert.device_public_key,
-            authored_at_ns: qos_relay::clock::now_ns(),
+            authored_at_ns: tilo_relay::clock::now_ns(),
             delta: active_replacement_state_delta(&signed),
             signature: [0; 64],
         })
@@ -1647,15 +1647,15 @@ async fn owner_and_room_isolation(
     origin: &str,
     capability: &str,
     metadata: &serde_json::Value,
-    first: &qos_relay::RelayClient,
+    first: &tilo_relay::RelayClient,
     room: uuid::Uuid,
-    first_cert: &qos_user_identity::DeviceCert,
-    native: &qos_user_identity::DeviceCert,
-    host_cert: &qos_user_identity::DeviceCert,
+    first_cert: &tilo_user_identity::DeviceCert,
+    native: &tilo_user_identity::DeviceCert,
+    host_cert: &tilo_user_identity::DeviceCert,
     broker_host: uuid::Uuid,
-    invocation: qos_actions::InvocationId,
+    invocation: tilo_actions::InvocationId,
 ) {
-    use qos_relay::{
+    use tilo_relay::{
         RelayClient,
         peer_actions::{ActionMessage, DirectedAction, UnavailableReason},
         transport::Envelope,
@@ -1671,7 +1671,7 @@ async fn owner_and_room_isolation(
     )
     .await;
     assert_eq!(code, 200);
-    let cert: qos_user_identity::DeviceCert =
+    let cert: tilo_user_identity::DeviceCert =
         serde_json::from_value(bootstrap["certificate"].clone()).unwrap();
     // Same human principal, distinct Certified{root,device} invocation owner.
     assert_eq!(cert.user_public_key, first_cert.user_public_key);
@@ -1690,13 +1690,13 @@ async fn owner_and_room_isolation(
         host_cert.device_public_key,
         cert.clone(),
         key,
-        qos_user_identity::RevocationList::new(),
+        tilo_user_identity::RevocationList::new(),
     )
     .await
     .unwrap();
     second
         .send(Envelope::Subscribe {
-            workspace_id: qos_relay::room_workspace_id(&room.to_string()).unwrap(),
+            workspace_id: tilo_relay::room_workspace_id(&room.to_string()).unwrap(),
         })
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -1710,7 +1710,7 @@ async fn owner_and_room_isolation(
     second
         .send_action(EnvelopeV2::EnableBrokerClient { room })
         .unwrap();
-    for foreign_or_absent in [invocation, qos_actions::InvocationId::new()] {
+    for foreign_or_absent in [invocation, tilo_actions::InvocationId::new()] {
         let query = uuid::Uuid::new_v4();
         second
             .send_action(EnvelopeV2::Directed(DirectedAction {
@@ -1797,7 +1797,7 @@ async fn owner_and_room_isolation(
 #[cfg(feature = "test-support")]
 async fn observe_native_publication(
     origin: &str,
-    client: &qos_relay::RelayClient,
+    client: &tilo_relay::RelayClient,
     remote: &mut qos_peer_state::StatePeer,
 ) {
     let started = Instant::now();
@@ -1853,12 +1853,12 @@ async fn observe_native_publication(
 }
 
 async fn desktop_open_through_broker(
-    client: &qos_relay::RelayClient, remote: &mut qos_peer_state::StatePeer,
-    room: uuid::Uuid, cert: &qos_user_identity::DeviceCert, native: &qos_user_identity::DeviceCert,
+    client: &tilo_relay::RelayClient, remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid, cert: &tilo_user_identity::DeviceCert, native: &tilo_user_identity::DeviceCert,
     host: uuid::Uuid, catalogue: &serde_json::Value,
-) -> (qos_actions::InvocationId, qos_relay::peer_actions::ActionMessage, usize) {
+) -> (tilo_actions::InvocationId, tilo_relay::peer_actions::ActionMessage, usize) {
     use qos_peer_state::desktop_command::*;
-    use qos_relay::peer_actions::ActionMessage;
+    use tilo_relay::peer_actions::ActionMessage;
     #[cfg(not(feature = "test-support"))]
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(100), client.recv()).await { apply_state(remote, event); }
     let mut tree = qos_desktop::WorkspaceTree::default();
@@ -1869,7 +1869,7 @@ async fn desktop_open_through_broker(
         command: DesktopCommand::OpenTab { app: "dev.qos.notes".into(), placement: TabPlacement::NewGroup { strip, after: None } },
     };
     let surface = catalogue["surfaces"].as_array().unwrap().iter().find(|s|s["app_id"]==APP_ID).expect("installed native desktop service must be advertised");
-    let invocation = qos_actions::InvocationId::new();
+    let invocation = tilo_actions::InvocationId::new();
     let operation = ActionMessage::InvokeBound { host, invocation, app_peer: surface["peer_id"].as_u64().unwrap().to_string(), app_id: APP_ID.into(), record_id: "".into(), resource: RESOURCE.into(), action: ACTION.into(), argument: Some(serde_json::json!({"command":serde_json::to_string(&command).unwrap()})), confirmation: None, revision: None };
     let prior = remote.rows().len();
     // A desktop gesture must publish its committed topology and checked record
@@ -1889,12 +1889,12 @@ async fn desktop_open_through_broker(
 }
 
 async fn desktop_close_through_broker(
-    client: &qos_relay::RelayClient, remote: &mut qos_peer_state::StatePeer,
-    room: uuid::Uuid, cert: &qos_user_identity::DeviceCert, native: &qos_user_identity::DeviceCert,
+    client: &tilo_relay::RelayClient, remote: &mut qos_peer_state::StatePeer,
+    room: uuid::Uuid, cert: &tilo_user_identity::DeviceCert, native: &tilo_user_identity::DeviceCert,
     host: uuid::Uuid, catalogue: &serde_json::Value,
 ) {
     use qos_peer_state::desktop_command::*;
-    use qos_relay::peer_actions::ActionMessage;
+    use tilo_relay::peer_actions::ActionMessage;
     let project = |remote: &qos_peer_state::StatePeer| {
         let mut tree = qos_desktop::WorkspaceTree::default();
         qos_desktop::projection::RoomProjection::apply_admitted_room(&mut tree, room.into(), remote.admitted_room().unwrap()).unwrap();
@@ -1909,7 +1909,7 @@ async fn desktop_close_through_broker(
         command: DesktopCommand::CloseTab { location: TabLocation { strip: strip.id.0, group: group.id, tab } },
     };
     let surface = catalogue["surfaces"].as_array().unwrap().iter().find(|s| s["app_id"] == APP_ID).unwrap();
-    let invocation = qos_actions::InvocationId::new();
+    let invocation = tilo_actions::InvocationId::new();
     let operation = ActionMessage::InvokeBound { host, invocation, app_peer: surface["peer_id"].as_u64().unwrap().to_string(), app_id: APP_ID.into(), record_id: "".into(), resource: RESOURCE.into(), action: ACTION.into(), argument: Some(serde_json::json!({"command":serde_json::to_string(&command).unwrap()})), confirmation: None, revision: None };
     let present = |remote: &qos_peer_state::StatePeer| project(remote).workspaces.iter().flat_map(|w| &w.strips).flat_map(|s| &s.window_groups).flat_map(|g| &g.tabs).any(|t| t.id == tab);
     let started = Instant::now();

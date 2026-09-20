@@ -29,7 +29,7 @@ use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::tilo_actions::{
     ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ControlInvocation,
     OperationKind, PermissionRequirement, Resource, RetryPolicy, RiskLevel,
 };

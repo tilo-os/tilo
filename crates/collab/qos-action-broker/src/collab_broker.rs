@@ -295,11 +295,11 @@ impl AppActionBroker {
             .start_invocation(peer_id, resource, action, argument, actor)
     }
 
-    pub fn status(&self, id: u64) -> Option<qos_actions::InvocationUpdate> {
+    pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.state.invocation_status(id)
     }
 
-    pub fn statuses(&self, actor: &str) -> Vec<(u64, qos_actions::InvocationUpdate)> {
+    pub fn statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.state.invocation_statuses(actor)
     }
 
@@ -388,7 +388,7 @@ impl BrokerHandle {
     pub fn connect_local_worker(
         &self,
         route: CrdtRoute,
-        certificate: &qos_user_identity::DeviceCert,
+        certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<std::os::unix::net::UnixStream, String> {
         self.fanout
             .capnp_state()

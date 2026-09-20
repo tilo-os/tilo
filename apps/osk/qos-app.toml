@@ -16,7 +16,7 @@
 #     cargo build -p osk -p pkg-cli -p install
 #     mkdir -p target/qpkg/osk/bin
 #     cp target/debug/osk target/qpkg/osk/bin/osk
-#     target/debug/qos-pkg pack --manifest apps/osk/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/osk/tilo-app.toml \
 #         --payload target/qpkg/osk --output target/osk.qpkg
 #     target/debug/qos-install install target/osk.qpkg --allow-self-signed
 

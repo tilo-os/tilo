@@ -9,7 +9,7 @@
 #     cargo build -p weather -p pkg-cli -p install
 #     mkdir -p target/qpkg/weather/bin
 #     cp target/debug/weather target/qpkg/weather/bin/weather
-#     target/debug/qos-pkg pack --manifest apps/weather/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/weather/tilo-app.toml \
 #         --payload target/qpkg/weather --output target/weather.qpkg
 #     target/debug/qos-install install target/weather.qpkg --allow-self-signed
 

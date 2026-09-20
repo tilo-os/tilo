@@ -163,9 +163,9 @@ mod tests {
         assert!(hits.iter().all(|hit| {
             hit.action_address().is_some_and(|address| {
                 Widget::resource(&app, &doc, &address.resource).is_some_and(|resource| {
-                    qos_actions::door::resolve(&[resource], &address).is_some_and(|spec| {
-                        spec.kind == qos_actions::OperationKind::View
-                            && spec.contract == qos_actions::ActionContract::view()
+                    tilo_actions::door::resolve(&[resource], &address).is_some_and(|spec| {
+                        spec.kind == tilo_actions::OperationKind::View
+                            && spec.contract == tilo_actions::ActionContract::view()
                     })
                 })
             })
@@ -211,7 +211,7 @@ mod tests {
         let before = doc.get_heads();
         palette.activate_selected();
         let operation = palette.take_operation().expect("broker operation queued");
-        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
         assert!(palette.take_navigation().is_none());
         assert!(
             app.invoke_resource_operation(

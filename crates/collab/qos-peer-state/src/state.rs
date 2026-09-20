@@ -8,7 +8,7 @@ use collab_types::{
     ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpClass, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
-use qos_user_identity::{DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCert, RevocationList};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use web_time::{Duration, SystemTime};
@@ -135,7 +135,7 @@ struct Durable {
     documents: Vec<DurableDocument>,
     receipts: BTreeMap<String, Vec<u8>>,
     certificates: Vec<DeviceCert>,
-    revocations: Vec<qos_user_identity::RevocationEntry>,
+    revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 #[derive(Clone)]
 pub struct StatePeer {
@@ -195,7 +195,7 @@ impl StatePeer {
         if cert.user_public_key != self.authority.user_public_key {
             return Err("enrollment root mismatch".into());
         }
-        qos_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
+        tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
         if self.revocations.is_revoked(&cert.device_public_key) {
             return Err("device revoked".into());
         }
@@ -303,7 +303,7 @@ impl StatePeer {
     pub fn certificates(&self) -> Vec<DeviceCert> {
         self.certificates.values().map(|cert| cert.as_ref().clone()).collect()
     }
-    pub fn revocations(&self) -> Vec<qos_user_identity::RevocationEntry> {
+    pub fn revocations(&self) -> Vec<tilo_user_identity::RevocationEntry> {
         let mut entries = self.revocations.iter().cloned().collect::<Vec<_>>();
         entries.sort_by_key(|entry| entry.revoked_device_public_key);
         entries
@@ -1403,7 +1403,7 @@ impl StatePeer {
 pub(crate) struct GovernedIdentity {
     pub(crate) device_cert: DeviceCert,
     #[serde(default)]
-    pub(crate) revocations: Vec<qos_user_identity::RevocationEntry>,
+    pub(crate) revocations: Vec<tilo_user_identity::RevocationEntry>,
 }
 /// The same native room CRDT keys projected by WorkspaceTree::sync_room_doc.
 pub fn seed_room(

@@ -6,7 +6,7 @@
 //! against the current index, which refuses an address that went stale after
 //! the result was rendered.
 
-use qos_actions::{
+use tilo_actions::{
     ActionAddress, ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, ResultSpec,
     RetryPolicy,
 };

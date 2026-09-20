@@ -21,7 +21,7 @@ use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::qos_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
+use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource, RetryPolicy};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::{
     DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,

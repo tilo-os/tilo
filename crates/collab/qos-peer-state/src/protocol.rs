@@ -146,9 +146,9 @@ pub enum NeighbourMsg {
     /// additive, root-signed revocations let receivers reject a lost device
     /// before any of its collaboration payload reaches an app or replica.
     IdentityHello {
-        cert: Box<qos_user_identity::DeviceCert>,
+        cert: Box<tilo_user_identity::DeviceCert>,
         #[serde(default)]
-        revocations: Vec<qos_user_identity::RevocationEntry>,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
     },
     /// One typed, signed document mutation crossing the Iroh boundary.
     /// Recipients authenticate the transport device, validate the envelope and
@@ -221,17 +221,17 @@ pub enum NeighbourMsg {
     /// room governor may promote it into replicated governance.
     IdentityAnnouncement {
         room: String,
-        device_cert: Box<qos_user_identity::DeviceCert>,
+        device_cert: Box<tilo_user_identity::DeviceCert>,
     },
     /// V2 identity announcement carrying additive root-signed revocations.
     /// Appended rather than changing V1's Postcard payload layout.
     IdentityAnnouncementV2 {
         room: String,
-        device_cert: Box<qos_user_identity::DeviceCert>,
+        device_cert: Box<tilo_user_identity::DeviceCert>,
         /// Additive root-signed revocations for the certificate's human root.
         /// The room governor verifies and retains them independently of the
         /// announcing device, so omission can never resurrect a device.
-        revocations: Vec<qos_user_identity::RevocationEntry>,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
     },
     /// Ask another certified device of the same person for its latest
     /// continuation checkpoints. This rides a user-root-derived topic, never
@@ -412,11 +412,11 @@ mod tests {
             (
                 "identity hello",
                 NeighbourMsg::IdentityHello {
-                    cert: Box::new(qos_user_identity::DeviceCert {
+                    cert: Box::new(tilo_user_identity::DeviceCert {
                         user_public_key: [1; 32],
                         device_public_key: [2; 32],
                         device_label: "Laptop".into(),
-                        capabilities: qos_user_identity::DeviceCapabilities::member(),
+                        capabilities: tilo_user_identity::DeviceCapabilities::member(),
                         issued_at_ns: 10,
                         expires_at_ns: None,
                         signature: [3; 64],

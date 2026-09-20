@@ -111,7 +111,7 @@ pub struct CalculatorApp {
     /// [`CalculatorAction`] through this: the host brackets the undo boundary,
     /// applies the action through the executor (so it replays byte-identically on
     /// peers, exactly as the Ctrl+K palette does), and records the last one so a
-    /// test can prove an affordance and its [`ActionSpec`](qos_actions::ActionSpec)
+    /// test can prove an affordance and its [`ActionSpec`](tilo_actions::ActionSpec)
     /// build the identical action.
     actions: ui::ActionHost,
 }
@@ -320,7 +320,7 @@ impl CalculatorApp {
             doc,
             actions::CALCULATOR_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Calculator", "Calculator", action),
+            tilo_actions::ActionContext::for_action("org.qos.Calculator", "Calculator", action),
         );
         // Re-adopt only durable resources. This makes a keyed action visible
         // immediately without ever copying another window's presentation.
@@ -1182,13 +1182,13 @@ impl Widget for CalculatorApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
@@ -1797,10 +1797,10 @@ impl Widget for CalculatorApp {
     }
 
     /// Publish the calculator's Ctrl+K resource tree (history entries + saved
-    /// graph formulas), via the [`ResourceProvider`](qos_actions::ResourceProvider)
+    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
     /// impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched

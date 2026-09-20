@@ -26,7 +26,7 @@ fn eight_independent_keys_share_canonical_room_and_full_directory() {
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let records = owner.status().records;
     let mut service = EnrollmentAuthority::default();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_relay::clock::now_ns();
     for n in 1..=8 {
         let key = SigningKey::from_bytes(&[n; 32]);
         let complete = proof(&mut service, &owner, &key, n, now);
@@ -46,11 +46,11 @@ fn eight_independent_keys_share_canonical_room_and_full_directory() {
         .unwrap();
         assert!(response.get("device_secret").is_none());
         assert_eq!(response["version"], 2);
-        let update: qos_user_identity::DirectoryUpdate =
+        let update: tilo_user_identity::DirectoryUpdate =
             serde_json::from_value(response["bootstrap"]["directory_update"].clone()).unwrap();
-        let author: qos_user_identity::DeviceCert =
+        let author: tilo_user_identity::DeviceCert =
             serde_json::from_value(response["bootstrap"]["directory_author"].clone()).unwrap();
-        let mut fresh = qos_user_identity::WorkspaceDirectory::new(
+        let mut fresh = tilo_user_identity::WorkspaceDirectory::new(
             certificate.user_public_key,
             certificate.device_public_key,
         );
@@ -58,11 +58,11 @@ fn eight_independent_keys_share_canonical_room_and_full_directory() {
             .apply_incremental(
                 &update,
                 &author,
-                &qos_user_identity::RevocationList::new(),
+                &tilo_user_identity::RevocationList::new(),
                 now,
             )
             .unwrap();
-        let workspace = qos_relay::room_workspace_id(owner.peer().room()).unwrap();
+        let workspace = tilo_relay::room_workspace_id(owner.peer().room()).unwrap();
         assert_eq!(
             fresh.as_map()[&workspace].member_devices.len(),
             usize::from(n) + 1
@@ -78,7 +78,7 @@ fn lost_response_retry_after_restart_keeps_certificate_but_refreshes_metadata() 
     let path = temp.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = SigningKey::from_bytes(&[21; 32]);
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_relay::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let complete = proof(&mut service, &owner, &key, 7, now);
     let replay = complete.clone();
@@ -110,7 +110,7 @@ fn proof_scope_expiry_signature_and_replay_are_enforced_without_membership_chang
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let before = owner.status();
     let key = SigningKey::from_bytes(&[22; 32]);
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_relay::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let response = service.challenge(&owner, request(&key, 4), now).unwrap();
     let original = enrollment::decode(&response.challenge).unwrap();
@@ -149,7 +149,7 @@ fn failed_native_commit_cannot_publish_an_issuance_result() {
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let before = owner.status();
     let key = SigningKey::from_bytes(&[23; 32]);
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_relay::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let complete = proof(&mut service, &owner, &key, 3, now);
     std::fs::rename(path.join("session.bin"), path.join("saved.bin")).unwrap();
@@ -168,7 +168,7 @@ fn failed_native_commit_cannot_publish_an_issuance_result() {
 
 #[test]
 fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
-    use qos_user_identity::{
+    use tilo_user_identity::{
         RevocationEntry, RevocationList, RevocationReason, WorkspaceDirectory,
         persist::{self, IdentityPaths},
         sign_revocation_entry,
@@ -177,7 +177,7 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     let path = temp.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = SigningKey::from_bytes(&[24; 32]);
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_relay::clock::now_ns();
     let mut service = EnrollmentAuthority::default();
     let complete = proof(&mut service, &owner, &key, 24, now);
     service.complete(&mut owner, complete, now).unwrap();
@@ -211,7 +211,7 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     .unwrap();
     directory
         .set_member_devices(
-            qos_relay::room_workspace_id(owner.peer().room()).unwrap(),
+            tilo_relay::room_workspace_id(owner.peer().room()).unwrap(),
             &[owner.peer().authority().device_public_key],
         )
         .unwrap();
@@ -239,7 +239,7 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     let request = proof(&mut service, &owner, &other, 25, now);
     let certificate = service.complete(&mut owner, request, now).unwrap();
     let bootstrap = public_bootstrap(&owner, &certificate, serde_json::json!({"id":"public-address"}), "http://127.0.0.1:12345", now).unwrap();
-    let roster: Vec<qos_user_identity::DeviceCert> = serde_json::from_value(bootstrap["bootstrap"]["certified_roster"].clone()).unwrap();
+    let roster: Vec<tilo_user_identity::DeviceCert> = serde_json::from_value(bootstrap["bootstrap"]["certified_roster"].clone()).unwrap();
     let mut revoked = RevocationList::new();
     for entry in serde_json::from_value::<Vec<RevocationEntry>>(bootstrap["revocations"].clone()).unwrap() { revoked.insert(entry).unwrap(); }
     let fresh = qos_peer_state::StatePeer::new(owner.peer().room(), owner.peer().authority().clone(), roster.clone(), revoked.clone(), web_time::SystemTime::now());

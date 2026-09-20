@@ -9,7 +9,7 @@
 #     cargo build -p diffmerge -p pkg-cli -p install
 #     mkdir -p target/qpkg/diffmerge/bin
 #     cp target/debug/diffmerge target/qpkg/diffmerge/bin/diffmerge
-#     target/debug/qos-pkg pack --manifest apps/diffmerge/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/diffmerge/tilo-app.toml \
 #         --payload target/qpkg/diffmerge --output target/diffmerge.qpkg
 #     target/debug/qos-install install target/diffmerge.qpkg --allow-self-signed
 

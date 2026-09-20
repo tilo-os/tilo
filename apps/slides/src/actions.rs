@@ -56,7 +56,7 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
@@ -227,8 +227,8 @@ fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
         },
     )
     .with_contract(ActionContract {
-        risk: qos_actions::RiskLevel::Destructive,
-        confirmation: qos_actions::ConfirmationPolicy::Confirm,
+        risk: tilo_actions::RiskLevel::Destructive,
+        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
         execution: ExecutionMode::Background { cancellable: true },
         result: ResultSpec::Job,
         ..ActionContract::default()
@@ -1401,7 +1401,7 @@ mod tests {
     use crate::app::SlidesApp;
     use crate::model::seed_deck;
     use automerge::{AutoCommit, ROOT};
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1499,7 +1499,7 @@ mod tests {
         assert_eq!(open_slide.kind, OperationKind::View);
         assert_eq!(
             open_slide_address(slide_id),
-            qos_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
+            tilo_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
         );
 
         let element = slide
@@ -1513,7 +1513,7 @@ mod tests {
         assert_eq!(open_text_address(element_id).resource, text.id.0);
 
         let address = open_text_address(element_id);
-        let encoded = qos_actions::door::encode(&resources, &address, None)
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("text address resolves through the published resource tree");
         assert_eq!(
             decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
@@ -1543,7 +1543,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         let after = SlidesDoc::load(&state.doc).unwrap();
@@ -1595,8 +1595,8 @@ mod tests {
         let slide_id = SlidesDoc::load(&a).unwrap().slides[1].id.clone();
         let action = set_slide_background_action(1, slide_id, Background::Deep);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1629,8 +1629,8 @@ mod tests {
         let id = deck.slides[1].elements[0].id.clone();
         let action = raise_element_action(1, id.clone());
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "restack replayed identically");
         let ra = SlidesDoc::load(&a).unwrap().slides[1].clone();
@@ -1656,8 +1656,8 @@ mod tests {
         let slide_id = SlidesDoc::load(&a).unwrap().slides[0].id.clone();
         let action = add_element_action(0, slide_id, &el);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "add replayed identically");
         assert!(

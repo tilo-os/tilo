@@ -18,14 +18,14 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The open photograph is published as a Resource whose edits are ActionSpecs,
 # so the shell's palette and an out-of-process caller drive the same operations
 # the toolbar buttons do.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 # "Select anything and say something about it": the open photograph mints a
 # durable address, so a message carries the picture rather than describing it.
-qos-reference = { path = "../../crates/collab/reference" }
+tilo-reference = { path = "../../crates/collab/reference" }
 # The content store: `qdoc::blobstore` is what names a photograph by its
 # bytes rather than by the path one machine happened to open it from.
 qdoc = { path = "../../crates/doc/qdoc" }

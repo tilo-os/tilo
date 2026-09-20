@@ -143,7 +143,7 @@ fn checked_export_needs_matching_custody_and_detects_tampering() {
 
 #[test]
 fn revoked_identity_and_replay_floors_survive_restart() {
-    use qos_user_identity::{
+    use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationEntry, RevocationList,
         persist::{self, IdentityPaths},
         sign_device_cert, sign_revocation_entry,
@@ -153,7 +153,7 @@ fn revoked_identity_and_replay_floors_survive_restart() {
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let root = persist::read_signing_key(&IdentityPaths::under(path.join("identity")).user_privkey)
         .unwrap();
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_relay::clock::now_ns();
     let (_, device) = DeviceIdentity::generate("revoked member", now);
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -169,7 +169,7 @@ fn revoked_identity_and_replay_floors_survive_restart() {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: device.public_key,
         revoked_at_ns: now,
-        reason: qos_user_identity::RevocationReason::Retired,
+        reason: tilo_user_identity::RevocationReason::Retired,
         signature: [0; 64],
     };
     sign_revocation_entry(&mut revoked, &root).unwrap();
@@ -223,7 +223,7 @@ async fn actual_loopback_subscription_reconnect_keeps_same_owner() {
 #[test]
 fn authenticated_encryption_obligation_is_committed_even_without_plaintext_checkpoint() {
     use qos_peer_state::{NeighbourMsg, TransportOrigin};
-    use qos_user_identity::persist::{self, IdentityPaths};
+    use tilo_user_identity::persist::{self, IdentityPaths};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
@@ -405,7 +405,7 @@ fn assert_observed_state_survives(owner: &SessionOwner, observed: &qos_session_p
 
 #[test]
 fn same_namespace_admission_cannot_roll_back_document_history_or_actor_floors() {
-    use qos_user_identity::persist::{self, IdentityPaths};
+    use tilo_user_identity::persist::{self, IdentityPaths};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
@@ -437,7 +437,7 @@ async fn admit_until_ready(
     session: &mut qos_session_peer::host::NativeSubscription,
 ) {
     use qos_peer_state::TransportOrigin;
-    use qos_relay::Inbound;
+    use tilo_relay::Inbound;
     while !session.is_ready() {
         match session
             .recv()
@@ -468,7 +468,7 @@ async fn admit_until_ready(
 #[test]
 fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
     use qos_peer_state::{NeighbourMsg, TransportOrigin};
-    use qos_user_identity::persist::{self, IdentityPaths};
+    use tilo_user_identity::persist::{self, IdentityPaths};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();

@@ -84,26 +84,26 @@ mod tests {
                 target: Some("peer@7".into()),
             },
             PresencePayload::Following { target: None },
-            PresencePayload::Interaction(Box::new(qos_actions::SemanticInteraction {
-                version: qos_actions::INTERACTION_VERSION,
-                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(7)),
+            PresencePayload::Interaction(Box::new(tilo_actions::SemanticInteraction {
+                version: tilo_actions::INTERACTION_VERSION,
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
                 sequence: 2,
-                actor: qos_actions::InteractionActor {
+                actor: tilo_actions::InteractionActor {
                     id: "quill".into(),
-                    kind: qos_actions::InteractionActorKind::Agent,
+                    kind: tilo_actions::InteractionActorKind::Agent,
                 },
-                phase: qos_actions::InteractionPhase::Committed,
-                action: qos_actions::InteractionAction {
+                phase: tilo_actions::InteractionPhase::Committed,
+                action: tilo_actions::InteractionAction {
                     id: "rename".into(),
                     label: "Rename".into(),
                     app: None,
                 },
-                resource: qos_actions::ActionResource {
+                resource: tilo_actions::ActionResource {
                     id: "file:draft".into(),
                     kind: "files.entry".into(),
                     label: "Draft.md".into(),
                 },
-                anchor: qos_actions::InteractionAnchor::ListItems {
+                anchor: tilo_actions::InteractionAnchor::ListItems {
                     ids: vec!["file:draft".into()],
                 },
                 group: None,

@@ -41,7 +41,7 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec,
@@ -400,11 +400,11 @@ pub enum SheetsAction {
 }
 
 /// Durable, browseable history metadata for a workbook mutation.
-pub fn history_context(action: &SheetsAction) -> qos_actions::ActionContext {
-    let mut context = qos_actions::ActionContext::for_action("org.qos.Sheets", "Sheets", action);
+pub fn history_context(action: &SheetsAction) -> tilo_actions::ActionContext {
+    let mut context = tilo_actions::ActionContext::for_action("org.qos.Sheets", "Sheets", action);
     let (label, id, kind, resource_label) = history_resource(action);
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id,
         kind: kind.to_string(),
         label: resource_label,
@@ -615,7 +615,7 @@ fn history_resource(action: &SheetsAction) -> HistoryResource {
 pub fn history_context_for_doc(
     _doc: &AutoCommit,
     action: &SheetsAction,
-) -> qos_actions::ActionContext {
+) -> tilo_actions::ActionContext {
     history_context(action)
 }
 
@@ -2363,7 +2363,7 @@ pub fn column_label(col: u32) -> String {
 mod tests {
     use super::*;
     use crate::model::CellFormat;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -2391,7 +2391,7 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     /// A workbook with two sheets; "Budget" carries a couple of cells.
@@ -2519,7 +2519,7 @@ mod tests {
         let lazy = Widget::resource(&app, &doc, &id).expect("valid omitted cell resolves");
         assert_eq!(lazy.id.0, id);
         assert!(
-            qos_actions::door::resolve(&[lazy], &open_cell_address(&sheet_id, 10, 100_000))
+            tilo_actions::door::resolve(&[lazy], &open_cell_address(&sheet_id, 10, 100_000))
                 .is_some()
         );
         assert!(
@@ -2660,7 +2660,7 @@ mod tests {
                 new_sheet_id,
             };
             let before = doc.save();
-            let error = qos_actions::apply_local(&mut doc, &action, encode(&action))
+            let error = tilo_actions::apply_local(&mut doc, &action, encode(&action))
                 .expect_err("malformed or duplicate resource identity must be refused");
             assert!(matches!(error, ActionError::Refused(_)));
             assert_eq!(doc.save(), before);
@@ -2745,7 +2745,7 @@ mod tests {
         let encoded = encode(&add_sheet_action("Fresh"));
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -2784,8 +2784,8 @@ mod tests {
 
         let action = set_cell_action(0, stable(&a, 0), (2, 4), "converge", None);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2814,8 +2814,8 @@ mod tests {
 
         let action = insert_row_action(0, stable(&a, 0), 0);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2849,8 +2849,8 @@ mod tests {
             ],
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2885,7 +2885,7 @@ mod tests {
                 },
             ],
         };
-        let error = qos_actions::apply_local(&mut doc, &action, encode(&action))
+        let error = tilo_actions::apply_local(&mut doc, &action, encode(&action))
             .expect_err("the full batch must be validated before any write");
         assert!(matches!(error, ActionError::Refused(_)));
         assert_eq!(
@@ -2930,8 +2930,8 @@ mod tests {
             ),
         ]);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).expect("import applies");
-        qos_actions::replay(&mut b, &env, &registry()).expect("import replays");
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).expect("import applies");
+        tilo_actions::replay(&mut b, &env, &registry()).expect("import replays");
         assert_eq!(a.get_heads(), b.get_heads());
         assert_eq!(SheetsDoc::sheet_count(&mut b), 4);
         assert_eq!(SheetsDoc::cell_raw(&mut b, 2, (1, 0)), "1200");
@@ -2966,7 +2966,7 @@ mod tests {
                 },
             ],
         };
-        assert!(qos_actions::apply_local(&mut doc, &action, encode(&action)).is_err());
+        assert!(tilo_actions::apply_local(&mut doc, &action, encode(&action)).is_err());
         assert_eq!(
             doc.save(),
             before,

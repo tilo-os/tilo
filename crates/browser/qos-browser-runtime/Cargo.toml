@@ -8,14 +8,14 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 [dependencies]
 hex.workspace = true
-qos-relay = { path = "../../hosting/qos-relay" }
+tilo-relay = { path = "../../hosting/tilo-relay" }
 uuid.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek.workspace = true
-qos-user-identity = { path = "../../identity/qos-user-identity" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
-ui = { path = "../../../ui" }
+ui = { path = "../../sdk/ui-core" }
 qos-desktop = { path = "../../session/qos-desktop" }
 notes = { path = "../../../apps/notes" }
 calculator = { path = "../../../apps/calculator" }
@@ -23,7 +23,7 @@ taffy.workspace = true
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
 qdoc = { path = "../../doc/qdoc" }
-qos-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../collab/actions" }
 futures = { workspace = true, features = ["std", "async-await"] }
 automerge.workspace = true
 serde.workspace = true

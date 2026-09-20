@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use ed25519_dalek::{Signature, Signer, Verifier};
 use qos_peer_state::transport::{Retention, retention};
 use qos_peer_state::{DocumentRow, NeighbourMsg, StatePeer, TransportOrigin};
-use qos_user_identity::{DeviceCert, RevocationList, WorkspaceDirectory};
+use tilo_user_identity::{DeviceCert, RevocationList, WorkspaceDirectory};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use web_time::SystemTime;
@@ -259,7 +259,7 @@ impl SessionOwner {
             .iter()
             .map(postcard::to_stdvec)
             .collect::<Result<Vec<_>, _>>()?;
-        let workspace = qos_relay::room_workspace_id(&room)?;
+        let workspace = tilo_relay::room_workspace_id(&room)?;
         let mut directory = WorkspaceDirectory::new(
             identity.root.verifying_key().to_bytes(),
             identity.native_cert.device_public_key,
@@ -727,7 +727,7 @@ impl SessionOwner {
         )?;
         let workspace = directory
             .as_map()
-            .remove(&qos_relay::room_workspace_id(self.peer.room())?)
+            .remove(&tilo_relay::room_workspace_id(self.peer.room())?)
             .context("admission directory removes canonical workspace")?;
         if !workspace
             .member_devices

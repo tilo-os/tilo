@@ -35,7 +35,7 @@ fn run_session_inner(args: &LaunchArgs) -> Result<()> {
     let scope = ui::wake::WakeScope::new();
     let _entry = scope.enter();
     ui::i18n::I18nManager::init("en-US");
-    let (state, root) = qos_scratchpad::open(&directory)?;
+    let (state, root) = scratchpad::open(&directory)?;
     if let Some(out) = &args.shots {
         let mut driver =
             ui::headless::Driver::new(state, root, args.viewport.unwrap_or((800, 600)));
@@ -44,7 +44,7 @@ fn run_session_inner(args: &LaunchArgs) -> Result<()> {
             theme.text_scale = scale;
             driver.set_theme(theme);
         }
-        qos_scratchpad::register(driver.action_registry_mut());
+        scratchpad::register(driver.action_registry_mut());
         driver.render_png(out);
         println!("Rendered {}", out.display());
     } else {
@@ -53,7 +53,7 @@ fn run_session_inner(args: &LaunchArgs) -> Result<()> {
         if let Some(scale) = args.text_scale {
             app.set_text_scale(scale);
         }
-        qos_scratchpad::register(app.action_registry_mut());
+        scratchpad::register(app.action_registry_mut());
         app.run();
     }
     Ok(())

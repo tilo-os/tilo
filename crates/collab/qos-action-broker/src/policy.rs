@@ -225,7 +225,7 @@ fn bounded_receipt_text(value: &str, max: usize) -> String {
         .to_string()
 }
 
-fn redact_receipt_context(context: &mut qos_actions::ActionContext) {
+fn redact_receipt_context(context: &mut tilo_actions::ActionContext) {
     context.action_label = bounded_receipt_text(&context.action_label, 200);
     if let Some(app) = &mut context.app {
         app.id = bounded_receipt_text(&app.id, 160);
@@ -256,10 +256,10 @@ fn redact_receipt_context(context: &mut qos_actions::ActionContext) {
 /// Construct the same bounded public receipt for native and standalone owners.
 /// No invocation arguments, output, streamed items or private failure text enter it.
 pub fn redacted_effect_receipt(
-    invocation: qos_actions::InvocationId,
+    invocation: tilo_actions::InvocationId,
     actor: &str,
-    mut context: qos_actions::ActionContext,
-    status: qos_actions::EffectReceiptStatus,
+    mut context: tilo_actions::ActionContext,
+    status: tilo_actions::EffectReceiptStatus,
 ) -> WorkspaceEffectReceipt {
     let completed_at = unix_now();
     let original_action = bounded_receipt_text(&context.action_label, 160);
@@ -270,8 +270,8 @@ pub fn redacted_effect_receipt(
     };
     context
         .facets
-        .push(qos_actions::ActionFacet::new("qos.receipt", "effect"));
-    context.facets.push(qos_actions::ActionFacet::new(
+        .push(tilo_actions::ActionFacet::new("qos.receipt", "effect"));
+    context.facets.push(tilo_actions::ActionFacet::new(
         "qos.invocation",
         invocation.0.to_string(),
     ));

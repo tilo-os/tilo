@@ -124,7 +124,7 @@ fn granted(name: &str) -> ui::permissions::PermissionContext {
 /// The live resource tree the Word Processor itself publishes for this
 /// document. The table anchor is the final bullet, matching where a person
 /// would leave the caret after entering the list.
-fn word_processor_resources(doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+fn word_processor_resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
     let b = blocks(doc);
     let anchor = b
         .iter()

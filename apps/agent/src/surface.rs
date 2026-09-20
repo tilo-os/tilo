@@ -5,7 +5,7 @@
 //! exactly one app in it. This module replaces the list with a question: an
 //! app on the qOS action model publishes a [`Resource`] tree and the
 //! operations each resource exports (`docs/action-model-recipe.md`), and
-//! [`qos_actions::door`] turns a live tree into inert, stably-addressed
+//! [`tilo_actions::door`] turns a live tree into inert, stably-addressed
 //! descriptors the agent can perform. So the agent does not need to know
 //! what an app can do — it asks, every time, and gets back whatever the app
 //! is publishing at that moment.
@@ -43,8 +43,8 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use automerge::AutoCommit;
-use qos_actions::door::{ActionAddress, ActionDescriptor};
-use qos_actions::{ActionContract, ActionRegistry, PermissionRequirement, Resource};
+use tilo_actions::door::{ActionAddress, ActionDescriptor};
+use tilo_actions::{ActionContract, ActionRegistry, PermissionRequirement, Resource};
 use ui::permissions::{PermissionContext, PermissionScope, ResourceRef, Verb};
 
 /// Separator between a resource id and an action id in an address.
@@ -354,7 +354,7 @@ fn chat_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
 }
 
 fn photos_resources(_view: &View, doc: &AutoCommit) -> Vec<Resource> {
-    use qos_actions::ResourceProvider;
+    use tilo_actions::ResourceProvider;
     photos::actions::PhotosResources.resources(doc)
 }
 
@@ -504,7 +504,7 @@ impl Offer {
         };
         if !matches!(
             param.ty,
-            qos_actions::ParamType::Text | qos_actions::ParamType::Secret
+            tilo_actions::ParamType::Text | tilo_actions::ParamType::Secret
         ) {
             return None;
         }
@@ -551,17 +551,17 @@ pub fn broker_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec
         .flat_map(|surface| {
             surface.actions.iter().map(|action| {
                 let input = if action.input.kind == "text" {
-                    qos_actions::InputSpec::Text {
+                    tilo_actions::InputSpec::Text {
                         prompt: action.input.prompt.clone(),
                         placeholder: action.input.placeholder.clone(),
                         collects: if action.input.wants_content {
-                            qos_actions::Collects::Content
+                            tilo_actions::Collects::Content
                         } else {
-                            qos_actions::Collects::Words
+                            tilo_actions::Collects::Words
                         },
                     }
                 } else {
-                    qos_actions::InputSpec::None
+                    tilo_actions::InputSpec::None
                 };
                 Offer {
                     app: surface.app_id.clone(),
@@ -572,7 +572,7 @@ pub fn broker_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec
                         resource_label: action.resource_label.clone(),
                         action_label: action.action_label.clone(),
                         description: action.description.clone(),
-                        locus: qos_actions::ExecutionLocus::ServerPreferred,
+                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
                         kind: action.operation_kind,
                         contract: action.contract.clone(),
                         params: action.params.clone(),
@@ -660,7 +660,7 @@ pub fn offers(
     let mut out = Vec::new();
     for (contract, doc) in held {
         let resources = tree(contract, view, doc);
-        for descriptor in qos_actions::door::survey(&resources) {
+        for descriptor in tilo_actions::door::survey(&resources) {
             // Denied means absent, so nothing downstream can decide to
             // perform an operation it may not.
             if !permitted_descriptor(perms, &descriptor) {
@@ -720,13 +720,13 @@ fn openable(
     // between two steps goes through — so an open is offered content on
     // exactly the terms every other operation is.
     let onto = if held.iter().any(|(c, doc)| (c.product)(view, doc).is_some()) {
-        qos_actions::InputSpec::Text {
+        tilo_actions::InputSpec::Text {
             prompt: "The content to open it onto".to_string(),
             placeholder: String::new(),
-            collects: qos_actions::Collects::Content,
+            collects: tilo_actions::Collects::Content,
         }
     } else {
-        qos_actions::InputSpec::None
+        tilo_actions::InputSpec::None
     };
     CONTRACTS
         .iter()
@@ -749,8 +749,8 @@ fn openable(
                 // the address before the door sees it and asks the session
                 // over the socket instead, since starting an application is
                 // work only the session hosting the room can do.
-                locus: qos_actions::ExecutionLocus::ServerPreferred,
-                kind: qos_actions::OperationKind::Effect,
+                locus: tilo_actions::ExecutionLocus::ServerPreferred,
+                kind: tilo_actions::OperationKind::Effect,
                 contract: ActionContract::default(),
                 params: Vec::new(),
                 input: onto.clone(),
@@ -1142,7 +1142,7 @@ fn collects_a_value_said(offer: &Offer) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::door::ActionAddress;
+    use tilo_actions::door::ActionAddress;
 
     #[test]
     fn an_address_with_a_path_in_it_round_trips() {
@@ -1214,13 +1214,13 @@ mod tests {
         resource: &str,
         action: &str,
         label: &str,
-        input: qos_actions::InputSpec,
+        input: tilo_actions::InputSpec,
     ) -> Offer {
-        let params = matches!(&input, qos_actions::InputSpec::Text { .. })
+        let params = matches!(&input, tilo_actions::InputSpec::Text { .. })
             .then(|| {
-                vec![qos_actions::ActionParam::required(
+                vec![tilo_actions::ActionParam::required(
                     "value",
-                    qos_actions::ParamType::Text,
+                    tilo_actions::ParamType::Text,
                     "value",
                 )]
             })
@@ -1234,8 +1234,8 @@ mod tests {
                 resource_label: "a thing".to_string(),
                 action_label: label.to_string(),
                 description: None,
-                locus: qos_actions::ExecutionLocus::ClientLocal,
-                kind: qos_actions::OperationKind::Document,
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Document,
                 contract: ActionContract::default(),
                 params,
                 input,
@@ -1264,10 +1264,10 @@ mod tests {
                 "photos.image:1",
                 "crop",
                 "Crop to a region",
-                qos_actions::InputSpec::Text {
+                tilo_actions::InputSpec::Text {
                     prompt: "Region to keep".to_string(),
                     placeholder: "0.25,0.25,0.5,0.5".to_string(),
-                    collects: qos_actions::Collects::Words,
+                    collects: tilo_actions::Collects::Words,
                 },
             ),
             offer(
@@ -1275,7 +1275,7 @@ mod tests {
                 "photos.image:1",
                 "crop-square",
                 "Crop to a square",
-                qos_actions::InputSpec::None,
+                tilo_actions::InputSpec::None,
             ),
         ];
 
@@ -1308,14 +1308,14 @@ mod tests {
                 "photos.image:1",
                 "rotate-left",
                 "Rotate left",
-                qos_actions::InputSpec::None,
+                tilo_actions::InputSpec::None,
             ),
             offer(
                 "photos",
                 "photos.image:1",
                 "rotate-right",
                 "Rotate right",
-                qos_actions::InputSpec::None,
+                tilo_actions::InputSpec::None,
             ),
         ];
         match from_verbs("rotate the photograph", &both_bare) {
@@ -1333,10 +1333,10 @@ mod tests {
                 "photos.image:1",
                 "crop-left-half",
                 "Crop the left half",
-                qos_actions::InputSpec::Text {
+                tilo_actions::InputSpec::Text {
                     prompt: "Which half".to_string(),
                     placeholder: String::new(),
-                    collects: qos_actions::Collects::Words,
+                    collects: tilo_actions::Collects::Words,
                 },
             ),
             offer(
@@ -1344,10 +1344,10 @@ mod tests {
                 "photos.image:1",
                 "crop-right-half",
                 "Crop the right half",
-                qos_actions::InputSpec::Text {
+                tilo_actions::InputSpec::Text {
                     prompt: "Which half".to_string(),
                     placeholder: String::new(),
-                    collects: qos_actions::Collects::Words,
+                    collects: tilo_actions::Collects::Words,
                 },
             ),
         ];
@@ -1576,7 +1576,7 @@ mod tests {
         let view = View::default();
         for contract in CONTRACTS {
             let doc = automerge::AutoCommit::new();
-            for descriptor in qos_actions::door::survey(&tree(contract, &view, &doc)) {
+            for descriptor in tilo_actions::door::survey(&tree(contract, &view, &doc)) {
                 assert!(
                     opens(&descriptor.address).is_none(),
                     "{} publishes {:?}, which reads as an open",
@@ -1602,9 +1602,9 @@ mod tests {
                 resource_label: "Calculator".into(),
                 action_label: "Clear".into(),
                 description: None,
-                operation_kind: qos_actions::OperationKind::Effect,
+                operation_kind: tilo_actions::OperationKind::Effect,
                 params: Vec::new(),
-                contract: qos_actions::ActionContract::default(),
+                contract: tilo_actions::ActionContract::default(),
                 input: ui::collaboration::BrokerActionInput {
                     kind: "none".into(),
                     prompt: String::new(),
@@ -1638,11 +1638,11 @@ mod tests {
                 resource_label: "Diffmerge".into(),
                 action_label: "Open Diffmerge".into(),
                 description: None,
-                locus: qos_actions::ExecutionLocus::ServerPreferred,
-                kind: qos_actions::OperationKind::Effect,
+                locus: tilo_actions::ExecutionLocus::ServerPreferred,
+                kind: tilo_actions::OperationKind::Effect,
                 contract: ActionContract::default(),
                 params: Vec::new(),
-                input: qos_actions::InputSpec::None,
+                input: tilo_actions::InputSpec::None,
             },
         };
         let decoded = decode_address(&offer.id()).expect("broker offer id remains decodable");

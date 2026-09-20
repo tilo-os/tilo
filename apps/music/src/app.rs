@@ -345,11 +345,11 @@ pub struct MusicApp {
     active_resolve_request: Option<u64>,
     /// The lifecycle invocation waiting for one exact stream-resolution id.
     /// This never represents ordinary in-window playback actions.
-    resource_stream_invocation: Option<(qos_actions::InvocationId, u64, u64, Instant)>,
+    resource_stream_invocation: Option<(tilo_actions::InvocationId, u64, u64, Instant)>,
     /// Terminal updates are retained per invocation until the host consumes
     /// them. A new operation must never overwrite an earlier terminal result
     /// just because the host polls on a later frame.
-    resource_stream_results: Vec<qos_actions::InvocationUpdate>,
+    resource_stream_results: Vec<tilo_actions::InvocationUpdate>,
     active_search_request: Option<u64>,
     active_search_more: HashMap<String, u64>,
     /// `(query, reason)` for the current live-search failure. Kept separate
@@ -569,17 +569,17 @@ pub struct MusicApp {
     downloads: HashMap<String, crate::audio::OfflineDownload>,
     offline_resolves: HashMap<u64, String>,
     offline_invocation: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         std::collections::BTreeSet<String>,
     )>,
-    offline_results: Vec<qos_actions::InvocationUpdate>,
+    offline_results: Vec<tilo_actions::InvocationUpdate>,
     offline_errors: HashMap<String, String>,
 
     /// Framework-owned action dispatch: brackets the undo boundary (the same undo
     /// path the Ctrl+K palette takes), encodes and dispatches each on-screen
     /// affordance's [`crate::actions`] action, and remembers the last one so a
     /// test can prove a button and the Ctrl+K
-    /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical action.
+    /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical action.
     actions: ui::ActionHost,
 }
 
@@ -2649,18 +2649,18 @@ impl MusicApp {
         if error.is_some() || empty {
             self.offline_invocation = None;
             let update = match error {
-                Some(message) => qos_actions::InvocationUpdate::Failed {
+                Some(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "music.offline_download_failed".into(),
                         message,
                         details: Some(serde_json::json!({"track_id": track_id})),
                         retryable: true,
                     },
                 },
-                None => qos_actions::InvocationUpdate::Succeeded {
+                None => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({"state":"cached"})),
                         resources: Vec::new(),
                     },
@@ -2675,7 +2675,7 @@ impl MusicApp {
     /// every stream intent through the same state machine.
     pub(crate) fn begin_resource_stream_invocation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         request_id: u64,
     ) {
         self.resource_stream_invocation = Some((
@@ -2698,9 +2698,9 @@ impl MusicApp {
     ) {
         if let Some((invocation, _, _, _)) = self.resource_stream_invocation.take() {
             self.resource_stream_results
-                .push(qos_actions::InvocationUpdate::Failed {
+                .push(tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: code.into(),
                         message: message.into(),
                         details,
@@ -3102,9 +3102,9 @@ impl MusicApp {
                 return;
             };
             self.resource_stream_results
-                .push(qos_actions::InvocationUpdate::Succeeded {
+                .push(tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         // This build has no audio backend.  Resolution means a
                         // stream URL was obtained; it must not claim playback
                         // has started when it cannot render any audio.
@@ -3125,9 +3125,9 @@ impl MusicApp {
         {
             self.resource_stream_invocation = None;
             self.resource_stream_results
-                .push(qos_actions::InvocationUpdate::Succeeded {
+                .push(tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({ "state": "playing" })),
                         resources: Vec::new(),
                     },
@@ -4130,7 +4130,7 @@ impl MusicApp {
                 // a Ctrl+K result takes after its canonical resource action
                 // resolves at the authority door.
                 let _ = self.invoke_resource_operation(
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::MUSIC_OPERATION_TYPE,
                     &payload,
                     &AutoCommit::new(),
@@ -5494,7 +5494,7 @@ mod tests {
         .unwrap();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &keep,
                 &doc,
@@ -5522,7 +5522,7 @@ mod tests {
         .unwrap();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &keep,
                 &doc,
@@ -5537,7 +5537,7 @@ mod tests {
         .unwrap();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &evict,
                 &doc,
@@ -6118,7 +6118,7 @@ mod tests {
                 .expect("each searchable Music entity has its canonical hit");
             let address = hit.action_address().expect("canonical search address");
             assert!(
-                qos_actions::door::resolve(&resources, &address).is_some(),
+                tilo_actions::door::resolve(&resources, &address).is_some(),
                 "{address:?} resolves against the live Music resource tree"
             );
         }
@@ -6136,9 +6136,9 @@ mod tests {
         palette.activate_selected();
         let operation = palette.take_operation().expect("play action queued");
         assert!(palette.take_navigation().is_none());
-        assert_eq!(operation.kind, qos_actions::OperationKind::Effect);
+        assert_eq!(operation.kind, tilo_actions::OperationKind::Effect);
         let heads = doc.get_heads();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             Widget::start_resource_operation(
                 &mut app,
@@ -6176,7 +6176,7 @@ mod tests {
         palette.set_cursor(row);
         palette.activate_selected();
         let operation = palette.take_operation().expect("artist view queued");
-        assert_eq!(operation.kind, qos_actions::OperationKind::View);
+        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
@@ -6209,11 +6209,11 @@ mod tests {
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
         let before = app.next_request_id;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             app.start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6240,11 +6240,11 @@ mod tests {
         playback.playing = true;
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         assert_eq!(
             app.start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6259,8 +6259,8 @@ mod tests {
                 .unwrap();
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::Effect,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &competing,
                 &doc,
@@ -6278,7 +6278,7 @@ mod tests {
         app.apply_resolve_failure("tk_g1", request_id, "backend unavailable");
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
@@ -6292,10 +6292,10 @@ mod tests {
         playback.playing = true;
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::MUSIC_OPERATION_TYPE,
             &payload,
             &doc,
@@ -6310,7 +6310,7 @@ mod tests {
             app.active_resolve_request, None,
             "timeout retires request authority"
         );
-        let Some(qos_actions::InvocationUpdate::Failed { error, .. }) =
+        let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
         else {
             panic!("timeout must settle the accepted operation");
@@ -6356,10 +6356,10 @@ mod tests {
         playback.playing = true;
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.start_resource_operation(
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::MUSIC_OPERATION_TYPE,
             &payload,
             &doc,
@@ -6392,7 +6392,7 @@ mod tests {
             },
         );
         assert_eq!(app.active_resolve_request, Some(second_request));
-        let Some(qos_actions::InvocationUpdate::Failed { error, .. }) =
+        let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
         else {
             panic!("local supersession must settle the old host operation");
@@ -6415,11 +6415,11 @@ mod tests {
         playback.playing = true;
         let payload =
             serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let _ = app
             .start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6461,7 +6461,7 @@ mod tests {
             .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
             .expect("rendered PCM settles the audio invocation as playing");
 
-        let qos_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
             panic!("the bound resolver completion must succeed");
         };
         #[cfg(not(feature = "audio"))]
@@ -6557,7 +6557,7 @@ mod tests {
         let track = playlist.track_ids.first().expect("seed membership").clone();
         let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
         let resource =
-            <MusicApp as qos_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
+            <MusicApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
                 .expect("membership resolves lazily");
         assert!(
             resource
@@ -6573,7 +6573,7 @@ mod tests {
         let payload = serde_json::to_vec(&operation).expect("operation encodes");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6594,7 +6594,7 @@ mod tests {
         app.reload_library(&mut doc);
         let error = app
             .invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -6609,7 +6609,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         let resource_id = crate::actions::view_resource_id("downloads");
         let resource =
-            <MusicApp as qos_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
+            <MusicApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
                 .expect("published destination resolves at the authority door");
         let open = resource
             .actions
@@ -6617,13 +6617,13 @@ mod tests {
             .find(|action| action.id == "open")
             .expect("view resource exposes open");
         let operation = match &open.input {
-            qos_actions::ActionInput::Immediate(operation) => operation,
-            qos_actions::ActionInput::Prompted { .. } => panic!("open destination is immediate"),
+            tilo_actions::ActionInput::Immediate(operation) => operation,
+            tilo_actions::ActionInput::Prompted { .. } => panic!("open destination is immediate"),
         };
         let heads = doc.get_heads();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &operation.type_id,
                 &operation.payload,
                 &doc,
@@ -6640,7 +6640,7 @@ mod tests {
         .expect("operation encodes");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::MUSIC_OPERATION_TYPE,
                 &forged,
                 &doc,

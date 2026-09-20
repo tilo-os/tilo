@@ -911,13 +911,13 @@ pub struct SheetsApp {
     interchange_rx: Option<Receiver<InterchangeResult>>,
     interchange_generation: u64,
     active_interchange_generation: Option<u64>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
-    pending_resource_io: Option<(qos_actions::InvocationId, actions::SheetsOperation)>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
+    pending_resource_io: Option<(tilo_actions::InvocationId, actions::SheetsOperation)>,
     prepared_resource_io: Option<PreparedResourceIo>,
     /// Set by a non-cancelled lifecycle poll; the following mutable `sync`
     /// receipt may then publish/import the prepared result.
-    resource_confirmation: Option<qos_actions::InvocationId>,
+    resource_confirmation: Option<tilo_actions::InvocationId>,
     /// A cancellation can arrive while the bounded worker is still parsing or
     /// encoding. Its eventual result is discarded by this exact generation.
     cancelled_interchange_generation: Option<u64>,
@@ -1076,7 +1076,7 @@ impl SheetsApp {
         &mut self,
         doc: &mut AutoCommit,
         action: &SheetsAction,
-    ) -> Result<(), qos_actions::ActionError> {
+    ) -> Result<(), tilo_actions::ActionError> {
         self.actions.try_dispatch_with_context(
             doc,
             actions::SHEETS_ACTION_TYPE,
@@ -1134,8 +1134,8 @@ impl SheetsApp {
         clippy::expect_used,
         reason = "the palette builds serializable action enum values in one authoritative surface"
     )]
-    fn native_palette_actions(&self) -> Vec<qos_actions::ActionSpec> {
-        use qos_actions::{ActionSpec, OperationKind};
+    fn native_palette_actions(&self) -> Vec<tilo_actions::ActionSpec> {
+        use tilo_actions::{ActionSpec, OperationKind};
 
         let immediate = |id: &str, label: &str, action: SheetsAction| {
             ActionSpec::immediate(id, label, actions::SHEETS_ACTION_TYPE, &action)
@@ -1303,7 +1303,7 @@ impl SheetsApp {
             }
         }
 
-        specs.push(qos_actions::ActionSpec::prompted_operation(
+        specs.push(tilo_actions::ActionSpec::prompted_operation(
             "go-to-cell",
             "Go to cell…",
             "Cell reference",
@@ -1311,7 +1311,7 @@ impl SheetsApp {
             OperationKind::View,
             actions::SHEETS_OPERATION_TYPE,
             |reference| {
-                qos_actions::EncodedAction::encode_operation(
+                tilo_actions::EncodedAction::encode_operation(
                     actions::SHEETS_OPERATION_TYPE,
                     &actions::SheetsOperation::GoToCell {
                         reference: reference.to_string(),
@@ -1337,12 +1337,12 @@ impl SheetsApp {
         specs
     }
 
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the affordance == [`ActionSpec`](tilo_actions::ActionSpec)
     /// covenant test: a control and its Ctrl+K entry must build the identical
     /// action.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -3081,7 +3081,7 @@ impl SheetsApp {
                     }
                     PortalOutcome::Cancelled => {
                         if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                            self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                                 invocation,
                                 message: Some("spreadsheet file selection was cancelled".into()),
                             });
@@ -3090,9 +3090,9 @@ impl SheetsApp {
                     PortalOutcome::Failed(e) => {
                         self.status = format!("File chooser unavailable: {e}");
                         if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                            self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "sheets.portal_failed".into(),
                                     message: e,
                                     details: None,
@@ -3108,9 +3108,9 @@ impl SheetsApp {
                 self.io = None;
                 self.status = "File chooser disconnected before returning a selection".into();
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "sheets.portal_disconnected".into(),
                             message: self.status.clone(),
                             details: None,
@@ -3314,13 +3314,13 @@ impl SheetsApp {
         };
         self.resource_confirmation = None;
         self.resource_result = Some(match result {
-            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
-            Err(message) => qos_actions::InvocationUpdate::Failed {
+            Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "sheets.io_failed".into(),
                     message,
                     details: None,
@@ -3334,7 +3334,7 @@ impl SheetsApp {
     /// forcibly killed (that is neither portable nor safe around codecs), but
     /// their exact generation becomes inert and any prepared export is removed
     /// before it can publish.
-    fn cancel_resource_io(&mut self, invocation: qos_actions::InvocationId) -> bool {
+    fn cancel_resource_io(&mut self, invocation: tilo_actions::InvocationId) -> bool {
         let pending_matches = self
             .pending_resource_io
             .as_ref()
@@ -3353,7 +3353,7 @@ impl SheetsApp {
         }
         self.resource_invocation = None;
         self.status = "Spreadsheet operation cancelled".into();
-        self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+        self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
             invocation,
             message: Some("spreadsheet operation cancelled before it changed data or files".into()),
         });
@@ -3428,7 +3428,7 @@ impl SheetsApp {
         };
         self.palette.clear();
         let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
-        let mut actions = qos_actions::flatten(&resources);
+        let mut actions = tilo_actions::flatten(&resources);
         actions.sort_by_key(|action| usize::from(action.action.id != "go-to-cell"));
         for action in actions {
             if action.action.id == "commands" {
@@ -3449,10 +3449,10 @@ impl SheetsApp {
         let intent = self
             .take_control_invocation()
             .expect("palette emitted a resource action");
-        let resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
-        let spec = qos_actions::door::resolve(&resources, &intent.address)
+        let resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
-        assert_eq!(spec.kind, qos_actions::OperationKind::View);
+        assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         let encoded = spec.build_json(&intent.arguments).expect("valid arguments");
         assert!(
             self.invoke_resource_operation(
@@ -5577,13 +5577,13 @@ impl Widget for SheetsApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         if type_id != actions::SHEETS_OPERATION_TYPE {
@@ -5666,8 +5666,8 @@ impl Widget for SheetsApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -5725,18 +5725,18 @@ impl Widget for SheetsApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested {
             let _ = self.cancel_resource_io(invocation);
         }
@@ -5965,10 +5965,10 @@ impl Widget for SheetsApp {
 
     /// Publish the open workbook + its sheets so the host's Ctrl+K action
     /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn action_directory_resource_page(
@@ -5991,8 +5991,8 @@ impl Widget for SheetsApp {
         })
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -6300,7 +6300,7 @@ impl Widget for SheetsApp {
         true
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.palette.take_control_invocation()
     }
 
@@ -6692,7 +6692,7 @@ impl SheetsApp {
         prefill: String,
     ) -> bool {
         let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
-        let entry = qos_actions::flatten(&resources)
+        let entry = tilo_actions::flatten(&resources)
             .into_iter()
             .find(|flat| flat.resource_id.as_str() == resource_id && flat.action.id == "edit")
             .map(|flat| CommandEntry::from_flat_action(&flat));
@@ -7886,7 +7886,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 actions::SHEETS_OPERATION_TYPE,
                 &toggle,
                 &doc,
@@ -7903,8 +7903,8 @@ mod tests {
         assert!(
             Widget::start_resource_operation(
                 &mut app,
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::View,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
                 actions::SHEETS_OPERATION_TYPE,
                 &import,
                 &doc,
@@ -7920,14 +7920,14 @@ mod tests {
     fn cancelled_import_completion_is_inert_before_any_crdt_action() {
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.active_interchange_generation = Some(41);
         let cancelled =
             Widget::poll_resource_operation(&mut app, invocation, true, &doc, &automerge::ROOT);
         assert!(matches!(
             cancelled,
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         let (tx, rx) = mpsc::sync_channel(1);
         tx.send(InterchangeResult::Import {
@@ -7957,7 +7957,7 @@ mod tests {
         let temporary = directory.join(".report.csv.qos-export-prepared.tmp");
         std::fs::write(&destination, "original").unwrap();
         std::fs::write(&temporary, "new export").unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.prepared_resource_io = Some(PreparedResourceIo::Export {
             generation: 42,
@@ -7970,7 +7970,7 @@ mod tests {
             Widget::poll_resource_operation(&mut app, invocation, true, &doc, &automerge::ROOT);
         assert!(matches!(
             cancelled,
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert_eq!(std::fs::read_to_string(&destination).unwrap(), "original");
         assert!(!temporary.exists());
@@ -8026,7 +8026,7 @@ mod tests {
     fn prepared_resource_import_waits_for_lifecycle_confirmation() {
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.resource_invocation = Some(invocation);
         app.prepared_resource_io = Some(PreparedResourceIo::Import {
             generation: 46,
@@ -8049,7 +8049,7 @@ mod tests {
         assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1);
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT,),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -9533,8 +9533,8 @@ mod tests {
             let sheet1 = &resources[0].children[1];
             let spec = sheet1.actions.iter().find(|a| a.id == "delete").unwrap();
             match &spec.input {
-                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-                qos_actions::ActionInput::Prompted { .. } => {
+                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => {
                     panic!("delete is an immediate action")
                 }
             }

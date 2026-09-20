@@ -31,7 +31,7 @@ use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::OperationKind;
+use ui::tilo_actions::OperationKind;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -162,7 +162,7 @@ pub struct AuthenticatorApp {
     /// the undo boundary, applies the action through the executor (so it replays
     /// byte-identically on peers, exactly as the Ctrl+K palette does), and records
     /// the last one so a test can prove a button and its
-    /// [`ActionSpec`](qos_actions::ActionSpec) build the identical action.
+    /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
     actions: ui::ActionHost,
 }
 
@@ -297,7 +297,7 @@ impl AuthenticatorApp {
             doc,
             crate::actions::TOTP_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action(
+            tilo_actions::ActionContext::for_action(
                 "org.qos.Authenticator",
                 "Authenticator",
                 action,
@@ -1401,9 +1401,9 @@ impl Widget for AuthenticatorApp {
 
     /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
     /// to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
         if self.persistence_pending
             && let Some(root) = resources.first_mut()
@@ -1415,7 +1415,7 @@ impl Widget for AuthenticatorApp {
         resources
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if id == "totp.vault" {
             return self.resources(doc).pop();
         }
@@ -2226,7 +2226,7 @@ mod tests {
 
     #[test]
     fn missing_local_secret_exposes_honest_setup_then_attaches_to_the_same_id() {
-        use qos_actions::Availability;
+        use tilo_actions::Availability;
 
         let mut app = AuthenticatorApp::empty();
         let mut state = ui::State::new();
@@ -2316,8 +2316,8 @@ mod tests {
             .expect("unsaved local vault exposes one retry effect");
         assert_eq!(retry.kind, OperationKind::Effect);
         let encoded = match &retry.input {
-            qos_actions::ActionInput::Immediate(encoded) => encoded.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("retry is immediate"),
+            tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("retry is immediate"),
         };
         assert!(
             app.invoke_resource_operation(

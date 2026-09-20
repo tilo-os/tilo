@@ -223,7 +223,7 @@ impl ComponentContextSource for Contexts {
             request.tab.id,
             self.permissions.clone(),
             ui::permissions::UserId(self.author.clone()),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             target,
         )?;
         self.handle.records.borrow_mut().insert(
@@ -795,9 +795,9 @@ impl DesktopRoot {
                 return Ok((false, Some(invocation.to_string())));
             }
             let resources = self.resources(doc);
-            let address = qos_actions::ActionAddress::new("desktop:requests", "close-tab");
-            let encoded = qos_actions::door::encode(&resources, &address, None).map_err(|error| error.to_string())?;
-            let output = self.invoke_resource_operation_v2(qos_actions::OperationKind::View, &encoded.type_id, &encoded.payload, doc, path)?
+            let address = tilo_actions::ActionAddress::new("desktop:requests", "close-tab");
+            let encoded = tilo_actions::door::encode(&resources, &address, None).map_err(|error| error.to_string())?;
+            let output = self.invoke_resource_operation_v2(tilo_actions::OperationKind::View, &encoded.type_id, &encoded.payload, doc, path)?
                 .ok_or("Close action unavailable")?;
             return output.value.and_then(|value| value.as_str().map(str::to_owned)).map(|invocation|(false,Some(invocation))).ok_or_else(|| "Close request identity unavailable".into());
         }
@@ -977,17 +977,17 @@ impl DesktopRoot {
 }
 
 impl Widget for DesktopRoot {
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let mut resources = self.resources(doc);
-        let mut views = qos_actions::Resource::new(activity::view_actions::RESOURCE_ID, "desktop", "Workspace views");
+        let mut views = tilo_actions::Resource::new(activity::view_actions::RESOURCE_ID, "desktop", "Workspace views");
         for descriptor in activity::view_actions::workspace_view_descriptors(&self.handle.tree.borrow(), self.activity_snapshot().is_ok()) { views = views.with_action(descriptor.action()); }
         resources.push(views);
         resources
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &["qos.desktop.request", activity::view_actions::OPERATION_TYPE] }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         use qos_desktop::session_commands::*;
-        use qos_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
+        use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource};
         let tree = self.handle.tree.borrow();
         let Some(workspace) = tree.active_workspace() else { return vec![]; };
         let source = CommandSource { room: workspace.room.to_string(), heads: self.source_heads.clone() };
@@ -1051,13 +1051,13 @@ impl Widget for DesktopRoot {
         for action in actions { resource = resource.with_action(action); }
         vec![resource]
     }
-    fn invoke_resource_operation_v2(&mut self, kind: qos_actions::OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<Option<qos_actions::ActionOutput>, String> {
-        if kind == qos_actions::OperationKind::View && type_id == activity::view_actions::OPERATION_TYPE {
+    fn invoke_resource_operation_v2(&mut self, kind: tilo_actions::OperationKind, type_id: &str, payload: &[u8], _doc: &AutoCommit, _path: &ObjId) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if kind == tilo_actions::OperationKind::View && type_id == activity::view_actions::OPERATION_TYPE {
             let request = serde_json::from_slice(payload).map_err(|e| format!("Invalid workspace view request: {e}"))?;
             self.queue_view_request(request)?;
             return Ok(Some(Default::default()));
         }
-        if kind != qos_actions::OperationKind::View || type_id != "qos.desktop.request" { return Ok(None); }
+        if kind != tilo_actions::OperationKind::View || type_id != "qos.desktop.request" { return Ok(None); }
         let command: qos_desktop::session_commands::BoundCommand = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
         let mut queue = self.handle.session_requests.borrow_mut();
         if queue.len() >= 32 { self.handle.errors.borrow_mut().push("desktop request queue is full".into()); return Err("desktop request queue is full".into()); }
@@ -1065,7 +1065,7 @@ impl Widget for DesktopRoot {
         queue.push((invocation, command));
         self.dirty = true;
         (self.notify)();
-        Ok(Some(qos_actions::ActionOutput { value: Some(serde_json::Value::String(invocation.to_string())), resources: vec![] }))
+        Ok(Some(tilo_actions::ActionOutput { value: Some(serde_json::Value::String(invocation.to_string())), resources: vec![] }))
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -1317,7 +1317,7 @@ mod tests {
             };
             let previous_view = root.activity.as_ref().map(|activity| activity.pane.view());
             root.invoke_resource_operation_v2(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 OPERATION_TYPE,
                 &serde_json::to_vec(&request).unwrap(),
                 &doc,
@@ -2019,7 +2019,7 @@ mod tests {
             .invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: (5 << 48) | 12,
-                    address: qos_actions::ActionAddress::new("notes.notebook", "new-page"),
+                    address: tilo_actions::ActionAddress::new("notes.notebook", "new-page"),
                 },
                 serde_json::json!({"value": hidden_title})
                     .as_object()
@@ -3391,7 +3391,7 @@ mod tests {
                 .invoke_bound_action(
                     &ui::bound_dispatch::BoundActionAddress {
                         instance_id: instance,
-                        address: qos_actions::ActionAddress::new(resource, action),
+                        address: tilo_actions::ActionAddress::new(resource, action),
                     },
                     serde_json::json!({"value":value}).as_object().unwrap(),
                 )

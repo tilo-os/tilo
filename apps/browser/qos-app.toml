@@ -11,7 +11,7 @@
 #     cargo build -p browser -p pkg-cli -p install
 #     mkdir -p target/qpkg/browser/bin
 #     cp target/debug/browser target/qpkg/browser/bin/browser
-#     target/debug/qos-pkg pack --manifest apps/browser/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/browser/tilo-app.toml \
 #         --payload target/qpkg/browser --output target/browser.qpkg
 #     target/debug/qos-install install target/browser.qpkg --allow-self-signed
 

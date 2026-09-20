@@ -2,12 +2,12 @@
 //! authenticated local relay, selected store, and fresh/offline StatePeer admission.
 use ed25519_dalek::SigningKey;
 use qos_peer_state::{StatePeer, TransportOrigin};
-use qos_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use qos_session_peer::{
     SessionOwner,
     host::{LocalHost, NativeSubscription, publish},
 };
-use qos_user_identity::{
+use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationList,
     persist::{self, IdentityPaths},
 };
@@ -105,7 +105,7 @@ async fn observer(
     .unwrap();
     RelayCoeditSession::join(
         client,
-        qos_relay::room_workspace_id(owner.peer().room()).unwrap(),
+        tilo_relay::room_workspace_id(owner.peer().room()).unwrap(),
         cert.device_public_key,
     )
     .unwrap()
@@ -217,7 +217,7 @@ fn report(
     output: (usize, usize),
 ) -> (usize, u64, usize, u64) {
     let workspace = owner.root().join("relay/workspaces").join(
-        qos_relay::room_workspace_id(owner.peer().room())
+        tilo_relay::room_workspace_id(owner.peer().room())
             .unwrap()
             .to_string(),
     );
@@ -264,11 +264,11 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 device_public_key: member.verifying_key().to_bytes(),
                 device_label: format!("qualification member {number}"),
                 capabilities: DeviceCapabilities::member(),
-                issued_at_ns: qos_relay::clock::now_ns(),
+                issued_at_ns: tilo_relay::clock::now_ns(),
                 expires_at_ns: None,
                 signature: [0; 64],
             };
-            qos_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
             candidate
                 .admit_certificate(cert.clone(), &key, SystemTime::now())
                 .unwrap();

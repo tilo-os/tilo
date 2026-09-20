@@ -18,7 +18,7 @@ struct Material {
 #[derive(Deserialize)]
 struct PublicBootstrap {
     version: u32,
-    certificate: qos_user_identity::DeviceCert,
+    certificate: tilo_user_identity::DeviceCert,
     root_public_key: [u8; 32],
     bootstrap: Room,
 }
@@ -36,8 +36,8 @@ fn read(bytes: &[u8]) -> Result<Material, String> {
     Ok(material)
 }
 pub fn create() -> Vec<u8> {
-    let (key, _) = qos_user_identity::DeviceIdentity::generate("Browser viewer", 0);
-    let (request, _) = qos_user_identity::DeviceIdentity::generate("Enrollment request", 0);
+    let (key, _) = tilo_user_identity::DeviceIdentity::generate("Browser viewer", 0);
+    let (request, _) = tilo_user_identity::DeviceIdentity::generate("Enrollment request", 0);
     serde_json::to_vec(&Material {
         version: 2,
         secret: key.to_bytes(),
@@ -118,7 +118,7 @@ pub fn bind(bytes: &[u8], response: &str, raw: &str) -> Result<Vec<u8>, String> 
         .as_nanos()
         .try_into()
         .unwrap_or(u64::MAX);
-    qos_user_identity::verify_device_cert_at(&config.certificate, now)
+    tilo_user_identity::verify_device_cert_at(&config.certificate, now)
         .map_err(|e| e.to_string())?;
     material.scope = Some(Scope {
         root: config.root_public_key,
@@ -185,7 +185,7 @@ mod binding_tests {
     use super::*;
     #[test]
     fn public_response_binds_key_scope_and_same_key_refresh_rejects_other_authority() {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
         let material = create();
         let data = read(&material).unwrap();
         let root = SigningKey::from_bytes(&[1; 32]);

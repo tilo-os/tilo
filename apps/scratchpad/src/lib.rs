@@ -5,7 +5,7 @@ mod storage;
 pub use native_fixture::{NativeFixtureManifest, seed_native_fixture};
 
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
-use qos_actions::{
+use tilo_actions::{
     Action, ActionBinding, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus,
     OperationKind, Resource,
 };
@@ -44,7 +44,7 @@ impl Action for EditNote {
     }
 }
 
-pub fn register(registry: &mut qos_actions::ActionRegistry) {
+pub fn register(registry: &mut tilo_actions::ActionRegistry) {
     registry.register::<EditNote>(EDIT);
 }
 

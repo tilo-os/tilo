@@ -18,16 +18,16 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The qOS ACTION model: the saved-connection store is the app's shared-document
 # state, so add/edit/rename/favorite/delete of a profile are replayable actions
 # the shell's Ctrl+K palette dispatches — the same ones the on-screen affordances do.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 # qOS-device sessions consume the authenticated exact-target mesh placement;
 # Remote does not maintain a second host-selection implementation.
-qos-relay = { path = "../../crates/hosting/qos-relay" }
+tilo-relay = { path = "../../crates/hosting/tilo-relay" }
 runtime-collab = { path = "../../crates/runtime/runtime-collab" }
-qos-callstream = { path = "../../crates/collab/qos-callstream" }
+tilo-callstream = { path = "../../crates/collab/tilo-callstream" }
 # Durable, same-directory replacement for the device-private SSH trust store.
 atomic-file = { path = "../../crates/system/atomic-file" }
 iroh.workspace = true

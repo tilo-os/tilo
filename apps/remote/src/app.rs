@@ -103,7 +103,7 @@ struct QosSession {
     encoded: Arc<Mutex<Option<Vec<u8>>>>,
     encoded_wake: SyncSender<()>,
     decoder_available: Arc<AtomicBool>,
-    decoded: Arc<Mutex<Option<qos_callstream::DecodedFrame>>>,
+    decoded: Arc<Mutex<Option<tilo_callstream::DecodedFrame>>>,
 }
 
 impl QosSession {
@@ -120,7 +120,7 @@ impl QosSession {
         std::thread::Builder::new()
             .name("remote-qos-decode".into())
             .spawn(move || {
-                let mut h264_decoder = qos_callstream::H264Decoder::new();
+                let mut h264_decoder = tilo_callstream::H264Decoder::new();
                 while encoded_rx.recv().is_ok() {
                     let Some(encoded) = lock_recover(&encoded_worker).take() else {
                         continue;
@@ -161,7 +161,7 @@ impl QosSession {
         }
     }
 
-    fn take_latest_frame(&self) -> Option<qos_callstream::DecodedFrame> {
+    fn take_latest_frame(&self) -> Option<tilo_callstream::DecodedFrame> {
         lock_recover(&self.decoded).take()
     }
 }
@@ -172,12 +172,12 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 enum PendingResourceOperation {
     Connect {
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         connection_id: ConnectionId,
         session_generation: u64,
     },
     SshInput {
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         connection_id: ConnectionId,
         session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
@@ -1221,7 +1221,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
         );
     }
 
@@ -1232,7 +1232,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
         );
         if self.selected == Some(id) {
             self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
@@ -1793,7 +1793,7 @@ impl RemoteApp {
             state,
             crate::actions::REMOTE_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
+            tilo_actions::ActionContext::for_action("org.qos.Remote", "Remote", &action),
         );
         self.selected = Some(id);
         self.screen = Screen::List;
@@ -1960,9 +1960,9 @@ impl RemoteApp {
     }
 
     /// The last action an on-screen affordance dispatched, for the
-    /// affordance == [`ActionSpec`](qos_actions::ActionSpec) covenant test.
+    /// affordance == [`ActionSpec`](tilo_actions::ActionSpec) covenant test.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 }
@@ -2231,10 +2231,10 @@ impl Widget for RemoteApp {
 
     /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
     /// delete) so the shell's one action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         if let Some(id) = self.session_for
             && let Some(connection) = self.workspace.get(id)
         {
@@ -2264,13 +2264,13 @@ impl Widget for RemoteApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -2372,14 +2372,14 @@ impl Widget for RemoteApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -2421,7 +2421,7 @@ impl Widget for RemoteApp {
                     }
                     Some(SessionStatus::Connected) => {
                         Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )))
                     }
                     Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
@@ -2462,7 +2462,7 @@ impl Widget for RemoteApp {
                     return Ok(None);
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    qos_actions::ActionOutput::default(),
+                    tilo_actions::ActionOutput::default(),
                 )))
             }
         }
@@ -2474,11 +2474,11 @@ impl Widget for RemoteApp {
     )]
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let pending = self.pending_resource_operation.as_ref()?;
         if cancellation_requested
             && let PendingResourceOperation::Connect {
@@ -2498,7 +2498,7 @@ impl Widget for RemoteApp {
                 self.disconnect_session();
             }
             self.pending_resource_operation = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("remote connection attempt cancelled".into()),
             });
@@ -2512,9 +2512,9 @@ impl Widget for RemoteApp {
                 if self.session_for != Some(*connection_id)
                     || self.session_generation != *session_generation
                 {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "remote.session_replaced".into(),
                             message: "the connection attempt was superseded by a newer session"
                                 .into(),
@@ -2526,15 +2526,15 @@ impl Widget for RemoteApp {
                     match self.live.as_ref().map(LiveSession::status) {
                         Some(SessionStatus::Connecting) => return None,
                         Some(SessionStatus::Connected) => {
-                            qos_actions::InvocationUpdate::Succeeded {
+                            tilo_actions::InvocationUpdate::Succeeded {
                                 invocation,
-                                output: qos_actions::ActionOutput::default(),
+                                output: tilo_actions::ActionOutput::default(),
                             }
                         }
                         Some(SessionStatus::Failed(message)) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.connect_failed".into(),
                                     message,
                                     details: None,
@@ -2543,9 +2543,9 @@ impl Widget for RemoteApp {
                             }
                         }
                         Some(SessionStatus::Unavailable(message)) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.transport_unavailable".into(),
                                     message,
                                     details: None,
@@ -2554,9 +2554,9 @@ impl Widget for RemoteApp {
                             }
                         }
                         Some(SessionStatus::Closed) | None => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.connection_closed".into(),
                                     message: "remote connection closed before it became ready"
                                         .into(),
@@ -2577,9 +2577,9 @@ impl Widget for RemoteApp {
                 if self.session_for != Some(*connection_id)
                     || self.session_generation != *session_generation
                 {
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "remote.session_replaced".into(),
                             message: "the SSH session ended before input delivery was acknowledged"
                                 .into(),
@@ -2589,13 +2589,13 @@ impl Widget for RemoteApp {
                     }
                 } else {
                     match acknowledgement.try_recv() {
-                        Ok(Ok(())) => qos_actions::InvocationUpdate::Succeeded {
+                        Ok(Ok(())) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         },
-                        Ok(Err(message)) => qos_actions::InvocationUpdate::Failed {
+                        Ok(Err(message)) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "remote.input_failed".into(),
                                 message,
                                 details: None,
@@ -2604,9 +2604,9 @@ impl Widget for RemoteApp {
                         },
                         Err(std::sync::mpsc::TryRecvError::Empty) => return None,
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "remote.input_worker_lost".into(),
                                     message: "remote input worker stopped before acknowledgement"
                                         .into(),
@@ -6984,14 +6984,14 @@ mod tests {
     fn view_resource_operations_open_the_exact_requested_ui() {
         let mut app = RemoteApp::new_demo();
         let id = app.workspace.connections()[0].id;
-        let edit = qos_actions::EncodedAction::encode_operation(
+        let edit = tilo_actions::EncodedAction::encode_operation(
             crate::actions::REMOTE_OPERATION_TYPE,
             &crate::actions::RemoteOperation::EditConnection { connection_id: id },
         )
         .expect("serializable view operation");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &edit.type_id,
                 &edit.payload,
                 &doc(),
@@ -7003,7 +7003,7 @@ mod tests {
 
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 &edit.type_id,
                 &edit.payload,
                 &doc(),
@@ -7614,7 +7614,7 @@ mod tests {
     #[test]
     fn unavailable_connect_operation_reports_a_distinct_non_retryable_result() {
         let mut app = RemoteApp::new_demo();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.live = Some(LiveSession::Unavailable {
             readiness: TransportReadiness::BackendUnavailable,
             kind: ConnectionKind::Rdp,
@@ -7632,7 +7632,7 @@ mod tests {
             .expect("unavailable transport reaches a terminal operation result");
         assert!(matches!(
             update,
-            qos_actions::InvocationUpdate::Failed { error, .. }
+            tilo_actions::InvocationUpdate::Failed { error, .. }
                 if error.code == "remote.transport_unavailable" && !error.retryable
         ));
     }
@@ -7641,7 +7641,7 @@ mod tests {
     fn cancelling_connect_settles_only_the_matching_session_generation() {
         let mut app = RemoteApp::new_demo();
         let id = app.first_of_kind(ConnectionKind::Qos).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.session_for = Some(id);
         app.session_generation = 42;
         app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
@@ -7653,14 +7653,14 @@ mod tests {
 
         assert!(matches!(
             app.poll_resource_operation(invocation, true, &doc(), &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert!(app.live.is_none());
         assert!(app.pending_resource_operation.is_none());
 
         // A delayed cancel for an older generation reports terminally but
         // cannot tear down a replacement session for the same saved profile.
-        let stale = qos_actions::InvocationId::new();
+        let stale = tilo_actions::InvocationId::new();
         app.session_for = Some(id);
         app.session_generation = 99;
         app.live = Some(LiveSession::Preview(SessionStatus::Connecting));
@@ -7671,7 +7671,7 @@ mod tests {
         });
         assert!(matches!(
             app.poll_resource_operation(stale, true, &doc(), &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         assert!(
             app.live.is_some(),

@@ -479,11 +479,11 @@ impl ImagerApp {
         &self.progress
     }
 
-    /// The last profile [`EncodedAction`](qos_actions::EncodedAction) an
+    /// The last profile [`EncodedAction`](tilo_actions::EncodedAction) an
     /// on-screen control dispatched, for the affordance == `ActionSpec` covenant
     /// test.
     #[doc(hidden)]
-    pub fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -3796,7 +3796,7 @@ impl ImagerApp {
             state,
             crate::actions::IMAGER_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", &action),
+            tilo_actions::ActionContext::for_action("org.qos.Imager", "Imager", &action),
         );
         self.source = Some(src.clone());
         self.set_status(state, &format!("Selected {}", src.name));
@@ -4627,10 +4627,10 @@ impl Widget for ImagerApp {
     }
 
     /// The resource tree the shell's Ctrl+K palette walks — delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`]. Empty unless an installable qOS image is selected.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         let available = self.source.is_some() && self.target().is_some();
         let mut job = crate::actions::operation_resource(
             self.target().map(TargetDrive::dev_path).as_deref(),
@@ -4642,23 +4642,23 @@ impl Widget for ImagerApp {
             crate::actions::operation_spec(
                 "export-config",
                 "Export headless configuration",
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::ImagerOperation::ExportConfig,
             )
-            .with_contract(qos_actions::ActionContract {
+            .with_contract(tilo_actions::ActionContract {
                 availability: if available {
-                    qos_actions::Availability::Available
+                    tilo_actions::Availability::Available
                 } else {
-                    qos_actions::Availability::Unavailable {
+                    tilo_actions::Availability::Unavailable {
                         code: "incomplete_plan".into(),
                         reason: "Select an image source and target drive first".into(),
                     }
                 },
-                result: qos_actions::ResultSpec::Json {
+                result: tilo_actions::ResultSpec::Json {
                     schema: serde_json::json!({ "type": "string" }),
                 },
-                discovery: qos_actions::DiscoveryScope::Launchable,
-                ..qos_actions::ActionContract::view()
+                discovery: tilo_actions::DiscoveryScope::Launchable,
+                ..tilo_actions::ActionContract::view()
             }),
         );
         resources.push(job);
@@ -4667,7 +4667,7 @@ impl Widget for ImagerApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -4678,8 +4678,8 @@ impl Widget for ImagerApp {
         };
         let expected_kind = match operation {
             crate::actions::ImagerOperation::Status
-            | crate::actions::ImagerOperation::ExportConfig => qos_actions::OperationKind::View,
-            _ => qos_actions::OperationKind::Effect,
+            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
+            _ => tilo_actions::OperationKind::Effect,
         };
         if kind != expected_kind {
             return Err("Imager operation kind does not match its contract".into());
@@ -4691,18 +4691,18 @@ impl Widget for ImagerApp {
 
     fn invoke_resource_operation_v2(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         match crate::actions::decode_operation(type_id, payload)? {
             Some(crate::actions::ImagerOperation::Status) => {
-                if kind != qos_actions::OperationKind::View {
+                if kind != tilo_actions::OperationKind::View {
                     return Err("Imager status is a view operation".into());
                 }
-                return Ok(Some(qos_actions::ActionOutput {
+                return Ok(Some(tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({
                         "phase": self.progress.phase.key(),
                         "progress": self.progress.overall(),
@@ -4712,7 +4712,7 @@ impl Widget for ImagerApp {
                 }));
             }
             Some(crate::actions::ImagerOperation::ExportConfig) => {
-                if kind != qos_actions::OperationKind::View {
+                if kind != tilo_actions::OperationKind::View {
                     return Err("Imager config export is a view operation".into());
                 }
                 if self.source.is_none() || self.target().is_none() {
@@ -4723,7 +4723,7 @@ impl Widget for ImagerApp {
                     .to_headless_config(self.source.as_ref(), self.target());
                 self.export_dialog.show(text.clone());
                 self.dirty = true;
-                return Ok(Some(qos_actions::ActionOutput {
+                return Ok(Some(tilo_actions::ActionOutput {
                     value: Some(serde_json::Value::String(text)),
                     resources: Vec::new(),
                 }));
@@ -4731,7 +4731,7 @@ impl Widget for ImagerApp {
             _ => {}
         }
         self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(qos_actions::ActionOutput::default))
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
     }
 
     /// The framework host drains the undo boundary an on-screen profile control
@@ -4818,7 +4818,7 @@ impl Widget for ImagerApp {
                         state,
                         crate::actions::IMAGER_ACTION_TYPE,
                         &field_action,
-                        qos_actions::ActionContext::for_action(
+                        tilo_actions::ActionContext::for_action(
                             "org.qos.Imager",
                             "Imager",
                             &field_action,

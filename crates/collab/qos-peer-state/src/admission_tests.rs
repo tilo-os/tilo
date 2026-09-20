@@ -1,7 +1,7 @@
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
-use qos_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -698,7 +698,7 @@ fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_read
 
 #[test]
 fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
-    use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+    use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
     let (mut native, a, b, bc, now) = seeded();
     let mut receiver = StatePeer::new(
         native.room(),
@@ -1666,14 +1666,14 @@ fn selective_room_only_publication_rechecks_current_governor_authority() {
     let (mut governor, key, _, _, now) = seeded();
     governor.durable_bootstrap_messages(&key, now, 1).unwrap();
     let root = SigningKey::from_bytes(&[1; 32]);
-    let mut revoked = qos_user_identity::RevocationEntry {
+    let mut revoked = tilo_user_identity::RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: key.verifying_key().to_bytes(),
         revoked_at_ns: 1,
-        reason: qos_user_identity::RevocationReason::Retired,
+        reason: tilo_user_identity::RevocationReason::Retired,
         signature: [0; 64],
     };
-    qos_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
     let mut revocations = RevocationList::new();
     revocations.insert(revoked).unwrap();
     let mut candidate = StatePeer::restore(

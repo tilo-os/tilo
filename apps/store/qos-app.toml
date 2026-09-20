@@ -8,7 +8,7 @@
 #     mkdir -p target/store-payload/bin
 #     cp target/release/store  target/store-payload/bin/store
 #     target/release/qos-pkg pack \
-#         --manifest apps/store/qos-app.toml \
+#         --manifest apps/store/tilo-app.toml \
 #         --payload  target/store-payload \
 #         --output   target/store.qpkg
 # The signed OS image provisions this system app and its required app-host

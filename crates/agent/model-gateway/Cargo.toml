@@ -1,5 +1,5 @@
 [package]
-name = "qos-model-gateway"
+name = "tilo-model-gateway"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 description = "Per-user qOS gateway for hosted agent model providers."
 
 [lib]
-name = "qos_model_gateway"
+name = "tilo_model_gateway"
 path = "src/lib.rs"
 
 [[bin]]
-name = "qos-model-gateway"
+name = "tilo-model-gateway"
 path = "src/main.rs"
 
 [dependencies]

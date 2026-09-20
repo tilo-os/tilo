@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
@@ -236,7 +236,7 @@ impl SearchProvider for SlideSearchProvider {
             .query_page(query, cursor, work_budget, result_limit)
     }
 
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
         actions::resolve_resource(&self.resource_context(), &address.resource)
     }
 }
@@ -358,10 +358,10 @@ mod tests {
             .unwrap();
         let address = hit.action_address().unwrap();
         let resource = app.resource(&doc, &address.resource).unwrap();
-        let encoded = qos_actions::door::encode(&[resource], &address, None).unwrap();
+        let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 &doc,

@@ -319,9 +319,9 @@ impl Customizer {
     pub fn bind_actions(
         &mut self,
         theme_id: &str,
-        duplicate: qos_actions::ActionBinding<()>,
-        reset: Option<qos_actions::ActionBinding<()>>,
-        delete: Option<qos_actions::ActionBinding<()>>,
+        duplicate: tilo_actions::ActionBinding<()>,
+        reset: Option<tilo_actions::ActionBinding<()>>,
+        delete: Option<tilo_actions::ActionBinding<()>>,
     ) {
         if self.action_theme.as_deref() == Some(theme_id) {
             return;

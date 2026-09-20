@@ -31,10 +31,10 @@ portal = ["ui/portal"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
 settings-store = { path = "../../crates/system/settings-store" }
-media = { path = "../../crates/media" }
+media = { path = "../../crates/media/core" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
 serde.workspace = true

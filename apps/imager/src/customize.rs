@@ -1154,7 +1154,7 @@ impl CustomizePanel {
             doc,
             IMAGER_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", action),
+            tilo_actions::ActionContext::for_action("org.qos.Imager", "Imager", action),
         );
     }
 

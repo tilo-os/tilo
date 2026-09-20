@@ -33,7 +33,7 @@
 
 use automerge::AutoCommit;
 
-use qos_actions::{
+use tilo_actions::{
     ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
     DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
     PermissionRequirement, Resource, ResourceProvider, RetryPolicy, RiskLevel,
@@ -100,7 +100,7 @@ pub enum FirewallAction {
     SetEnabled { on: bool },
 }
 
-impl qos_actions::Action for FirewallAction {
+impl tilo_actions::Action for FirewallAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         // No action reads, transforms, then rewrites the whole configuration.
         // The helpers address a single scalar/map/text object and enforce rule
@@ -316,8 +316,8 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
             confirmation: ConfirmationPolicy::Confirm,
             retry: RetryPolicy::Idempotent,
             discovery: DiscoveryScope::Launchable,
-            execution: qos_actions::ExecutionMode::Background { cancellable: true },
-            result: qos_actions::ResultSpec::Job,
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            result: tilo_actions::ResultSpec::Job,
             tags: vec!["security".into(), "firewall".into()],
             ..ActionContract::default()
         }),
@@ -341,8 +341,8 @@ pub fn provide_resources(config: &FirewallConfig) -> Vec<Resource> {
             permission: PermissionRequirement::Admin,
             risk: RiskLevel::Privileged,
             retry: RetryPolicy::Idempotent,
-            execution: qos_actions::ExecutionMode::Background { cancellable: true },
-            result: qos_actions::ResultSpec::Job,
+            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+            result: tilo_actions::ResultSpec::Job,
             tags: vec!["security".into(), "firewall".into()],
             ..ActionContract::default()
         }),
@@ -557,7 +557,7 @@ mod tests {
     use super::*;
     use crate::app::FirewallApp;
     use automerge::ROOT;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -678,7 +678,7 @@ mod tests {
 
         // The flattened tree exports every action, including the deeper rule
         // operations that sort after the zones.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -733,7 +733,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         let after = FirewallDoc::load(&state.doc).unwrap();
@@ -799,8 +799,8 @@ mod tests {
         let action = set_rule_enabled_action(zone, rule_id, !was);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -852,8 +852,8 @@ mod tests {
         let action = add_rule_action(zone, rule);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
         assert!(
@@ -879,7 +879,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         assert_eq!(
             doc.get_heads(),
             before,
@@ -959,7 +959,7 @@ mod tests {
         let encoded = prompted_encode(spec, "8443");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let after = FirewallDoc::load(&doc).unwrap();
         let rules = &after.zone(ZoneKind::Public).unwrap().rules;

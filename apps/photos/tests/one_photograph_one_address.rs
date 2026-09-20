@@ -14,7 +14,7 @@
 //! `qlvx…` there, `qlvq…` in the third. Same bytes, same blake3 hash, three
 //! names.
 //!
-//! An address is resolved by string equality (`qos_actions::door::resolve`),
+//! An address is resolved by string equality (`tilo_actions::door::resolve`),
 //! so an operation invoked on one of those ids reached exactly one session:
 //! the one whose path happened to win. That is what happened — an agent
 //! cropped the editor in `qlva…` while the person watching was looking at the
@@ -42,8 +42,8 @@ use automerge::AutoCommit;
 use photos::PhotosApp;
 use photos::actions::{PhotosResources, register};
 use photos::doc::PhotosDoc;
-use qos_actions::door::{self, ActionAddress};
-use qos_actions::{ActionRegistry, ResourceProvider};
+use tilo_actions::door::{self, ActionAddress};
+use tilo_actions::{ActionRegistry, ResourceProvider};
 
 /// The bytes of one photograph. Identical in every session below — that is the
 /// premise: one picture, staged more than once.

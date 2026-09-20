@@ -13,7 +13,7 @@
 #     cargo build -p containers -p pkg-cli -p install
 #     mkdir -p target/qpkg/containers/bin
 #     cp target/debug/containers target/qpkg/containers/bin/containers
-#     target/debug/qos-pkg pack --manifest apps/containers/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/containers/tilo-app.toml \
 #         --payload target/qpkg/containers --output target/containers.qpkg
 #     target/debug/qos-install install target/containers.qpkg --allow-self-signed
 

@@ -570,9 +570,9 @@ pub struct PhotosApp {
     compact_more_hits: Vec<(Hit, Rect)>,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
-    pending_resource_open: Option<(qos_actions::InvocationId, String)>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
+    pending_resource_open: Option<(tilo_actions::InvocationId, String)>,
     canvas_state: CanvasState,
     search_provider: crate::search::PhotosSearchProvider,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
@@ -1131,7 +1131,7 @@ impl PhotosApp {
             doc,
             crate::actions::PHOTOS_ACTION_TYPE,
             &crate::actions::PhotosAction::set(&next),
-            qos_actions::ActionContext::for_action(
+            tilo_actions::ActionContext::for_action(
                 "org.qos.Photos",
                 "Photos",
                 &crate::actions::PhotosAction::set(&next),
@@ -1152,7 +1152,7 @@ impl PhotosApp {
             doc,
             crate::actions::PHOTOS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Photos", "Photos", &action),
+            tilo_actions::ActionContext::for_action("org.qos.Photos", "Photos", &action),
         );
     }
 
@@ -2488,14 +2488,14 @@ impl PhotosApp {
                 self.open_path(doc, &path);
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.resource_result = Some(if self.open_image_path().is_some() {
-                        qos_actions::InvocationUpdate::Succeeded {
+                        tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         }
                     } else {
-                        qos_actions::InvocationUpdate::Failed {
+                        tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "photos.open_failed".into(),
                                 message: tr("photos-open-failed"),
                                 details: None,
@@ -2509,7 +2509,7 @@ impl PhotosApp {
             Ok(ui::portal::PortalOutcome::Cancelled) => {
                 self.picker = None;
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
                         message: Some("photo selection was cancelled".into()),
                     });
@@ -2518,9 +2518,9 @@ impl PhotosApp {
             Ok(ui::portal::PortalOutcome::Failed(message)) => {
                 self.picker = None;
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "photos.portal_failed".into(),
                             message,
                             details: None,
@@ -4210,13 +4210,13 @@ impl Widget for PhotosApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -4253,8 +4253,8 @@ impl Widget for PhotosApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -4285,18 +4285,18 @@ impl Widget for PhotosApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .resource_result
             .as_ref()
@@ -4317,14 +4317,14 @@ impl Widget for PhotosApp {
         if let Some((invocation, path)) = self.pending_resource_open.take() {
             self.open_path(doc, &path);
             self.resource_result = Some(if self.open_image_path().is_some() {
-                qos_actions::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             } else {
-                qos_actions::InvocationUpdate::Failed {
+                tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "photos.open_failed".into(),
                         message: tr("photos-open-failed"),
                         details: None,
@@ -5043,8 +5043,8 @@ impl Widget for PhotosApp {
     /// running as its own process offer the identical surface at the identical
     /// addresses. Without this the tree existed but only a caller already
     /// inside this process could reach it.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        use qos_actions::ResourceProvider;
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        use tilo_actions::ResourceProvider;
         crate::actions::PhotosResources.resources(doc)
     }
 
@@ -5222,9 +5222,9 @@ mod tests {
     use crate::model::{Album, LibraryPhoto};
     use crate::shots_pattern;
     use automerge::ROOT;
-    use qos_actions::ResourceProvider;
+    use tilo_actions::ResourceProvider;
 
-    fn has_resource_id(resource: &qos_actions::Resource, id: &str) -> bool {
+    fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
         resource.id.0 == id
             || resource
                 .children
@@ -5262,26 +5262,26 @@ mod tests {
         let resource_id = crate::actions::resource_id(&open);
 
         let resources = PhotosResources.resources(&doc);
-        let exported = qos_actions::flatten(&resources)
+        let exported = tilo_actions::flatten(&resources)
             .into_iter()
             .find(|entry| {
                 entry.resource_id.as_str() == resource_id
                     && entry.action.id == crate::actions::EXPORT_EDITED_CONTENT_ACTION_ID
             })
             .expect("addressed image exports edited content");
-        assert_eq!(exported.action.kind, qos_actions::OperationKind::Effect);
+        assert_eq!(exported.action.kind, tilo_actions::OperationKind::Effect);
         assert_eq!(
             exported.action.contract.retry,
-            qos_actions::RetryPolicy::Idempotent
+            tilo_actions::RetryPolicy::Idempotent
         );
         assert_eq!(
             exported.action.contract.result,
-            qos_actions::ResultSpec::Resource {
-                resource_kind: qos_actions::CONTENT_RESOURCE_KIND.into(),
+            tilo_actions::ResultSpec::Resource {
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.into(),
             }
         );
 
-        let payload = qos_actions::EncodedAction::encode_operation(
+        let payload = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ExportEditedContent {
                 resource_id: resource_id.clone(),
@@ -5293,8 +5293,8 @@ mod tests {
         let mut app = PhotosApp::new();
         let started = Widget::start_resource_operation(
             &mut app,
-            qos_actions::InvocationId::new(),
-            qos_actions::OperationKind::Effect,
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
             PHOTOS_OPERATION_TYPE,
             &payload.payload,
             &doc,
@@ -5307,7 +5307,7 @@ mod tests {
         };
         assert_eq!(output.resources.len(), 1);
         let produced_hash =
-            qos_actions::content_hash(&output.resources[0]).expect("one canonical content result");
+            tilo_actions::content_hash(&output.resources[0]).expect("one canonical content result");
         assert_ne!(
             produced_hash, source_hash,
             "edited bytes must not reuse the source hash"
@@ -5323,8 +5323,8 @@ mod tests {
         assert!(
             Widget::start_resource_operation(
                 &mut app,
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::Effect,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::Effect,
                 PHOTOS_OPERATION_TYPE,
                 &payload.payload,
                 &doc,
@@ -5344,7 +5344,7 @@ mod tests {
         PhotosDoc::set_image(&mut doc, Some(&open));
         let edits = PhotosDoc::edits(&doc);
         let encoded = |resource_id: String| {
-            qos_actions::EncodedAction::encode_operation(
+            tilo_actions::EncodedAction::encode_operation(
                 PHOTOS_OPERATION_TYPE,
                 &PhotosOperation::ExportEditedContent {
                     resource_id,
@@ -5362,8 +5362,8 @@ mod tests {
             assert!(
                 Widget::start_resource_operation(
                     &mut app,
-                    qos_actions::InvocationId::new(),
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
                     PHOTOS_OPERATION_TYPE,
                     &payload.payload,
                     &doc,
@@ -5389,7 +5389,7 @@ mod tests {
         });
         PhotosDoc::set_library(&mut doc, &library);
         let before = PhotosDoc::library(&doc);
-        let payload = qos_actions::EncodedAction::encode_operation(
+        let payload = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ViewAlbum {
                 album_id: "photos.album:trip".into(),
@@ -5399,7 +5399,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 PHOTOS_OPERATION_TYPE,
                 &payload.payload,
                 &doc,
@@ -5415,7 +5415,7 @@ mod tests {
             "navigation must not alter membership"
         );
 
-        let stale = qos_actions::EncodedAction::encode_operation(
+        let stale = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ViewAlbum {
                 album_id: "photos.album:gone".into(),
@@ -5425,7 +5425,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 PHOTOS_OPERATION_TYPE,
                 &stale.payload,
                 &doc,
@@ -5441,7 +5441,7 @@ mod tests {
         let mut app = PhotosApp::new();
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let payload = qos_actions::EncodedAction::encode_operation(
+        let payload = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ShareReference {
                 resource_id: "photos.photo:missing".into(),
@@ -5451,7 +5451,7 @@ mod tests {
 
         let error = Widget::invoke_resource_operation(
             &mut app,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             PHOTOS_OPERATION_TYPE,
             &payload.payload,
             &doc,

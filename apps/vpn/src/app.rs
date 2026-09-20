@@ -23,7 +23,7 @@ use std::rc::Rc;
 use ui::icons::Icon;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{ActionAddress, ControlInvocation};
+use ui::tilo_actions::{ActionAddress, ControlInvocation};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
@@ -378,10 +378,10 @@ pub struct VpnApp {
     /// A host-confirmed resource operation waiting for the next mutable-doc
     /// sync pass. The widget operation hook intentionally receives a read-only
     /// document; tunnel status is committed here after the real command runs.
-    queued_resource_toggle: Option<(ConnId, qos_actions::InvocationId)>,
-    completed_resource_toggle: Option<qos_actions::InvocationUpdate>,
-    queued_delete: Option<(ConnId, String, qos_actions::InvocationId)>,
-    completed_delete: Option<qos_actions::InvocationUpdate>,
+    queued_resource_toggle: Option<(ConnId, tilo_actions::InvocationId)>,
+    completed_resource_toggle: Option<tilo_actions::InvocationUpdate>,
+    queued_delete: Option<(ConnId, String, tilo_actions::InvocationId)>,
+    completed_delete: Option<tilo_actions::InvocationUpdate>,
     /// Most recent action results, newest last. Starts empty — populated
     /// only by real user actions (imports, connect attempts).
     activity: Vec<String>,
@@ -394,8 +394,8 @@ pub struct VpnApp {
     /// Existing shared profile being provisioned locally. `None` means a new
     /// import creates secret-free collaborative metadata after NM succeeds.
     provision_target: Option<ConnId>,
-    import_invocation: Option<qos_actions::InvocationId>,
-    completed_import: Option<qos_actions::InvocationUpdate>,
+    import_invocation: Option<tilo_actions::InvocationId>,
+    completed_import: Option<tilo_actions::InvocationUpdate>,
     pending_control_invocation: Option<ControlInvocation>,
     operation_error: Option<String>,
     /// Import errors can be retried without making the user rediscover which
@@ -896,7 +896,7 @@ impl VpnApp {
                         doc,
                         VPN_ACTION_TYPE,
                         &action,
-                        qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
+                        tilo_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
                     );
                     self.log(format!("$ {}  → ok {}", plan.display(), out));
                 }
@@ -1092,7 +1092,7 @@ impl VpnApp {
                                 doc,
                                 VPN_ACTION_TYPE,
                                 &action,
-                                qos_actions::ActionContext::for_action(
+                                tilo_actions::ActionContext::for_action(
                                     "org.qos.Vpn",
                                     "VPN",
                                     &action,
@@ -1116,9 +1116,9 @@ impl VpnApp {
                             self.retry_import_kind = None;
                             if let Some(invocation) = self.import_invocation.take() {
                                 self.completed_import =
-                                    Some(qos_actions::InvocationUpdate::Failed {
+                                    Some(tilo_actions::InvocationUpdate::Failed {
                                         invocation,
-                                        error: qos_actions::ActionFailure {
+                                        error: tilo_actions::ActionFailure {
                                             code: "vpn.local_state_failed".into(),
                                             message: error,
                                             details: None,
@@ -1144,7 +1144,7 @@ impl VpnApp {
             PortalOutcome::Cancelled => {
                 self.provision_target = None;
                 if let Some(invocation) = self.import_invocation.take() {
-                    self.completed_import = Some(qos_actions::InvocationUpdate::Cancelled {
+                    self.completed_import = Some(tilo_actions::InvocationUpdate::Cancelled {
                         invocation,
                         message: Some("Import cancelled".into()),
                     });
@@ -1162,9 +1162,9 @@ impl VpnApp {
         self.operation_error = None;
         self.retry_import_kind = None;
         if let Some(invocation) = self.import_invocation.take() {
-            self.completed_import = Some(qos_actions::InvocationUpdate::Succeeded {
+            self.completed_import = Some(tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             });
         }
     }
@@ -1174,9 +1174,9 @@ impl VpnApp {
         self.retry_import_kind = Some(self.import_hint);
         self.log(message.clone());
         if let Some(invocation) = self.import_invocation.take() {
-            self.completed_import = Some(qos_actions::InvocationUpdate::Failed {
+            self.completed_import = Some(tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "vpn.import_failed".into(),
                     message,
                     details: None,
@@ -1193,9 +1193,9 @@ impl VpnApp {
         self.retry_import_kind = None;
         self.log(message.clone());
         if let Some(invocation) = self.import_invocation.take() {
-            self.completed_import = Some(qos_actions::InvocationUpdate::Failed {
+            self.completed_import = Some(tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "vpn.import_identity_ambiguous".into(),
                     message,
                     details: None,
@@ -1212,7 +1212,7 @@ impl VpnApp {
             doc,
             VPN_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
+            tilo_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
         );
         self.refresh(doc);
     }
@@ -1255,11 +1255,11 @@ impl VpnApp {
         ));
     }
 
-    /// The last [`qos_actions::EncodedAction`] an affordance dispatched, for the
+    /// The last [`tilo_actions::EncodedAction`] an affordance dispatched, for the
     /// `affordance == ActionSpec` covenant test — an on-screen control and its
     /// Ctrl+K entry must build the byte-identical action.
     #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -3273,9 +3273,9 @@ impl Widget for VpnApp {
             self.confirm_pending(state);
             let is_connected = self.vault.get(id).is_some_and(Connection::is_connected);
             self.completed_resource_toggle = Some(if was_connected == is_connected {
-                qos_actions::InvocationUpdate::Failed {
+                tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "vpn.tunnel_transition_failed".into(),
                         message: self
                             .activity
@@ -3287,9 +3287,9 @@ impl Widget for VpnApp {
                     },
                 }
             } else {
-                qos_actions::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             });
         }
@@ -3305,9 +3305,9 @@ impl Widget for VpnApp {
                         self.operation_error = Some(format!(
                             "NetworkManager deleted the profile, but local association cleanup failed: {error}. The shared profile was retained for recovery."
                         ));
-                        qos_actions::InvocationUpdate::Failed {
+                        tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "vpn.local_state_failed".into(),
                                 message:
                                     "NetworkManager deleted the profile but local cleanup failed"
@@ -3322,23 +3322,23 @@ impl Widget for VpnApp {
                             state,
                             VPN_ACTION_TYPE,
                             &action,
-                            qos_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
+                            tilo_actions::ActionContext::for_action("org.qos.Vpn", "VPN", &action),
                         );
                         self.local_selected = None;
                         self.live_status.remove(&id);
                         self.operation_error = None;
-                        qos_actions::InvocationUpdate::Succeeded {
+                        tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         }
                     }
                 }
                 Err(message) => {
                     self.operation_error =
                         Some(format!("Could not delete the local VPN profile: {message}"));
-                    qos_actions::InvocationUpdate::Failed {
+                    tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "vpn.delete_failed".into(),
                             message,
                             details: None,
@@ -3524,7 +3524,7 @@ impl Widget for VpnApp {
 
     /// Publish the vault + connections resource tree to the shell's Ctrl+K
     /// palette (see [`crate::actions`]).
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         let mut resources = actions::provide_resources(&self.vault);
         if let Some(root) = resources.first_mut() {
             for connection in &self.vault.connections {
@@ -3547,9 +3547,9 @@ impl Widget for VpnApp {
                     .find(|action| action.id == "delete")
                 {
                     delete.contract.availability = if locally_provisioned {
-                        qos_actions::Availability::Available
+                        tilo_actions::Availability::Available
                     } else {
-                        qos_actions::Availability::Unavailable {
+                        tilo_actions::Availability::Unavailable {
                             code: "local_credentials_required".into(),
                             reason: "No exact local NetworkManager profile is provisioned on this device".into(),
                         }
@@ -3560,36 +3560,36 @@ impl Widget for VpnApp {
                 } else {
                     ("connect", "Connect")
                 };
-                if let Ok(spec) = qos_actions::ActionSpec::operation(
+                if let Ok(spec) = tilo_actions::ActionSpec::operation(
                     id,
                     label,
-                    qos_actions::OperationKind::Effect,
+                    tilo_actions::OperationKind::Effect,
                     "vpn.toggle-tunnel",
                     &connection.id.to_string(),
                 ) {
                     resource.actions.insert(
                         0,
-                        spec.with_contract(qos_actions::ActionContract {
+                        spec.with_contract(tilo_actions::ActionContract {
                             availability: if connecting {
-                                qos_actions::Availability::Unavailable {
+                                tilo_actions::Availability::Unavailable {
                                     code: "transition_in_progress".into(),
                                     reason: "The tunnel is already changing state".into(),
                                 }
                             } else if !locally_provisioned {
-                                qos_actions::Availability::Unavailable {
+                                tilo_actions::Availability::Unavailable {
                                     code: "local_credentials_required".into(),
                                     reason: "Set up this shared profile on this device before connecting".into(),
                                 }
                             } else {
-                                qos_actions::Availability::Available
+                                tilo_actions::Availability::Available
                             },
-                            permission: qos_actions::PermissionRequirement::Admin,
-                            risk: qos_actions::RiskLevel::Privileged,
-                            confirmation: qos_actions::ConfirmationPolicy::Confirm,
-                            retry: qos_actions::RetryPolicy::AtMostOnce,
-                            execution: qos_actions::ExecutionMode::Background { cancellable: true },
-                            result: qos_actions::ResultSpec::Job,
-                            ..qos_actions::ActionContract::default()
+                            permission: tilo_actions::PermissionRequirement::Admin,
+                            risk: tilo_actions::RiskLevel::Privileged,
+                            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                            retry: tilo_actions::RetryPolicy::AtMostOnce,
+                            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                            result: tilo_actions::ResultSpec::Job,
+                            ..tilo_actions::ActionContract::default()
                         }),
                     );
                 }
@@ -3600,13 +3600,13 @@ impl Widget for VpnApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         _payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect
+        if kind != tilo_actions::OperationKind::Effect
             || !matches!(
                 type_id,
                 "vpn.toggle-tunnel"
@@ -3622,15 +3622,15 @@ impl Widget for VpnApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect || type_id != "vpn.toggle-tunnel" {
-            if kind == qos_actions::OperationKind::Effect && type_id == actions::VPN_DELETE_TYPE {
+        if kind != tilo_actions::OperationKind::Effect || type_id != "vpn.toggle-tunnel" {
+            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_DELETE_TYPE {
                 if self.queued_delete.is_some() {
                     return Err("another VPN profile deletion is already queued".into());
                 }
@@ -3650,7 +3650,7 @@ impl Widget for VpnApp {
                 self.queued_delete = Some((id, uuid, invocation));
                 return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
             }
-            if kind == qos_actions::OperationKind::Effect && type_id == actions::VPN_IMPORT_TYPE {
+            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_IMPORT_TYPE {
                 if self.import_rx.is_some() || self.import_invocation.is_some() {
                     return Err("another VPN profile import is already in progress".into());
                 }
@@ -3665,7 +3665,7 @@ impl Widget for VpnApp {
                 self.request_import(kind);
                 return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
             }
-            if kind == qos_actions::OperationKind::Effect && type_id == actions::VPN_PROVISION_TYPE
+            if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_PROVISION_TYPE
             {
                 if self.import_rx.is_some() || self.import_invocation.is_some() {
                     return Err("another VPN profile import is already in progress".into());
@@ -3709,11 +3709,11 @@ impl Widget for VpnApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if self
             .completed_import
             .as_ref()
@@ -3731,7 +3731,7 @@ impl Widget for VpnApp {
         if cancellation_requested && self.import_invocation == Some(invocation) {
             self.import_invocation = None;
             self.import_rx = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("Import cancelled before a profile was selected".into()),
             });
@@ -3742,7 +3742,7 @@ impl Widget for VpnApp {
                 .is_some_and(|(_, pending)| pending == invocation)
         {
             self.queued_resource_toggle = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("cancelled before the VPN command was run".into()),
             });
@@ -4616,7 +4616,7 @@ mod tests {
                 .find(|action| action.id == action_id)
                 .unwrap();
             assert!(
-                matches!(action.contract.availability, qos_actions::Availability::Unavailable { ref code, .. } if code == "local_credentials_required")
+                matches!(action.contract.availability, tilo_actions::Availability::Unavailable { ref code, .. } if code == "local_credentials_required")
             );
         }
     }
@@ -4735,11 +4735,11 @@ mod tests {
     fn exported_tunnel_toggle_is_a_cancellable_background_job() {
         let (mut app, doc) = demo_with_doc();
         let connection = app.vault.connections[0].id;
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let started = app
             .start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "vpn.toggle-tunnel",
                 &serde_json::to_vec(&connection.to_string()).unwrap(),
                 &doc,
@@ -4749,7 +4749,7 @@ mod tests {
         assert_eq!(started, Some(ui::widget::ResourceOperationStart::Accepted));
         assert!(matches!(
             app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
 
         let action = Widget::resources(&app, &doc)
@@ -4760,8 +4760,8 @@ mod tests {
             .unwrap();
         assert!(matches!(
             action.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: true }
+            tilo_actions::ExecutionMode::Background { cancellable: true }
         ));
-        assert_eq!(action.contract.result, qos_actions::ResultSpec::Job);
+        assert_eq!(action.contract.result, tilo_actions::ResultSpec::Job);
     }
 }

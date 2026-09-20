@@ -63,14 +63,14 @@ pub struct Snapshot {
     pub query: Option<String>,
     pub detail: Option<StoreItem>,
     pub remotes: Vec<Remote>,
-    pub invocation: Option<qos_actions::InvocationId>,
+    pub invocation: Option<tilo_actions::InvocationId>,
     pub operation_error: Option<String>,
     pub moderation_case: Option<registry_types::ModerationCase>,
 }
 
 struct QueuedRequest {
     request: Request,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 pub struct StoreWorker {
@@ -111,7 +111,7 @@ impl StoreWorker {
     pub fn request_with_invocation(
         &self,
         request: Request,
-        invocation: Option<qos_actions::InvocationId>,
+        invocation: Option<tilo_actions::InvocationId>,
     ) -> bool {
         self.pending.fetch_add(1, Ordering::Relaxed);
         if self
@@ -224,7 +224,7 @@ fn run(
 )]
 fn handle(
     request: Request,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     state: &mut State,
     snapshots: &mpsc::Sender<Snapshot>,
     staging: &std::path::Path,
@@ -500,7 +500,7 @@ fn send_tracked(
     status_line: &str,
     query: Option<String>,
     detail: Option<StoreItem>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     operation_error: Option<String>,
 ) -> bool {
     snapshots
@@ -568,7 +568,7 @@ fn moderation_registry(
 fn send_moderation_result(
     state: &State,
     snapshots: &mpsc::Sender<Snapshot>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
     success: &str,
 ) -> bool {
@@ -606,7 +606,7 @@ fn send_moderation_result(
 fn send_moderation_submission_result(
     state: &State,
     snapshots: &mpsc::Sender<Snapshot>,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
     result: Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError>,
     success: &str,
 ) -> bool {

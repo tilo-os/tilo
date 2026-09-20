@@ -25,7 +25,7 @@ thin = ["dep:runtime-dylib"]
 default = ["live-media"]
 # The real-time media engine: voice + camera + screen-share over iroh QUIC,
 # GStreamer for microphone/opus capture + playback and camera capture,
-# `qos-callstream` for the H.264 camera/screen codec, and the
+# `tilo-callstream` for the H.264 camera/screen codec, and the
 # xdg-desktop-portal ScreenCast request over ashpd. OFF by default so the
 # standard build and the `--shots` headless path never need the GStreamer/portal
 # dev stack or a Tokio runtime; the call UI runs fully against simulated/local
@@ -41,21 +41,21 @@ live-media = [
     "dep:iroh",
     "dep:tokio",
     "dep:ashpd",
-    "dep:qos-callstream",
+    "dep:tilo-callstream",
 ]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The qOS action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
 # framework's `ui::ActionHost`.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 # The address a message carries when it was authored by selecting something —
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
-qos-reference = { path = "../../crates/collab/reference" }
+tilo-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
 # The qOS runtime user-identity loader (QOS_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
@@ -80,7 +80,7 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # Live-media-only (feature-gated; never compiled for the default build).
 # Versions pinned to match the workspace lock so no extra copies resolve:
 # gstreamer 0.24 collapses onto the copy `apps/camera` / `apps/tube` /
-# `crates/media` already resolve; iroh 1.0 matches `fs`; `qos-callstream`
+# `crates/media` already resolve; iroh 1.0 matches `fs`; `tilo-callstream`
 # owns the same openh264 codec used by the shared video player;
 # ashpd 0.9 matches the copy the other portal-using apps resolve.
 gstreamer = { workspace = true, optional = true }
@@ -93,7 +93,7 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "syn
 # other ashpd user in the tree inherits the tokio-only workspace config; chat
 # must too, otherwise moving `live-media` into the default build fails to compile.
 ashpd = { workspace = true, optional = true }
-qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true }
+tilo-callstream = { path = "../../crates/collab/tilo-callstream", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

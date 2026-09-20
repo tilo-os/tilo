@@ -146,7 +146,7 @@ pub struct TubeApp {
     /// external caller uses.  Keeping only the inert invocation here means the
     /// host re-resolves availability and applies confirmation policy before an
     /// effect ever reaches [`perform_resource_operation`](Self::perform_resource_operation).
-    pending_device_actions: VecDeque<qos_actions::ControlInvocation>,
+    pending_device_actions: VecDeque<tilo_actions::ControlInvocation>,
     bound_watch_video: Option<String>,
     /// The video id whose stream URL is currently loaded into the player engine,
     /// so we open a source exactly once per resolution and can mirror the engine
@@ -367,9 +367,9 @@ impl TubeApp {
             };
             let mut arguments = serde_json::Map::new();
             arguments.insert("invite".into(), serde_json::Value::String(invite));
-            qos_actions::ActionBinding::static_json(resource, spec, arguments)
+            tilo_actions::ActionBinding::static_json(resource, spec, arguments)
         } else {
-            qos_actions::ActionBinding::unit_for(resource, action_id)
+            tilo_actions::ActionBinding::unit_for(resource, action_id)
         };
         let Ok(binding) = binding else {
             return false;
@@ -409,10 +409,10 @@ impl TubeApp {
             self.bound_watch_video = None;
             return;
         };
-        self.play_action = qos_actions::ActionBinding::unit_for(&current, "play-pause")
+        self.play_action = tilo_actions::ActionBinding::unit_for(&current, "play-pause")
             .ok()
             .map(ActionEmitter::new);
-        self.share_action = qos_actions::ActionBinding::unit_for(&current, "share")
+        self.share_action = tilo_actions::ActionBinding::unit_for(&current, "share")
             .ok()
             .map(ActionEmitter::new);
         self.bound_watch_video = Some(video_id);
@@ -1950,10 +1950,10 @@ impl Widget for TubeApp {
 
     /// Publish the open-resource tree (the playing video + its comments) so the
     /// host's Ctrl+K action palette scopes to it. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -1962,7 +1962,7 @@ impl Widget for TubeApp {
         ))]
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.pending_device_actions
             .pop_front()
             .or_else(|| self.play_action.as_mut().and_then(ActionEmitter::take))
@@ -1990,7 +1990,7 @@ impl Widget for TubeApp {
 
     fn refresh_control_action_availability(
         &mut self,
-        allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         if let Some(action) = &mut self.play_action {
             action.refresh_availability(allowed);
@@ -2009,13 +2009,13 @@ impl Widget for TubeApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -2402,7 +2402,7 @@ impl Widget for TubeApp {
                     state,
                     crate::actions::TUBE_ACTION_TYPE,
                     &operation,
-                    qos_actions::ActionContext::for_action("org.qos.Tube", "Tube", &operation),
+                    tilo_actions::ActionContext::for_action("org.qos.Tube", "Tube", &operation),
                 );
             }
             changed |= self.apply(a, state, path);
@@ -2594,8 +2594,8 @@ mod tests {
         let intent = app
             .take_control_invocation()
             .expect("custom control emitted an action-native invocation");
-        let resources = <TubeApp as qos_actions::ResourceProvider>::resources(app, doc);
-        let spec = qos_actions::door::resolve(&resources, &intent.address)
+        let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(app, doc);
+        let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("fresh resource surface resolves the control address");
         let encoded = spec
             .build_json(&intent.arguments)
@@ -2644,13 +2644,13 @@ mod tests {
                 .is_empty(),
             "the local field is wiped once its Secret argument is queued"
         );
-        let resources = <TubeApp as qos_actions::ResourceProvider>::resources(&app, &doc);
-        let spec = qos_actions::door::resolve(&resources, &invocation.address)
+        let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
+        let spec = tilo_actions::door::resolve(&resources, &invocation.address)
             .expect("fresh resource tree resolves Pair");
-        assert_eq!(spec.kind, qos_actions::OperationKind::Effect);
+        assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);
         assert!(!matches!(
             spec.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         ));
     }
 
@@ -2732,7 +2732,7 @@ mod tests {
     #[test]
     fn externally_applied_absolute_subscription_action_updates_visible_model() {
         let (mut app, mut doc) = fresh();
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &crate::actions::TubeAction::SetSubscription {
                 channel_id: "ch_synth".into(),
                 subscribed: true,
@@ -2752,7 +2752,7 @@ mod tests {
         let (mut app, mut doc) = fresh();
         let unknown_channel = "channel-not-in-catalogue";
         let unknown_video = "video-not-in-catalogue";
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &crate::actions::TubeAction::SetSubscription {
                 channel_id: unknown_channel.into(),
                 subscribed: true,
@@ -2760,7 +2760,7 @@ mod tests {
             &mut doc,
         )
         .expect("subscription applies");
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &crate::actions::TubeAction::SetQueueMembership {
                 video_id: unknown_video.into(),
                 queued: true,
@@ -3057,7 +3057,7 @@ mod tests {
         let (mut app, mut doc) = fresh();
         app.model.route = Route::Watch("vid_donut".into());
         app.model.playhead = 42.0;
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &crate::actions::TubeAction::SetSetting {
                 setting: SettingFlag::DeArrow,
                 enabled: false,

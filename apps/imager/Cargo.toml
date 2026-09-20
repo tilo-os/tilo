@@ -31,7 +31,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # only user-authored config in the shared document) is exported as replayable
 # actions the shell's Ctrl+K palette dispatches — the same actions its on-screen
 # toggles and fields dispatch.
-qos-actions = { path = "../../crates/collab/actions" }
+tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
@@ -52,10 +52,10 @@ zbus = { workspace = true, optional = true, default-features = true }
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl"] }

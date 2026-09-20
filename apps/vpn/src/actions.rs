@@ -44,7 +44,7 @@
 
 use automerge::AutoCommit;
 
-use qos_actions::{
+use tilo_actions::{
     ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, PermissionRequirement, Resource,
     ResourceProvider, ResultSpec, RetryPolicy, RiskLevel,
@@ -90,7 +90,7 @@ pub enum VpnAction {
     SetTorGlobal { on: bool },
 }
 
-impl qos_actions::Action for VpnAction {
+impl tilo_actions::Action for VpnAction {
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         // Read the current fleet for change-guards, then apply a *targeted*
         // field write (never a whole-vault rewrite — that would churn every
@@ -369,7 +369,7 @@ mod tests {
     use crate::app::VpnApp;
     use crate::model::draft_connection;
     use automerge::ROOT;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
     use uuid::Uuid;
 
@@ -483,7 +483,7 @@ mod tests {
 
         // The flattened tree exports every action, including the per-connection
         // operations that sort after the vault-level ones.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -521,7 +521,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         let after = VpnDoc::read_vault(&state.doc);
@@ -576,8 +576,8 @@ mod tests {
         let action = set_conn_tor_action(cid, !was);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -608,8 +608,8 @@ mod tests {
         let action = add_connection_action(conn);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
         assert!(
@@ -628,7 +628,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         assert_eq!(
             doc.get_heads(),
             before,

@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
     Resource, ResourceProvider, ResultSpec, RetryPolicy,
@@ -175,7 +175,7 @@ fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
             };
             EncodedAction::encode_operation(CONTACTS_OPERATION_TYPE, &operation).unwrap_or_else(
                 |error| EncodedAction {
-                    type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                     payload: format!("contacts file operation could not be serialized: {error}")
                         .into_bytes(),
                 },
@@ -184,14 +184,14 @@ fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
     )
     .with_contract(ActionContract {
         risk: if export {
-            qos_actions::RiskLevel::Destructive
+            tilo_actions::RiskLevel::Destructive
         } else {
-            qos_actions::RiskLevel::Low
+            tilo_actions::RiskLevel::Low
         },
         confirmation: if export {
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::Confirm
         } else {
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         },
         // The host picker has no cancellation API. The app can stop waiting
         // for an outcome, but cannot close the native dialog or interrupt an
@@ -601,9 +601,9 @@ pub enum ContactsAction {
 }
 
 /// Durable, browseable history metadata for an address-book mutation.
-pub fn history_context(action: &ContactsAction) -> qos_actions::ActionContext {
+pub fn history_context(action: &ContactsAction) -> tilo_actions::ActionContext {
     let mut context =
-        qos_actions::ActionContext::for_action("org.qos.Contacts", "Contacts", action);
+        tilo_actions::ActionContext::for_action("org.qos.Contacts", "Contacts", action);
     let (label, id, name) = match action {
         ContactsAction::CreateContact(contact) => {
             let name = format!("{} {}", contact.first, contact.last)
@@ -626,7 +626,7 @@ pub fn history_context(action: &ContactsAction) -> qos_actions::ActionContext {
         ),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: format!("contacts.contact:{id}"),
         kind: "contacts.contact".to_string(),
         label: if name.is_empty() {
@@ -951,7 +951,7 @@ fn immediate_spec(id: &str, label: &str, action: &ContactsAction) -> ActionSpec 
 
 fn invalid_arguments(message: impl Into<String>) -> EncodedAction {
     EncodedAction {
-        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: message.into().into_bytes(),
     }
 }
@@ -1255,7 +1255,7 @@ mod tests {
     use super::*;
     use crate::app::ContactsApp;
     use automerge::ROOT;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1332,7 +1332,7 @@ mod tests {
         // surfaces them as rows (the Actions group is display-capped, so
         // reachability is asserted on the flatten and the leading rows on the
         // palette itself).
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -1374,7 +1374,7 @@ mod tests {
         let direct = resolve_resource(&ctx, &address.resource)
             .expect("contacts outside the contextual page resolve lazily");
         assert!(
-            qos_actions::door::resolve(&[direct], &address).is_some(),
+            tilo_actions::door::resolve(&[direct], &address).is_some(),
             "the lazy resource exposes its canonical open action"
         );
         assert!(
@@ -1413,7 +1413,7 @@ mod tests {
         let resource = resolve_resource(&ctx, &address.resource)
             .expect("a group outside the palette page resolves lazily");
         assert!(
-            qos_actions::door::resolve(&[resource], &address).is_some(),
+            tilo_actions::door::resolve(&[resource], &address).is_some(),
             "the lazy resource exposes the exact group view operation"
         );
     }
@@ -1446,12 +1446,12 @@ mod tests {
             .expect("review exposes import-as-new");
         assert_eq!(
             import_as_new.contract.confirmation,
-            qos_actions::ConfirmationPolicy::Confirm,
+            tilo_actions::ConfirmationPolicy::Confirm,
             "adding an untrusted collision as a new contact needs confirmation"
         );
         assert_eq!(
             import_as_new.contract.risk,
-            qos_actions::RiskLevel::Destructive
+            tilo_actions::RiskLevel::Destructive
         );
     }
 
@@ -1497,7 +1497,7 @@ mod tests {
             .expect("the invalid payload is still an encoded rejection");
         assert_eq!(
             empty.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "empty patches cannot create meaningless history entries"
         );
     }
@@ -1519,7 +1519,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1572,8 +1572,8 @@ mod tests {
         let action = set_favorite_action(target.id.to_string(), !target.favorite);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1610,8 +1610,8 @@ mod tests {
         let action = patch_contact_action(&base, &c);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "edit replayed identically");
         let title_b = ContactsDoc::list_contacts(&b)
@@ -1677,16 +1677,16 @@ mod tests {
         let remove_action = patch_contact_action(&base, &removed);
 
         let edit_envelope =
-            qos_actions::apply_local(&mut edit_peer, &edit_action, encode(&edit_action)).unwrap();
+            tilo_actions::apply_local(&mut edit_peer, &edit_action, encode(&edit_action)).unwrap();
         let remove_envelope =
-            qos_actions::apply_local(&mut remove_peer, &remove_action, encode(&remove_action))
+            tilo_actions::apply_local(&mut remove_peer, &remove_action, encode(&remove_action))
                 .unwrap();
         // Each envelope was authored from the shared base. Replay into a peer
         // that has already advanced locally; the action layer must replay at
         // the pinned base and CRDT-merge, rather than validate against the
         // receiver's current state.
-        qos_actions::replay(&mut edit_peer, &remove_envelope, &registry()).unwrap();
-        qos_actions::replay(&mut remove_peer, &edit_envelope, &registry()).unwrap();
+        tilo_actions::replay(&mut edit_peer, &remove_envelope, &registry()).unwrap();
+        tilo_actions::replay(&mut remove_peer, &edit_envelope, &registry()).unwrap();
 
         let merged = ContactsDoc::list_contacts(&edit_peer)
             .into_iter()
@@ -1786,10 +1786,10 @@ mod tests {
         let patch = patch_contact_action(&base, &stale);
 
         let delete = delete_contact_action(base.id.to_string());
-        let delete_envelope = qos_actions::apply_local(&mut a, &delete, encode(&delete)).unwrap();
-        let patch_envelope = qos_actions::apply_local(&mut b, &patch, encode(&patch)).unwrap();
-        qos_actions::replay(&mut a, &patch_envelope, &registry()).unwrap();
-        qos_actions::replay(&mut b, &delete_envelope, &registry()).unwrap();
+        let delete_envelope = tilo_actions::apply_local(&mut a, &delete, encode(&delete)).unwrap();
+        let patch_envelope = tilo_actions::apply_local(&mut b, &patch, encode(&patch)).unwrap();
+        tilo_actions::replay(&mut a, &patch_envelope, &registry()).unwrap();
+        tilo_actions::replay(&mut b, &delete_envelope, &registry()).unwrap();
         assert!(
             !ContactsDoc::list_contacts(&a)
                 .iter()
@@ -1932,7 +1932,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Dana Scott");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let book = ContactsDoc::list_contacts(&doc);
         assert_eq!(book.len(), before + 1, "the action added a contact");
@@ -1971,7 +1971,7 @@ mod tests {
         let address = hit.action_address().expect("search hit is canonical");
         assert_eq!(address, open_contact_address(id));
         assert!(
-            qos_actions::door::resolve(&Widget::resources(&app, &doc), &address).is_some(),
+            tilo_actions::door::resolve(&Widget::resources(&app, &doc), &address).is_some(),
             "the address is exported to the palette, accessibility and agents"
         );
     }

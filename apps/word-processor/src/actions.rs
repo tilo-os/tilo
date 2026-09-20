@@ -26,7 +26,7 @@ use qdoc::{Containers, DocMut};
 
 use crate::num;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
     ResourceProvider, ResultSpec,
@@ -1847,7 +1847,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                 let target = args.text("target").unwrap_or_default().trim();
                 if target.is_empty() {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"hyperlink target is required".to_vec(),
                     };
                 }
@@ -1872,7 +1872,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             move |args: &ActionArgs| {
                 let Some(text) = args.text("text") else {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"replacement text is required".to_vec(),
                     };
                 };
@@ -1911,7 +1911,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             move |args: &ActionArgs| {
                 let Some(text) = args.text("text") else {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"replacement text is required".to_vec(),
                     };
                 };
@@ -1953,7 +1953,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                 let text = args.text("text").unwrap_or_default();
                 if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: b"comment author is required and comment text is too long"
                             .to_vec(),
                     };
@@ -2033,7 +2033,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             move |hash| {
                 let Some(bytes) = qdoc::blobstore::get(hash) else {
                     return EncodedAction {
-                        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                         payload: format!("content `{hash}` is not available on this machine")
                             .into_bytes(),
                     };
@@ -2162,7 +2162,7 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
                     let text = args.text("text").unwrap_or_default();
                     if author.is_empty() || text.chars().count() > MAX_ACTION_TEXT_CHARS {
                         return EncodedAction {
-                            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
                             payload: b"reply author is required and reply text is too long"
                                 .to_vec(),
                         };
@@ -2428,8 +2428,8 @@ impl ResourceProvider for crate::widget::WordProcessorWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::ActionInput;
-    use qos_actions::LocalTransport;
+    use tilo_actions::ActionInput;
+    use tilo_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -2475,7 +2475,7 @@ mod tests {
     fn dispatch(doc: &mut AutoCommit, action: &WordProcessorAction) {
         let encoded = encode(action);
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, action, encoded, &mut tx).unwrap();
     }
 
     #[test]
@@ -2644,8 +2644,8 @@ mod tests {
         // Replace "world" with "there".
         let action = splice_text_action(RegionKind::Body, &block, 6, 11, "there");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(text_of(&a.doc, &block), "Hello there", "the splice landed");
         assert_eq!(
@@ -2677,8 +2677,8 @@ mod tests {
             vec![],
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2715,8 +2715,8 @@ mod tests {
             None,
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2747,8 +2747,8 @@ mod tests {
 
         let action = insert_table_action(&after, 2, 3);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2780,8 +2780,8 @@ mod tests {
         // Break in the middle: "one" | "two".
         let action = insert_page_break_action(&block, 3);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2814,8 +2814,8 @@ mod tests {
 
         let action = replace_body_action("# Fresh\n\nBrand new body\n");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &env, &registry()).unwrap();
 
         assert_eq!(
             a.doc.get_heads(),
@@ -2956,7 +2956,7 @@ mod tests {
         let replacement = replace
             .build_args([(
                 "text".to_string(),
-                qos_actions::ArgValue::Text("guide".into()),
+                tilo_actions::ArgValue::Text("guide".into()),
             )])
             .unwrap();
         assert_eq!(
@@ -2981,7 +2981,7 @@ mod tests {
         let encoded = link
             .build_args([(
                 "target".to_string(),
-                qos_actions::ArgValue::Text("https://example.com/guide".into()),
+                tilo_actions::ArgValue::Text("https://example.com/guide".into()),
             )])
             .unwrap();
         let action: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
@@ -3041,17 +3041,17 @@ mod tests {
         let bytes = b"content supplied by a preceding action";
         let hash = qdoc::blobstore::put(bytes).expect("test fixture fits blob quota");
         let resources = provide_resources(&ctx, &state.doc);
-        let descriptor = qos_actions::door::survey(&resources)
+        let descriptor = tilo_actions::door::survey(&resources)
             .into_iter()
             .find(|descriptor| descriptor.address.action == "place-image")
             .expect("the document publishes its content hand-off action");
         assert!(descriptor.input.wants_content());
 
         let arguments = serde_json::Map::from_iter([(
-            qos_actions::PROMPTED_PARAM.to_string(),
+            tilo_actions::PROMPTED_PARAM.to_string(),
             serde_json::Value::String(hash.clone()),
         )]);
-        qos_actions::door::invoke_json(
+        tilo_actions::door::invoke_json(
             &mut state.doc,
             &resources,
             &descriptor.address,
@@ -3160,9 +3160,9 @@ mod tests {
             set_image_placement_action(&image, "page", "none", 24, 36, 0),
         ];
         for action in &actions {
-            let envelope = qos_actions::apply_local(&mut a.doc, action, encode(action))
+            let envelope = tilo_actions::apply_local(&mut a.doc, action, encode(action))
                 .expect("apply object action");
-            qos_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
+            tilo_actions::replay(&mut b.doc, &envelope, &registry()).expect("replay object action");
         }
         assert_eq!(
             a.doc.get_heads(),
@@ -3253,8 +3253,8 @@ mod tests {
                 .unwrap(),
         );
         let action: WordProcessorAction = serde_json::from_slice(&accept.payload).unwrap();
-        let envelope = qos_actions::apply_local(&mut a.doc, &action, accept).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &action, accept).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(a.doc.get_heads(), b.doc.get_heads());
         let snap = qdoc::model::materialize(
             &a.doc,
@@ -3283,8 +3283,8 @@ mod tests {
         let mut b = ui::State::load(&bytes).unwrap();
 
         let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-07", "Will do.");
-        let envelope = qos_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &reply, encode(&reply)).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(
             a.doc.get_heads(),
             b.doc.get_heads(),
@@ -3297,8 +3297,8 @@ mod tests {
         assert_eq!(comments[0].replies[0].blocks[0].text, "Will do.");
 
         let resolve = WordProcessorAction::ResolveComment { id: comment };
-        let envelope = qos_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(
             a.doc.get_heads(),
             b.doc.get_heads(),
@@ -3375,7 +3375,7 @@ mod tests {
             let label = change.message().map_or_else(|| format!("Revision {}", index + 1), |message| short(message, "Revision"));
             assert_eq!(revision.label, label);
             let show = revision.actions.iter().find(|action| action.id == "show").unwrap();
-            assert_eq!(show.build_args(std::iter::empty::<(String, qos_actions::ArgValue)>()).unwrap(),
+            assert_eq!(show.build_args(std::iter::empty::<(String, tilo_actions::ArgValue)>()).unwrap(),
                 EncodedAction::encode_operation(WORD_PROCESSOR_OPERATION_TYPE, &WordProcessorOperation::ShowRevision { index }).unwrap());
         }
         assert_eq!((state.doc.base_heads(), state.doc.pending_ops()), pending, "resource discovery must not commit the owner");
@@ -3434,8 +3434,8 @@ mod tests {
         let mut b = ui::State::load(&bytes).unwrap();
         let action = replace_selection_action(RegionKind::Body, &ids[0], 2, &ids[2], 3, "X");
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
-        qos_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a.doc, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b.doc, &envelope, &registry()).unwrap();
         assert_eq!(a.doc.get_heads(), b.doc.get_heads());
         let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
         let blocks = qdoc::model::materialize(&a.doc, &c).blocks;

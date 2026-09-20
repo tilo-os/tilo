@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use thumbnail::{ThumbKey, ThumbnailService};
-use ui::qos_actions::{
+use ui::tilo_actions::{
     ActionContract, ActionSpec, Availability, ConfirmationPolicy, EncodedAction, ExecutionMode,
     OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
@@ -510,8 +510,8 @@ pub struct FileExplorerWidget {
 
     merge_preflight_result: MergePreflightResult,
     merge_preflight_pending: Option<(uuid::Uuid, collab_types::FileVersionId)>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
     /// One bounded remote DAV browse at a time. The worker owns the network
     /// request; the UI thread only adopts the resulting metadata projection.
     remote_browse_result: RemoteBrowseResult,
@@ -2411,14 +2411,14 @@ impl FileExplorerWidget {
                         .and_then(|name| name.to_str())
                         .unwrap_or("File")
                         .to_string();
-                    let context = ui::qos_actions::ActionContext::for_resource(
+                    let context = ui::tilo_actions::ActionContext::for_resource(
                         action.clone(),
                         record_id.clone(),
                         "files.entry",
                         resource_label.clone(),
                     )
                     .with_app("org.qos.Files", "Files")
-                    .with_facet(ui::qos_actions::ActionFacet::new(
+                    .with_facet(ui::tilo_actions::ActionFacet::new(
                         "version",
                         version.id.clone(),
                     ));
@@ -5031,13 +5031,13 @@ impl FileExplorerWidget {
             .resource_invocation
             .take()
             .map(|invocation| match &result {
-                Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "files.share_failed".into(),
                         message: message.clone(),
                         details: None,
@@ -5108,13 +5108,13 @@ impl FileExplorerWidget {
             .resource_invocation
             .take()
             .map(|invocation| match &result {
-                Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(error) => qos_actions::InvocationUpdate::Failed {
+                Err(error) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "files.remote_dav_failed".into(),
                         message: error.message().into(),
                         details: None,
@@ -5252,13 +5252,13 @@ impl FileExplorerWidget {
             .resource_invocation
             .take()
             .map(|invocation| match &result {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "files.history_failed".into(),
                         message: message.clone(),
                         details: None,
@@ -7110,7 +7110,7 @@ impl Widget for FileExplorerWidget {
     )]
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -7229,18 +7229,18 @@ impl Widget for FileExplorerWidget {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &automerge::AutoCommit,
         _path: &automerge::ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.poll_share_result();
         self.poll_history_result();
         self.poll_remote_browse_result();
@@ -7738,7 +7738,7 @@ impl Widget for FileExplorerWidget {
         v
     }
 
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.state_retry.take_control_invocation().or_else(|| {
             self.children_mut()
                 .into_iter()
@@ -8813,7 +8813,7 @@ mod command_path_tests {
 
     #[test]
     fn entry_resource_uses_a_wire_safe_id_and_renames_through_the_action_door() {
-        use ui::qos_actions::{ActionAddress, door};
+        use ui::tilo_actions::{ActionAddress, door};
 
         let d = tempfile::tempdir().unwrap();
         // A control separator is a legal Unix filename byte but must not leak
@@ -9867,25 +9867,25 @@ mod command_path_tests {
         let device_key = ed25519_dalek::SigningKey::from_bytes(&[82; 32]);
         let device =
             collab_types::Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes());
-        let mut certificate = qos_user_identity::DeviceCert {
+        let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: person_bytes,
             device_public_key: device_key.verifying_key().to_bytes(),
             device_label: "Ada's laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+        tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
         let mut w = FileExplorerWidget::new();
         w.workspace_roots = vec![dir.path().to_path_buf()];
         w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
-            qos_user_identity::TrustedIdentityProjectionV2 {
-                schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![qos_user_identity::GovernedHumanIdentityV2 {
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: person_bytes,
                     display_name: "Ada Lovelace".to_string(),
-                    devices: vec![qos_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
                 }],
             },
         )
@@ -9969,27 +9969,27 @@ mod command_path_tests {
             root: &ed25519_dalek::SigningKey,
             name: &str,
             devices: &[(u8, &str, Option<u64>)],
-        ) -> qos_user_identity::TrustedIdentityProjectionV2 {
+        ) -> tilo_user_identity::TrustedIdentityProjectionV2 {
             let devices = devices
                 .iter()
                 .map(|(seed, label, expires_at_ns)| {
                     let device = ed25519_dalek::SigningKey::from_bytes(&[*seed; 32]);
-                    let mut certificate = qos_user_identity::DeviceCert {
+                    let mut certificate = tilo_user_identity::DeviceCert {
                         user_public_key: root.verifying_key().to_bytes(),
                         device_public_key: device.verifying_key().to_bytes(),
                         device_label: (*label).into(),
-                        capabilities: qos_user_identity::DeviceCapabilities::member(),
+                        capabilities: tilo_user_identity::DeviceCapabilities::member(),
                         issued_at_ns: 1,
                         expires_at_ns: *expires_at_ns,
                         signature: [0; 64],
                     };
-                    qos_user_identity::sign_device_cert(&mut certificate, root).unwrap();
-                    qos_user_identity::GovernedDeviceIdentityV2 { certificate }
+                    tilo_user_identity::sign_device_cert(&mut certificate, root).unwrap();
+                    tilo_user_identity::GovernedDeviceIdentityV2 { certificate }
                 })
                 .collect();
-            qos_user_identity::TrustedIdentityProjectionV2 {
-                schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![qos_user_identity::GovernedHumanIdentityV2 {
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: root.verifying_key().to_bytes(),
                     display_name: name.into(),
                     devices,
@@ -10048,7 +10048,7 @@ mod command_path_tests {
 
         std::fs::write(
             &path,
-            serde_json::to_vec(&qos_user_identity::TrustedIdentityProjectionV2::empty()).unwrap(),
+            serde_json::to_vec(&tilo_user_identity::TrustedIdentityProjectionV2::empty()).unwrap(),
         )
         .unwrap();
         assert!(widget.refresh_trusted_identities(Some(&path)));
@@ -10111,11 +10111,11 @@ mod command_path_tests {
             Widget::resource(&widget, &doc, &address.resource)
                 .expect("late record materializes exactly for this address"),
         );
-        let spec = ui::qos_actions::door::resolve(&resources, &address)
+        let spec = ui::tilo_actions::door::resolve(&resources, &address)
             .expect("search reveal action is exported");
         let kind = spec.kind;
         let encoded =
-            ui::qos_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
+            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
                 .expect("reveal action encodes");
         assert!(
             Widget::invoke_resource_operation(
@@ -10818,7 +10818,7 @@ mod responsive_body_tests {
         assert_eq!(intent.address.action, "invoke");
         assert!(
             h.w.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 br#""files.retry""#,
                 &h.state.doc,
@@ -10838,7 +10838,7 @@ mod responsive_body_tests {
         let mut h = H::new(None, 1200.0, 720.0);
         assert!(
             h.w.invoke_resource_operation(
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 br#""files.view_menu""#,
                 &h.state.doc,

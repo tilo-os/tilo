@@ -1,12 +1,12 @@
 [package]
-name = "qos-actions"
+name = "tilo-actions"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 
 [lib]
-name = "qos_actions"
+name = "tilo_actions"
 path = "src/lib.rs"
 
 # The qOS ACTION model: a serializable, replayable unit of CRDT mutation, plus

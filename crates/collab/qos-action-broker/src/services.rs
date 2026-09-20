@@ -15,10 +15,10 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
     fn record_effect(
         &self,
         room: &str,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         actor: &str,
-        context: qos_actions::ActionContext,
-        status: qos_actions::EffectReceiptStatus,
+        context: tilo_actions::ActionContext,
+        status: tilo_actions::EffectReceiptStatus,
     ) -> Result<(), String>;
     fn record_task_update(
         &self,

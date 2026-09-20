@@ -12,7 +12,7 @@
 #     cargo build -p sheets -p pkg-cli -p install
 #     mkdir -p target/qpkg/sheets/bin
 #     cp target/debug/sheets target/qpkg/sheets/bin/sheets
-#     target/debug/qos-pkg pack --manifest apps/sheets/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/sheets/tilo-app.toml \
 #         --payload target/qpkg/sheets --output target/sheets.qpkg
 #     target/debug/qos-install install target/sheets.qpkg --allow-self-signed
 

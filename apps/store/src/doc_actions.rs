@@ -2,7 +2,7 @@
 
 use automerge::ROOT;
 use automerge::transaction::Transactable;
-use qos_actions::{Action, ActionError, ActionRegistry, Doc};
+use tilo_actions::{Action, ActionError, ActionRegistry, Doc};
 use serde::{Deserialize, Serialize};
 
 pub const STORE_DOCUMENT_ACTION_TYPE: &str = "store.document";

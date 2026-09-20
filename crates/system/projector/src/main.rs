@@ -40,7 +40,7 @@ use fcast_sender_sdk::device::{
 };
 use fcast_sender_sdk::{DeviceDiscovererEventHandler, url_format_ip_addr};
 use mdns_sd::ServiceEvent;
-use qos_projector::{
+use tilo_projector::{
     CaptureProfile, DisplayResolutionLimit, DisplayStreamPolicy, ProjectionDevice, ProjectionMode,
     ProjectionProtocol, VideoPacket,
 };
@@ -1906,7 +1906,7 @@ mod tests {
         let mut pipeline =
             HlsPipeline::start(&paths, false).expect("start production HLS pipeline");
         let mut encoder =
-            qos_callstream::encoder::H264Encoder::new_with_bitrate_and_keyframe_interval(
+            tilo_callstream::encoder::H264Encoder::new_with_bitrate_and_keyframe_interval(
                 64, 64, 30, 1_000_000, 30,
             )
             .expect("H.264 encoder");
@@ -1922,7 +1922,7 @@ mod tests {
                     width: 64,
                     height: 64,
                     presentation_time_us: frame_index * 33_333,
-                    keyframe: qos_callstream::session::is_h264_keyframe(&annex_b),
+                    keyframe: tilo_callstream::session::is_h264_keyframe(&annex_b),
                     annex_b,
                 })
                 .expect("push projection frame");

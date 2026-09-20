@@ -1003,7 +1003,7 @@ impl AgentModelsPane {
                             let mut config = ProviderConfig::load();
                             config.remove(&remove_profile_id);
                             let _ = config.save();
-                            let _ = qos_model_gateway::remove_api_key(&remove_profile_id);
+                            let _ = tilo_model_gateway::remove_api_key(&remove_profile_id);
                         }),
                     ))
                     .push(Box::new(Spacer::new())),
@@ -1014,7 +1014,7 @@ impl AgentModelsPane {
             let set_id = profile_id.clone();
             let set_buffer = Arc::clone(&buffer);
             let remove_id = profile_id.clone();
-            let configured = qos_model_gateway::secret_configured(&profile_id).unwrap_or(false);
+            let configured = tilo_model_gateway::secret_configured(&profile_id).unwrap_or(false);
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -1040,7 +1040,7 @@ impl AgentModelsPane {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
                             let value = std::mem::take(&mut *key);
-                            let _ = qos_model_gateway::set_api_key(&set_id, value);
+                            let _ = tilo_model_gateway::set_api_key(&set_id, value);
                             key.zeroize();
                         }),
                     ))
@@ -1051,7 +1051,7 @@ impl AgentModelsPane {
                             None,
                         )
                         .on_effect(move || {
-                            let _ = qos_model_gateway::remove_api_key(&remove_id);
+                            let _ = tilo_model_gateway::remove_api_key(&remove_id);
                         }),
                     ))
                     .push(Box::new(Spacer::new())),

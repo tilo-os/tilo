@@ -9,8 +9,8 @@ fn document(owner: &SessionOwner, sequence: u64) -> OwnerCommitRequest {
     let mut doc = AutoCommit::load(&owner.peer().document(app, record).unwrap()).unwrap();
     doc.put(ROOT, "owner_commit_test", sequence).unwrap();
     doc.commit();
-    let key = qos_user_identity::persist::read_device_key(
-        &qos_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
+    let key = tilo_user_identity::persist::read_device_key(
+        &tilo_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
             .device_privkey,
     )
     .unwrap();
@@ -354,7 +354,7 @@ async fn committed_publication_compacts_to_bounded_recoverable_history() {
         owner.peer().room(),
         owner.peer().authority().clone(),
         owner.peer().certificates(),
-        qos_user_identity::RevocationList::new(),
+        tilo_user_identity::RevocationList::new(),
         web_time::SystemTime::now(),
     )
     .unwrap();

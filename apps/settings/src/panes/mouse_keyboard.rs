@@ -946,7 +946,7 @@ impl Widget for MouseKeyboardPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::qos_actions::ActionContext> {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         // The add/reorder/remove source edge keys are transient internally,
         // but they exist only to apply a durable keyboard-source preference.
         let pending = std::mem::take(&mut self.commit_context_pending)

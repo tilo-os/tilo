@@ -1,0 +1,77 @@
+# Code Editor — qOS application manifest.
+#
+# The project tree lives in the CRDT — the editor opens and saves no
+# file of the user's today.
+#
+# The PTY the terminal tab needs comes from the devpts bwrap mounts at
+# /dev; binding the host's /dev/ptmx + /dev/pts over it splits master
+# and slave across two devpts instances and openpty() fails EACCES.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read+exec on the host bin dirs, for `$SHELL` in the built-in
+# terminal tab and for any language server enabled through
+# `QOS_CODE_LSP`.
+#
+# Pack and install:
+#
+#     cargo build -p code-editor -p pkg-cli -p install
+#     mkdir -p target/qpkg/code-editor/bin
+#     cp target/debug/code-editor target/qpkg/code-editor/bin/code-editor
+#     target/debug/qos-pkg pack --manifest apps/code-editor/tilo-app.toml \
+#         --payload target/qpkg/code-editor --output target/code-editor.qpkg
+#     target/debug/qos-install install target/code-editor.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.code-editor"
+name     = "Code Editor"
+category = "Development"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/code-editor"
+type            = "gui"
+splash-segments = ["bin/code-editor[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

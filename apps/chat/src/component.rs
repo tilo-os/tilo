@@ -61,7 +61,7 @@ fn create(
         .read_record(|doc| crate::ChatApp::from_document(doc, identity, runtime))
         .map_err(LaunchError::Record)?
         .map_err(LaunchError::Operation)?;
-    let mut registry = qos_actions::ActionRegistry::new();
+    let mut registry = tilo_actions::ActionRegistry::new();
     crate::actions::register(&mut registry);
     Ok(AppComponent::new(context, Box::new(widget), registry))
 }

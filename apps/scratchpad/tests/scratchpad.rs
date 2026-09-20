@@ -35,7 +35,7 @@ fn cli_screenshot_accepts_shared_viewport_and_text_scale() {
 fn editor_uses_the_available_width_and_keeps_save_visible() {
     for viewport in [(480, 600), (1000, 700)] {
         let directory = tempfile::tempdir().unwrap();
-        let (state, root) = qos_scratchpad::open(directory.path()).unwrap();
+        let (state, root) = scratchpad::open(directory.path()).unwrap();
         let driver = Driver::new(state, root, viewport);
         let targets = driver.targets();
         let editor = targets.get("note-editor").unwrap();
@@ -49,30 +49,30 @@ fn editor_uses_the_available_width_and_keeps_save_visible() {
 fn typed_note_survives_save_close_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
     {
-        let (state, root) = qos_scratchpad::open(directory.path()).unwrap();
+        let (state, root) = scratchpad::open(directory.path()).unwrap();
         let mut driver = Driver::new(state, root, (800, 600));
-        qos_scratchpad::register(driver.action_registry_mut());
+        scratchpad::register(driver.action_registry_mut());
         driver.click_named("note-editor").unwrap();
         driver.type_text("Hello macOS — café 日本語");
         driver.click_named("save-note").unwrap();
         let value = driver.state_mut().doc.get(ROOT, "body").unwrap().unwrap().0;
         assert_eq!(value.to_str(), Some("Hello macOS — café 日本語"));
     }
-    let (state, _root) = qos_scratchpad::open(directory.path()).unwrap();
+    let (state, _root) = scratchpad::open(directory.path()).unwrap();
     let value = state.doc.get(ROOT, "body").unwrap().unwrap().0;
     assert_eq!(value.to_str(), Some("Hello macOS — café 日本語"));
 }
 
 #[test]
 fn edits_replay_to_identical_document_heads() {
-    use qos_actions::{ActionAddress, ActionRegistry, apply_local, replay};
+    use tilo_actions::{ActionAddress, ActionRegistry, apply_local, replay};
     let directory = tempfile::tempdir().unwrap();
-    let (mut state, root) = qos_scratchpad::open(directory.path()).unwrap();
+    let (mut state, root) = scratchpad::open(directory.path()).unwrap();
     let mut peer = state.doc.clone();
-    let action = qos_scratchpad::EditNote {
+    let action = scratchpad::EditNote {
         text: "Same note, on another replica.".into(),
     };
-    let encoded = qos_actions::door::encode(
+    let encoded = tilo_actions::door::encode(
         &root.resources(&state.doc),
         &ActionAddress::new("scratchpad", "edit"),
         Some(&action.text),
@@ -80,7 +80,7 @@ fn edits_replay_to_identical_document_heads() {
     .unwrap();
     let envelope = apply_local(&mut state.doc, &action, encoded).unwrap();
     let mut registry = ActionRegistry::new();
-    qos_scratchpad::register(&mut registry);
+    scratchpad::register(&mut registry);
     replay(&mut peer, &envelope, &registry).unwrap();
     assert_eq!(state.doc.get_heads(), peer.get_heads());
     assert_eq!(
@@ -92,10 +92,10 @@ fn edits_replay_to_identical_document_heads() {
 #[test]
 fn a_second_instance_cannot_overwrite_the_open_note() {
     let directory = tempfile::tempdir().unwrap();
-    let first = qos_scratchpad::open(directory.path()).unwrap();
-    assert!(qos_scratchpad::open(directory.path()).is_err());
+    let first = scratchpad::open(directory.path()).unwrap();
+    assert!(scratchpad::open(directory.path()).is_err());
     drop(first);
-    assert!(qos_scratchpad::open(directory.path()).is_ok());
+    assert!(scratchpad::open(directory.path()).is_ok());
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn corrupt_or_missing_saved_content_is_not_replaced_with_an_empty_note() {
     let directory = tempfile::tempdir().unwrap();
     for reference in ["not-a-hash", &"0".repeat(64)] {
         std::fs::write(directory.path().join("current"), reference).unwrap();
-        assert!(qos_scratchpad::open(directory.path()).is_err());
+        assert!(scratchpad::open(directory.path()).is_err());
         assert_eq!(
             std::fs::read_to_string(directory.path().join("current")).unwrap(),
             reference
@@ -116,9 +116,9 @@ fn corrupt_or_missing_saved_content_is_not_replaced_with_an_empty_note() {
 fn failed_save_reports_error_and_keeps_the_previous_reference() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
-    let (state, root) = qos_scratchpad::open(directory.path()).unwrap();
+    let (state, root) = scratchpad::open(directory.path()).unwrap();
     let mut driver = Driver::new(state, root, (800, 600));
-    qos_scratchpad::register(driver.action_registry_mut());
+    scratchpad::register(driver.action_registry_mut());
     driver.click_named("note-editor").unwrap();
     driver.type_text("Keep this version");
     driver.click_named("save-note").unwrap();
@@ -137,7 +137,7 @@ fn failed_save_reports_error_and_keeps_the_previous_reference() {
         previous
     );
     drop(driver);
-    let (state, _root) = qos_scratchpad::open(directory.path()).unwrap();
+    let (state, _root) = scratchpad::open(directory.path()).unwrap();
     assert_eq!(
         state.doc.get(ROOT, "body").unwrap().unwrap().0.to_str(),
         Some("Keep this version")

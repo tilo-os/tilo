@@ -503,7 +503,7 @@ fn canonical_validation_refuses_versions_and_malformed_shapes_without_reset() {
 #[test]
 fn deleting_every_page_and_tag_through_actions_does_not_reimport() {
     use notes::actions::NotesAction;
-    use qos_actions::Action;
+    use tilo_actions::Action;
     let f = LegacyFixture::rich();
     let checkout = imported(&f).checkout;
     // Explicit authority is retained for the caller; import itself performs private initialization.
@@ -663,7 +663,7 @@ fn accepted_prefix_with_missing_notebook_version_returns_retained_migration_erro
 
 #[test]
 fn deleting_link_target_retains_surviving_text_and_read_only_projection() {
-    use qos_actions::Action;
+    use tilo_actions::Action;
     let f = LegacyFixture::rich();
     let checkout = imported(&f).checkout;
     let before = f

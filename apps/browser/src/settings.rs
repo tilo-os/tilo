@@ -39,16 +39,16 @@ use ui::widget::{
 /// used by Ctrl+K and agents.
 #[derive(Clone, Default)]
 pub struct SettingsActionBindings {
-    pub adblock: Option<qos_actions::ActionBinding<bool>>,
-    pub clear_on_exit: Option<qos_actions::ActionBinding<bool>>,
-    pub homepage: Option<qos_actions::ActionBinding<String>>,
-    pub search_engine: Option<qos_actions::ActionBinding<String>>,
-    pub clear_history: Option<qos_actions::ActionBinding<()>>,
-    pub clear_site_data: Option<qos_actions::ActionBinding<()>>,
+    pub adblock: Option<tilo_actions::ActionBinding<bool>>,
+    pub clear_on_exit: Option<tilo_actions::ActionBinding<bool>>,
+    pub homepage: Option<tilo_actions::ActionBinding<String>>,
+    pub search_engine: Option<tilo_actions::ActionBinding<String>>,
+    pub clear_history: Option<tilo_actions::ActionBinding<()>>,
+    pub clear_site_data: Option<tilo_actions::ActionBinding<()>>,
     /// Close is presentation-only, but it is still a canonical Browser view
     /// action.  Keeping it here means keyboard and assistive-tech activation
     /// have the same route as the Library's Done button.
-    pub close: Option<qos_actions::ActionBinding<()>>,
+    pub close: Option<tilo_actions::ActionBinding<()>>,
 }
 
 /// Process-local mirrors used only to present the action-applied settings.
@@ -503,7 +503,7 @@ fn field_block(
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
-    action: Option<qos_actions::ActionBinding<String>>,
+    action: Option<tilo_actions::ActionBinding<String>>,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
@@ -522,14 +522,14 @@ fn field_block(
     )
 }
 
-fn toggle_with_action(toggle: Toggle, action: Option<qos_actions::ActionBinding<bool>>) -> Toggle {
+fn toggle_with_action(toggle: Toggle, action: Option<tilo_actions::ActionBinding<bool>>) -> Toggle {
     match action {
         Some(binding) => toggle.on_action(binding),
         None => toggle,
     }
 }
 
-fn button_with_action(button: Button, action: Option<qos_actions::ActionBinding<()>>) -> Button {
+fn button_with_action(button: Button, action: Option<tilo_actions::ActionBinding<()>>) -> Button {
     match action {
         Some(binding) => button.on_action(binding),
         None => button,

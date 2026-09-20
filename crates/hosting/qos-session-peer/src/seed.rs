@@ -1,6 +1,6 @@
 //! Initialize canonical app records only during explicit creation of a new session.
 use qos_peer_state::{SeedDocument, SeedState};
-use qos_user_identity::DeviceCert;
+use tilo_user_identity::DeviceCert;
 use ui::{
     portable_storage::PortableStorage,
     record::{RecordCheckout, RecordId, RecordOwners},

@@ -1122,7 +1122,7 @@ impl ChannelHandle {
 
     /// Ask this session to open the "say something about this" surface,
     /// addressed to the compositor on the far end of this socket, not the
-    /// room. `reference` is a serialised `qos_reference::ResourceRef`
+    /// room. `reference` is a serialised `tilo_reference::ResourceRef`
     /// (JSON); `beside` is `(x, y, w, h)` **in this window's own
     /// coordinates** — the session converts, since only it knows where this
     /// window sits on a desktop. The panel can't be drawn here: it opens
@@ -1335,7 +1335,7 @@ pub struct ActionEvent {
     /// The registry type id the action was encoded under. Names the app
     /// that owns the document it belongs to.
     pub type_id: String,
-    /// The encoded action, exactly as `qos_actions::EncodedAction`
+    /// The encoded action, exactly as `tilo_actions::EncodedAction`
     /// carries it.
     pub payload: Vec<u8>,
     /// The broker's attribution for whoever sent the frame. Who *sent*
@@ -1405,7 +1405,7 @@ impl ActionStream {
 }
 
 /// What one exported action's invocation must carry, as it crosses the
-/// wire — the transport-side twin of `qos_actions::door::InputSpec`.
+/// wire — the transport-side twin of `tilo_actions::door::InputSpec`.
 /// Kept here rather than depending on `qos-actions` so this crate stays
 /// a client for one socket; an app wanting the richer type converts at
 /// its own edge.
@@ -1630,7 +1630,7 @@ pub struct Invocation {
     /// resulting change commits under — not an authority; the session
     /// already decided this may happen.
     pub actor: String,
-    /// Serialized broker-owned [`qos_actions::ActionContext`] when this
+    /// Serialized broker-owned [`tilo_actions::ActionContext`] when this
     /// invocation originated from a leased workspace task. Empty for ordinary
     /// invocations so legacy application callers remain context-neutral.
     pub context_json: String,
@@ -1908,7 +1908,7 @@ impl PresenceHandle {
 
     /// Publish an invocation-scoped semantic interaction. The broker derives
     /// the actor from this authenticated handle; the JSON carries only the
-    /// versioned action/target lifecycle from `qos_actions`.
+    /// versioned action/target lifecycle from `tilo_actions`.
     ///
     /// # Errors
     ///
@@ -2009,7 +2009,7 @@ pub enum PresencePayload {
     Following {
         target: Option<String>,
     },
-    /// Versioned `qos_actions::InteractionUpdate` JSON. Actor identity is the
+    /// Versioned `tilo_actions::InteractionUpdate` JSON. Actor identity is the
     /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
     /// caller-controlled payload.
     InteractionJson(String),

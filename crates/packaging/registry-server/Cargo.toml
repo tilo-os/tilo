@@ -21,7 +21,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+atomic-file = { path = "../../system/atomic-file" }
 registry-types = { path = "../registry-types" }
 app-registry = { path = "../app-registry" }
 

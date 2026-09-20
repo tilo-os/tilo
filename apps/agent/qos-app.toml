@@ -12,7 +12,7 @@
 #     cargo build -p agent -p pkg-cli -p install
 #     mkdir -p target/qpkg/agent/bin
 #     cp target/debug/qos-agent target/qpkg/agent/bin/qos-agent
-#     target/debug/qos-pkg pack --manifest apps/agent/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/agent/tilo-app.toml \
 #         --payload target/qpkg/agent --output target/agent.qpkg
 #     target/debug/qos-install install target/agent.qpkg --allow-self-signed
 

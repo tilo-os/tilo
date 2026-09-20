@@ -8,7 +8,7 @@
 #     cargo build -p backups -p pkg-cli -p install
 #     mkdir -p target/qpkg/backups/bin
 #     cp target/debug/backups target/qpkg/backups/bin/backups
-#     target/debug/qos-pkg pack --manifest apps/backups/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/backups/tilo-app.toml \
 #         --payload target/qpkg/backups --output target/backups.qpkg
 #     target/debug/qos-install install target/backups.qpkg --allow-self-signed
 

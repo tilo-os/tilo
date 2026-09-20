@@ -161,7 +161,7 @@ enum DocumentJobResult {
 
 struct DispatchedSave {
     generation: u64,
-    invocation: Option<qos_actions::InvocationId>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 struct DocumentWorker {
@@ -884,8 +884,8 @@ pub struct SlidesApp {
     active_document_generation: Option<u64>,
     dispatched_save: Option<DispatchedSave>,
     resource_file: Option<(bool, std::path::PathBuf)>,
-    resource_invocation: Option<qos_actions::InvocationId>,
-    completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
+    completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Option<(String, ToastKind)>,
@@ -1532,7 +1532,7 @@ impl SlidesApp {
             doc,
             crate::actions::SLIDES_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Slides", "Slides", action),
+            tilo_actions::ActionContext::for_action("org.qos.Slides", "Slides", action),
         );
         self.canonical_deck = doc
             .get(automerge::ROOT, "deck")
@@ -3184,19 +3184,19 @@ impl SlidesApp {
 
     fn finish_file_invocation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         success: bool,
         error: Option<String>,
     ) {
         self.completed_resource_invocation = Some(if success {
-            qos_actions::InvocationUpdate::Succeeded {
+            tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             }
         } else if let Some(message) = error {
-            qos_actions::InvocationUpdate::Failed {
+            tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "slides.file_failed".into(),
                     message,
                     details: None,
@@ -3204,7 +3204,7 @@ impl SlidesApp {
                 },
             }
         } else {
-            qos_actions::InvocationUpdate::Cancelled {
+            tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file selection cancelled".into()),
             }
@@ -5825,7 +5825,7 @@ impl Widget for SlidesApp {
 
     fn document_action_applied(
         &mut self,
-        action: &qos_actions::EncodedAction,
+        action: &tilo_actions::EncodedAction,
         before: &[automerge::ChangeHash],
         doc: &AutoCommit,
         _path: &ObjId,
@@ -5850,7 +5850,7 @@ impl Widget for SlidesApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -5859,7 +5859,7 @@ impl Widget for SlidesApp {
         use crate::actions::SlidesOperation;
         self.reconcile_canonical(doc);
 
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         // Keep the registered wire type on the canonical dispatch path.  This
@@ -5951,8 +5951,8 @@ impl Widget for SlidesApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -5993,7 +5993,7 @@ impl Widget for SlidesApp {
                 .map(|handled| {
                     handled.then(|| {
                         ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )
                     })
                 }),
@@ -6002,11 +6002,11 @@ impl Widget for SlidesApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested && self.resource_invocation == Some(invocation) {
             self.resource_invocation = None;
             self.resource_file = None;
@@ -6015,7 +6015,7 @@ impl Widget for SlidesApp {
             // is inert. Dispatched saves have separate invocation custody and
             // settle only with the worker's actual outcome.
             self.active_document_generation = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("presentation file operation cancelled".into()),
             });
@@ -6792,18 +6792,18 @@ impl Widget for SlidesApp {
     /// The deck's resource tree for the shell's one Ctrl+K palette — every
     /// document-mutating affordance exported as the same action it dispatches on
     /// screen. See [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if !self.canonical_matches(doc) {
             return Vec::new();
         }
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if !self.canonical_matches(doc) {
             return None;
         }
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -8722,7 +8722,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::SLIDES_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -10034,7 +10034,7 @@ mod tests {
         let (results, rx) = std::sync::mpsc::sync_channel(1);
         drop(results);
         app.document_worker = Some(DocumentWorker { tx, rx });
-        app.resource_invocation = Some(qos_actions::InvocationId::new());
+        app.resource_invocation = Some(tilo_actions::InvocationId::new());
         app.active_document_generation = Some(7);
 
         app.drain_document_worker(&mut doc);
@@ -10044,7 +10044,7 @@ mod tests {
         assert!(app.resource_invocation.is_none());
         assert!(matches!(
             app.completed_resource_invocation,
-            Some(qos_actions::InvocationUpdate::Failed { .. })
+            Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
         assert!(matches!(app.io_toast.as_ref(), Some((_, ToastKind::Error))));
     }
@@ -11330,7 +11330,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::SLIDES_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -11420,7 +11420,7 @@ mod history_interruption_tests {
     fn assert_save_settlement(
         app: &mut SlidesApp,
         doc: &AutoCommit,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         succeeds: bool,
         actual_error: Option<&str>,
     ) {
@@ -11428,13 +11428,13 @@ mod history_interruption_tests {
             .poll_resource_operation(invocation, false, doc, &automerge::ROOT)
             .unwrap();
         match update {
-            qos_actions::InvocationUpdate::Succeeded {
+            tilo_actions::InvocationUpdate::Succeeded {
                 invocation: settled,
                 ..
             } if succeeds => {
                 assert_eq!(settled, invocation);
             }
-            qos_actions::InvocationUpdate::Failed {
+            tilo_actions::InvocationUpdate::Failed {
                 invocation: settled,
                 error,
             } if !succeeds => {
@@ -11480,7 +11480,7 @@ mod history_interruption_tests {
         SlidesDoc::set_title(&mut doc, "Authorized export snapshot");
         let mut app = SlidesApp::new();
         app.sync(&mut doc, &automerge::ROOT);
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::SlidesOperation::SaveAs {
             path: Some(path.to_string_lossy().into_owned()),
         })
@@ -11488,7 +11488,7 @@ mod history_interruption_tests {
         assert!(matches!(
             app.start_resource_operation(
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::SLIDES_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -11530,11 +11530,11 @@ mod history_interruption_tests {
             app.poll_resource_operation(invocation, true, &doc, &automerge::ROOT)
                 .is_none()
         );
-        let other_invocation = qos_actions::InvocationId::new();
+        let other_invocation = tilo_actions::InvocationId::new();
         assert!(
             app.start_resource_operation(
                 other_invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::SLIDES_OPERATION_TYPE,
                 &payload,
                 &doc,

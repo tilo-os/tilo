@@ -9,7 +9,7 @@
 #     cargo build -p slides -p pkg-cli -p install
 #     mkdir -p target/qpkg/slides/bin
 #     cp target/debug/slides target/qpkg/slides/bin/slides
-#     target/debug/qos-pkg pack --manifest apps/slides/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/slides/tilo-app.toml \
 #         --payload target/qpkg/slides --output target/slides.qpkg
 #     target/debug/qos-install install target/slides.qpkg --allow-self-signed
 

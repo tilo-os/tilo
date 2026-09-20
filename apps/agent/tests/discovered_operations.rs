@@ -20,7 +20,7 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_actions::{Resource, ResourceProvider};
+use tilo_actions::{Resource, ResourceProvider};
 use qos_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
@@ -529,8 +529,8 @@ fn drive_photo_peer(
                                 .find(|candidate| candidate.id == action)
                         })
                         .and_then(|spec| match &spec.input {
-                            qos_actions::ActionInput::Immediate(encoded) => Some(encoded),
-                            qos_actions::ActionInput::Prompted { .. } => None,
+                            tilo_actions::ActionInput::Immediate(encoded) => Some(encoded),
+                            tilo_actions::ActionInput::Prompted { .. } => None,
                         })
                         .expect("the published export has one immediate operation payload");
                     let result =
@@ -549,15 +549,15 @@ fn drive_photo_peer(
                                 _ => Err("the export descriptor did not encode an export".into()),
                             });
                     let invocation =
-                        qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+                        tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
                     match result {
                         Ok(output) => {
                             exported = true;
-                            qos_actions::InvocationUpdate::Succeeded { invocation, output }
+                            tilo_actions::InvocationUpdate::Succeeded { invocation, output }
                         }
-                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                        Err(message) => tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "photos.export_failed".into(),
                                 message,
                                 details: None,

@@ -7,7 +7,7 @@
 //! After this process exits, the operator may remove only the inspection destination.
 //! Record source/identity hashes externally before and after inspection. This tool
 //! proves a strict canonical receipt count, not effect-once or UI convergence.
-use qos_actions::InvocationId;
+use tilo_actions::InvocationId;
 use serde::Serialize;
 use std::path::Path;
 use ui::automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
@@ -72,9 +72,9 @@ fn project(doc: &AutoCommit, original: InvocationId) -> ReceiptProjection {
                 if receipt.invocation == original {
                     result.matching_receipts += 1;
                     matching_status = Some(match receipt.status {
-                        qos_actions::EffectReceiptStatus::Succeeded => "succeeded",
-                        qos_actions::EffectReceiptStatus::Failed { .. } => "failed",
-                        qos_actions::EffectReceiptStatus::Cancelled => "cancelled",
+                        tilo_actions::EffectReceiptStatus::Succeeded => "succeeded",
+                        tilo_actions::EffectReceiptStatus::Failed { .. } => "failed",
+                        tilo_actions::EffectReceiptStatus::Cancelled => "cancelled",
                     });
                 }
             }
@@ -195,7 +195,7 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_actions::{ActionContext, EffectReceiptStatus};
+    use tilo_actions::{ActionContext, EffectReceiptStatus};
     use qos_desktop::WorkspaceEffectReceipt;
     use ui::automerge::{ObjType, ROOT, transaction::Transactable};
     use uuid::Uuid;

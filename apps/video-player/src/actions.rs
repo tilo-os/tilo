@@ -1,7 +1,7 @@
 //! Discoverable effect/view operations for the local video player.
 
 use automerge::AutoCommit;
-use qos_actions::{
+use tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
     OperationKind, ParamType, Resource, ResultSpec, RetryPolicy,
 };
@@ -271,7 +271,7 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, _doc: &AutoCommit) -> Vec<Resource
         .with_contract(ActionContract {
             execution: ExecutionMode::Background { cancellable: false },
             result: ResultSpec::Job,
-            permission: qos_actions::PermissionRequirement::Read,
+            permission: tilo_actions::PermissionRequirement::Read,
             ..open_contract
         }),
     );
@@ -1014,10 +1014,10 @@ mod tests {
         let open = actions.iter().find(|a| a.id == "open").unwrap();
         assert_eq!(
             open.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: false }
+            tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(open.contract.result, qos_actions::ResultSpec::Job);
-        assert_eq!(open.locus, qos_actions::ExecutionLocus::ClientLocal);
+        assert_eq!(open.contract.result, tilo_actions::ResultSpec::Job);
+        assert_eq!(open.locus, tilo_actions::ExecutionLocus::ClientLocal);
         assert!(open.contract.tags.iter().any(|tag| tag == "device-local"));
         assert!(
             open.contract.tags.iter().any(|tag| tag == "sensitive-path"),
@@ -1150,7 +1150,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "play")
             .unwrap();
-        assert_eq!(play.locus, qos_actions::ExecutionLocus::ClientLocal);
+        assert_eq!(play.locus, tilo_actions::ExecutionLocus::ClientLocal);
         assert_eq!(
             play.contract.execution,
             ExecutionMode::Background { cancellable: false }

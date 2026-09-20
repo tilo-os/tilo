@@ -13,7 +13,7 @@
 #     cargo build -p calendar -p pkg-cli -p install
 #     mkdir -p target/qpkg/calendar/bin
 #     cp target/debug/calendar target/qpkg/calendar/bin/calendar
-#     target/debug/qos-pkg pack --manifest apps/calendar/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/calendar/tilo-app.toml \
 #         --payload target/qpkg/calendar --output target/calendar.qpkg
 #     target/debug/qos-install install target/calendar.qpkg --allow-self-signed
 

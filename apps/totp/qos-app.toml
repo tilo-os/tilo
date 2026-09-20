@@ -10,7 +10,7 @@
 #     cargo build -p totp -p pkg-cli -p install
 #     mkdir -p target/qpkg/totp/bin
 #     cp target/debug/totp target/qpkg/totp/bin/totp
-#     target/debug/qos-pkg pack --manifest apps/totp/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/totp/tilo-app.toml \
 #         --payload target/qpkg/totp --output target/totp.qpkg
 #     target/debug/qos-install install target/totp.qpkg --allow-self-signed
 

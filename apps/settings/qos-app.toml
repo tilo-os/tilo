@@ -15,7 +15,7 @@
 #     cargo build -p settings -p pkg-cli -p install
 #     mkdir -p target/qpkg/settings/bin
 #     cp target/debug/settings target/qpkg/settings/bin/settings
-#     target/debug/qos-pkg pack --manifest apps/settings/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/settings/tilo-app.toml \
 #         --payload target/qpkg/settings --output target/settings.qpkg
 #     target/debug/qos-install install target/settings.qpkg --allow-self-signed
 

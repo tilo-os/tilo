@@ -292,14 +292,14 @@ impl BackupsApp {
             doc,
             BACKUPS_ACTION_TYPE,
             &action,
-            qos_actions::ActionContext::for_action("org.qos.Backups", "Backups", &action),
+            tilo_actions::ActionContext::for_action("org.qos.Backups", "Backups", &action),
         );
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -4274,8 +4274,8 @@ impl Widget for BackupsApp {
 
     /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
     /// (see [`crate::actions`]).
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
@@ -4287,7 +4287,7 @@ impl Widget for BackupsApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -4295,7 +4295,7 @@ impl Widget for BackupsApp {
     ) -> Result<bool, String> {
         if !matches!(
             kind,
-            qos_actions::OperationKind::Effect | qos_actions::OperationKind::View
+            tilo_actions::OperationKind::Effect | tilo_actions::OperationKind::View
         ) {
             return Ok(false);
         }
@@ -4997,9 +4997,9 @@ mod tests {
                 .any(|resource| resource.kind == "backups.workspace")
         );
         assert!(
-            qos_actions::flatten(&resources)
+            tilo_actions::flatten(&resources)
                 .iter()
-                .any(|entry| entry.action.kind == qos_actions::OperationKind::Effect)
+                .any(|entry| entry.action.kind == tilo_actions::OperationKind::Effect)
         );
     }
 

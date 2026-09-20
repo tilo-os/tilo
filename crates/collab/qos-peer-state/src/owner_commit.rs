@@ -27,7 +27,7 @@ pub enum CommitOperation {
     /// invocation from its authenticated durable admission, never from arguments.
     DesktopCommand {
         invocation: uuid::Uuid,
-        caller: qos_user_identity::DeviceCert,
+        caller: tilo_user_identity::DeviceCert,
         command: crate::desktop_command::BoundCommand,
     },
 }

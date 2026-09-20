@@ -942,7 +942,7 @@ mod tests {
     use super::*;
     use crate::actions::PhotosAction;
     use crate::model::Rect01;
-    use qos_actions::Action;
+    use tilo_actions::Action;
 
     #[test]
     fn a_seeded_document_has_no_image_open() {

@@ -1,0 +1,40 @@
+[package]
+name = "git-client"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "git_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "git-client"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+# The qOS ACTION model: the client's durable view preferences (diff layout,
+# syntax highlight, whitespace, wrap) are its only shared-document state, and it
+# exports them as replayable actions the shell's Ctrl+K palette dispatches.
+tilo-actions = { path = "../../crates/collab/actions" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -23,7 +23,7 @@ use std::rc::Rc;
 use ui::PathSegment;
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::tilo_actions::{
     ActionAddress, ActionSpec, ControlInvocation, OperationKind, PermissionRequirement, Resource,
     RetryPolicy, flatten,
 };
@@ -744,7 +744,7 @@ impl ContainersApp {
             .take_control_invocation()
             .expect("palette emitted a resource action");
         let resources = self.resources(doc);
-        let spec = ui::qos_actions::door::resolve(&resources, &intent.address)
+        let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
         let kind = spec.kind;
         let encoded = spec
@@ -2411,7 +2411,7 @@ impl Widget for ContainersApp {
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.palette
             .take_control_invocation()
             .or_else(|| self.pending_control_invocation.take())

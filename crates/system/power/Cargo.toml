@@ -1,12 +1,12 @@
 [package]
-name = "qos-power-mgmt"
+name = "tilo-power-mgmt"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 
 [lib]
-name = "qos_power_mgmt"
+name = "tilo_power_mgmt"
 path = "src/lib.rs"
 
 [features]
@@ -34,8 +34,8 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 # One owner for ~/.config/qos/settings.json — path resolution, forgiving reads
 # and non-destructive writes, shared with every other reader of that file.
-settings-store = { path = "../../../crates/system/settings-store", optional = true }
-atomic-file = { path = "../../../crates/system/atomic-file", optional = true }
+settings-store = { path = "../settings-store", optional = true }
+atomic-file = { path = "../atomic-file", optional = true }
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
 zbus = { version = "4", default-features = false, features = ["tokio"], optional = true }

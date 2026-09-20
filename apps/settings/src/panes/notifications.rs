@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc, Value, transaction::Transactable};
-use qos_actions::EncodedAction;
+use tilo_actions::EncodedAction;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -287,7 +287,7 @@ impl NotificationsPane {
             state,
             SETTINGS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
+            tilo_actions::ActionContext::for_action("org.qos.Settings", "Settings", action),
         );
     }
 
@@ -1120,8 +1120,8 @@ mod tests {
             .unwrap();
         let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
         let from_spec = match &dnd_spec.input {
-            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            qos_actions::ActionInput::Prompted { .. } => {
+            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => {
                 panic!("the DND flip is an immediate action")
             }
         };

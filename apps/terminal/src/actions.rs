@@ -2,7 +2,7 @@
 //!
 //! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an `Action` (`qos_actions::Action`) — a serializable value that
+//! becomes an `Action` (`tilo_actions::Action`) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
 //! app code. PTY input is therefore exported as an effect on the live terminal
@@ -392,7 +392,7 @@ mod tests {
             terminal
                 .actions
                 .iter()
-                .all(|action| action.kind == ui::qos_actions::OperationKind::Effect)
+                .all(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
         );
         assert!(
             widget.take_committed_action().is_none(),
@@ -402,11 +402,11 @@ mod tests {
             terminal.actions.iter().all(|action| {
                 matches!(
                     action.contract.confirmation,
-                    ui::qos_actions::ConfirmationPolicy::Confirm
-                ) && matches!(action.contract.risk, ui::qos_actions::RiskLevel::Privileged)
+                    ui::tilo_actions::ConfirmationPolicy::Confirm
+                ) && matches!(action.contract.risk, ui::tilo_actions::RiskLevel::Privileged)
                     && matches!(
                         action.contract.retry,
-                        ui::qos_actions::RetryPolicy::AtMostOnce
+                        ui::tilo_actions::RetryPolicy::AtMostOnce
                     )
             }),
             "palette and agents must explicitly confirm every operation that can affect a live shell"
@@ -434,7 +434,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.run",
                 &payload,
                 &doc,
@@ -448,7 +448,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.run",
                 &blank,
                 &doc,
@@ -467,7 +467,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &empty,
                 &doc,
@@ -480,7 +480,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &too_large,
                 &doc,
@@ -516,7 +516,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.send",
                 &payload,
                 &doc,
@@ -537,7 +537,7 @@ mod tests {
                     resource.actions.iter().all(|action| {
                         matches!(
                             action.contract.availability,
-                            ui::qos_actions::Availability::Unavailable { .. }
+                            ui::tilo_actions::Availability::Unavailable { .. }
                         )
                     })
                 })
@@ -561,7 +561,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut widget,
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::OperationKind::Effect,
                 "terminal.control",
                 &payload,
                 &doc,

@@ -44,8 +44,8 @@ pub fn store_card(
     action_click_key: &str,
     theme: &ui::Theme,
     images: Option<ui::ImageStore>,
-    action_binding: Option<ui::qos_actions::ActionBinding<()>>,
-    detail_binding: Option<ui::qos_actions::ActionBinding<()>>,
+    action_binding: Option<ui::tilo_actions::ActionBinding<()>>,
+    detail_binding: Option<ui::tilo_actions::ActionBinding<()>>,
     compact: bool,
     operation_active: bool,
 ) -> Box<dyn Widget> {

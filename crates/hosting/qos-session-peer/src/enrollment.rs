@@ -3,7 +3,7 @@ use crate::SessionOwner;
 use qos_peer_state::enrollment::{
     self, ChallengeRequest, ChallengeResponse, CompleteRequest, EnrollmentChallenge,
 };
-use qos_user_identity::{DeviceCapabilities, DeviceCert, WorkspaceDirectory, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, WorkspaceDirectory, sign_device_cert};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -106,7 +106,7 @@ impl EnrollmentAuthority {
             version: 2,
             root_public_key: owner.peer().authority().user_public_key,
             room: owner.peer().room().into(),
-            workspace_id: qos_relay::room_workspace_id(owner.peer().room())
+            workspace_id: tilo_relay::room_workspace_id(owner.peer().room())
                 .map_err(EnrollmentError::unavailable)?,
             device_public_key: device,
             request_id,
@@ -133,7 +133,7 @@ impl EnrollmentAuthority {
             &request,
             owner.peer().authority().user_public_key,
             owner.peer().room(),
-            qos_relay::room_workspace_id(owner.peer().room())
+            tilo_relay::room_workspace_id(owner.peer().room())
                 .map_err(EnrollmentError::unavailable)?,
             now,
         )
@@ -263,6 +263,6 @@ pub fn public_bootstrap(
         !revocations.iter().any(|entry| entry.revoked_device_public_key == cert.device_public_key)
     }).collect::<Vec<_>>();
     Ok(
-        serde_json::json!({"version":2,"certificate":certificate,"root_public_key":certificate.user_public_key,"host_certificate":owner.host_certificate(),"relay_address":relay_address,"packet_relay":packet_relay,"revocations":revocations,"bootstrap":{"directory_update":update,"directory_author":owner.peer().authority(),"certified_roster":roster,"room":owner.peer().room(),"workspace_id":qos_relay::room_workspace_id(owner.peer().room()).map_err(EnrollmentError::unavailable)?.to_string(),"writer_tab_id":1,"chat_package_primary":true,"records":owner.peer().rows()}}),
+        serde_json::json!({"version":2,"certificate":certificate,"root_public_key":certificate.user_public_key,"host_certificate":owner.host_certificate(),"relay_address":relay_address,"packet_relay":packet_relay,"revocations":revocations,"bootstrap":{"directory_update":update,"directory_author":owner.peer().authority(),"certified_roster":roster,"room":owner.peer().room(),"workspace_id":tilo_relay::room_workspace_id(owner.peer().room()).map_err(EnrollmentError::unavailable)?.to_string(),"writer_tab_id":1,"chat_package_primary":true,"records":owner.peer().rows()}}),
     )
 }

@@ -92,7 +92,7 @@ struct VerifiedJoinIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AdmittedJoinIdentity {
-    certificate: Option<qos_user_identity::DeviceCert>,
+    certificate: Option<tilo_user_identity::DeviceCert>,
     verified: VerifiedJoinIdentity,
     principal_id: String,
     /// Informational display label announced by this authenticated session.
@@ -230,10 +230,10 @@ fn verify_join_presentation(
     if presentation.workspace_id != route.cluster_id {
         return Err("certified join is scoped to a different workspace".into());
     }
-    let cert: qos_user_identity::DeviceCert =
+    let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
-    qos_user_identity::verify_device_cert_at(&cert, now_ns)
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns)
         .map_err(|error| format!("device certificate was rejected: {error}"))?;
     if &cert.user_public_key != expected_user_public_key {
         return Err("device certificate belongs to another workspace identity".into());
@@ -271,7 +271,7 @@ fn verify_join_identity(
     else {
         return Err("collaboration join requires a certified device presentation".into());
     };
-    let cert: qos_user_identity::DeviceCert =
+    let cert: tilo_user_identity::DeviceCert =
         serde_json::from_slice(&presentation.device_certificate)
             .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
     let (expected_root, revoked, enrolled) = if let Some(authority) = authority {
@@ -361,9 +361,9 @@ pub struct PublishedAction {
     pub resource_label: String,
     pub action_label: String,
     pub description: Option<String>,
-    pub operation_kind: qos_actions::OperationKind,
-    pub params: Vec<qos_actions::ActionParam>,
-    pub contract: qos_actions::ActionContract,
+    pub operation_kind: tilo_actions::OperationKind,
+    pub params: Vec<tilo_actions::ActionParam>,
+    pub contract: tilo_actions::ActionContract,
     pub input: PublishedInput,
 }
 
@@ -383,12 +383,12 @@ pub struct PublishedSurface {
 #[derive(Clone, Debug)]
 struct InvocationEnvelope {
     id: u64,
-    invocation: qos_actions::InvocationId,
+    invocation: tilo_actions::InvocationId,
     resource: String,
     action: String,
     argument: Option<String>,
     actor: String,
-    context: Option<qos_actions::ActionContext>,
+    context: Option<tilo_actions::ActionContext>,
 }
 
 #[derive(Clone, Debug)]
@@ -398,7 +398,7 @@ struct TaskRunEnvelope {
     run_id: u64,
     lease: String,
     planning: runtime_collab::TaskRunPlanning,
-    action_context: qos_actions::ActionContext,
+    action_context: tilo_actions::ActionContext,
 }
 
 #[derive(Clone, Debug)]
@@ -415,7 +415,7 @@ struct PendingTaskRun {
     cluster_id: String,
     task_id: String,
     lease: String,
-    action_context: qos_actions::ActionContext,
+    action_context: tilo_actions::ActionContext,
     terminal: bool,
 }
 
@@ -433,20 +433,20 @@ pub struct InvocationJob {
 
 #[derive(Clone)]
 struct PendingInvocation {
-    network_evidence: Option<qos_relay::client::CertifiedAction>,
+    network_evidence: Option<tilo_relay::client::CertifiedAction>,
     journal_key: Option<InvocationKey>,
     peer_id: u64,
     tx: std::sync::mpsc::Sender<InvocationCompletion>,
-    update: qos_actions::InvocationUpdate,
+    update: tilo_actions::InvocationUpdate,
     last_sequence: u64,
     actor: String,
     cancellable: bool,
     retryable_on_disconnect: bool,
-    execution: qos_actions::ExecutionMode,
-    result: qos_actions::ResultSpec,
-    operation_kind: qos_actions::OperationKind,
+    execution: tilo_actions::ExecutionMode,
+    result: tilo_actions::ResultSpec,
+    operation_kind: tilo_actions::OperationKind,
     cluster_id: String,
-    context: qos_actions::ActionContext,
+    context: tilo_actions::ActionContext,
     /// Admission/progress heartbeat. A silent application must not leave a
     /// broker-owned job in `Accepted` forever.
     last_activity: std::time::Instant,
@@ -461,7 +461,7 @@ struct PendingInvocation {
 pub(crate) struct VerifiedActionCaller {
     room: String,
     presentation: Vec<u8>,
-    network: Option<qos_relay::client::CertifiedAction>,
+    network: Option<tilo_relay::client::CertifiedAction>,
     admitted: AdmittedJoinIdentity,
 }
 
@@ -479,7 +479,7 @@ impl VerifiedActionCaller {
 /// the certified recipient device before entering this API.
 #[derive(Clone, Debug)]
 pub(crate) struct CallerInvocation {
-    pub invocation: qos_actions::InvocationId,
+    pub invocation: tilo_actions::InvocationId,
     pub host: uuid::Uuid,
     pub peer_id: u64,
     pub app_id: String,
@@ -588,7 +588,7 @@ impl CapnpBrokerState {
     fn caller_key(
         &self,
         caller: &VerifiedActionCaller,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<InvocationKey, String> {
         Ok(InvocationKey {
             room: caller.room.clone(),
@@ -604,7 +604,7 @@ impl CapnpBrokerState {
         record: &DurableInvocation,
     ) -> Result<(), String> {
         let current = self.current_action_caller(caller)?;
-        let contract: qos_actions::ActionContract =
+        let contract: tilo_actions::ActionContract =
             serde_json::from_value(record.intent["contract"].clone())
                 .map_err(|_| "journal action contract invalid")?;
         let app = record.intent["app_id"]
@@ -625,12 +625,12 @@ impl CapnpBrokerState {
             .ok_or("workspace no longer hosted")?;
         let actor = workspace.actor_for_person(&current.principal_id);
         let verb = match contract.permission {
-            qos_actions::PermissionRequirement::None => None,
-            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
-            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
-            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+            tilo_actions::PermissionRequirement::None => None,
+            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
         };
         if verb.is_some_and(|verb| {
             workspace.decide(
@@ -650,7 +650,7 @@ impl CapnpBrokerState {
     pub(crate) fn verified_invocation_status(
         &self,
         caller: &VerifiedActionCaller,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<Option<DurableInvocation>, String> {
         self.current_action_caller(caller)?;
         self.expire_stale_invocations();
@@ -743,7 +743,7 @@ impl CapnpBrokerState {
     pub(crate) fn cancel_verified_invocation(
         &self,
         caller: &VerifiedActionCaller,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
     ) -> Result<DurableInvocation, String> {
         let record = self
             .verified_invocation_status(caller, invocation)?
@@ -789,7 +789,7 @@ impl CapnpBrokerState {
     fn persist_invocation(
         &self,
         pending: &PendingInvocation,
-        update: qos_actions::InvocationUpdate,
+        update: tilo_actions::InvocationUpdate,
         uncertain: bool,
     ) -> Result<(), String> {
         if let Some(key) = &pending.journal_key {
@@ -903,7 +903,7 @@ pub enum DirectoryActionConfirmation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StartedDirectoryAction {
     pub invocation_id: u64,
-    pub initial_update: qos_actions::InvocationUpdate,
+    pub initial_update: tilo_actions::InvocationUpdate,
 }
 
 /// A bounded bridge failure.  `Busy` is deliberate backpressure: palette
@@ -1399,7 +1399,7 @@ pub struct CapnpBrokerState {
     admission_lock: Mutex<()>,
     journal: Mutex<Result<Option<InvocationJournal>, String>>,
     stable_invocation_subscribers: Mutex<std::collections::HashSet<u64>>,
-    completed_invocations: Mutex<HashMap<u64, (String, qos_actions::InvocationUpdate)>>,
+    completed_invocations: Mutex<HashMap<u64, (String, tilo_actions::InvocationUpdate)>>,
     confirmation_grants: Mutex<HashMap<String, ConfirmationGrant>>,
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     task_subscribers: Mutex<HashMap<u64, TaskSubscription>>,
@@ -1416,7 +1416,7 @@ impl CapnpBrokerState {
     pub fn connect_local_worker(
         &self,
         route: CrdtRoute,
-        certificate: &qos_user_identity::DeviceCert,
+        certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<std::os::unix::net::UnixStream, String> {
         self.owner_health()?;
         if route.app_id.is_empty() || !route.is_publishable() {
@@ -1433,7 +1433,7 @@ impl CapnpBrokerState {
             .map_err(|_| "clock unavailable")?
             .as_nanos()
             .min(u128::from(u64::MAX)) as u64;
-        qos_user_identity::verify_device_cert_at(certificate, now)
+        tilo_user_identity::verify_device_cert_at(certificate, now)
             .map_err(|_| "worker certificate rejected")?;
         if certificate.capabilities.can_act_as_host {
             return Err("worker requires device authority".into());
@@ -1542,9 +1542,9 @@ impl CapnpBrokerState {
                 code: code.into(),
                 message: message.into(),
             };
-            let update = qos_actions::InvocationUpdate::Failed {
+            let update = tilo_actions::InvocationUpdate::Failed {
                 invocation: pending.update.invocation(),
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: completion.code.clone(),
                     message: completion.message.clone(),
                     details: None,
@@ -1576,7 +1576,7 @@ impl CapnpBrokerState {
         }
     }
 
-    fn record_completion(&self, id: u64, actor: String, update: qos_actions::InvocationUpdate) {
+    fn record_completion(&self, id: u64, actor: String, update: tilo_actions::InvocationUpdate) {
         if let Ok(mut completed) = self.completed_invocations.lock() {
             completed.insert(id, (actor, update));
             while completed.len() > Self::MAX_RETAINED_INVOCATIONS {
@@ -1642,16 +1642,16 @@ impl CapnpBrokerState {
     async fn commit_effect_before_terminal(
         &self,
         pending: &PendingInvocation,
-        update: &qos_actions::InvocationUpdate,
+        update: &tilo_actions::InvocationUpdate,
     ) -> Result<(), capnp::Error> {
         if !self.durable_owner_required || !update.is_terminal() {
             return Ok(());
         }
         self.owner_health().map_err(capnp::Error::failed)?;
-        if pending.operation_kind != qos_actions::OperationKind::Effect {
+        if pending.operation_kind != tilo_actions::OperationKind::Effect {
             return Ok(());
         }
-        let status = qos_actions::EffectReceiptStatus::from_terminal(update)
+        let status = tilo_actions::EffectReceiptStatus::from_terminal(update)
             .ok_or_else(|| capnp::Error::failed("nonterminal effect receipt".into()))?;
         let receipt = crate::policy::redacted_effect_receipt(
             update.invocation(),
@@ -1673,15 +1673,15 @@ impl CapnpBrokerState {
     fn record_effect_receipt(
         &self,
         pending: &PendingInvocation,
-        update: &qos_actions::InvocationUpdate,
+        update: &tilo_actions::InvocationUpdate,
     ) {
         if self.durable_owner_required {
             return;
         }
-        if pending.operation_kind != qos_actions::OperationKind::Effect {
+        if pending.operation_kind != tilo_actions::OperationKind::Effect {
             return;
         }
-        let Some(status) = qos_actions::EffectReceiptStatus::from_terminal(update) else {
+        let Some(status) = tilo_actions::EffectReceiptStatus::from_terminal(update) else {
             return;
         };
         if let Some(projection) = &self.services.legacy_workspace {
@@ -2306,14 +2306,14 @@ impl CapnpBrokerState {
         action: &str,
         argument: Option<&str>,
         actor: &BrokerActor,
-        contract: &qos_actions::ActionContract,
+        contract: &tilo_actions::ActionContract,
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<Option<String>, ActionDirectoryBridgeError> {
         match &contract.confirmation {
-            qos_actions::ConfirmationPolicy::None => return Ok(None),
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::None => return Ok(None),
+            tilo_actions::ConfirmationPolicy::Confirm
                 if matches!(confirmation, Some(DirectoryActionConfirmation::Confirmed)) => {}
-            qos_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
+            tilo_actions::ConfirmationPolicy::Phrase { phrase } if matches!(&confirmation, Some(DirectoryActionConfirmation::Phrase(value)) if value == phrase) =>
                 {}
             _ => return Err(ActionDirectoryBridgeError::ConfirmationRequired),
         }
@@ -2360,16 +2360,16 @@ impl CapnpBrokerState {
                 "action directory contract must be non-empty and bounded".into(),
             ));
         }
-        let contract = serde_json::from_str::<qos_actions::ActionContract>(contract_json).map_err(
+        let contract = serde_json::from_str::<tilo_actions::ActionContract>(contract_json).map_err(
             |error| capnp::Error::failed(format!("invalid action directory contract: {error}")),
         )?;
         let Some(verb) = (match contract.permission {
-            qos_actions::PermissionRequirement::None => None,
-            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
-            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
-            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+            tilo_actions::PermissionRequirement::None => None,
+            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
         }) else {
             return Ok(true);
         };
@@ -2460,12 +2460,12 @@ impl CapnpBrokerState {
                     .into_iter()
                     .filter(|action| {
                         let Some(verb) = (match action.contract.permission {
-                            qos_actions::PermissionRequirement::None => None,
-                            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
-                            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-                            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
-                            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-                            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+                            tilo_actions::PermissionRequirement::None => None,
+                            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+                            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+                            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+                            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+                            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
                         }) else {
                             return true;
                         };
@@ -2549,9 +2549,9 @@ impl CapnpBrokerState {
                     "resource_label": display_name,
                     "action_label": format!("Open {display_name}"),
                     "description": "Launch this application into the current workspace",
-                    "operation_kind": qos_actions::OperationKind::Effect,
+                    "operation_kind": tilo_actions::OperationKind::Effect,
                     "params": [],
-                    "contract": qos_actions::ActionContract::default(),
+                    "contract": tilo_actions::ActionContract::default(),
                     "input": {"kind": "none"},
                 }],
             }));
@@ -2656,11 +2656,11 @@ impl CapnpBrokerState {
                 })
                 .ok_or_else(|| "the application no longer publishes that action".to_string())?;
         match &offered.contract.confirmation {
-            qos_actions::ConfirmationPolicy::None => {
+            tilo_actions::ConfirmationPolicy::None => {
                 return Err("the action does not require confirmation".into());
             }
-            qos_actions::ConfirmationPolicy::Confirm => {}
-            qos_actions::ConfirmationPolicy::Phrase { phrase: expected } => {
+            tilo_actions::ConfirmationPolicy::Confirm => {}
+            tilo_actions::ConfirmationPolicy::Phrase { phrase: expected } => {
                 if phrase != Some(expected.as_str()) {
                     return Err("the confirmation phrase did not match".into());
                 }
@@ -2735,7 +2735,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         actor: &BrokerActor,
         confirmation_token: Option<&str>,
-        context: Option<qos_actions::ActionContext>,
+        context: Option<tilo_actions::ActionContext>,
     ) -> Result<InvocationJob, String> {
         let offered = self
             .surfaces
@@ -2778,7 +2778,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         actor: &BrokerActor,
         confirmation_token: Option<&str>,
-        context: Option<qos_actions::ActionContext>,
+        context: Option<tilo_actions::ActionContext>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
         let _admission = self
@@ -2805,7 +2805,7 @@ impl CapnpBrokerState {
         argument: Option<&str>,
         actor: &BrokerActor,
         confirmation_token: Option<&str>,
-        context: Option<qos_actions::ActionContext>,
+        context: Option<tilo_actions::ActionContext>,
         durable: Option<(&VerifiedActionCaller, &CallerInvocation)>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
@@ -2840,18 +2840,18 @@ impl CapnpBrokerState {
             app: offered.0.app_id.clone(),
             action: offered.1.action.clone(),
         };
-        if let qos_actions::Availability::Unavailable { reason, .. } =
+        if let tilo_actions::Availability::Unavailable { reason, .. } =
             &offered.1.contract.availability
         {
             return Err(format!("the application action is unavailable: {reason}"));
         }
         let verb = match offered.1.contract.permission {
-            qos_actions::PermissionRequirement::None => None,
-            qos_actions::PermissionRequirement::Read => Some(Verb::Read),
-            qos_actions::PermissionRequirement::Comment => Some(Verb::Comment),
-            qos_actions::PermissionRequirement::Write => Some(Verb::Write),
-            qos_actions::PermissionRequirement::Invite => Some(Verb::Invite),
-            qos_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+            tilo_actions::PermissionRequirement::None => None,
+            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
         };
         if verb.is_some_and(|verb| workspace.decide(&caller, &target, verb) != CapDecision::Allow) {
             return Err("the caller is not allowed to invoke that application action".into());
@@ -2877,7 +2877,7 @@ impl CapnpBrokerState {
         }
         if !matches!(
             offered.1.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
+            tilo_actions::ConfirmationPolicy::None
         ) {
             let token = confirmation_token.ok_or_else(|| {
                 "action_confirmation_required: request and present a one-use confirmation token"
@@ -2906,11 +2906,11 @@ impl CapnpBrokerState {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| "invocation handle space exhausted")?;
         let invocation = durable.map_or_else(
-            || qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+            || tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
             |(_, request)| request.invocation,
         );
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut receipt_context = qos_actions::ActionContext::for_resource(
+        let mut receipt_context = tilo_actions::ActionContext::for_resource(
             &offered.1.action_label,
             &offered.1.resource,
             &offered.1.resource_kind,
@@ -2958,21 +2958,21 @@ impl CapnpBrokerState {
                     journal_key: journal_key.clone(),
                     peer_id,
                     tx,
-                    update: qos_actions::InvocationUpdate::Accepted { invocation },
+                    update: tilo_actions::InvocationUpdate::Accepted { invocation },
                     last_sequence: 0,
                     actor: actor.id.clone(),
                     cancellable: matches!(
                         offered.1.contract.execution,
-                        qos_actions::ExecutionMode::Background { cancellable: true }
-                            | qos_actions::ExecutionMode::Streaming {
+                        tilo_actions::ExecutionMode::Background { cancellable: true }
+                            | tilo_actions::ExecutionMode::Streaming {
                                 cancellable: true,
                                 ..
                             }
                     ),
                     retryable_on_disconnect: matches!(
                         offered.1.contract.retry,
-                        qos_actions::RetryPolicy::Idempotent
-                            | qos_actions::RetryPolicy::RetryWithInvocationId
+                        tilo_actions::RetryPolicy::Idempotent
+                            | tilo_actions::RetryPolicy::RetryWithInvocationId
                     ),
                     execution: offered.1.contract.execution.clone(),
                     result: offered.1.contract.result.clone(),
@@ -3012,7 +3012,7 @@ impl CapnpBrokerState {
         Ok(InvocationJob { id, completion: rx })
     }
 
-    pub fn invocation_status(&self, id: u64) -> Option<qos_actions::InvocationUpdate> {
+    pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_stale_invocations();
         self.pending_invocations
             .lock()
@@ -3026,7 +3026,7 @@ impl CapnpBrokerState {
             })
     }
 
-    pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, qos_actions::InvocationUpdate)> {
+    pub fn invocation_statuses(&self, actor: &str) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.expire_stale_invocations();
         let mut jobs = self
             .pending_invocations
@@ -3361,7 +3361,7 @@ impl CapnpBrokerState {
             .ok_or_else(|| "the task action is no longer published in this workspace".to_string())?
             .contract
             .confirmation;
-        if !matches!(confirmation_required, qos_actions::ConfirmationPolicy::None) {
+        if !matches!(confirmation_required, tilo_actions::ConfirmationPolicy::None) {
             return Err(
                 "task action requires an interactive confirmation and cannot run unattended".into(),
             );
@@ -3413,9 +3413,9 @@ impl CapnpBrokerState {
                         code: "action_failed".into(),
                         message: "application disconnected before completing the action".into(),
                     };
-                    let update = qos_actions::InvocationUpdate::Failed {
+                    let update = tilo_actions::InvocationUpdate::Failed {
                         invocation: invocation.update.invocation(),
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: completion.code.clone(),
                             message: completion.message.clone(),
                             details: None,
@@ -3477,7 +3477,7 @@ impl CapnpBrokerState {
                 .map_err(|_| capnp::Error::failed("clock unavailable".into()))?
                 .as_nanos()
                 .min(u128::from(u64::MAX)) as u64;
-            qos_user_identity::verify_device_cert_at(cert, now)
+            tilo_user_identity::verify_device_cert_at(cert, now)
                 .map_err(|_| capnp::Error::failed("certificate no longer valid".into()))?;
             if let Some(authority) = self.certificate_authority.get() {
                 let room = uuid::Uuid::parse_str(&route.cluster_id)
@@ -4062,13 +4062,13 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .map_err(|error| capnp::Error::failed(error.to_string()))
             })
             .and_then(|json| {
-                serde_json::from_str::<qos_actions::InvocationUpdate>(json)
+                serde_json::from_str::<tilo_actions::InvocationUpdate>(json)
                     .map_err(|error| capnp::Error::failed(error.to_string()))
             }) {
             Ok(update) => update,
             Err(error) => return Promise::err(error),
         };
-        let Some(status) = qos_actions::EffectReceiptStatus::from_terminal(&update) else {
+        let Some(status) = tilo_actions::EffectReceiptStatus::from_terminal(&update) else {
             return Promise::err(capnp::Error::failed(
                 "only a terminal effect may enter workspace activity".into(),
             ));
@@ -4092,12 +4092,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "the application no longer publishes that action".into(),
             ));
         };
-        if offered.operation_kind != qos_actions::OperationKind::Effect {
+        if offered.operation_kind != tilo_actions::OperationKind::Effect {
             return Promise::err(capnp::Error::failed(
                 "only Effects produce durable invocation receipts".into(),
             ));
         }
-        let mut context = qos_actions::ActionContext::for_resource(
+        let mut context = tilo_actions::ActionContext::for_resource(
             offered.action_label,
             offered.resource,
             offered.resource_kind,
@@ -4387,8 +4387,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let action = row.get_action()?.to_str()?.to_owned();
                 if resource.is_empty()
                     || action.is_empty()
-                    || resource.contains(qos_actions::KEY_SEP)
-                    || action.contains(qos_actions::KEY_SEP)
+                    || resource.contains(tilo_actions::KEY_SEP)
+                    || action.contains(tilo_actions::KEY_SEP)
                     || actions.iter().any(|candidate: &PublishedAction| {
                         candidate.resource == resource && candidate.action == action
                     })
@@ -4415,9 +4415,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                     action_label: row.get_action_label()?.to_str()?.to_owned(),
                     description: (!description.is_empty()).then_some(description),
                     operation_kind: match row.get_operation_kind()?.to_str()? {
-                        "" | "document" => qos_actions::OperationKind::Document,
-                        "effect" => qos_actions::OperationKind::Effect,
-                        "view" => qos_actions::OperationKind::View,
+                        "" | "document" => tilo_actions::OperationKind::Document,
+                        "effect" => tilo_actions::OperationKind::Effect,
+                        "view" => tilo_actions::OperationKind::View,
                         other => {
                             return Err(capnp::Error::failed(format!(
                                 "unknown exported operation kind `{other}`"
@@ -4440,8 +4440,8 @@ impl channel_handle::Server for CapnpChannelHandle {
                         let json = row.get_contract_json()?.to_str()?;
                         if json.is_empty() {
                             match row.get_operation_kind()?.to_str()? {
-                                "view" => qos_actions::ActionContract::view(),
-                                _ => qos_actions::ActionContract::default(),
+                                "view" => tilo_actions::ActionContract::view(),
+                                _ => tilo_actions::ActionContract::default(),
                             }
                         } else {
                             serde_json::from_str(json).map_err(|error| {
@@ -4495,7 +4495,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .actions
                 .iter()
                 .filter(|action| {
-                    !matches!(action.contract.discovery, qos_actions::DiscoveryScope::Live)
+                    !matches!(action.contract.discovery, tilo_actions::DiscoveryScope::Live)
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -5066,7 +5066,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     .get(&id)
                     .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?
                     .result
-                    .validate(&qos_actions::ActionOutput::default())
+                    .validate(&tilo_actions::ActionOutput::default())
                     .map_err(|error| {
                         capnp::Error::failed(format!(
                             "legacy completion violated its published result contract: {error}"
@@ -5078,14 +5078,14 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
             let invocation = pending.update.invocation();
             let update = if completion.code.is_empty() {
-                qos_actions::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             } else {
-                qos_actions::InvocationUpdate::Failed {
+                tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: completion.code.clone(),
                         message: completion.message.clone(),
                         details: None,
@@ -5319,7 +5319,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .get("confirmation_phrase")
                 .and_then(serde_json::Value::as_str);
             let job = match &offered.contract.confirmation {
-                qos_actions::ConfirmationPolicy::None => state.start_invocation_confirmed_for(
+                tilo_actions::ConfirmationPolicy::None => state.start_invocation_confirmed_for(
                     peer_id,
                     &resource,
                     &action,
@@ -5328,7 +5328,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                     None,
                     None,
                 ),
-                qos_actions::ConfirmationPolicy::Confirm => {
+                tilo_actions::ConfirmationPolicy::Confirm => {
                     if confirmation
                         .get("confirm")
                         .and_then(serde_json::Value::as_bool)
@@ -5358,7 +5358,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         None,
                     )
                 }
-                qos_actions::ConfirmationPolicy::Phrase { .. } => {
+                tilo_actions::ConfirmationPolicy::Phrase { .. } => {
                     let token = state
                         .prepare_confirmation(
                             peer_id,
@@ -5514,7 +5514,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             workspace
         };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
-        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
         let update = match self
             .state
             .services
@@ -5523,13 +5523,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             .ok_or_else(|| "application launch unsupported".to_string())
             .and_then(|service| service.launch(&app_id, &workspace))
         {
-            Ok(_) => qos_actions::InvocationUpdate::Succeeded {
+            Ok(_) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
-            Err(error) => qos_actions::InvocationUpdate::Failed {
+            Err(error) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "launch_failed".into(),
                     message: error.to_string(),
                     details: None,
@@ -5754,7 +5754,7 @@ fn permits_directory_row(
                 ));
             }
             if descriptor.params_json.len() > DIRECTORY_MAX_PARAMS_BYTES
-                || serde_json::from_str::<Vec<qos_actions::ActionParam>>(&descriptor.params_json)
+                || serde_json::from_str::<Vec<tilo_actions::ActionParam>>(&descriptor.params_json)
                     .is_err()
             {
                 return Err(capnp::Error::failed(
@@ -5860,9 +5860,9 @@ fn published_directory_action(
         ));
     }
     let operation_kind = match descriptor.operation_kind.as_str() {
-        "document" => qos_actions::OperationKind::Document,
-        "effect" => qos_actions::OperationKind::Effect,
-        "view" => qos_actions::OperationKind::View,
+        "document" => tilo_actions::OperationKind::Document,
+        "effect" => tilo_actions::OperationKind::Effect,
+        "view" => tilo_actions::OperationKind::View,
         _ => {
             return Err(capnp::Error::failed(
                 "invalid directory operation kind".into(),
@@ -6088,7 +6088,7 @@ struct CapnpPresenceHandle {
     verified_identity: AdmittedJoinIdentity,
     /// Broker-owned monotonic sequence per invocation. Publishers describe
     /// phases and targets but cannot reorder or resurrect their visual state.
-    interaction_sequences: Mutex<HashMap<qos_actions::InvocationId, u64>>,
+    interaction_sequences: Mutex<HashMap<tilo_actions::InvocationId, u64>>,
 }
 
 impl CapnpPresenceHandle {
@@ -6280,15 +6280,15 @@ impl presence_handle::Server for CapnpPresenceHandle {
                     "interaction payload exceeds 64 KiB".into(),
                 ));
             }
-            let mut update: qos_actions::SemanticInteraction = serde_json::from_str(json)
+            let mut update: tilo_actions::SemanticInteraction = serde_json::from_str(json)
                 .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
             let actor = self.verified_identity.broker_actor();
-            let normalized_actor = qos_actions::InteractionActor {
+            let normalized_actor = tilo_actions::InteractionActor {
                 id: CapnpBrokerState::participant_id(&self.verified_identity),
                 kind: if actor.is_agent {
-                    qos_actions::InteractionActorKind::Agent
+                    tilo_actions::InteractionActorKind::Agent
                 } else {
-                    qos_actions::InteractionActorKind::Person
+                    tilo_actions::InteractionActorKind::Person
                 },
             };
             let sequence = {
@@ -7112,7 +7112,7 @@ pub mod tests {
     pub struct TestActionDirectory {
         revision: String,
         pub resolve_mode: DirectoryResolveMode,
-        result: qos_actions::ResultSpec,
+        result: tilo_actions::ResultSpec,
         confirmation_required: bool,
         query_count: usize,
         resolve_count: usize,
@@ -7120,10 +7120,10 @@ pub mod tests {
 
     impl TestActionDirectory {
         fn contract_json(&self) -> String {
-            let mut contract = qos_actions::ActionContract::view();
+            let mut contract = tilo_actions::ActionContract::view();
             contract.result = self.result.clone();
             if self.confirmation_required {
-                contract.confirmation = qos_actions::ConfirmationPolicy::Confirm;
+                contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
             }
             serde_json::to_string(&contract).expect("test action contract")
         }
@@ -7243,7 +7243,7 @@ pub mod tests {
             self.directory_state.borrow_mut().confirmation_required = required;
         }
 
-        pub fn set_result_spec(&self, result: qos_actions::ResultSpec) {
+        pub fn set_result_spec(&self, result: tilo_actions::ResultSpec) {
             self.directory_state.borrow_mut().result = result;
         }
 
@@ -7271,7 +7271,7 @@ pub mod tests {
         pub async fn complete_invocation(
             &self,
             id: u64,
-            update: &qos_actions::InvocationUpdate,
+            update: &tilo_actions::InvocationUpdate,
         ) -> Result<(), capnp::Error> {
             let client = self.invocation_channel();
             let mut request = client.update_invocation_request();
@@ -7382,7 +7382,7 @@ pub mod tests {
         let directory_state = Rc::new(RefCell::new(TestActionDirectory {
             revision: "directory-r1".into(),
             resolve_mode: DirectoryResolveMode::Found,
-            result: qos_actions::ResultSpec::None,
+            result: tilo_actions::ResultSpec::None,
             confirmation_required: false,
             query_count: 0,
             resolve_count: 0,
@@ -7654,16 +7654,16 @@ pub mod tests {
         root: &SigningKey,
         device: &SigningKey,
     ) -> runtime_collab::CertifiedJoinIdentity {
-        let mut cert = qos_user_identity::DeviceCert {
+        let mut cert = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
             device_label: "Test device".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::primary(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut cert, root).expect("root signs device cert");
+        tilo_user_identity::sign_device_cert(&mut cert, root).expect("root signs device cert");
         runtime_collab::CertifiedJoinIdentity {
             workspace_id: workspace.into(),
             device_certificate: serde_json::to_vec(&cert).expect("certificate JSON"),
@@ -7724,7 +7724,7 @@ pub mod tests {
         );
 
         let mut presentation = certified_join("workspace-a", &root, &device);
-        let mut cert: qos_user_identity::DeviceCert =
+        let mut cert: tilo_user_identity::DeviceCert =
             serde_json::from_slice(&presentation.device_certificate).expect("certificate");
         cert.device_label.push_str(" (tampered)");
         presentation.device_certificate = serde_json::to_vec(&cert).expect("certificate JSON");
@@ -8309,9 +8309,9 @@ pub mod tests {
                         resource_label: "report".into(),
                         action_label: "Reveal".into(),
                         description: None,
-                        operation_kind: qos_actions::OperationKind::View,
+                        operation_kind: tilo_actions::OperationKind::View,
                         params: Vec::new(),
-                        contract: qos_actions::ActionContract::view(),
+                        contract: tilo_actions::ActionContract::view(),
                         input: PublishedInput::None,
                     },
                     PublishedAction {
@@ -8321,12 +8321,12 @@ pub mod tests {
                         resource_label: "report".into(),
                         action_label: "Erase".into(),
                         description: None,
-                        operation_kind: qos_actions::OperationKind::Effect,
+                        operation_kind: tilo_actions::OperationKind::Effect,
                         params: Vec::new(),
-                        contract: qos_actions::ActionContract {
-                            risk: qos_actions::RiskLevel::Destructive,
-                            confirmation: qos_actions::ConfirmationPolicy::Confirm,
-                            ..qos_actions::ActionContract::default()
+                        contract: tilo_actions::ActionContract {
+                            risk: tilo_actions::RiskLevel::Destructive,
+                            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                            ..tilo_actions::ActionContract::default()
                         },
                         input: PublishedInput::None,
                     },
@@ -8337,12 +8337,12 @@ pub mod tests {
                         resource_label: "report".into(),
                         action_label: "Refresh".into(),
                         description: None,
-                        operation_kind: qos_actions::OperationKind::Effect,
+                        operation_kind: tilo_actions::OperationKind::Effect,
                         params: Vec::new(),
-                        contract: qos_actions::ActionContract {
-                            execution: qos_actions::ExecutionMode::Background { cancellable: true },
-                            result: qos_actions::ResultSpec::Job,
-                            ..qos_actions::ActionContract::default()
+                        contract: tilo_actions::ActionContract {
+                            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                            result: tilo_actions::ResultSpec::Job,
+                            ..tilo_actions::ActionContract::default()
                         },
                         input: PublishedInput::None,
                     },
@@ -8453,7 +8453,7 @@ pub mod tests {
         );
         assert!(matches!(
             state.invocation_status(refresh.id),
-            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "action_cancellation_timeout"
         ));
         assert_eq!(
@@ -8466,7 +8466,7 @@ pub mod tests {
         );
         assert!(matches!(
             state.invocation_status(erased.id),
-            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "action_timeout"
         ));
         assert_eq!(
@@ -8532,11 +8532,11 @@ pub mod tests {
                 resource_label: "Files".into(),
                 action_label: "New window".into(),
                 description: None,
-                operation_kind: qos_actions::OperationKind::View,
+                operation_kind: tilo_actions::OperationKind::View,
                 params: Vec::new(),
-                contract: qos_actions::ActionContract {
-                    discovery: qos_actions::DiscoveryScope::Launchable,
-                    ..qos_actions::ActionContract::view()
+                contract: tilo_actions::ActionContract {
+                    discovery: tilo_actions::DiscoveryScope::Launchable,
+                    ..tilo_actions::ActionContract::view()
                 },
                 input: PublishedInput::None,
             }],
@@ -8589,22 +8589,22 @@ pub mod tests {
             None,
         );
         let (tx, _rx) = std::sync::mpsc::channel();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
             network_evidence: None,
             journal_key: None,
             peer_id: 7,
             tx,
-            update: qos_actions::InvocationUpdate::Accepted { invocation },
+            update: tilo_actions::InvocationUpdate::Accepted { invocation },
             last_sequence: 0,
             actor: "agent:Scribe".into(),
             cancellable: false,
             retryable_on_disconnect: false,
-            execution: qos_actions::ExecutionMode::Immediate,
-            result: qos_actions::ResultSpec::None,
-            operation_kind: qos_actions::OperationKind::Effect,
+            execution: tilo_actions::ExecutionMode::Immediate,
+            result: tilo_actions::ResultSpec::None,
+            operation_kind: tilo_actions::OperationKind::Effect,
             cluster_id,
-            context: qos_actions::ActionContext::for_resource(
+            context: tilo_actions::ActionContext::for_resource(
                 "Publish",
                 "document:brief",
                 "document",
@@ -8615,9 +8615,9 @@ pub mod tests {
             last_activity: std::time::Instant::now(),
             cancellation_requested_at: None,
         };
-        let update = qos_actions::InvocationUpdate::Failed {
+        let update = tilo_actions::InvocationUpdate::Failed {
             invocation,
-            error: qos_actions::ActionFailure {
+            error: tilo_actions::ActionFailure {
                 code: "publish_denied".into(),
                 message: "authorization=secret-value".into(),
                 details: Some(serde_json::json!({"body": "private draft"})),
@@ -8628,29 +8628,29 @@ pub mod tests {
         state.record_effect_receipt(&pending, &update);
         state.record_effect_receipt(&pending, &update);
 
-        let succeeded_invocation = qos_actions::InvocationId::new();
+        let succeeded_invocation = tilo_actions::InvocationId::new();
         let mut succeeded_pending = pending;
-        succeeded_pending.update = qos_actions::InvocationUpdate::Accepted {
+        succeeded_pending.update = tilo_actions::InvocationUpdate::Accepted {
             invocation: succeeded_invocation,
         };
         state.record_effect_receipt(
             &succeeded_pending,
-            &qos_actions::InvocationUpdate::Succeeded {
+            &tilo_actions::InvocationUpdate::Succeeded {
                 invocation: succeeded_invocation,
-                output: qos_actions::ActionOutput {
+                output: tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({"token": "output-secret"})),
                     resources: vec!["files.entry:/private/export".into()],
                 },
             },
         );
         let mut private_view = succeeded_pending;
-        private_view.operation_kind = qos_actions::OperationKind::View;
-        let view_invocation = qos_actions::InvocationId::new();
+        private_view.operation_kind = tilo_actions::OperationKind::View;
+        let view_invocation = tilo_actions::InvocationId::new();
         state.record_effect_receipt(
             &private_view,
-            &qos_actions::InvocationUpdate::Succeeded {
+            &tilo_actions::InvocationUpdate::Succeeded {
                 invocation: view_invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
         );
 
@@ -8678,7 +8678,7 @@ pub mod tests {
         assert!(durable.contains("publish_denied"));
         assert!(receipts.iter().any(|receipt| {
             receipt.invocation == succeeded_invocation
-                && receipt.status == qos_actions::EffectReceiptStatus::Succeeded
+                && receipt.status == tilo_actions::EffectReceiptStatus::Succeeded
         }));
     }
 
@@ -8701,7 +8701,7 @@ pub mod tests {
         async fn update_app(
             client: &channel_handle::Client,
             id: u64,
-            update: &qos_actions::InvocationUpdate,
+            update: &tilo_actions::InvocationUpdate,
         ) -> Result<(), capnp::Error> {
             let mut request = client.update_invocation_request();
             request.get().set_id(id);
@@ -8746,11 +8746,11 @@ pub mod tests {
             );
             let mut action =
                 published_directory_action(&fixture.directory_state.borrow().row()).unwrap();
-            action.operation_kind = qos_actions::OperationKind::Effect;
-            action.contract = qos_actions::ActionContract {
-                execution: qos_actions::ExecutionMode::Background { cancellable: true },
-                result: qos_actions::ResultSpec::Job,
-                ..qos_actions::ActionContract::default()
+            action.operation_kind = tilo_actions::OperationKind::Effect;
+            action.contract = tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                result: tilo_actions::ResultSpec::Job,
+                ..tilo_actions::ActionContract::default()
             };
             assert!(action.contract.validate_declaration().is_empty());
             fixture.state.surfaces.lock().unwrap().insert(
@@ -8781,7 +8781,7 @@ pub mod tests {
             let request = CallerInvocation {
                 recipient: None,
                 revision: None,
-                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID)),
+                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(FULL_ID)),
                 host: fixture.state.invocation_host().unwrap(),
                 peer_id: 71,
                 app_id: fixture.route.app_id.clone(),
@@ -8834,7 +8834,7 @@ pub mod tests {
                             .unwrap();
                         if scenario == "caller-before-legacy" {
                             request.invocation =
-                                qos_actions::InvocationId(uuid::Uuid::from_u128(2));
+                                tilo_actions::InvocationId(uuid::Uuid::from_u128(2));
                         }
                         let wire_id = if scenario == "legacy-before-caller" {
                             let job = fixture
@@ -8847,7 +8847,7 @@ pub mod tests {
                                     &caller.admitted.principal_id,
                                 )
                                 .unwrap();
-                            request.invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(
+                            request.invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(
                                 u128::from(job.id),
                             ));
                             job.id
@@ -8914,9 +8914,9 @@ pub mod tests {
                                 .is_err()
                         );
                         let channel = fixture.invocation_channel();
-                        let terminal = qos_actions::InvocationUpdate::Succeeded {
+                        let terminal = tilo_actions::InvocationUpdate::Succeeded {
                             invocation: request.invocation,
-                            output: qos_actions::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         };
                         update_app(&channel, wire_id, &terminal).await.unwrap();
                         if scenario != "legacy-before-caller" {
@@ -8966,7 +8966,7 @@ pub mod tests {
                         .unwrap()
                         .actions[0]
                         .contract
-                        .result = qos_actions::ResultSpec::Json {
+                        .result = tilo_actions::ResultSpec::Json {
                         schema: serde_json::json!({"type":"object"}),
                     };
                     let requests = (0..8)
@@ -9009,9 +9009,9 @@ pub mod tests {
                         "one actual Cap'n Proto application delivery"
                     );
                     effect(root.path());
-                    let terminal = qos_actions::InvocationUpdate::Succeeded {
+                    let terminal = tilo_actions::InvocationUpdate::Succeeded {
                         invocation: request.invocation,
-                        output: qos_actions::ActionOutput {
+                        output: tilo_actions::ActionOutput {
                             value: Some(
                                 serde_json::json!({"counter":1,"private":"private-result-token"}),
                             ),
@@ -9091,7 +9091,7 @@ pub mod tests {
                         let delivered = fixture.invocation_rx.try_recv().unwrap();
                         effect(root.path());
                         fixture.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(BarrierFailure::File);
-                        assert!(fixture.complete_invocation(delivered.id, &qos_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: qos_actions::ActionOutput::default() }).await.is_err());
+                        assert!(fixture.complete_invocation(delivered.id, &tilo_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: tilo_actions::ActionOutput::default() }).await.is_err());
                     }
                     let membership = fixture.membership.clone().unwrap();
                     drop(fixture);
@@ -9102,7 +9102,7 @@ pub mod tests {
                     } else {
                         let result = restarted.state.start_verified_invocation(&caller, &request, None).unwrap();
                         assert!(result.uncertain);
-                        assert!(matches!(result.update, qos_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable));
+                        assert!(matches!(result.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown" && !error.retryable));
                         assert!(restarted.invocation_rx.try_recv().is_err());
                         if boundary == BarrierFailure::Terminal {
                             assert_eq!(std::fs::read_to_string(root.path().join("effect-counter")).unwrap(), "1");
@@ -9157,7 +9157,7 @@ pub mod tests {
                 "legacy root-scoped queries must not disclose another device's private results"
             );
             let mut bad = request.clone();
-            bad.invocation = qos_actions::InvocationId::new();
+            bad.invocation = tilo_actions::InvocationId::new();
             bad.record_id = "different-record".into();
             assert!(
                 fixture
@@ -9265,7 +9265,7 @@ pub mod tests {
                     .unwrap();
                 assert!(status.uncertain);
                 assert!(
-                    matches!(status.update, qos_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown")
+                    matches!(status.update, tilo_actions::InvocationUpdate::Failed { error, .. } if error.code == "action_outcome_unknown")
                 );
                 assert_eq!(
                     fixture
@@ -9338,26 +9338,26 @@ pub mod tests {
                     channel_id: fixture.route.channel_key(), peer_id: 999,
                     verified_identity: caller.admitted.clone(),
                 });
-                assert!(update_app(&foreign, admitted.wire_id, &qos_actions::InvocationUpdate::Succeeded {
-                    invocation: request.invocation, output: qos_actions::ActionOutput::default(),
+                assert!(update_app(&foreign, admitted.wire_id, &tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: request.invocation, output: tilo_actions::ActionOutput::default(),
                 }).await.is_err());
                 let invalid = [
-                    qos_actions::InvocationUpdate::Accepted { invocation: request.invocation },
-                    qos_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "".into(), completed: None, total: None, message: None },
-                    qos_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "working".into(), completed: Some(2), total: Some(1), message: None },
-                    qos_actions::InvocationUpdate::Item { invocation: request.invocation, sequence: 1, value: serde_json::json!({"private":"value"}) },
-                    qos_actions::InvocationUpdate::Failed { invocation: request.invocation, error: qos_actions::ActionFailure { code: "bad".into(), message: "failed".into(), details: None, retryable: true } },
-                    qos_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: qos_actions::ActionOutput { value: Some(serde_json::json!("undeclared")), resources: vec![] } },
+                    tilo_actions::InvocationUpdate::Accepted { invocation: request.invocation },
+                    tilo_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "".into(), completed: None, total: None, message: None },
+                    tilo_actions::InvocationUpdate::Progress { invocation: request.invocation, sequence: 1, phase: "working".into(), completed: Some(2), total: Some(1), message: None },
+                    tilo_actions::InvocationUpdate::Item { invocation: request.invocation, sequence: 1, value: serde_json::json!({"private":"value"}) },
+                    tilo_actions::InvocationUpdate::Failed { invocation: request.invocation, error: tilo_actions::ActionFailure { code: "bad".into(), message: "failed".into(), details: None, retryable: true } },
+                    tilo_actions::InvocationUpdate::Succeeded { invocation: request.invocation, output: tilo_actions::ActionOutput { value: Some(serde_json::json!("undeclared")), resources: vec![] } },
                 ];
                 for update in invalid {
                     assert!(update_app(&channel, admitted.wire_id, &update).await.is_err());
-                    assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, qos_actions::InvocationUpdate::Accepted { .. }));
+                    assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, tilo_actions::InvocationUpdate::Accepted { .. }));
                 }
                 let mut complete = channel.complete_invocation_request();
                 complete.get().set_id(admitted.wire_id);
                 complete.get().set_code(""); complete.get().set_message("");
                 complete.send().promise.await.unwrap();
-                assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, qos_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == request.invocation));
+                assert!(matches!(fixture.state.verified_invocation_status(&caller, request.invocation).unwrap().unwrap().update, tilo_actions::InvocationUpdate::Succeeded { invocation, .. } if invocation == request.invocation));
 
                 // The legacy numeric local caller still receives and completes its original handle.
                 let legacy = fixture.state.start_invocation(71, &request.resource, &request.action, None, &caller.admitted.principal_id).unwrap();
@@ -9388,12 +9388,12 @@ pub mod tests {
                             .actions[0]
                             .contract
                             .execution = if streaming {
-                            qos_actions::ExecutionMode::Streaming {
+                            tilo_actions::ExecutionMode::Streaming {
                                 cancellable: true,
                                 item_schema: serde_json::json!({"type":"integer"}),
                             }
                         } else {
-                            qos_actions::ExecutionMode::Immediate
+                            tilo_actions::ExecutionMode::Immediate
                         };
                         if !streaming {
                             fixture
@@ -9405,7 +9405,7 @@ pub mod tests {
                                 .unwrap()
                                 .actions[0]
                                 .contract
-                                .result = qos_actions::ResultSpec::None;
+                                .result = tilo_actions::ResultSpec::None;
                         }
                         let admitted = fixture
                             .state
@@ -9413,13 +9413,13 @@ pub mod tests {
                             .unwrap();
                         fixture.invocation_rx.try_recv().unwrap();
                         let bad = if streaming {
-                            qos_actions::InvocationUpdate::Item {
+                            tilo_actions::InvocationUpdate::Item {
                                 invocation: request.invocation,
                                 sequence: 1,
                                 value: serde_json::json!("wrong type"),
                             }
                         } else {
-                            qos_actions::InvocationUpdate::Progress {
+                            tilo_actions::InvocationUpdate::Progress {
                                 invocation: request.invocation,
                                 sequence: 1,
                                 phase: "working".into(),
@@ -9436,10 +9436,10 @@ pub mod tests {
                                 .unwrap()
                                 .unwrap()
                                 .update,
-                            qos_actions::InvocationUpdate::Accepted { .. }
+                            tilo_actions::InvocationUpdate::Accepted { .. }
                         ));
                         if streaming {
-                            let item = qos_actions::InvocationUpdate::Item {
+                            let item = tilo_actions::InvocationUpdate::Item {
                                 invocation: request.invocation,
                                 sequence: 1,
                                 value: serde_json::json!(7),
@@ -9477,7 +9477,7 @@ pub mod tests {
                         .unwrap()
                         .actions[0]
                         .contract
-                        .confirmation = qos_actions::ConfirmationPolicy::Phrase {
+                        .confirmation = tilo_actions::ConfirmationPolicy::Phrase {
                         phrase: "erase exactly".into(),
                     };
                     let actor = &caller.admitted.principal_id;
@@ -9522,14 +9522,14 @@ pub mod tests {
                     let delivered = fixture.invocation_rx.try_recv().unwrap();
                     assert_eq!(delivered.invocation, request.invocation);
                     let mut new = request.clone();
-                    new.invocation = qos_actions::InvocationId::new();
+                    new.invocation = tilo_actions::InvocationId::new();
                     assert!(
                         fixture
                             .state
                             .start_verified_invocation(&caller, &new, Some(&token))
                             .is_err()
                     );
-                    let progress = qos_actions::InvocationUpdate::Progress {
+                    let progress = tilo_actions::InvocationUpdate::Progress {
                         invocation: request.invocation,
                         sequence: 1,
                         phase: "working".into(),
@@ -9543,11 +9543,11 @@ pub mod tests {
                         update_app(
                             &channel,
                             delivered.id,
-                            &qos_actions::InvocationUpdate::Succeeded {
-                                invocation: qos_actions::InvocationId(uuid::Uuid::from_u128(
+                            &tilo_actions::InvocationUpdate::Succeeded {
+                                invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(
                                     u128::from(delivered.id)
                                 )),
-                                output: qos_actions::ActionOutput::default()
+                                output: tilo_actions::ActionOutput::default()
                             }
                         )
                         .await
@@ -9567,7 +9567,7 @@ pub mod tests {
                             .is_terminal(),
                         "request is not acknowledgement"
                     );
-                    let cancelled = qos_actions::InvocationUpdate::Cancelled {
+                    let cancelled = tilo_actions::InvocationUpdate::Cancelled {
                         invocation: request.invocation,
                         message: None,
                     };
@@ -9595,7 +9595,7 @@ use crate::policy::WorkspacePolicy as _;
 
 impl CapnpBrokerState {
     async fn apply_invocation_update(
-        self: &Arc<Self>, peer_id: u64, id: u64, update: qos_actions::InvocationUpdate,
+        self: &Arc<Self>, peer_id: u64, id: u64, update: tilo_actions::InvocationUpdate,
         identity: Option<(CrdtRoute, AdmittedJoinIdentity)>,
     ) -> Result<(), capnp::Error> {
         let state = self;
@@ -9615,12 +9615,12 @@ impl CapnpBrokerState {
                 ));
             }
             let mut next_sequence = pending.last_sequence;
-            if matches!(&update, qos_actions::InvocationUpdate::Accepted { .. }) {
+            if matches!(&update, tilo_actions::InvocationUpdate::Accepted { .. }) {
                 return Err(capnp::Error::failed(
                     "invocation acceptance is owned by the broker".into(),
                 ));
             }
-            if let qos_actions::InvocationUpdate::Progress {
+            if let tilo_actions::InvocationUpdate::Progress {
                 sequence,
                 phase,
                 completed,
@@ -9628,7 +9628,7 @@ impl CapnpBrokerState {
                 ..
             } = &update
             {
-                if matches!(pending.execution, qos_actions::ExecutionMode::Immediate) {
+                if matches!(pending.execution, tilo_actions::ExecutionMode::Immediate) {
                     return Err(capnp::Error::failed(
                         "immediate action reported background progress".into(),
                     ));
@@ -9653,11 +9653,11 @@ impl CapnpBrokerState {
                 }
                 next_sequence = *sequence;
             }
-            if let qos_actions::InvocationUpdate::Item {
+            if let tilo_actions::InvocationUpdate::Item {
                 sequence, value, ..
             } = &update
             {
-                let qos_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution
+                let tilo_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution
                 else {
                     return Err(capnp::Error::failed(
                         "non-streaming action reported a streamed item".into(),
@@ -9668,21 +9668,21 @@ impl CapnpBrokerState {
                         "invocation stream sequence must be monotonic".into(),
                     ));
                 }
-                qos_actions::validate_json_schema(value, item_schema).map_err(|error| {
+                tilo_actions::validate_json_schema(value, item_schema).map_err(|error| {
                     capnp::Error::failed(format!(
                         "streamed item violated its published contract: {error}"
                     ))
                 })?;
                 next_sequence = *sequence;
             }
-            if let qos_actions::InvocationUpdate::Succeeded { output, .. } = &update {
+            if let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &update {
                 pending.result.validate(output).map_err(|error| {
                     capnp::Error::failed(format!(
                         "invocation result violated its published contract: {error}"
                     ))
                 })?;
             }
-            if let qos_actions::InvocationUpdate::Failed { error, .. } = &update {
+            if let tilo_actions::InvocationUpdate::Failed { error, .. } = &update {
                 if error.code.trim().is_empty() || error.message.trim().is_empty() {
                     return Err(capnp::Error::failed(
                         "invocation failure requires a code and message".into(),
@@ -9694,7 +9694,7 @@ impl CapnpBrokerState {
                     ));
                 }
             }
-            if matches!(&update, qos_actions::InvocationUpdate::Cancelled { .. })
+            if matches!(&update, tilo_actions::InvocationUpdate::Cancelled { .. })
                 && !pending.cancellable
             {
                 return Err(capnp::Error::failed(
@@ -9727,15 +9727,15 @@ impl CapnpBrokerState {
             pending.update = update.clone();
             if update.is_terminal() {
                 let completion = match &update {
-                    qos_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
+                    tilo_actions::InvocationUpdate::Succeeded { .. } => InvocationCompletion {
                         code: String::new(),
                         message: String::new(),
                     },
-                    qos_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
+                    tilo_actions::InvocationUpdate::Failed { error, .. } => InvocationCompletion {
                         code: error.code.clone(),
                         message: error.message.clone(),
                     },
-                    qos_actions::InvocationUpdate::Cancelled { message, .. } => {
+                    tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
                         InvocationCompletion {
                             code: "action_cancelled".into(),
                             message: message.clone().unwrap_or_default(),

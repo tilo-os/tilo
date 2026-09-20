@@ -26,9 +26,9 @@ iroh-relay = { version = "1.0.3", features = ["server"] }
 web-time = { version = "1", features = ["serde"] }
 atomic-file = { path = "../../system/atomic-file" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
-qos-user-identity = { path = "../../identity/qos-user-identity" }
-qos-relay = { path = "../qos-relay" }
-ui = { path = "../../../ui" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-relay = { path = "../tilo-relay" }
+ui = { path = "../../sdk/ui-core" }
 qos-desktop = { path = "../../session/qos-desktop" }
 notes = { path = "../../../apps/notes" }
 calculator = { path = "../../../apps/calculator" }
@@ -36,7 +36,7 @@ word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }
 collab-types = { path = "../../collab/collab-types" }
 qos-action-broker = { path = "../../collab/qos-action-broker" }
-qos-actions = { path = "../../collab/actions" }
+tilo-actions = { path = "../../collab/actions" }
 runtime-collab = { path = "../../runtime/runtime-collab" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 [dev-dependencies]

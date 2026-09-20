@@ -5,7 +5,7 @@
 //! exact-target route is accepted for control; a workspace-wide relay is
 //! reported as unavailable rather than leaking input through fan-out.
 
-use qos_relay::{RemoteControlRoute, ServerAdvertisement, route_remote_control};
+use tilo_relay::{RemoteControlRoute, ServerAdvertisement, route_remote_control};
 
 /// Certified-device routing key.
 pub type DeviceKey = [u8; 32];
@@ -116,7 +116,7 @@ pub fn short_device_id(device: &DeviceKey) -> String {
 mod tests {
     use std::collections::BTreeSet;
 
-    use qos_relay::{DeviceRole, ServiceCapabilities};
+    use tilo_relay::{DeviceRole, ServiceCapabilities};
 
     use super::*;
 

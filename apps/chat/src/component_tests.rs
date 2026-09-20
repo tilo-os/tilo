@@ -199,7 +199,7 @@ fn semantic_component_harness(
         1,
         permissions,
         ui::permissions::UserId("author".into()),
-        qos_actions::ActionContext::default(),
+        tilo_actions::ActionContext::default(),
         &target,
     )
     .unwrap();
@@ -427,7 +427,7 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
             instance,
             permissions.clone(),
             ui::permissions::UserId("author".into()),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             &target,
         )
         .unwrap();

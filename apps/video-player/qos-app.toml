@@ -9,7 +9,7 @@
 #     cargo build -p video-player -p pkg-cli -p install
 #     mkdir -p target/qpkg/video-player/bin
 #     cp target/debug/video-player target/qpkg/video-player/bin/video-player
-#     target/debug/qos-pkg pack --manifest apps/video-player/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/video-player/tilo-app.toml \
 #         --payload target/qpkg/video-player --output target/video-player.qpkg
 #     target/debug/qos-install install target/video-player.qpkg --allow-self-signed
 

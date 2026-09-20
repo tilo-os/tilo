@@ -444,8 +444,8 @@ mod tests {
         assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
         let result = rows
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec("browser.download.cancel.7").unwrap(),
                 &automerge::AutoCommit::new(),
@@ -576,8 +576,8 @@ mod tests {
         assert!(contains(rows.as_ref(), "browser.download.retry.41"));
         let result = rows
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec("browser.download.retry.41").unwrap(),
                 &automerge::AutoCommit::new(),

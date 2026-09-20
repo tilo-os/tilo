@@ -132,7 +132,7 @@ mod tests {
     use qos_desktop::{projection::RoomProjection, *};
     use qos_peer_state::{SeedState, StatePeer};
     fn state() -> (StatePeer, SigningKey) {
-        use qos_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
         let root = SigningKey::from_bytes(&[61; 32]);
         let key = SigningKey::from_bytes(&[62; 32]);
         let mut cert = DeviceCert {

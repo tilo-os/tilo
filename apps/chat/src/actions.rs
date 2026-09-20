@@ -65,7 +65,7 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
     OperationKind, Resource, ResourceProvider,
 };
@@ -180,7 +180,7 @@ pub enum ChatAction {
         /// `#[serde(default)]` so a frame from a release that predates
         /// references still decodes.
         #[serde(default)]
-        reference: Option<qos_reference::ResourceRef>,
+        reference: Option<tilo_reference::ResourceRef>,
     },
     /// Replace a message's body, archiving the prior text into its edit history
     /// and flagging it edited. `ts` (the edit time) is minted at authoring.
@@ -359,8 +359,8 @@ pub enum ChatAction {
     clippy::too_many_lines,
     reason = "one exhaustive action-to-history mapping keeps every ChatAction variant compiler-checked"
 )]
-pub fn history_context(action: &ChatAction) -> qos_actions::ActionContext {
-    let mut context = qos_actions::ActionContext::for_action("org.qos.Chat", "Chat", action);
+pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
+    let mut context = tilo_actions::ActionContext::for_action("org.qos.Chat", "Chat", action);
     let (label, channel, resource_id, kind) = match action {
         ChatAction::SendMessage { channel, id, .. } => {
             ("Send message", channel, id, "chat.message")
@@ -455,7 +455,7 @@ pub fn history_context(action: &ChatAction) -> qos_actions::ActionContext {
         }
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: format!("{kind}:{resource_id}"),
         kind: kind.to_string(),
         label: if kind == "chat.message" {
@@ -1674,7 +1674,7 @@ mod tests {
     use super::*;
     use crate::doc::ChatDoc;
     use crate::model::{self, ChannelKind};
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     /// A fixed authoring timestamp for tests — actions carry it in the payload,
     /// so nothing here reads the wall-clock.
@@ -1706,7 +1706,7 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     fn seeded() -> AutoCommit {
@@ -1837,7 +1837,7 @@ mod tests {
         let mut call_doc = AutoCommit::load(&doc.save()).unwrap();
         let joined = registry().decode(&immediate_encode(join)).unwrap();
         let mut transport = LocalTransport::new();
-        qos_actions::dispatch(
+        tilo_actions::dispatch(
             &mut call_doc,
             joined.as_ref(),
             immediate_encode(join),
@@ -1859,7 +1859,7 @@ mod tests {
 
         // Every exported action is reachable — flatten the forest (parents before
         // children) and confirm the message + workspace actions are present.
-        let flat = qos_actions::flatten(&resources);
+        let flat = tilo_actions::flatten(&resources);
         let flat_labels: Vec<&str> = flat.iter().map(|f| f.action.label.as_str()).collect();
         assert!(flat_labels.contains(&"New channel"), "{flat_labels:?}");
         assert!(!flat_labels.contains(&"Delete message"), "{flat_labels:?}");
@@ -2189,7 +2189,7 @@ mod tests {
         ));
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -2236,8 +2236,8 @@ mod tests {
             Vec::new(),
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2273,8 +2273,8 @@ mod tests {
             ChannelKind::Text,
         );
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
         assert!(ChatDoc::list_channels(&b).iter().any(|c| c.id == "c_sync"));
@@ -2410,10 +2410,10 @@ mod tests {
                 .all(|action| action.kind == OperationKind::Document)
         );
         let delete = channel.actions.iter().find(|a| a.id == "delete").unwrap();
-        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(delete.contract.risk, tilo_actions::RiskLevel::Destructive);
         assert_eq!(
             delete.contract.confirmation,
-            qos_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::Confirm
         );
     }
 }

@@ -115,13 +115,13 @@ pub struct DiffMergeApp {
     /// A human-readable reason the last host-portal open failed, surfaced in
     /// the status bar. `None` in the normal (success / cancel) case.
     load_error: Option<String>,
-    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
     pending_resource_paths: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         std::path::PathBuf,
         std::path::PathBuf,
     )>,
-    resource_result: Option<qos_actions::InvocationUpdate>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
     dirty: bool,
     /// One-shot flag: set when the active mode changed so the host rebuilds the
     /// taffy tree (the flex content child swaps between the two views).
@@ -368,7 +368,7 @@ impl DiffMergeApp {
             doc,
             crate::actions::DIFFMERGE_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Diff", "Diff", action),
+            tilo_actions::ActionContext::for_action("org.qos.Diff", "Diff", action),
         );
         self.merge.acknowledge_content(doc);
     }
@@ -376,7 +376,7 @@ impl DiffMergeApp {
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -435,9 +435,9 @@ impl DiffMergeApp {
                             Ok(false) => {
                                 if let Some(invocation) = self.resource_invocation.take() {
                                     self.resource_result =
-                                        Some(qos_actions::InvocationUpdate::Succeeded {
+                                        Some(tilo_actions::InvocationUpdate::Succeeded {
                                             invocation,
-                                            output: qos_actions::ActionOutput::default(),
+                                            output: tilo_actions::ActionOutput::default(),
                                         });
                                 }
                             }
@@ -445,9 +445,9 @@ impl DiffMergeApp {
                                 self.load_error = Some(reason.clone());
                                 if let Some(invocation) = self.resource_invocation.take() {
                                     self.resource_result =
-                                        Some(qos_actions::InvocationUpdate::Failed {
+                                        Some(tilo_actions::InvocationUpdate::Failed {
                                             invocation,
-                                            error: qos_actions::ActionFailure {
+                                            error: tilo_actions::ActionFailure {
                                                 code: "diffmerge.open_failed".into(),
                                                 message: reason,
                                                 details: None,
@@ -463,7 +463,7 @@ impl DiffMergeApp {
                     PortalOutcome::Cancelled => {
                         self.pending_left = None;
                         if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+                            self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
                                 invocation,
                                 message: Some("file selection cancelled".into()),
                             });
@@ -474,9 +474,9 @@ impl DiffMergeApp {
                         self.pending_left = None;
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                            self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "diffmerge.open_failed".into(),
                                     message: reason,
                                     details: None,
@@ -493,9 +493,9 @@ impl DiffMergeApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(qos_actions::InvocationUpdate::Failed {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                         invocation,
-                        error: qos_actions::ActionFailure {
+                        error: tilo_actions::ActionFailure {
                             code: "diffmerge.portal_disconnected".into(),
                             message: "file picker disconnected".into(),
                             details: None,
@@ -979,7 +979,7 @@ impl Default for DiffMergeApp {
 }
 
 impl Widget for DiffMergeApp {
-    fn document_action_applied(&mut self, action: &qos_actions::EncodedAction, before: &[ChangeHash], doc: &AutoCommit, _path: &ObjId) {
+    fn document_action_applied(&mut self, action: &tilo_actions::EncodedAction, before: &[ChangeHash], doc: &AutoCommit, _path: &ObjId) {
         if action.type_id == crate::actions::DIFFMERGE_ACTION_TYPE
             && doc.clone().fork_at(before).ok().is_some_and(|prior| self.merge.context_matches(&prior)) {
             self.merge.acknowledge_content(doc);
@@ -997,13 +997,13 @@ impl Widget for DiffMergeApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -1035,8 +1035,8 @@ impl Widget for DiffMergeApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -1069,11 +1069,11 @@ impl Widget for DiffMergeApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .pending_resource_paths
@@ -1081,7 +1081,7 @@ impl Widget for DiffMergeApp {
                 .is_some_and(|(id, _, _)| *id == invocation)
         {
             self.pending_resource_paths = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("cancelled before files were read".into()),
             });
@@ -1090,7 +1090,7 @@ impl Widget for DiffMergeApp {
             self.resource_invocation = None;
             self.portal_rx = None;
             self.pending_left = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("file selection cancelled".into()),
             });
@@ -1106,13 +1106,13 @@ impl Widget for DiffMergeApp {
         if let Some((invocation, left, right)) = self.pending_resource_paths.take() {
             let result = self.load_paths(&left, &right);
             self.resource_result = Some(match result {
-                Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
-                Err(message) => qos_actions::InvocationUpdate::Failed {
+                Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "diffmerge.open_failed".into(),
                         message,
                         details: None,
@@ -1499,10 +1499,10 @@ impl Widget for DiffMergeApp {
 
     /// Publish the open merge + its hunks so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Hand the host the heads captured before an on-panel chip dispatched its
@@ -1581,7 +1581,7 @@ mod tests {
         let (mut app, mut state) = app_with_state();
         let left = write_temp("direct-left.txt", "left\n");
         let right = write_temp("direct-right.txt", "right\n");
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::DiffmergeOperation::OpenFiles {
             left: Some(left.display().to_string()),
             right: Some(right.display().to_string()),
@@ -1590,7 +1590,7 @@ mod tests {
         let started = Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::DIFFMERGE_OPERATION_TYPE,
             &payload,
             &state.doc,
@@ -1602,7 +1602,7 @@ mod tests {
         app.sync(&mut state.doc, &state.root);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &state.doc, &state.root),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         std::fs::remove_dir_all(left.parent().unwrap()).ok();
         std::fs::remove_dir_all(right.parent().unwrap()).ok();
@@ -1810,7 +1810,7 @@ mod tests {
             .children
             .iter()
             .find(|r| r.actions.iter().find(|a| a.id == "take-theirs").is_some_and(|spec| {
-                let qos_actions::ActionInput::Immediate(encoded) = &spec.input else { return false };
+                let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else { return false };
                 matches!(serde_json::from_slice::<crate::actions::DiffmergeAction>(&encoded.payload), Ok(crate::actions::DiffmergeAction::ResolveHunk { hunk: target, .. }) if target == hunk as u64)
             }))
             .expect("the conflict resource");
@@ -1820,8 +1820,8 @@ mod tests {
             .find(|a| a.id == "take-theirs")
             .unwrap();
         let from_spec = match &spec.input {
-            qos_actions::ActionInput::Immediate(e) => e.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("take-theirs is immediate"),
+            tilo_actions::ActionInput::Immediate(e) => e.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("take-theirs is immediate"),
         };
 
         // Chip path: `resolve` queues the action a click builds.
@@ -2379,7 +2379,7 @@ mod tests {
 
         let error = Widget::invoke_resource_operation(
             &mut app,
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             crate::actions::DIFFMERGE_OPERATION_TYPE,
             &payload,
             &state.doc,

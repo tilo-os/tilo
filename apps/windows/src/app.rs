@@ -170,10 +170,10 @@ pub struct WindowsApp {
     confirm_escalate_to_vm: Option<String>,
     confirm_vendor_uninstall: Option<String>,
     confirm_delete_data: Option<String>,
-    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
     resource_waits_for_appliance: bool,
-    resource_result: Option<qos_actions::InvocationUpdate>,
-    pending_control_invocation: Option<qos_actions::ControlInvocation>,
+    resource_result: Option<tilo_actions::InvocationUpdate>,
+    pending_control_invocation: Option<tilo_actions::ControlInvocation>,
     projected_route_policy: HashMap<String, Option<Route>>,
     /// Immediate-mode modal geometry from the latest frame. It is the single
     /// pointer-capture boundary while destructive deletion is awaiting an
@@ -530,8 +530,8 @@ impl WindowsApp {
         if !self.provider.action_native_controls() {
             return false;
         }
-        self.pending_control_invocation = Some(qos_actions::ControlInvocation {
-            address: qos_actions::ActionAddress::new(resource, action),
+        self.pending_control_invocation = Some(tilo_actions::ControlInvocation {
+            address: tilo_actions::ActionAddress::new(resource, action),
             arguments: serde_json::Map::new(),
         });
         self.notice = Some("Request sent for authorization…".into());
@@ -635,13 +635,13 @@ impl WindowsApp {
             return;
         };
         self.resource_result = Some(match result {
-            Ok(()) => qos_actions::InvocationUpdate::Succeeded {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
-            Err(message) => qos_actions::InvocationUpdate::Failed {
+            Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "windows.operation_failed".into(),
                     message,
                     details: None,
@@ -655,7 +655,7 @@ impl WindowsApp {
         let Some(invocation) = self.resource_invocation.take() else {
             return;
         };
-        self.resource_result = Some(qos_actions::InvocationUpdate::Cancelled {
+        self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
             invocation,
             message: Some(message.into()),
         });
@@ -2908,18 +2908,18 @@ impl Widget for WindowsApp {
     fn get_rect(&self) -> Rect {
         self.area
     }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         actions::provide_resources(&self.catalogue)
     }
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Ok(false);
         }
         self.invoke_effect_operation(type_id, payload)
@@ -2927,14 +2927,14 @@ impl Widget for WindowsApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != qos_actions::OperationKind::Effect {
+        if kind != tilo_actions::OperationKind::Effect {
             return Ok(None);
         }
         if self.resource_invocation.is_some() {
@@ -2966,18 +2966,18 @@ impl Widget for WindowsApp {
             Ok(Some(ui::widget::ResourceOperationStart::Accepted))
         } else {
             Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                qos_actions::ActionOutput::default(),
+                tilo_actions::ActionOutput::default(),
             )))
         }
     }
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.refresh();
         if self
             .resource_result
@@ -2992,7 +2992,7 @@ impl Widget for WindowsApp {
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
     }
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.pending_control_invocation.take()
     }
     fn modal_capture(&self) -> Option<Rect> {
@@ -3696,7 +3696,7 @@ mod tests {
         let mut app = WindowsApp::new_offline();
         let app_id = app.catalogue.apps[0].id.clone();
         let mut doc = AutoCommit::new();
-        qos_actions::Action::apply(
+        tilo_actions::Action::apply(
             &actions::WindowsAction::SetRoute {
                 app_id: app_id.clone(),
                 route: Route::Proton,

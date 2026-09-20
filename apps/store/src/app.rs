@@ -39,7 +39,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
-use ui::qos_actions::{
+use ui::tilo_actions::{
     ActionAddress, ActionArgs, ActionBinding, ActionContract, ActionParam, ActionSpec,
     Availability, ConfirmationPolicy, ControlInvocation, EncodedAction, ExecutionMode,
     OperationKind, ParamType, Resource, ResultSpec, RetryPolicy, RiskLevel,
@@ -775,10 +775,10 @@ pub struct StoreApp {
     /// Drained by the host each frame via [`take_pending_actions`].
     pending_actions: Vec<(String, ActionKind)>,
     pending_refresh: bool,
-    pending_lifecycle_actions: Vec<(String, ActionKind, qos_actions::InvocationId)>,
-    pending_lifecycle_refresh: Option<qos_actions::InvocationId>,
-    pending_lifecycle_remote: Vec<(RemoteIntent, qos_actions::InvocationId)>,
-    completed_invocations: Vec<qos_actions::InvocationUpdate>,
+    pending_lifecycle_actions: Vec<(String, ActionKind, tilo_actions::InvocationId)>,
+    pending_lifecycle_refresh: Option<tilo_actions::InvocationId>,
+    pending_lifecycle_remote: Vec<(RemoteIntent, tilo_actions::InvocationId)>,
+    completed_invocations: Vec<tilo_actions::InvocationUpdate>,
     pending_search: Option<String>,
     pending_detail: Option<String>,
     remotes: Vec<crate::flathub_client::Remote>,
@@ -793,11 +793,11 @@ pub struct StoreApp {
     pending_remote_intents: Vec<RemoteIntent>,
     pending_control_invocation: Option<ControlInvocation>,
     report_export: Option<(
-        qos_actions::InvocationId,
+        tilo_actions::InvocationId,
         ui::portal::PortalChannel,
         Vec<u8>,
     )>,
-    pending_moderation: Vec<(ModerationIntent, qos_actions::InvocationId)>,
+    pending_moderation: Vec<(ModerationIntent, tilo_actions::InvocationId)>,
     /// List position survives the composed widget tree being rebuilt after a
     /// filter, search result, or catalogue update.
     scroll_offset: Rc<Cell<(f32, f32)>>,
@@ -908,36 +908,36 @@ impl StoreApp {
 
     pub fn take_lifecycle_actions(
         &mut self,
-    ) -> Vec<(String, ActionKind, qos_actions::InvocationId)> {
+    ) -> Vec<(String, ActionKind, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_lifecycle_actions)
     }
 
-    pub fn take_lifecycle_refresh(&mut self) -> Option<qos_actions::InvocationId> {
+    pub fn take_lifecycle_refresh(&mut self) -> Option<tilo_actions::InvocationId> {
         self.pending_lifecycle_refresh.take()
     }
 
-    pub fn take_lifecycle_remote(&mut self) -> Vec<(RemoteIntent, qos_actions::InvocationId)> {
+    pub fn take_lifecycle_remote(&mut self) -> Vec<(RemoteIntent, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_lifecycle_remote)
     }
 
     pub fn complete_lifecycle_invocation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         error: Option<String>,
     ) {
         self.completed_invocations.push(match error {
-            Some(message) => qos_actions::InvocationUpdate::Failed {
+            Some(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "store.operation_failed".into(),
                     message,
                     details: None,
                     retryable: false,
                 },
             },
-            None => qos_actions::InvocationUpdate::Succeeded {
+            None => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: qos_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput::default(),
             },
         });
     }
@@ -960,7 +960,7 @@ impl StoreApp {
 
     pub fn take_moderation_requests(
         &mut self,
-    ) -> Vec<(ModerationIntent, qos_actions::InvocationId)> {
+    ) -> Vec<(ModerationIntent, tilo_actions::InvocationId)> {
         std::mem::take(&mut self.pending_moderation)
     }
 
@@ -3153,14 +3153,14 @@ impl StoreApp {
             ui::portal::PortalOutcome::Opened(path) => match std::fs::write(&path, bytes) {
                 Ok(()) => {
                     self.status_line = format!("Exported report evidence to {}.", path.display());
-                    qos_actions::InvocationUpdate::Succeeded {
+                    tilo_actions::InvocationUpdate::Succeeded {
                         invocation,
-                        output: qos_actions::ActionOutput::default(),
+                        output: tilo_actions::ActionOutput::default(),
                     }
                 }
-                Err(error) => qos_actions::InvocationUpdate::Failed {
+                Err(error) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "store.report_export_failed".into(),
                         message: format!("Could not export report evidence: {error}"),
                         details: None,
@@ -3168,13 +3168,13 @@ impl StoreApp {
                     },
                 },
             },
-            ui::portal::PortalOutcome::Cancelled => qos_actions::InvocationUpdate::Cancelled {
+            ui::portal::PortalOutcome::Cancelled => tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("Export cancelled".into()),
             },
-            ui::portal::PortalOutcome::Failed(message) => qos_actions::InvocationUpdate::Failed {
+            ui::portal::PortalOutcome::Failed(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: "store.report_export_failed".into(),
                     message,
                     details: None,
@@ -3463,7 +3463,7 @@ impl Widget for StoreApp {
                     })
                 },
             )
-            .requiring(ui::qos_actions::PermissionRequirement::Admin)
+            .requiring(ui::tilo_actions::PermissionRequirement::Admin)
             .privileged()
             .execution(ExecutionMode::Background { cancellable: false })
             .returns(ResultSpec::Job),
@@ -3482,7 +3482,7 @@ impl Widget for StoreApp {
                 &vec!["remove".to_string(), remote.name.clone()],
             ) {
                 resource.actions.push(remove.with_contract(ActionContract {
-                    permission: ui::qos_actions::PermissionRequirement::Admin,
+                    permission: ui::tilo_actions::PermissionRequirement::Admin,
                     risk: RiskLevel::Destructive,
                     confirmation: ConfirmationPolicy::Confirm,
                     retry: RetryPolicy::Idempotent,
@@ -3735,7 +3735,7 @@ impl Widget for StoreApp {
     )]
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
@@ -3948,11 +3948,11 @@ impl Widget for StoreApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         _cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         let index = self
             .completed_invocations
             .iter()
@@ -4865,7 +4865,7 @@ mod tests {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
         let heads = doc.get_heads();
-        let encoded = qos_actions::EncodedAction::encode_operation(
+        let encoded = tilo_actions::EncodedAction::encode_operation(
             crate::browse_actions::STORE_BROWSE_OPERATION_TYPE,
             &crate::browse_actions::BrowseOperation::SetSource {
                 source: "qOS".into(),
@@ -4953,7 +4953,7 @@ mod tests {
     fn exported_refresh_is_accepted_until_worker_completion() {
         let mut app = seeded_app();
         let doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let started = app
             .start_resource_operation(
                 invocation,
@@ -4973,7 +4973,7 @@ mod tests {
         app.complete_lifecycle_invocation(invocation, None);
         assert!(matches!(
             app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -4984,7 +4984,7 @@ mod tests {
         let payload = serde_json::to_vec(&vec!["id.notes", "open"]).unwrap();
         let first = app
             .start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &payload,
@@ -5001,7 +5001,7 @@ mod tests {
         assert_eq!(app.take_lifecycle_actions().len(), 1);
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &payload,
@@ -5021,7 +5021,7 @@ mod tests {
         let mut app = seeded_app();
         let doc = AutoCommit::new();
         let result = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.app",
             &serde_json::to_vec(&vec!["id.notes", "remove"]).unwrap(),
@@ -5088,7 +5088,7 @@ mod tests {
         }
         assert!(
             app.start_resource_operation(
-                qos_actions::InvocationId::new(),
+                tilo_actions::InvocationId::new(),
                 OperationKind::Effect,
                 "store.app",
                 &serde_json::to_vec(&vec!["id.chess", "flatpak-remove"]).unwrap(),
@@ -5130,7 +5130,7 @@ mod tests {
     fn moderation_effect_waits_for_authoritative_case_before_materializing_status() {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         app.reports.push(ReportRecord {
             id: "report:id.notes".into(),
             app_id: "id.notes".into(),
@@ -5230,7 +5230,7 @@ mod tests {
         );
         let doc = AutoCommit::new();
         let accepted = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.moderation",
             &serde_json::to_vec(&("qOS", &current)).unwrap(),
@@ -5243,7 +5243,7 @@ mod tests {
         let mut stale = current;
         stale.evidence_note = "Different text that was never saved in this draft.".into();
         let rejected = app.start_resource_operation(
-            qos_actions::InvocationId::new(),
+            tilo_actions::InvocationId::new(),
             OperationKind::Effect,
             "store.moderation",
             &serde_json::to_vec(&("qOS", stale)).unwrap(),

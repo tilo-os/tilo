@@ -21,7 +21,7 @@
 use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
-use qos_actions::Resource;
+use tilo_actions::Resource;
 use qos_agent::{Config, Session};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;

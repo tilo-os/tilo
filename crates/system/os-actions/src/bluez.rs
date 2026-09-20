@@ -26,7 +26,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use qos_bluez::{BluezClient, DeviceInfo};
+use tilo_bluez::{BluezClient, DeviceInfo};
 use tokio::runtime::Runtime;
 
 /// One shared current-thread-pool runtime for every blocking call.
@@ -63,7 +63,7 @@ where
 {
     runtime()?
         .block_on(f)
-        .map_err(|e| qos_bluez::error_text(&e))
+        .map_err(|e| tilo_bluez::error_text(&e))
 }
 
 /// The adapter every operation here targets.
@@ -158,7 +158,7 @@ pub fn scan_for(window: Duration) -> Result<Vec<DeviceInfo>, String> {
 ///
 /// Returns an error message if [`adapter_path`] fails, or pairing, trusting, or connecting
 /// fails (including a rejected or timed-out passkey).
-pub fn pair(device_path: &str) -> Result<qos_bluez::PairOutcome, String> {
+pub fn pair(device_path: &str) -> Result<tilo_bluez::PairOutcome, String> {
     let c = client()?;
     let adapter = adapter_path()?;
     block(async { c.pair_and_connect(&adapter, device_path).await })

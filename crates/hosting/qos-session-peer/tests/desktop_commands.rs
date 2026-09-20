@@ -604,7 +604,7 @@ fn invalid_command_and_failed_flush_leave_original_topology_and_records_recovera
 
 #[test]
 fn caller_revoked_after_request_capture_is_refused_at_execution() {
-    use qos_user_identity::{
+    use tilo_user_identity::{
         RevocationEntry, RevocationList, RevocationReason, WorkspaceDirectory,
         persist::{self, IdentityPaths},
         sign_revocation_entry,
@@ -613,7 +613,7 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
     let path = root.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[34; 32]);
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_relay::clock::now_ns();
     let mut enrollment = qos_session_peer::enrollment::EnrollmentAuthority::default();
     let challenge = enrollment
         .challenge(
@@ -670,7 +670,7 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
     .unwrap();
     directory
         .set_member_devices(
-            qos_relay::room_workspace_id(owner.peer().room()).unwrap(),
+            tilo_relay::room_workspace_id(owner.peer().room()).unwrap(),
             &[owner.peer().authority().device_public_key],
         )
         .unwrap();
@@ -687,7 +687,7 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
 
 #[test]
 fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery() {
-    use qos_relay::transport_v2::EnvelopeV2;
+    use tilo_relay::transport_v2::EnvelopeV2;
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("direct");
     let mut owner = SessionOwner::initialize(&path).unwrap();
@@ -701,7 +701,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
     let delivery = delivery.expect("normal app launch has a bounded immediate publication");
     let source_user = owner.peer().authority().user_public_key;
     let target = delivery.target;
-    let qos_relay::peer_actions::ActionMessage::CommittedDesktop { opened: Some(opened_route), .. } = &delivery.message else { panic!("launch carries its exact opened route") };
+    let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { opened: Some(opened_route), .. } = &delivery.message else { panic!("launch carries its exact opened route") };
     let new_tab = tree(&owner).workspaces[0].strips[0].window_groups.last().unwrap().tabs[0].id;
     assert_eq!(opened_route.tab, new_tab.to_string());
     let event = EnvelopeV2::Delivered { action: delivery.clone(), source_user };
@@ -717,7 +717,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
     for field in 0..5 {
         let mut wrong = delivery.clone(); let mut root = source_user;
         match field { 0 => wrong.source = [91;32], 1 => wrong.target = [91;32], 2 => wrong.room = uuid::Uuid::new_v4(), 3 => root = [91;32], _ => {
-            let qos_relay::peer_actions::ActionMessage::CommittedDesktop { packets, .. } = &mut wrong.message else { panic!() };
+            let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { packets, .. } = &mut wrong.message else { panic!() };
             let last = packets.last_mut().unwrap();
             let mut bytes = qos_peer_state::desktop_delivery::decode(&[last.clone()]).unwrap().remove(0); let end = bytes.len()-1; bytes[end] ^= 1; *last = hex::encode(bytes);
         }}

@@ -234,7 +234,7 @@ impl MailState {
             doc,
             MAIL_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Mail", "Mail", action),
+            tilo_actions::ActionContext::for_action("org.qos.Mail", "Mail", action),
         );
     }
 

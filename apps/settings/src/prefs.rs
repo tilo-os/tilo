@@ -338,7 +338,7 @@ fn default_critical_action() -> PowerActionPref {
 /// reads. The active power *profile* is live system state
 /// (`powerprofilesctl`), not stored here. Every field added after the initial
 /// two carries `#[serde(default)]` so a config written before it existed still
-/// loads. The keys mirror `qos_power_mgmt::config`'s reader exactly.
+/// loads. The keys mirror `tilo_power_mgmt::config`'s reader exactly.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PowerPrefs {
     /// Master toggle for idle-suspend. `false` disables it regardless of
@@ -1305,7 +1305,7 @@ mod tests {
     }
 
     /// The `power` section serialises to exactly the keys and lowercase action
-    /// labels the compositor's `qos_power_mgmt::config` reader parses. This is
+    /// labels the compositor's `tilo_power_mgmt::config` reader parses. This is
     /// the write side of the cross-crate JSON contract (the read side is
     /// pinned in that crate's `full_section_parses` test); if either drifts
     /// this test — or that one — fails.

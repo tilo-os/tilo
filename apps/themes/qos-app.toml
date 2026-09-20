@@ -9,7 +9,7 @@
 #     cargo build -p themes -p pkg-cli -p install
 #     mkdir -p target/qpkg/themes/bin
 #     cp target/debug/themes target/qpkg/themes/bin/themes
-#     target/debug/qos-pkg pack --manifest apps/themes/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/themes/tilo-app.toml \
 #         --payload target/qpkg/themes --output target/themes.qpkg
 #     target/debug/qos-install install target/themes.qpkg --allow-self-signed
 

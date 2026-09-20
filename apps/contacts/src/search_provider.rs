@@ -166,8 +166,8 @@ impl SearchProvider for ContactSearchProvider {
 
     fn resolve_action_resource(
         &self,
-        address: &qos_actions::ActionAddress,
-    ) -> Option<qos_actions::Resource> {
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::Resource> {
         if let Some(raw_id) = address.resource.strip_prefix("contacts.contact:") {
             let id = raw_id.parse::<ContactId>().ok()?;
             let contact = self.contacts.get(&id)?;
@@ -365,7 +365,7 @@ mod tests {
             .resolve_action_resource(&address)
             .expect("the group resolves without expanding the palette page");
         assert!(
-            qos_actions::door::resolve(&[resource], &address).is_some(),
+            tilo_actions::door::resolve(&[resource], &address).is_some(),
             "the exact group open action is agent-addressable"
         );
     }
@@ -421,7 +421,7 @@ mod tests {
         let resource = provider
             .resolve_action_resource(&address)
             .expect("the late hit resolves without expanding the contextual page");
-        assert!(qos_actions::door::resolve(&[resource], &address).is_some());
+        assert!(tilo_actions::door::resolve(&[resource], &address).is_some());
         assert_eq!(provider.stats().records, 100_001);
     }
 

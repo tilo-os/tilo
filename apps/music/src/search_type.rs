@@ -27,7 +27,7 @@
 //! provider query with no reach into app internals. Search activation itself
 //! goes through the shared operation broker and Music's exported resource tree.
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,

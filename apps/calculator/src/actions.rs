@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use ui::clock::{SystemTime, UNIX_EPOCH};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
     OperationKind, Resource, ResourceProvider, RetryPolicy,
 };
@@ -653,7 +653,7 @@ impl ResourceProvider for crate::app::CalculatorApp {
 mod tests {
     use super::*;
     use crate::model::CalcModel;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -687,7 +687,7 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
@@ -866,7 +866,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -914,8 +914,8 @@ mod tests {
         // A applies a formula edit locally; B replays the envelope.
         let action = set_graph_expr_action(GraphKind::Curve2d, 1, "x^3+1");
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -939,8 +939,8 @@ mod tests {
 
         let action = toggle_graph_visible_action(GraphKind::Surface3d, 0);
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
-        qos_actions::replay(&mut doc_b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut doc_a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut doc_b, &env, &registry()).unwrap();
 
         assert_eq!(
             doc_a.get_heads(),
@@ -1220,7 +1220,7 @@ mod tests {
 
         let decoded = registry().decode(&exposed).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut via_a11y, decoded.as_ref(), exposed, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut via_a11y, decoded.as_ref(), exposed, &mut tx).unwrap();
         let id = crate::doc::row_id_at(&via_affordance, "history", 0).expect("stable id");
         dispatch(
             &mut via_affordance,

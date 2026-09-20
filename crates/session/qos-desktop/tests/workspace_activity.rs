@@ -60,7 +60,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
             }
         );
         let action = descriptor.action();
-        assert_eq!(action.kind, qos_actions::OperationKind::View);
+        assert_eq!(action.kind, tilo_actions::OperationKind::View);
         assert_eq!(action.operation_type.as_deref(), Some(OPERATION_TYPE));
         let operation = action.build_args([]).unwrap();
         assert_eq!(operation.type_id, OPERATION_TYPE);

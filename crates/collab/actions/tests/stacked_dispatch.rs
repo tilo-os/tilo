@@ -23,7 +23,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
-use qos_actions::{
+use tilo_actions::{
     Action, ActionError, ActionRegistry, Doc, EncodedAction, LocalTransport, apply_local, dispatch,
     replay,
 };

@@ -4,11 +4,11 @@ use anyhow::{Context, Result, bail};
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};
 use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
-use qos_relay::{
+use tilo_relay::{
     Inbound, Relay, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding,
     daemon::RelayIdentity,
 };
-use qos_user_identity::RevocationList;
+use tilo_user_identity::RevocationList;
 use serde_json::json;
 use std::sync::Arc;
 use std::{net::Ipv4Addr, path::Path, time::Duration};
@@ -386,21 +386,21 @@ impl LocalHost {
             packet_url.clone(),
             None,
         )));
-        let workspace = qos_relay::room_workspace_id(owner.peer().room())?;
+        let workspace = tilo_relay::room_workspace_id(owner.peer().room())?;
         let state = owner.root().join("relay");
         let config = RelayConfig {
             state_root: state.clone(),
             identity_root: owner.root().join("host-identity"),
             full_replica_status: state.join("full-replica/status.json"),
             home_peer_bundle: state.join("home-peer.toml"),
-            trust_policy: qos_relay::TrustPolicy::AllowList {
+            trust_policy: tilo_relay::TrustPolicy::AllowList {
                 users: vec![hex::encode(owner.identity.root.verifying_key().to_bytes())],
             },
             iroh_listen: (Ipv4Addr::LOCALHOST, 0).into(),
             workspaces: vec![WorkspaceBinding {
                 id: workspace,
                 pin: true,
-                replication: qos_relay::ReplicationIntent::FullWorkspace,
+                replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![],
                 shell_authority: Some(
                     qos_peer_state::retained_proof::RetentionAuthority::new(
@@ -453,7 +453,7 @@ impl LocalHost {
             .collect();
         self.relay
             .set_workspace_membership(
-                qos_relay::room_workspace_id(owner.peer().room())?,
+                tilo_relay::room_workspace_id(owner.peer().room())?,
                 true,
                 members,
                 owner.root().join("relay"),
@@ -469,7 +469,7 @@ impl LocalHost {
         let certificate = owner.identity.native_cert.clone();
         let key = owner.identity.native.clone();
         let revoked = revocations(owner)?;
-        let workspace = qos_relay::room_workspace_id(owner.peer().room())?;
+        let workspace = tilo_relay::room_workspace_id(owner.peer().room())?;
         let (cancel, mut cancelled) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             tokio::select! { _=tokio::time::sleep(delay)=>{}, _=&mut cancelled=>bail!("native reconnect cancelled") }
@@ -626,7 +626,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     #[cfg(feature = "test-support")]
     let mut qualification = QualificationHold::default();
     let mut stdin_open = true;
-    let metadata = json!({"version":2,"enrollment_version":2,"challenge_path":"/enrollment/challenge","complete_path":"/enrollment/complete","pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"room":owner.peer().room(),"workspace_id":qos_relay::room_workspace_id(owner.peer().room())?.to_string(),"state_root":owner.root(),"records":owner.peer().rows()});
+    let metadata = json!({"version":2,"enrollment_version":2,"challenge_path":"/enrollment/challenge","complete_path":"/enrollment/complete","pid":std::process::id(),"platform":std::env::consts::OS,"fixture_origin":format!("http://{}",listener.local_addr()?),"status_path":"/status","packet_relay":host.packet_url,"relay_address":host.address,"room":owner.peer().room(),"workspace_id":tilo_relay::room_workspace_id(owner.peer().room())?.to_string(),"state_root":owner.root(),"records":owner.peer().rows()});
     atomic_file::write_with_mode(ready_path, &serde_json::to_vec_pretty(&metadata)?, 0o600)?;
     crate::store::sync_dir(
         ready_path
@@ -857,11 +857,11 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         Err(crate::enrollment::EnrollmentError::new(503,"native peer is reconnecting; retry enrollment with the same identity"))
                     } else {
                         match command.request {
-                            crate::enrollment_http::EnrollmentRequest::Challenge(request)=>enrollment.challenge(&owner,request,qos_relay::clock::now_ns()).and_then(|response|serde_json::to_vec(&response).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
+                            crate::enrollment_http::EnrollmentRequest::Challenge(request)=>enrollment.challenge(&owner,request,tilo_relay::clock::now_ns()).and_then(|response|serde_json::to_vec(&response).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))),
                             crate::enrollment_http::EnrollmentRequest::Complete(request)=>{
                                 let enrolled = {
                                     let mut current = authority.0.lock().map_err(|_| anyhow::anyhow!("authority unavailable"))?;
-                                    let enrolled = enrollment.complete(&mut owner,request,qos_relay::clock::now_ns());
+                                    let enrolled = enrollment.complete(&mut owner,request,tilo_relay::clock::now_ns());
                                     *current = (owner.permits_publication() && action_error.is_none()).then(|| owner.peer().clone());
                                     enrolled
                                 };
@@ -871,7 +871,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                         Err(error)=>Err(crate::enrollment::EnrollmentError::new(503,format!("committed enrollment awaits relay membership reconciliation: {error}"))),
                                         Ok(())=>{
                                             let published=session.as_ref().ok_or_else(||anyhow::anyhow!("native subscription unavailable")).and_then(|current|publish(&owner,current));
-                                            published.map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string())).and_then(|()|crate::enrollment::public_bootstrap(&owner,&certificate,serde_json::to_value(&host.address).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))?,&host.packet_url.to_string(),qos_relay::clock::now_ns())).and_then(|value|serde_json::to_vec(&value).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string())))
+                                            published.map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string())).and_then(|()|crate::enrollment::public_bootstrap(&owner,&certificate,serde_json::to_value(&host.address).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string()))?,&host.packet_url.to_string(),tilo_relay::clock::now_ns())).and_then(|value|serde_json::to_vec(&value).map_err(|error|crate::enrollment::EnrollmentError::new(503,error.to_string())))
                                         }
                                     }
                                 }

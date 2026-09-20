@@ -90,8 +90,8 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use ed25519_dalek::SigningKey;
-    use qos_actions::Action;
-    use qos_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+    use tilo_actions::Action;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
     fn state() -> (StatePeer, SigningKey, web_time::SystemTime) {
         let root = SigningKey::from_bytes(&[41; 32]);
         let key = SigningKey::from_bytes(&[42; 32]);
@@ -239,7 +239,7 @@ mod capture_tests {
   let records=RecordOwners::portable(cache.clone()).open(definition.app_id,"room").unwrap();
   let views=Rc::new(InstanceViewStore::portable(cache,"room").unwrap());
   let permissions=Rc::new(RefCell::new(PermissionContext::from_capabilities(Actor::person(Some(Role::Owner),"author"),vec![])));
-  let context=HostContext::prepare(definition,records.clone(),views,"actor".into(),1,permissions,UserId("author".into()),qos_actions::ActionContext::default(),&LaunchTarget::PrimaryNew).unwrap();
+  let context=HostContext::prepare(definition,records.clone(),views,"actor".into(),1,permissions,UserId("author".into()),tilo_actions::ActionContext::default(),&LaunchTarget::PrimaryNew).unwrap();
   let component=definition.instantiate(context,LaunchTarget::PrimaryNew,RestoreInput::None).unwrap();let record=component.record().id.clone();
   let mut frame=ui::headless::FrameHarness::from_component(component,(900,640),ComponentRunnerInputs{theme:ui::Theme::dark(),text_renderer:ui::TextRenderer::new()}).unwrap();
   frame.click_at(450.0,580.0);frame.send_host_event(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit("S".into())));

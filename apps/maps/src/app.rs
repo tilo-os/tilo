@@ -24,7 +24,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::format::bytes as format_bytes;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::qos_actions::{
+use ui::tilo_actions::{
     ActionContract, ActionFailure, ActionOutput, ActionSpec, Availability, DiscoveryScope,
     ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
     ResultSpec, RetryPolicy,
@@ -1217,7 +1217,7 @@ impl MapsApp {
             doc,
             MAPS_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Maps", "Maps", action),
+            tilo_actions::ActionContext::for_action("org.qos.Maps", "Maps", action),
         );
         MapsDoc::apply_durable(doc, &mut self.model);
     }
@@ -5340,10 +5340,10 @@ impl Widget for MapsApp {
     /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
     /// places, the active route, and the offline regions currently in the shared
     /// document. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         if resources.is_empty() {
             resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
         }
@@ -5372,7 +5372,7 @@ impl Widget for MapsApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let mut resource = <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+        let mut resource = <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
             .or_else(|| {
                 (id == "maps.workspace")
                     .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))

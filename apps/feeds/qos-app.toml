@@ -10,7 +10,7 @@
 #     cargo build -p feeds -p pkg-cli -p install
 #     mkdir -p target/qpkg/feeds/bin
 #     cp target/debug/feeds target/qpkg/feeds/bin/feeds
-#     target/debug/qos-pkg pack --manifest apps/feeds/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/feeds/tilo-app.toml \
 #         --payload target/qpkg/feeds --output target/feeds.qpkg
 #     target/debug/qos-install install target/feeds.qpkg --allow-self-signed
 

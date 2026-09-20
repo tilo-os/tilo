@@ -10,7 +10,7 @@
 #     cargo build -p logs -p pkg-cli -p install
 #     mkdir -p target/qpkg/logs/bin
 #     cp target/debug/logs target/qpkg/logs/bin/logs
-#     target/debug/qos-pkg pack --manifest apps/logs/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/logs/tilo-app.toml \
 #         --payload target/qpkg/logs --output target/logs.qpkg
 #     target/debug/qos-install install target/logs.qpkg --allow-self-signed
 

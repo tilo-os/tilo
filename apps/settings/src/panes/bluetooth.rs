@@ -3,7 +3,7 @@
 
 use crate::widgets::{El, caption, card_with_action, rows, setting_row, value_row};
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
-use qos_bluez::{DeviceInfo, PairOutcome};
+use tilo_bluez::{DeviceInfo, PairOutcome};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;

@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use collab_types::Ed25519PublicKey;
-use qos_user_identity::{
+use tilo_user_identity::{
     MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_BYTES,
     MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS, TrustedIdentityProjectionV1,
     TrustedIdentityProjectionV2,
@@ -35,7 +35,7 @@ pub struct TrustedDevice {
     pub label: String,
     /// Root-certified policy attributes retained for device-detail UI. They
     /// are descriptive here; Files never derives authorization from labels.
-    pub capabilities: qos_user_identity::DeviceCapabilities,
+    pub capabilities: tilo_user_identity::DeviceCapabilities,
     pub issued_at_ns: u64,
     pub expires_at_ns: Option<u64>,
 }
@@ -75,14 +75,14 @@ impl TrustedHumanDirectory {
         {
             Some(version)
                 if version
-                    == u64::from(qos_user_identity::TRUSTED_IDENTITY_PROJECTION_V1_VERSION) =>
+                    == u64::from(tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_V1_VERSION) =>
             {
                 let projection = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Identity directory is invalid: {error}"))?;
                 Self::from_projection(projection)
             }
             Some(version)
-                if version == u64::from(qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION) =>
+                if version == u64::from(tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION) =>
             {
                 let projection = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Identity directory is invalid: {error}"))?;
@@ -236,7 +236,7 @@ pub fn fingerprint(key: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qos_user_identity::{GovernedHumanIdentityV1, TRUSTED_IDENTITY_PROJECTION_V1_VERSION};
+    use tilo_user_identity::{GovernedHumanIdentityV1, TRUSTED_IDENTITY_PROJECTION_V1_VERSION};
 
     fn projection(rows: Vec<([u8; 32], &str)>) -> TrustedIdentityProjectionV1 {
         TrustedIdentityProjectionV1 {
@@ -351,23 +351,23 @@ mod tests {
     fn v2_exposes_root_signed_device_details_without_changing_share_authority() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-        let mut certificate = qos_user_identity::DeviceCert {
+        let mut certificate = tilo_user_identity::DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: device.verifying_key().to_bytes(),
             device_label: "Ada's laptop".into(),
-            capabilities: qos_user_identity::DeviceCapabilities::member(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
             issued_at_ns: 7,
             expires_at_ns: None,
             signature: [0; 64],
         };
-        qos_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
         let directory = TrustedHumanDirectory::from_projection_v2(
-            qos_user_identity::TrustedIdentityProjectionV2 {
-                schema_version: qos_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![qos_user_identity::GovernedHumanIdentityV2 {
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                     root_public_key: root.verifying_key().to_bytes(),
                     display_name: "Ada Lovelace".into(),
-                    devices: vec![qos_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
                 }],
             },
         )
@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(human.devices[0].label, "Ada's laptop");
         assert_eq!(
             human.devices[0].capabilities,
-            qos_user_identity::DeviceCapabilities::member()
+            tilo_user_identity::DeviceCapabilities::member()
         );
         assert_eq!(
             human.devices[0].device.as_bytes(),

@@ -14,7 +14,7 @@
 #     cargo build -p music -p pkg-cli -p install
 #     mkdir -p target/qpkg/music/bin
 #     cp target/debug/music target/qpkg/music/bin/music
-#     target/debug/qos-pkg pack --manifest apps/music/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/music/tilo-app.toml \
 #         --payload target/qpkg/music --output target/music.qpkg
 #     target/debug/qos-install install target/music.qpkg --allow-self-signed
 

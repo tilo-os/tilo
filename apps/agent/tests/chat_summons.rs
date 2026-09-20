@@ -13,7 +13,7 @@ use chat::{
     doc::ChatDoc,
     model::{AgentRoute, AgentStepOutcome, AgentWorkState},
 };
-use qos_actions::Action;
+use tilo_actions::Action;
 use qos_agent::{Config, Session};
 use std::time::{Duration, Instant};
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
@@ -52,7 +52,7 @@ fn config(path: std::path::PathBuf) -> Config {
         ),
     }
 }
-fn resources(doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+fn resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
     word_processor::actions::provide_resources(
         &word_processor::actions::WpResourceCtx {
             caret_block: qdoc::model::open(doc, &automerge::ROOT)
@@ -96,14 +96,14 @@ enum OwnerOutcome {
     CancelAfterMutation,
 }
 
-fn scenario_resources(doc: &AutoCommit, outcome: OwnerOutcome) -> Vec<qos_actions::Resource> {
-    fn allow_cancellation(resources: &mut [qos_actions::Resource]) {
+fn scenario_resources(doc: &AutoCommit, outcome: OwnerOutcome) -> Vec<tilo_actions::Resource> {
+    fn allow_cancellation(resources: &mut [tilo_actions::Resource]) {
         for resource in resources {
             for action in &mut resource.actions {
                 if action.id == "insert-table" {
                     action.contract.execution =
-                        qos_actions::ExecutionMode::Background { cancellable: true };
-                    action.contract.result = qos_actions::ResultSpec::Job;
+                        tilo_actions::ExecutionMode::Background { cancellable: true };
+                    action.contract.result = tilo_actions::ResultSpec::Job;
                     assert!(action.contract.validate_declaration().is_empty());
                 }
             }
@@ -168,7 +168,7 @@ fn scenario_outcome(
         parent: None,
         attachment: None,
         reference: wait_for_owner.then(|| {
-            qos_reference::ResourceRef::whole(
+            tilo_reference::ResourceRef::whole(
                 "word-processor.document",
                 "word-processor.document",
                 "Owner document",
@@ -294,7 +294,7 @@ fn scenario_outcome(
                             owner_online = false;
                         } else {
                             let update = if outcome == OwnerOutcome::CancelAfterMutation {
-                                qos_actions::InvocationUpdate::Cancelled {
+                                tilo_actions::InvocationUpdate::Cancelled {
                                     invocation: update.invocation(),
                                     message: Some(
                                         "Owner stopped after changing the document".into(),

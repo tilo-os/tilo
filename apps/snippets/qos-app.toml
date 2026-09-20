@@ -8,7 +8,7 @@
 #     cargo build -p snippets -p pkg-cli -p install
 #     mkdir -p target/qpkg/snippets/bin
 #     cp target/debug/snippets target/qpkg/snippets/bin/snippets
-#     target/debug/qos-pkg pack --manifest apps/snippets/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/snippets/tilo-app.toml \
 #         --payload target/qpkg/snippets --output target/snippets.qpkg
 #     target/debug/qos-install install target/snippets.qpkg --allow-self-signed
 

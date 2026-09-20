@@ -144,7 +144,7 @@ impl Chooser {
     /// logging at startup so an operator knows before the beat which path
     /// this run will take.
     pub fn is_live(&self) -> bool {
-        self.enabled && self.provider.is_some() && qos_model_gateway::available()
+        self.enabled && self.provider.is_some() && tilo_model_gateway::available()
     }
 
     /// Decide what `rest` asks for, given the document it was written into.
@@ -160,7 +160,7 @@ impl Chooser {
             return fallback(Fallback::Disabled);
         }
         let answer = if let Some(provider) = &self.provider {
-            if !qos_model_gateway::available() {
+            if !tilo_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
             self.ask_provider(provider, rest, blocks)
@@ -203,7 +203,7 @@ impl Chooser {
             return fallback(Fallback::Disabled);
         }
         let answer = if let Some(provider) = &self.provider {
-            if !qos_model_gateway::available() {
+            if !tilo_model_gateway::available() {
                 return fallback(Fallback::NoKey);
             }
             self.ask_actions_provider(provider, rest, blocks, catalogue, most_steps)
@@ -387,7 +387,7 @@ fn post_provider(
     // reference. All profile lookup, credential resolution, and egress happen
     // at the per-user model gateway reached through a launcher-issued FD.
     let timeout = remaining().ok_or_else(|| AskError::Failed("the call timed out".into()))?;
-    qos_model_gateway::plan(
+    tilo_model_gateway::plan(
         &provider.selection.profile_id,
         &provider.selection.model.id,
         body.clone(),
@@ -638,8 +638,8 @@ fn first_chars(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use crate::surface::Offer;
-    use qos_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
-    use qos_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
+    use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
+    use tilo_actions::{ActionContract, ActionParam, ExecutionLocus, OperationKind, ParamType};
     use std::collections::BTreeMap;
 
     fn block(kind: &str, text: &str) -> Block {

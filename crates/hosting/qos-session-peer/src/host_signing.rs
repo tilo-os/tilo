@@ -32,7 +32,7 @@ pub(crate) struct HostSigning {
 }
 pub(crate) struct PendingSignature {
     route: RouteSpec,
-    certificate: qos_user_identity::DeviceCert,
+    certificate: tilo_user_identity::DeviceCert,
     mutation: DocumentMutation,
     started: response::Sender<std::time::Instant>,
     reply: response::Sender<Result<SignedOp, String>>,
@@ -43,7 +43,7 @@ pub(crate) struct PendingSignature {
 struct BoundSigner {
     service: HostSigning,
     route: RouteSpec,
-    certificate: qos_user_identity::DeviceCert,
+    certificate: tilo_user_identity::DeviceCert,
 }
 impl HostSigning {
     pub fn desktop_commands(&self, room: String) -> Arc<dyn qos_action_broker::services::DesktopCommands> {
@@ -71,7 +71,7 @@ impl HostSigning {
     pub fn bind(
         &self,
         route: RouteSpec,
-        certificate: qos_user_identity::DeviceCert,
+        certificate: tilo_user_identity::DeviceCert,
     ) -> Arc<dyn HostDocumentCommitter> {
         Arc::new(BoundSigner {
             service: self.clone(),

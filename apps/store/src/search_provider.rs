@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
-use qos_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionAddress, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
 use ui::search::{SearchCatalog, SearchPage, SearchProvider, SearchResult};
 

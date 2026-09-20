@@ -33,7 +33,7 @@ use photos::doc::PhotosDoc;
 use photos::model::{Edits, Rect01};
 use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
-use qos_actions::ResourceProvider;
+use tilo_actions::ResourceProvider;
 
 /// A laid-out app, ready to assert on.
 struct Harness {
@@ -581,7 +581,7 @@ fn save_does_not_default_to_overwriting_the_original() {
 /// listing them changes nothing.
 #[test]
 fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
-    use qos_actions::{ActionRegistry, flatten};
+    use tilo_actions::{ActionRegistry, flatten};
 
     let dir = tempfile::tempdir().unwrap();
     let (path, _) = staged(dir.path(), 400, 200);
@@ -622,7 +622,7 @@ fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
         .iter()
         .find(|a| a.id == "rotate-right")
         .expect("rotate-right is published");
-    let qos_actions::ActionInput::Immediate(encoded) = &spec.input else {
+    let tilo_actions::ActionInput::Immediate(encoded) = &spec.input else {
         panic!("rotate-right fires immediately");
     };
     registry
@@ -651,7 +651,7 @@ fn the_resource_surface_enumerates_the_open_photograph_and_acts_on_it() {
 /// the exported pixels against the original by identity rather than by size.
 #[test]
 fn a_caller_with_no_display_crops_by_address_and_gets_those_pixels() {
-    use qos_actions::{ActionInput, ActionRegistry};
+    use tilo_actions::{ActionInput, ActionRegistry};
 
     let dir = tempfile::tempdir().unwrap();
     let (path, original) = staged(dir.path(), 400, 400);

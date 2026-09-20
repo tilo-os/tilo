@@ -11,7 +11,7 @@
 #     cargo build -p word-processor -p pkg-cli -p install
 #     mkdir -p target/qpkg/word-processor/bin
 #     cp target/debug/word-processor target/qpkg/word-processor/bin/word-processor
-#     target/debug/qos-pkg pack --manifest apps/word-processor/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/word-processor/tilo-app.toml \
 #         --payload target/qpkg/word-processor --output target/word-processor.qpkg
 #     target/debug/qos-install install target/word-processor.qpkg --allow-self-signed
 

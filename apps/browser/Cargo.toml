@@ -7,7 +7,7 @@ license.workspace = true
 
 # The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]
-ignored = ["qos-actions"]
+ignored = ["tilo-actions"]
 
 [lib]
 name = "browser"
@@ -30,8 +30,8 @@ thin = ["dep:runtime-dylib"]
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the
 # `webview-adblock` feature provides filter-list compilation. The default
 # Chromium helper applies built-in network, cosmetic and scriptlet filtering.
-ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["webview-adblock"] }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock"] }
+tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 # Filter lists (EasyList/EasyPrivacy) are fetched on a background thread

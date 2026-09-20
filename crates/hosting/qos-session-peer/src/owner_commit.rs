@@ -138,7 +138,7 @@ impl PendingOwnerCommit {
         }
     }
     pub fn is_desktop(&self) -> bool { self.desktop_reply.is_some() }
-    pub fn apply_desktop(mut self, owner: &mut SessionOwner) -> Result<Option<qos_relay::peer_actions::DirectedAction>, String> {
+    pub fn apply_desktop(mut self, owner: &mut SessionOwner) -> Result<Option<tilo_relay::peer_actions::DirectedAction>, String> {
         use qos_peer_state::desktop_command::DesktopCommandError;
         self.start_execution();
         let result = self.health.check().map_err(DesktopCommandError::Uncertain)

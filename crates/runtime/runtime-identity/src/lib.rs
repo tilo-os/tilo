@@ -141,7 +141,7 @@ pub mod wire {
             avatar_color: [u8; 3],
             group_public_key: [u8; 32],
             signing_public_key: [u8; 32],
-            /// JSON-encoded root-signed `qos_user_identity::DeviceCert`.
+            /// JSON-encoded root-signed `tilo_user_identity::DeviceCert`.
             device_certificate: Option<Vec<u8>>,
             threshold: u16,
             total_shares: u16,

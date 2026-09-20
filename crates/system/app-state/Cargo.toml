@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+atomic-file = { path = "../atomic-file" }
 # Path resolution is NOT re-invented here: `package_id` and
 # `standalone_state_dir` come from the CLI SDK, which is also what
 # `cli::resolve_workspace_path` falls back to. One resolver, two callers.

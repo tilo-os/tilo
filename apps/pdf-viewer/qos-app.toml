@@ -1,0 +1,76 @@
+# PDF Viewer — qOS application manifest.
+#
+# The viewer does not edit, and annotations are the app's own state.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read on the document it was asked to open. Open-from-elsewhere goes
+# through the host file-chooser portal, which hands back a descriptor
+# rather than a path.
+#
+# Pack and install:
+#
+#     cargo build -p pdf-viewer -p pkg-cli -p install
+#     mkdir -p target/qpkg/pdf-viewer/bin
+#     cp target/debug/pdf-viewer target/qpkg/pdf-viewer/bin/pdf-viewer
+#     target/debug/qos-pkg pack --manifest apps/pdf-viewer/tilo-app.toml \
+#         --payload target/qpkg/pdf-viewer --output target/pdf-viewer.qpkg
+#     target/debug/qos-install install target/pdf-viewer.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.pdf-viewer"
+name     = "PDF Viewer"
+category = "Office"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/pdf-viewer"
+type            = "gui"
+splash-segments = ["bin/pdf-viewer[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "application/pdf",
+]
+ext  = [
+    "pdf",
+]

@@ -91,7 +91,7 @@ impl SearchState {
                     app_id: d.app_id.into(),
                     title: d.title.into(),
                     icon: None,
-                    action: qos_actions::ActionAddress::new(
+                    action: tilo_actions::ActionAddress::new(
                         "desktop:requests",
                         format!("open-{}", d.app_id),
                     ),

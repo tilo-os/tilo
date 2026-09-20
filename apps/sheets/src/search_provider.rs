@@ -152,8 +152,8 @@ impl SearchProvider for SheetSearchProvider {
 
     fn resolve_action_resource(
         &self,
-        address: &qos_actions::ActionAddress,
-    ) -> Option<qos_actions::Resource> {
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<tilo_actions::Resource> {
         let cell = self
             .cells
             .read()

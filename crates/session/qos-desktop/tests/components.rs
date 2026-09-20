@@ -39,7 +39,7 @@ impl ComponentContextSource for Host {
                 ),
             )),
             ui::permissions::UserId("author".into()),
-            qos_actions::ActionContext::default(),
+            tilo_actions::ActionContext::default(),
             target,
         )?;
         self.wakes.push(context.wake_handle());
@@ -279,7 +279,7 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
             .invoke_bound_action(
                 &ui::bound_dispatch::BoundActionAddress {
                     instance_id: instance,
-                    address: qos_actions::ActionAddress::new(resource, action),
+                    address: tilo_actions::ActionAddress::new(resource, action),
                 },
                 serde_json::json!({"value":value}).as_object().unwrap(),
             )

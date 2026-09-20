@@ -310,18 +310,18 @@ mod tests {
             Widget::resource(&app, &doc, &address.resource)
                 .expect("search address lazily resolves against the live app"),
         ];
-        let spec = qos_actions::door::resolve(&resources, &address)
+        let spec = tilo_actions::door::resolve(&resources, &address)
             .expect("search address resolves against the live resource tree");
         let encoded = match &spec.input {
-            qos_actions::ActionInput::Immediate(encoded) => encoded,
-            qos_actions::ActionInput::Prompted { .. } => panic!("open takes no argument"),
+            tilo_actions::ActionInput::Immediate(encoded) => encoded,
+            tilo_actions::ActionInput::Prompted { .. } => panic!("open takes no argument"),
         };
         assert_ne!(
             app.open_id_for_test(),
             Some(id),
             "precondition: the selected search hit is not already open"
         );
-        assert_eq!(spec.kind, qos_actions::OperationKind::View);
+        assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
@@ -359,14 +359,14 @@ mod tests {
             Widget::resource(&app, &doc, &address.resource)
                 .expect("tag address lazily resolves against the live app"),
         ];
-        let spec = qos_actions::door::resolve(&resources, &address)
+        let spec = tilo_actions::door::resolve(&resources, &address)
             .expect("tag address resolves against the exported tree");
         let encoded = match &spec.input {
-            qos_actions::ActionInput::Immediate(encoded) => encoded,
-            qos_actions::ActionInput::Prompted { .. } => panic!("reveal takes no argument"),
+            tilo_actions::ActionInput::Immediate(encoded) => encoded,
+            tilo_actions::ActionInput::Prompted { .. } => panic!("reveal takes no argument"),
         };
 
-        assert_eq!(spec.kind, qos_actions::OperationKind::View);
+        assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,

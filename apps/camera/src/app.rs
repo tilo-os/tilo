@@ -17,7 +17,7 @@
 //! source so screenshots and tests never touch the disk or a device.
 
 #[cfg(test)]
-use qos_actions::EncodedAction;
+use tilo_actions::EncodedAction;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -252,9 +252,9 @@ pub struct CameraApp {
     scan_generation: u64,
     pending_scan: Option<(String, u64)>,
     worker: crate::worker::CameraWorker,
-    pending_capture: Option<(qos_actions::InvocationId, u64)>,
-    pending_video: Option<(qos_actions::InvocationId, u64)>,
-    completed_operations: HashMap<qos_actions::InvocationId, qos_actions::InvocationUpdate>,
+    pending_capture: Option<(tilo_actions::InvocationId, u64)>,
+    pending_video: Option<(tilo_actions::InvocationId, u64)>,
+    completed_operations: HashMap<tilo_actions::InvocationId, tilo_actions::InvocationUpdate>,
     camera_issue: Option<CameraIssue>,
     selected_camera: Option<String>,
     camera_chooser_open: bool,
@@ -436,7 +436,7 @@ impl CameraApp {
     /// bounded finalizer. `sync` publishes the resulting canonical capture.
     fn stop_recording(
         &mut self,
-        invocation: Option<qos_actions::InvocationId>,
+        invocation: Option<tilo_actions::InvocationId>,
     ) -> Result<(), String> {
         if self.recording.is_none() {
             return Err("No recording is in progress".into());
@@ -854,7 +854,7 @@ impl CameraApp {
                 doc,
                 crate::actions::CAMERA_ACTION_TYPE,
                 action,
-                qos_actions::ActionContext::for_action("org.qos.Camera", "Camera", action),
+                tilo_actions::ActionContext::for_action("org.qos.Camera", "Camera", action),
             )
             .map_err(|error| error.to_string())
     }
@@ -903,7 +903,7 @@ impl CameraApp {
         &self,
         doc: &AutoCommit,
         id: &str,
-    ) -> Option<qos_actions::Resource> {
+    ) -> Option<tilo_actions::Resource> {
         if matches!(id, "camera.gallery" | "camera.settings" | "camera") {
             return crate::actions::resolve_resource(&self.camera_resource_ctx(), doc, id);
         }
@@ -1224,7 +1224,7 @@ impl CameraApp {
 
     /// Take a photo: write the current frame to disk (live) or append an
     /// in-memory sample (hermetic).
-    fn capture(&mut self, invocation: Option<qos_actions::InvocationId>) -> Result<(), String> {
+    fn capture(&mut self, invocation: Option<tilo_actions::InvocationId>) -> Result<(), String> {
         match &self.storage {
             Storage::Sample => {
                 let id = format!(
@@ -1683,14 +1683,14 @@ impl Widget for CameraApp {
 
     /// Publish the open gallery + its shots so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
@@ -1699,13 +1699,13 @@ impl Widget for CameraApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -1717,14 +1717,14 @@ impl Widget for CameraApp {
 
     fn start_resource_operation_with_document(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -1768,7 +1768,7 @@ impl Widget for CameraApp {
                         )]
                     });
                 return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    qos_actions::ActionOutput {
+                    tilo_actions::ActionOutput {
                         value: Some(serde_json::Value::String(media_id)),
                         resources: resource,
                     },
@@ -1777,7 +1777,7 @@ impl Widget for CameraApp {
             operation => self.perform_resource_operation(operation)?,
         }
         Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            qos_actions::ActionOutput::default(),
+            tilo_actions::ActionOutput::default(),
         )))
     }
 
@@ -1790,18 +1790,18 @@ impl Widget for CameraApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested
             && self
                 .pending_capture
                 .is_some_and(|(pending, _)| pending == invocation)
         {
             self.pending_capture = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("photo save cancelled".into()),
             });
@@ -1812,7 +1812,7 @@ impl Widget for CameraApp {
                 .is_some_and(|(pending, _)| pending == invocation)
         {
             self.pending_video = None;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some("video finalization cancelled".into()),
             });
@@ -1865,9 +1865,9 @@ impl Widget for CameraApp {
                         if let Some(invocation) = terminal {
                             self.completed_operations.insert(
                                 invocation,
-                                qos_actions::InvocationUpdate::Failed {
+                                tilo_actions::InvocationUpdate::Failed {
                                     invocation,
-                                    error: qos_actions::ActionFailure {
+                                    error: tilo_actions::ActionFailure {
                                         code: "camera.register_refused".into(),
                                         message: error,
                                         details: None,
@@ -1878,7 +1878,7 @@ impl Widget for CameraApp {
                         }
                         continue;
                     }
-                    let output = qos_actions::ActionOutput {
+                    let output = tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({
                             "media_id": saved.media_id.clone(),
                             "capture_id": saved.name.clone(),
@@ -1891,7 +1891,7 @@ impl Widget for CameraApp {
                     if let Some(invocation) = terminal {
                         self.completed_operations.insert(
                             invocation,
-                            qos_actions::InvocationUpdate::Succeeded { invocation, output },
+                            tilo_actions::InvocationUpdate::Succeeded { invocation, output },
                         );
                     }
                 }
@@ -1900,9 +1900,9 @@ impl Widget for CameraApp {
                     if let Some(invocation) = terminal {
                         self.completed_operations.insert(
                             invocation,
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "camera.save_failed".into(),
                                     message: error,
                                     details: None,
@@ -1953,9 +1953,9 @@ impl Widget for CameraApp {
                         if let Some(invocation) = terminal {
                             self.completed_operations.insert(
                                 invocation,
-                                qos_actions::InvocationUpdate::Failed {
+                                tilo_actions::InvocationUpdate::Failed {
                                     invocation,
-                                    error: qos_actions::ActionFailure {
+                                    error: tilo_actions::ActionFailure {
                                         code: "camera.register_refused".into(),
                                         message: error,
                                         details: None,
@@ -1966,7 +1966,7 @@ impl Widget for CameraApp {
                         }
                         continue;
                     }
-                    let output = qos_actions::ActionOutput {
+                    let output = tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({
                             "media_id": saved.media_id.clone(),
                             "capture_id": saved.name.clone(),
@@ -1979,7 +1979,7 @@ impl Widget for CameraApp {
                     if let Some(invocation) = terminal {
                         self.completed_operations.insert(
                             invocation,
-                            qos_actions::InvocationUpdate::Succeeded { invocation, output },
+                            tilo_actions::InvocationUpdate::Succeeded { invocation, output },
                         );
                     }
                 }
@@ -1988,9 +1988,9 @@ impl Widget for CameraApp {
                     if let Some(invocation) = terminal {
                         self.completed_operations.insert(
                             invocation,
-                            qos_actions::InvocationUpdate::Failed {
+                            tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "camera.video_failed".into(),
                                     message: error,
                                     details: None,
@@ -6702,8 +6702,8 @@ mod tests {
 
         let started = Widget::start_resource_operation_with_document(
             &mut app,
-            qos_actions::InvocationId::new(),
-            qos_actions::OperationKind::Effect,
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
             crate::actions::CAMERA_OPERATION_TYPE,
             &payload,
             &mut doc,
@@ -6733,13 +6733,13 @@ mod tests {
         let root = automerge::ROOT;
         sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
         assert!(app.push_camera_frame(frame::viewfinder(1, 64, 48)));
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture).unwrap();
         assert!(matches!(
             Widget::start_resource_operation_with_document(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::CAMERA_OPERATION_TYPE,
                 &payload,
                 &mut doc,
@@ -6750,7 +6750,7 @@ mod tests {
         ));
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, true, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         for _ in 0..150 {
             app.sync(&mut doc, &root);
@@ -6784,14 +6784,14 @@ mod tests {
             assert!(app.push_camera_frame(frame::viewfinder(seed, 128, 96)));
         }
 
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::CameraOperation::ToggleRecording)
             .expect("video operation payload");
         assert!(matches!(
             Widget::start_resource_operation_with_document(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::CAMERA_OPERATION_TYPE,
                 &payload,
                 &mut doc,
@@ -6802,7 +6802,7 @@ mod tests {
         ));
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, true, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Cancelled { .. })
+            Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
         for _ in 0..200 {
             app.sync(&mut doc, &root);
@@ -6837,14 +6837,14 @@ mod tests {
                 .expect("hostile capture row");
         }
         assert!(app.push_camera_frame(frame::viewfinder(1, 64, 48)));
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture)
             .expect("capture operation payload");
         assert!(matches!(
             Widget::start_resource_operation_with_document(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::CAMERA_OPERATION_TYPE,
                 &payload,
                 &mut doc,
@@ -6858,7 +6858,7 @@ mod tests {
         });
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root),
-            Some(qos_actions::InvocationUpdate::Failed { error, .. })
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "camera.register_refused"
         ));
         assert!(std::fs::read_dir(&dir).map_or(true, |entries| {

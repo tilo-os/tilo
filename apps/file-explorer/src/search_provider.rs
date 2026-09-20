@@ -16,7 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use sha2::{Digest as _, Sha256};
 
-use ui::qos_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
+use ui::tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
@@ -657,7 +657,7 @@ mod tests {
             .resolve_action_resource(&address)
             .expect("the omitted account is materialized exactly");
         let resources = [resource];
-        let spec = ui::qos_actions::door::resolve(&resources, &address)
+        let spec = ui::tilo_actions::door::resolve(&resources, &address)
             .expect("the lazy action matches the search address");
         assert_eq!(spec.id, REMOTE_ACCOUNT_OPEN_ACTION);
     }
@@ -868,13 +868,13 @@ mod tests {
         let doc = AutoCommit::new();
         let address = hit.action_address().expect("canonical action address");
         let resources = app.resources(&doc);
-        let spec = ui::qos_actions::door::resolve(&resources, &address)
+        let spec = ui::tilo_actions::door::resolve(&resources, &address)
             .expect("search address is exported");
-        assert_eq!(spec.kind, ui::qos_actions::OperationKind::View);
-        assert_eq!(spec.contract, ui::qos_actions::ActionContract::view());
+        assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
+        assert_eq!(spec.contract, ui::tilo_actions::ActionContract::view());
         let kind = spec.kind;
         let encoded =
-            ui::qos_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
+            ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
                 .expect("search address is exported");
         assert!(
             app.invoke_resource_operation(kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)

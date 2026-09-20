@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
+atomic-file = { path = "../../system/atomic-file" }
 pkg = { path = "../pkg" }
 
 # Content-addressed blob transport — the SAME stack the FUSE filesystem

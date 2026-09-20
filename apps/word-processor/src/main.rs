@@ -57,7 +57,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
 
-use qos_actions::Action;
+use tilo_actions::Action;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::PermissionContext;

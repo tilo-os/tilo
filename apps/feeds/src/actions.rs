@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider,
     RetryPolicy,
@@ -890,7 +890,7 @@ mod tests {
     use super::*;
     use crate::app::FeedsApp;
     use crate::model::Filter;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -960,13 +960,13 @@ mod tests {
                 <= MAX_CONTEXT_ARTICLE_RESOURCES
         );
         assert!(
-            qos_actions::door::resolve(&page, &open_article_address(late)).is_none(),
+            tilo_actions::door::resolve(&page, &open_article_address(late)).is_none(),
             "the late article is intentionally outside the contextual page"
         );
         let exact = resolve_resource(&ctx, &article_resource_id(late))
             .expect("the omitted article resolves lazily");
         assert!(
-            qos_actions::door::resolve(&[exact], &open_article_address(late)).is_some(),
+            tilo_actions::door::resolve(&[exact], &open_article_address(late)).is_some(),
             "lazy resolution exports the exact canonical open action"
         );
         assert!(
@@ -1029,9 +1029,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             refresh.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: false }
+            tilo_actions::ExecutionMode::Background { cancellable: false }
         );
-        assert_eq!(refresh.contract.result, qos_actions::ResultSpec::None);
+        assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::None);
         assert_eq!(refresh.kind, OperationKind::Effect);
 
         let folder = reader
@@ -1076,7 +1076,7 @@ mod tests {
                 .unwrap()
                 .contract
                 .risk,
-            qos_actions::RiskLevel::Destructive
+            tilo_actions::RiskLevel::Destructive
         );
 
         let article = feed
@@ -1114,7 +1114,7 @@ mod tests {
 
         // The full flattened tree exports every action — the palette's Actions
         // group is display-capped, so reachability is asserted on the flatten.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -1156,7 +1156,7 @@ mod tests {
             .decode(&encoded)
             .expect("prompt result decodes through the Feeds registry");
         let mut transport = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
             .expect("canonical prompt result applies deterministically");
         assert!(
             FeedsDoc::load(&doc)
@@ -1179,7 +1179,7 @@ mod tests {
         let decoded = registry().decode(&encoded).expect("prompt still decodes");
         let before = FeedsDoc::load(&doc).feeds.len();
         let mut transport = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut transport)
             .expect("blank action is harmless");
         assert_eq!(FeedsDoc::load(&doc).feeds.len(), before);
     }
@@ -1201,7 +1201,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -1257,8 +1257,8 @@ mod tests {
         let action = set_starred_action(article, true);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -1273,8 +1273,8 @@ mod tests {
 
         let tags = vec!["design".to_string(), "later".to_string()];
         let action = set_article_tags_action(article, &tags);
-        let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-        qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         assert_eq!(
             a.get_heads(),
             b.get_heads(),
@@ -1304,8 +1304,8 @@ mod tests {
             set_read_settings_action(settings),
             set_folder_collapsed_action(folder, true),
         ] {
-            let envelope = qos_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-            qos_actions::replay(&mut b, &envelope, &registry()).unwrap();
+            let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+            tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
         }
 
         assert_eq!(a.get_heads(), b.get_heads(), "shared preferences converge");
@@ -1327,8 +1327,8 @@ mod tests {
         let action = add_subscription_action(id, "https://blog.rust-lang.org/feed.xml", None, 7);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "create replayed identically");
         let feed = FeedsDoc::load(&b)
@@ -1405,7 +1405,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let loaded = FeedsDoc::load(&doc);
         assert!(loaded.folder(folder).is_none(), "the folder is gone");

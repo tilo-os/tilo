@@ -160,13 +160,13 @@ impl ui::widget::Widget for LiveStore {
         self.inner.local_resource_operation_handlers()
     }
 
-    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::qos_actions::Resource> {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
         self.inner.resources(doc)
     }
 
     fn invoke_resource_operation(
         &mut self,
-        kind: ui::qos_actions::OperationKind,
+        kind: ui::tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &automerge::AutoCommit,
@@ -178,8 +178,8 @@ impl ui::widget::Widget for LiveStore {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: ui::qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: ui::tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &automerge::AutoCommit,
@@ -191,11 +191,11 @@ impl ui::widget::Widget for LiveStore {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         doc: &automerge::AutoCommit,
         path: &automerge::ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         self.inner
             .poll_resource_operation(invocation, cancellation_requested, doc, path)
     }
@@ -422,7 +422,7 @@ impl ui::widget::Widget for LiveStore {
     fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {
         self.inner.children_mut()
     }
-    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.inner.take_control_invocation()
     }
     fn name(&self) -> &'static str {

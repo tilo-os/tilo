@@ -9,7 +9,7 @@
 #     cargo build -p vpn -p pkg-cli -p install
 #     mkdir -p target/qpkg/vpn/bin
 #     cp target/debug/vpn target/qpkg/vpn/bin/vpn
-#     target/debug/qos-pkg pack --manifest apps/vpn/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/vpn/tilo-app.toml \
 #         --payload target/qpkg/vpn --output target/vpn.qpkg
 #     target/debug/qos-install install target/vpn.qpkg --allow-self-signed
 

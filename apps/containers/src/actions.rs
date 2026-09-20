@@ -2,11 +2,11 @@
 //!
 //! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an [`Action`](qos_actions::Action) — a serializable value that
+//! becomes an [`Action`](tilo_actions::Action) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
 //! app code. Container lifecycle commands are therefore exported as
-//! [`OperationKind::Effect`](qos_actions::OperationKind::Effect) operations,
+//! [`OperationKind::Effect`](tilo_actions::OperationKind::Effect) operations,
 //! while this module verifies they never masquerade as document mutations.
 //!
 //! ## What Containers actually is
@@ -21,7 +21,7 @@
 //! operation (see [`crate::podman`] and the `apply_*` / `*_image` / `*_volume`
 //! methods on [`crate::app::ContainersApp`]). It mutates the podman daemon, not a
 //! shared CRDT, so it is exported as an `Effect`: lifecycle buttons emit inert
-//! [`ControlInvocation`](qos_actions::ControlInvocation)s and the host resolves
+//! [`ControlInvocation`](tilo_actions::ControlInvocation)s and the host resolves
 //! current permission/availability, records the outcome in activity history,
 //! then calls the widget's operation handler. No container control shells out
 //! before that authority boundary.
@@ -325,7 +325,7 @@ mod tests {
             .children
             .iter()
             .flat_map(|resource| resource.actions.iter())
-            .filter(|action| action.kind == ui::qos_actions::OperationKind::Effect)
+            .filter(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
             .collect();
         assert!(
             actions
@@ -334,7 +334,7 @@ mod tests {
             "container publishes the lifecycle action appropriate to its state",
         );
         assert!(actions.iter().all(|action| {
-            action.kind == ui::qos_actions::OperationKind::Effect
+            action.kind == ui::tilo_actions::OperationKind::Effect
                 && !action.contract.availability.is_available()
         }));
         assert!(

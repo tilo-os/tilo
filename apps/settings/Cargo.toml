@@ -26,7 +26,7 @@ desktop-policy = { path = "../../crates/system/desktop-policy" }
 launcher = { path = "../../crates/packaging/launcher" }
 # The same freedesktop scanner the shell uses for host and Flatpak launches;
 # notification rules must be keyed by those canonical desktop identities.
-desktop-entry = { package = "qos-desktop-entry", path = "../../crates/system/desktop-entry" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
 # The one capability vocabulary the compositor persists. Depending on this
 # lightweight *types* crate (not the compositor) lets the Permissions pane
 # deserialise the real per-workspace grants the shell writes to
@@ -35,8 +35,8 @@ desktop-entry = { package = "qos-desktop-entry", path = "../../crates/system/des
 collab-types = { path = "../../crates/collab/collab-types" }
 # The qOS action model: every setting mutation is a serializable, replayable
 # `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
-qos-actions = { path = "../../crates/collab/actions" }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared shell-out helpers for the interactive panes (display, audio,
 # network, bluetooth). The crate lives at the workspace root so both
 # `shell` and the Settings app drive the same hardware bindings without
@@ -45,12 +45,12 @@ os-actions = { path = "../../crates/system/os-actions" }
 # Public identity summaries + active selector. The secret share never enters
 # Settings state; switching writes only the non-secret active id.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-qos-user-identity = { path = "../../crates/identity/qos-user-identity" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 # Device role, workspace residency and server relay policy use the same types
-# the real qos-relay daemon loads; Settings never keeps a shadow sync model.
-qos-relay = { path = "../../crates/hosting/qos-relay" }
-qos-bluez = { path = "../../crates/system/qos-bluez" }
+# the real tilo-relay daemon loads; Settings never keeps a shadow sync model.
+tilo-relay = { path = "../../crates/hosting/tilo-relay" }
+tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
@@ -61,11 +61,11 @@ accounts = { path = "../../crates/system/accounts" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 # Settings uses this only over the launcher-passed service FD to put/remove a
 # key; no vault file or provider network capability is linked into the app.
-qos-model-gateway = { path = "../../crates/agent/model-gateway" }
+tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives real audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
-media = { path = "../../crates/media" }
+media = { path = "../../crates/media/core" }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.

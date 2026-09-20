@@ -12,7 +12,7 @@
 #     cargo build -p disks -p pkg-cli -p install
 #     mkdir -p target/qpkg/disks/bin
 #     cp target/debug/disks target/qpkg/disks/bin/disks
-#     target/debug/qos-pkg pack --manifest apps/disks/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/disks/tilo-app.toml \
 #         --payload target/qpkg/disks --output target/disks.qpkg
 #     target/debug/qos-install install target/disks.qpkg --allow-self-signed
 

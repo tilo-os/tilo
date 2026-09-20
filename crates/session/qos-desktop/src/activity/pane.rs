@@ -1328,7 +1328,7 @@ impl RoomActivityPane {
             LensSelection::WorkGroup(group) => filter.work_groups.push(group.clone()),
             LensSelection::Facet(key, value) => filter
                 .facets
-                .push(ui::qos_actions::ActionFacet::new(key, value)),
+                .push(ui::tilo_actions::ActionFacet::new(key, value)),
             LensSelection::Unclassified => {
                 filter.classification = HistoryClassification::Unclassified;
             }
@@ -1606,13 +1606,13 @@ impl RoomActivityPane {
                         let mut context =
                             e.context
                                 .take()
-                                .unwrap_or_else(|| ui::qos_actions::ActionContext {
+                                .unwrap_or_else(|| ui::tilo_actions::ActionContext {
                                     action_label: e.summary.clone(),
-                                    ..ui::qos_actions::ActionContext::default()
+                                    ..ui::tilo_actions::ActionContext::default()
                                 });
                         context
                             .facets
-                            .push(ui::qos_actions::ActionFacet::new("workspace", label));
+                            .push(ui::tilo_actions::ActionFacet::new("workspace", label));
                         e.context = Some(context);
                     }
                     rows.push(e);
@@ -1738,14 +1738,14 @@ impl RoomActivityPane {
                         let label = labels.join(" + ");
                         projected.summary = format!("{label} \u{00b7} {}", projected.summary);
                         let mut context = projected.context.take().unwrap_or_else(|| {
-                            ui::qos_actions::ActionContext {
+                            ui::tilo_actions::ActionContext {
                                 action_label: projected.summary.clone(),
-                                ..ui::qos_actions::ActionContext::default()
+                                ..ui::tilo_actions::ActionContext::default()
                             }
                         });
                         context
                             .facets
-                            .push(ui::qos_actions::ActionFacet::new("workspace", label));
+                            .push(ui::tilo_actions::ActionFacet::new("workspace", label));
                         projected.context = Some(context);
                     }
                     self.projected_origins.insert(projected.id, row.id.clone());

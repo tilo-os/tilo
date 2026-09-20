@@ -13,7 +13,7 @@
 #     cargo build -p chat -p pkg-cli -p install
 #     mkdir -p target/qpkg/chat/bin
 #     cp target/debug/chat target/qpkg/chat/bin/chat
-#     target/debug/qos-pkg pack --manifest apps/chat/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/chat/tilo-app.toml \
 #         --payload target/qpkg/chat --output target/chat.qpkg
 #     target/debug/qos-install install target/chat.qpkg --allow-self-signed
 

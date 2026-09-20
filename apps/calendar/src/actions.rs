@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use ui::widget::BlockEditOp;
 use uuid::Uuid;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
     RetryPolicy,
@@ -143,7 +143,7 @@ fn calendar_operation(
         | CalendarOperation::ShowAgenda => spec.retry_policy(RetryPolicy::Idempotent),
         CalendarOperation::Sync => spec
             .retry_policy(RetryPolicy::Idempotent)
-            .execution(qos_actions::ExecutionMode::Background { cancellable: false }),
+            .execution(tilo_actions::ExecutionMode::Background { cancellable: false }),
         CalendarOperation::ExportIcs | CalendarOperation::ImportIcs => {
             spec.retry_policy(RetryPolicy::AtMostOnce)
         }
@@ -174,7 +174,7 @@ fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resour
 fn encode_operation(operation: &CalendarOperation) -> EncodedAction {
     EncodedAction::encode_operation(CALENDAR_OPERATION_TYPE, operation).unwrap_or_else(|_| {
         EncodedAction {
-            type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
             payload: b"Calendar operation could not be encoded".to_vec(),
         }
     })
@@ -505,9 +505,9 @@ pub enum NoteOwner {
 }
 
 /// Durable, browseable history metadata for a calendar mutation.
-pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
+pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
     let mut context =
-        qos_actions::ActionContext::for_action("org.qos.Calendar", "Calendar", action);
+        tilo_actions::ActionContext::for_action("org.qos.Calendar", "Calendar", action);
     let (label, id, kind, title) = match action {
         CalendarAction::UpsertProject(project) => (
             "Update project",
@@ -574,7 +574,7 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
         ),
     };
     context.action_label = label.to_string();
-    context.resource = Some(qos_actions::ActionResource {
+    context.resource = Some(tilo_actions::ActionResource {
         id: if kind == "calendar.calendar" {
             kind.to_string()
         } else {
@@ -1079,7 +1079,7 @@ pub struct CalendarResourceCtx {
 /// a malformed agent request into a no-op document action.
 fn invalid_arguments(reason: impl Into<String>) -> EncodedAction {
     EncodedAction {
-        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
         payload: reason.into().into_bytes(),
     }
 }
@@ -2141,7 +2141,7 @@ mod tests {
     use super::*;
     use crate::app::CalendarApp;
     use automerge::ROOT;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -2232,7 +2232,7 @@ mod tests {
         // toggle/delete that sort after the events. The palette's Actions group
         // is display-capped, so reachability is asserted on the flatten and only
         // the leading rows on the palette itself.
-        let flat: Vec<&str> = qos_actions::flatten(&resources)
+        let flat: Vec<&str> = tilo_actions::flatten(&resources)
             .iter()
             .map(|f| f.action.label.as_str())
             .collect();
@@ -2396,7 +2396,7 @@ mod tests {
         assert!(
             all_hits.iter().all(|hit| hit
                 .action_address()
-                .is_some_and(|address| qos_actions::door::resolve(&resources, &address).is_some())),
+                .is_some_and(|address| tilo_actions::door::resolve(&resources, &address).is_some())),
             "every event, task and subtask hit resolves in the live resource tree"
         );
 
@@ -2499,7 +2499,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert_eq!(
@@ -2557,9 +2557,9 @@ mod tests {
         let decoded = registry().decode(&encoded).expect("calendar note action");
         let mut transport = LocalTransport::new();
         let envelope =
-            qos_actions::dispatch(&mut author, decoded.as_ref(), encoded, &mut transport)
+            tilo_actions::dispatch(&mut author, decoded.as_ref(), encoded, &mut transport)
                 .expect("note action dispatches");
-        qos_actions::replay(&mut peer, envelope.envelope(), &registry())
+        tilo_actions::replay(&mut peer, envelope.envelope(), &registry())
             .expect("note action replays");
 
         assert_eq!(
@@ -2600,8 +2600,8 @@ mod tests {
         let action = set_task_done_action(task.id.to_string(), true);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -2630,8 +2630,8 @@ mod tests {
         let action = upsert_event_action(&ev);
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "edit replayed identically");
         assert_eq!(
@@ -2686,7 +2686,7 @@ mod tests {
         let blank = prompted_encode(edit_spec, "   ");
         assert_eq!(
             blank.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "rename refuses a whitespace-only title"
         );
     }
@@ -2780,7 +2780,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Coffee with Dana");
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let model = CalDoc::read_model(&doc);
         assert_eq!(model.events.len(), before + 1, "the action added an event");
@@ -2813,12 +2813,12 @@ mod tests {
         let encoded = location
             .build_args([(
                 "location".to_string(),
-                qos_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
+                tilo_actions::ArgValue::Text("Studio 3 · https://meet.example".to_string()),
             )])
             .expect("well-typed location request");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("location action dispatches");
         assert_eq!(
             CalDoc::read_model(&doc).event(id).expect("event").location,
@@ -2834,7 +2834,7 @@ mod tests {
             repeat
                 .build_args([(
                     "repeat".to_string(),
-                    qos_actions::ArgValue::Text("every-other-tuesday".to_string()),
+                    tilo_actions::ArgValue::Text("every-other-tuesday".to_string()),
                 )])
                 .is_err(),
             "the declared choices reject an invented recurrence rather than silently defaulting"
@@ -2842,11 +2842,11 @@ mod tests {
         let encoded = repeat
             .build_args([(
                 "repeat".to_string(),
-                qos_actions::ArgValue::Text("weekly".to_string()),
+                tilo_actions::ArgValue::Text("weekly".to_string()),
             )])
             .expect("declared recurrence is accepted");
         let decoded = registry().decode(&encoded).expect("calendar action");
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("repeat action dispatches");
         let updated = CalDoc::read_model(&doc).event(id).expect("event").clone();
         assert_eq!(updated.recurrence, Recurrence::Weekly);
@@ -2869,7 +2869,7 @@ mod tests {
         let encoded = prompted_encode(spec, "Book dentist appointment");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("new task dispatches");
         let model = CalDoc::read_model(&doc);
         assert_eq!(model.tasks.len(), before + 1);
@@ -2882,7 +2882,7 @@ mod tests {
         let blank = prompted_encode(spec, "\t ");
         assert_eq!(
             blank.type_id,
-            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
             "new task refuses a whitespace-only title"
         );
     }
@@ -2933,12 +2933,12 @@ mod tests {
         let encoded = rename
             .build_args([(
                 "name".to_string(),
-                qos_actions::ArgValue::Text("Critical path".to_string()),
+                tilo_actions::ArgValue::Text("Critical path".to_string()),
             )])
             .expect("typed project rename");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("project rename dispatches");
         assert_eq!(
             CalDoc::read_model(&doc).project(id).expect("project").name,
@@ -3026,12 +3026,12 @@ mod tests {
         let encoded = priority
             .build_args([(
                 "priority".to_string(),
-                qos_actions::ArgValue::Text("p1".to_string()),
+                tilo_actions::ArgValue::Text("p1".to_string()),
             )])
             .expect("declared priority is accepted");
         let decoded = registry().decode(&encoded).expect("calendar action");
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
             .expect("priority action dispatches");
         let changed = CalDoc::read_model(&doc).task(id).expect("task").clone();
         assert_eq!(changed.priority, Priority::High);
@@ -3080,8 +3080,8 @@ mod tests {
             tasks: Vec::new(),
         };
         let encoded = encode(&action);
-        let envelope = qos_actions::apply_local(&mut a, &action, encoded).expect("apply import");
-        qos_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
+        let envelope = tilo_actions::apply_local(&mut a, &action, encoded).expect("apply import");
+        tilo_actions::replay(&mut b, &envelope, &registry()).expect("replay import");
         assert_eq!(
             a.get_heads(),
             b.get_heads(),

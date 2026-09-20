@@ -10,7 +10,7 @@
 #     cargo build -p monitor -p pkg-cli -p install
 #     mkdir -p target/qpkg/monitor/bin
 #     cp target/debug/monitor target/qpkg/monitor/bin/monitor
-#     target/debug/qos-pkg pack --manifest apps/monitor/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/monitor/tilo-app.toml \
 #         --payload target/qpkg/monitor --output target/monitor.qpkg
 #     target/debug/qos-install install target/monitor.qpkg --allow-self-signed
 

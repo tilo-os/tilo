@@ -3,11 +3,11 @@ use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use qos_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
-use qos_relay::{
+use tilo_relay::{
     RelayClient,
     coedit::{Inbound, RelayCoeditSession},
 };
-use qos_user_identity::{
+use tilo_user_identity::{
     DeviceCert, DirectoryUpdate, RevocationEntry, RevocationList, WorkspaceDirectory,
 };
 use serde::Deserialize;
@@ -152,7 +152,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
     {
         return Err(error("enrollment key/root binding mismatch"));
     }
-    let now = qos_relay::clock::now_ns();
+    let now = tilo_relay::clock::now_ns();
     let mut revoked = RevocationList::new();
     for entry in config.revocations {
         if entry.user_public_key != config.root_public_key {
@@ -160,8 +160,8 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         }
         revoked.insert(entry).map_err(error)?;
     }
-    qos_user_identity::verify_device_cert_at(&config.certificate, now).map_err(error)?;
-    qos_user_identity::verify_device_cert_at(&config.host_certificate, now).map_err(error)?;
+    tilo_user_identity::verify_device_cert_at(&config.certificate, now).map_err(error)?;
+    tilo_user_identity::verify_device_cert_at(&config.host_certificate, now).map_err(error)?;
     if revoked.is_revoked(&device) || revoked.is_revoked(&config.host_certificate.device_public_key)
     {
         return Err(error("enrolled device revoked"));
@@ -171,7 +171,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         .workspace_id
         .parse::<u64>()
         .map_err(error)?;
-    if qos_relay::room_workspace_id(&config.bootstrap.room).map_err(error)? != workspace {
+    if tilo_relay::room_workspace_id(&config.bootstrap.room).map_err(error)? != workspace {
         return Err(error("workspace room binding mismatch"));
     }
     let mut directory = WorkspaceDirectory::new(config.root_public_key, device);
@@ -244,7 +244,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
     .await;
     // Only the typed TLS ALPN refusal permits v1. Auth and policy failures do not.
     let (connected, action_v2) = match connected {
-        Err(qos_relay::client::ClientError::UnsupportedProtocol) => (RelayClient::connect_to_enrolled_home_peer(
+        Err(tilo_relay::client::ClientError::UnsupportedProtocol) => (RelayClient::connect_to_enrolled_home_peer(
             endpoint.clone(), config.relay_address, config.root_public_key,
             config.host_certificate.device_public_key, config.certificate.clone(),key.clone(),revoked,
         ).await, false),
@@ -299,8 +299,8 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                 // Delivered is attested by the same mutually authenticated relay.
                 // Current membership/certificate validity is rechecked for every response.
                 if action_context(&peer).is_ok() {
-                    if matches!(&event, qos_relay::transport_v2::EnvelopeV2::Delivered { action, .. }
-                        if matches!(action.message, qos_relay::peer_actions::ActionMessage::CommittedDesktop { .. })) {
+                    if matches!(&event, tilo_relay::transport_v2::EnvelopeV2::Delivered { action, .. }
+                        if matches!(action.message, tilo_relay::peer_actions::ActionMessage::CommittedDesktop { .. })) {
                         // Flush local edits before cloning admission, just as on
                         // the retained channel. A complete batch installs once.
                         if let Err(error) = crate::browser::prepare_peer_remote(peer.id) {
@@ -314,8 +314,8 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                                 if let Err(e) = install_candidate(&peer, candidate) {
                                     *peer.admission_failure.borrow_mut() = Some(e.clone());
                                     report(&peer, "incomplete", Some(e));
-                                } else if let qos_relay::transport_v2::EnvelopeV2::Delivered { action, .. } = &event {
-                                    if let qos_relay::peer_actions::ActionMessage::CommittedDesktop { invocation, opened, .. } = &action.message {
+                                } else if let tilo_relay::transport_v2::EnvelopeV2::Delivered { action, .. } = &event {
+                                    if let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { invocation, opened, .. } = &action.message {
                                         let notice = serde_json::json!({"committedDesktop":{"invocation":invocation,"room":action.room,"opened":opened}}).to_string();
                                         let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str(&notice));
                                     }
@@ -780,7 +780,7 @@ pub fn peer_action_context(id:u32)->Result<String,JsValue>{
 }
 #[wasm_bindgen]
 pub fn peer_action_request(id:u32,message:String)->Result<String,JsValue>{
-    use qos_relay::peer_actions::{ActionMessage,DirectedAction};
+    use tilo_relay::peer_actions::{ActionMessage,DirectedAction};
     let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))?;
     action_context(&peer).map_err(error)?;
     let message:ActionMessage=serde_json::from_str(&message).map_err(error)?;

@@ -18,7 +18,7 @@ ed25519-dalek.workspace = true
 web-time = { version = "1", features = ["serde"] }
 rand.workspace = true
 collab-types = { path = "../collab-types" }
-qos-user-identity = { path = "../../identity/qos-user-identity" }
+tilo-user-identity = { path = "../tilo-user-identity" }
 
 [lints]
 workspace = true

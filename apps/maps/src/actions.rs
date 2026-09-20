@@ -39,7 +39,7 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
     EncodedAction, ExecutionLocus, Resource, ResourceProvider, RetryPolicy, RiskLevel,
 };
@@ -333,7 +333,7 @@ fn history_resource(query: &str) -> Resource {
     if let Ok(action) = ActionSpec::operation(
         "search-again",
         "Search again",
-        qos_actions::OperationKind::View,
+        tilo_actions::OperationKind::View,
         "maps.search",
         &query.to_string(),
     ) {
@@ -430,7 +430,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         "Search maps",
         "Place, address, or category",
         "e.g. museum near me",
-        qos_actions::OperationKind::View,
+        tilo_actions::OperationKind::View,
         "maps.search",
         |query| {
             EncodedAction::encode_operation("maps.search", &query.trim().to_string())
@@ -524,7 +524,7 @@ impl ResourceProvider for crate::app::MapsApp {
 mod tests {
     use super::*;
     use crate::model::{Category, LatLon, Place, Route, TravelMode};
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -817,7 +817,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -865,8 +865,8 @@ mod tests {
         };
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -902,8 +902,8 @@ mod tests {
 
         let action = MapsAction::AddRegion(region("r2", "Schwabing"));
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(a.get_heads(), b.get_heads(), "add replayed identically");
         assert!(

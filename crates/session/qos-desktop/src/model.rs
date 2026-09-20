@@ -509,10 +509,10 @@ pub struct WorkspaceTaskAuditEvent {
 /// and failure details are deliberately absent from this durable shape.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceEffectReceipt {
-    pub invocation: qos_actions::InvocationId,
+    pub invocation: tilo_actions::InvocationId,
     pub actor: String,
-    pub context: qos_actions::ActionContext,
-    pub status: qos_actions::EffectReceiptStatus,
+    pub context: tilo_actions::ActionContext,
+    pub status: tilo_actions::EffectReceiptStatus,
     pub completed_at: i64,
 }
 
@@ -537,12 +537,12 @@ pub struct WorkspaceTask {
 }
 
 impl WorkspaceTask {
-    pub fn action_context(&self) -> qos_actions::ActionContext {
-        let mut context = qos_actions::ActionContext::default()
+    pub fn action_context(&self) -> tilo_actions::ActionContext {
+        let mut context = tilo_actions::ActionContext::default()
             .with_purpose(self.title.clone())
             .with_group(self.id.clone(), self.title.clone(), "task");
         if let Some(resource) = &self.resource {
-            context.resource = Some(qos_actions::ActionResource {
+            context.resource = Some(tilo_actions::ActionResource {
                 id: resource.id.clone(),
                 kind: resource.kind.clone(),
                 label: resource.label.clone(),

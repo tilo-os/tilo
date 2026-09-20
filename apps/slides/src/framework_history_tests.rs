@@ -465,25 +465,25 @@ fn empty_restore_uses_real_autosaver_and_fresh_process_opener() {
 
 struct ResourceHarness {
     app: crate::SlidesApp,
-    queue: std::rc::Rc<std::cell::RefCell<Vec<qos_actions::ControlInvocation>>>,
+    queue: std::rc::Rc<std::cell::RefCell<Vec<tilo_actions::ControlInvocation>>>,
 }
 impl ui::widget::Widget for ResourceHarness {
     fn sync(&mut self, d: &mut AutoCommit, p: &automerge::ObjId) {
         self.app.sync(d, p);
     }
-    fn resources(&self, d: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {
         ui::widget::Widget::resources(&self.app, d)
     }
     fn document_action_applied(
         &mut self,
-        a: &qos_actions::EncodedAction,
+        a: &tilo_actions::EncodedAction,
         b: &[automerge::ChangeHash],
         d: &AutoCommit,
         p: &automerge::ObjId,
     ) {
         self.app.document_action_applied(a, b, d, p);
     }
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.queue.borrow_mut().pop()
     }
     fn build_layout(
@@ -551,8 +551,8 @@ fn successive_admitted_resource_actions_stay_usable_and_deleted_target_is_refuse
             .iter()
             .find(|r| r.actions.iter().any(|a| a.id == choice))
             .expect("canonical resource remains usable");
-        queue.borrow_mut().push(qos_actions::ControlInvocation {
-            address: qos_actions::ActionAddress::new(deck.id.as_str(), choice),
+        queue.borrow_mut().push(tilo_actions::ControlInvocation {
+            address: tilo_actions::ActionAddress::new(deck.id.as_str(), choice),
             arguments: serde_json::Map::default(),
         });
         driver.key("Escape");
@@ -569,12 +569,12 @@ fn successive_admitted_resource_actions_stay_usable_and_deleted_target_is_refuse
         .flat_map(|r| &r.children)
         .find(|r| r.actions.iter().any(|a| a.id == "duplicate"))
         .unwrap();
-    let stale = qos_actions::ActionAddress::new(slide.id.as_str(), "duplicate");
+    let stale = tilo_actions::ActionAddress::new(slide.id.as_str(), "duplicate");
     let mut empty = crate::doc::SlidesDoc::load(&driver.state_mut().doc).unwrap();
     empty.slides.clear();
     crate::doc::SlidesDoc::seed(&mut driver.state_mut().doc, &empty);
     let heads = driver.state_mut().doc.get_heads();
-    queue.borrow_mut().push(qos_actions::ControlInvocation {
+    queue.borrow_mut().push(tilo_actions::ControlInvocation {
         address: stale,
         arguments: serde_json::Map::default(),
     });

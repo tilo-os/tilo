@@ -668,9 +668,9 @@ pub struct BooksApp {
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
     portal_rx: Option<PortalChannel>,
-    resource_invocation: Option<qos_actions::InvocationId>,
+    resource_invocation: Option<tilo_actions::InvocationId>,
     resource_lifecycle: Option<ResourceLifecycle>,
-    completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
+    completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
     /// The sole background parser. It owns no document state; completed books
     /// are committed only by [`Self::drain_import_worker`] on the UI thread.
     import_worker: Option<ImportWorker>,
@@ -1993,7 +1993,7 @@ impl BooksApp {
                     PortalOutcome::Cancelled => {
                         if let Some(invocation) = self.resource_invocation.take() {
                             self.completed_resource_invocation =
-                                Some(qos_actions::InvocationUpdate::Cancelled {
+                                Some(tilo_actions::InvocationUpdate::Cancelled {
                                     invocation,
                                     message: Some("book selection cancelled".into()),
                                 });
@@ -2004,9 +2004,9 @@ impl BooksApp {
                         self.dirty = true;
                         if let Some(invocation) = self.resource_invocation.take() {
                             self.completed_resource_invocation =
-                                Some(qos_actions::InvocationUpdate::Failed {
+                                Some(tilo_actions::InvocationUpdate::Failed {
                                     invocation,
-                                    error: qos_actions::ActionFailure {
+                                    error: tilo_actions::ActionFailure {
                                         code: "ebook.portal_failed".into(),
                                         message: reason,
                                         details: None,
@@ -2025,9 +2025,9 @@ impl BooksApp {
                 // palette invocation pending forever.
                 if let Some(invocation) = self.resource_invocation.take() {
                     self.completed_resource_invocation =
-                        Some(qos_actions::InvocationUpdate::Failed {
+                        Some(tilo_actions::InvocationUpdate::Failed {
                             invocation,
-                            error: qos_actions::ActionFailure {
+                            error: tilo_actions::ActionFailure {
                                 code: "ebook.portal_disconnected".into(),
                                 message: "The book picker stopped before returning a selection."
                                     .into(),
@@ -2081,9 +2081,9 @@ impl BooksApp {
         self.import_loading = None;
         self.load_error = Some(message.clone());
         if let Some(invocation) = self.resource_invocation.take() {
-            self.completed_resource_invocation = Some(qos_actions::InvocationUpdate::Failed {
+            self.completed_resource_invocation = Some(tilo_actions::InvocationUpdate::Failed {
                 invocation,
-                error: qos_actions::ActionFailure {
+                error: tilo_actions::ActionFailure {
                     code: code.into(),
                     message,
                     details: None,
@@ -2142,9 +2142,9 @@ impl BooksApp {
                     }
                     if let Some(invocation) = self.resource_invocation.take() {
                         self.completed_resource_invocation =
-                            Some(qos_actions::InvocationUpdate::Succeeded {
+                            Some(tilo_actions::InvocationUpdate::Succeeded {
                                 invocation,
-                                output: qos_actions::ActionOutput::default(),
+                                output: tilo_actions::ActionOutput::default(),
                             });
                     }
                     // A watched-folder refresh advances one book at a time.
@@ -2163,9 +2163,9 @@ impl BooksApp {
                     self.load_error = Some(format!("Couldn’t open {name}: {error}"));
                     if let Some(invocation) = self.resource_invocation.take() {
                         self.completed_resource_invocation =
-                            Some(qos_actions::InvocationUpdate::Failed {
+                            Some(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
-                                error: qos_actions::ActionFailure {
+                                error: tilo_actions::ActionFailure {
                                     code: "ebook.open_failed".into(),
                                     message: self.load_error.clone().unwrap_or_default(),
                                     details: None,
@@ -2673,14 +2673,14 @@ impl BooksApp {
         }
         if let Some(invocation) = self.resource_invocation.take() {
             self.completed_resource_invocation = Some(if self.load_error.is_none() {
-                qos_actions::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: qos_actions::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             } else {
-                qos_actions::InvocationUpdate::Failed {
+                tilo_actions::InvocationUpdate::Failed {
                     invocation,
-                    error: qos_actions::ActionFailure {
+                    error: tilo_actions::ActionFailure {
                         code: "ebook.share_failed".into(),
                         message: self.load_error.clone().unwrap_or_default(),
                         details: None,
@@ -3379,15 +3379,15 @@ impl BooksApp {
             doc,
             crate::actions::EBOOK_ACTION_TYPE,
             action,
-            qos_actions::ActionContext::for_action("org.qos.Ebook", "Ebook", action),
+            tilo_actions::ActionContext::for_action("org.qos.Ebook", "Ebook", action),
         );
     }
 
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-page
+    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-page
     /// affordance dispatched: a control and its Ctrl+K entry must build the
     /// identical action.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -4269,7 +4269,7 @@ impl Widget for BooksApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         _doc: &AutoCommit,
@@ -4277,7 +4277,7 @@ impl Widget for BooksApp {
     ) -> Result<bool, String> {
         use crate::actions::EbookOperation;
 
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -4352,8 +4352,8 @@ impl Widget for BooksApp {
 
     fn start_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
-        kind: qos_actions::OperationKind,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
@@ -4394,7 +4394,7 @@ impl Widget for BooksApp {
                 .map(|handled| {
                     handled.then(|| {
                         ui::widget::ResourceOperationStart::Completed(
-                            qos_actions::ActionOutput::default(),
+                            tilo_actions::ActionOutput::default(),
                         )
                     })
                 }),
@@ -4403,11 +4403,11 @@ impl Widget for BooksApp {
 
     fn poll_resource_operation(
         &mut self,
-        invocation: qos_actions::InvocationId,
+        invocation: tilo_actions::InvocationId,
         cancellation_requested: bool,
         _doc: &AutoCommit,
         _path: &ObjId,
-    ) -> Option<qos_actions::InvocationUpdate> {
+    ) -> Option<tilo_actions::InvocationUpdate> {
         if cancellation_requested && self.resource_invocation == Some(invocation) {
             self.resource_invocation = None;
             self.portal_rx = None;
@@ -4421,7 +4421,7 @@ impl Widget for BooksApp {
             // by the missing loading generation.
             self.import_loading = None;
             self.dirty = true;
-            return Some(qos_actions::InvocationUpdate::Cancelled {
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
                 message: Some(message.into()),
             });
@@ -4439,9 +4439,9 @@ impl Widget for BooksApp {
 
     /// Publish the open book + its annotations so the host's Ctrl+K action
     /// palette scopes to them, via [`crate::actions`]'s
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl.
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     /// Hand the host the heads captured before an on-page affordance
@@ -11804,7 +11804,7 @@ mod interaction_tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::EBOOK_OPERATION_TYPE,
                 &settings,
                 &doc,
@@ -11818,8 +11818,8 @@ mod interaction_tests {
         assert!(
             Widget::start_resource_operation(
                 &mut app,
-                qos_actions::InvocationId::new(),
-                qos_actions::OperationKind::View,
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
                 crate::actions::EBOOK_OPERATION_TYPE,
                 &open,
                 &doc,
@@ -11854,7 +11854,7 @@ mod interaction_tests {
             assert!(
                 Widget::invoke_resource_operation(
                     &mut app,
-                    qos_actions::OperationKind::View,
+                    tilo_actions::OperationKind::View,
                     crate::actions::EBOOK_OPERATION_TYPE,
                     &payload,
                     &doc,
@@ -13782,7 +13782,7 @@ mod interaction_tests {
     fn disconnected_picker_settles_the_pending_resource_invocation() {
         let mut app = BooksApp::with_library(Vec::new());
         let mut doc = AutoCommit::new();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         let (sender, receiver) = std::sync::mpsc::channel::<PortalOutcome>();
         drop(sender);
         app.resource_invocation = Some(invocation);
@@ -13794,7 +13794,7 @@ mod interaction_tests {
         assert!(app.resource_invocation.is_none());
         assert!(matches!(
             app.completed_resource_invocation,
-            Some(qos_actions::InvocationUpdate::Failed { invocation: got, ref error })
+            Some(tilo_actions::InvocationUpdate::Failed { invocation: got, ref error })
                 if got == invocation && error.code == "ebook.portal_disconnected"
         ));
     }
@@ -13996,13 +13996,13 @@ mod interaction_tests {
         let id = app.library[0].id.clone();
         let payload =
             serde_json::to_vec(&crate::actions::EbookOperation::ShareBook { book_id: id }).unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
 
         assert!(matches!(
             Widget::start_resource_operation(
                 &mut app,
                 invocation,
-                qos_actions::OperationKind::Effect,
+                tilo_actions::OperationKind::Effect,
                 crate::actions::EBOOK_OPERATION_TYPE,
                 &payload,
                 &doc,
@@ -14020,7 +14020,7 @@ mod interaction_tests {
         assert!(BooksDoc::read_library_entries(&doc)[0].shared);
         assert!(matches!(
             Widget::poll_resource_operation(&mut app, invocation, false, &doc, &automerge::ROOT,),
-            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 
@@ -14034,8 +14034,8 @@ mod interaction_tests {
             serde_json::to_vec(&crate::actions::EbookOperation::ShareBook { book_id: id }).unwrap();
         let error = Widget::start_resource_operation(
             &mut app,
-            qos_actions::InvocationId::new(),
-            qos_actions::OperationKind::Effect,
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
             crate::actions::EBOOK_OPERATION_TYPE,
             &payload,
             &doc,
@@ -14060,11 +14060,11 @@ mod interaction_tests {
             book_id: app.library[0].id.clone(),
         })
         .unwrap();
-        let invocation = qos_actions::InvocationId::new();
+        let invocation = tilo_actions::InvocationId::new();
         Widget::start_resource_operation(
             &mut app,
             invocation,
-            qos_actions::OperationKind::Effect,
+            tilo_actions::OperationKind::Effect,
             crate::actions::EBOOK_OPERATION_TYPE,
             &payload,
             &doc,
@@ -14080,7 +14080,7 @@ mod interaction_tests {
                 &doc,
                 &automerge::ROOT,
             ),
-            Some(qos_actions::InvocationUpdate::Cancelled {
+            Some(tilo_actions::InvocationUpdate::Cancelled {
                 message: Some(ref message),
                 ..
             }) if message == "book sharing cancelled"
@@ -14281,7 +14281,7 @@ mod interaction_tests {
         frame(&mut app, &mut doc, 1280.0, 800.0);
 
         // The EncodedAction the palette would dispatch for "Delete comment".
-        let resources = <BooksApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let resources = <BooksApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
         let spec_encoded = {
             let hl_res = resources[0].children[0]
                 .children
@@ -14299,8 +14299,8 @@ mod interaction_tests {
                 .find(|a| a.id == "delete-comment")
                 .expect("delete-comment spec");
             match &spec.input {
-                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-                qos_actions::ActionInput::Prompted { .. } => panic!("delete-comment is immediate"),
+                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => panic!("delete-comment is immediate"),
             }
         };
 
@@ -14370,7 +14370,7 @@ mod interaction_tests {
 
         // The palette's book-level "Highlight selection" EncodedAction, resolved
         // from the same live selection the swatch sees.
-        let resources = <BooksApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let resources = <BooksApp as tilo_actions::ResourceProvider>::resources(&app, &doc);
         let spec_encoded = {
             let spec = resources[0].children[0]
                 .actions
@@ -14378,8 +14378,8 @@ mod interaction_tests {
                 .find(|a| a.id == "highlight-selection")
                 .expect("a highlight-selection spec while a selection exists");
             match &spec.input {
-                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-                qos_actions::ActionInput::Prompted { .. } => {
+                tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+                tilo_actions::ActionInput::Prompted { .. } => {
                     panic!("highlight-selection is immediate")
                 }
             }

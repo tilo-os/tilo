@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use automerge::{ROOT, transaction::Transactable};
-use qos_actions::OperationKind;
+use tilo_actions::OperationKind;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]

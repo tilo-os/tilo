@@ -14,7 +14,7 @@
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
     ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
     ResultSpec, RetryPolicy,
@@ -483,7 +483,7 @@ pub fn provide_diff_resources(ctx: &DiffResourceCtx) -> Vec<Resource> {
 }
 
 /// Same non-fallible-in-practice contract as [`encode`]: `provide_resources`
-/// returns a plain `Vec<Resource>` (the [`qos_actions::ResourceProvider`]
+/// returns a plain `Vec<Resource>` (the [`tilo_actions::ResourceProvider`]
 /// trait shape), so there is no `Result` to propagate an encode failure into.
 #[allow(
     clippy::expect_used,
@@ -683,7 +683,7 @@ impl ResourceProvider for crate::app::DiffMergeApp {
 mod tests {
     use super::*;
     use crate::samples;
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -880,7 +880,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
 
         let merged = MergeDoc::merged_text(&doc);
         assert!(merged.contains("THEIRS"), "{merged:?}");
@@ -917,8 +917,8 @@ mod tests {
         );
         let encoded = encode(&action);
 
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),
@@ -977,7 +977,7 @@ mod tests {
         let encoded = encode(&action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         assert_eq!(MergeDoc::merged_text(&doc), "x\ny\n");
     }
 

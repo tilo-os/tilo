@@ -1,4 +1,4 @@
-use qos_user_identity::{DeviceCert, DeviceCertError, verify_device_cert_at};
+use tilo_user_identity::{DeviceCert, DeviceCertError, verify_device_cert_at};
 use std::sync::Arc;
 
 /// Immutable signature-verified public certificate. This is not an authorization
@@ -35,7 +35,7 @@ impl AsRef<DeviceCert> for VerifiedCertificate {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use qos_user_identity::{DeviceCapabilities, sign_device_cert};
+    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
     fn certificate() -> DeviceCert {
         let root = SigningKey::from_bytes(&[31; 32]);

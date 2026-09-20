@@ -10,7 +10,7 @@
 #     cargo build -p photos -p pkg-cli -p install
 #     mkdir -p target/qpkg/photos/bin
 #     cp target/debug/photos target/qpkg/photos/bin/photos
-#     target/debug/qos-pkg pack --manifest apps/photos/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/photos/tilo-app.toml \
 #         --payload target/qpkg/photos --output target/photos.qpkg
 #     target/debug/qos-install install target/photos.qpkg --allow-self-signed
 

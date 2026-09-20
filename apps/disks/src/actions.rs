@@ -2,7 +2,7 @@
 //!
 //! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
 //! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an [`Action`](qos_actions::Action) — a serializable value that
+//! becomes an [`Action`](tilo_actions::Action) — a serializable value that
 //! deterministically changes the shared Automerge document, so undo and
 //! multi-peer replay come for free — while presentation / view state stays plain
 //! app code. Applying that split to Disks leaves no *replicated document*
@@ -21,7 +21,7 @@
 //! it is handed **no** [`AutoCommit`] and can no more mutate the shared document
 //! than `mount(8)` can. By the recipe's rule none of this is an action.
 //!
-//! Modelling any of these as a replicated [`Action`](qos_actions::Action) would
+//! Modelling any of these as a replicated [`Action`](tilo_actions::Action) would
 //! be actively **wrong**: mounting a filesystem is an effect on *one* machine, so
 //! replaying a "mounted /dev/sda1" envelope on a collaborator would make their
 //! document claim a device is mounted that their machine never touched. The

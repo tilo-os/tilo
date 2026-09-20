@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
@@ -296,11 +296,11 @@ mod tests {
             .expect("annotation is searchable");
         let address = hit.action_address().expect("canonical address");
         let resources = app.resources(&doc);
-        let encoded = qos_actions::door::encode(&resources, &address, None)
+        let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("search address resolves against the exported tree");
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 &doc,

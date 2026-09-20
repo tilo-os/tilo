@@ -1257,11 +1257,11 @@ impl Widget for BrowserTabs {
     }
     fn poll_resource_operation(
         &mut self,
-        invocation: ui::qos_actions::InvocationId,
+        invocation: ui::tilo_actions::InvocationId,
         cancellation_requested: bool,
         doc: &AutoCommit,
         path: &ObjId,
-    ) -> Option<ui::qos_actions::InvocationUpdate> {
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
         self.tabs.iter_mut().find_map(|tab| {
             tab.widget
                 .poll_resource_operation(invocation, cancellation_requested, doc, path)
@@ -1427,7 +1427,7 @@ impl Widget for BrowserTabs {
         }
         self.dirty = true;
     }
-    fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(recovery) = self.recovery.as_mut() {
             return recovery.panel.take_control_invocation();
         }
@@ -1903,8 +1903,8 @@ mod tests {
         // Exercise the exact action-bound button operation used by the host.
         let result = tabs
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec("browser.session.fresh").unwrap(),
                 &AutoCommit::new(),
@@ -2060,8 +2060,8 @@ mod tests {
                     .expect("ordinary input must emit the button's canonical action");
                 assert_eq!(invocation.address.resource, format!("qos.control:{id}"));
                 tabs.start_resource_operation(
-                    ui::qos_actions::InvocationId::new(),
-                    ui::qos_actions::OperationKind::Effect,
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::Effect,
                     "qos.ui.control.invoke",
                     &serde_json::to_vec(id).unwrap(),
                     &doc,
@@ -2195,8 +2195,8 @@ mod tests {
         assert_eq!(invocation.address.resource, format!("qos.control:{id}"));
         assert!(tabs
             .start_resource_operation(
-                ui::qos_actions::InvocationId::new(),
-                ui::qos_actions::OperationKind::Effect,
+                ui::tilo_actions::InvocationId::new(),
+                ui::tilo_actions::OperationKind::Effect,
                 "qos.ui.control.invoke",
                 &serde_json::to_vec(id).unwrap(),
                 doc,
@@ -2857,7 +2857,7 @@ mod tests {
             .unwrap();
         let args = serde_json::from_value(serde_json::json!({"url": "https://one.test"})).unwrap();
         let encoded = navigate.build_json(&args).unwrap();
-        let invocation = ui::qos_actions::InvocationId::new();
+        let invocation = ui::tilo_actions::InvocationId::new();
         tabs.start_resource_operation(
             invocation,
             navigate.kind,
@@ -2871,7 +2871,7 @@ mod tests {
         tabs.sync(&mut doc, &root);
         assert!(matches!(
             tabs.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
     #[test]
@@ -2941,7 +2941,7 @@ mod tests {
             .iter()
             .find(|action| action.id == "picture-in-picture")
             .unwrap();
-        let invocation = ui::qos_actions::InvocationId::new();
+        let invocation = ui::tilo_actions::InvocationId::new();
         tabs.start_resource_operation(
             invocation,
             pip.kind,
@@ -2959,7 +2959,7 @@ mod tests {
         assert_eq!(request.id, "browser.media-pip.1");
         assert!(matches!(
             tabs.poll_resource_operation(invocation, false, &doc, &root),
-            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
 }

@@ -1,5 +1,5 @@
 //! Inert broker descriptors rendered with the shared ActionPalette schema.
-use qos_actions::{
+use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource,
 };
 use serde::Deserialize;
@@ -50,7 +50,7 @@ pub(crate) fn request(
     let wire = pending.wire_argument();
     let argument = match wire {
         Some(value) => {
-            if let Some(json) = value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX) {
+            if let Some(json) = value.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX) {
                 serde_json::from_str(json).map_err(|e| e.to_string())?
             } else {
                 serde_json::Value::String(value)

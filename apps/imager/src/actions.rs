@@ -53,7 +53,7 @@
 
 use automerge::AutoCommit;
 
-use qos_actions::{
+use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
     ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus, ExecutionMode,
     OperationKind, ParamType, PermissionRequirement, Resource, ResourceProvider, ResultSpec,
@@ -613,7 +613,7 @@ impl ResourceProvider for crate::app::ImagerApp {
 mod tests {
     use super::*;
     use crate::model::{Source, SourceKind, sample_targets};
-    use qos_actions::{ActionInput, LocalTransport};
+    use tilo_actions::{ActionInput, LocalTransport};
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -629,7 +629,7 @@ mod tests {
         let encoded = encode(action);
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(doc, decoded.as_ref(), encoded, &mut tx).unwrap();
     }
 
     /// A populated demo document (sample drives + an installable qOS image +
@@ -815,7 +815,7 @@ mod tests {
         let encoded = write
             .build_args([(
                 "confirmation".to_string(),
-                qos_actions::ArgValue::Text("/dev/sdz".into()),
+                tilo_actions::ArgValue::Text("/dev/sdz".into()),
             )])
             .unwrap();
         assert_eq!(
@@ -838,7 +838,7 @@ mod tests {
         assert!(!write.contract.availability.is_available());
         assert!(matches!(
             &write.contract.availability,
-            qos_actions::Availability::Unavailable { code, .. }
+            tilo_actions::Availability::Unavailable { code, .. }
                 if code == "write_backend_disabled"
         ));
     }
@@ -942,7 +942,7 @@ mod tests {
         let encoded = encode(&ImagerAction::SetEncrypt { on: true });
         let decoded = registry().decode(&encoded).unwrap();
         let mut tx = LocalTransport::new();
-        qos_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).unwrap();
         state.record_committed_action(before_heads, None, None);
 
         assert!(
@@ -979,8 +979,8 @@ mod tests {
             value: "lab01".into(),
         };
         let encoded = encode(&action);
-        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
-        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+        let env = tilo_actions::apply_local(&mut a, &action, encoded).unwrap();
+        tilo_actions::replay(&mut b, &env, &registry()).unwrap();
 
         assert_eq!(
             a.get_heads(),

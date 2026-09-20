@@ -303,11 +303,11 @@ dependencies = [
  "hex",
  "photos",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-model-gateway",
- "qos-reference",
- "qos-user-identity",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-model-gateway",
+ "tilo-reference",
+ "tilo-user-identity",
  "runtime-collab",
  "runtime-dylib",
  "runtime-identity",
@@ -483,13 +483,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
-name = "api_tester"
+name = "api-tester"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "base64 0.22.1",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -1146,8 +1146,8 @@ name = "backups"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1507,8 +1507,8 @@ dependencies = [
  "libc",
  "png 0.18.1",
  "pollster",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -1626,8 +1626,8 @@ name = "calculator"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1644,8 +1644,8 @@ dependencies = [
  "atomic-file",
  "automerge",
  "chrono",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "reqwest 0.12.28",
  "roxmltree",
  "runtime-dylib",
@@ -1734,8 +1734,8 @@ dependencies = [
  "image",
  "png 0.18.1",
  "qdoc",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "qrcode",
  "rqrr",
  "runtime-dylib",
@@ -2017,10 +2017,10 @@ dependencies = [
  "image",
  "iroh",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-callstream",
- "qos-reference",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-callstream",
+ "tilo-reference",
  "runtime-dylib",
  "runtime-identity",
  "serde",
@@ -2230,13 +2230,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "code_editor"
+name = "code-editor"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2475,8 +2475,8 @@ dependencies = [
  "atomic-file",
  "automerge",
  "pkg",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2497,8 +2497,8 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3126,15 +3126,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
-name = "db_client"
+name = "db-client"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
  "mysql",
  "postgres",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "rusqlite",
  "serde",
@@ -3306,8 +3306,8 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3409,8 +3409,8 @@ dependencies = [
 name = "disks"
 version = "0.1.0"
 dependencies = [
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -3541,8 +3541,8 @@ dependencies = [
  "automerge",
  "blake3",
  "image",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "roxmltree",
  "runtime-dylib",
  "serde",
@@ -4063,8 +4063,8 @@ dependencies = [
  "automerge",
  "chrono",
  "feed-rs",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -4156,9 +4156,9 @@ dependencies = [
  "mime_guess",
  "open",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-user-identity",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-user-identity",
  "reqwest 0.12.28",
  "roxmltree",
  "runtime-dylib",
@@ -4215,8 +4215,8 @@ name = "firewall"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -4564,8 +4564,8 @@ dependencies = [
  "moka",
  "postcard",
  "qdoc",
- "qos-power-mgmt",
- "qos-user-identity",
+ "tilo-power-mgmt",
+ "tilo-user-identity",
  "rand 0.8.8",
  "runtime-fs",
  "serde",
@@ -4995,15 +4995,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "git_client"
+name = "git-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
  "chrono",
  "git2",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -5686,12 +5686,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
-name = "hex_editor"
+name = "hex-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -6586,8 +6586,8 @@ dependencies = [
  "cap-std",
  "dirs 6.0.0",
  "libc",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "qos-ntfs-protocol",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -7551,7 +7551,7 @@ dependencies = [
  "landlock",
  "libc",
  "pkg",
- "qos-desktop-entry",
+ "tilo-desktop-entry",
  "runtime-bundle",
  "runtime-identity",
  "seccompiler",
@@ -8140,8 +8140,8 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "blake3",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8246,8 +8246,8 @@ dependencies = [
  "lettre",
  "mail-builder",
  "mail-parser",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "rcgen 0.13.2",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -8292,8 +8292,8 @@ dependencies = [
  "chrono",
  "futures-util",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "rustls",
@@ -8557,8 +8557,8 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8605,8 +8605,8 @@ dependencies = [
  "base64 0.22.1",
  "gstreamer",
  "image",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "rustypipe",
@@ -9097,8 +9097,8 @@ dependencies = [
  "automerge",
  "blake3",
  "dirs 6.0.0",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -9880,8 +9880,8 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
- "qos-bluez",
- "qos-power-mgmt",
+ "tilo-bluez",
+ "tilo-power-mgmt",
  "serde",
  "serde_json",
  "tempfile",
@@ -9907,8 +9907,8 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "libc",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde_json",
  "swipe",
@@ -10165,7 +10165,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pdf_viewer"
+name = "pdf-viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -10174,8 +10174,8 @@ dependencies = [
  "pdf-extract",
  "pdfium-render",
  "qdoc",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -10403,9 +10403,9 @@ dependencies = [
  "image",
  "png 0.18.1",
  "qdoc",
- "qos-actions",
- "qos-app",
- "qos-reference",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-reference",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -11277,12 +11277,12 @@ dependencies = [
  "libc",
  "parking_lot",
  "postcard",
- "qos-actions",
+ "tilo-actions",
  "qos-desktop",
  "qos-peer-state",
- "qos-relay",
+ "tilo-relay",
  "qos-session-peer",
- "qos-user-identity",
+ "tilo-user-identity",
  "rand_core 0.6.4",
  "runtime-collab",
  "runtime-identity",
@@ -11298,7 +11298,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-actions"
+name = "tilo-actions"
 version = "0.1.0"
 dependencies = [
  "automerge",
@@ -11312,14 +11312,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-app"
+name = "tilo-app"
 version = "0.1.0"
 dependencies = [
  "ui",
 ]
 
 [[package]]
-name = "qos-bluez"
+name = "tilo-bluez"
 version = "0.1.0"
 dependencies = [
  "futures-util",
@@ -11344,11 +11344,11 @@ dependencies = [
  "notes",
  "postcard",
  "qdoc",
- "qos-actions",
+ "tilo-actions",
  "qos-desktop",
  "qos-peer-state",
- "qos-relay",
- "qos-user-identity",
+ "tilo-relay",
+ "tilo-user-identity",
  "serde",
  "serde_json",
  "taffy",
@@ -11366,7 +11366,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-callstream"
+name = "tilo-callstream"
 version = "0.1.0"
 dependencies = [
  "openh264",
@@ -11385,7 +11385,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-cli"
+name = "tilo-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -11404,7 +11404,7 @@ dependencies = [
  "notes",
  "parking_lot",
  "qdoc",
- "qos-actions",
+ "tilo-actions",
  "qos-peer-state",
  "serde",
  "serde_json",
@@ -11419,7 +11419,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-desktop-entry"
+name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
  "serial_test",
@@ -11428,7 +11428,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-dev"
+name = "tilo-dev"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -11439,8 +11439,8 @@ dependencies = [
  "libc",
  "notify",
  "pkg",
- "qos-headless-schema",
- "qos-ui-graph",
+ "tilo-headless-schema",
+ "tilo-ui-graph",
  "serde",
  "serde_json",
  "syn 2.0.117",
@@ -11449,24 +11449,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-dev-template-smoke"
+name = "tilo-dev-template-smoke"
 version = "0.1.0"
 dependencies = [
- "qos-app",
- "qos-dev",
+ "tilo-app",
+ "tilo-dev",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "qos-headless-schema"
+name = "tilo-headless-schema"
 version = "0.1.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
-name = "qos-model-gateway"
+name = "tilo-model-gateway"
 version = "0.1.0"
 dependencies = [
  "accounts",
@@ -11512,7 +11512,7 @@ dependencies = [
  "flate2",
  "hex",
  "postcard",
- "qos-user-identity",
+ "tilo-user-identity",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -11528,7 +11528,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-power-mgmt"
+name = "tilo-power-mgmt"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
@@ -11543,14 +11543,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-projector"
+name = "tilo-projector"
 version = "0.1.0"
 dependencies = [
  "fcast-sender-sdk",
  "futures-util",
  "libc",
  "mdns-sd",
- "qos-callstream",
+ "tilo-callstream",
  "rand 0.8.8",
  "serde",
  "serde_json",
@@ -11559,18 +11559,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-reference"
+name = "tilo-reference"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "qos-actions",
+ "tilo-actions",
  "serde",
  "serde_json",
  "uuid",
 ]
 
 [[package]]
-name = "qos-relay"
+name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -11593,10 +11593,10 @@ dependencies = [
  "n0-future",
  "postcard",
  "qdoc",
- "qos-actions",
+ "tilo-actions",
  "qos-browser-runtime",
  "qos-peer-state",
- "qos-user-identity",
+ "tilo-user-identity",
  "rand 0.8.8",
  "runtime-identity",
  "sd-notify",
@@ -11618,7 +11618,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-rollback"
+name = "tilo-rollback"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -11634,7 +11634,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-scratchpad"
+name = "scratchpad"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -11644,8 +11644,8 @@ dependencies = [
  "dirs 6.0.0",
  "fs",
  "iroh-blobs",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "serde",
  "serde_json",
  "taffy",
@@ -11675,12 +11675,12 @@ dependencies = [
  "postcard",
  "qdoc",
  "qos-action-broker",
- "qos-actions",
+ "tilo-actions",
  "qos-browser-runtime",
  "qos-desktop",
  "qos-peer-state",
- "qos-relay",
- "qos-user-identity",
+ "tilo-relay",
+ "tilo-user-identity",
  "rand 0.8.8",
  "runtime-collab",
  "runtime-identity",
@@ -11697,7 +11697,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-startup-metrics"
+name = "tilo-startup-metrics"
 version = "0.1.0"
 dependencies = [
  "parking_lot",
@@ -11707,7 +11707,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-ui-builder"
+name = "tilo-ui-builder"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
@@ -11715,7 +11715,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-ui-graph"
+name = "tilo-ui-graph"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -11724,14 +11724,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "qos-unlock-helper"
+name = "tilo-unlock-helper"
 version = "0.1.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
-name = "qos-user-identity"
+name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
@@ -12330,10 +12330,10 @@ dependencies = [
  "automerge",
  "des 0.8.1",
  "iroh",
- "qos-actions",
- "qos-app",
- "qos-callstream",
- "qos-relay",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-callstream",
+ "tilo-relay",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -12616,7 +12616,7 @@ dependencies = [
  "cli",
  "comemo",
  "iroh",
- "qos-callstream",
+ "tilo-callstream",
  "runtime",
  "rustypipe",
  "tiny-skia",
@@ -13522,13 +13522,13 @@ dependencies = [
  "mail",
  "media",
  "os-actions",
- "qos-actions",
- "qos-app",
- "qos-bluez",
- "qos-desktop-entry",
- "qos-model-gateway",
- "qos-relay",
- "qos-user-identity",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-bluez",
+ "tilo-desktop-entry",
+ "tilo-model-gateway",
+ "tilo-relay",
+ "tilo-user-identity",
  "quick-xml 0.41.0",
  "rcgen 0.14.7",
  "reqwest 0.12.28",
@@ -13671,8 +13671,8 @@ dependencies = [
  "automerge",
  "calamine",
  "dirs 6.0.0",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "rust_xlsxwriter",
  "serde",
@@ -13738,18 +13738,18 @@ dependencies = [
  "qcms",
  "qdoc",
  "qos-action-broker",
- "qos-actions",
- "qos-bluez",
- "qos-callstream",
+ "tilo-actions",
+ "tilo-bluez",
+ "tilo-callstream",
  "qos-desktop",
- "qos-desktop-entry",
+ "tilo-desktop-entry",
  "qos-peer-state",
- "qos-power-mgmt",
- "qos-projector",
- "qos-relay",
+ "tilo-power-mgmt",
+ "tilo-projector",
+ "tilo-relay",
  "qos-session-peer",
- "qos-startup-metrics",
- "qos-user-identity",
+ "tilo-startup-metrics",
+ "tilo-user-identity",
  "rand 0.8.8",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
@@ -13941,8 +13941,8 @@ dependencies = [
  "automerge",
  "image",
  "qdoc",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "quick-xml 0.41.0",
  "runtime-dylib",
  "serde",
@@ -14104,8 +14104,8 @@ name = "snippets"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -14353,8 +14353,8 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "registry-types",
  "reqwest 0.12.28",
  "runtime-dylib",
@@ -14889,8 +14889,8 @@ dependencies = [
  "libc",
  "portable-pty",
  "qdoc",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "runtime-portal",
  "serde_json",
@@ -14910,8 +14910,8 @@ name = "themes"
 version = "0.1.0"
 dependencies = [
  "automerge",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -15439,8 +15439,8 @@ dependencies = [
  "getrandom 0.2.17",
  "hmac 0.12.1",
  "image",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "qrcode",
  "rqrr",
  "runtime-dylib",
@@ -15632,8 +15632,8 @@ dependencies = [
  "flate2",
  "media",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "runtime-portal-xdg",
@@ -16027,14 +16027,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "typst_editor"
+name = "typst-editor"
 version = "0.1.0"
 dependencies = [
  "automerge",
  "comemo",
  "dirs 6.0.0",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -16116,11 +16116,11 @@ dependencies = [
  "pollster",
  "postcard",
  "qdoc",
- "qos-actions",
- "qos-headless-schema",
+ "tilo-actions",
+ "tilo-headless-schema",
  "qos-peer-state",
- "qos-startup-metrics",
- "qos-ui-graph",
+ "tilo-startup-metrics",
+ "tilo-ui-graph",
  "qrcode",
  "rand_core 0.6.4",
  "regex",
@@ -16538,8 +16538,8 @@ dependencies = [
  "automerge",
  "collab-types",
  "media",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -16551,7 +16551,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "video_editor"
+name = "video-editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -16560,8 +16560,8 @@ dependencies = [
  "gstreamer-app",
  "media",
  "png 0.18.1",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -16590,8 +16590,8 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "os-actions",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -17317,8 +17317,8 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "reqwest 0.12.28",
  "runtime-dylib",
  "serde",
@@ -17690,8 +17690,8 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "compat-service",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "runtime-dylib",
  "runtime-portal",
  "serde",
@@ -18367,8 +18367,8 @@ dependencies = [
  "qdoc-html",
  "qdoc-pdf",
  "qdoc-rtf",
- "qos-actions",
- "qos-app",
+ "tilo-actions",
+ "tilo-app",
  "regex",
  "runtime-dylib",
  "serde",

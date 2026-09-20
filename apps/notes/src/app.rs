@@ -176,7 +176,7 @@ pub struct NotesApp {
     /// [`NotesAction`] through this: the host brackets the undo boundary, applies
     /// the action through the executor (so it replays byte-identically on peers,
     /// exactly as the Ctrl+K palette does), and records the last one so a test can
-    /// prove a sidebar affordance and its [`ActionSpec`](qos_actions::ActionSpec)
+    /// prove a sidebar affordance and its [`ActionSpec`](tilo_actions::ActionSpec)
     /// build the identical action.
     actions: ui::ActionHost,
     /// Page ids that have appeared in the shared document. Steady-state `sync`
@@ -1887,7 +1887,7 @@ impl NotesApp {
     /// Test hook: apply one [`OutEvent`] AND dispatch the matching page-tree
     /// action against `doc`, exactly as the live sidebar-event path does. Lets a
     /// test prove the on-screen affordance and the Ctrl+K palette resolve to the
-    /// same [`EncodedAction`](qos_actions::EncodedAction), and drive the real
+    /// same [`EncodedAction`](tilo_actions::EncodedAction), and drive the real
     /// undo path.
     #[doc(hidden)]
     pub fn dispatch_event_for_test(&mut self, doc: &mut AutoCommit, ev: OutEvent) {
@@ -1897,7 +1897,7 @@ impl NotesApp {
     /// Test hook: the last action an affordance dispatched through
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[doc(hidden)]
-    pub fn last_dispatched_for_test(&self) -> Option<&qos_actions::EncodedAction> {
+    pub fn last_dispatched_for_test(&self) -> Option<&tilo_actions::EncodedAction> {
         self.actions.last_dispatched()
     }
 
@@ -2280,13 +2280,13 @@ impl Widget for NotesApp {
 
     fn invoke_resource_operation(
         &mut self,
-        kind: qos_actions::OperationKind,
+        kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind == qos_actions::OperationKind::Document {
+        if kind == tilo_actions::OperationKind::Document {
             return Ok(false);
         }
         let Some(operation) = actions::decode_operation(type_id, payload)? else {
@@ -2370,14 +2370,14 @@ impl Widget for NotesApp {
 
     /// Publish the open notebook + its pages (nested by the tree) so the host's
     /// Ctrl+K action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
     /// Hand the host the heads captured before a sidebar affordance dispatched
@@ -3505,8 +3505,8 @@ mod tests {
             .expect("a Welcome page resource");
         let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
         let from_palette = match &delete_spec.input {
-            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
-            qos_actions::ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
+            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
+            tilo_actions::ActionInput::Prompted { .. } => panic!("delete is an immediate action"),
         };
 
         // Affordance side: the sidebar's Delete event through the app path.
@@ -3567,7 +3567,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::NOTES_OPERATION_TYPE,
                 &payload,
                 &state.doc,
@@ -3699,7 +3699,7 @@ mod tests {
         assert!(
             Widget::invoke_resource_operation(
                 &mut app,
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 crate::actions::NOTES_OPERATION_TYPE,
                 &payload,
                 &state.doc,

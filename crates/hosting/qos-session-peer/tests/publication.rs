@@ -5,8 +5,8 @@ use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 use web_time::SystemTime;
 
 fn owner_key(owner: &SessionOwner) -> ed25519_dalek::SigningKey {
-    qos_user_identity::persist::read_device_key(
-        &qos_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
+    tilo_user_identity::persist::read_device_key(
+        &tilo_user_identity::persist::IdentityPaths::under(owner.root().join("identity"))
             .device_privkey,
     )
     .unwrap()
@@ -19,7 +19,7 @@ async fn local_host_persists_exact_native_owner_authority_before_serving() {
     let host = qos_session_peer::host::LocalHost::start(&owner)
         .await
         .unwrap();
-    let workspace = qos_relay::room_workspace_id(owner.peer().room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(owner.peer().room()).unwrap();
     let path = owner
         .root()
         .join("relay/workspaces")
@@ -69,21 +69,21 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
     let path = temp.path().join("owner");
     let mut owner = SessionOwner::initialize(&path).unwrap();
     let key = owner_key(&owner);
-    let root = qos_user_identity::persist::read_signing_key(
-        &qos_user_identity::persist::IdentityPaths::under(path.join("identity")).user_privkey,
+    let root = tilo_user_identity::persist::read_signing_key(
+        &tilo_user_identity::persist::IdentityPaths::under(path.join("identity")).user_privkey,
     )
     .unwrap();
     let foreign_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-    let mut certificate = qos_user_identity::DeviceCert {
+    let mut certificate = tilo_user_identity::DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: foreign_key.verifying_key().to_bytes(),
         device_label: "foreign fixture author".into(),
-        capabilities: qos_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: qos_relay::clock::now_ns(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_relay::clock::now_ns(),
         expires_at_ns: None,
         signature: [0; 64],
     };
-    qos_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+    tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
     let mut candidate = owner.peer().clone();
     candidate
         .admit_certificate(certificate.clone(), &key, SystemTime::now())
@@ -193,7 +193,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         owner.peer().room(),
         owner.peer().authority().clone(),
         owner.peer().certificates(),
-        qos_user_identity::RevocationList::new(),
+        tilo_user_identity::RevocationList::new(),
         now,
     )
     .unwrap();
@@ -215,7 +215,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         owner.peer().room(),
         owner.peer().authority().clone(),
         owner.peer().certificates(),
-        qos_user_identity::RevocationList::new(),
+        tilo_user_identity::RevocationList::new(),
         now,
     )
     .unwrap();
@@ -228,7 +228,7 @@ fn actual_shell_receive_publication_preserves_foreign_intent_and_recovers_baseli
         std::fs::create_dir_all(&dir).unwrap();
         let manifest = serde_json::json!({
             "version":1, "room":owner.peer().room(), "authority":owner.peer().authority(), "certificates":owner.peer().certificates(),
-            "now_ns":qos_relay::clock::now_ns(), "rows":rows,
+            "now_ns":tilo_relay::clock::now_ns(), "rows":rows,
             "baseline":fixture_batch(&dir,"baseline",&baseline,&baseline_kinds),
             "tail":fixture_batch(&dir,"tail",&tail,&tail_kinds),
             "checkpoint2":fixture_batch(&dir,"checkpoint2",owner.outgoing(),owner.outgoing_kinds())
@@ -296,7 +296,7 @@ fn one_large_touched_record_compacts_by_bytes_without_limiting_canonical_history
         owner.peer().room(),
         owner.peer().authority().clone(),
         owner.peer().certificates(),
-        qos_user_identity::RevocationList::new(),
+        tilo_user_identity::RevocationList::new(),
         now,
     )
     .unwrap();

@@ -1,5 +1,5 @@
 //! Exact authenticated private-response correlation. Never executes effects.
-use qos_relay::{
+use tilo_relay::{
     peer_actions::{ActionMessage, DirectedAction},
     transport_v2::EnvelopeV2,
 };

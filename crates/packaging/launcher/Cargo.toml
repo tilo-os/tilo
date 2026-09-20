@@ -52,7 +52,7 @@ uuid.workspace = true
 # machine. Kept in its own crate because nothing about it is qOS
 # packaging — it is the freedesktop format, and the compositor's search
 # providers read it directly too.
-desktop-entry = { package = "qos-desktop-entry", path = "../../system/desktop-entry" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 # Resolves the explicit active identity selector and hosts its per-app signing
 # broker. Private records are never mounted into the sandbox.
 runtime-identity = { path = "../../runtime/runtime-identity" }

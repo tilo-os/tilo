@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use qos_power_mgmt::{BatteryHistory, BatteryHistoryPoint, load_battery_history};
+pub use tilo_power_mgmt::{BatteryHistory, BatteryHistoryPoint, load_battery_history};
 
 /// A normalized description of the charge-limit control the kernel or
 /// platform driver actually exposes.  Settings builds its choices from this

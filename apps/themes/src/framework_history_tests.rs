@@ -79,7 +79,7 @@ fn legacy_library_restore_and_fresh_live_sync_preserve_exact_content() {
 
 #[test]
 fn valid_legacy_edit_materializes_only_addressed_record_and_invalid_edit_does_nothing() {
-    use qos_actions::Action;
+    use tilo_actions::Action;
     let mut doc = AutoCommit::new();
     let one = crate::model::seed_custom();
     let mut two = one.clone();
@@ -100,7 +100,7 @@ fn valid_legacy_edit_materializes_only_addressed_record_and_invalid_edit_does_no
     }
     assert_eq!(doc.get_heads(), before);
     let action = crate::actions::set_custom_theme_name_action("sunset", "Explicit legacy edit");
-    qos_actions::apply_local(&mut doc, &action, crate::actions::encode(&action)).unwrap();
+    tilo_actions::apply_local(&mut doc, &action, crate::actions::encode(&action)).unwrap();
     let themes = doc.get(ROOT, "themes").unwrap().unwrap().1;
     assert!(doc.get(&themes, "sunset").unwrap().is_some());
     assert!(doc.get(&themes, "second").unwrap().is_none());
@@ -205,7 +205,7 @@ fn legacy_reset_delete_and_native_precedence_keep_other_records_and_one_undo() {
         let legacy = serde_json::to_string(&[one.clone(), two]).unwrap();
         crate::doc::put_text(&mut state.doc, &ROOT, "catalog", &legacy);
         let before = state.doc.get_heads();
-        qos_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action)).unwrap();
+        tilo_actions::apply_local(&mut state.doc, &action, crate::actions::encode(&action)).unwrap();
         state.record_committed_action(before.clone(), None, None);
         assert_eq!(state.doc.get_changes(&before).len(), 1);
         assert_eq!(

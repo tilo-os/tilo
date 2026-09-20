@@ -9,7 +9,7 @@ license.workspace = true
 
 # The app uses the protocol types through ui's canonical re-export.
 [package.metadata.cargo-machete]
-ignored = ["qos-actions"]
+ignored = ["tilo-actions"]
 
 [lib]
 name = "file_explorer"
@@ -24,8 +24,8 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-qos-actions = { path = "../../crates/collab/actions" }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
 accounts = { path = "../../crates/system/accounts" }
 reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 roxmltree = "0.20"
@@ -34,7 +34,7 @@ zeroize.workspace = true
 # manager and the codecs agree on what opens in the word processor).
 qdoc = { path = "../../crates/doc/qdoc" }
 collab-types = { path = "../../crates/collab/collab-types" }
-qos-user-identity = { path = "../../crates/identity/qos-user-identity" }
+tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
@@ -44,7 +44,7 @@ sha2.workspace = true
 # previews; pure-Rust to build — pdfium loads dynamically at runtime, falling
 # back to a badge when absent). Video stays a badge here so the hermetic build
 # and `--shots` need no gstreamer stack.
-thumbnail = { path = "../../crates/thumbnail", features = ["pdf"] }
+thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
 trash = "5.2.6"
 open.workspace = true
 mime_guess = "2.0.5"
@@ -82,7 +82,7 @@ taffy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-fs = { path = "../../fs" }
+fs = { path = "../../crates/system/fs" }
 fuser.workspace = true
 iroh.workspace = true
 

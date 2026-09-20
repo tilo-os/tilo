@@ -1,9 +1,9 @@
 //! Native-only fixture producer. The normal app reservation initializes each
 //! canonical document once; peers only receive those resulting signed bytes.
 use ed25519_dalek::SigningKey;
-use qos_actions::Action;
+use tilo_actions::Action;
 use qos_peer_state::{NeighbourMsg, SeedDocument, SeedState, StatePeer};
-use qos_user_identity::DeviceCert;
+use tilo_user_identity::DeviceCert;
 use ui::{
     portable_storage::PortableStorage,
     record::{RecordCheckout, RecordId, RecordOwners},

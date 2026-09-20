@@ -56,25 +56,25 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
 // door while retaining the real DiffMerge owner as the callback destination.
 struct ResourceHarness {
     app: crate::DiffMergeApp,
-    queue: std::rc::Rc<std::cell::RefCell<Vec<qos_actions::ControlInvocation>>>,
+    queue: std::rc::Rc<std::cell::RefCell<Vec<tilo_actions::ControlInvocation>>>,
 }
 impl ui::widget::Widget for ResourceHarness {
     fn sync(&mut self, d: &mut AutoCommit, p: &automerge::ObjId) {
         self.app.sync(d, p);
     }
-    fn resources(&self, d: &AutoCommit) -> Vec<qos_actions::Resource> {
+    fn resources(&self, d: &AutoCommit) -> Vec<tilo_actions::Resource> {
         ui::widget::Widget::resources(&self.app, d)
     }
     fn document_action_applied(
         &mut self,
-        a: &qos_actions::EncodedAction,
+        a: &tilo_actions::EncodedAction,
         b: &[automerge::ChangeHash],
         d: &AutoCommit,
         p: &automerge::ObjId,
     ) {
         self.app.document_action_applied(a, b, d, p);
     }
-    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.queue.borrow_mut().pop()
     }
     fn build_layout(
@@ -139,8 +139,8 @@ fn successive_admitted_resource_hunks_remain_usable_then_restore_fences_stale_re
             .flat_map(|r| &r.children)
             .find(|r| r.actions.iter().any(|a| a.id == choice))
             .expect("current hunk remains available");
-        queue.borrow_mut().push(qos_actions::ControlInvocation {
-            address: qos_actions::ActionAddress::new(hunk.id.as_str(), choice),
+        queue.borrow_mut().push(tilo_actions::ControlInvocation {
+            address: tilo_actions::ActionAddress::new(hunk.id.as_str(), choice),
             arguments: serde_json::Map::default(),
         });
         driver.key("Escape");
@@ -156,13 +156,13 @@ fn successive_admitted_resource_hunks_remain_usable_then_restore_fences_stale_re
         .flat_map(|r| &r.children)
         .find(|r| r.actions.iter().any(|a| a.id == "take-theirs"))
         .unwrap();
-    let stale = qos_actions::ActionAddress::new(hunk.id.as_str(), "take-theirs");
+    let stale = tilo_actions::ActionAddress::new(hunk.id.as_str(), "take-theirs");
     crate::doc::MergeDoc::set_merged(
         &mut driver.state_mut().doc,
         "Historical output independent of current hunks\n",
     );
     let heads = driver.state_mut().doc.get_heads();
-    queue.borrow_mut().push(qos_actions::ControlInvocation {
+    queue.borrow_mut().push(tilo_actions::ControlInvocation {
         address: stale,
         arguments: serde_json::Map::default(),
     });

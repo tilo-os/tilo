@@ -8,7 +8,7 @@
 #     cargo build -p calculator -p pkg-cli -p install
 #     mkdir -p target/qpkg/calculator/bin
 #     cp target/debug/calculator target/qpkg/calculator/bin/calculator
-#     target/debug/qos-pkg pack --manifest apps/calculator/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/calculator/tilo-app.toml \
 #         --payload target/qpkg/calculator --output target/calculator.qpkg
 #     target/debug/qos-install install target/calculator.qpkg --allow-self-signed
 

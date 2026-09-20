@@ -151,8 +151,8 @@ fn click_at(
             let payload = serde_json::to_vec(control).expect("control id is valid JSON");
             let started = app
                 .start_resource_operation(
-                    qos_actions::InvocationId::new(),
-                    qos_actions::OperationKind::View,
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
                     "qos.ui.control.invoke",
                     &payload,
                     doc,

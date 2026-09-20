@@ -1,0 +1,68 @@
+# API Tester — qOS application manifest.
+#
+# Fires user-authored HTTP requests, so the egress host set is
+# whatever the user types — it cannot be enumerated in a manifest and
+# `mode = "host"` is the honest declaration. `reqwest` is an
+# unconditional dependency: this is live in the default build.
+#
+# Pack and install:
+#
+#     cargo build -p api-tester -p pkg-cli -p install
+#     mkdir -p target/qpkg/api-tester/bin
+#     cp target/debug/api-tester target/qpkg/api-tester/bin/api-tester
+#     target/debug/qos-pkg pack --manifest apps/api-tester/tilo-app.toml \
+#         --payload target/qpkg/api-tester --output target/api-tester.qpkg
+#     target/debug/qos-install install target/api-tester.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.api-tester"
+name     = "API Tester"
+category = "Development"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/api-tester"
+type            = "gui"
+splash-segments = ["bin/api-tester[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

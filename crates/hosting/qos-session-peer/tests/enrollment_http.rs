@@ -132,7 +132,7 @@ async fn real_http_enrollment_is_authorized_serialized_recoverable_and_public_on
             .await;
             assert_eq!(code, 200, "{response}");
             assert!(response.get("device_secret").is_none());
-            let certificate: qos_user_identity::DeviceCert =
+            let certificate: tilo_user_identity::DeviceCert =
                 serde_json::from_value(response["certificate"].clone()).unwrap();
             assert_eq!(
                 certificate.device_public_key,

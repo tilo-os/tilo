@@ -1,6 +1,6 @@
 //! Chat global search backed exclusively by canonical resource actions.
 
-use qos_actions::ActionAddress;
+use tilo_actions::ActionAddress;
 use ui::icons::Icon;
 use ui::search::{
     DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor,
@@ -234,14 +234,14 @@ impl SearchProvider for ChatSearchProvider {
         clippy::too_many_lines,
         reason = "one exhaustive resource-kind dispatcher keeps canonical search addresses and their matching open operations adjacent"
     )]
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<qos_actions::Resource> {
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<tilo_actions::Resource> {
         if let Some(id) = address.resource.strip_prefix("chat.workspace:") {
             let workspace = self
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.id == id)?;
             return (address == &Self::workspace_address(id)).then(|| {
-                qos_actions::Resource::new(
+                tilo_actions::Resource::new(
                     address.resource.clone(),
                     "chat.workspace",
                     workspace.name.clone(),
@@ -258,7 +258,7 @@ impl SearchProvider for ChatSearchProvider {
         if let Some(id) = address.resource.strip_prefix("chat.channel:") {
             let channel = self.channels.iter().find(|channel| channel.id == id)?;
             return (address == &Self::channel_address(id)).then(|| {
-                qos_actions::Resource::new(
+                tilo_actions::Resource::new(
                     address.resource.clone(),
                     "chat.channel",
                     format!("{} {}", channel.kind.glyph(), channel.name),
@@ -276,7 +276,7 @@ impl SearchProvider for ChatSearchProvider {
         if let Some(id) = address.resource.strip_prefix("chat.category:") {
             let category = self.categories.iter().find(|category| category.id == id)?;
             return (address == &Self::category_address(id)).then(|| {
-                qos_actions::Resource::new(
+                tilo_actions::Resource::new(
                     address.resource.clone(),
                     "chat.category",
                     category.name.clone(),
@@ -294,7 +294,7 @@ impl SearchProvider for ChatSearchProvider {
         if let Some(id) = address.resource.strip_prefix("chat.person:") {
             let user = self.users.iter().find(|user| user.id == id)?;
             return (address == &Self::person_address(id)).then(|| {
-                qos_actions::Resource::new(
+                tilo_actions::Resource::new(
                     address.resource.clone(),
                     "chat.person",
                     user.name.clone(),
@@ -321,10 +321,10 @@ impl SearchProvider for ChatSearchProvider {
         if address != &Self::message_address(message_id) {
             return None;
         }
-        let open = qos_actions::ActionSpec::operation(
+        let open = tilo_actions::ActionSpec::operation(
             "open",
             "Reveal message",
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             crate::actions::CHAT_OPERATION_TYPE,
             &crate::actions::ChatOperation::RevealMessage {
                 workspace: workspace.id.clone(),
@@ -334,9 +334,9 @@ impl SearchProvider for ChatSearchProvider {
             },
         )
         .ok()?
-        .retry_policy(qos_actions::RetryPolicy::Idempotent);
+        .retry_policy(tilo_actions::RetryPolicy::Idempotent);
         Some(
-            qos_actions::Resource::new(
+            tilo_actions::Resource::new(
                 address.resource.clone(),
                 "chat.message",
                 message.text.clone(),
@@ -493,9 +493,9 @@ mod tests {
             .expect("frontend");
         let address = channel_hit.action_address().unwrap();
         let encoded =
-            qos_actions::door::encode(&resources, &address, None).expect("exported channel action");
+            tilo_actions::door::encode(&resources, &address, None).expect("exported channel action");
         app.invoke_resource_operation(
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &doc,
@@ -525,10 +525,10 @@ mod tests {
         let message_resource = provider
             .resolve_action_resource(&message_address)
             .expect("message resolves lazily");
-        let encoded = qos_actions::door::encode(&[message_resource], &message_address, None)
+        let encoded = tilo_actions::door::encode(&[message_resource], &message_address, None)
             .expect("exported message action");
         app.invoke_resource_operation(
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &doc,
@@ -546,10 +546,10 @@ mod tests {
             .find(|hit| hit.kind == PERSON_KIND)
             .unwrap();
         let encoded =
-            qos_actions::door::encode(&resources, &person_hit.action_address().unwrap(), None)
+            tilo_actions::door::encode(&resources, &person_hit.action_address().unwrap(), None)
                 .expect("exported person action");
         app.invoke_resource_operation(
-            qos_actions::OperationKind::View,
+            tilo_actions::OperationKind::View,
             &encoded.type_id,
             &encoded.payload,
             &doc,
@@ -636,13 +636,13 @@ mod tests {
             .unwrap();
         let address = hit.action_address().unwrap();
         let stale = provider.resolve_action_resource(&address).unwrap();
-        let encoded = qos_actions::door::encode(&[stale], &address, None).unwrap();
+        let encoded = tilo_actions::door::encode(&[stale], &address, None).unwrap();
         crate::doc::ChatDoc::delete_message(&mut doc, &message.channel, &message.id);
         app.reload(&doc);
 
         assert!(
             app.invoke_resource_operation(
-                qos_actions::OperationKind::View,
+                tilo_actions::OperationKind::View,
                 &encoded.type_id,
                 &encoded.payload,
                 &doc,

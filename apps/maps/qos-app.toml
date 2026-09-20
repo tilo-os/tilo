@@ -11,7 +11,7 @@
 #     cargo build -p maps -p pkg-cli -p install
 #     mkdir -p target/qpkg/maps/bin
 #     cp target/debug/maps target/qpkg/maps/bin/maps
-#     target/debug/qos-pkg pack --manifest apps/maps/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/maps/tilo-app.toml \
 #         --payload target/qpkg/maps --output target/maps.qpkg
 #     target/debug/qos-install install target/maps.qpkg --allow-self-signed
 

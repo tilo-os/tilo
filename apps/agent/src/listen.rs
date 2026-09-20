@@ -39,7 +39,7 @@
 //!
 //! * The message carries an address → [`Subject::Carried`]. That address is
 //!   the subject, whatever the prose says. This is the whole point of
-//!   [`qos_reference`]: the agent never has to work out what "this" meant.
+//!   [`tilo_reference`]: the agent never has to work out what "this" meant.
 //! * It carries none, and the agent acted on something within
 //!   [`RECENCY_SECS`] → [`Subject::Recent`], the resource of that last action.
 //! * Neither → [`Subject::Nothing`], and an instruction that needed a subject
@@ -63,7 +63,7 @@
 use std::collections::HashSet;
 
 use chat::model::Message;
-use qos_reference::ResourceRef;
+use tilo_reference::ResourceRef;
 
 use crate::plan::Instruction;
 
@@ -121,7 +121,7 @@ impl Subject {
     /// The resource id to act on, or `None` when there is nothing to go on.
     ///
     /// A [`Subject::Carried`] answers with the reference's own id — the
-    /// address, never [`ResourceRef::label`](qos_reference::ResourceRef), which
+    /// address, never [`ResourceRef::label`](tilo_reference::ResourceRef), which
     /// is the author's wording at the moment of writing and resolves nothing.
     pub fn resource(&self) -> Option<&str> {
         match self {

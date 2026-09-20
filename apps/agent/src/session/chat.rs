@@ -412,7 +412,7 @@ impl Session {
             let Some(offer) = surface::find(&offers, id).cloned() else {
                 return self.chat_refused("That action is no longer offered.");
             };
-            if offer.descriptor.kind != qos_actions::OperationKind::Document {
+            if offer.descriptor.kind != tilo_actions::OperationKind::Document {
                 return self.chat_refused("External effects and view operations are unavailable in this Chat runner until durable delegated admission is connected.");
             }
             let namespace = surface::app_of(&offer.descriptor.address.resource);

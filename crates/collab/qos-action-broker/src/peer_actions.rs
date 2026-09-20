@@ -1,7 +1,7 @@
 //! Permissioned peer adapter for the ordinary native action broker.
 //! Only inert authenticated requests cross into its bounded LocalSet queue.
-use qos_relay::client::{CertifiedAction, CertifiedActionEvent};
-use qos_relay::peer_actions::{ActionMessage, DirectedAction};
+use tilo_relay::client::{CertifiedAction, CertifiedActionEvent};
+use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
@@ -40,13 +40,13 @@ pub trait CertificateAuthority: Send + Sync {
     fn authorize(
         &self,
         room: Uuid,
-        certificate: &qos_user_identity::DeviceCert,
+        certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String>;
     /// Local SDK admission may additionally require a host's current enrollment record.
     fn authorize_join(
         &self,
         room: Uuid,
-        certificate: &qos_user_identity::DeviceCert,
+        certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String> {
         self.authorize(room, certificate)?;
         if certificate.capabilities.can_act_as_host {
@@ -80,12 +80,12 @@ pub struct PeerActionQueue {
     sender: mpsc::Sender<Request>,
     permits: Arc<Semaphore>,
     transitions:
-        tokio::sync::broadcast::Sender<(CertifiedAction, Option<qos_actions::InvocationUpdate>)>,
+        tokio::sync::broadcast::Sender<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>,
 }
 pub struct Request {
     pub evidence: Option<CertifiedAction>,
-    pub poll: Option<qos_actions::InvocationId>,
-    pub notification: Option<qos_actions::InvocationUpdate>,
+    pub poll: Option<tilo_actions::InvocationId>,
+    pub notification: Option<tilo_actions::InvocationUpdate>,
     pub reply: oneshot::Sender<Result<ActionMessage, ()>>,
     pub _permit: OwnedSemaphorePermit,
 }
@@ -110,8 +110,8 @@ impl PeerActionQueue {
     async fn request(
         &self,
         evidence: Option<CertifiedAction>,
-        poll: Option<qos_actions::InvocationId>,
-        notification: Option<qos_actions::InvocationUpdate>,
+        poll: Option<tilo_actions::InvocationId>,
+        notification: Option<tilo_actions::InvocationUpdate>,
     ) -> Result<ActionMessage, ()> {
         let permit = self.permits.clone().try_acquire_owned().map_err(|_| ())?;
         let (reply, rx) = oneshot::channel();
@@ -147,12 +147,12 @@ impl PeerActionQueue {
     #[cfg(any(test, feature = "test-support"))]
     pub fn transitions_for_test(
         &self,
-    ) -> tokio::sync::broadcast::Receiver<(CertifiedAction, Option<qos_actions::InvocationUpdate>)>
+    ) -> tokio::sync::broadcast::Receiver<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>
     {
         self.transitions.subscribe()
     }
 
-    pub fn publish(&self, evidence: CertifiedAction, update: qos_actions::InvocationUpdate) {
+    pub fn publish(&self, evidence: CertifiedAction, update: tilo_actions::InvocationUpdate) {
         // Called only after the durable transition barrier. Lag closes the
         // observing session rather than silently skipping streaming items.
         let bounded = ActionMessage::Update {
@@ -160,7 +160,7 @@ impl PeerActionQueue {
         }
         .validate()
             && serde_json::to_vec(&update).is_ok_and(|bytes| {
-                bytes.len() <= qos_relay::peer_actions::MAX_PRIVATE_BYTES.saturating_sub(1024)
+                bytes.len() <= tilo_relay::peer_actions::MAX_PRIVATE_BYTES.saturating_sub(1024)
             });
         let _ = self.transitions.send((evidence, bounded.then_some(update)));
     }
@@ -170,7 +170,7 @@ impl PeerActionQueue {
     /// must tear down that session, so stale capability cannot survive.
     pub async fn serve(
         &self,
-        session: Arc<qos_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
     ) -> Result<(), ()> {
@@ -187,7 +187,7 @@ impl PeerActionQueue {
     /// false when this serving future exits.
     pub async fn serve_with_readiness(
         &self,
-        session: Arc<qos_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
@@ -204,7 +204,7 @@ impl PeerActionQueue {
     #[cfg(feature = "test-support")]
     pub async fn serve_with_readiness_and_registration_barrier_for_test(
         &self,
-        session: Arc<qos_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
@@ -221,7 +221,7 @@ impl PeerActionQueue {
 
     async fn serve_with_readiness_inner(
         &self,
-        session: Arc<qos_relay::RelayCoeditSession>,
+        session: Arc<tilo_relay::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
         acknowledged: tokio::sync::watch::Sender<bool>,
@@ -253,7 +253,7 @@ impl PeerActionQueue {
         session
             .register_action_broker(room, host)
             .map_err(attachment_send_error)?;
-        let mut watches: Vec<(CertifiedAction, qos_actions::InvocationId, ActionMessage)> =
+        let mut watches: Vec<(CertifiedAction, tilo_actions::InvocationId, ActionMessage)> =
             Vec::new();
         let mut transitions = self.transitions.subscribe();
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
@@ -272,9 +272,9 @@ impl PeerActionQueue {
                             } else { watches.retain(|(old, id, _)| old.action().source != evidence.action().source || *id != invocation); }
                         }
                     }
-                    Some(CertifiedActionEvent::Control(qos_relay::transport_v2::EnvelopeV2::Unavailable { request_id, reason, .. })) => {
+                    Some(CertifiedActionEvent::Control(tilo_relay::transport_v2::EnvelopeV2::Unavailable { request_id, reason, .. })) => {
                         watches.retain(|(evidence, _, _)| evidence.action().request_id != request_id);
-                        if reason == qos_relay::peer_actions::UnavailableReason::Backpressure { return Err(PeerActionAttachmentError::Failed); }
+                        if reason == tilo_relay::peer_actions::UnavailableReason::Backpressure { return Err(PeerActionAttachmentError::Failed); }
                     },
                     Some(CertifiedActionEvent::Control(control)) => {
                         if registration_acknowledged(&control, room, host) {
@@ -304,33 +304,33 @@ impl PeerActionQueue {
     }
 }
 fn registration_acknowledged(
-    control: &qos_relay::transport_v2::EnvelopeV2,
+    control: &tilo_relay::transport_v2::EnvelopeV2,
     room: Uuid,
     host: Uuid,
 ) -> bool {
     matches!(
         control,
-        qos_relay::transport_v2::EnvelopeV2::ActionsReady {
+        tilo_relay::transport_v2::EnvelopeV2::ActionsReady {
             room: acknowledged_room,
-            capability: qos_relay::transport_v2::ActionCapability::DurableBroker {
+            capability: tilo_relay::transport_v2::ActionCapability::DurableBroker {
                 host: acknowledged_host,
             },
         } if *acknowledged_room == room && *acknowledged_host == host
     )
 }
-fn sequence(update: &qos_actions::InvocationUpdate) -> Option<u64> {
+fn sequence(update: &tilo_actions::InvocationUpdate) -> Option<u64> {
     match update {
-        qos_actions::InvocationUpdate::Progress { sequence, .. }
-        | qos_actions::InvocationUpdate::Item { sequence, .. } => Some(*sequence),
+        tilo_actions::InvocationUpdate::Progress { sequence, .. }
+        | tilo_actions::InvocationUpdate::Item { sequence, .. } => Some(*sequence),
         _ => None,
     }
 }
 
 fn send(
-    session: &qos_relay::RelayCoeditSession,
+    session: &tilo_relay::RelayCoeditSession,
     evidence: &CertifiedAction,
     message: ActionMessage,
-) -> Result<(), qos_relay::client::ClientError> {
+) -> Result<(), tilo_relay::client::ClientError> {
     let request = evidence.action();
     session.send_action(bounded_reply(request, message))
 }
@@ -346,7 +346,7 @@ fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAc
     // Reject locally with the original correlation ID. Letting the relay reject
     // an invalid response reports only to us and leaves the caller waiting.
     if !reply.validate()
-        || qos_relay::transport_v2::encode(&qos_relay::transport_v2::EnvelopeV2::Directed(reply.clone())).is_err()
+        || tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::Directed(reply.clone())).is_err()
     {
         reply.message = ActionMessage::Rejected {
             code: "action_response_exceeds_limits".into(),
@@ -356,10 +356,10 @@ fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAc
 }
 
 fn attachment_send_error(
-    error: qos_relay::client::ClientError,
+    error: tilo_relay::client::ClientError,
 ) -> PeerActionAttachmentError {
     match error {
-        qos_relay::client::ClientError::PrivateTransportClosed => {
+        tilo_relay::client::ClientError::PrivateTransportClosed => {
             PeerActionAttachmentError::TransportClosed
         }
         _ => PeerActionAttachmentError::Failed,
@@ -373,17 +373,17 @@ mod tests {
     #[test]
     fn oversized_reply_returns_a_correlated_rejection_instead_of_disappearing() {
         let request = DirectedAction { room: Uuid::new_v4(), request_id: Uuid::new_v4(), source: [1;32], target: [2;32], message: ActionMessage::CatalogueRefresh };
-        let reply = bounded_reply(&request, ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(qos_relay::peer_actions::MAX_PRIVATE_BYTES)}) });
+        let reply = bounded_reply(&request, ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(tilo_relay::peer_actions::MAX_PRIVATE_BYTES)}) });
         assert!(matches!(reply.message, ActionMessage::Rejected { .. }));
         assert!(reply.validate());
         assert_eq!(reply.request_id, request.request_id);
         assert_eq!((reply.source, reply.target), (request.target, request.source));
-        assert!(qos_relay::transport_v2::encode(&qos_relay::transport_v2::EnvelopeV2::Directed(reply)).is_ok());
+        assert!(tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::Directed(reply)).is_ok());
     }
 
     #[test]
     fn only_exact_durable_registration_acknowledges_readiness() {
-        use qos_relay::transport_v2::{ActionCapability, EnvelopeV2};
+        use tilo_relay::transport_v2::{ActionCapability, EnvelopeV2};
 
         let room = Uuid::from_u128(1);
         let host = Uuid::from_u128(2);
@@ -441,7 +441,7 @@ mod tests {
 
     #[test]
     fn only_closed_private_transport_is_retryable() {
-        use qos_relay::client::ClientError;
+        use tilo_relay::client::ClientError;
 
         assert_eq!(
             attachment_send_error(ClientError::PrivateTransportClosed),

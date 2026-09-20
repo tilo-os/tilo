@@ -10,7 +10,7 @@
 #     cargo build -p imager -p pkg-cli -p install
 #     mkdir -p target/qpkg/imager/bin
 #     cp target/debug/imager target/qpkg/imager/bin/imager
-#     target/debug/qos-pkg pack --manifest apps/imager/qos-app.toml \
+#     target/debug/qos-pkg pack --manifest apps/imager/tilo-app.toml \
 #         --payload target/qpkg/imager --output target/imager.qpkg
 #     target/debug/qos-install install target/imager.qpkg --allow-self-signed
 
