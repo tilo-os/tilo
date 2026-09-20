@@ -202,6 +202,11 @@ impl NativeRedrawReasons {
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
+const SLOW_PREPAINT_PHASE: Duration = Duration::from_millis(50);
+
+fn slow_prepaint_phase(elapsed: Duration) -> bool {
+    elapsed >= SLOW_PREPAINT_PHASE
+}
 
 fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Option<Instant> {
     (!wake_registered).then(|| now + WAYLAND_CLIENT_SERVICE_FALLBACK)
@@ -5640,6 +5645,15 @@ pub fn run() {
         // before any frame decision, so its level-triggered poll fd is cleared
         // in this same iteration instead of immediately waking calloop again.
         backend.poll_events(&mut |event| pending_events.push(event));
+        let t_backend_poll_done = iter_t0.elapsed();
+        if slow_prepaint_phase(t_backend_poll_done) {
+            tracing::warn!(
+                target: "tilo::latency",
+                elapsed_ms = t_backend_poll_done.as_secs_f64() * 1_000.0,
+                queued_events = pending_events.len(),
+                "backend poll stalled compositor input"
+            );
+        }
         // Capture workers wake this loop through their eventfd. Apply released
         // Smithay transactions before deciding whether there is app content
         // to paint; doing this after painting strands the newly committed
@@ -6193,6 +6207,16 @@ pub fn run() {
         }
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
+        let input_dispatch = t_input_done.saturating_sub(t_backend_poll_done);
+        if slow_prepaint_phase(input_dispatch) {
+            tracing::warn!(
+                target: "tilo::latency",
+                elapsed_ms = input_dispatch.as_secs_f64() * 1_000.0,
+                backend_poll_ms = t_backend_poll_done.as_secs_f64() * 1_000.0,
+                had_backend_events,
+                "pre-paint input and service dispatch stalled compositor input"
+            );
+        }
 
         // The power menu is shell UI only.  Its Lock row requests this
         // compositor-owned transition through ChromeState; drain the edge
@@ -7907,6 +7931,13 @@ mod tests {
             None,
             "a full presenter must sleep for its retirement wake instead of spinning on the stale frame deadline"
         );
+    }
+
+    #[test]
+    fn prepaint_stall_threshold_reports_fifty_milliseconds_and_above() {
+        assert!(!slow_prepaint_phase(Duration::from_millis(49)));
+        assert!(slow_prepaint_phase(Duration::from_millis(50)));
+        assert!(slow_prepaint_phase(Duration::from_secs(2)));
     }
 
     #[test]

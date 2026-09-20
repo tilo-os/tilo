@@ -2264,7 +2264,6 @@ pub struct DrmRuntime {
     /// compositor rather than Settings so closing/crashing the app cannot
     /// strand the session on a blank mode.
     last_display_transaction_check: std::time::Instant,
-    last_display_snapshot_publish: std::time::Instant,
     last_icc_profile_refresh: std::time::Instant,
     icc_profiles: IccProfileWorker,
 }
@@ -2598,7 +2597,6 @@ impl DrmRuntime {
             scanouts,
             commands: Some(rx),
             last_display_transaction_check: std::time::Instant::now(),
-            last_display_snapshot_publish: std::time::Instant::now(),
             last_icc_profile_refresh: std::time::Instant::now(),
             icc_profiles,
         })
@@ -2717,7 +2715,11 @@ impl DrmRuntime {
 
     /// Check the timed display confirmation independently of settings-file
     /// changes. The compositor loop calls this continuously, but filesystem
-    /// work is bounded to four times a second.
+    /// work is bounded to four times a second. Capability snapshots are
+    /// published only when their inputs change (startup, hotplug, display
+    /// settings, or ICC results): building one force-probes every KMS
+    /// connector, and doing that periodically on this input-thread path can
+    /// stall pointer and keyboard dispatch for seconds on real hardware.
     pub fn poll_display_transaction(&mut self) {
         let now = std::time::Instant::now();
         if now.duration_since(self.last_display_transaction_check)
@@ -2745,12 +2747,6 @@ impl DrmRuntime {
         if now.duration_since(self.last_icc_profile_refresh) >= std::time::Duration::from_secs(30) {
             self.last_icc_profile_refresh = now;
             self.icc_profiles.request_refresh();
-        }
-        if now.duration_since(self.last_display_snapshot_publish)
-            >= std::time::Duration::from_secs(5)
-        {
-            self.last_display_snapshot_publish = now;
-            self.dispatch.publish_display_snapshot();
         }
         let Some(transaction) = settings_store::hardware::DisplayTransaction::load() else {
             return;
