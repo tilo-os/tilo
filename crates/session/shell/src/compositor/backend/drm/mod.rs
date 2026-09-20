@@ -165,10 +165,6 @@ struct DirectEligibility<'a> {
     drm_bus_id: Option<&'a str>,
 }
 
-fn direct_scanout_eligible(input: DirectEligibility<'_>) -> bool {
-    direct_scanout_rejection(input).is_none()
-}
-
 fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
     if input.outputs != 1 {
         return Some("multiple outputs");
@@ -328,7 +324,6 @@ mod direct_eligibility_tests {
     #[test]
     fn direct_path_requires_the_complete_safe_contract() {
         assert_eq!(direct_scanout_rejection(eligible()), None);
-        assert!(direct_scanout_eligible(eligible()));
         for (rejected, reason) in [
             (
                 DirectEligibility {
