@@ -176,8 +176,17 @@ class OperatorTests(unittest.TestCase):
 
     def test_local_operator_change_does_not_silently_change_operation(self):
         self.init()
-        with patch.object(o, 'operator_identity', return_value='0' * 64), self.assertRaisesRegex(ValueError, 'implementation changed'):
-            o.load(self.args.operation)
+        config_sha256 = s.digest((self.args.operation / 'operation.json').read_bytes())
+        with patch.object(o, 'operator_identity', return_value='0' * 64):
+            with self.assertRaisesRegex(ValueError, 'implementation changed'):
+                o.load(self.args.operation)
+            with self.assertRaisesRegex(ValueError, 'implementation changed'):
+                o.load(self.args.operation, '1' * 64)
+            config, request = o.load(self.args.operation, config_sha256)
+        self.assertEqual(config['request_sha256'], s.digest(s.canonical(self.q)))
+        self.assertEqual(request, self.q)
+        self.assertEqual(
+            s.digest((self.args.operation / 'operation.json').read_bytes()), config_sha256)
 
     def test_archive_traversal_and_wrong_archive_are_rejected_before_operation_creation(self):
         self.archive(('../../escape',))
