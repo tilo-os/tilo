@@ -64,7 +64,11 @@ impl App {
         }
         let context = HistoryReadContext {
             document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
+            active_record: self
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: self.state.document_identity(),
             permissions: &self.permission_ctx,
         };
@@ -381,7 +385,11 @@ impl App {
         self.history_layout = Some(layout);
         let context = HistoryReadContext {
             document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
+            active_record: self
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: self.state.document_identity(),
             permissions: &self.permission_ctx,
         };
@@ -531,7 +539,11 @@ impl App {
     ) -> R {
         let context = HistoryReadContext {
             document: &self.state.doc,
-            active_record: self.records.as_ref().and_then(|records| records.active()),
+            active_record: self
+                .persistence
+                .records
+                .as_ref()
+                .and_then(|records| records.active()),
             document_identity: self.state.document_identity(),
             permissions: &self.permission_ctx,
         };

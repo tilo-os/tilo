@@ -98,17 +98,20 @@ impl App {
             {
                 errors.push(error);
             }
-        } else if let Some(records) = self.records.as_mut() {
+        } else if let Some(records) = self.persistence.records.as_mut() {
             if let Err(error) = records.try_flush(&mut self.state.doc) {
                 errors.push(error);
             }
-            if let (Some(saver), Some(index)) = (self.autosave.as_mut(), self.room_index.as_mut()) {
+            if let (Some(saver), Some(index)) = (
+                self.persistence.autosave.as_mut(),
+                self.persistence.room_index.as_mut(),
+            ) {
                 saver.request_checkpoint(index.document_mut());
                 if let Err(error) = saver.try_flush() {
                     errors.push(error);
                 }
             }
-        } else if let Some(saver) = self.autosave.as_mut() {
+        } else if let Some(saver) = self.persistence.autosave.as_mut() {
             saver.request_checkpoint(&mut self.state.doc);
             if let Err(error) = saver.try_flush() {
                 errors.push(error);
