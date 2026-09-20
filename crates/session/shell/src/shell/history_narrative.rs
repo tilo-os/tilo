@@ -149,7 +149,11 @@ fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String>
                     "TB" => 1_000_000_000_000_f64,
                     _ => return None,
                 };
-                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "Model inventory sizes are nonnegative decimal byte estimates used only for bounded model selection."
+                )]
                 Some((value * multiplier) as u64)
             });
             Some((name, size))
