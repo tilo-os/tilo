@@ -6138,15 +6138,8 @@ impl ShellOverlayHost {
         // SAFETY: same ownership contract as `group_at_for_tests` above.
         let row: &GroupRow = unsafe { &*ptr };
         let group = row.groups.iter().find(|group| group.id == group_id)?;
-        let active_tab = group.active_tab_id();
-        let maximize = group
-            .bar_for_tests()
-            .tabs()
-            .iter()
-            .position(|tab| tab.id == active_tab)
-            .and_then(|idx| group.bar_for_tests().max_rects().get(idx).copied())
-            .unwrap_or(Rect::ZERO);
-        Some((maximize, group.restore_rect_for_tests()))
+        let maximize = group.active_maximize_rect().unwrap_or(Rect::ZERO);
+        Some((maximize, group.restore_rect()))
     }
 
     /// Test-only: runs the per-frame active-group reconcile outside `update`.
