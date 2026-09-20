@@ -65,7 +65,10 @@ fn px_dim(v: f64) -> u32 {
 // Standard immediate-mode paint-helper signature (scene + geometry + the
 // shadow's own tunable parameters); every parameter is independently
 // load-bearing for this one shot case.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the paint helper receives independent shot geometry and shadow parameters"
+)]
 fn paint(
     scene: &mut Scene,
     canvas: Rect,
