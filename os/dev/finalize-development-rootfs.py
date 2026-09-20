@@ -67,11 +67,16 @@ def validate_request(request):
         raise ValueError('publication must use the bound development repository with a separate staging tag')
     bounds = {'generation': (1, 2**64 - 1), 'source_date_epoch': (0, 253402300799),
               'minimum_free_bytes': (1024**3, 1024**4), 'stage_timeout_seconds': (60, 3600),
-              'signing_response_timeout_seconds': (60, 7200),
+              'signing_response_timeout_seconds': (60, 1800),
+              # Leave fifteen minutes inside the workflow's 155-minute step
+              # deadline for launcher/export cleanup and failure evidence.
               'prediction_stage_timeout_seconds': (300, 8400)}
     for name, (low, high) in bounds.items():
         if type(request[name]) is not int or not low <= request[name] <= high:
             raise ValueError('invalid finalization execution bound')
+    if request['prediction_stage_timeout_seconds'] <= (
+            request['signing_response_timeout_seconds'] + request['stage_timeout_seconds']):
+        raise ValueError('prediction deadline must exceed signing response and non-signing command budgets')
     if not re.fullmatch(r'259(?:[.][0-9]+)?(?:[-+][A-Za-z0-9_.+-]+)?', request['systemd_version']):
         raise ValueError('independently pinned systemd259 version required')
     return request
@@ -367,11 +372,7 @@ class Driver:
             return {'image_id': identifier, 'composefs_digest': seal, **self.publish_stage5(identifier)}
         resealed_id = self.stage(5, reseal)['image_id']
         def prediction():
-            # The prediction helper has four sequential operator-signing
-            # handoffs. Its aggregate deadline is a compute budget plus the
-            # separately bound human response windows; operator waiting must
-            # not consume the requested build budget.
-            deadline = time.monotonic() + q['prediction_stage_timeout_seconds'] + 4 * q['signing_response_timeout_seconds']
+            deadline = time.monotonic() + q['prediction_stage_timeout_seconds']
             def command(arguments, *, aggregate=False):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:

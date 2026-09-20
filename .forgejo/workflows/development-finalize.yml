@@ -39,9 +39,9 @@ jobs:
   finalize:
     if: github.event_name == 'workflow_dispatch' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/codex/'))
     runs-on: runner-disk-100g-arm64
-    # Covers five independently bounded human signing-response windows. Build
-    # commands retain their smaller request-bound stage deadlines.
-    timeout-minutes: 720
+    # Adds the two-hour initial human authorization window while preserving
+    # the existing post-gate execution and cleanup budgets.
+    timeout-minutes: 280
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -107,7 +107,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Finalize only, with operator-bound external signing
-        timeout-minutes: 710
+        timeout-minutes: 270
         env:
           FINALIZATION_REQUEST: ${{ inputs.request }}
           FINALIZATION_REQUEST_SHA256: ${{ inputs.request_sha256 }}
