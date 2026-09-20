@@ -333,7 +333,7 @@ use crate::render_thread::{FrameOutcome, RenderRequest, RenderThreadHandle, spaw
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{FloatingSurfaceWidgetExt as _, Widget};
+use crate::widget::{AudiencePresentationWidgetExt as _, FloatingSurfaceWidgetExt as _, Widget};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use taffy::{AvailableSpace, NodeId, TaffyTree};

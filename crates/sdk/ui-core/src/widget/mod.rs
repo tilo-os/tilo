@@ -536,6 +536,44 @@ pub trait FloatingSurfaceProvider {
     }
 }
 
+/// Optional second-output presentation capability for app roots.
+pub trait AudiencePresentationProvider {
+    /// Request a real audience toplevel on a different output.
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        None
+    }
+
+    /// Report whether the audience toplevel is currently live.
+    fn on_audience_presentation_changed(&mut self, _active: bool) {}
+
+    /// Paint the audience-only projection of the app's existing state.
+    fn draw_audience_presentation(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _rect: vello::kurbo::Rect,
+    ) -> bool {
+        false
+    }
+
+    /// Route controls originating on the audience surface.
+    fn handle_audience_presentation_event(
+        &mut self,
+        _event: &WindowEvent,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        false
+    }
+
+    /// Treat closing the audience toplevel as an explicit stop request.
+    fn on_audience_presentation_closed(&mut self) {}
+}
+
 pub trait Widget {
     /// App-declared external document obligations. An in-memory RecordSet is
     /// not evidence that an editable file has been saved.
@@ -636,6 +674,18 @@ pub trait Widget {
 
     /// Mutable counterpart to [`Widget::floating_surface_provider`].
     fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        None
+    }
+
+    /// Expose second-output presentation only for app roots that own it.
+    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+        None
+    }
+
+    /// Mutable counterpart to [`Widget::audience_presentation_provider`].
+    fn audience_presentation_provider_mut(
+        &mut self,
+    ) -> Option<&mut dyn AudiencePresentationProvider> {
         None
     }
 
@@ -1233,54 +1283,6 @@ pub trait Widget {
     /// so a compositor-initiated exit (global keybind, lost grant) can be
     /// reacted to even though the app never asked. Root widget only.
     fn on_fullscreen_changed(&mut self, _active: bool) {}
-
-    /// Request a separate audience toplevel for a presentation. The host only
-    /// honours this when it can enumerate a *different* output from the local
-    /// presenter window; it never simulates dual-display mode inside one
-    /// window. The regular fullscreen contract remains the safe fallback.
-    fn audience_presentation_request(
-        &self,
-    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-        None
-    }
-
-    /// The host reports whether a real audience toplevel is live. Widgets use
-    /// this to keep their ordinary window as the presenter surface. It is
-    /// edge-triggered and is also sent during teardown.
-    fn on_audience_presentation_changed(&mut self, _active: bool) {}
-
-    /// Paint only the audience content in a separate surface. This is not a
-    /// second layout pass: it must be a pure projection of already-owned app
-    /// state, so a presenter and audience stay in lock-step without cloning a
-    /// document or rendering a split pane.
-    fn draw_audience_presentation(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _rect: vello::kurbo::Rect,
-    ) -> bool {
-        false
-    }
-
-    /// Route lightweight presentation controls from the audience surface.
-    /// Widgets must not depend on the primary window's layout here: an
-    /// audience surface has its own output dimensions. Returning `true`
-    /// requests a normal model sync and redraw of both surfaces.
-    fn handle_audience_presentation_event(
-        &mut self,
-        _event: &WindowEvent,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
-        false
-    }
-
-    /// Closing the audience toplevel is a user-visible stop request, not a
-    /// transient output loss. The default is intentionally a no-op because
-    /// only presentation-capable roots own that lifecycle.
-    fn on_audience_presentation_closed(&mut self) {}
 
     /// Which **record** (see [`crate::record`]) this widget's document
     /// should be, so opening a second file checks out a different document
@@ -1906,6 +1908,74 @@ impl<T: Widget + ?Sized> FloatingSurfaceWidgetExt for T {
     }
 }
 
+/// Ergonomic host API for optional second-output presentation support.
+pub trait AudiencePresentationWidgetExt {
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest>;
+    fn on_audience_presentation_changed(&mut self, active: bool);
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: vello::kurbo::Rect,
+    ) -> bool;
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool;
+    fn on_audience_presentation_closed(&mut self);
+}
+
+impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
+    fn audience_presentation_request(
+        &self,
+    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+        self.audience_presentation_provider()
+            .and_then(AudiencePresentationProvider::audience_presentation_request)
+    }
+
+    fn on_audience_presentation_changed(&mut self, active: bool) {
+        if let Some(provider) = self.audience_presentation_provider_mut() {
+            provider.on_audience_presentation_changed(active);
+        }
+    }
+
+    fn draw_audience_presentation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: vello::kurbo::Rect,
+    ) -> bool {
+        self.audience_presentation_provider_mut()
+            .is_some_and(|provider| {
+                provider.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
+            })
+    }
+
+    fn handle_audience_presentation_event(
+        &mut self,
+        event: &WindowEvent,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.audience_presentation_provider_mut()
+            .is_some_and(|provider| provider.handle_audience_presentation_event(event, state, path))
+    }
+
+    fn on_audience_presentation_closed(&mut self) {
+        if let Some(provider) = self.audience_presentation_provider_mut() {
+            provider.on_audience_presentation_closed();
+        }
+    }
+}
+
 /// Drain collaboration capabilities throughout a retained widget tree.
 pub(crate) fn take_collab_requests(
     widget: &mut dyn Widget,
@@ -2394,8 +2464,24 @@ mod tests {
         }
     }
 
+    impl AudiencePresentationProvider for CollabProbe {
+        fn on_audience_presentation_changed(&mut self, _active: bool) {
+            self.events.set(self.events.get().saturating_add(1));
+        }
+    }
+
     impl Widget for CollabProbe {
         fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
+            Some(self)
+        }
+
+        fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
+            Some(self)
+        }
+
+        fn audience_presentation_provider_mut(
+            &mut self,
+        ) -> Option<&mut dyn AudiencePresentationProvider> {
             Some(self)
         }
 
@@ -2488,6 +2574,18 @@ mod tests {
             &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
         );
         assert_eq!(events.get(), 2);
+    }
+
+    #[test]
+    fn audience_presentation_capability_forwards_through_dyn_widget() {
+        let events = Rc::new(Cell::new(0));
+        let mut widget: Box<dyn Widget> = Box::new(CollabProbe {
+            events: Rc::clone(&events),
+            child: None,
+        });
+
+        widget.on_audience_presentation_changed(true);
+        assert_eq!(events.get(), 1);
     }
 
     #[test]
