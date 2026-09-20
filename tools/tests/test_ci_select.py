@@ -50,7 +50,7 @@ class SelectorTests(unittest.TestCase):
         # whose production command must fail rather than convert absence to skip.
         for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
                      "vendor/openh264-sys2/build.rs", "os/tests/test_openh264_source_order.py",
-                     ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py"):
+                     ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py"):
             with self.subTest(path=path):
                 plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
                 self.assertTrue(plan["native_dependencies_required"])
@@ -61,7 +61,7 @@ class SelectorTests(unittest.TestCase):
     def test_native_contract_bootstrap_does_not_break_other_dependencies_or_full_runs(self):
         for changes in (["Cargo.lock"], ["Cargo.toml"], ["rust-toolchain.toml"],
                         [".forgejo/workflows/check.yml", "tools/ci/affected_packages.py",
-                         "os/tests/test_openh264_source_order.py"], []):
+                         "os/tests/test_openh264_source_order.py"], ["tools/ci/workspace_graph.py"], []):
             with self.subTest(changes=changes):
                 self.assertFalse(ci_select.native_dependencies_required(self.root, changes))
                 self.assertFalse(ci_select.native_dependencies_required(self.root, changes, force_full=True))
