@@ -1518,7 +1518,10 @@ impl TextInput {
     /// with `a <= b <= nchars`. The `.get`/`unwrap_or` fallbacks below exist
     /// so a future change to this invariant degrades gracefully instead of
     /// panicking; they are not expected to trigger.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "wrapping carries the bounded paragraph range and accumulated layout explicitly"
+    )]
     fn wrap_paragraph(
         &self,
         tr: &mut TextRenderer,

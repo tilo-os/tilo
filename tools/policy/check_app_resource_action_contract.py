@@ -395,6 +395,54 @@ def prepared_launch_registry_wired(text: str) -> bool:
     return False
 
 
+def component_launch_registry_wired(main_text: str, crate_text: str) -> bool:
+    """Recognize a registry installed by a canonical component factory.
+
+    ``ApplicationDefinition`` owns the production factory in the component
+    architecture, while ``LaunchSpec`` only supplies host inputs. Follow the
+    definition's named create callback and require that the same registry
+    passed to ``actions::register`` reaches ``AppComponent::new``. This keeps
+    test-only or disconnected registration helpers from satisfying the gate.
+    """
+    main = rust_code_only(live_launch_registration_code(main_text))
+    if not (
+        re.search(r"(?:::|\.)from_definition\s*\(", main)
+        and re.search(r"\.component_host\s*\(", main)
+    ):
+        return False
+
+    code = rust_code_only(crate_text)
+    bodies = function_bodies(code)
+    pending = re.findall(
+        r"\bcreate\s*:\s*\|[^|]*\|\s*([a-z_][A-Za-z0-9_]*)\s*\(", code
+    )
+    seen: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for body in bodies.get(name, []):
+            for registration in re.finditer(
+                r"\bactions\s*::\s*register\s*\(\s*&mut\s+"
+                r"(?P<registry>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;",
+                body,
+            ):
+                registry = re.escape(registration.group("registry"))
+                tail = body[registration.end() :]
+                if re.search(
+                    rf"\bAppComponent\s*::\s*new\s*\([^;{{}}]*\b{registry}\b\s*\)",
+                    tail,
+                ):
+                    return True
+            pending.extend(
+                called
+                for called in re.findall(r"\b([a-z_][A-Za-z0-9_]*)\s*\(", body)
+                if called in bodies and called not in seen
+            )
+    return False
+
+
 def unattached_handler_entries(text: str) -> list[str]:
     """Registry claims with no evidence on the reachable dispatch path."""
     registry = OPERATION_HANDLER_REGISTRY.search(text)
@@ -699,6 +747,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 ACTION_REGISTRY_DEFINITION.search(combined)
                 and not LIVE_ACTION_REGISTRY_WIRING.search(main_code)
                 and not prepared_launch_registry_wired(main_raw)
+                and not component_launch_registry_wired(main_raw, combined_raw)
             ):
                 violations.append(
                     Violation(
