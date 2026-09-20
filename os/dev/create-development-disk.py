@@ -22,6 +22,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 import development_prediction as prediction
 import installer_target_artifacts
@@ -38,6 +39,8 @@ FLAGS = ('--via-loopback', '--generic-image', '--composefs-backend', '--bootload
          '--filesystem', '--source-imgref', '--target-imgref',
          '--enforce-container-sigpolicy', '--run-fetch-check')
 
+TRANSIENT_CRUN_NAMESPACE_ERROR = (
+    b'error: reading /proc/1/ns/ipc: No such file or directory (os error 2)')
 
 
 def command(argv):
@@ -47,6 +50,23 @@ def command(argv):
         # Registry/tool diagnostics may contain credentials; do not echo them.
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout.decode('utf-8', 'strict')
+
+
+def bootc_help(argv, attempts=3, delay_seconds=2):
+    """Run the read-only compatibility probe through a narrow crun retry."""
+    for attempt in range(attempts):
+        result = subprocess.run(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={'PATH': '/usr/bin:/bin', 'HOME': '/root', 'LANG': 'C.UTF-8'})
+        if not result.returncode:
+            return result.stdout.decode('utf-8', 'strict')
+        if (result.stderr.strip() == TRANSIENT_CRUN_NAMESPACE_ERROR and
+                attempt + 1 < attempts):
+            time.sleep(delay_seconds)
+            continue
+        # Do not expose tool diagnostics, even though this probe has no auth.
+        raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
+    raise AssertionError('unreachable')
 
 
 def ensure_fuse_device(device=Path('/dev/fuse'), misc=Path('/proc/misc'),
@@ -160,9 +180,9 @@ def _create_verified_disk(args):
             if not re.fullmatch(r'sha256:[0-9a-f]{64}', verified.image_id):
                 raise ValueError('source verifier did not return an immutable local image ID')
             run = ['/usr/bin/podman', '--remote=false', 'run', '--rm', '--pull=never']
-            help_text = command([*run, '--network=none', '--cap-drop=ALL',
-                                 '--entrypoint=/usr/bin/bootc', verified.image_id,
-                                 'install', 'to-disk', '--help'])
+            help_text = bootc_help([*run, '--network=none', '--cap-drop=ALL',
+                                    '--entrypoint=/usr/bin/bootc', verified.image_id,
+                                    'install', 'to-disk', '--help'])
             if any(not re.search(r'(?<![\w-])' + re.escape(flag) + r'(?![\w-])', help_text)
                    for flag in FLAGS):
                 raise ValueError('packaged bootc lacks a required installation flag')
