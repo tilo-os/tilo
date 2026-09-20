@@ -17,7 +17,7 @@ use std::path::Path;
 use anyhow::{Result, anyhow, bail};
 
 use pkg::PackageId;
-use pkg::manifest::{AArch64Level, Arch, IsaLevel, X86_64Level};
+use pkg::manifest::Arch;
 use pkg::pack::SigningIdentity;
 
 use crate::index::{IndexEntry, RegistryIndex};
@@ -36,21 +36,11 @@ pub struct PublishReceipt {
     pub registry_id: String,
 }
 
-/// The widest ISA floor for an arch — used when a manifest declares
-/// no per-arch ISA requirement.
-fn baseline_isa(arch: Arch) -> IsaLevel {
-    match arch {
-        Arch::X86_64 => IsaLevel::X86_64(X86_64Level::Baseline),
-        Arch::AArch64 => IsaLevel::AArch64(AArch64Level::Armv8A),
-    }
-}
-
 /// Build + publisher-sign an [`IndexEntry`] from a `.qpkg`, WITHOUT
 /// uploading anything.
 ///
 /// - `arch` selects which arch this build targets; when `None` it is
-///   inferred (the single arch the manifest declares an ISA for, else
-///   the host arch).
+///   inferred only when the manifest declares exactly one architecture.
 /// - `ticket` fills the entry's fetch source; pass `None` for a
 ///   dry-run (the entry can still be inspected / diffed).
 ///
@@ -113,18 +103,16 @@ pub fn build_entry(
         Some(a) => a,
         None => match candidates.as_slice() {
             [only] => *only,
-            [] => crate::index::HostProfile::detect().arch,
+            [] => bail!("manifest declares no target architecture"),
             _ => bail!(
                 "manifest declares ISA for multiple arches ({candidates:?}); pass an explicit arch"
             ),
         },
     };
-    let isa = meta
-        .manifest
-        .package
-        .isa
-        .for_arch(arch)
-        .unwrap_or_else(|| baseline_isa(arch));
+    let isa =
+        meta.manifest.package.isa.for_arch(arch).ok_or_else(|| {
+            anyhow!("manifest declares no build for target architecture {arch:?}")
+        })?;
 
     let qpkg_hash = *blake3::hash(qpkg_bytes).as_bytes();
 
