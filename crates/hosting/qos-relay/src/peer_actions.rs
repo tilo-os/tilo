@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const MAX_PRIVATE_BYTES: usize = 256 * 1024;
+// Catalogues aggregate descriptors for every record. Their structural budget
+// must be larger than a single effect's argument while remaining bounded by
+// the same wire-size and nesting limits.
+const MAX_CATALOGUE_NODES: usize = 32 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 512;
 pub const MAX_CONFIRMATION_BYTES: usize = 4096;
 
@@ -120,7 +124,12 @@ impl ActionMessage {
         let Ok(json) = serde_json::to_value(self) else {
             return false;
         };
-        if !bounded_json(&json, 0, &mut 4096) {
+        let mut remaining = if matches!(self, Self::Catalogue { .. } | Self::BrokerCatalogue { .. }) {
+            MAX_CATALOGUE_NODES
+        } else {
+            4096
+        };
+        if !bounded_json(&json, 0, &mut remaining) {
             return false;
         }
         let identifier = |value: &str| !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES;
@@ -162,7 +171,7 @@ impl ActionMessage {
                     && revision.as_ref().is_none_or(|v| identifier(v))
                     && !matches!(confirmation, Some(Confirmation::Phrase(v)) if v.len() > MAX_CONFIRMATION_BYTES)
             }
-            Self::Catalogue { catalogue } => {
+            Self::Catalogue { catalogue } | Self::BrokerCatalogue { catalogue, .. } => {
                 catalogue.get("version").and_then(serde_json::Value::as_u64) == Some(1)
                     && catalogue
                         .get("surfaces")
@@ -239,5 +248,40 @@ mod message_json {
             return Err(serde::de::Error::custom("private payload too large"));
         }
         serde_json::from_slice(&bytes).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod catalogue_bounds_tests {
+    use super::*;
+
+    fn catalogue(nodes: usize) -> serde_json::Value {
+        serde_json::json!({"version": 1, "surfaces": [{"actions": vec![serde_json::json!({"resource": "document", "action": "edit", "params": {}}); nodes]}]})
+    }
+
+    #[test]
+    fn catalogue_has_a_separate_node_budget_from_effect_arguments() {
+        let catalogue = catalogue(1500);
+        for message in [ActionMessage::Catalogue { catalogue: catalogue.clone() }, ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue: catalogue.clone() }] {
+            let directed = DirectedAction { room: Uuid::new_v4(), request_id: Uuid::new_v4(), source: [1;32], target: [2;32], message };
+            assert!(directed.validate(), "a bounded catalogue with over 4096 nodes must remain discoverable");
+            assert!(crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(directed)).is_ok());
+        }
+        let invoke = ActionMessage::Invoke { invocation: qos_actions::InvocationId::new(), app_peer: "1".into(), resource: "document".into(), action: "edit".into(), argument: Some(catalogue), confirmation: None, revision: None };
+        assert!(!invoke.validate(), "effect arguments retain the original node bound");
+    }
+
+    #[test]
+    fn catalogue_still_rejects_excessive_nodes_depth_surfaces_and_bytes() {
+        for catalogue in [catalogue(9000), serde_json::json!({"version":1,"surfaces": vec![serde_json::json!({});257]}), {
+            let mut deep = serde_json::Value::Null;
+            for _ in 0..33 { deep = serde_json::json!([deep]); }
+            serde_json::json!({"version":1,"surfaces":[],"nested":deep})
+        }] {
+            for message in [ActionMessage::Catalogue { catalogue: catalogue.clone() }, ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue }] { assert!(!message.validate()); }
+        }
+        let action = DirectedAction { room: Uuid::new_v4(), request_id: Uuid::new_v4(), source: [1;32], target: [2;32], message: ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(MAX_PRIVATE_BYTES)}) } };
+        assert!(!action.validate());
+        assert!(crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(action)).is_err());
     }
 }

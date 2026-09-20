@@ -332,14 +332,27 @@ fn send(
     message: ActionMessage,
 ) -> Result<(), qos_relay::client::ClientError> {
     let request = evidence.action();
-    session
-        .send_action(DirectedAction {
-            room: request.room,
-            request_id: request.request_id,
-            source: request.target,
-            target: request.source,
-            message,
-        })
+    session.send_action(bounded_reply(request, message))
+}
+
+fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAction {
+    let mut reply = DirectedAction {
+        room: request.room,
+        request_id: request.request_id,
+        source: request.target,
+        target: request.source,
+        message,
+    };
+    // Reject locally with the original correlation ID. Letting the relay reject
+    // an invalid response reports only to us and leaves the caller waiting.
+    if !reply.validate()
+        || qos_relay::transport_v2::encode(&qos_relay::transport_v2::EnvelopeV2::Directed(reply.clone())).is_err()
+    {
+        reply.message = ActionMessage::Rejected {
+            code: "action_response_exceeds_limits".into(),
+        };
+    }
+    reply
 }
 
 fn attachment_send_error(
@@ -356,6 +369,17 @@ fn attachment_send_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_reply_returns_a_correlated_rejection_instead_of_disappearing() {
+        let request = DirectedAction { room: Uuid::new_v4(), request_id: Uuid::new_v4(), source: [1;32], target: [2;32], message: ActionMessage::CatalogueRefresh };
+        let reply = bounded_reply(&request, ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(qos_relay::peer_actions::MAX_PRIVATE_BYTES)}) });
+        assert!(matches!(reply.message, ActionMessage::Rejected { .. }));
+        assert!(reply.validate());
+        assert_eq!(reply.request_id, request.request_id);
+        assert_eq!((reply.source, reply.target), (request.target, request.source));
+        assert!(qos_relay::transport_v2::encode(&qos_relay::transport_v2::EnvelopeV2::Directed(reply)).is_ok());
+    }
 
     #[test]
     fn only_exact_durable_registration_acknowledges_readiness() {

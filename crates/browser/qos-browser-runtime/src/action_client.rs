@@ -175,6 +175,20 @@ mod tests {
         );
     }
     #[test]
+    fn catalogue_above_effect_node_budget_reaches_browser_correlation() {
+        let mut pending = PendingActions::default();
+        let request = request();
+        pending.insert(request.clone()).unwrap();
+        let mut reply = response(&request);
+        reply.message = ActionMessage::BrokerCatalogue {
+            host: Uuid::from_u128(5),
+            catalogue: serde_json::json!({"version":1,"surfaces":[{"actions":vec![serde_json::json!({"resource":"document","action":"edit","params":{}});1500]}]}),
+        };
+        assert!(pending.receive(EnvelopeV2::Delivered { action: reply, source_user: [9;32] }, [9;32]));
+        assert!(matches!(pending.take(request.request_id), Some(ActionMessage::BrokerCatalogue { .. })));
+    }
+
+    #[test]
     fn authentic_exact_response_and_duplicate() {
         let mut p = PendingActions::default();
         let a = request();
