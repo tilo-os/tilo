@@ -707,7 +707,8 @@ mod tests {
         );
         let error = form
             .binding::<bool>("name")
-            .expect_err("wrong field type must fail");
+            .err()
+            .expect("wrong field type must fail");
         assert!(error.contains("text, not boolean"));
     }
 }
