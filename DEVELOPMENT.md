@@ -141,9 +141,10 @@ lockfile, toolchain or packaging changes can select the whole app fleet. This
 command needs the pinned Rust toolchain for `cargo metadata --locked --no-deps`.
 It compares committed Git revisions and does not include uncommitted edits.
 
-The selected list describes package output. Native packaging currently builds
-the full default Cargo graph even for a partial package selection, preserving
-the shared Rust runtime ABI; this preview does not promise fewer compile targets.
+The selected list controls which app binaries are compiled and packaged. Cargo
+still resolves the full default collection's dependency features to preserve the
+shared Rust runtime ABI. Shared dependencies may rebuild; unselected app binaries
+are not compiled.
 
 A zero count means no app package is selected; check/lint and relevant tests
 still apply. Packaging automation compares against its last independently
