@@ -144,9 +144,14 @@ def image_id(value):
     return value
 
 
-def verify_registry_bytes(manifest_raw, config_raw, manifest_digest, config_digest, architecture, revision):
-    if 'sha256:' + spool.digest(manifest_raw) != manifest_digest or 'sha256:' + spool.digest(config_raw) != config_digest:
-        raise ValueError('published registry bytes differ from immutable digest')
+def verify_registry_bytes(manifest_raw, config_raw, registry_manifest_digest, manifest_digest,
+                          config_digest, architecture, revision):
+    # Skopeo may reserialize both inspection outputs. Bind the image through
+    # the registry-reported manifest digest and its config descriptor, then
+    # validate the decoded config properties instead of hashing presentation
+    # bytes as though they were raw registry blobs.
+    if image_id(registry_manifest_digest) != manifest_digest:
+        raise ValueError('published registry manifest differs from immutable digest')
     manifest = json.loads(manifest_raw, object_pairs_hook=spool.unique)
     config = json.loads(config_raw, object_pairs_hook=spool.unique)
     if (manifest.get('schemaVersion') != 2 or manifest.get('config', {}).get('digest') != config_digest
@@ -236,9 +241,12 @@ class Driver:
         return {'sha256': spool.context(context), **expected}
 
     def registry_bytes(self, reference):
+        digest = image_id(self.command(
+            ['skopeo', 'inspect', '--tls-verify=true', '--format={{.Digest}}', 'docker://' + reference]
+        ).decode().strip())
         manifest = self.command(['skopeo', 'inspect', '--tls-verify=true', '--raw', 'docker://' + reference])
         config = self.command(['skopeo', 'inspect', '--tls-verify=true', '--config', 'docker://' + reference])
-        return manifest, config
+        return manifest, config, digest
 
     def publish_checkpoint(self, image, stage):
         if stage not in (2, 5):
@@ -249,8 +257,8 @@ class Driver:
                       image_id(image), 'docker://' + tag])
         manifest_digest = image_id(spool.snapshot(digestfile, 128).decode().strip())
         reference = self.request['publish_repository'] + '@' + manifest_digest
-        manifest, config = self.registry_bytes(reference)
-        verify_registry_bytes(manifest, config, manifest_digest, image, self.request['architecture'],
+        manifest, config, registry_digest = self.registry_bytes(reference)
+        verify_registry_bytes(manifest, config, registry_digest, manifest_digest, image, self.request['architecture'],
                               self.request['source_revision'])
         # Retain producer context as provenance, but do not require a later
         # explicit attempt to reuse the same ephemeral pod/job identity.
@@ -295,8 +303,8 @@ class Driver:
         # current_context validates this new attempt against the stable request.
         # Its digest is intentionally allowed to differ from the producer.
         self.current_context()
-        manifest, config = self.registry_bytes(reference)
-        verify_registry_bytes(manifest, config, manifest_digest, config_digest, self.request['architecture'],
+        manifest, config, registry_digest = self.registry_bytes(reference)
+        verify_registry_bytes(manifest, config, registry_digest, manifest_digest, config_digest, self.request['architecture'],
                               self.request['source_revision'])
         self.command(['podman', '--remote=false', 'pull', '--tls-verify=true', reference])
         self.inspect(config_digest)
@@ -465,9 +473,9 @@ class Driver:
             manifest_digest = spool.snapshot(digestfile, 128).decode().strip()
             image_id(manifest_digest)
             reference = q['publish_repository'] + '@' + manifest_digest
-            manifest = self.command(['skopeo', 'inspect', '--raw', '--tls-verify=true', 'docker://' + reference])
-            configuration = self.command(['skopeo', 'inspect', '--config', '--raw', '--tls-verify=true', 'docker://' + reference])
-            verify_registry_bytes(manifest, configuration, manifest_digest, final_id, q['architecture'], q['source_revision'])
+            manifest, configuration, registry_digest = self.registry_bytes(reference)
+            verify_registry_bytes(manifest, configuration, registry_digest, manifest_digest, final_id,
+                                  q['architecture'], q['source_revision'])
             return {'image_id': final_id, 'published_reference': reference, 'manifest_digest': manifest_digest,
                     'config_digest': final_id, 'staging_tag': tag, 'target_update_ref': q['new_target'],
                     'boot_profile': q.get('boot_profile', 'installed-target'),
