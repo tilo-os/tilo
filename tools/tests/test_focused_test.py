@@ -2,6 +2,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -84,10 +85,23 @@ class FocusedTests(unittest.TestCase):
         self.assertEqual(workflow.count('persist-credentials: false'), 3)
         self.assertIn("hashFiles('source/Cargo.lock')", workflow)
         self.assertIn('ref: ${{ needs.builder.outputs.source }}', workflow)
-        self.assertIn('python3 -I tools/ci/focused_test.py run --root source', workflow)
+        self.assertIn('python3 -I control/tools/ci/focused_test.py run --root source', workflow)
+        native = workflow.split('  focused:', 1)[1]
+        self.assertEqual(native.count('path: control'), 1)
+        self.assertEqual(native.count('path: source'), 1)
         for line in workflow.splitlines():
             if 'secrets.' in line:
                 self.assertIn('secrets.REGISTRY_TOKEN', line)
+
+    def test_parent_cargo_config_is_rejected_before_compiling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.cargo').mkdir()
+            (root / '.cargo/config.toml').write_text('[build]\njobs=1\n')
+            with patch.object(focused.subprocess, 'check_output') as read, \
+                 self.assertRaisesRegex(ValueError, 'ancestor Cargo'):
+                focused.execute(root / 'source', self.values)
+            read.assert_not_called()
 
 
 if __name__ == '__main__':
