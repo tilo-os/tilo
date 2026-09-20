@@ -58,6 +58,7 @@ use vello::kurbo::{Affine, Point};
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 
 /// A self-contained WPE acceptance page with no external resources.
+#[cfg(feature = "wpe")]
 const WPE_READINESS_URL: &str = "data:text/html;base64,PCFkb2N0eXBlIGh0bWw+PG1ldGEgY2hhcnNldD0idXRmLTgiPjx0aXRsZT5UaWxvIFdQRSBvZmZsaW5lIHJlYWRpbmVzczwvdGl0bGU+PHN0eWxlPmJvZHl7YmFja2dyb3VuZDojMTgzMjQ1O2NvbG9yOiNmZmY7Zm9udDozMnB4IHNhbnMtc2VyaWY7bWFyZ2luOjQ4cHh9I3JlYWR5e2NvbG9yOiM4NmVmYWN9PC9zdHlsZT48aDEgaWQ9InJlYWR5Ij5USUxPIFdQRSBPRkZMSU5FIFJFQURZPC9oMT48cD5Mb2NhbCBkZXRlcm1pbmlzdGljIHBhZ2U7IG5vIGV4dGVybmFsIHJlc291cmNlcy48L3A+PGNhbnZhcyBpZD0icHJvYmUiIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiI+PC9jYW52YXM+PHNjcmlwdD5jb25zdCBjPWRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCJwcm9iZSIpLHg9Yy5nZXRDb250ZXh0KCIyZCIpO3guZmlsbFN0eWxlPSIjZmYwMDAwIjt4LmZpbGxSZWN0KDAsMCwzMiwzMik7PC9zY3JpcHQ+";
 
 /// # Errors
