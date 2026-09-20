@@ -9,13 +9,12 @@ use ui::theme::Theme;
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
 
 use ui::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::widget::{TextInput, Widget};
 
-use crate::input_controls::{InputEventCtx, InputPaintCtx};
+use crate::input_controls::InputEventCtx;
 use crate::model::{AnnoKind, Annotation, HiColor};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
@@ -41,25 +40,6 @@ pub(crate) enum CommentSemanticOutcome {
 struct Hit {
     rect: Rect,
     action: CommentAction,
-}
-
-pub(crate) struct CommentOverlayView<'a> {
-    pub viewport: Rect,
-    pub cursor: Point,
-    pub annotations: &'a [Annotation],
-    pub default_color: HiColor,
-}
-
-struct CommentLayout {
-    card: Rect,
-    pad: f64,
-    header_height: f64,
-    inner_x0: f64,
-    inner_x1: f64,
-    inner_width: f32,
-    text_width: f32,
-    row_gap: f64,
-    add_height: f64,
 }
 
 pub(crate) struct CommentOverlay {
