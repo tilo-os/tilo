@@ -46,9 +46,11 @@ class Handler(BaseHTTPRequestHandler):
         global release
         path = urlsplit(self.path).path
         if path == "/api/v1/repos/qos/releases":
-            self.send_json(200, {"full_name": "qos/releases", "private": False, "archived": False})
+            self.send_json(200, {"full_name": "qos/releases", "private": False, "internal": False, "archived": False})
+        elif path == "/api/v1/repos/tilo/internal-downloads":
+            self.send_json(200, {"full_name": "tilo/internal-downloads", "private": False, "internal": True, "archived": False})
         elif path == "/api/v1/repos/tilo/private-downloads":
-            self.send_json(200, {"full_name": "tilo/private-downloads", "private": True, "archived": False})
+            self.send_json(200, {"full_name": "tilo/private-downloads", "private": True, "internal": False, "archived": False})
         elif path.endswith("/releases/tags/imager-v1.2.3"):
             if release is None:
                 self.send_json(404, {"message": "not found"})
@@ -163,6 +165,12 @@ if TILO_RELEASE_REPOSITORY=tilo/private-downloads publish \
   exit 1
 fi
 grep -Fq 'release repository must be public' "$work/private.err"
+if TILO_RELEASE_REPOSITORY=tilo/internal-downloads publish \
+    >"$work/internal.out" 2>"$work/internal.err"; then
+  printf 'publisher accepted an internal binary target\n' >&2
+  exit 1
+fi
+grep -Fq 'release repository must be public' "$work/internal.err"
 
 second="$(publish)"
 grep -Fq 'verified existing tilo-imager-test.bin' <<<"$second" \
