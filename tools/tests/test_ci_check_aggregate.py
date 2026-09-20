@@ -147,6 +147,20 @@ class CheckAggregateTests(unittest.TestCase):
             with self.subTest(required=required, result=result):
                 self.assertNotEqual(self.aggregate(native_required=required, native=result)[0], 0)
 
+    def test_selected_native_job_fails_without_its_fixture_or_dependency(self):
+        script = step_script(self.workflow, "native-check")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for fixture_present in (False, True):
+                if fixture_present:
+                    fixture = root / "os/tests/test_openh264_source_order.py"
+                    fixture.parent.mkdir(parents=True)
+                    shutil.copyfile(ROOT / "os/tests/test_openh264_source_order.py", fixture)
+                result = subprocess.run([self.bash, "-c", script], cwd=root,
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotEqual(self.aggregate(native_required="true", native="failure")[0], 0)
+
     def test_wiring_and_failed_selector_pipeline(self):
         affected = section(self.workflow, "affected", 2)
         self.assertIn("if: needs.select.outputs.rust_required == 'true'", affected)

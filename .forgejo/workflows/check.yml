@@ -218,7 +218,9 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Verify deterministic native archive inputs
-        run: python3 os/tests/test_openh264_source_order.py -v
+        id: native-check
+        run: |
+          python3 os/tests/test_openh264_source_order.py -v
 
   affected:
     if: needs.select.outputs.rust_required == 'true'
