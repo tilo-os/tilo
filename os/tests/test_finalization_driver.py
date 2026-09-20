@@ -333,5 +333,26 @@ class FinalizationTests(unittest.TestCase):
         else:
             self.fail('descendant retained stdout after deadline')
 
+    def test_failed_command_writes_bounded_sanitized_diagnostics(self):
+        q = request()
+        driver = finalizer.Driver(q, '/verified/helpers', self.root)
+        driver.status({'stage': 'provisional', 'state': 'running', 'automatic_retry': False})
+        script = ('import sys;print("useful failure");print("TOKEN=do-not-publish");'
+                  'print("https://operator:private@example.invalid/path");sys.exit(7)')
+        with self.assertRaisesRegex(finalizer.CommandFailure, 'checkpoint not accepted'):
+            driver.command([sys.executable, '-c', script])
+        receipt = spool.document(self.root / 'failure.json')
+        self.assertEqual(receipt['stage'], 'provisional')
+        self.assertEqual(receipt['exit_code'], 7)
+        self.assertEqual(receipt['executable'], Path(sys.executable).name)
+        self.assertEqual(receipt['argument_count'], 3)
+        self.assertRegex(receipt['arguments_sha256'], r'^[0-9a-f]{64}$')
+        self.assertRegex(receipt['output_sha256'], r'^[0-9a-f]{64}$')
+        self.assertIn('useful failure', receipt['output_tail'])
+        self.assertNotIn('do-not-publish', receipt['output_tail'])
+        self.assertNotIn('private', receipt['output_tail'])
+        self.assertIn('https://***:***@example.invalid/path', receipt['output_tail'])
+        self.assertLessEqual(len(receipt['output_tail']), 4096)
+
 if __name__ == '__main__':
     unittest.main()
