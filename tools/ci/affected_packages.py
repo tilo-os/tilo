@@ -125,6 +125,10 @@ HEAVY_PACKAGES = {
 # rebuilding shared dependencies than it saves in wall time. Shard timing and
 # CPU figures are emitted by tools/ci/measure.sh so this can be tuned from runs.
 SHARD_COST_BUDGET = 1_000
+# Ordinary global-input checks use at most two existing x86 runners (four
+# Cargo workers each). Keep small/reverse-closure changes on one warm target;
+# explicit full qualification retains its native architecture matrix.
+MAX_DEVELOPER_SHARDS = 2
 
 
 def run(*args: str, cwd: Path) -> str:
@@ -415,7 +419,9 @@ def make_plan(
     # on x86, but links tests only for changed crates and the existing contract
     # suites. Global/unowned workspace inputs retain complete test coverage.
     tested = (selected if full else (seeds | ALWAYS_PACKAGES) & selected)
-    effective_shards = useful_shard_count(selected, packages, shard_count if force_full else 1)
+    shard_limit = (shard_count if force_full else
+                   min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
+    effective_shards = useful_shard_count(selected, packages, shard_limit)
     runners = NATIVE_RUNNERS if force_full else {"x86_64": NATIVE_RUNNERS["x86_64"]}
     matrix = []
     for arch, runner in runners.items():
