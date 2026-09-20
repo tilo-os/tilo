@@ -77,8 +77,13 @@ Scope tests to what you are proving — the compile dominates, and a whole-crate
 
 ```bash
 cargo test -p shell --lib room_activity
-cargo test -p shell --test interaction_test   # headless Wayland state, no GPU
+cargo test --locked -p shell --test it interaction_test::   # headless Wayland state, no GPU
 ```
+
+Shell integration files are modules of the single `it` target, not individual
+Cargo targets. Use `--test it MODULE::` to select a module, or its full
+`MODULE::TEST` path with `-- --exact` for one case. For remote native execution,
+see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
 
 Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
 targets, which is how test files have silently stopped building for days at a time.
