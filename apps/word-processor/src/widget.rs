@@ -17,7 +17,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use qdoc::model::Region;
-use qdoc::snapshot::{AttrVal, BlockView, CommentView, NoteView};
+use qdoc::snapshot::{AttrVal, BlockView, NoteView};
 use ui::chrome::{self, LabelCue, ToolbarItem};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -94,8 +94,6 @@ use text_runs::{
     block_runs_markup, char_font_family, char_font_size, char_highlight, note_numbering, note_text,
     parse_hex_rgb, running_head_runs, running_head_runs_editing,
 };
-#[cfg(test)]
-use toolbar::TOOLBAR_RIGHT_PAD;
 use toolbar::{
     COMPACT_TOOLBAR_BREAKPOINT, HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, item as toolbar_item,
     pack_rows as pack_toolbar_rows, swatch_reserve_width,
@@ -532,10 +530,13 @@ impl PanelMetrics {
 /// statement.
 struct ToolbarModel {
     /// Left padding `chrome::toolbar::draw` applies before the first item.
+    #[cfg(test)]
     pad: f64,
     /// Gap `chrome::toolbar::draw` places after each item.
+    #[cfg(test)]
     gap: f64,
     /// Extra width a group separator inserts before a `group_start` item.
+    #[cfg(test)]
     sep: f64,
     /// Right margin reserved when packing rows (breathing space at the
     /// toolbar's right edge).
@@ -549,8 +550,11 @@ struct ToolbarModel {
 }
 
 const TOOLBAR_MODEL: ToolbarModel = ToolbarModel {
+    #[cfg(test)]
     pad: 14.0,
+    #[cfg(test)]
     gap: 6.0,
+    #[cfg(test)]
     sep: 14.0,
     right_pad: 18.0,
     item_pad: 12.0,
@@ -726,12 +730,6 @@ struct NumRow {
     field: NumField,
     value: f32,
     geometry: PanelRow,
-}
-
-#[derive(Clone, Copy)]
-struct ImageFlipRow {
-    geometry: PanelRow,
-    button_width: f64,
 }
 
 struct PanelButton<'a> {
@@ -1359,24 +1357,6 @@ impl Default for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
-    fn canvas_horizontal_bounds(&self, full: Rect) -> (f64, f64) {
-        let right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            (full.x1 - self.styles_panel_width()).max(full.x0 + 1.0)
-        } else {
-            full.x1
-        };
-        let left = if self.outline.is_open() {
-            (full.x0 + self.outline_panel_width()).min(right - 1.0)
-        } else {
-            full.x0
-        };
-        (left, right)
-    }
-
-    fn layout_bar_height(&self) -> f64 {
-        LAYOUT_BAR_H * self.text_scale
-    }
-
     fn styles_panel_width(&self) -> f64 {
         STYLES_PANEL_W * self.text_scale
     }
@@ -2542,7 +2522,7 @@ impl WordProcessorWidget {
                             Ok(())
                         }
                         Some(PortalPurpose::OpenDocument) => {
-                            if (self.save_status == DocumentSaveStatus::Modified) {
+                            if self.save_status == DocumentSaveStatus::Modified {
                                 self.stage_replacement(PendingReplacement::Open(path));
                                 return;
                             }
@@ -3943,7 +3923,6 @@ impl WordProcessorWidget {
         _theme: &Theme,
         bar: Rect,
     ) {
-        let scale = f64::from(tr.text_scale());
         let cc = self.chrome;
         scene.fill(Fill::NonZero, transform, cc.bar, None, &bar);
         scene.fill(
@@ -4190,58 +4169,6 @@ impl WordProcessorWidget {
         }
 
         ctx.scene.pop_layer();
-    }
-
-    fn draw_panel_close_button(&mut self, ctx: &mut PanelDrawCtx<'_>, right: f64, y: f64) -> f64 {
-        let close = Rect::new(right - 62.0, y, right, y + 24.0);
-        draw_btn(
-            ctx.scene,
-            ctx.transform,
-            ctx.tr,
-            &ctx.cc,
-            &PanelButton {
-                rect: close,
-                label: &t("panel-close"),
-                active: false,
-                centered: true,
-            },
-        );
-        self.panel_hits.push((close, PanelHit::Close));
-        y + 30.0
-    }
-
-    /// Scale the complete inspector as one coherent surface at large system
-    /// text. Its existing layout is expressed in 1× logical units; scaling the
-    /// vector scene and remapping its hit rectangles preserves that proven
-    /// internal rhythm while making both labels and controls genuinely 200%.
-    fn draw_styles_panel_responsive(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        panel: Rect,
-    ) {
-        if self.text_scale <= 1.01 {
-            self.draw_styles_panel(scene, transform, tr, panel);
-            return;
-        }
-        let scale = self.text_scale;
-        let logical = Rect::new(0.0, 0.0, panel.width() / scale, panel.height() / scale);
-        let scaled_transform =
-            transform * Affine::translate((panel.x0, panel.y0)) * Affine::scale(scale);
-        let previous_text_scale = tr.text_scale();
-        tr.set_text_scale(1.0);
-        self.draw_styles_panel(scene, scaled_transform, tr, logical);
-        tr.set_text_scale(previous_text_scale);
-        self.panel_rect = panel;
-        for (rect, _) in &mut self.panel_hits {
-            *rect = Rect::new(
-                panel.x0 + rect.x0 * scale,
-                panel.y0 + rect.y0 * scale,
-                panel.x0 + rect.x1 * scale,
-                panel.y0 + rect.y1 * scale,
-            );
-        }
     }
 
     /// "This paragraph" section: alignment (L/C/R/J) and line-spacing cycling
@@ -5179,7 +5106,6 @@ fn draw_btn(
         active,
         centered: center,
     } = *button;
-    let bg = if active { cc.accent } else { cc.chip };
     let fg = if active { cc.on_accent } else { cc.text };
     chip_face(scene, transform, cc, r, 6.0, active);
     // Centre on the measured label box, not a per-glyph estimate: a scaled
@@ -8799,26 +8725,6 @@ impl WordProcessorWidget {
             self.handle_ctrl_shortcut(state, s, shift, handled);
             return;
         }
-        // Only these operations are known to preserve the body structure and
-        // all other blocks. A pending external mutation invalidates the hint.
-        let plain_text_edit = match logical_key {
-            Key::Character(_) => text
-                .is_some_and(|value| !value.is_empty() && value.chars().all(char::is_alphanumeric)),
-            Key::Named(NamedKey::Backspace) => {
-                self.inner.caret.offset > 0 && self.last_autocorrection.is_none()
-            }
-            _ => false,
-        };
-        let text_block = (!ctrl
-            && plain_text_edit
-            && self.inner.region() == Region::Body
-            && !self.inner.has_selection()
-            && self
-                .blocks
-                .iter()
-                .any(|block| block.id == self.inner.caret.block)
-            && self.materialized_heads == state.get_heads())
-        .then(|| self.inner.caret.block.clone());
         if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
             self.last_autocorrection = None;
         }
@@ -9527,7 +9433,7 @@ impl Widget for WordProcessorWidget {
             self.remember_saved_document(state);
         }
         if let Some((invocation, open_path)) = self.pending_resource_open.take() {
-            if (self.save_status == DocumentSaveStatus::Modified) {
+            if self.save_status == DocumentSaveStatus::Modified {
                 self.resource_file_invocation = Some(invocation);
                 self.stage_replacement(PendingReplacement::Open(open_path));
             } else {
@@ -10412,6 +10318,7 @@ impl ui::widget::AppWidget for WordProcessorWidget {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CommentThreadLayout {
     panel: Rect,
@@ -10420,6 +10327,7 @@ struct CommentThreadLayout {
     submit_button: Rect,
 }
 
+#[cfg(test)]
 impl CommentThreadLayout {
     fn for_host(host: Rect, scale: f64) -> Self {
         let width = (372.0 * scale).min((host.width() - 24.0 * scale).max(260.0 * scale));
@@ -10455,95 +10363,6 @@ impl CommentThreadLayout {
 }
 
 impl WordProcessorWidget {
-    fn draw_styles_panel_layer(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        fg: &FrameGeometry,
-    ) {
-        if !self.styles_panel_visible() {
-            self.panel_rect = Rect::ZERO;
-            self.panel_hits.clear();
-            return;
-        }
-        let full = self.rect;
-        let overlay = self.styles_panel_overlay();
-        if overlay {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.scrim.with_alpha_factor(0.35),
-                None,
-                &Rect::new(full.x0, full.y0 + fg.tb_h, full.x1, fg.layout_bar_top),
-            );
-        }
-        let panel = Rect::new(
-            if overlay {
-                (full.x1 - self.styles_panel_width()).max(full.x0)
-            } else {
-                fg.canvas_right
-            },
-            full.y0 + fg.tb_h,
-            full.x1,
-            fg.layout_bar_top,
-        );
-        self.draw_styles_panel_responsive(scene, transform, text_renderer, panel);
-    }
-
-    /// Draw the document outline after pagination so its active-heading state
-    /// reflects the frame being presented.
-    fn draw_outline_layer(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        fg: &FrameGeometry,
-    ) {
-        if !self.outline.is_open() {
-            self.outline.clear_frame();
-            return;
-        }
-        let full = self.rect;
-        let outline_band = Rect::new(full.x0, full.y0 + fg.tb_h, fg.canvas_left, fg.history_top);
-        let entries = self.outline_entries();
-        let active = self.active_outline_block();
-        let colors = self.chrome;
-        self.outline.draw(
-            &mut PaintContext::new(scene, transform, text_renderer),
-            outline_band,
-            &entries,
-            active.as_deref(),
-            OutlinePalette {
-                background: colors.bar,
-                border: colors.border,
-                chip: colors.chip,
-                text: colors.text,
-                text_dim: colors.text_dim,
-            },
-        );
-    }
-
-    fn draw_frame_footer(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        fg: &FrameGeometry,
-    ) {
-        let full = self.rect;
-        if fg.history_h > 0.0 {
-            let band = Rect::new(full.x0, fg.history_top, full.x1, fg.layout_bar_top);
-            self.history
-                .draw(scene, transform, text_renderer, theme, presence, band);
-        }
-        let layout_bar = Rect::new(full.x0, fg.layout_bar_top, full.x1, fg.content_bottom);
-        self.draw_layout_bar(scene, transform, text_renderer, theme, layout_bar);
-    }
-
     /// Draw the expanded, durable comment thread above the inline margin
     /// anchor. The panel is on-demand, retaining the compact canvas as the
     /// primary surface while keeping each persisted reply visible and usable.
@@ -12019,7 +11838,7 @@ impl WordProcessorWidget {
     }
 
     fn request_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
-        if (self.save_status == DocumentSaveStatus::Modified) {
+        if self.save_status == DocumentSaveStatus::Modified {
             self.stage_replacement(PendingReplacement::Template(template));
         } else {
             self.apply_template(state, template);
