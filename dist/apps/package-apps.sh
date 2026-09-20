@@ -48,6 +48,10 @@ mkdir -p "$out/qpkg" "$out/work"
 
 plan="$out/plan.json"
 python3 "$repo_root/tools/apps/app_release.py" --apps "$apps" > "$plan"
+if [[ -n ${TILO_APP_DEV_SOURCE:-} ]]; then
+    python3 "$repo_root/tools/apps/dev_app_versions.py" --root "$repo_root" \
+        --source "$TILO_APP_DEV_SOURCE" --plan "$plan"
+fi
 mapfile -t packages < <(jq -r '.packages[]' "$plan")
 runtime_plan="$out/runtime-plan.json"
 python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
@@ -112,6 +116,7 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     install -pm 0755 "$built" "$payload/bin/$binary"
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
+    python3 "$repo_root/tools/apps/dev_app_versions.py" --manifest "$staged_manifest" --version "$version"
     python3 "$repo_root/tools/apps/app_package_isa.py" stage --arch "$native_arch" \
         --manifest "$staged_manifest" --binary "$payload/bin/$binary" --output "$staged_manifest"
     qpkg="$out/qpkg/$name-$version-$(uname -m).qpkg"

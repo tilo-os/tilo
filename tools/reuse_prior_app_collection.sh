@@ -25,7 +25,10 @@ collection_count=$(jq -er '.catalog | length' "$collection_plan")
 
 # A complete build already contains every member. Returning before URL, token,
 # or network validation is deliberate: the prior collection is irrelevant.
-(( built_count < collection_count )) || exit 0
+if (( built_count == collection_count )); then
+  python3 "$(dirname "$0")/apps/dev_app_versions.py" --plan "$collection_plan" --built-index "$index"
+  exit 0
+fi
 
 [[ -n $prior_url ]] || {
   printf 'partial app build requires a prior collection URL\n' >&2
@@ -116,4 +119,6 @@ prior_qpkgs=("$prior_dir"/qpkg/*.qpkg)
   printf 'prior app collection contains no qpkgs\n' >&2
   exit 1
 }
+python3 "$(dirname "$0")/apps/dev_app_versions.py" --plan "$collection_plan" \
+  --built-index "$index" --prior-index "$prior_dir/index.json"
 cp "${prior_qpkgs[@]}" "$qpkg_dir/"
