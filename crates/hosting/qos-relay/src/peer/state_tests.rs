@@ -16,6 +16,7 @@ struct Fixture {
     recipient: AuthenticatedPeer,
     recipient_tx: mpsc::Sender<Envelope>,
     recipient_rx: mpsc::Receiver<StateDelivery>,
+    recipient_disconnected: mpsc::Receiver<()>,
     private: mpsc::Sender<PrivateOutbound>,
     metrics: Arc<crate::metrics::Metrics>,
     _receivers: Vec<mpsc::Receiver<Envelope>>,
@@ -34,8 +35,12 @@ impl Fixture {
         let (source_tx, source_rx) = mpsc::channel(32);
         let (recipient_tx, recipient_state_rx) = mpsc::channel(32);
         let (delivery, recipient_rx) = mpsc::channel(32);
-        let (disconnect, _) = mpsc::channel(1);
-        for (peer, tx) in [(&author, &source_tx), (&recipient, &recipient_tx)] {
+        let (source_disconnect, _) = mpsc::channel(1);
+        let (recipient_disconnect, recipient_disconnected) = mpsc::channel(1);
+        for (peer, tx, disconnect) in [
+            (&author, &source_tx, &source_disconnect),
+            (&recipient, &recipient_tx, &recipient_disconnect),
+        ] {
             runtime.add_subscriber(Subscriber {
                 device_public_key: peer.device_public_key,
                 role: peer.role,
@@ -54,7 +59,7 @@ impl Fixture {
         let source = StateSource {
             peer: author,
             tx: source_tx,
-            disconnect,
+            disconnect: source_disconnect,
             revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
             policy: Arc::new(std::sync::RwLock::new(
                 crate::policy::TrustPolicy::AllowMatchingUser,
@@ -77,6 +82,7 @@ impl Fixture {
             recipient,
             recipient_tx,
             recipient_rx,
+            recipient_disconnected,
             private,
             metrics: Arc::new(crate::metrics::Metrics::default()),
             _receivers: vec![source_rx, recipient_state_rx],
@@ -197,6 +203,87 @@ async fn state_owner_preserves_checkpoint_then_tail_and_durability_under_cancell
         fixture.envelope(2)
     );
     assert_eq!(fixture.store.load_retained().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn full_state_delivery_queue_preserves_live_session_and_durable_pending() {
+    let mut fixture = Fixture::new();
+    let (state_tx, state_rx) = mpsc::channel(1);
+    fixture.recipient_rx = state_rx;
+    fixture
+        .workspace
+        .lock()
+        .await
+        .state_sessions
+        .get_mut(&fixture.recipient.device_public_key)
+        .unwrap()
+        .tx = state_tx;
+
+    fixture.enqueue(0).await;
+    fixture.drained().await;
+    fixture.enqueue(3).await;
+    fixture.drained().await;
+
+    let runtime = fixture.workspace.lock().await;
+    assert!(
+        fixture.recipient_disconnected.try_recv().is_err(),
+        "a full durable state queue must not disconnect its live recipient"
+    );
+    assert!(
+        runtime
+            .subscribers
+            .contains_key(&fixture.recipient.device_public_key),
+        "a backpressured recipient must remain subscribed"
+    );
+    assert!(
+        runtime
+            .state_sessions
+            .contains_key(&fixture.recipient.device_public_key),
+        "a backpressured recipient must retain its ordered state session"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        2,
+        "both the queued and backpressured durable inputs must remain pending"
+    );
+}
+
+#[tokio::test]
+async fn closed_state_delivery_queue_disconnects_and_prunes_exact_session() {
+    let mut fixture = Fixture::new();
+    fixture.recipient_rx.close();
+
+    fixture.enqueue(0).await;
+    fixture.drained().await;
+
+    let runtime = fixture.workspace.lock().await;
+    assert!(
+        fixture.recipient_disconnected.try_recv().is_ok(),
+        "a closed state queue must disconnect its recipient"
+    );
+    assert!(
+        !runtime
+            .subscribers
+            .contains_key(&fixture.recipient.device_public_key),
+        "a closed recipient must be pruned"
+    );
+    assert!(
+        !runtime
+            .state_sessions
+            .contains_key(&fixture.recipient.device_public_key),
+        "a closed recipient's ordered state session must be pruned"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        1,
+        "a closed wire cannot acknowledge its durable pending input"
+    );
 }
 
 #[tokio::test]

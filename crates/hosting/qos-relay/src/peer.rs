@@ -1455,7 +1455,10 @@ async fn enqueue_state_inner(
                         if !sub.tx.same_channel(original) { continue; }
                         let Some(target) = runtime.state_sessions.get(recipient) else { continue };
                         if !state_member(&runtime, &target.peer) || source.as_ref().is_some_and(|s| !s.cert(&target.peer)) { continue; }
-                        let Ok(budget) = &budget else { let _ = sub.disconnect.try_send(()); continue; };
+                        // Durable coverage was committed before publication. If
+                        // the shared live-byte budget is full, leave that coverage
+                        // for replay/anti-entropy without fencing a healthy wire.
+                        let Ok(budget) = &budget else { continue };
                         if crate::persistence::correlated_diagnostics() && let Envelope::Delta { workspace_id, authored_at_ns, .. } = &*envelope {
                             tracing::info!(phase="server_delta_publication", workspace_id, authored_at_ns, recipient=%hex::encode(&recipient[..4]));
                         }
@@ -1463,10 +1466,16 @@ async fn enqueue_state_inner(
                             envelope: envelope.clone(), cleanup: commit.pending.remove(recipient), source: source.clone(),
                             _budget: budget.clone(), live: target.live.clone(),
                         };
-                        if target.tx.try_send(delivery).is_err() {
-                            let _ = sub.disconnect.try_send(());
-                            runtime.remove_subscriber_session(recipient, original);
-                        } else { delivered = delivered.saturating_add(1); }
+                        match target.tx.try_send(delivery) {
+                            Ok(()) => delivered = delivered.saturating_add(1),
+                            // A full live queue is backpressure. Dropping this
+                            // delivery keeps its pending/retained coverage intact.
+                            Err(mpsc::error::TrySendError::Full(_)) => {}
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                let _ = sub.disconnect.try_send(());
+                                runtime.remove_subscriber_session(recipient, original);
+                            }
+                        }
                     }
                 }
                 Ok(())
