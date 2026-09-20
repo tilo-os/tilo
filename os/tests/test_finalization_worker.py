@@ -223,19 +223,22 @@ class WorkerContract(unittest.TestCase):
         self.assertTrue(all('/' not in name and name.endswith('.json') for name in worker.EVIDENCE))
         self.assertFalse(any(word in name for name in worker.EVIDENCE for word in ('key', 'auth', 'log')))
 
-    def test_stage5_restore_requires_an_explicit_complete_bounded_receipt_chain(self):
-        with tempfile.TemporaryDirectory(prefix='tilo-stage5-checkpoint-') as temporary:
-            root = Path(temporary)
-            for number, name in enumerate(worker.STAGE5_EVIDENCE, 1):
-                (root / name).write_text(json.dumps({'schema': 1, 'stage': number}))
-            result = worker.stage5_checkpoint(root)
-            self.assertEqual(tuple(result), worker.STAGE5_EVIDENCE)
-            (root / worker.STAGE5_EVIDENCE[-1]).unlink()
-            with self.assertRaisesRegex(ValueError, 'complete bounded'):
-                worker.stage5_checkpoint(root)
-            (root / worker.STAGE5_EVIDENCE[-1]).symlink_to(root / worker.STAGE5_EVIDENCE[0])
-            with self.assertRaisesRegex(ValueError, 'complete bounded'):
-                worker.stage5_checkpoint(root)
+    def test_restore_requires_an_explicit_complete_bounded_receipt_chain(self):
+        for stage in worker.CHECKPOINT_STAGES:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory(
+                    prefix=f'tilo-stage{stage}-checkpoint-') as temporary:
+                root = Path(temporary)
+                expected = worker.EVIDENCE[:stage]
+                for number, name in enumerate(expected, 1):
+                    (root / name).write_text(json.dumps({'schema': 1, 'stage': number}))
+                result = worker.registry_checkpoint(root, stage)
+                self.assertEqual(tuple(result), expected)
+                (root / expected[-1]).unlink()
+                with self.assertRaisesRegex(ValueError, 'complete bounded'):
+                    worker.registry_checkpoint(root, stage)
+                (root / expected[-1]).symlink_to(root / expected[0])
+                with self.assertRaisesRegex(ValueError, 'complete bounded'):
+                    worker.registry_checkpoint(root, stage)
 
     def archive(self, kind=tarfile.REGTYPE, size=2, count=1):
         buffer = io.BytesIO()
