@@ -50,14 +50,14 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 // the Cap'n Proto compiler. build.rs keeps the schema and generated source in
 // lockstep with a checksum gate.
 #[allow(
+    unused,
+    dead_code,
     clippy::all,
     clippy::nursery,
     clippy::pedantic,
     clippy::restriction,
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
-#[allow(unused)]
-#[allow(dead_code)]
 pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
