@@ -32,5 +32,5 @@ def command(context,identifier,epoch,iid):
  import re
  if not re.fullmatch(r'sha256:[0-9a-f]{64}',identifier):raise ValueError('immutable provisional installer base required')
  return ['podman','--remote=false','build','--pull=never','--network=none','--source-date-epoch',str(epoch),'--rewrite-timestamp',
-         '--build-context','installer-base=container-image://'+identifier,'--build-arg','TILO_BASE_IMAGE=installer-base',
+         '--build-arg','TILO_BASE_IMAGE='+identifier,
          '--build-arg','TILO_INSTALLER_DEV_SSH=0','--iidfile',str(iid),'--file',str(Path(context)/'Containerfile'),str(context)]
