@@ -33,6 +33,45 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(result["queue_seconds"], 1)
         self.assertIsNone(result["jobs"][0]["queue_seconds"])
 
+    def test_rerun_uses_latest_attempt_creation_for_run_intervals(self):
+        result = timing.report({"runs": [{
+            "id": 11333,
+            "created": "2026-09-20T07:26:04Z",
+            "started": "2026-09-20T09:12:00Z",
+            "stopped": "2026-09-20T09:15:00Z",
+            "jobs": [{
+                "id": 91600,
+                "attempt": 2,
+                "created_at": "2026-09-20T09:10:27Z",
+                "log": ("2026-09-20T09:12:01Z Runner fixture received task 1 of job check\n"
+                        "2026-09-20T09:14:59Z 🏁  Job succeeded\n"),
+            }],
+        }]})["runs"][0]
+        self.assertEqual(result["attempt"], 2)
+        self.assertEqual(result["attempt_created"], "2026-09-20T09:10:27Z")
+        self.assertEqual(result["queue_seconds"], 93)
+        self.assertEqual(result["wall_seconds"], 180)
+        self.assertEqual(result["total_seconds"], 273)
+        self.assertEqual(
+            result["jobs"][0]["attempt_created_to_runner_received_seconds"], 94
+        )
+        self.assertIn("Run 11333 attempt 2", timing.human_summary({
+            "runs": [result], "experience": {},
+        }))
+
+    def test_rerun_without_attempt_creation_does_not_use_original_creation(self):
+        result = timing.report({"observed_at": "2026-09-20T09:11:00Z", "runs": [{
+            "id": 11333,
+            "status": "waiting",
+            "created": "2026-09-20T07:26:04Z",
+            "jobs": [{"id": 91600, "attempt": 2}],
+        }]})["runs"][0]
+        self.assertEqual(result["attempt"], 2)
+        self.assertIsNone(result["attempt_created"])
+        self.assertIsNone(result["queue_seconds"])
+        self.assertIsNone(result["current_queue_seconds"])
+        self.assertIsNone(result["total_seconds"])
+
     def test_create_without_pull_keeps_startup_time_and_unknown_pull_time(self):
         # Sanitized normal-main lint timestamps (job 83571); absence of a pull
         # alone is not proof of a cache hit if the supplied log is incomplete.
