@@ -230,6 +230,11 @@ pub struct WindowGroup {
     /// tabs or in-flight closing hosts left. `GroupRow` prunes the group
     /// once `close_complete()` is true.
     closing_at: Option<Instant>,
+    /// Last motion policy observed from the active theme. Widget scheduling
+    /// has no `Theme` parameter, so draw latches it here and the next
+    /// `needs_animation_frame` query can avoid waking for transitions that
+    /// must snap to their endpoint.
+    reduce_motion: bool,
 }
 
 /// Shared layout numbers for the maximized-chrome pill row, computed once in
@@ -275,6 +280,7 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            reduce_motion: false,
             style_dirty: false,
             built_active: Some(active_id),
             pending_maximize_change: None,
@@ -606,6 +612,7 @@ impl WindowGroup {
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
+            reduce_motion: false,
             style_dirty: false,
             built_active: Some(active_id),
             pending_maximize_change: None,
@@ -1053,6 +1060,9 @@ impl WindowGroup {
     /// `fade_y` is currently always 0, kept in the tuple in case a future
     /// close curve wants a settle.
     fn fade_transform_params(&self) -> (f32, f64, f64, f64) {
+        if self.reduce_motion && self.closing_at.is_none() {
+            return (1.0, 0.0, 0.0, 1.0);
+        }
         if let Some(started) = self.closing_at {
             // No offset: the per-host curve already carries the y-drift.
             // Ratio of two `Duration`s taken via `as_secs_f64` rather than
@@ -1479,6 +1489,7 @@ impl Widget for WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.reduce_motion = theme.reduce_motion;
         // Tolerance rather than exact float equality: this only gates a
         // no-op-transform fast path, so a value merely close to identity
         // is close enough to skip composing it.
@@ -1494,7 +1505,7 @@ impl Widget for WindowGroup {
         // before the app has drawn — without restarting it here the fade
         // would already have run its course against an invisible group.
         if std::mem::take(&mut self.held_back) {
-            self.spawned_at = Some(Instant::now());
+            self.spawned_at = (!self.reduce_motion).then(Instant::now);
         }
         // Close checked first (mutually exclusive with spawn in practice):
         // `opacity 0→1, scale 0.92→1, x -16→0` over `SPAWN_ANIM_MS`
@@ -1769,9 +1780,10 @@ impl Widget for WindowGroup {
     fn needs_animation_frame(&self) -> bool {
         // `WindowGroup::children()` uses the default (empty) impl, so
         // ancestors wouldn't otherwise see the bar's drag/spawn signals.
-        let spawn_in_flight = self
-            .spawned_at
-            .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));
+        let spawn_in_flight = !self.reduce_motion
+            && self
+                .spawned_at
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(SPAWN_ANIM_MS));
         // GROUP_CLOSE_FADE_MS mirrors CLOSE_FADE_MS (tabs.rs) as a whole
         // millisecond u64, avoiding an f32->u64 cast at every use site.
         let close_window = Duration::from_millis(GROUP_CLOSE_FADE_MS);
@@ -2959,6 +2971,23 @@ mod tests {
         assert!(
             g.needs_animation_frame(),
             "in-flight spawn fade must pump the run loop",
+        );
+    }
+
+    #[test]
+    fn reduced_motion_spawn_snaps_without_pumping_frames() {
+        let mut g = make_group();
+        g.reduce_motion = true;
+        g.start_spawn_animation();
+
+        assert_eq!(
+            g.fade_transform_params(),
+            (1.0, 0.0, 0.0, 1.0),
+            "reduced motion must paint a newly opened group at its settled transform",
+        );
+        assert!(
+            !g.needs_animation_frame(),
+            "the settled spawn must not keep a software-rendered compositor awake",
         );
     }
 
