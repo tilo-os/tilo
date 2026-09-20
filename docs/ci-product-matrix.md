@@ -15,17 +15,26 @@ The protected check and lint contexts must pass for the exact head before merge.
 selection keeps the Rust lane focused while nightly CI remains the full-workspace
 backstop.
 
-The trusted merge controller pilots review-optional integration only for Rust
-source changes inside an existing `apps/<app>/src/` package. The author must post
-`/merge <full-head-sha>` after exact-head checks pass. An official review request
-holds that head until it is cancelled or receives an allowed exact-head approval;
-current change requests block, and every push invalidates the prior decision.
-Documentation, tools, workflow YAML and supported `dist/`/`os/` scripts require
-an official approval for the current head, author intent and the deployed reviewed
-operator command. Paths outside both allowlists are not yet admitted. See
-[Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow) for the
-command and limits, and [Release pipeline](release-pipeline.md) for heavy-build
-and publication triggers.
+The trusted merge controller classifies changes using the deployed
+[admission code](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/admission.py)
+and [path policy](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json).
+Ordinary product and documentation changes are routine; tools are classified by
+path, not by being tools. CI/policy, publication, signing and named security
+boundaries require the reviewed scope, as does an existing file's executable-mode
+change. Named dependency exceptions carry their own checks.
+
+After exact-head checks pass, the author posts `/merge <full-head-sha>` or follows
+the controller's queue instructions. Review is optional for routine changes and
+is requested explicitly through Forgejo after checks pass; no review agent starts
+automatically. An official request holds integration until cancelled or approved
+for that head; change requests block. A new push requires fresh checks and intent.
+
+An optional approval does **not** turn a routine documentation PR into a reviewed-
+scope change. Such a PR still uses routine integration, respecting queue priority.
+The reviewed operator command is only for changes the classifier assigns to that
+scope. See [Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow)
+for the command and limits, and [Release pipeline](release-pipeline.md) for
+heavy-build and publication triggers.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |

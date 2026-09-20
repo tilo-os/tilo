@@ -152,7 +152,7 @@ click handler is invisible to every one of them.
 
 `tilo-control` is the CLI over the compositor's control socket — path from `$TILO_TEST_CONTROL`,
 default `/tmp/tilo.sock`. It is a `shell` binary and is **not on PATH**; run it with
-`cargo run -q --bin tilo-control --` , or `cargo install --path shell --bin tilo-control` once
+`cargo run -q --bin tilo-control --` , or `cargo install --locked --path crates/session/shell --bin tilo-control` once
 if you use it often. It has two halves; reach for the first.
 
 Semantic — how a collaborator, an agent or a script drives an app:
