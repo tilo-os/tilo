@@ -388,6 +388,26 @@ class ProductTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             api.qualify_receipt(receipt)
 
+    def test_release_trust_tracks_shared_graph_not_check_scheduling(self):
+        import base64
+        import hashlib
+        content = b'[toolchain]\nchannel="1.97.1"\n'
+        self.assertNotIn('tools/ci/affected_packages.py', product.REQUIRED_PATHS)
+        self.assertIn('tools/ci/workspace_graph.py', product.REQUIRED_PATHS)
+        policy = dict(POLICY, trusted_files={path: hashlib.sha256(content).hexdigest()
+                                            for path in product.REQUIRED_PATHS})
+        api = product.ProductForgejo(policy)
+        seen = []
+        def read(path):
+            seen.append(path)
+            if path == 'repos/' + product.REPO:
+                return {'id': 23, 'full_name': product.REPO}
+            return cargo_listing(path) or {'type': 'file', 'content': base64.b64encode(content).decode()}
+        api.call = read
+        api.qualify_receipt(dict(desired(), policy_sha256=api.policy_sha))
+        self.assertTrue(any('/contents/tools/ci/workspace_graph.py?' in path for path in seen))
+        self.assertFalse(any('/contents/tools/ci/affected_packages.py?' in path for path in seen))
+
     def test_unverified_success_cannot_rebind_known_run_id(self):
         self.start()
         intent = self.store.read()['active']
@@ -403,7 +423,7 @@ class ProductTests(unittest.TestCase):
         files = {path: hashlib.sha256(content).hexdigest() for path in product.REQUIRED_PATHS}
         for helper in ('tools/assemble_verified_apps.py', 'tools/apps/final_app_receipt.py',
                        'tools/apps/app_channel_manifest.py', 'dist/apps/assemble-collection.sh',
-                       'tools/apps/assemble_app_collection.py', 'tools/ci/affected_packages.py',
+                       'tools/apps/assemble_app_collection.py', 'tools/ci/workspace_graph.py',
                        'tools/ci/__init__.py', 'tools/ci/resolve_builder.py', 'tools/ci/python.py'):
             with self.subTest(helper=helper):
                 self.assertIn(helper, files)
