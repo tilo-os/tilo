@@ -3,6 +3,7 @@
 
 Offline: --input evidence.json (object containing runs, each with jobs and optional log).
 Live: --repo owner/repo --run 123 --run 124 [--hostname code.sandbox.example].
+Run numbers match the Forgejo web URL and fgj, not global API database IDs.
 Recent stream: --repo owner/repo --recent 20 [--workflow check.yml] [--head SHA].
 JSON goes to --output or stdout; a compact human summary goes to stderr.
 Pull-to-create is an observed interval, including registry/auth/setup overhead,
@@ -482,12 +483,23 @@ def hydrate_recent_run(args, run, token):
 
 def collect(args):
     runs = []
-    for run_id in args.run:
+    for number in args.run:
+        if number < 1:
+            raise ValueError("run number must be positive")
         prefix = f"repos/{args.repo}/actions"
+        resolved = command_json(args, ["actions", "run", "view", str(number),
+                                       "--repo", args.repo, "--json"]).get("run", {})
+        run_id = resolved.get("id")
+        if (type(run_id) is not int or run_id < 1
+                or resolved.get("index_in_repo") != number
+                or not resolved.get("commit_sha")):
+            raise ValueError("resolved run does not match requested repository run number")
         run = api(args, f"{prefix}/runs/{run_id}")
-        if run["id"] != run_id:
-            raise ValueError("returned run ID does not match request")
-        # Explicit run endpoint: no global run listing or polling.
+        if (run.get("id") != run_id or run.get("index_in_repo") != number
+                or run.get("repository", {}).get("full_name") != args.repo
+                or run.get("commit_sha") != resolved["commit_sha"]):
+            raise ValueError("returned run identity does not match resolved repository run")
+        # Resolve the UI number once, then use its verified database ID for jobs.
         jobs = api(args, f"{prefix}/runs/{run_id}/jobs")
         if isinstance(jobs, dict):
             jobs = jobs["jobs"]
@@ -579,7 +591,8 @@ def main():
     parser.add_argument("--input", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--repo")
-    parser.add_argument("--run", type=int, action="append", default=[])
+    parser.add_argument("--run", type=int, action="append", default=[],
+                        help="repository run number from Forgejo URL or fgj (not API database ID)")
     parser.add_argument("--recent", type=int, help="inspect this many newest runs (maximum 100)")
     parser.add_argument("--workflow", help="with --recent, select one workflow filename")
     parser.add_argument("--head", help="with --recent, select one exact commit SHA")
