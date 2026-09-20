@@ -132,6 +132,7 @@ pub fn unpack<S: BlobStore>(
     // we can mark it +x once its bytes hit disk. Path values inside a
     // Collection are always forward-slash-normalised regardless of host,
     // so the comparison is stable.
+    #[cfg(unix)]
     let entrypoint_rel: Option<String> = match manifest.package.kind {
         crate::id::Kind::App | crate::id::Kind::Service => manifest
             .entrypoint

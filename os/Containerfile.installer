@@ -48,6 +48,11 @@ RUN test -x /usr/bin/tilo-installer \
     && /usr/libexec/tilo-uki-cmdline remove rd.udev.log_level \
     && /usr/libexec/tilo-uki-cmdline remove loglevel \
     && /usr/libexec/tilo-uki-cmdline remove vt.global_cursor_default \
+    # These describe the installed target. The live UKI uses the three
+    # length-stable installer placeholders below; its independently derived
+    # target variant adds root discovery back after removing those slots.
+    && /usr/libexec/tilo-uki-cmdline remove root \
+    && /usr/libexec/tilo-uki-cmdline remove rd.luks.options \
     && /usr/libexec/tilo-uki-cmdline append tilo.root=0000000000000000000000000000000000000 \
     && /usr/libexec/tilo-uki-cmdline append tilo.luks=000000000000000000000000000000000000000000000 \
     # Reserve one length-stable measured token for per-volume TPM2/FIDO2

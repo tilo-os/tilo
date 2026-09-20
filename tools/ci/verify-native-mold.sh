@@ -24,7 +24,7 @@ export TILO_CI_MOLD_TARGET="$arch-unknown-linux-gnu"
 export TILO_CI_MOLD_THREADS=2
 
 rustc -Vv
-rpm -q --qf '%{NEVRA}\n' mold
+cat /usr/local/share/tilo-builder/mold-source.txt
 mold --version
 
 work=$(mktemp -d)
