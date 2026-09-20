@@ -4,6 +4,9 @@ Source audit: main `97fde6687`, 2026-09-19. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
 artifact.
 
+See the [CI and packaging roadmap](ci-production-roadmap.md) for the build graph,
+promotion model, service levels and phased production plan.
+
 ## Routine change lifecycle
 
 Routine work starts on a task branch and lands through one updated pull request.
