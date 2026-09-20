@@ -2755,6 +2755,10 @@ impl ShellOverlayHost {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the constructor keeps the complete injected service bundle and retained host state in one auditable initialization"
+    )]
     fn from_inputs(content: Box<dyn Widget>, inputs: OverlayHostInputs) -> Self {
         let OverlayHostInputs {
             search_registry,
@@ -16353,6 +16357,10 @@ impl ShellOverlayHost {
         bounds
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
+    )]
     fn draw_collaborators_dropdown(
         &mut self,
         scene: &mut Scene,
@@ -18859,12 +18867,7 @@ impl ShellOverlayHost {
         let (room, local) = {
             let chrome = chrome_rc.borrow();
             let local = chrome.active_local_user();
-            let tree = chrome.tree();
-            let room = tree
-                .workspaces
-                .iter()
-                .find(|w| w.id == tree.active)
-                .map(|w| w.room.to_string());
+            let room = chrome.tree().active_workspace().map(|w| w.room.to_string());
             (room, local)
         };
         let Some(room) = room else {
