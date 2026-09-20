@@ -24,6 +24,27 @@ import hardware_profile
 import installer_overlay
 import signing_spool as spool
 
+
+class CommandFailure(ValueError):
+    """Bounded command failure details for a public, sanitized receipt."""
+
+    def __init__(self, reason, arguments, output, exit_code=None):
+        super().__init__(reason)
+        self.reason = reason
+        self.arguments = tuple(arguments)
+        self.output = bytes(output)
+        self.exit_code = exit_code
+
+
+def sanitized_tail(output, limit=4096):
+    text = output[-limit * 4:].decode('utf-8', errors='replace')
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    text = re.sub(r'(?i)([a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@', r'\1***:***@', text)
+    text = re.sub(r'(?i)\b(authorization|password|passwd|token|secret|credential|auth)\b(\s*[:=]\s*)([^\s,;]+)',
+                  r'\1\2***', text)
+    text = ''.join(character if character in '\n\t' or character.isprintable() else '\ufffd' for character in text)
+    return text[-limit:]
+
 STAGES = ('rebind', 'loader', 'provisional', 'composefs', 'reseal', 'prediction', 'verified', 'published')
 FIELDS = {'schema', 'source_revision', 'source_dir', 'helpers_revision', 'receipt', 'receipt_sha256',
           'public_bundle', 'manifest_sha256', 'target', 'new_public_bundle', 'new_manifest_sha256',
@@ -93,15 +114,16 @@ def run_bounded(arguments, environment, timeout):
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not selector.select(remaining):
-                    raise ValueError('finalization stage exceeded deadline')
+                    raise CommandFailure('finalization stage exceeded deadline', arguments, data)
                 chunk = process.stdout.read1(65536)
                 if not chunk:
                     break
                 data.extend(chunk)
                 if len(data) > 16 * 1024**2:
-                    raise ValueError('finalization stage output exceeded bound')
-        if process.wait(timeout=max(0.01, deadline - time.monotonic())):
-            raise ValueError('finalization command failed; checkpoint not accepted')
+                    raise CommandFailure('finalization stage output exceeded bound', arguments, data)
+        exit_code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        if exit_code:
+            raise CommandFailure('finalization command failed; checkpoint not accepted', arguments, data, exit_code)
         completed = True
         return bytes(data)
     finally:
@@ -173,7 +195,24 @@ class Driver:
     def command(self, arguments, timeout=None):
         if timeout is None:
             timeout = self.request['stage_timeout_seconds']
-        return self.runner([str(a) for a in arguments], self.environment, timeout)
+        arguments = [str(a) for a in arguments]
+        try:
+            return self.runner(arguments, self.environment, timeout)
+        except CommandFailure as error:
+            receipt = {'schema': 1, 'request_sha256': self.binding,
+                       'reason': error.reason, 'executable': Path(error.arguments[0]).name,
+                       'argument_count': len(error.arguments),
+                       'arguments_sha256': spool.digest(spool.canonical(list(error.arguments))),
+                       'exit_code': error.exit_code, 'output_sha256': spool.digest(error.output),
+                       'output_tail': sanitized_tail(error.output)}
+            try:
+                status = spool.document(self.evidence / 'status.json')
+                if status.get('request_sha256') == self.binding and isinstance(status.get('stage'), str):
+                    receipt['stage'] = status['stage']
+                spool.publish(self.evidence / 'failure.json', spool.canonical(receipt))
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+            raise
 
     def helper(self, name, arguments):
         raw = self.command(['/usr/bin/python3', self.dev / name, *arguments])
