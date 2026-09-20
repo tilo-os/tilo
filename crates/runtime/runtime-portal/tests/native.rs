@@ -24,7 +24,7 @@ fn bootstrap_child() {
     if std::env::var_os("QOS_BOOTSTRAP_LOOKUP_ONLY").is_some() {
         assert!(runtime_portal::service_fd("collab").is_none());
         assert!(runtime_portal::service_fd("identity").is_none());
-        assert!(!runtime_portal::is_qos_native());
+        assert!(!runtime_portal::is_tilo_native());
         return;
     }
     match runtime_portal::native::ensure_attached("dev.qos.bootstrap-test") {
