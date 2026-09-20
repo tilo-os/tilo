@@ -83,17 +83,6 @@ pub struct NavRow {
 }
 
 impl NavRow {
-    fn rail_label(label: &str, theme: &Theme, max_chars: usize) -> String {
-        if theme.text_scale <= 1.25 || label.chars().count() <= max_chars {
-            return label.to_owned();
-        }
-        let mut compact = label
-            .chars()
-            .take(max_chars.saturating_sub(1))
-            .collect::<String>();
-        compact.push('…');
-        compact
-    }
     pub fn new(
         id: impl Into<String>,
         kind: NavKind,
@@ -599,10 +588,6 @@ impl NavRow {
         selected: bool,
     ) {
         let c = &theme.tokens.colors;
-        let scale = f64::from(theme.text_scale);
-        let label_y =
-            r.y0 + (r.height() - f64::from(theme.tokens.typography.scale.sm) * scale) / 2.0;
-        let method_y = r.y0 + (r.height() - 10.0 * scale) / 2.0;
         if selected {
             let shape = RoundedRect::from_rect(
                 Rect::new(r.x0, r.y0 + 2.0, r.x1, r.y1 - 2.0),
