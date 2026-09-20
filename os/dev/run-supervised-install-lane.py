@@ -317,6 +317,65 @@ def host_agent(context, node):
     return matches[0]
 
 
+def validate_creator_failure(document):
+    required = {'schema','purpose','stage','argv_sha256','returncode',
+                'stdout_base64','stderr_base64','stdout_truncated','stderr_truncated'}
+    if (set(document) != required or document['schema'] != 1
+            or document['purpose'] != 'tilo-supervised-bootc-install-failure'
+            or document['stage'] != 'bootc-install-to-disk'
+            or not re.fullmatch(r'[0-9a-f]{64}', document['argv_sha256'])
+            or type(document['returncode']) is not int or document['returncode'] == 0
+            or type(document['stdout_truncated']) is not bool
+            or type(document['stderr_truncated']) is not bool):
+        raise ValueError('creator failure evidence has invalid metadata')
+    for name in ('stdout_base64', 'stderr_base64'):
+        try: value = base64.b64decode(document[name], validate=True)
+        except (ValueError, TypeError) as error:
+            raise ValueError('creator failure evidence has invalid stream encoding') from error
+        if len(value) > 256 * 1024:
+            raise ValueError('creator failure evidence stream exceeds bound')
+
+
+def collect_creator_failure(args, disk):
+    remote = '/work/disk-output/bootc-install.failure.json'
+    script = r'''import os,stat,sys
+p=sys.argv[1]
+try:i=os.lstat(p)
+except FileNotFoundError:sys.exit(3)
+if not stat.S_ISREG(i.st_mode) or i.st_uid or i.st_gid or i.st_nlink!=1 or i.st_mode&0o077 or not 2<=i.st_size<=1024*1024:sys.exit(4)
+fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW)
+try:
+ o=os.fstat(fd)
+ if (o.st_dev,o.st_ino,o.st_size)!=(i.st_dev,i.st_ino,i.st_size):sys.exit(4)
+ d=os.read(fd,1024*1024+1)
+ if len(d)!=i.st_size:sys.exit(4)
+ sys.stdout.buffer.write(d)
+finally:os.close(fd)
+'''
+    result = subprocess.run(kubectl(args.context, '-n', disk['namespace'], 'exec', disk['pod'],
+        '-c', 'disk', '--', 'python3', '-c', script, remote), capture_output=True)
+    if result.returncode == 3:
+        return False
+    if result.returncode:
+        raise ValueError('failed to collect bounded creator failure evidence')
+    document = json.loads(result.stdout)
+    validate_creator_failure(document)
+    destination = args.operation_dir / 'creator-install-failure.json'
+    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write((json.dumps(document, indent=2, sort_keys=True) + '\n').encode())
+            output.flush(); os.fsync(output.fileno())
+    except BaseException:
+        try: destination.unlink()
+        except FileNotFoundError: pass
+        raise
+    unlink = "import os,sys; p=sys.argv[1]; i=os.lstat(p); fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW); o=os.fstat(fd); os.close(fd); assert (i.st_dev,i.st_ino)==(o.st_dev,o.st_ino); os.unlink(p)"
+    command(kubectl(args.context, '-n', disk['namespace'], 'exec', disk['pod'], '-c', 'disk',
+                    '--', 'python3', '-c', unlink, remote), timeout=30)
+    return True
+
+
 def controller(root, args, disk, agent, inspect_only, evidence_name='creator-environment.json'):
     argv = ['python3', str(root/'os/dev/create-supervised-kata-disk.py'),
       '--context',args.context,'--namespace',disk['namespace'],'--pod',disk['pod'],
@@ -330,7 +389,12 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
     else:
         argv += ['--registry-auth',str(args.operation_dir/'registry-auth.json'),
                  '--creation-receipt',str(args.operation_dir/'creation.json')]
-    return command(argv, timeout=7200)
+    try:
+        return command(argv, timeout=7200)
+    except ValueError:
+        if not inspect_only:
+            collect_creator_failure(args, disk)
+        raise
 
 
 def prepare_disk_output(context, disk):

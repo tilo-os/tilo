@@ -1,8 +1,12 @@
 """Pure admission tests; no cluster, image, disk or VM operation."""
+import base64
 import copy
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -116,6 +120,39 @@ class LaneAdmission(unittest.TestCase):
                 changed['spec']['tolerations'].append({'operator':'Exists'})
             with self.subTest(change=change),self.assertRaisesRegex(ValueError,'requested isolation'):
                 lane.binding(changed,n,manifest)
+
+    def test_creator_failure_evidence_is_exact_and_bounded(self):
+        good = {'schema': 1, 'purpose': 'tilo-supervised-bootc-install-failure',
+                'stage': 'bootc-install-to-disk', 'argv_sha256': 'a' * 64,
+                'returncode': 1, 'stdout_base64': base64.b64encode(b'progress').decode(),
+                'stderr_base64': base64.b64encode(b'failure').decode(),
+                'stdout_truncated': False, 'stderr_truncated': False}
+        lane.validate_creator_failure(good)
+        for key, value in [('extra', True), ('returncode', 0),
+                           ('stderr_base64', 'not base64!')]:
+            hostile = dict(good); hostile[key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                lane.validate_creator_failure(hostile)
+
+    def test_creator_failure_collection_is_private_and_never_overwrites(self):
+        document = {'schema': 1, 'purpose': 'tilo-supervised-bootc-install-failure',
+                    'stage': 'bootc-install-to-disk', 'argv_sha256': 'a' * 64,
+                    'returncode': 1, 'stdout_base64': '', 'stderr_base64': '',
+                    'stdout_truncated': False, 'stderr_truncated': False}
+        disk = {'namespace': 'kata-system', 'pod': 'tilo-disk-run1'}
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(context='ctx', operation_dir=Path(directory))
+            result = SimpleNamespace(returncode=0, stdout=json.dumps(document).encode())
+            with patch.object(lane.subprocess, 'run', return_value=result), \
+                    patch.object(lane, 'command') as command:
+                self.assertTrue(lane.collect_creator_failure(args, disk))
+                evidence = Path(directory) / 'creator-install-failure.json'
+                self.assertEqual(evidence.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(json.loads(evidence.read_text()), document)
+                self.assertEqual(command.call_count, 1)
+                with self.assertRaises(FileExistsError):
+                    lane.collect_creator_failure(args, disk)
+                self.assertEqual(command.call_count, 1)
 
     def test_creator_prepares_fresh_private_output_before_creation(self):
         disk = {'namespace': 'kata-system', 'pod': 'tilo-disk-run1'}
