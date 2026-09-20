@@ -3070,37 +3070,9 @@ impl ContactsApp {
         f64::from(self.text_scale.clamp(1.0, 2.0))
     }
 
+    #[cfg(test)]
     fn row_h(&self) -> f64 {
         ROW_H * self.layout_scale()
-    }
-
-    fn field_h(&self) -> f64 {
-        FIELD_H * self.layout_scale()
-    }
-
-    fn layout_toolbar_actions(&mut self, r: Rect, scale: f64) {
-        let button_h = 32.0 * scale;
-        let btn_y = r.y0 + (self.toolbar_h() - button_h) / 2.0;
-        let compact = self.toolbar_is_compact();
-        let gap = if compact { 6.0 } else { 10.0 };
-        let mut x = r.x1 - PAD;
-        let new_w = if compact { 40.0 } else { 104.0 };
-        self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + button_h);
-        x -= new_w + gap;
-        let export_w = if compact { 40.0 } else { 86.0 };
-        self.hit.export = Rect::new(x - export_w, btn_y, x, btn_y + button_h);
-        x -= export_w + gap;
-        self.hit.duplicates = Rect::ZERO;
-        if self.has_duplicate_candidate() {
-            // At large text and phone widths this retains the same 40 px
-            // touch target as the other compact toolbar controls. The short
-            // painted label has a complete accessible name and tooltip.
-            let duplicate_w = if compact { 40.0 } else { 112.0 };
-            self.hit.duplicates = Rect::new(x - duplicate_w, btn_y, x, btn_y + button_h);
-            x -= duplicate_w + gap;
-        }
-        let import_w = if compact { 40.0 } else { 86.0 };
-        self.hit.import = Rect::new(x - import_w, btn_y, x, btn_y + button_h);
     }
 
     fn layout(&mut self) {
@@ -3386,7 +3358,6 @@ impl ContactsApp {
     /// length; the geometry (and thus the rendered layout) is unchanged
     /// from one flat function.
     fn layout_form(&mut self) {
-        let scale = self.layout_scale();
         let large_text = self.text_scale >= 1.75;
         let area = self.detail_rect;
         let off = self.detail_top_offset();
@@ -3530,7 +3501,6 @@ impl ContactsApp {
         y: &mut f64,
         plan: &mut Vec<(Slot, Rect)>,
     ) {
-        let large_text = self.text_scale >= 1.5;
         let m = self.form_metrics();
         let (label_h, gap, nh) = (m.label_h, 12.0, m.field_h);
         *y += label_h;
@@ -3562,7 +3532,6 @@ impl ContactsApp {
         y: &mut f64,
         plan: &mut Vec<(Slot, Rect)>,
     ) {
-        let large_text = self.text_scale >= 1.5;
         let m = self.form_metrics();
         let (label_h, gap, nh) = (m.label_h, 12.0, m.field_h);
         *y += label_h;
@@ -5038,7 +5007,6 @@ impl ContactsApp {
         let c = &theme.tokens.colors;
         let area = self.detail_rect;
         let off = self.detail_top_offset();
-        let scale = self.layout_scale();
         let x0 = area.x0 + PAD;
 
         let Some(f) = self.form.as_ref() else {
@@ -5164,7 +5132,6 @@ impl ContactsApp {
         inputs_snapshot: &[(Slot, Rect)],
     ) {
         let c = &theme.tokens.colors;
-        let scale = self.layout_scale();
         let x0 = self.detail_rect.x0 + PAD;
         // The label sits in the band `layout_form` reserved above its group
         // (`FormMetrics::label_h`), so a scaled label never overprints the
