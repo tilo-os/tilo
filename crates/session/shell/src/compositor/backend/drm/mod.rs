@@ -166,14 +166,35 @@ struct DirectEligibility<'a> {
 }
 
 fn direct_scanout_eligible(input: DirectEligibility<'_>) -> bool {
-    input.outputs == 1
-        && input.normal_transform
-        && !input.color_managed
-        && input.hardware_cursor
-        && input.event_pageflips
-        && input
-            .drm_bus_id
-            .is_some_and(|drm| scanout::renderer_matches_drm_card(input.renderer_pci, drm))
+    direct_scanout_rejection(input).is_none()
+}
+
+fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
+    if input.outputs != 1 {
+        return Some("multiple outputs");
+    }
+    if !input.normal_transform {
+        return Some("output transform is not normal");
+    }
+    if input.color_managed {
+        return Some("output color transform is active");
+    }
+    if !input.hardware_cursor {
+        return Some("hardware cursor plane is unavailable");
+    }
+    if !input.event_pageflips {
+        return Some("event-driven page flips are unavailable");
+    }
+    if input.drm_bus_id.is_none() {
+        return Some("DRM device has no PCI identity");
+    }
+    if !input
+        .drm_bus_id
+        .is_some_and(|drm| scanout::renderer_matches_drm_card(input.renderer_pci, drm))
+    {
+        return Some("renderer and scanout use different GPUs");
+    }
+    None
 }
 
 #[derive(Debug)]
@@ -306,38 +327,60 @@ mod direct_eligibility_tests {
 
     #[test]
     fn direct_path_requires_the_complete_safe_contract() {
+        assert_eq!(direct_scanout_rejection(eligible()), None);
         assert!(direct_scanout_eligible(eligible()));
-        for rejected in [
-            DirectEligibility {
-                outputs: 2,
-                ..eligible()
-            },
-            DirectEligibility {
-                normal_transform: false,
-                ..eligible()
-            },
-            DirectEligibility {
-                color_managed: true,
-                ..eligible()
-            },
-            DirectEligibility {
-                hardware_cursor: false,
-                ..eligible()
-            },
-            DirectEligibility {
-                event_pageflips: false,
-                ..eligible()
-            },
-            DirectEligibility {
-                drm_bus_id: None,
-                ..eligible()
-            },
-            DirectEligibility {
-                drm_bus_id: Some("pci:0000:01:00.0"),
-                ..eligible()
-            },
+        for (rejected, reason) in [
+            (
+                DirectEligibility {
+                    outputs: 2,
+                    ..eligible()
+                },
+                "multiple outputs",
+            ),
+            (
+                DirectEligibility {
+                    normal_transform: false,
+                    ..eligible()
+                },
+                "output transform is not normal",
+            ),
+            (
+                DirectEligibility {
+                    color_managed: true,
+                    ..eligible()
+                },
+                "output color transform is active",
+            ),
+            (
+                DirectEligibility {
+                    hardware_cursor: false,
+                    ..eligible()
+                },
+                "hardware cursor plane is unavailable",
+            ),
+            (
+                DirectEligibility {
+                    event_pageflips: false,
+                    ..eligible()
+                },
+                "event-driven page flips are unavailable",
+            ),
+            (
+                DirectEligibility {
+                    drm_bus_id: None,
+                    ..eligible()
+                },
+                "DRM device has no PCI identity",
+            ),
+            (
+                DirectEligibility {
+                    drm_bus_id: Some("pci:0000:01:00.0"),
+                    ..eligible()
+                },
+                "renderer and scanout use different GPUs",
+            ),
         ] {
-            assert!(!direct_scanout_eligible(rejected));
+            assert_eq!(direct_scanout_rejection(rejected), Some(reason));
         }
     }
 }
@@ -496,6 +539,7 @@ fn apply_scanout_command(
         }
         ScanoutCommand::Pause => {
             for entry in scanouts.iter_mut() {
+                entry.scanout.restore_legacy_front();
                 entry.direct_targets = None;
             }
             *paused = true;
@@ -503,9 +547,9 @@ fn apply_scanout_command(
         }
         ScanoutCommand::Resume { dpms_on } => {
             for e in scanouts.iter_mut() {
-                e.direct_targets = None;
                 e.scanout.restore();
                 e.scanout.set_dpms(dpms_on);
+                e.direct_targets = None;
             }
             *blanked = !dpms_on;
             *paused = false;
@@ -621,7 +665,8 @@ fn paint_scanouts(
         // the established presenter.
         if let Ok(adapter) = bridge.adapter_info()
             && let drm_bus_id = entry.scanout.drm_bus_id()
-            && direct_scanout_eligible(DirectEligibility {
+        {
+            let eligibility = DirectEligibility {
                 outputs: scanout_count,
                 normal_transform: entry.transform
                     == settings_store::hardware::OutputTransform::Normal,
@@ -630,61 +675,79 @@ fn paint_scanouts(
                 event_pageflips: entry.scanout.event_pageflips_available(),
                 renderer_pci: &adapter.pci_bus_id,
                 drm_bus_id: drm_bus_id.as_deref(),
-            })
-        {
-            if entry.direct_targets.is_none() && entry.direct_unavailable.is_none() {
-                match scanout::DirectScanoutTargets::new(&entry.scanout, bridge) {
-                    Ok(targets) => {
-                        tracing::info!(
-                            renderer_pci = %adapter.pci_bus_id,
-                            drm_bus_id = drm_bus_id.as_deref().unwrap_or("unavailable"),
-                            "DRM direct scanout enabled"
-                        );
-                        entry.direct_targets = Some(targets);
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "DRM direct scanout unavailable; retaining readback fallback");
-                        entry.direct_unavailable = Some(error);
-                    }
+            };
+            if let Some(reason) = direct_scanout_rejection(eligibility) {
+                if entry.direct_unavailable.is_none() {
+                    eprintln!(
+                        "tilo compositor: DRM direct scanout unavailable: {reason} \
+                         (renderer_pci={}, drm_bus_id={}, hardware_cursor={}, event_pageflips={})",
+                        adapter.pci_bus_id,
+                        drm_bus_id.as_deref().unwrap_or("unavailable"),
+                        eligibility.hardware_cursor,
+                        eligibility.event_pageflips,
+                    );
+                    entry.direct_unavailable = Some(reason.to_owned());
                 }
-            }
-            if let Some(targets) = entry.direct_targets.as_mut() {
-                // Retire a prior imported-buffer flip before selecting a new
-                // render target. With two slots, a pending flip owns both.
-                for crtc in entry.scanout.poll_flip_completions() {
-                    entry.scanout.mark_direct_flip_complete(targets, crtc);
-                }
-                if let Some((index, target)) = targets.render_slot() {
-                    let revision = damage.map_or(1, |damage| damage.revision.max(1));
-                    let direct_damage = damage.unwrap_or(SceneDamage {
-                        revision,
-                        previous_revision: None,
-                        regions: None,
-                    });
-                    let deadline = Instant::now()
-                        .checked_add(Duration::from_secs(1))
-                        .unwrap_or_else(Instant::now);
-                    match bridge.paint_imported_bgra8_until(scene, direct_damage, target, deadline)
-                    {
-                        Ok(stats) if entry.scanout.submit_direct_target(targets, index) => {
-                            tracing::trace!(
-                                revision = stats.revision,
-                                render_attempts = stats.render_attempts,
-                                framebuffer_copy_bytes = stats.framebuffer_copy_bytes,
-                                framebuffer_staging_bytes = stats.framebuffer_staging_bytes,
-                                "DRM direct frame submitted"
+            } else {
+                if entry.direct_targets.is_none() && entry.direct_unavailable.is_none() {
+                    match scanout::DirectScanoutTargets::new(&entry.scanout, bridge) {
+                        Ok(targets) => {
+                            tracing::info!(
+                                renderer_pci = %adapter.pci_bus_id,
+                                drm_bus_id = drm_bus_id.as_deref().unwrap_or("unavailable"),
+                                "DRM direct scanout enabled"
                             );
-                            return;
+                            entry.direct_targets = Some(targets);
                         }
-                        Ok(_) => return,
                         Err(error) => {
-                            tracing::warn!(%error, "DRM direct frame failed; disabling direct targets");
-                            entry.direct_targets = None;
-                            entry.direct_unavailable = Some(error.to_string());
+                            tracing::warn!(%error, "DRM direct scanout unavailable; retaining readback fallback");
+                            entry.direct_unavailable = Some(error);
                         }
                     }
-                } else {
-                    return;
+                }
+                if let Some(targets) = entry.direct_targets.as_mut() {
+                    // Retire a prior imported-buffer flip before selecting a new
+                    // render target. With two slots, a pending flip owns both.
+                    for crtc in entry.scanout.poll_flip_completions() {
+                        entry.scanout.mark_direct_flip_complete(targets, crtc);
+                    }
+                    if let Some((index, target)) = targets.render_slot() {
+                        let revision = damage.map_or(1, |damage| damage.revision.max(1));
+                        let direct_damage = damage.unwrap_or(SceneDamage {
+                            revision,
+                            previous_revision: None,
+                            regions: None,
+                        });
+                        let deadline = Instant::now()
+                            .checked_add(Duration::from_secs(1))
+                            .unwrap_or_else(Instant::now);
+                        match bridge.paint_imported_bgra8_until(
+                            scene,
+                            direct_damage,
+                            target,
+                            deadline,
+                        ) {
+                            Ok(stats) if entry.scanout.submit_direct_target(targets, index) => {
+                                tracing::trace!(
+                                    revision = stats.revision,
+                                    render_attempts = stats.render_attempts,
+                                    framebuffer_copy_bytes = stats.framebuffer_copy_bytes,
+                                    framebuffer_staging_bytes = stats.framebuffer_staging_bytes,
+                                    "DRM direct frame submitted"
+                                );
+                                return;
+                            }
+                            Ok(_) => return,
+                            Err(error) => {
+                                tracing::warn!(%error, "DRM direct frame failed; disabling direct targets");
+                                entry.scanout.restore_legacy_front();
+                                entry.direct_targets = None;
+                                entry.direct_unavailable = Some(error.to_string());
+                            }
+                        }
+                    } else {
+                        return;
+                    }
                 }
             }
         }
@@ -938,8 +1001,8 @@ impl Presenter for DrmPresenter {
         });
         self.blanked = !on;
         for e in &mut self.scanouts {
-            e.direct_targets = None;
             e.scanout.set_dpms(on);
+            e.direct_targets = None;
         }
     }
 }
@@ -1075,8 +1138,8 @@ impl Backend for DrmBackend {
             s.set_dpms(on);
         }
         for e in &mut self.inner.scanouts {
-            e.direct_targets = None;
             e.scanout.set_dpms(on);
+            e.direct_targets = None;
         }
     }
 
