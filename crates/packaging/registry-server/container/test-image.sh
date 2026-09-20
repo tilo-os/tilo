@@ -29,6 +29,7 @@ fi
 
 container="tilo-registry-smoke-${source_revision:0:12}-$$"
 volume="${container}-state"
+helper_image=docker.io/library/busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
   docker volume rm -f "$volume" >/dev/null 2>&1 || true
@@ -45,7 +46,7 @@ docker run --rm \
   --cap-add CHOWN \
   --security-opt no-new-privileges \
   --mount "type=volume,source=$volume,target=/state,volume-nocopy" \
-  docker.io/library/busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0 \
+  "$helper_image" \
   sh -ec 'chmod 0750 /state && chown 65532:65532 /state'
 
 # RFC 8032 test-vector public key. Only public identity material enters the
@@ -71,18 +72,23 @@ docker run --detach --name "$container" \
   --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
   --mount "type=volume,source=$volume,target=/var/lib/tilo-registry,volume-nocopy" \
-  --publish 127.0.0.1::8443 \
   "$image" >/dev/null
 
-port=$(docker port "$container" 8443/tcp | awk -F: 'END {print $NF}')
-[[ $port =~ ^[0-9]+$ ]]
-for _ in $(seq 1 30); do
-  if response=$(curl --fail --silent --show-error "http://127.0.0.1:$port/health" 2>/dev/null); then
-    [[ $response == '{"ok":true}' ]]
-    exit 0
-  fi
-  sleep 1
-done
+# The workflow shell runs inside the runner job container while Docker runs on
+# the host daemon. Join the registry's network namespace so this proves the
+# endpoint without assuming the daemon host is the shell's 127.0.0.1.
+if response=$(docker run --rm \
+  --user 65532:65532 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  --network "container:$container" \
+  "$helper_image" \
+  sh -ec 'for _ in $(seq 1 30); do response=$(wget -qO- http://127.0.0.1:8443/health 2>/dev/null) && { printf "%s" "$response"; exit 0; }; sleep 1; done; exit 1')
+then
+  [[ $response == '{"ok":true}' ]]
+  exit 0
+fi
 
 docker logs "$container" >&2
 exit 1
