@@ -61,4 +61,4 @@ jobs:
         run: cargo deny --workspace check
 
       - name: cargo machete
-        run: cargo machete --with-metadata
+        run: bash tools/ci/check-unused-dependencies.sh
