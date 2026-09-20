@@ -30,7 +30,7 @@ use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::ImageData;
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::animation::{Animated, Curve, Transition};
@@ -97,7 +97,6 @@ const LIB_ROW_GAP_TIGHT: f64 = step(Spacing::BASE.s2);
 /// sheet, where `Colors::lift(1.0)` would resolve to the ground itself and
 /// the face would vanish into it. Its edge then derives from this face via
 /// [`surface::card`].
-use crate::presentation::control_face;
 const SHEET_BUTTON_H: f64 = 44.0;
 const RETAINED_CONTROL_OPERATION_TYPE: &str = "tilo.ui.control.invoke";
 
@@ -317,13 +316,6 @@ const COLLECTION_PAGE_SIZE: usize = 4;
 /// shelf works well; below this a single card preserves independent Details,
 /// favourite, and removal targets at the 44px touch minimum.
 const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
-
-/// Grid density is presentation-local, but text scale is part of that
-/// presentation. Keep the decision pure so wide/high-text and sheet-open
-/// regressions cannot silently drift apart.
-fn library_column_count(width: f64, large_text: bool, metadata_editor: bool) -> usize {
-    crate::presentation::library_column_count(width, large_text, metadata_editor)
-}
 
 const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
 /// The full masthead needs room for destinations, density and selection.
@@ -10424,13 +10416,6 @@ impl PhotosApp {
         } else {
             180.0
         };
-        // Right-align the page count to the grid's right edge from its measured
-        // width (it used to start at a fixed 100 px allowance and end wherever
-        // the digits happened to stop, ~60 px short of the cards).
-        let count_budget: f32 = if large_text { 180.0 } else { 100.0 };
-        let (count_w, _) =
-            text_renderer.measure_weighted(&count, 13.0, Some(count_budget), TextWeight::Regular);
-        let count_x = bounds.x1 - f64::from(PAD) - f64::from(count_w.min(count_budget));
         text_renderer.draw_text_weighted(
             scene,
             &count,
