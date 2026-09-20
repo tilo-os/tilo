@@ -89,6 +89,26 @@ def file_identity(info):
     return {'device': info.st_dev, 'inode': info.st_ino, 'size': info.st_size}
 
 
+def copied_disk_receipt(path, creation_bytes, creation, copied):
+    required={'schema','purpose','source_creation_sha256','source_path',
+              'source_file_identity','raw_identity','path','file_identity'}
+    raw=copied.get('raw_identity') if isinstance(copied,dict) else None
+    if (not isinstance(copied,dict) or set(copied)!=required
+            or copied.get('schema')!=1 or copied.get('purpose')!='tilo-supervised-raw-media-copy'
+            or copied.get('source_creation_sha256')!=hashlib.sha256(creation_bytes).hexdigest()
+            or copied.get('source_path')!=creation.get('path')
+            or copied.get('source_file_identity')!=creation.get('file_identity')
+            or copied.get('path')!=str(path) or not isinstance(raw,dict)
+            or set(raw)!={'size','sha256'} or raw.get('size')!=creation.get('size_bytes')
+            or not re.fullmatch(r'[0-9a-f]{64}',raw.get('sha256',''))
+            or not isinstance(copied.get('file_identity'),dict)
+            or set(copied['file_identity'])!={'device','inode','size'}
+            or copied['file_identity'].get('size')!=creation.get('size_bytes')):
+        raise ValueError('copied disk receipt does not bind the created raw media')
+    return {'path':str(path),'file_identity':copied['file_identity'],
+            'size_bytes':creation['size_bytes'],'disk_created':True}
+
+
 @contextmanager
 def open_created_disk(path, receipt):
     path = Path(path)
@@ -310,8 +330,11 @@ def verify(args):
     if platform.machine() != args.architecture:
         raise ValueError('requires native execution')
     require_private_namespace()
-    receipt = json.loads(args.creation_receipt.read_text())
-    with source.verified_source(args) as verified, open_created_disk(args.disk, receipt) as fd:
+    creation_bytes=args.creation_receipt.read_bytes()
+    receipt=json.loads(creation_bytes)
+    copied=json.loads(args.copy_receipt.read_text()) if args.copy_receipt else None
+    access=copied_disk_receipt(args.disk,creation_bytes,receipt,copied) if copied else receipt
+    with source.verified_source(args) as verified, open_created_disk(args.disk, access) as fd:
         if receipt.get('source') != verified.receipt:
             raise ValueError('creation source differs from fresh source verification')
         boot = prediction.verify_prediction(verified.root, verified.public_bundle, args.manifest_sha256,
@@ -373,10 +396,12 @@ def verify(args):
                 raise ValueError('deployment var does not bind expected shared state')
             material_receipt = audit_material(root, esp, uki, args.composefs_digest, args.architecture)
     return {'schema': 1, 'purpose': 'tilo-installed-boot-and-root-verification',
-        'source': verified.receipt, 'boot': boot, 'file_identity': receipt['file_identity'],
+        'source': verified.receipt, 'boot': boot, 'file_identity': access['file_identity'],
+        'copy_receipt': copied,
         'selected_boot': selected_boot,
         'target_materialization': target_materialization,
-        'checks': {'read_only_disk': True, 'selected_uki_matches_source': True,
+        'checks': {'read_only_disk': True, 'disk_receipt_binding': True,
+                   'selected_uki_matches_source': True,
                    'installed_origin': True, 'verity_mounted_root': True, 'effective_policy': True,
                    'introduced_private_material_policy': True},
         'material_audit': material_receipt,
@@ -392,6 +417,7 @@ def main():
         parser.add_argument('--' + name, required=True)
     for name in ('public-bundle', 'disk', 'creation-receipt'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--copy-receipt', type=Path)
     parser.add_argument('--generation', type=int, required=True)
     parser.add_argument('--boot-profile', choices=('installed-target', 'installer-media'), default='installed-target')
     parser.add_argument('--source-live-uki', help='installer-media only: exact source boot/EFI/Linux/*.efi path')
