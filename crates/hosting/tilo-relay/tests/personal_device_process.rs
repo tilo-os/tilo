@@ -125,7 +125,10 @@ fn write_approver_fixture(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps enrollment and offline-owner continuity in one process-level trace"
+)]
 async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_route() {
     let workspace = tempfile::tempdir().unwrap();
     let approver_root = workspace.path().join("approver-tilo");
@@ -351,7 +354,10 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
 /// runner's mount namespace.
 #[test]
 #[ignore = "requires root plus CAP_SYS_ADMIN; fs-fuse.yml runs this explicitly"]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps privileged helper setup and ownership assertions in one auditable trace"
+)]
 fn privileged_helper_preserves_user_owned_personal_device_projection() {
     #[cfg(not(unix))]
     panic!("the privileged helper is Linux-only");
