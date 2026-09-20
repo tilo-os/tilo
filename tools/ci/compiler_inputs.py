@@ -136,13 +136,19 @@ def command(*args: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--from-messages", type=Path, help="observe existing Clippy JSON without invoking Clippy")
+    parser.add_argument("--cargo-exit-code", type=int)
+    parser.add_argument("--expected-commit", help="source revision captured before the existing invocation")
     parser.add_argument("cargo_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     cargo_args = args.cargo_args
     if cargo_args[:1] == ["--"]:
         cargo_args = cargo_args[1:]
-    if not cargo_args or cargo_args[0] != "check":
-        parser.error("expected -- check <existing Cargo arguments>")
+    observing = args.from_messages is not None
+    if not cargo_args or cargo_args[0] != ("clippy" if observing else "check"):
+        parser.error("expected existing check arguments, or clippy arguments with --from-messages")
+    if observing and (args.cargo_exit_code is None or not args.expected_commit):
+        parser.error("existing messages require --cargo-exit-code and --expected-commit")
     root = Path.cwd()
     try:
         binding = {"commit": command("git", "rev-parse", "HEAD"),
@@ -156,26 +162,49 @@ def main() -> int:
                                     ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml")]}
         metadata = json.loads(command("cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"))
     except (OSError, ValueError, subprocess.CalledProcessError):
+        if observing:
+            print("::warning::Clippy input binding unavailable; existing compilation result unchanged.")
+            return 0
         print("::warning::Compiler input binding unavailable; running unchanged Cargo check.")
         return subprocess.call(["cargo", *cargo_args])
     messages = []
-    proc = subprocess.Popen(["cargo", *cargo_args, "--message-format=json-render-diagnostics"],
-                            stdout=subprocess.PIPE, text=True)
-    assert proc.stdout is not None
-    for line in proc.stdout:
+    if observing:
         try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            print(line, end="", flush=True)
-            continue
-        if message.get("reason") in {"compiler-artifact", "build-script-executed", "build-finished"}:
-            messages.append(message)
-        if message.get("reason") == "compiler-message":
-            print(message["message"].get("rendered", ""), end="", flush=True)
-    status = proc.wait()
+            for line in args.from_messages.read_text().splitlines():
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(message, dict):
+                    messages.append(message)
+        except (OSError, UnicodeError):
+            print("::warning::Clippy messages unavailable; existing compilation result unchanged.")
+            return 0
+        status = args.cargo_exit_code
+    else:
+        proc = subprocess.Popen(["cargo", *cargo_args, "--message-format=json-render-diagnostics"],
+                                stdout=subprocess.PIPE, text=True)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                print(line, end="", flush=True)
+                continue
+            if message.get("reason") in {"compiler-artifact", "build-script-executed", "build-finished"}:
+                messages.append(message)
+            if message.get("reason") == "compiler-message":
+                print(message["message"].get("rendered", ""), end="", flush=True)
+        status = proc.wait()
     try:
         receipt = collect(messages, metadata, root, binding)
         receipt["cargo_exit_code"] = status
+        if observing:
+            receipt["binding"]["expected_commit"] = args.expected_commit
+            if binding["commit"] != args.expected_commit:
+                receipt["unknown"].append("source revision differs from invocation start")
+        if status != 0:
+            receipt["unknown"].append("Cargo invocation failed; target coverage incomplete")
         if command("git", "rev-parse", "HEAD") != binding["commit"] or command("git", "status", "--porcelain", "--untracked-files=no"):
             receipt["unknown"].append("source binding changed or dirty after check")
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -184,7 +213,7 @@ def main() -> int:
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         # Observability cannot turn a successful compile red or hide its failure.
         print(f"::warning::Compiler input receipt unavailable ({type(error).__name__}).")
-    return status
+    return 0 if observing else status
 
 
 if __name__ == "__main__":
