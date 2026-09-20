@@ -87,6 +87,7 @@ DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
 EFI_ARTIFACTS="${TILO_INSTALL_EFI_ARTIFACTS:-/usr/libexec/tilo-install-efi-artifacts}"
 BOOT_MENU="${TILO_INSTALL_BOOT_MENU:-/usr/libexec/tilo-install-boot-menu}"
+BOOT_MOUNT_CONTRACT="${TILO_BOOT_MOUNT_CONTRACT:-/usr/libexec/tilo-boot-mount-contract}"
 
 # Alongside installs share a firmware-visible FAT ESP with Tilo's retained,
 # staged, and repair UKIs. Six 160 MiB image slots plus filesystem slack need
@@ -813,10 +814,15 @@ if [ "$ENCRYPT" -eq 1 ]; then
   ENC_LUKS="$(printf '%s\n' "$PREP" | sed -n 's/^LUKS_PART=//p')"
   ENC_KEYFILE="$(printf '%s\n' "$PREP" | sed -n 's/^KEY_FILE=//p')"
   ENC_ROOT_UUID="$(printf '%s\n' "$PREP" | sed -n 's/^ROOT_FS_UUID=//p')"
+  ENC_BOOT_PART="$(printf '%s\n' "$PREP" | sed -n 's/^BOOT_PART=//p')"
   ROOT_FS_UUID="$ENC_ROOT_UUID"
   ENC_KARGS="$(printf '%s\n' "$PREP" | sed -n 's/^KARGS=//p')"
-  [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_KARGS" ] \
+  [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_BOOT_PART" ] && [ -n "$ENC_KARGS" ] \
     || die "encryption: tilo-disk-encrypt prepare did not report the volume it made"
+  ENC_BOOT_MOUNT_SPEC="$("$BOOT_MOUNT_CONTRACT" --disk "$DISK" --boot-part "$ENC_BOOT_PART" --target-root "$ENC_MNT")" \
+    || die "encryption: invalid prepared /boot contract"
+  [ "$ENC_BOOT_MOUNT_SPEC" = LABEL=TILO_BOOT ] \
+    || die "encryption: prepared /boot contract is not the signed TILO_BOOT label"
 
   # From here the volume is open and the tree is mounted. If anything below fails
   # the installer exits without reaching `finish`, so close them on the way out —
@@ -846,6 +852,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
     --security-opt label=type:unconfined_t \
     "$LOCAL_IMG" \
     bootc install to-filesystem \
+      --boot-mount-spec "$ENC_BOOT_MOUNT_SPEC" \
       --target-imgref "$TILO_TARGET_IMGREF" \
       --skip-finalize \
       /target
