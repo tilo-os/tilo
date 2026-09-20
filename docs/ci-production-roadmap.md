@@ -24,7 +24,7 @@ feedback after the coordinator is in service.
 
 | Product | Present evidence | Next production step |
 | --- | --- | --- |
-| qOS/Linux apps | [`release-apps.yml`](../.forgejo/workflows/release-apps.yml) plans every PR and packages affected apps on relevant `main` pushes. It publishes immutable qpkgs and collections, reusing unchanged members. Explicit and tagged runs retain x86-64 and ARM64. | Submit each verified qpkg to `apps.tilo.dev`, promote an atomic signed channel, and make ARM64 continuous after its native lane meets the same reliability target. A toolkit change rebuilds only its transitive app closure. |
+| qOS/Linux apps | [`release-apps.yml`](../.forgejo/workflows/release-apps.yml) plans every PR and packages affected apps on relevant `main` pushes. It publishes immutable qpkgs and collections to Forgejo, reusing unchanged members. Explicit and tagged runs retain x86-64 and ARM64. | Publish the accepted catalogue and atomic signed channel at `registry.tilo.dev`, then make ARM64 continuous after its native lane meets the same reliability target. A toolkit change rebuilds only its transitive app closure. |
 | Windows apps | The toolkit and local installer exist; [`ci-product-matrix.md`](ci-product-matrix.md) records the missing release qualification. | Keep this optional. Qualify a small x86-64 set on a disposable native host before choosing archive or MSIX, signing, update and rollback contracts. Add ARM64 only after x86-64 is useful. |
 | macOS apps | No standalone release path is qualified. | Deferred. Do not allocate runners or publish packages. |
 | Linux desktop | [`package-desktop.yml`](../.forgejo/workflows/package-desktop.yml) defines Debian 13, Ubuntu 24.04, Fedora 44, Arch and Nix packages. PRs run preflight; scheduled, manual and tagged runs perform native builds. | Install-test each emitted repository package, retain a last-known-good set per distribution and architecture, then promote one signed desktop release manifest. |
@@ -81,7 +81,7 @@ not hidden dependency drift.
 | Compiler | S3-backed sccache, separated by compiler, target and trust domain | Aim for unchanged dependency hits. Release verification that needs stronger producer trust uses a restricted namespace or rebuilds cold. |
 | Regional OCI/ECR | CI images, builder images, frozen inputs and BuildKit caches close to runners | Replicate by digest before rollout. Runner startup must not depend on repeatedly pulling large images through the Forgejo control-plane node. |
 | Forgejo packages | Immutable qpkgs, collections, desktop packages, receipts and workflow-local handoffs | Use immutable versions and digests. Mutable names only point to accepted artifacts. |
-| Tilo registry | Signed app catalogue, channel metadata and public app downloads | The server and image build exist in [`registry.md`](registry.md); deployment and end-to-end CI publication need live evidence before this tier is called available. |
+| Tilo registry | Signed app catalogue, channel metadata and public app downloads | The server and image build exist in [`registry.md`](registry.md). GitOps targets `registry.tilo.dev`; its DNS credential, live endpoint and end-to-end CI publication still need evidence before this tier is called available. |
 
 Eviction starts with reconstructible local data. Accepted artifacts, receipts,
 signatures and the inputs required for cross-time reproduction follow a defined
@@ -92,8 +92,8 @@ is released.
 
 | Boundary | Required work |
 | --- | --- |
-| Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. |
-| `main` | Preserve check/lint for every commit. Package the affected qOS/Linux apps, verify their receipts and advance only the development app channel. Coalesce superseded expensive work without discarding fast results. |
+| Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. The narrow routine app-source pilot permits an explicit `/merge <full-head-sha>` without review; requesting official review holds that head for approval or cancellation. |
+| `main` | Preserve check/lint for every commit. Package the affected qOS/Linux apps and update immutable collection inputs. Advance a public development channel only after registry publication is enabled. Coalesce superseded expensive work without discarding fast results. |
 | Scheduled integration | Rebuild full app baselines, Linux desktop packages and a generic x86-64 OS candidate. Rotate ARM64 and other costly coverage according to measured drift and capacity. |
 | App/desktop release | Reuse accepted build nodes, install-test the release set, sign artifacts and provenance, then atomically move a channel manifest. |
 | OS release | Manual tag or explicit publish dispatch only. Require native x86-64 and ARM64 outputs, independent reproducibility, installed-VM boot/update/rollback, signatures, SBOM and provenance before promotion. |
@@ -141,10 +141,11 @@ rollout.
 
 ## Delivery phases
 
-1. **Make continuous apps boring.** Deploy the registry, publish verified
-   x86-64 qpkgs from `main`, retain the last-known-good channel on failure, and
-   show timing and selection in every run. Exit when 30 consecutive relevant
-   changes need no manual recovery and meet the app SLO.
+1. **Make continuous apps boring.** Complete the `registry.tilo.dev` deployment,
+   publish the verified x86-64 qpkgs already produced from `main` into its signed
+   development catalogue, retain the last-known-good channel on failure, and show
+   timing and selection in every run. Exit when 30 consecutive relevant changes
+   need no manual recovery and meet the app SLO.
 2. **Scale without multiplying work.** Put the coordinator and receipt store in
    charge of dependency selection, move heavy OCI traffic to regional ECR,
    qualify continuous ARM64 apps, and install-test the Linux desktop matrix.
