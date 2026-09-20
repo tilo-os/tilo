@@ -66,17 +66,23 @@ rm -rf "$TILO_TPM_DIR"
 say() { printf '\n### %s\n' "$*"; }
 die() { printf '\n!!! %s\n' "$*" >&2; exit 1; }
 
-SSHOPTS=(-p "${TILO_SSH_PORT:-2222}" -o StrictHostKeyChecking=no
-         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR)
+SSHOPTS=(-F /dev/null -p "${TILO_SSH_PORT:-2222}" -o StrictHostKeyChecking=no
+         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR
+         -o BatchMode=no -o NumberOfPasswordPrompts=1
+         -o PreferredAuthentications=password -o PubkeyAuthentication=no
+         -o KbdInteractiveAuthentication=no)
 GUEST="${TILO_VM_USER:-tester}@127.0.0.1"
 GUEST_PW="${TILO_VM_PASS:-tilo}"
-gssh() { sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
+gssh() {
+  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE \
+    sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" "$@"
+}
 # Run a script as root in the guest. The password reaches sudo on stdin and the
 # script comes from a file, so the two never contend for stdin.
 runscript() {
   printf '%s\n' "$2" > "$OUT/$1.sh"
-  sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" 'cat > /tmp/step.sh' < "$OUT/$1.sh" || return 1
-  sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" \
+  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" 'cat > /tmp/step.sh' < "$OUT/$1.sh" || return 1
+  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" \
     "echo $GUEST_PW | sudo -S -p '' bash /tmp/step.sh 2>&1"
 }
 # One install step: the whole output to a file, a tail of it to the terminal,
