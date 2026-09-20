@@ -1618,6 +1618,12 @@ pub struct ShellOverlayHost {
     /// tab whose content changed without its id changing still gets
     /// rebuilt.
     tab_tiles: std::collections::HashMap<u64, String>,
+    /// Last foreign-frame sequence observed for a tab which still displays
+    /// its retained opening card.  A client's first buffer does not mutate
+    /// the workspace document, so this is the one-shot signal which retries
+    /// the card -> live-surface replacement without polling/rebuilding the
+    /// whole desktop while it is idle.
+    opening_foreign_frames: std::collections::HashMap<u64, u64>,
     /// Session-local bindings from `(owner, surface)` to the peer-window tab
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
@@ -2900,6 +2906,7 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
+            opening_foreign_frames: std::collections::HashMap::new(),
             peer_stream_tabs: std::collections::HashMap::new(),
             personal_display: None,
             // User intent is durable, while the root filters it against the
@@ -3177,6 +3184,28 @@ impl ShellOverlayHost {
         self.power_menu.is_open()
             || self.screenshot_markup.is_some()
             || self.capture_studio.modal_capture().is_some()
+    }
+
+    /// Whether the pointer is over the shell-owned controls painted above a
+    /// maximized client.  The client fills the output, so ordinary foreign
+    /// hit-testing would otherwise consume Restore/Close presses before the
+    /// `WindowGroup` which draws those controls can see them.
+    pub(crate) fn maximized_chrome_captures_pointer(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let Some(group_id) = chrome.borrow().maximized_group() else {
+            return false;
+        };
+        self.group_row_ptrs.values().any(|&ptr| {
+            // SAFETY: same stable boxed-row contract as the other
+            // `group_row_ptrs` accessors; this is a read-only query.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.groups.iter().any(|group| {
+                group.id == group_id
+                    && group.should_show_maximized_chrome(self.last_cursor.map(|p| p.y))
+            })
+        })
     }
 
     pub fn open_screenshot_markup(
@@ -4603,7 +4632,10 @@ impl ShellOverlayHost {
             return false;
         };
         let current_rev = chrome.borrow().revision;
-        if current_rev == self.last_chrome_revision {
+        let foreign_frame_arrived = self.opening_foreign_frames.iter().any(|(surface, seen)| {
+            crate::compositor::foreign::store().frame_seq(*surface) != *seen
+        });
+        if current_rev == self.last_chrome_revision && !foreign_frame_arrived {
             return false;
         }
         let mut any_change = false;
@@ -4676,8 +4708,22 @@ impl ShellOverlayHost {
                             // surface has drawn, so a swap doesn't replace
                             // an "opening" card with a blank frame — the
                             // signature is left unrecorded so it retries.
+                            let still_starting = window_is_still_starting(&tab.tile);
+                            if let crate::shell::state::TileContent::Foreign {
+                                surface_id, ..
+                            } = &tab.tile
+                            {
+                                if still_starting {
+                                    self.opening_foreign_frames.insert(
+                                        *surface_id,
+                                        crate::compositor::foreign::store().frame_seq(*surface_id),
+                                    );
+                                } else {
+                                    self.opening_foreign_frames.remove(surface_id);
+                                }
+                            }
                             if tab_tiles.get(&tab.id) != Some(&signature)
-                                && !window_is_still_starting(&tab.tile)
+                                && !still_starting
                                 && let Some(host) = live.host_for_tab_mut(tab.id)
                             {
                                 host.replace_content(crate::shell::to_ui_tile(&tab.tile));
@@ -5450,8 +5496,13 @@ impl ShellOverlayHost {
                 }
                 // Eased, not teleported — matches Niri's focus-column slide.
                 row.scroll_group_into_view_animated(group_id, Instant::now());
+                // Record the edge only after the row could actually inspect
+                // the group's laid-out rectangle.  A freshly adopted app is
+                // spliced before its first layout pass; memoising it earlier
+                // suppresses the next-frame retry and can leave the active
+                // window entirely off-screen in a long restored strip.
+                self.last_scrolled_active_group.insert(strip_id, group_id);
             }
-            self.last_scrolled_active_group.insert(strip_id, group_id);
         }
     }
 
@@ -6036,6 +6087,33 @@ impl ShellOverlayHost {
         // SAFETY: see field doc on `group_row_ptrs`.
         let row: &mut GroupRow = unsafe { &mut *ptr };
         row.groups.get_mut(group_idx)
+    }
+
+    /// Live pointer targets for the active group's maximize/restore actions.
+    /// Kept on the explicit debug control surface so VM acceptance can click
+    /// the same geometry a person sees instead of mutating persisted state.
+    #[cfg(any(test, debug_assertions))]
+    pub fn active_window_control_rects_for_tests(&self) -> Option<(Rect, Rect)> {
+        let chrome = self.chrome.clone()?;
+        let (strip_id, group_id) = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let strip = tree.active_strip.get(&tree.active).copied()?;
+            (strip, tree.active_group_for(strip)?)
+        };
+        let &ptr = self.group_row_ptrs.get(&strip_id)?;
+        // SAFETY: same ownership contract as `group_at_for_tests` above.
+        let row: &GroupRow = unsafe { &*ptr };
+        let group = row.groups.iter().find(|group| group.id == group_id)?;
+        let active_tab = group.active_tab_id();
+        let maximize = group
+            .bar_for_tests()
+            .tabs()
+            .iter()
+            .position(|tab| tab.id == active_tab)
+            .and_then(|idx| group.bar_for_tests().max_rects().get(idx).copied())
+            .unwrap_or(Rect::ZERO);
+        Some((maximize, group.restore_rect_for_tests()))
     }
 
     /// Test-only: runs the per-frame active-group reconcile outside `update`.
@@ -28642,6 +28720,52 @@ mod resync_strips_tests {
     }
 
     #[test]
+    fn restored_opening_tab_swaps_to_live_surface_when_first_frame_arrives() {
+        const SURFACE: u64 = 0x5a17;
+        let (mut tree, strip_id, group_id) = one_group_seed();
+        let tab_id = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        tree.workspaces[0].strips[0].window_groups[0].tabs[0] = Tab {
+            id: tab_id,
+            title: "Terminal".into(),
+            tile: TileContent::PeerWindow {
+                app_id: "dev.tilo.terminal".into(),
+                label: "Terminal".into(),
+                note: "Opening here…".into(),
+            },
+        };
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+
+        {
+            let state = chrome.borrow_mut();
+            let mut live = state.tree_mut();
+            live.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+                app_id: "dev.tilo.terminal".into(),
+                surface_id: SURFACE,
+            };
+            live.external_revision = live.external_revision.wrapping_add(1);
+        }
+        assert!(host.take_structure_dirty());
+        assert_eq!(host.active_tile_rect(group_id), Some(Rect::ZERO));
+        assert_eq!(
+            host.opening_foreign_frames.get(&SURFACE),
+            Some(&0),
+            "the retained opening card must remember the frame generation it is waiting on"
+        );
+
+        crate::compositor::foreign::store().publish_rgba(SURFACE, &[0, 0, 0, 255], 1, 1);
+        assert!(
+            host.take_structure_dirty(),
+            "the first frame must retry the card-to-surface projection without a tree revision"
+        );
+        assert!(
+            !host.opening_foreign_frames.contains_key(&SURFACE),
+            "the one-shot waiter is retired once the live surface is installed"
+        );
+        let _ = strip_id;
+        crate::compositor::foreign::store().forget(SURFACE);
+    }
+
+    #[test]
     fn resync_picks_up_new_groups_added_after_bump() {
         let (tree, strip_id, _) = one_group_seed();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -28676,6 +28800,84 @@ mod resync_strips_tests {
         assert!(
             host.group_at_for_tests(strip_id, 3).is_none(),
             "no phantom fourth group"
+        );
+    }
+
+    #[test]
+    fn newly_active_group_retries_reveal_after_its_first_layout() {
+        let (mut tree, strip_id, first_group) = one_group_seed();
+        for id in 201..=206 {
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .push(make_stub_group(id, &format!("Existing-{id}")));
+        }
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let root = host.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        taffy
+            .compute_layout(
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .expect("initial wide-strip layout");
+        host.apply_layout(&taffy, root, Point::ORIGIN);
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("seed strip has a live row");
+        row.set_scroll_x_for_test(row.max_scroll_x());
+        host.last_scrolled_active_group
+            .insert(strip_id, first_group);
+
+        const LAUNCHED_GROUP: GroupId = 999;
+        {
+            let mut st = chrome.borrow_mut();
+            let mut live = st.tree_mut();
+            live.workspaces[0].strips[0]
+                .window_groups
+                .push(make_stub_group(LAUNCHED_GROUP, "Launched"));
+            live.active_group.insert(strip_id, LAUNCHED_GROUP);
+            drop(live);
+            st.bump();
+        }
+
+        assert!(host.take_structure_dirty(), "launch splices a new group");
+        host.tick_scroll_active_into_view_for_tests();
+        assert_eq!(
+            host.last_scrolled_active_group.get(&strip_id),
+            Some(&first_group),
+            "an unlaid group must not consume the focus-follow edge"
+        );
+
+        let mut rebuilt = TaffyTree::new();
+        let mut rebuilt_map = HashMap::new();
+        let rebuilt_root = host.build_layout(&mut rebuilt, &Theme::dark(), &mut rebuilt_map);
+        rebuilt
+            .compute_layout(
+                rebuilt_root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .expect("post-launch layout");
+        host.apply_layout(&rebuilt, rebuilt_root, Point::ORIGIN);
+        host.tick_scroll_active_into_view_for_tests();
+
+        assert_eq!(
+            host.last_scrolled_active_group.get(&strip_id),
+            Some(&LAUNCHED_GROUP),
+            "the first laid-out frame must retry and accept the reveal"
+        );
+        let row = host
+            .group_row_mut_for_tests(strip_id)
+            .expect("launched strip remains live");
+        assert!(
+            row.needs_animation_frame(),
+            "revealing the off-screen launch must start the strip pan"
         );
     }
 

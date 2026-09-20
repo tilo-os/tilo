@@ -12,7 +12,7 @@ pub use crate::shell::test_control::{
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -201,7 +201,11 @@ impl NativeRedrawReasons {
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
-const WAYLAND_CLIENT_SERVICE: Duration = Duration::from_millis(4);
+const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
+
+fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Option<Instant> {
+    (!wake_registered).then(|| now + WAYLAND_CLIENT_SERVICE_FALLBACK)
+}
 
 /// Select how long calloop may sleep. Presentation cadence is a deadline only
 /// while visual work is pending; a static desktop instead sleeps until the
@@ -235,6 +239,14 @@ fn cadence_wait_needed(
     animating: bool,
 ) -> bool {
     pipe_ready && ((content_changed && !cadence_due) || animating)
+}
+
+/// A lock-state edge replaces every pixel on screen.  Keep that edge pending
+/// until a frame is actually accepted by the presenter; consuming it while
+/// the asynchronous render queue is full would leave the previous lock or
+/// desktop frame visible until unrelated input happens to trigger a repaint.
+fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
+    session_changed && !frame_submitted
 }
 
 /// A widget deadline is useful only when the presenter can accept the frame it
@@ -1750,6 +1762,15 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "max_scroll_x": max_scroll_x,
                 }))
                 .collect::<Vec<_>>(),
+            // Debug-session acceptance drives the same live pointer targets
+            // a person sees. Zero-area means the hover-revealed maximize or
+            // maximized restore control is not currently painted.
+            "active_window_controls": self.fb.host()
+                .active_window_control_rects_for_tests()
+                .map(|(maximize, restore)| serde_json::json!({
+                    "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
+                    "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
+                })),
         })
     }
 }
@@ -4674,11 +4695,13 @@ pub fn run() {
     };
 
     // The `Display` owns the wayland-server protocol state. Its poll fd is an
-    // epoll instance containing the individual client sockets; nesting that
-    // epoll fd inside calloop's epoll can consume the outer readiness without
-    // draining the inner client event and then park the whole compositor.
-    // Keep ownership here and drive its nonblocking aggregate dispatch from
-    // the bounded native loop instead.
+    // epoll instance containing the individual client sockets. Register a
+    // duplicate as an edge-triggered *wake token* below, while retaining
+    // ownership and doing all actual protocol dispatch here. The edge is safe
+    // because `dispatch_clients` drains the inner epoll fully; level-triggered
+    // epoll nesting can consume outer readiness without draining the inner
+    // client event and then strand a request. If registration is unavailable,
+    // retain the bounded 4 ms service fallback rather than breaking clients.
     let mut display: Display<State> = match Display::new() {
         Ok(d) => d,
         Err(e) => {
@@ -4687,6 +4710,35 @@ pub fn run() {
         }
     };
     let display_handle = display.handle();
+
+    let wayland_client_wake = {
+        let duplicate =
+            unsafe { libc::fcntl(display.as_fd().as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if duplicate < 0 {
+            tracing::warn!(
+                error = %std::io::Error::last_os_error(),
+                "could not duplicate Wayland display wake fd; using bounded polling fallback"
+            );
+            false
+        } else {
+            // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+            match event_loop
+                .handle()
+                .insert_source(Generic::new(fd, Interest::READ, Mode::Edge), |_, _, _| {
+                    Ok(PostAction::Continue)
+                }) {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "could not register Wayland display wake fd; using bounded polling fallback"
+                    );
+                    false
+                }
+            }
+        }
+    };
 
     spawn_auto_brightness_worker();
 
@@ -4697,7 +4749,7 @@ pub fn run() {
     // fd in the compositor loop so hardware input wakes us immediately rather
     // than waiting for a periodic backend poll (which made the cursor visibly
     // lag by roughly the old 50 ms interval).
-    let _backend_event_wake = if let Some(fd) = backend.event_fd() {
+    let backend_event_wake = if let Some(fd) = backend.event_fd() {
         match event_loop
             .handle()
             .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
@@ -5149,6 +5201,38 @@ pub fn run() {
         None => (None, None),
     };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
+    // A test-control client is itself an event source.  Register a duplicate
+    // of the listener as a wake token so a driver which connects to an idle
+    // compositor is serviced immediately.  Accepting and executing requests
+    // stays below on the compositor thread; this source only prevents the
+    // outer calloop from sleeping through the listener's readability.
+    //
+    // The inherited eventfd below remains useful for older harnesses which
+    // write to an already-connected stream, but a plain Unix-socket client
+    // must never depend on that private side channel.
+    let _test_control_listener_wake = test_control_listener.as_ref().and_then(|listener| {
+        let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if duplicate < 0 {
+            eprintln!(
+                "tilo compositor: test_control listener duplicate: {}",
+                std::io::Error::last_os_error()
+            );
+            return None;
+        }
+        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+        match event_loop
+            .handle()
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+                Ok(PostAction::Continue)
+            }) {
+            Ok(token) => Some(token),
+            Err(error) => {
+                eprintln!("tilo compositor: test_control listener wake source: {error}");
+                None
+            }
+        }
+    });
     // Test drivers pass an inherited eventfd and increment it after writing a
     // command. That gives this manually-pumped protocol a proper outer-loop
     // wake without registering a persistent Unix stream as permanently
@@ -6317,7 +6401,12 @@ pub fn run() {
             // adoption/destruction is immediately visible to chrome and persistence.
             // The input router's queues remain bookkeeping and are drained each
             // tick so they cannot grow across a long session.
-            if state.client_input.clear_pending() {
+            let had_pending = state.client_input.clear_pending();
+            let placements_changed = {
+                let tree = state.workspace_tree.read();
+                state.client_input.refresh_placements_from_tree(&tree)
+            };
+            if had_pending || placements_changed {
                 frame_builder.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
             }
         }
@@ -7341,6 +7430,9 @@ pub fn run() {
                 &output_globals,
             );
         }
+        if retain_session_redraw(session_changed, should_paint) {
+            injected_redraw_pending = true;
+        }
         let t_paint_done = iter_t0.elapsed();
 
         // Confirm an `ext_session_lock_v1` client's lock only after the overlay is
@@ -7467,7 +7559,7 @@ pub fn run() {
             .flatten();
         let park = native_loop_park(
             park_now,
-            false,
+            backend_event_wake,
             cadence_needed,
             frame_clock.next_deadline(),
             [
@@ -7475,7 +7567,8 @@ pub fn run() {
                 None,
                 lock_clock_deadline,
                 run_deadline,
-                Some(park_now + WAYLAND_CLIENT_SERVICE),
+                backend.next_service_deadline(),
+                wayland_client_service_deadline(wayland_client_wake, park_now),
             ],
         );
         let t_sleep_start = Instant::now();
@@ -7644,6 +7737,62 @@ mod tests {
     }
 
     #[test]
+    fn failed_backend_wake_registration_keeps_the_bounded_idle_poll() {
+        let now = Instant::now();
+        assert_eq!(
+            native_loop_park(now, false, false, now + Duration::from_millis(8), []),
+            Some(IDLE_BACKEND_POLL),
+            "a backend whose wake fd could not be registered must still be serviced"
+        );
+    }
+
+    #[test]
+    fn backend_owned_repeat_deadline_wakes_an_otherwise_idle_loop() {
+        let now = Instant::now();
+        let repeat = now + Duration::from_millis(275);
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                now + Duration::from_millis(8),
+                [Some(repeat)],
+            ),
+            Some(Duration::from_millis(275)),
+            "registered backend fds do not replace timers synthesized inside the backend"
+        );
+    }
+
+    #[test]
+    fn registered_wayland_wake_removes_periodic_idle_poll() {
+        let now = Instant::now();
+
+        assert_eq!(wayland_client_service_deadline(true, now), None);
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                now + Duration::from_millis(8),
+                [wayland_client_service_deadline(true, now)],
+            ),
+            None,
+            "a static desktop must block on registered fds instead of waking every 4 ms"
+        );
+    }
+
+    #[test]
+    fn failed_wayland_wake_registration_keeps_bounded_service_fallback() {
+        let now = Instant::now();
+
+        assert_eq!(
+            wayland_client_service_deadline(false, now),
+            Some(now + WAYLAND_CLIENT_SERVICE_FALLBACK),
+            "an unsupported edge-triggered wake must not strand Wayland client requests"
+        );
+    }
+
+    #[test]
     fn stale_private_wayland_endpoints_are_recovered_without_touching_live_pids() {
         let runtime = tempfile::tempdir().expect("temporary runtime");
         let dead_pid = u32::MAX;
@@ -7742,6 +7891,19 @@ mod tests {
             ),
             Some(Duration::from_nanos(6_944_444)),
             "the backpressure guard must not weaken normal 144 Hz animation pacing"
+        );
+    }
+
+    #[test]
+    fn lock_state_edge_survives_presenter_backpressure_until_submitted() {
+        assert!(retain_session_redraw(true, false));
+        assert!(
+            !retain_session_redraw(true, true),
+            "a submitted replacement frame consumes the lock-state edge"
+        );
+        assert!(
+            !retain_session_redraw(false, false),
+            "ordinary idle ticks must not manufacture redraw work"
         );
     }
 
