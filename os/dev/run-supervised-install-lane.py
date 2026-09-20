@@ -441,7 +441,11 @@ def acceptance_evidence(context, vm, cycle):
     paths = {'conversion_info':'/work/verified/conversion-info.json',
              'conversion_sha256':'/work/verified/conversion.sha256',
              'verdict':f'/work/{cycle}-evidence/verdict.txt',
-             'exit_status':f'/work/{cycle}-evidence/exit-status.txt'}
+             'exit_status':f'/work/{cycle}-evidence/exit-status.txt',
+             'desktop_ocr':f'/work/{cycle}-evidence/15-desktop-config.txt',
+             'browser_ocr':f'/work/{cycle}-evidence/18-browser-offline.txt',
+             'browser_fixture':f'/work/{cycle}-evidence/browser-offline-fixture.txt',
+             'browser_fixture_html':f'/work/{cycle}-evidence/browser-offline-fixture.html'}
     script = "import json,pathlib,sys;p=json.loads(sys.argv[1]);print(json.dumps({k:pathlib.Path(v).read_text() for k,v in p.items()},sort_keys=True))"
     evidence = json.loads(command(kubectl(context,'-n',vm['namespace'],'exec',vm['pod'],'-c','qemu',
       '--','python3','-c',script,json.dumps(paths)),timeout=60))
@@ -450,7 +454,29 @@ def acceptance_evidence(context, vm, cycle):
     json.loads(evidence['conversion_info'])
     if len(evidence['conversion_sha256'].splitlines()) != 2:
         raise ValueError('conversion digest evidence is incomplete')
+    validate_gui_evidence(evidence)
     return evidence
+
+
+def validate_gui_evidence(evidence):
+    if not re.search(r'cycle\W*tilo', evidence.get('desktop_ocr',''), re.IGNORECASE):
+        raise ValueError('cycle evidence lacks the installed desktop hostname')
+    if not re.search(r'tilo\s+browser\s+offline\s+ready', evidence.get('browser_ocr',''), re.IGNORECASE):
+        raise ValueError('cycle evidence lacks rendered offline Browser content')
+    rows={}
+    for line in evidence.get('browser_fixture','').splitlines():
+        if '=' not in line: raise ValueError('browser fixture evidence is malformed')
+        key,value=line.split('=',1)
+        if key in rows: raise ValueError('browser fixture evidence has duplicate fields')
+        rows[key]=value
+    url=re.fullmatch(r'http://10\.0\.2\.2:([0-9]{4,5})/index\.html',rows.get('url',''))
+    if (set(rows)!={'url','sha256','transport','external_references'}
+            or url is None or not 1024<=int(url.group(1))<=65535
+            or not re.fullmatch(r'[0-9a-f]{64}',rows.get('sha256',''))
+            or hashlib.sha256(evidence.get('browser_fixture_html','').encode()).hexdigest()!=rows.get('sha256')
+            or rows.get('transport')!='qemu-user-local-gateway'
+            or rows.get('external_references')!='none'):
+        raise ValueError('browser fixture evidence does not describe the local offline page')
 
 
 def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
@@ -491,9 +517,11 @@ def collect_cycle_archive(context, vm, cycle, destination, limit=512*1024*1024):
                 names.add('/'.join(path.parts[1:]))
             required={'verdict.txt','exit-status.txt','boot-timing.txt',
                       'alongside-preservation-before-target-boot.txt',
-                      '07-target-greeter.png','15-desktop-config.png'}
+                      '07-target-greeter.png','15-desktop-config.png',
+                      '17-browser-open.png','18-browser-offline.png',
+                      'browser-offline-fixture.txt','browser-offline-fixture.html'}
             if not required.issubset(names):
-                raise ValueError('cycle evidence archive lacks cold-boot or desktop proof')
+                raise ValueError('cycle evidence archive lacks cold-boot, desktop or Browser proof')
         os.replace(temporary,destination)
     finally:
         try:os.unlink(temporary)
@@ -595,7 +623,8 @@ def main():
       'finalized_verification_sha256':finalization_verification_sha256,
       'creator_worker':disk,'verifier_worker':verifier,'vm_worker':vm,
       'creator_and_verifier_released':True,'cycle':cycle,'cold_boot_verified':True,
-      'prepared_alongside_verified':True,'cycle_evidence_file':'cycle-evidence.json',
+      'prepared_alongside_verified':True,'desktop_verified':True,
+      'browser_offline_page_verified':True,'cycle_evidence_file':'cycle-evidence.json',
       'cycle_evidence_archive':archive,
       'workers_retained_for_followup':True}
     write_private(args.operation_dir/'acceptance.json',(json.dumps(result,indent=2,sort_keys=True)+'\n').encode())
