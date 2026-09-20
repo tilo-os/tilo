@@ -149,7 +149,9 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
 grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
   && grep -Fq 'CONTINUOUS_OS_RELEASE: "0"' "$desktop" \
-  && grep -Fq "if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'" "$desktop" \
+  && grep -Fq "vars.TILO_PUBLIC_RELEASES_ENABLED == '1'" "$desktop" \
+  && grep -Fq "(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')" "$desktop" \
+  && grep -Fq "github.ref == 'refs/heads/main'" "$desktop" \
   && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
   && grep -Fq 'TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}' "$os" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \

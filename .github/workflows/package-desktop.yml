@@ -267,7 +267,10 @@ jobs:
           if-no-files-found: error
 
   publish-os-payload:
-    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    if: >-
+      vars.TILO_PUBLIC_RELEASES_ENABLED == '1' &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main'
     needs: package
     runs-on: ubuntu-24.04
     timeout-minutes: 120

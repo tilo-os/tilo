@@ -62,6 +62,18 @@ class EnabledImagerPlatforms(unittest.TestCase):
         self.assertIn("runner: macos-15", deferred)
         homebrew = section(self.workflow, "homebrew", 2)
         self.assertIn('TILO_IMAGER_MACOS_ENABLED: "0"', homebrew)
+        for job in ("homebrew", "winget", "site-downloads"):
+            self.assertIn(
+                "vars.TILO_PUBLIC_RELEASES_ENABLED == '1'",
+                section(self.workflow, job, 2),
+            )
+
+    def test_publication_monitors_are_launch_gated(self):
+        monitor = (ROOT / ".github/workflows/monitor-winget.yml").read_text()
+        desktop = (ROOT / ".github/workflows/package-desktop.yml").read_text()
+        self.assertIn("vars.TILO_PUBLIC_RELEASES_ENABLED == '1'", monitor)
+        publish = section(desktop, "publish-os-payload", 2)
+        self.assertIn("vars.TILO_PUBLIC_RELEASES_ENABLED == '1'", publish)
 
     def test_real_release_gate_accepts_linux_windows_and_rejects_missing_or_corrupt(self):
         script = step_script(self.workflow, "enabled-assets")

@@ -513,7 +513,8 @@ grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v'
 winget_monitor="$repo/.github/workflows/monitor-winget.yml"
 winget_reconcile="$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
 grep -Fq 'cron: "23 */6 * * *"' "$winget_monitor" \
-  && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != '' || vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP == '1'" "$winget_monitor" \
+  && grep -Fq "vars.TILO_PUBLIC_RELEASES_ENABLED == '1'" "$winget_monitor" \
+  && grep -Fq "(vars.IMAGER_SITE_CREDENTIAL_BROKER != '' || vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP == '1')" "$winget_monitor" \
   && grep -Fq 'id-token: write' "$winget_monitor" \
   && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$winget_monitor" \
   && grep -Fq 'acquire-release-token.sh' "$winget_monitor" \

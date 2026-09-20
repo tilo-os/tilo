@@ -53,6 +53,15 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertIn("if: github.event.inputs.coordinator_intent != ''", provenance)
         self.assertIn('RESOLVED_BUILDER: ${{ steps.builder.outputs.image }}', provenance)
 
+    def test_external_publication_requires_explicit_launch_gate(self):
+        source = (ROOT / '.github/workflows/release-apps.yml').read_text()
+        plan = source.split('\n  plan:\n', 1)[1].split('\n  build:\n', 1)[0]
+        self.assertIn('PUBLIC_RELEASES_ENABLED: ${{ vars.TILO_PUBLIC_RELEASES_ENABLED }}', plan)
+        self.assertIn(
+            '[[ $publication_requested == true && ${PUBLIC_RELEASES_ENABLED:-0} == 1 ]]',
+            plan,
+        )
+
     def check(self, workflow):
         script = (ROOT / 'os/tests/release_pipeline_invariants.sh').read_text()
         start = script.index("grep -Fq 'dist/apps/app-collections.toml' \"$apps\"")

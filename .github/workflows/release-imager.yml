@@ -808,7 +808,9 @@ jobs:
 
   homebrew:
     timeout-minutes: 60
-    if: startsWith(github.ref, 'refs/tags/imager-v')
+    # External distribution is a separate, explicit launch decision. A release
+    # tag may retain private repository assets without publishing them elsewhere.
+    if: startsWith(github.ref, 'refs/tags/imager-v') && vars.TILO_PUBLIC_RELEASES_ENABLED == '1'
     needs: publish
     runs-on: ubuntu-24.04-arm
     permissions:
@@ -908,7 +910,7 @@ jobs:
 
   winget:
     timeout-minutes: 60
-    if: startsWith(github.ref, 'refs/tags/imager-v')
+    if: startsWith(github.ref, 'refs/tags/imager-v') && vars.TILO_PUBLIC_RELEASES_ENABLED == '1'
     needs: publish
     runs-on: ubuntu-24.04
     permissions:
@@ -944,7 +946,7 @@ jobs:
 
   site-downloads:
     timeout-minutes: 30
-    if: startsWith(github.ref, 'refs/tags/imager-v')
+    if: startsWith(github.ref, 'refs/tags/imager-v') && vars.TILO_PUBLIC_RELEASES_ENABLED == '1'
     needs: [homebrew-install-test, winget]
     runs-on: ubuntu-24.04
     permissions:
