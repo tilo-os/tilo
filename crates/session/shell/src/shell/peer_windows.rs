@@ -150,6 +150,34 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
     out
 }
 
+/// Older builds persisted a host window's toolkit identity and then marked
+/// the card permanently missing when that identity was not a package id. If
+/// the current desktop-entry catalogue can now resolve that identity, the
+/// error is stale rather than user state: clear it so the normal restore path
+/// can migrate and relaunch the app. A genuinely absent application remains
+/// an answered card and is not retried on every tick.
+pub fn retry_resolvable_host_app_errors(tree: &mut WorkspaceTree) -> bool {
+    let mut changed = false;
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
+                    let TileContent::LocalApp { app_id, note, .. } = &mut tab.tile else {
+                        continue;
+                    };
+                    if note == "Not installed on this machine"
+                        && crate::shell::host_apps::resolve(app_id).is_some()
+                    {
+                        note.clear();
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
+
 /// Start a local instance of `item`'s app, bound to `item`'s tab. `Err`
 /// carries the sentence to put on the card — what is actually the case,
 /// never a promise ("not installed", not "coming soon").
@@ -626,6 +654,54 @@ mod tests {
             !any_pending(&tree),
             "a peer window that has been answered for must not be examined again"
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn stale_missing_note_for_a_resolvable_host_app_is_retried_once() {
+        let data = tempfile::tempdir().expect("temporary XDG data home");
+        let applications = data.path().join("applications");
+        std::fs::create_dir_all(&applications).expect("applications directory");
+        std::fs::write(
+            applications.join("rygel-preferences.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nStartupWMClass=org.gnome.Rygel.Preferences\n",
+        )
+        .expect("desktop entry");
+        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
+        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+        crate::shell::host_apps::invalidate_cache();
+
+        let (mut tree, tab) = tree_with_local_app("org.gnome.Rygel.Preferences");
+        assert!(set_note(
+            &mut tree,
+            tab,
+            "Not installed on this machine".into()
+        ));
+        assert!(retry_resolvable_host_app_errors(&mut tree));
+        assert_eq!(local_app_note(&tree, tab), "");
+        assert!(any_pending(&tree));
+
+        assert!(set_note(
+            &mut tree,
+            tab,
+            "Not installed on this machine".into()
+        ));
+        if let TileContent::LocalApp { app_id, .. } =
+            &mut tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile
+        {
+            *app_id = "org.example.ActuallyMissing".into();
+        }
+        assert!(!retry_resolvable_host_app_errors(&mut tree));
+        assert_eq!(local_app_note(&tree, tab), "Not installed on this machine");
+
+        crate::shell::host_apps::invalidate_cache();
+        unsafe {
+            if let Some(previous) = previous_data_home {
+                std::env::set_var("XDG_DATA_HOME", previous);
+            } else {
+                std::env::remove_var("XDG_DATA_HOME");
+            }
+        }
     }
 
     #[test]
