@@ -159,14 +159,14 @@ exclude = ["crates/doc/qdoc-codec-markdown-wasm"]
 [package]
 name = "qdoc-codec-markdown-wasm"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 qdoc = { path = "../qdoc" }
-wit-bindgen = "0.36"
+wit-bindgen = "0.57"
 ```
 
 ### src/lib.rs
