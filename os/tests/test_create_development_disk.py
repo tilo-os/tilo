@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import importlib.util
 import os
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -14,6 +15,75 @@ sys.path.insert(0, str(DEV))
 spec = importlib.util.spec_from_file_location('disk_creator', DEV / 'create-development-disk.py')
 disk_creator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(disk_creator)
+
+
+class FuseDeviceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.device = Path(self.tmp.name) / 'fuse'
+        self.misc = Path(self.tmp.name) / 'misc'
+        self.sys_device = Path(self.tmp.name) / 'sys-device'
+
+    def test_creates_exact_fuse_character_device_from_kernel_identity(self):
+        self.misc.write_text('229 fuse\n')
+        self.sys_device.write_text('10:229\n')
+        with patch.object(os, 'mknod') as mknod, patch.object(Path, 'lstat') as lstat:
+            lstat.side_effect = [FileNotFoundError(), SimpleNamespace(
+                st_mode=stat.S_IFCHR | 0o600, st_rdev=os.makedev(10, 229))]
+            disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
+        mknod.assert_called_once_with(self.device, stat.S_IFCHR | 0o600, os.makedev(10, 229))
+
+    def test_rejects_missing_or_ambiguous_kernel_fuse_identity(self):
+        for contents in ('', '228 fuse\n', '229 fuse\n229 fuse\n'):
+            with self.subTest(contents=contents):
+                self.misc.write_text(contents)
+                self.sys_device.write_text('10:229\n')
+                with self.assertRaisesRegex(ValueError, 'expected FUSE misc device'):
+                    disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
+
+    def test_rejects_wrong_sysfs_fuse_identity(self):
+        self.misc.write_text('229 fuse\n')
+        self.sys_device.write_text('10:228\n')
+        with self.assertRaisesRegex(ValueError, 'expected FUSE misc device'):
+            disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
+
+    def test_accepts_existing_exact_device_without_recreating_it(self):
+        info = SimpleNamespace(st_mode=stat.S_IFCHR | 0o600,
+                               st_rdev=os.makedev(10, 229))
+        with patch.object(Path, 'lstat', return_value=info), \
+                patch.object(os, 'mknod') as mknod:
+            disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
+        mknod.assert_not_called()
+
+    def test_mknod_failure_propagates(self):
+        self.misc.write_text('229 fuse\n')
+        self.sys_device.write_text('10:229\n')
+        with patch.object(os, 'mknod', side_effect=PermissionError('denied')):
+            with self.assertRaisesRegex(PermissionError, 'denied'):
+                disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
+
+    def test_rejects_symlink_without_replacing_it(self):
+        target = Path(self.tmp.name) / 'target'
+        target.write_text('fixture')
+        self.device.symlink_to(target)
+        with self.assertRaisesRegex(ValueError, 'character device 10:229'):
+            disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
+        self.assertTrue(self.device.is_symlink())
+
+    def test_rejects_existing_wrong_device_identity(self):
+        self.device.write_text('not a device')
+        self.misc.write_text('229 fuse\n')
+        with self.assertRaisesRegex(ValueError, 'character device 10:229'):
+            disk_creator.ensure_fuse_device(self.device, self.misc)
+
+    def test_rejects_existing_character_device_with_wrong_rdev(self):
+        info = SimpleNamespace(st_mode=stat.S_IFCHR | 0o600,
+                               st_rdev=os.makedev(10, 228))
+        with patch.object(Path, 'lstat', return_value=info):
+            with self.assertRaisesRegex(ValueError, 'character device 10:229'):
+                disk_creator.ensure_fuse_device(self.device, self.misc, self.sys_device)
+
 
 
 class CreationTests(unittest.TestCase):
