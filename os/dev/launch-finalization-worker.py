@@ -36,6 +36,13 @@ EVIDENCE = ('01-rebind.json', '02-loader.json', '03-provisional.json',
             '04-composefs.json', '05-reseal.json', '06-prediction.json',
             '07-verified.json', '08-published.json', 'result.json', 'status.json', 'signing-pending.json')
 STAGE5_EVIDENCE = EVIDENCE[:5]
+# The initial gate is an operator authorization window. It is deliberately
+# independent of the request-bound signing and build execution deadlines.
+OPERATOR_READY_TIMEOUT_SECONDS = 7200
+# Preserve the launcher's pre-existing post-gate observation budget: the old
+# 9000-second wait contained a 300-second gate and 8700 seconds after release.
+POST_GATE_OBSERVATION_SECONDS = 8700
+WORKER_WAIT_TIMEOUT_SECONDS = OPERATOR_READY_TIMEOUT_SECONDS + POST_GATE_OBSERVATION_SECONDS
 
 
 def receipt_from_tar(raw):
@@ -130,18 +137,6 @@ def unique(pairs):
             raise ValueError('duplicate request field')
         result[key] = value
     return result
-
-
-def operator_gate_timeout(request_path):
-    """Use the request-bound human response window for initial staging."""
-    raw = Path(request_path).read_bytes()
-    if not 0 < len(raw) <= 65536:
-        raise ValueError('bounded finalization request required')
-    value = json.loads(raw, object_pairs_hook=unique)
-    timeout = value.get('signing_response_timeout_seconds') if isinstance(value, dict) else None
-    if type(timeout) is not int or not 60 <= timeout <= 7200:
-        raise ValueError('invalid operator preparation timeout')
-    return timeout
 
 
 def request_bytes(raw, digest, helpers):
@@ -240,7 +235,7 @@ def inside():
     info = json.loads(run('podman', '--remote=false', 'info', '--format=json'))
     if info['store']['graphDriverName'] != 'overlay':
         raise ValueError('native overlay required')
-    deadline = time.monotonic() + operator_gate_timeout('/work/finalization-request.json')
+    deadline = time.monotonic() + OPERATOR_READY_TIMEOUT_SECONDS
     gate = Path('/work/operator-ready')
     while not gate.exists():
         if time.monotonic() >= deadline:
@@ -367,10 +362,9 @@ def main():
                     'controller_revision': run('git', '-C', str(args.controller), 'rev-parse', 'HEAD')}
         (args.evidence / 'worker-identity.json').write_text(json.dumps(identity, indent=2) + '\n')
         print(json.dumps(identity), flush=True)
-        # Five operator-mediated signatures can each use the request's
-        # two-hour response window. Keep observation alive across those waits;
-        # this is not a build-stage timeout.
-        result = run('docker', 'wait', container, timeout=42000)
+        # Supervision includes the independent initial operator-ready window;
+        # the post-gate execution observation budget remains unchanged.
+        result = run('docker', 'wait', container, timeout=WORKER_WAIT_TIMEOUT_SECONDS)
         if result != '0':
             raise RuntimeError('finalization failed; inspect public receipts, do not blindly retry')
     finally:
