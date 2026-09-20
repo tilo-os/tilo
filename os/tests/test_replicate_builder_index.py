@@ -38,8 +38,18 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
                 "schemaVersion": 2,
                 "mediaType": "application/vnd.oci.image.index.v1+json",
                 "manifests": [
-                    {"digest": "sha256:" + "a" * 64, "platform": {"os": "linux", "architecture": "amd64"}},
-                    {"digest": "sha256:" + "b" * 64, "platform": {"os": "linux", "architecture": "arm64"}},
+                    {
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "size": 123,
+                        "digest": "sha256:" + "a" * 64,
+                        "platform": {"os": "linux", "architecture": "amd64"},
+                    },
+                    {
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "size": 124,
+                        "digest": "sha256:" + "b" * 64,
+                        "platform": {"os": "linux", "architecture": "arm64"},
+                    },
                 ],
             },
             separators=(",", ":"),
@@ -57,12 +67,19 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
         self.token = "header." + payload + ".signature"
         self.calls = []
         self.aws_environments = []
+        self.cosign_auth = []
+        self.target_raw = None
 
     def execute(self, arguments, **kwargs):
         arguments = tuple(str(value) for value in arguments)
         self.calls.append(arguments)
         if arguments[:3] == ("skopeo", "inspect", "--raw"):
+            if self.target_raw is not None and ".dkr.ecr." in arguments[-1]:
+                return subprocess.CompletedProcess(arguments, 0, stdout=self.target_raw)
             return subprocess.CompletedProcess(arguments, 0, stdout=self.raw)
+        if arguments[:2] == ("cosign", "verify") and kwargs.get("env") is not None:
+            config = Path(kwargs["env"]["DOCKER_CONFIG"]) / "config.json"
+            self.cosign_auth.append((config.read_text(), config))
         if arguments[:3] == ("aws", "sts", "get-caller-identity"):
             self.aws_environments.append(kwargs["env"])
             return subprocess.CompletedProcess(
@@ -132,7 +149,7 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             source = Path(temporary) / "builder-index.txt"
             source.write_text(MODULE.SOURCE_REPOSITORY + "@sha256:" + "f" * 64 + "\n")
             with patch.object(MODULE.subprocess, "run", side_effect=self.execute):
-                with self.assertRaisesRegex(ValueError, "different index bytes"):
+                with self.assertRaisesRegex(ValueError, "different manifest bytes"):
                     MODULE.replicate(
                         source,
                         "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-builder",
@@ -171,6 +188,181 @@ class RegionalBuilderReplicationTest(unittest.TestCase):
             self.assertTrue(target.endswith("@" + self.digest))
             self.assertFalse(any(call[:2] == ("cosign", "verify") for call in self.calls))
             self.assertIn("--preserve-digests", next(call for call in self.calls if call[:2] == ("skopeo", "copy")))
+
+    def test_private_single_image_manifest_uses_explicit_source_auth(self):
+        self.raw = json.dumps(
+            {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {
+                    "mediaType": "application/vnd.oci.image.config.v1+json",
+                    "size": 321,
+                    "digest": "sha256:" + "c" * 64,
+                },
+                "layers": [
+                    {
+                        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+                        "size": 654,
+                        "digest": "sha256:" + "d" * 64,
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        ).encode()
+        digest = "sha256:" + hashlib.sha256(self.raw).hexdigest()
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "registry-server.txt"
+            source_auth = Path(temporary) / "forgejo-auth.json"
+            output = Path(temporary) / "replication.txt"
+            source.write_text("code.sandbox.example/qos/tilo-registry-server@" + digest + "\n")
+            source_auth.write_text('{"auths":{"code.sandbox.example":{}}}')
+            environment = {
+                "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
+            }
+            with patch.dict(MODULE.os.environ, environment, clear=True), patch.object(
+                MODULE.urllib.request,
+                "urlopen",
+                return_value=Response({"value": self.token}),
+            ), patch.object(MODULE.subprocess, "run", side_effect=self.execute):
+                target = MODULE.replicate(
+                    source,
+                    "125650147312.dkr.ecr.us-west-2.amazonaws.com/qos/tilo-registry-server",
+                    "arn:aws:iam::125650147312:role/burst-us-qos-builder-replication",
+                    "us-west-2",
+                    "tilo-builder-replication",
+                    ROOT / "keys/cosign.pub",
+                    output,
+                    source_auth,
+                )
+
+            source_inspect = next(
+                call
+                for call in self.calls
+                if call[:3] == ("skopeo", "inspect", "--raw") and "code.sandbox.example" in call[-1]
+            )
+            copy = next(call for call in self.calls if call[:2] == ("skopeo", "copy"))
+            self.assertIn(("--authfile", str(source_auth)), list(zip(source_inspect, source_inspect[1:])))
+            self.assertIn(("--src-authfile", str(source_auth)), list(zip(copy, copy[1:])))
+            self.assertIn("--preserve-digests", copy)
+            self.assertTrue(target.endswith("@" + digest))
+            self.assertEqual(self.cosign_auth[0][0], source_auth.read_text())
+            self.assertFalse(self.cosign_auth[0][1].exists())
+
+    def test_index_requires_an_identifying_media_type(self):
+        descriptor = {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "size": 1,
+            "digest": "sha256:" + "a" * 64,
+        }
+        with self.assertRaisesRegex(ValueError, "unsupported media type"):
+            MODULE.validate_manifest(
+                {"schemaVersion": 2, "manifests": [descriptor]},
+                "code.sandbox.example/qos/tilo-registry-server",
+            )
+
+    def test_builder_requires_exactly_two_children_but_generic_indexes_do_not(self):
+        descriptor = {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "size": 1,
+            "digest": "sha256:" + "a" * 64,
+        }
+        for count in (1, 3):
+            document = {
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [descriptor] * count,
+            }
+            with self.subTest(count=count), self.assertRaisesRegex(ValueError, "two-platform index"):
+                MODULE.validate_manifest(document, MODULE.SOURCE_REPOSITORY)
+            MODULE.validate_manifest(document, "code.sandbox.example/qos/tilo-registry-server")
+
+    def test_rejects_ambiguous_and_unknown_manifest_shapes(self):
+        descriptor = {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "size": 1,
+            "digest": "sha256:" + "a" * 64,
+        }
+        with self.assertRaisesRegex(ValueError, "ambiguous manifest shape"):
+            MODULE.validate_manifest(
+                {
+                    "schemaVersion": 2,
+                    "manifests": [descriptor],
+                    "config": descriptor,
+                    "layers": [],
+                },
+                "code.sandbox.example/qos/tilo-registry-server",
+            )
+        with self.assertRaisesRegex(ValueError, "neither index nor image-manifest"):
+            MODULE.validate_manifest(
+                {"schemaVersion": 2},
+                "code.sandbox.example/qos/tilo-registry-server",
+            )
+
+    def test_rejects_target_manifest_bytes_changed_after_copy(self):
+        self.target_raw = self.raw + b"\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "python-index.txt"
+            source.write_text("docker.io/library/python@" + self.digest + "\n")
+            environment = {
+                "ACTIONS_ID_TOKEN_REQUEST_URL": "https://code.invalid/token",
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-secret",
+            }
+            with patch.dict(MODULE.os.environ, environment, clear=True), patch.object(
+                MODULE.urllib.request,
+                "urlopen",
+                return_value=Response({"value": self.token}),
+            ), patch.object(MODULE.subprocess, "run", side_effect=self.execute):
+                with self.assertRaisesRegex(ValueError, "changed the promoted OCI identity"):
+                    MODULE.replicate(
+                        source,
+                        "125650147312.dkr.ecr.us-west-2.amazonaws.com/dockerhub/library/python",
+                        "arn:aws:iam::125650147312:role/burst-us-qos-builder-replication",
+                        "us-west-2",
+                        "tilo-builder-replication",
+                        None,
+                        Path(temporary) / "output",
+                    )
+
+    def test_builder_rejects_single_image_manifest(self):
+        document = {
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "config": {
+                "mediaType": "application/vnd.docker.container.image.v1+json",
+                "size": 1,
+                "digest": "sha256:" + "c" * 64,
+            },
+            "layers": [],
+        }
+        with self.assertRaisesRegex(ValueError, "two-platform index"):
+            MODULE.validate_manifest(document, MODULE.SOURCE_REPOSITORY)
+
+    def test_accepts_oci_and_docker_index_and_image_media_types(self):
+        descriptor = {
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "size": 1,
+            "digest": "sha256:" + "a" * 64,
+        }
+        for media_type in (
+            "application/vnd.oci.image.index.v1+json",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+        ):
+            with self.subTest(media_type=media_type):
+                MODULE.validate_manifest(
+                    {"schemaVersion": 2, "mediaType": media_type, "manifests": [descriptor]},
+                    "code.sandbox.example/qos/tilo-registry-server",
+                )
+        for media_type in (
+            "application/vnd.oci.image.manifest.v1+json",
+            "application/vnd.docker.distribution.manifest.v2+json",
+            None,
+        ):
+            with self.subTest(media_type=media_type):
+                document = {"schemaVersion": 2, "config": descriptor, "layers": [descriptor]}
+                if media_type is not None:
+                    document["mediaType"] = media_type
+                MODULE.validate_manifest(document, "code.sandbox.example/qos/tilo-registry-server")
 
 
 if __name__ == "__main__":
