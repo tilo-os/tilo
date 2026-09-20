@@ -435,6 +435,54 @@ class OperatorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'task changed'):
                 o.status(self.args.operation, c, 23, 2)
 
+    def test_status_accepts_same_job_becoming_terminal_during_transfer(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        directory = o.run_path(self.args.operation, 23, 2)
+        directory.mkdir(mode=0o700)
+        self.put(directory / 'job.json', s.canonical(job))
+        self.put(directory / 'staging-receipt.json', b'{}')
+        terminal_run, terminal_job = copy.deepcopy(run), copy.deepcopy(job)
+        terminal_run['status'] = terminal_job['status'] = 'failure'
+        client = Mock()
+        client.transfer.side_effect = ValueError('authenticated transfer command failed')
+        with patch.object(o, 'actual_job', side_effect=[(run, job), (terminal_run, terminal_job)]), \
+                patch.object(o, 'client_for', return_value=client):
+            result = o.status(self.args.operation, c, 23, 2)
+        self.assertEqual(result['job_status'], 'failure')
+        self.assertEqual(result['run_status'], 'failure')
+        self.assertEqual(result['requests'], [])
+
+    def test_status_preserves_transfer_failure_if_same_job_still_runs(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        directory = o.run_path(self.args.operation, 23, 2)
+        directory.mkdir(mode=0o700)
+        self.put(directory / 'job.json', s.canonical(job))
+        self.put(directory / 'staging-receipt.json', b'{}')
+        client = Mock()
+        client.transfer.side_effect = TimeoutError('transport lost')
+        with patch.object(o, 'actual_job', side_effect=[(run, job), (run, copy.deepcopy(job))]), \
+                patch.object(o, 'client_for', return_value=client), \
+                self.assertRaisesRegex(TimeoutError, 'transport lost'):
+            o.status(self.args.operation, c, 23, 2)
+
+    def test_status_rejects_identity_change_during_terminal_recheck(self):
+        c, _ = self.init()
+        run, job = self.event(c)
+        directory = o.run_path(self.args.operation, 23, 2)
+        directory.mkdir(mode=0o700)
+        self.put(directory / 'job.json', s.canonical(job))
+        self.put(directory / 'staging-receipt.json', b'{}')
+        changed = copy.deepcopy(job)
+        changed['task_id'] += 1
+        client = Mock()
+        client.transfer.side_effect = ValueError('transfer failed')
+        with patch.object(o, 'actual_job', side_effect=[(run, job), (run, changed)]), \
+                patch.object(o, 'client_for', return_value=client), \
+                self.assertRaisesRegex(ValueError, 'identity changed'):
+            o.status(self.args.operation, c, 23, 2)
+
     def test_wait_ignores_serviced_requests_and_timeout_is_observation_only(self):
         state = {'requests': ['a' * 32], 'job_status': 'running'}
         with patch.object(o, 'status', side_effect=lambda *a: copy.deepcopy(state)), patch.object(o.time, 'sleep') as sleep, patch.object(o.time, 'monotonic', side_effect=[0, 1, 2]), self.assertRaises(TimeoutError):

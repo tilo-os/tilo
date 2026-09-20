@@ -423,7 +423,21 @@ def status(operation, c, run_id, attempt):
         require(document(directory / 'job.json')['task_id'] == job['task_id'], 'bound job task changed')
         result['staged'] = (directory / 'staging-receipt.json').exists()
         if result['staged'] and job['status'] == 'running':
-            pending = json.loads(client_for(directory).transfer('list'), object_pairs_hook=spool.unique)
+            client = client_for(directory)
+            try:
+                raw_pending = client.transfer('list')
+            except Exception:
+                # A terminal runner can disappear between the job observation and
+                # spool transfer. Re-read once and accept only the same terminal job.
+                fresh_run, fresh_job = actual_job(operation, c, run_id, attempt)
+                require(all(fresh_job[key] == job[key]
+                            for key in ('id', 'run_id', 'attempt', 'name', 'task_id')),
+                        'bound job identity changed during terminal recheck')
+                if fresh_job['status'] in ('success', 'failure', 'cancelled', 'skipped'):
+                    result.update(run_status=fresh_run['status'], job_status=fresh_job['status'], requests=[])
+                    return result
+                raise
+            pending = json.loads(raw_pending, object_pairs_hook=spool.unique)
             require(set(pending) == {'requests'} and isinstance(pending['requests'], list) and
                     len(pending['requests']) <= 64 and all(isinstance(n, str) and NONCE.fullmatch(n)
                     for n in pending['requests']), 'invalid pending request list')
