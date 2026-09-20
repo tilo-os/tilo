@@ -1,6 +1,6 @@
 # Product packaging coverage and next Windows qualification
 
-Source audit: main `97fde6687`, 2026-09-19. A defined workflow is not evidence
+Source audit: main `6608d60f0`, 2026-09-20. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
 artifact.
 
@@ -10,19 +10,18 @@ promotion model, service levels and phased production plan.
 ## Routine change lifecycle
 
 Routine work starts on a task branch and lands through one updated pull request.
-The exact head needs independent review and the protected check and lint
-contexts before merge.
+The protected check and lint contexts must pass for the exact head before merge.
 `check.yml` and `lint.yml` preserve a result for every `main` commit; dependency
 selection keeps the Rust lane focused while nightly CI remains the full-workspace
 backstop.
 
-The trusted merge dispatcher completes eligible routine app PRs automatically,
-one at a time. Its current allowlist is deliberately narrow: Rust source changes
-inside an existing `apps/<app>/src/` package. It fails closed when the branch is
-out of date, author/reviewer/integrator identities overlap, branch protection
-drifts, or exact-head check, lint or independent approval is missing. Other PRs
-still need an explicit merge. See [Release pipeline](release-pipeline.md) for the
-enabled heavy-build and publication triggers.
+The trusted merge controller pilots review-optional integration only for Rust
+source changes inside an existing `apps/<app>/src/` package. The author must post
+`/merge <full-head-sha>` after exact-head checks pass. An official review request
+holds that head until it is cancelled or receives an allowed exact-head approval;
+current change requests block, and every push invalidates the prior decision.
+Other changes retain independent review. See [Release pipeline](release-pipeline.md)
+for the enabled heavy-build and publication triggers.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |

@@ -3,8 +3,8 @@
 The registry is Tilo's semi-federated marketplace for `.qpkg`
 bundles. It advertises signed metadata so users can browse,
 install, and update packages from the shell. Anyone can host
-their own registry; the Tilo org runs one at
-`apps.tilo.dev` (source under `crates/packaging/registry-server`)
+their own registry; the Tilo org deployment targets
+`registry.tilo.dev` (source under `crates/packaging/registry-server`)
 and ships **the registry client itself as a `.qpkg` app** so it
 can be swapped out or forked like any other Tilo app.
 
