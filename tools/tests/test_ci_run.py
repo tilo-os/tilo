@@ -17,6 +17,13 @@ def shell_path(path):
     return f"/mnt/{path.drive[0].lower()}{path.as_posix()[2:]}"
 
 
+def bash_command(*args):
+    # Legacy bash.exe rewrites -c positional arguments. WSL's direct exec
+    # preserves the argv used by the same Linux regression on Windows hosts.
+    prefix = ["wsl.exe", "--exec", "bash"] if os.name == "nt" else ["bash"]
+    return prefix + list(args)
+
+
 class CiRunSummaryTests(unittest.TestCase):
     def test_immediate_commands_do_not_leave_an_open_heartbeat_pipe(self):
         # Exercise shutdown before the heartbeat necessarily assigns its child
@@ -24,7 +31,7 @@ class CiRunSummaryTests(unittest.TestCase):
         for attempt in range(30):
             with self.subTest(attempt=attempt):
                 result = subprocess.run(
-                    ["bash", shell_path(CI_RUN), "immediate", "--", "true"],
+                    bash_command(shell_path(CI_RUN), "immediate", "--", "true"),
                     cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     timeout=10, check=False,
                 )
@@ -42,7 +49,7 @@ class CiRunSummaryTests(unittest.TestCase):
                 shim.write_text(
                     "#!/usr/bin/env bash\n"
                     f'if [ "$1" = 60 ]; then echo $$ > {shlex.quote(shell_path(sleeper))}; fi\n'
-                    'exec /bin/sleep "$@"\n', encoding="utf-8"
+                    'exec /bin/sleep "$@"\n', encoding="utf-8", newline="\n"
                 )
                 shim.chmod(0o755)
                 command = root / "command.sh"
@@ -51,19 +58,22 @@ class CiRunSummaryTests(unittest.TestCase):
                     "#!/usr/bin/env bash\n"
                     f"for attempt in {{1..200}}; do [ -s {shlex.quote(shell_path(sleeper))} ] && break; sleep 0.01; done\n"
                     f"test -s {shlex.quote(shell_path(sleeper))} || exit 99\n"
-                    + finish, encoding="utf-8"
+                    + finish, encoding="utf-8", newline="\n"
                 )
                 try:
                     result = subprocess.run(
-                        ["bash", "-c", 'export PATH="$1:$PATH"; exec bash "$2" heartbeat -- bash "$3"',
-                         "fixture", shell_path(binary), shell_path(CI_RUN), shell_path(command)],
+                        bash_command("-c", 'export PATH="$1:$PATH"; exec bash "$2" heartbeat -- bash "$3"',
+                                     "fixture", shell_path(binary), shell_path(CI_RUN), shell_path(command)),
                         cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         timeout=10, check=False,
                     )
-                    self.assertEqual(result.returncode, status, result.stdout)
+                    # wsl.exe reports the terminating Linux signal as a positive code;
+                    # native subprocess reports it as a negative return code.
+                    expected = 15 if os.name == "nt" and status == -15 else status
+                    self.assertEqual(result.returncode, expected, result.stdout)
                     pid = sleeper.read_text().strip()
                     reaped = subprocess.run(
-                        ["bash", "-c", 'test ! -e "/proc/$1"', "fixture", pid],
+                        bash_command("-c", 'test ! -e "/proc/$1"', "fixture", pid),
                         check=False,
                     )
                     self.assertEqual(reaped.returncode, 0, "heartbeat must reap its owned sleep")
@@ -72,10 +82,9 @@ class CiRunSummaryTests(unittest.TestCase):
                     # This runs after the reaping assertion, never in its place.
                     if sleeper.exists():
                         subprocess.run(
-                            ["bash", "-c", 'kill -TERM "$1" 2>/dev/null || true',
-                             "fixture", sleeper.read_text().strip()], check=False,
+                            bash_command("-c", 'kill -TERM "$1" 2>/dev/null || true',
+                                         "fixture", sleeper.read_text().strip()), check=False,
                         )
-
 
     def test_clippy_diff_failure_keeps_lint_location_and_name(self):
         diagnostic = """introduced 1 Clippy diagnostic site(s):
@@ -98,14 +107,13 @@ warning: item in documentation is missing backticks
                 inherited = env.get("WSLENV", "")
                 env["WSLENV"] = ":".join(filter(None, [inherited, "GITHUB_STEP_SUMMARY"]))
             result = subprocess.run(
-                [
-                    "bash",
+                bash_command(
                     shell_path(CI_RUN),
                     "Clippy diagnostic diff",
                     "--",
                     "bash",
                     shell_path(command),
-                ],
+                ),
                 cwd=ROOT,
                 env=env,
                 text=True,
