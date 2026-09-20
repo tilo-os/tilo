@@ -237,8 +237,8 @@ static int sds_security(struct state *s, ntfs_inode *ni, uint64_t *raw) {
   if (!ctx || ntfs_index_lookup(&key, sizeof key, ctx))
     goto out;
   INDEX_ENTRY *entry = ctx->entry;
-  uint16_t length = le16_to_cpu(entry->length),
-           offset = le16_to_cpu(entry->data_offset);
+  size_t length = le16_to_cpu(entry->length),
+         offset = le16_to_cpu(entry->data_offset);
   if (offset > length || sizeof(SECURITY_DESCRIPTOR_HEADER) > length - offset ||
       le16_to_cpu(entry->data_length) != sizeof(SECURITY_DESCRIPTOR_HEADER))
     goto out;
