@@ -197,6 +197,9 @@ fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str
 struct PhaseWindow {
     started: Instant,
     frames: u64,
+    direct_frames: u64,
+    direct_dropped: u64,
+    flip_completions: u64,
     submit_us: u128,
     gpu_readback_map_us: u128,
     settle_us: u128,
@@ -210,6 +213,9 @@ impl Default for PhaseWindow {
         Self {
             started: Instant::now(),
             frames: 0,
+            direct_frames: 0,
+            direct_dropped: 0,
+            flip_completions: 0,
             submit_us: 0,
             gpu_readback_map_us: 0,
             settle_us: 0,
@@ -233,6 +239,21 @@ impl PhaseWindow {
             .saturating_add(timing.cpu_copy_swizzle_us);
         self.readback_bytes = self.readback_bytes.saturating_add(timing.readback_bytes);
         self.output_bytes = self.output_bytes.saturating_add(timing.cpu_output_bytes);
+    }
+
+    fn record_direct_submit(&mut self) {
+        self.frames = self.frames.saturating_add(1);
+        self.direct_frames = self.direct_frames.saturating_add(1);
+    }
+
+    fn record_direct_drop(&mut self) {
+        self.direct_dropped = self.direct_dropped.saturating_add(1);
+    }
+
+    fn record_flip_completions(&mut self, count: usize) {
+        self.flip_completions = self
+            .flip_completions
+            .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
     }
 
     fn due(&self, now: Instant) -> bool {
@@ -269,6 +290,9 @@ mod phase_window_tests {
         window.record(timing(3));
 
         assert_eq!(window.frames, 2);
+        assert_eq!(window.direct_frames, 0);
+        assert_eq!(window.direct_dropped, 0);
+        assert_eq!(window.flip_completions, 0);
         assert_eq!(window.submit_us, 5);
         assert_eq!(window.gpu_readback_map_us, 10);
         assert_eq!(window.settle_us, 15);
@@ -296,10 +320,28 @@ mod phase_window_tests {
 
         assert_eq!(window.started, now);
         assert_eq!(window.frames, 0);
+        assert_eq!(window.direct_frames, 0);
+        assert_eq!(window.direct_dropped, 0);
+        assert_eq!(window.flip_completions, 0);
         assert_eq!(window.submit_us, 0);
         assert_eq!(window.gpu_readback_map_us, 0);
         assert_eq!(window.settle_us, 0);
         assert_eq!(window.cpu_swizzle_us, 0);
+        assert_eq!(window.readback_bytes, 0);
+        assert_eq!(window.output_bytes, 0);
+    }
+
+    #[test]
+    fn phase_window_records_direct_submission_drop_and_flip_completion() {
+        let mut window = PhaseWindow::default();
+        window.record_direct_submit();
+        window.record_direct_drop();
+        window.record_flip_completions(2);
+
+        assert_eq!(window.frames, 1);
+        assert_eq!(window.direct_frames, 1);
+        assert_eq!(window.direct_dropped, 1);
+        assert_eq!(window.flip_completions, 2);
         assert_eq!(window.readback_bytes, 0);
         assert_eq!(window.output_bytes, 0);
     }
@@ -399,6 +441,7 @@ impl DrmPresenter {
             self.pointer,
             scene,
             None,
+            Some(&mut self.phase_window),
         );
     }
 
@@ -418,25 +461,28 @@ impl DrmPresenter {
                 previous_revision: frame.previous_revision,
                 regions: frame.damage_regions.as_deref(),
             }),
+            Some(&mut self.phase_window),
         );
         self.emit_phase_profile();
     }
 
     fn emit_phase_profile(&mut self) {
-        let Some(timing) = self
+        if let Some(timing) = self
             .paint
             .as_ref()
             .and_then(paint::VelloDrmBridge::last_phase_timing)
-        else {
-            return;
-        };
-        self.phase_window.record(timing);
+        {
+            self.phase_window.record(timing);
+        }
         let now = Instant::now();
         if self.phase_window.due(now) {
             let frames = self.phase_window.frames.max(1);
             tracing::info!(
                 target: "tilo::render_phase_summary",
                 frames = self.phase_window.frames,
+                direct_frames = self.phase_window.direct_frames,
+                direct_dropped = self.phase_window.direct_dropped,
+                flip_completions = self.phase_window.flip_completions,
                 window_us = now.saturating_duration_since(self.phase_window.started).as_micros(),
                 avg_submit_us = self.phase_window.submit_us / u128::from(frames),
                 avg_gpu_readback_map_us = self.phase_window.gpu_readback_map_us / u128::from(frames),
@@ -451,6 +497,13 @@ impl DrmPresenter {
         if !self.profile_phases {
             return;
         }
+        let Some(timing) = self
+            .paint
+            .as_ref()
+            .and_then(paint::VelloDrmBridge::last_phase_timing)
+        else {
+            return;
+        };
         self.profile_seq = self.profile_seq.saturating_add(1);
         tracing::info!(
             target: "tilo::render_phase",
@@ -578,6 +631,7 @@ fn paint_scanouts(
     pointer: (f64, f64),
     scene: &Scene,
     damage: Option<SceneDamage<'_>>,
+    mut phase_window: Option<&mut PhaseWindow>,
 ) {
     if scanouts.is_empty() {
         return;
@@ -709,7 +763,11 @@ fn paint_scanouts(
                 if let Some(targets) = entry.direct_targets.as_mut() {
                     // Retire a prior imported-buffer flip before selecting a new
                     // render target. With two slots, a pending flip owns both.
-                    for crtc in entry.scanout.poll_flip_completions() {
+                    let completions = entry.scanout.poll_flip_completions();
+                    if let Some(window) = phase_window.as_deref_mut() {
+                        window.record_flip_completions(completions.len());
+                    }
+                    for crtc in completions {
                         entry.scanout.mark_direct_flip_complete(targets, crtc);
                     }
                     if let Some((index, target)) = targets.render_slot() {
@@ -728,17 +786,33 @@ fn paint_scanouts(
                             target,
                             deadline,
                         ) {
-                            Ok(stats) if entry.scanout.submit_direct_target(targets, index) => {
-                                tracing::trace!(
-                                    revision = stats.revision,
-                                    render_attempts = stats.render_attempts,
-                                    framebuffer_copy_bytes = stats.framebuffer_copy_bytes,
-                                    framebuffer_staging_bytes = stats.framebuffer_staging_bytes,
-                                    "DRM direct frame submitted"
-                                );
-                                return;
-                            }
-                            Ok(_) => return,
+                            Ok(stats) => match entry.scanout.submit_direct_target(targets, index) {
+                                scanout::DirectSubmit::Queued => {
+                                    if let Some(window) = phase_window.as_deref_mut() {
+                                        window.record_direct_submit();
+                                    }
+                                    tracing::trace!(
+                                        revision = stats.revision,
+                                        render_attempts = stats.render_attempts,
+                                        framebuffer_copy_bytes = stats.framebuffer_copy_bytes,
+                                        framebuffer_staging_bytes = stats.framebuffer_staging_bytes,
+                                        "DRM direct frame submitted"
+                                    );
+                                    return;
+                                }
+                                scanout::DirectSubmit::Busy => {
+                                    if let Some(window) = phase_window.as_deref_mut() {
+                                        window.record_direct_drop();
+                                    }
+                                    return;
+                                }
+                                scanout::DirectSubmit::Failed(error) => {
+                                    tracing::warn!(%error, "DRM direct submit failed; disabling direct targets");
+                                    entry.scanout.restore_legacy_front();
+                                    entry.direct_targets = None;
+                                    entry.direct_unavailable = Some(error);
+                                }
+                            },
                             Err(error) => {
                                 tracing::warn!(%error, "DRM direct frame failed; disabling direct targets");
                                 entry.scanout.restore_legacy_front();
@@ -747,6 +821,9 @@ fn paint_scanouts(
                             }
                         }
                     } else {
+                        if let Some(window) = phase_window.as_deref_mut() {
+                            window.record_direct_drop();
+                        }
                         return;
                     }
                 }
@@ -1039,6 +1116,7 @@ impl Backend for DrmBackend {
             pointer,
             scene,
             None,
+            None,
         );
     }
 
@@ -1058,6 +1136,7 @@ impl Backend for DrmBackend {
                 previous_revision: frame.previous_revision,
                 regions: frame.damage_regions.as_deref(),
             }),
+            None,
         );
     }
 
