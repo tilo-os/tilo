@@ -1,4 +1,4 @@
-//! Offscreen renders of [`ui::surface::soft_shadow`] at every geometry the
+//! Offscreen renders of [`tilo_ui::surface::soft_shadow`] at every geometry the
 //! toolkit and the shell chrome actually ask for, so the primitive can be
 //! inspected without hunting for a scene that happens to contain the
 //! shape you changed.
@@ -19,9 +19,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-use ui::offscreen::OffscreenRenderer;
-use ui::surface::soft_shadow;
-use ui::theme::Theme;
+use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui::surface::soft_shadow;
+use tilo_ui::theme::Theme;
 
 /// `(name, width, height, spread, offset_y, intensity, radius)` — the
 /// live call sites, in their own numbers.

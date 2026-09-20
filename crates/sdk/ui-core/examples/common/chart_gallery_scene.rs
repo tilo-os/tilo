@@ -1,9 +1,9 @@
 //! Populated, interactive reference scene for the chart catalogue.
 
-use ui::chart_palette::ChartPalette;
-use ui::num::f64_of_usize;
-use ui::theme::Theme;
-use ui::widget::{
+use tilo_ui::chart_palette::ChartPalette;
+use tilo_ui::num::f64_of_usize;
+use tilo_ui::theme::Theme;
+use tilo_ui::widget::{
     AxisLabelFormat, Candle, CandlestickChart, Card, CardGrid, CartesianAnnotation, CartesianPan,
     CartesianPlot, CartesianRenderingStyle, CartesianStyle, Category, CategoryChart,
     CategoryLayout, CategorySeries, ChordChart, ChordLink, ChordNode, ChordSelection, Column,
