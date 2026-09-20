@@ -43,6 +43,7 @@ on:
   pull_request:
     branches: ["main"]
     paths:
+      - "vendor/automerge/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"
