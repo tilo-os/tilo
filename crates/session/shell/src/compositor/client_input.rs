@@ -40,7 +40,7 @@ use crate::compositor::state::State;
 use crate::shell::notification::{
     Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
 };
-use crate::shell::state::{GroupId, StripId};
+use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree};
 
 /// Linux `BTN_LEFT`. The Wayland pointer protocol carries raw evdev button codes, not an enum, so the winit `MouseButton` has to be mapped back.
 const BTN_LEFT: u32 = 0x110;
@@ -126,6 +126,20 @@ impl ClientInput {
         self.pending_removals.clear();
         self.pending_renames.clear();
         had_pending
+    }
+
+    /// Refresh input-routing addresses from the authoritative shared tree.
+    /// Protocol callbacks adopt directly into that tree, so draining their
+    /// bookkeeping must not also discard the strip/group address needed for
+    /// initial keyboard focus (notably xwayland-satellite's first window).
+    pub fn refresh_placements_from_tree(&mut self, tree: &WorkspaceTree) -> bool {
+        let live = self.surfaces.keys().copied().collect::<HashSet<_>>();
+        let next = placements_for_live_surfaces(tree, &live);
+        if self.placements == next {
+            return false;
+        }
+        self.placements = next;
+        true
     }
 
     /// Record a destroyed foreign toplevel — drops the surface handle immediately and queues the chrome-side tab removal.
@@ -815,6 +829,26 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     state.set_client_keyboard_focus(gate_keyboard_focus(candidate, captured));
 }
 
+fn placements_for_live_surfaces(
+    tree: &WorkspaceTree,
+    live: &HashSet<u64>,
+) -> HashMap<u64, (StripId, GroupId)> {
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| {
+            strip.window_groups.iter().flat_map(move |group| {
+                group.tabs.iter().filter_map(move |tab| match tab.tile {
+                    TileContent::Foreign { surface_id, .. } if live.contains(&surface_id) => {
+                        Some((surface_id, (strip.id, group.id)))
+                    }
+                    _ => None,
+                })
+            })
+        })
+        .collect()
+}
+
 /// Advance the compositor seat's keyboard state while a trusted shell
 /// surface (currently the lock screen) owns the visible interaction.
 ///
@@ -928,20 +962,26 @@ pub fn route_input(
     state
         .remote_input_firewall
         .note_local_input(std::time::Instant::now());
-    let captured = chrome_captures_input(fb);
     match event {
         WindowEvent::CursorMoved { position, .. } => {
-            route_cursor_moved(state, fb, captured, *position)
+            // Capture depends on the pointer's *new* location (notably the
+            // Restore/Close controls painted over a maximized client). Record
+            // it before deciding ownership; otherwise crossing from the
+            // client into shell chrome routes this motion to the client and
+            // leaves the widget hit-test one event behind.
+            fb.host_mut()
+                .note_pointer(vello::kurbo::Point::new(position.x, position.y));
+            route_cursor_moved(state, fb, chrome_captures_input(fb), *position)
         }
         WindowEvent::CursorLeft { .. } => route_cursor_left(state),
         WindowEvent::MouseInput {
             state: element,
             button,
             ..
-        } => route_mouse_input(state, fb, captured, *element, *button),
+        } => route_mouse_input(state, fb, chrome_captures_input(fb), *element, *button),
         WindowEvent::MouseWheel { delta, .. } => route_mouse_wheel(state, fb, *delta, *modifiers),
         WindowEvent::KeyboardInput { .. } => {
-            route_keyboard_input(state, fb, captured, event, *modifiers)
+            route_keyboard_input(state, fb, chrome_captures_input(fb), event, *modifiers)
         }
         _ => false,
     }
@@ -957,12 +997,14 @@ fn route_cursor_moved(
 ) -> bool {
     state.client_input.cursor = Some((position.x, position.y));
     // Withheld from the chrome's own dispatch below (belongs to the client) — without this the chrome's pointer idea freezes at its last chrome-side position.
-    fb.host_mut()
-        .note_pointer(vello::kurbo::Point::new(position.x, position.y));
     let hit = current_pointer_target(state, fb, captured);
     deliver_pointer(state, hit);
     // During a chrome drag the file manager keeps drawing the ghost under the cursor, so it sees every move even over a client.
-    hit.is_some() && state.selection.chrome_drag.is_none()
+    // A captured move must continue to `FrameBuilder::dispatch_event` so
+    // shell widgets update their hover/hit-test cursor. Returning `true`
+    // here was why the following Restore press saw the last client-side
+    // coordinate instead of the visible button.
+    hit.is_some() && state.selection.chrome_drag.is_none() && !captured
 }
 
 /// `WindowEvent::CursorLeft` half of [`route_input`]: the pointer left the
@@ -1526,6 +1568,48 @@ mod tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    #[test]
+    fn moving_from_a_client_into_maximized_chrome_reaches_the_widget() {
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+        let mut fb = FrameBuilder::with_handle(tree.clone(), false, (1280, 800));
+        let group = {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            let group = tree.workspaces[0].strips[0].window_groups[0].id;
+            tree.workspaces[0].strips[0].window_groups[0].maximized = true;
+            group
+        };
+        fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
+        let _ = fb.paint_settled();
+
+        let event_loop: EventLoop<'static, crate::compositor::state::State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<crate::compositor::state::State> =
+            Display::new().expect("wayland display");
+        let mut state = crate::compositor::state::State::new_with_workspace_tree(
+            event_loop.handle(),
+            display.handle(),
+            tree,
+        );
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(1210.0, 109.0),
+        };
+
+        assert!(
+            !route_input(&mut state, &mut fb, &moved, &Modifiers::default(),),
+            "captured motion must fall through to shell widget dispatch"
+        );
+        assert_eq!(
+            fb.host().pointer_position(),
+            Some(vello::kurbo::Point::new(1210.0, 109.0)),
+        );
+        assert!(chrome_captures_input(&fb));
     }
 
     #[test]
@@ -2432,5 +2516,30 @@ mod tests {
         assert_eq!(ci.grab, None);
         assert!(ci.pending_adoptions.is_empty());
         assert_eq!(ci.pending_removals, vec![5]);
+    }
+
+    #[test]
+    fn authoritative_tree_restores_input_placement_after_protocol_adoption() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let surface = 91_337;
+        crate::shell::tab_binding::adopt_toplevel_at(
+            &mut tree,
+            surface,
+            Some("anon-91337".into()),
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        let live = HashSet::from([surface]);
+
+        let placements = placements_for_live_surfaces(&tree, &live);
+        let (strip, group) = placements
+            .get(&surface)
+            .copied()
+            .expect("adopted live surface has an input address");
+        assert_eq!(tree.active_strip.get(&tree.active), Some(&strip));
+        assert_eq!(tree.active_group_for(strip), Some(group));
+        assert!(
+            placements_for_live_surfaces(&tree, &HashSet::new()).is_empty(),
+            "dead protocol surfaces must not retain routable placement"
+        );
     }
 }

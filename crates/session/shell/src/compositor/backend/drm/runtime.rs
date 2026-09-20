@@ -75,6 +75,10 @@ struct KeyRepeat {
 }
 
 impl KeyRepeat {
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.held.as_ref().map(|held| held.next)
+    }
+
     fn press(
         &mut self,
         keycode: xkb::Keycode,
@@ -2473,6 +2477,14 @@ impl DrmRuntime {
             // SAFETY: F_DUPFD_CLOEXEC returned a new descriptor owned by us.
             Ok(unsafe { OwnedFd::from_raw_fd(raw) })
         }
+    }
+
+    /// Deadline for work generated wholly inside this runtime rather than by
+    /// one of its registered fds. Native keyboard repeat is the only such
+    /// source today; exposing it lets the parent compositor block on the
+    /// nested calloop fd when otherwise idle without delaying held keys.
+    pub fn next_service_deadline(&self) -> Option<std::time::Instant> {
+        self.dispatch.key_repeat.next_deadline()
     }
 
     /// Acquire the session, enumerate DRM devices, attach libinput, and wire everything onto an internal calloop — returns `Err`, not a panic, matching the binary entry point's `eprintln!` + `exit(1)` contract.
@@ -5213,7 +5225,12 @@ mod tests {
         let start = std::time::Instant::now();
         let key = xkb::Keycode::new(38); // evdev KEY_A + 8
         let mut repeat = KeyRepeat::default();
+        assert_eq!(repeat.next_deadline(), None);
         repeat.press(key, start, std::time::Duration::from_millis(300), 20);
+        assert_eq!(
+            repeat.next_deadline(),
+            Some(start + std::time::Duration::from_millis(300))
+        );
         assert!(
             repeat
                 .due(start + std::time::Duration::from_millis(299))
@@ -5224,10 +5241,15 @@ mod tests {
             [key]
         );
         assert_eq!(
+            repeat.next_deadline(),
+            Some(start + std::time::Duration::from_millis(350))
+        );
+        assert_eq!(
             repeat.due(start + std::time::Duration::from_millis(401)),
             [key, key]
         );
         repeat.release(key);
+        assert_eq!(repeat.next_deadline(), None);
         assert!(
             repeat
                 .due(start + std::time::Duration::from_secs(1))
