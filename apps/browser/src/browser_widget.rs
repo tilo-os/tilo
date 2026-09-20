@@ -4608,6 +4608,7 @@ mod architecture_tests {
 )]
 mod tests {
     use super::*;
+    #[cfg(feature = "wpe")]
     use std::sync::Arc;
     use ui::webview::WebViewEngine;
 
