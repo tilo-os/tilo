@@ -35,13 +35,28 @@ Schema1 has exactly these fields:
   container store and evidence filesystem before every stage, including pulls.
   This is a reserve, not a claim to predict unknown expansion. The launcher
   must separately admit the complete raw image and scratch peak to its volume.
-- `stage_timeout_seconds`: bounded command timeout,60–3600seconds. The complete
-  worker deadline is also bounded independently by the launcher.
+- `stage_timeout_seconds`: bounded non-signing command timeout, 60–3600 seconds.
+- `signing_response_timeout_seconds`: request-bound deadline for each external
+  signing response, 60–1800 seconds. The staged bridge copies this exact value
+  into its configuration; it is never supplied by worker-local defaults.
+- `prediction_stage_timeout_seconds`: aggregate deadline for all stage-6 work,
+  300–8400 seconds. It must be greater than the signing-response deadline plus
+  the non-signing command deadline. The 140-minute maximum leaves cleanup and
+  evidence-export time inside the preserved 155-minute post-gate allowance.
+  The complete worker deadline is also bounded independently by the launcher.
 - `publish_repository`: `code.sandbox.example/qos/tilo-development`, exactly the
   repository portion of `new_target`. The driver never updates the intended
   update tag. It writes `finalization-<canonical-request-sha256>` and records the
   immutable manifest reference. Other repositories are rejected so signatures
   and the installed policy remain bound to the same repository.
+
+Requests that omit either signing deadline are rejected. Supplying a worker
+default would make the effective signing authorization differ from the exact
+request bytes bound into checkpoints and the operator handshake.
+
+The initial `/work/operator-ready` gate has a separate 7200-second human
+authorization window. Releasing that gate starts the existing request-bound
+signing and build deadlines; the staging allowance does not extend them.
 
 The request itself and all bundle paths are public. Registry authentication
 uses the existing worker configuration; its credential file is not copied into
@@ -53,7 +68,10 @@ from this driver; see REMOTE-SIGNING.md.
 The evidence directory is root-owned0700. Export only these public files:
 
 1. `01-rebind.json`: authenticated raw import, public trust rebinding and dracut.
-2. `02-loader.json`: signed loader verified and added before root sealing.
+2. `02-loader.json`: signed loader verified and added before root sealing. The
+   signed rootfs is published immediately as a request-bound immutable registry
+   checkpoint so later assembly retries do not repeat trust rebinding or loader
+   signing.
 3. `03-provisional.json`: final split/UKI target assembled from retained rootfs.
 4. `04-composefs.json`: independently computed bootc1.16.4 root digest.
 5. `05-reseal.json`: immutable boot-only reseal layer.
@@ -66,8 +84,10 @@ The evidence directory is root-owned0700. Export only these public files:
 9. `result.json`, `status.json`: public outcome and current checkpoint status.
 
 Completed checkpoints are chained to the exact canonical request and previous
-receipt. Resuming with the same surviving store rechecks immutable image IDs
-and skips completed signing stages. A `.started-*` marker without an accepted
+receipt. An explicitly selected stage-2 or stage-5 artifact restores its
+immutable registry image only after verifying the complete receipt chain,
+stable request binding, manifest/config bytes, architecture and source revision.
+Stage-2 restore skips both rebind and loader signing. A `.started-*` marker without an accepted
 checkpoint forbids automatic retry. Inspect the actual live process and remote
 signing request; a marker alone does not prove the process has stopped. Resolve
 pending requests and durable local signer authorizations before explicitly
@@ -78,11 +98,11 @@ one request-owned local alias; only its verified immutable result is retained
 in checkpoints. No existing user tag is used. This preserves the coherent
 helper API without duplicating prediction construction.
 
-The CI store is ephemeral. Success therefore requires publication before the
-driver returns and the launcher removes its owned worker/store. Interrupted
-jobs export available bounded public checkpoints; local signing state/results
-remain on the operator machine. A new explicitly approved attempt may repeat
-cheap finalization stages from retained artifacts; it never recompiles apps.
+The CI store is ephemeral. Stages 2 and 5 are therefore published before their
+receipts are committed, and final success still requires publication before the
+launcher removes its owned worker/store. Interrupted jobs export available
+bounded public checkpoints; local signing state/results remain on the operator
+machine. A new explicitly approved attempt never recompiles apps.
 
 ## What success means
 

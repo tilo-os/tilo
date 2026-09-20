@@ -89,6 +89,26 @@ def branch_summary(commit, *, can_merge=True):
     }
 
 
+def protection_rule():
+    return {
+        "enable_push": False,
+        "apply_to_admins": True,
+        "enable_merge_whitelist": False,
+        "merge_whitelist_usernames": [],
+        "merge_whitelist_teams": [],
+        "enable_status_check": True,
+        "status_check_contexts": sorted(merge_pr.REQUIRED_CONTEXTS),
+        "required_approvals": 1,
+        "enable_approvals_whitelist": True,
+        "approvals_whitelist_username": sorted(merge_pr.REVIEWERS),
+        "approvals_whitelist_teams": [],
+        "block_on_rejected_reviews": True,
+        "block_on_official_review_requests": True,
+        "block_on_outdated_branch": True,
+        "dismiss_stale_approvals": True,
+    }
+
+
 class FakeApi:
     def __init__(self, root, head, journal=None, actor=merge_pr.INTEGRATOR):
         self.root, self.head, self.base = root, head, command(root, "rev-parse", "HEAD")
@@ -116,6 +136,8 @@ class FakeApi:
         if path == "/branches/main":
             commit = self.main_after_merge if self.merged else self.base
             return 200, branch_summary(commit, can_merge=self.actor == merge_pr.INTEGRATOR)
+        if path == "/branch_protections/main":
+            return 200, protection_rule()
         if path == "/pulls/7":
             return 200, {
                 "state": "closed" if self.merged else "open", "merged": self.merged,
@@ -184,6 +206,18 @@ class RoutineTests(unittest.TestCase):
         finally:
             repo.close()
 
+    def test_prefilter_raises_when_the_trusted_checkout_moves_or_is_dirty(self):
+        repo = Repo()
+        try:
+            head = repo.candidate()
+            with self.assertRaisesRegex(ValueError, "moved"):
+                merge_pr.routine_prefilter_errors(repo.root, "f" * 40, head)
+            (repo.root / "untracked.txt").write_text("dirty\n")
+            with self.assertRaisesRegex(ValueError, "dirty"):
+                merge_pr.routine_prefilter_errors(repo.root, repo.base, head)
+        finally:
+            repo.close()
+
 
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
@@ -239,6 +273,40 @@ class AdmissionTests(unittest.TestCase):
                 else:
                     expected = "branch protection mismatch: " + field
                 self.assertIn(expected, result["errors"])
+
+    def test_extra_human_merge_authority_fails_closed(self):
+        api = FakeApi(self.repo.root, self.head)
+        original = api.__call__
+
+        def changed(path, method="GET", body=None):
+            status, value = original(path, method, body)
+            if path == "/branch_protections/main":
+                value["merge_whitelist_usernames"] = [merge_pr.INTEGRATOR, "admin"]
+            return status, value
+
+        result = merge_pr.observe(changed, 7, self.repo.root)
+        self.assertIn(
+            "branch protection rule mismatch: merge_whitelist_usernames",
+            result["errors"],
+        )
+
+    def test_every_live_rule_field_fails_closed(self):
+        baseline = protection_rule()
+        changes = {
+            key: (not value if isinstance(value, bool) else ["wrong"])
+            for key, value in baseline.items()
+            if key != "required_approvals"
+        }
+        changes["required_approvals"] = 0
+        for field, value in changes.items():
+            with self.subTest(field=field):
+                rule = protection_rule()
+                rule[field] = value
+                errors = merge_pr.protection_rule_errors(rule)
+                expected = ("branch protection rule requires no independent approval"
+                            if field == "required_approvals"
+                            else "branch protection rule mismatch: " + field)
+                self.assertIn(expected, errors)
 
     def test_wrong_account_cannot_pass_effective_branch_permission(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -32,7 +32,10 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
         self.assertEqual(action.count("/cargo-home/registry/index"), 1)
         self.assertEqual(action.count("/cargo-home/registry/cache"), 1)
         self.assertEqual(action.count("/cargo-home/git/db"), 1)
-        self.assertIn("key: cargo-deps-${{ hashFiles('Cargo.lock') }}", action)
+        self.assertIn("default: Cargo.lock", action)
+        self.assertIn("key: cargo-deps-${{ hashFiles(inputs.lockfile) }}", action)
+        self.assertIn("value: ${{ steps.restore.outputs.cache-primary-key }}", action)
+        self.assertNotIn('hashFiles', action.split('outputs:', 1)[1].split('runs:', 1)[0])
         self.assertIn("value: ${{ steps.restore.outputs.cache-hit }}", action)
 
     def test_rust_build_action_composes_download_and_compiler_caches(self) -> None:
@@ -68,7 +71,24 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
             path.read_text(encoding="utf-8").count("key: cargo-deps-")
             for path in workflows.glob("*.y*ml")
         )
-        self.assertEqual(remaining_keys, 2)
+        self.assertEqual(remaining_keys, 3)
+
+    def test_builder_cold_canary_seeds_a_missing_architecture_cache(self) -> None:
+        workflow = (
+            ROOT / ".forgejo" / "workflows" / "build-builder-image.yml"
+        ).read_text(encoding="utf-8")
+        cold = workflow.split("  cache-cold:", 1)[1].split("  cache-warm:", 1)[0]
+
+        self.assertIn("id: cargo-cache", cold)
+        self.assertIn("if: steps.cargo-cache.outputs.cache-hit != 'true'", cold)
+        self.assertIn(
+            "uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684",
+            cold,
+        )
+        self.assertLess(
+            cold.index("cargo build -p atomic-file --locked"),
+            cold.index("- name: Save Cargo downloads"),
+        )
 
     def test_path_filtered_consumers_track_the_shared_action(self) -> None:
         workflows = ROOT / ".forgejo" / "workflows"

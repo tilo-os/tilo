@@ -153,7 +153,7 @@ class BundleTests(unittest.TestCase):
         self.assertNotIn('name: canonical-verifiers-', text)
         self.assertNotIn('cp target/release/tilo-pkg target/release/tilo-runtime-bundle', text)
         self.assertEqual(text.count('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch'), 2)
-        self.assertIn('# branches: [main]', text)
+        self.assertIn('    branches: [main]', text)
 
 
 if __name__ == '__main__':
