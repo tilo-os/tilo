@@ -35,20 +35,22 @@ def main() -> int:
             raise RuntimeError("control socket closed without a response")
         return json.loads(response)
 
-    if args.wait_target:
-        deadline = time.monotonic() + 5
-        while True:
-            listed = transact({"op": "list_targets"})
-            targets = listed.get("targets", []) if isinstance(listed, dict) else []
-            if any(item.get("name") == args.wait_target for item in targets):
-                break
-            if time.monotonic() >= deadline:
-                print(f"target did not become visible: {args.wait_target}", file=sys.stderr)
-                return 1
-            time.sleep(0.05)
-
     try:
         decoded = transact(request)
+        if args.wait_target and "err" not in decoded:
+            deadline = time.monotonic() + 5
+            while True:
+                listed = transact({"op": "list_targets"})
+                targets = listed.get("targets", []) if isinstance(listed, dict) else []
+                if any(item.get("name") == args.wait_target for item in targets):
+                    break
+                if time.monotonic() >= deadline:
+                    print(
+                        f"target did not become visible: {args.wait_target}",
+                        file=sys.stderr,
+                    )
+                    return 1
+                time.sleep(0.05)
     except (RuntimeError, FileNotFoundError, ConnectionResetError) as error:
         print(error, file=sys.stderr)
         return 1

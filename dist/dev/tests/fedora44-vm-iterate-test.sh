@@ -110,6 +110,16 @@ grep -Fq "SCCACHE_SERVER_PORT='45555'" "$log"
 grep -Fq 'cargo test --locked -p' "$tool"
 grep -Fq -- '-fuse-ld=mold' "$tool"
 grep -Fq 'focused-testing' "$tool"
+python3 - "$repo_root/dist/dev/tilo-vm-control.py" <<'PY'
+import ast
+import pathlib
+import sys
+
+tree = ast.parse(pathlib.Path(sys.argv[1]).read_text())
+main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+source = ast.unparse(main)
+assert source.index("decoded = transact(request)") < source.index('transact({\'op\': \'list_targets\'})')
+PY
 
 : >"$log"
 env PATH="$work/bin:$PATH" FAST_LOOP_LOG="$log" \
@@ -155,6 +165,12 @@ grep -Fq "root:root:644:regular file" "$tool"
 grep -Fq 'test -u /usr/sbin/unix_chkpwd' "$tool"
 
 grep -Fq 'tilo-dev-session/active' "$tool"
+grep -Fq 'apps-single' "$tool"
+grep -Fq 'dev-app-environment' "$tool"
+grep -Fq 'TILO_APPS_SYSTEM_PAYLOAD_DIR' "$repo_root/dist/session/tilo-session-dev"
+grep -Fq ': "${TILO_REDUCE_MOTION:=1}"' "$repo_root/dist/session/tilo-session-dev"
+grep -Fq 'export WGPU_BACKEND WGPU_ADAPTER_NAME VK_DRIVER_FILES TILO_REDUCE_MOTION' \
+    "$repo_root/dist/session/tilo-session-dev"
 
 rm -rf "$repo_root/$target_rel"
 echo 'fedora44-vm-iterate: PASS'

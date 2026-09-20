@@ -415,17 +415,45 @@ deploy_one() {
             fi" <"$unit"
     fi
     if [[ $package == terminal ]]; then
-        # A Tilo app is launched from its signed package payload, not from
-        # PATH. This is a disposable-VM development override only: atomically
-        # replace the exact installed entrypoint while leaving its release-
-        # shaped manifest/registry and every other qpkg untouched.
+        # A Tilo app is launched from its package payload, not PATH. Build a
+        # private developer-system-store overlay once and replace only this
+        # entrypoint there. The package-owned dev wrapper validates and exports
+        # these roots on every login, so an ordinary logout/login cannot
+        # silently restore the old /usr payload under the next test run.
         ssh_base "set -eu
-            payload=/usr/lib/tilo-apps/payloads/dev.tilo.terminal/bin/terminal
+            root=\"\$HOME/$vm_root/apps-single\"
+            payload=\"\$root/usr/lib/tilo-apps/payloads/dev.tilo.terminal/bin/terminal\"
+            if ! test -f \"\$root/usr/share/tilo-apps/registry.toml\"; then
+              install -d -m 700 \"\$root/usr/share\" \"\$root/usr/lib\"
+              cp -a /usr/share/tilo-apps \"\$root/usr/share/tilo-apps\"
+              cp -a /usr/lib/tilo-apps \"\$root/usr/lib/tilo-apps\"
+              cp -a /usr/lib/tilo-runtime \"\$root/usr/lib/tilo-runtime\"
+              publisher=\$(sed -n 's/^publisher_hex = \"\([0-9a-fA-F]\{64\}\)\"$/\1/p' \
+                \"\$root/usr/lib/tilo-runtime/2026.07/bundle.toml\")
+              test \"\${#publisher}\" -eq 64
+              printf '%s\\n' \"\$publisher\" > \
+                \"\$root/usr/lib/tilo-runtime/trusted-publishers.txt\"
+            fi
             test -x \"\$payload\"
-            sudo install -o root -g root -m 0755 \
-              \"\$HOME/$vm_root/terminal\" \"\$payload.new\"
-            sudo mv -f -- \"\$payload.new\" \"\$payload\"
-            sha256sum -- \"\$payload\" | cut -d' ' -f1 \
+            install -m 0755 \"\$HOME/$vm_root/terminal\" \"\$payload.new\"
+            mv -f -- \"\$payload.new\" \"\$payload\"
+            find \"\$root\" -type d -exec chmod go-w {} +
+            find \"\$root\" -type f -exec chmod go-w {} +
+            source_sha=\$(sha256sum -- \"\$HOME/$vm_root/terminal\" | cut -d' ' -f1)
+            payload_sha=\$(sha256sum -- \"\$payload\" | cut -d' ' -f1)
+            test \"\$payload_sha\" = \"\$source_sha\" || {
+              printf 'terminal overlay digest mismatch: source=%s payload=%s\\n' \
+                \"\$source_sha\" \"\$payload_sha\" >&2
+              exit 1
+            }
+            install -d -m 700 \"\$HOME/.config/tilo\"
+            printf '%s\\n%s\\n%s\\n' \
+              \"\$root/usr/share/tilo-apps\" \
+              \"\$root/usr/lib/tilo-apps\" \
+              \"\$root/usr/lib/tilo-runtime\" \
+              > \"\$HOME/.config/tilo/dev-app-environment\"
+            chmod 600 \"\$HOME/.config/tilo/dev-app-environment\"
+            printf '%s\\n' \"\$payload_sha\" \
               > \"\$HOME/$vm_root/terminal-payload.sha256\"
             chmod 600 \"\$HOME/$vm_root/terminal-payload.sha256\""
     fi
@@ -596,6 +624,21 @@ cmd_diagnose() {
             sed -n "1,12p" "$runtime/tilo-dev-session/active"
         else
             echo "attestation=absent"
+        fi
+        echo "-- developer app overlay --"
+        app_env="$HOME/.config/tilo/dev-app-environment"
+        if test -r "$app_env"; then
+            sed -n "1,3p" "$app_env"
+            payload_root=$(sed -n "2p" "$app_env")
+            terminal="$payload_root/payloads/dev.tilo.terminal/bin/terminal"
+            if test -x "$terminal"; then
+                printf "terminal-payload-sha256="
+                sha256sum -- "$terminal" | cut -d" " -f1
+            else
+                echo "terminal-payload=missing"
+            fi
+        else
+            echo "developer-app-environment=absent"
         fi
         test -S "$runtime/tilo-dev-session/control.sock"
         printf "control-socket=%s\n" "$?"

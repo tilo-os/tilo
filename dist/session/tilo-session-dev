@@ -168,6 +168,7 @@ done
 if [ "$VIRTUAL_DRM" -eq 1 ]; then
     : "${WGPU_BACKEND:=vulkan}"
     : "${WGPU_ADAPTER_NAME:=llvmpipe}"
+    : "${TILO_REDUCE_MOTION:=1}"
     if [ -z "${VK_DRIVER_FILES:-}" ]; then
         for _icd in /usr/share/vulkan/icd.d/lvp_icd."$(uname -m)".json \
             /usr/share/vulkan/icd.d/lvp_icd.x86_64.json; do
@@ -177,7 +178,7 @@ if [ "$VIRTUAL_DRM" -eq 1 ]; then
             fi
         done
     fi
-    export WGPU_BACKEND WGPU_ADAPTER_NAME VK_DRIVER_FILES
+    export WGPU_BACKEND WGPU_ADAPTER_NAME VK_DRIVER_FILES TILO_REDUCE_MOTION
 fi
 TARGET_SHA256=
 if [ -f "$CONF_SHA" ]; then
