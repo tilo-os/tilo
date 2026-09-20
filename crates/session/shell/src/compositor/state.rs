@@ -3544,6 +3544,14 @@ impl XdgShellHandler for State {
     /// `app_id` may be unset here; falls back to `anon-<id>`, rewritten by [`Self::app_id_changed`].
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
+        let authenticated_launch_key = surface.wl_surface().client().and_then(|client| {
+            client
+                .get_data::<ClientState>()
+                .and_then(|data| data.package_id.clone())
+        });
+        if let Some(launch_key) = authenticated_launch_key.as_deref() {
+            crate::shell::launcher::attribute_surface_launch(surface_id, launch_key);
+        }
         let announced_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
@@ -3618,6 +3626,7 @@ impl XdgShellHandler for State {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
+        crate::shell::launcher::forget_surface_launch(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
         }

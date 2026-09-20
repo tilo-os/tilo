@@ -920,6 +920,7 @@ mod tests {
             &launch_identities,
             &app.name,
         );
+        crate::shell::launcher::attribute_surface_launch(90_102, &app.desktop_id);
         crate::shell::launcher::set_pending_placement_for_identities(
             &app.desktop_id,
             &launch_identities,
