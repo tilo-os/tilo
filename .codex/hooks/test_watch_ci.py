@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -33,6 +34,33 @@ class WatchCiTests(unittest.TestCase):
         )
         self.assertFalse(watch_ci.pushed_successfully(self.event("git push", 1)))
         self.assertFalse(watch_ci.pushed_successfully(self.event("git status")))
+
+    def test_hook_runs_for_shell_and_code_exec_tools(self) -> None:
+        config = json.loads((MODULE_PATH.parent.parent / "hooks.json").read_text())
+        matcher = config["hooks"]["PostToolUse"][0]["matcher"]
+        self.assertIsNotNone(re.fullmatch(matcher, "Bash"))
+        self.assertIsNotNone(re.fullmatch(matcher, "exec"))
+
+    def test_successful_code_exec_push_starts_watcher(self) -> None:
+        event = {
+            "tool_name": "exec",
+            "tool_input": {
+                "code": (
+                    'const result = await tools.exec_command({'
+                    'cmd: "git status --short; git push -u origin topic"});'
+                )
+            },
+            "tool_response": {"content": [{"type": "text", "text": "done"}]},
+        }
+        self.assertTrue(watch_ci.pushed_successfully(event))
+
+        event["tool_input"]["code"] = 'text("git push is documented here")'
+        self.assertFalse(watch_ci.pushed_successfully(event))
+        event["tool_input"]["code"] = (
+            'await tools.exec_command({cmd: "git push origin topic"})'
+        )
+        event["tool_response"] = {"isError": True}
+        self.assertFalse(watch_ci.pushed_successfully(event))
 
     def test_green_message_is_compact(self) -> None:
         message = watch_ci.result_message(
