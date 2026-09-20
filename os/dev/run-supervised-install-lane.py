@@ -336,6 +336,11 @@ def controller(root, args, disk, agent, inspect_only, evidence_name='creator-env
 def prepare_disk_output(context, disk):
     script = r'''set -eu
 umask 077
+test ! -L /work
+test "$(stat -c '%u:%g:%F' /work)" = '0:0:directory'
+test "$(stat -c '%d' /work)" != "$(stat -c '%d' /)"
+chmod 0700 /work
+test "$(stat -c '%u:%g:%a:%F' /work)" = '0:0:700:directory'
 test ! -e /work/disk-output
 mkdir -m 0700 /work/disk-output
 test "$(stat -c '%u:%g:%a:%F' /work/disk-output)" = '0:0:700:directory'
