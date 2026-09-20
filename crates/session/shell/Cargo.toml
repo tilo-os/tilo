@@ -293,6 +293,7 @@ smithay = { version = "0.7", default-features = false, features = [
     "desktop",
     # DRM/KMS + libseat + udev + libinput backend for running on a bare TTY.
     "backend_drm",
+    "backend_gbm",
     "backend_libinput",
     "backend_udev",
     "backend_session_libseat",
