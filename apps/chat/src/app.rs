@@ -33,7 +33,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::tooltip::TooltipHost;
 use ui::widget::{
-    Collaborative, ContextMenu as SharedContextMenu, Continuable, MenuItem, TextInput, VideoPlayer,
+    Collaborative, ContextMenu as SharedContextMenu, Continuable, FloatingSurfaceProvider,
+    MenuItem, TextInput, VideoPlayer,
 };
 
 use crate::actions::{self, ChatAction};
@@ -2894,6 +2895,125 @@ impl Collaborative for ChatApp {
     }
 }
 
+impl FloatingSurfaceProvider for ChatApp {
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_floating.take()
+    }
+
+    fn draw_floating_surfaces(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if !self.call.active
+            || self.call.expanded
+            || (!self.call.placement.is_return_pending()
+                && !matches!(
+                    self.call.placement.attachment(),
+                    ui::floating_surface::Attachment::Desktop { .. }
+                ))
+        {
+            return;
+        }
+        let mut hits = Vec::new();
+        self.draw_live_huddle(scene, transform, text_renderer, theme, presence, &mut hits);
+        self.hits.extend(hits);
+    }
+
+    fn floating_surface_presentations(
+        &self,
+    ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
+        let returning_to_app = self.call.placement.is_return_pending();
+        if !self.call.active
+            || self.call.expanded
+            || (!returning_to_app
+                && !matches!(
+                    self.call.placement.attachment(),
+                    ui::floating_surface::Attachment::Desktop { .. }
+                ))
+        {
+            return Vec::new();
+        }
+        vec![ui::floating_surface::FloatingSurfacePresentation {
+            id: format!("chat-call:{}", self.call.channel),
+            content_rect: self.call_video_rect(),
+            window_rect: self.huddle_panel().inflate(8.0, 8.0),
+            returning_to_app,
+        }]
+    }
+
+    fn active_floating_surface_ids(&self) -> Vec<String> {
+        self.call
+            .active
+            .then(|| format!("chat-call:{}", self.call.channel))
+            .into_iter()
+            .collect()
+    }
+
+    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
+        self.floating_surface_bounds = bounds;
+    }
+
+    fn on_floating_surface_host_message(
+        &mut self,
+        message: &ui::floating_surface::FloatingSurfaceHostMessage,
+    ) {
+        let id = format!("chat-call:{}", self.call.channel);
+        if let ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+            id: request_id,
+            content_rect,
+            transfer_covered,
+            coordinate_offset,
+            ..
+        } = message
+            && request_id == &id
+            && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
+        {
+            self.call.placement.prepare_desktop_rect_with_offset(
+                rect,
+                vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+            );
+            self.call
+                .placement
+                .set_desktop_transfer_covered(*transfer_covered);
+            return;
+        }
+        if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+            id: request_id,
+            rect,
+        } = message
+            && request_id == &id
+            && ui::floating_surface::protocol_rect(*rect).is_ok()
+        {
+            self.call.placement.confirm_desktop_adoption();
+            return;
+        }
+        if matches!(
+            message,
+            ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request_id }
+                | ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: request_id }
+                if request_id == &id
+        ) {
+            let app = self.rect;
+            let desktop = self.desktop_floating_bounds();
+            self.call.placement.reattach_to_app(app, desktop);
+            return;
+        }
+        if matches!(
+            message,
+            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id }
+                if request_id == &id
+        ) {
+            self.call.placement.confirm_app_adoption(self.rect);
+        }
+    }
+}
+
 impl Widget for ChatApp {
     fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
         Some(self)
@@ -2907,6 +3027,13 @@ impl Widget for ChatApp {
         Some(self)
     }
 
+    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
+
+    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
+        Some(self)
+    }
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         self.apply_realtime_stop(doc);
         self.establish_realtime_target();
@@ -3711,123 +3838,6 @@ impl Widget for ChatApp {
 
     fn wants_pointer_capture(&self) -> bool {
         self.call.placement.is_dragging()
-    }
-
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.pending_floating.take()
-    }
-
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if !self.call.active
-            || self.call.expanded
-            || (!self.call.placement.is_return_pending()
-                && !matches!(
-                    self.call.placement.attachment(),
-                    ui::floating_surface::Attachment::Desktop { .. }
-                ))
-        {
-            return;
-        }
-        let mut hits = Vec::new();
-        self.draw_live_huddle(scene, transform, text_renderer, theme, presence, &mut hits);
-        self.hits.extend(hits);
-    }
-
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
-        let returning_to_app = self.call.placement.is_return_pending();
-        if !self.call.active
-            || self.call.expanded
-            || (!returning_to_app
-                && !matches!(
-                    self.call.placement.attachment(),
-                    ui::floating_surface::Attachment::Desktop { .. }
-                ))
-        {
-            return Vec::new();
-        }
-        vec![ui::floating_surface::FloatingSurfacePresentation {
-            id: format!("chat-call:{}", self.call.channel),
-            content_rect: self.call_video_rect(),
-            window_rect: self.huddle_panel().inflate(8.0, 8.0),
-            returning_to_app,
-        }]
-    }
-
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.call
-            .active
-            .then(|| format!("chat-call:{}", self.call.channel))
-            .into_iter()
-            .collect()
-    }
-
-    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
-        self.floating_surface_bounds = bounds;
-    }
-
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &ui::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        let id = format!("chat-call:{}", self.call.channel);
-        if let ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
-            id: request_id,
-            content_rect,
-            transfer_covered,
-            coordinate_offset,
-            ..
-        } = message
-            && request_id == &id
-            && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
-        {
-            self.call.placement.prepare_desktop_rect_with_offset(
-                rect,
-                vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
-            );
-            self.call
-                .placement
-                .set_desktop_transfer_covered(*transfer_covered);
-            return;
-        }
-        if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
-            id: request_id,
-            rect,
-        } = message
-            && request_id == &id
-            && ui::floating_surface::protocol_rect(*rect).is_ok()
-        {
-            self.call.placement.confirm_desktop_adoption();
-            return;
-        }
-        if matches!(
-            message,
-            ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request_id }
-                | ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: request_id }
-                if request_id == &id
-        ) {
-            let app = self.rect;
-            let desktop = self.desktop_floating_bounds();
-            self.call.placement.reattach_to_app(app, desktop);
-            return;
-        }
-        if matches!(
-            message,
-            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id }
-                if request_id == &id
-        ) {
-            self.call.placement.confirm_app_adoption(self.rect);
-        }
     }
 
     fn needs_redraw(&self) -> bool {
