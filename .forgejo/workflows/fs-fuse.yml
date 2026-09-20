@@ -27,6 +27,7 @@ on:
   #     - "crates/session/shell/**"
   #     - "crates/sdk/ui-core/**"
   #     - "scripts/ci-run.sh"
+  #     - "tools/ci/focused_test.py"
   #     - "os/usr/libexec/tilo-session"
   #     - "os/usr/lib/systemd/user/tilo-graphical-session.target"
   #     - "os/usr/lib/systemd/user/tilo-identity.service"
@@ -64,6 +65,7 @@ on:
       - "crates/session/shell/**"
       - "crates/sdk/ui-core/**"
       - "scripts/ci-run.sh"
+      - "tools/ci/focused_test.py"
       - "os/usr/libexec/tilo-session"
       - "os/usr/lib/systemd/user/tilo-graphical-session.target"
       - "os/usr/lib/systemd/user/tilo-identity.service"
@@ -78,22 +80,24 @@ on:
       - ".forgejo/workflows/fs-fuse.yml"
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
+      - "tools/ci/sccache.sh"
   schedule:
     - cron: "30 4 * * *"
   workflow_dispatch:
 
 concurrency:
-  # The privileged runner exposes one kernel-backed FUSE lane. Jobs from
-  # different refs must queue behind each other rather than contend for that
-  # device and get killed immediately after preflight.
-  group: fs-fuse
-  cancel-in-progress: false
+  # Each broker runner has its own Kata guest kernel, DinD storage and FUSE
+  # device. Replace superseded heavy PR runs, but keep manual and scheduled
+  # validation separate and uncancelled. Check/lint use their own commit groups.
+  group: fs-fuse-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_HOME: /cargo-home
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   CARGO_TERM_COLOR: never
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
   RUSTFLAGS: "-D warnings"
   TILO_FS_FUSE_REQUIRED: "1"
 
@@ -146,9 +150,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Require a real kernel FUSE environment
         run: bash scripts/ci-fuse-preflight.sh
+
+      - name: Enable shared compiler cache
+        run: bash tools/ci/sccache.sh prepare
 
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/tilo-session-lifecycle.sh
@@ -202,7 +211,9 @@ jobs:
         run: |
           bash scripts/ci-run.sh "replica receipt clock skew" -- cargo test --locked -p fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
           bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p fs sync::tests::a_read_only_peer_pulls_updates_but_cannot_author --lib -- --nocapture
-          bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- cargo test --locked -p fs fs::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions --lib -- --nocapture
+          SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=fs TEST_TARGET= OPERATION=test-lib \
+            TEST_NAME=fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions \
+            bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- python3 -I tools/ci/focused_test.py run --root .
 
       - name: Reject corrupted collaborative state and prove legacy name migration
         run: |
@@ -222,6 +233,15 @@ jobs:
         run: >-
           bash scripts/ci-run.sh "collaborative-files performance gate" --
           cargo test --locked -p fs --test performance_gate -- --nocapture --test-threads=1
+
+      - name: Report compiler cache effectiveness
+        if: always()
+        continue-on-error: true
+        run: |
+          echo '### real-fuse compiler cache' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # File Explorer's full UI/library harness links the entire toolkit. Building
   # it after the relay, shell, and FUSE harnesses filled the privileged
@@ -249,8 +269,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Enable shared compiler cache
+        run: bash tools/ci/sccache.sh prepare
 
       - name: Enforce Files collaboration UX in a fresh overlay
         run: >-
           bash scripts/ci-run.sh "Files collaboration UX" --
           cargo test --locked -p file-explorer --lib -- --nocapture --test-threads=1
+
+      - name: Report compiler cache effectiveness
+        if: always()
+        continue-on-error: true
+        run: |
+          echo '### files-ux compiler cache' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

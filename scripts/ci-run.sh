@@ -41,13 +41,30 @@ progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/process_progress.py"
 # legitimately be silent that long while linking a large workspace target, so
 # emit one compact progress line per minute until the command exits.
 (
-    while sleep 60; do
+    # A foreground sleep survives killing this subshell and keeps the runner's
+    # output pipe open for the rest of the minute. Wait on an owned child so a
+    # signal interrupts the wait, then terminate and reap that child on exit.
+    heartbeat_child=""
+    # Query this subshell's own jobs: TERM can arrive after launching a child
+    # but before assigning its PID below. Never signal unrelated descendants.
+    trap 'for child in $(jobs -pr); do
+        kill "$child" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true' EXIT
+    trap 'exit 0' TERM INT
+    while true; do
+        sleep 60 &
+        heartbeat_child=$!
+        wait "$heartbeat_child" || exit 0
+        heartbeat_child=""
         echo "==> ${label}: still running ($(( $(date +%s) - start ))s)"
         # A wrapper heartbeat alone cannot distinguish work from a stuck child.
         # Numeric descendant CPU/RSS/I/O counters let successive receipts show
         # progress without exposing process arguments or environment secrets.
-        timeout 5s python3 "$progress_script" --root-pid "$$" 2>/dev/null ||
-            echo 'CI_PROCESS_PROGRESS=unavailable'
+        timeout 5s python3 "$progress_script" --root-pid "$$" 2>/dev/null &
+        heartbeat_child=$!
+        wait "$heartbeat_child" || echo 'CI_PROCESS_PROGRESS=unavailable'
+        heartbeat_child=""
     done
 ) &
 heartbeat_pid=$!

@@ -17,7 +17,7 @@ REF = "code.example/qos/rpms@sha256:" + "a" * 64
 
 class BuildkitSnapshotTests(unittest.TestCase):
     def check(self, metadata, manifest="example-package\n", host="x86_64", ref=REF,
-              inspect_error=False, build_error=False):
+              inspect_error=False, build_error=False, raw_metadata=None, manifest_kind="file"):
         commands = []
 
         def read(command, **kwargs):
@@ -26,7 +26,7 @@ class BuildkitSnapshotTests(unittest.TestCase):
                 self.assertEqual(command[4], ref)
                 if inspect_error:
                     raise subprocess.CalledProcessError(1, command)
-                return json.dumps(metadata)
+                return json.dumps(metadata) if raw_metadata is None else raw_metadata
             self.assertTrue(command[1].endswith("derive-rpm-package-set.py"))
             return "example-package\n"
 
@@ -43,7 +43,13 @@ class BuildkitSnapshotTests(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, command)
             output = Path(command[command.index("--output") + 1].split("dest=", 1)[1])
             output.mkdir()
-            if manifest is not None:
+            if manifest_kind == "directory":
+                (output / "actual").mkdir()
+            elif manifest_kind == "symlink":
+                target = output / "elsewhere"
+                target.write_text("example-package\n")
+                (output / "actual").symlink_to(target)
+            elif manifest is not None:
                 (output / "actual").write_text(manifest)
 
         self.commands = commands
@@ -73,6 +79,22 @@ class BuildkitSnapshotTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             self.check({}, inspect_error=True)
         self.assertEqual(len(self.commands), 1)
+
+    def test_invalid_registry_json_is_fatal_before_layer_download(self):
+        with self.assertRaises(ValueError):
+            self.check({}, raw_metadata="not json")
+        self.assertEqual(len(self.commands), 1)
+
+    def test_ambiguous_arm_variant_is_rejected_before_layer_download(self):
+        image = {"architecture": "arm64", "os": "linux", "variant": "v8"}
+        with self.assertRaises(ValueError):
+            self.check({"linux/arm64": image, "linux/arm64/v8": image}, host="aarch64")
+        self.assertEqual(len(self.commands), 1)
+
+    def test_manifest_must_be_a_regular_file(self):
+        for kind in ("directory", "symlink"):
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "no regular package manifest"):
+                self.check({"architecture": "amd64", "os": "linux"}, manifest_kind=kind)
 
     def test_unpinned_snapshot_is_rejected_before_registry_access(self):
         with self.assertRaises(ValueError):
