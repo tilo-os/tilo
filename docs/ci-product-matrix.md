@@ -1,29 +1,43 @@
 # Product packaging coverage and next Windows qualification
 
-Source audit: main `f13605c59`, 2026-09-19. A defined workflow is not evidence
+Source audit: main `d780529df`, 2026-09-20. A defined workflow is not evidence
 that every target has a ready runner, successful native build or releasable
 artifact.
+
+See the [CI and packaging roadmap](ci-production-roadmap.md) for the build graph,
+promotion model, service levels and phased production plan.
 
 ## Routine change lifecycle
 
 Routine work starts on a task branch and lands through one updated pull request.
-The exact head needs independent review and the protected check and lint
-contexts before merge.
+The protected check and lint contexts must pass for the exact head before merge.
 `check.yml` and `lint.yml` preserve a result for every `main` commit; dependency
 selection keeps the Rust lane focused while nightly CI remains the full-workspace
 backstop.
 
-The trusted merge dispatcher completes eligible routine app PRs automatically,
-one at a time. Its current allowlist is deliberately narrow: Rust source changes
-inside an existing `apps/<app>/src/` package. It fails closed when the branch is
-out of date, author/reviewer/integrator identities overlap, branch protection
-drifts, or exact-head check, lint or independent approval is missing. Other PRs
-still need an explicit merge. See [Release pipeline](release-pipeline.md) for the
-enabled heavy-build and publication triggers.
+The trusted merge controller classifies changes using the deployed
+[admission code](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/admission.py)
+and [path policy](https://code.podesta.ai/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json).
+Ordinary product and documentation changes are routine; tools are classified by
+path, not by being tools. CI/policy, publication, signing and named security
+boundaries use the protected scope, as does an existing file's executable-mode
+change. Named dependency exceptions carry their own CI checks. No scope requires
+review.
+
+After exact-head checks pass, the author posts `/merge <full-head-sha>` or follows
+the controller's queue instructions. Reviews are informational and never block
+integration. A new push requires fresh checks and intent.
+
+Review state does **not** turn a routine documentation PR into a protected-scope
+change. Such a PR still uses routine integration, respecting queue priority. The
+operator command is only for changes the classifier assigns to the protected
+scope. See [Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow)
+for the command and limits, and [Release pipeline](release-pipeline.md) for
+heavy-build and publication triggers.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |
-| Linux/qOS native apps | `release-apps.yml`: affected-app PR planning; explicit/tagged signed qpkg and runtime collection, x86-64 and ARM64 | Continuous main trigger remains paused. Dependency selection, compiler reuse, immutable runtime/package receipts and guarded publication must complete before enabling it. qOS ISA policy is explicit; this is not a universal Linux standalone installer. |
+| Linux/qOS native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed qpkg and runtime collection on x86-64 and ARM64 | Main compiles and packages selected app binaries and reuses immutable collection members; full-collection dependency features preserve the shared runtime ABI. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. qOS ISA policy is explicit; this is not a universal Linux standalone installer. |
 | Whole desktop / Linux distributions | `package-desktop.yml`: Arch, Nix, Ubuntu 24.04, Debian 13, Fedora 44; architecture jobs run distro builds serially | PR contracts remain cheap; weekly/manual distribution builds and main payload publication remain. ARM requires the workflow's native capability gate. Distribution install tests do not establish bootable OS/device acceptance. |
 | Setup application, Linux | `release-imager.yml`: default explicit Linux x86 smoke; full native/tag lanes add ARM64, AppImage and release checks | Catalog, signing, installation and physical-media qualification remain distinct. |
 | Setup application, Windows | Existing x86-64/ARM64 jobs use `imager-windows-x86_64` / `imager-windows-aarch64`, MSVC targets, imager tests, package build and signature checks | Enabled for imager tags or explicit `full_native=true`, not ordinary pushes. Actual native host availability must be checked before dispatch. |
@@ -43,9 +57,9 @@ Do not route Windows work onto Linux `runner` just because it is available.
 1. Operate the bounded automatic merge path and expand its path allowlist only
    with the same exact-head, identity-separation, recovery and reconciliation
    guarantees.
-2. Qualify dependency-selected app packaging on both native architectures,
-   including shared-runtime compatibility, immutable receipts and atomic channel
-   promotion; then enable continuous `main` scheduling explicitly.
+2. Observe dependency-selected app packaging on `main`, including shared-runtime
+   compatibility, immutable receipts and atomic channel promotion; extend routine
+   packaging to ARM64 after its native lane has sustained reliable throughput.
 3. Keep OS publication manual through a release tag or a `main` dispatch with
    `publish=true`, after image, reproducibility and VM gates pass.
 4. If native Windows app distribution becomes worthwhile, qualify a versioned,

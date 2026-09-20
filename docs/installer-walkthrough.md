@@ -19,6 +19,41 @@ Partition and uses the rest for its encrypted root. It intentionally does not
 resize NTFS: Windows understands BitLocker, hibernation, and its recovery
 partitions better than an offline Linux tool can.
 
+Before the shrink window, open one Administrator PowerShell in the repository,
+keep it open for the coordinated Windows preparation, and run the read-only
+preflight. Retain its JSON beside the installation record:
+
+```powershell
+PowerShell -ExecutionPolicy Bypass -File .\scripts\windows-dual-boot-preflight.ps1 `
+  -OutputPath .\windows-dual-boot-preflight.json
+```
+
+The report records the Windows-supported shrink limit, the latest NTFS shrink
+analysis event, paging and hibernation state, shadow-copy storage, BitLocker,
+Secure Boot, and Windows Recovery. A large amount of free space does not prove
+that the partition can shrink by the same amount: an allocated extent near the
+end of NTFS can set a much smaller supported limit.
+
+Keep normal automatic paging active during image preparation. If an immovable
+page file limits the final shrink, close applications and virtual machines,
+checkpoint its exact configuration, disable paging only for the short shrink
+window, and reboot before measuring again. Restore the checkpoint and reboot
+immediately after the shrink. Running build workloads without active paging is
+not a safe steady state.
+
+Disabling hibernation with `powercfg /hibernate off` also disables Fast Startup
+and removes `hiberfil.sys`; it is reversible with `powercfg /hibernate on`.
+Do this before the final supported shrink measurement, then keep Fast Startup
+off while dual booting. Use Windows' `defrag C: /X` only when the shrink event
+shows that free-space consolidation is useful. Do not repeatedly optimize the
+volume when the limiting extent has not changed.
+
+Do not delete the NTFS change journal, restore points, or shadow copies as a
+generic preparation step. Those operations discard history or recovery state.
+If the shrink event names one of them, review the affected consumers and take
+that action explicitly in the final shrink window. Never use an offline Linux
+tool to shrink a BitLocker-protected Windows volume.
+
 Changing UEFI boot files, Secure Boot keys, or boot order can cause BitLocker to
 ask for its recovery key even when the Windows partition was not modified.
 That prompt is a security feature, not data loss.
