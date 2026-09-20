@@ -143,6 +143,7 @@ pub(super) struct SelectedGc {
     root: PathBuf,
     generation: PathBuf,
     input: File,
+    selection_synced: bool,
 }
 impl SelectedGc {
     pub(super) fn new(root: PathBuf, generation: PathBuf) -> Result<Self, StoreError> {
@@ -150,13 +151,21 @@ impl SelectedGc {
             input: File::open(generation.join("gc.manifest"))?,
             root,
             generation,
+            selection_synced: false,
         })
     }
     pub(super) fn step(&mut self) -> Result<Step<()>, StoreError> {
-        File::open(self.root.join(DIRECTORY).join("CURRENT"))?.sync_all()?;
-        retained::sync_dir(&self.root.join(DIRECTORY))?;
         if retained::current(&self.root.join(DIRECTORY))?.as_ref() != Some(&self.generation) {
             return Err(invalid("retirement selection changed"));
+        }
+        // This cursor holds one immutable plan under the serialized owner.
+        // Confirm its selection once, not once per historical record. A failed
+        // barrier leaves the flag clear, so retries and newly opened cursors
+        // must still establish durability before retiring anything.
+        if !self.selection_synced {
+            File::open(self.root.join(DIRECTORY).join("CURRENT"))?.sync_all()?;
+            retained::sync_dir(&self.root.join(DIRECTORY))?;
+            self.selection_synced = true;
         }
         let offset = self.input.stream_position()?;
         let Some(meta) = read_meta(&mut self.input)? else {

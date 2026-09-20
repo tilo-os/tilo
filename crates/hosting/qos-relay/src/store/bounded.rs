@@ -59,6 +59,7 @@ pub(super) fn increment(value: &mut u64) -> Result<(), StoreError> {
 
 #[derive(Default, Debug, Clone)]
 pub(crate) struct WorkStats {
+    pub staging_full_flushes: u64,
     pub peak_metadata_entries: usize,
     pub peak_metadata_bytes: usize,
     pub peak_open_files: usize,

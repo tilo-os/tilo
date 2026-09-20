@@ -234,3 +234,69 @@ fn retirement_pin_survives_failed_source_barrier_on_retry_and_reopen() {
     assert!(!source.exists());
     assert!(reopened.basis.complete());
 }
+
+#[test]
+fn retirement_confirms_immutable_selection_once_for_the_whole_plan() {
+    let (_tmp, store) = setup();
+    let scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}", hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut selector = Selection::new(&store, scratch, None).unwrap();
+    while !matches!(selector.phase, Phase::Gc) {
+        selector.step(WorkLimit::default()).unwrap();
+    }
+    let generation = selector.staged.clone();
+    let mut gc = SelectedGc::new(store.root.clone(), generation.clone()).unwrap();
+    let selected_dir = store.root.join(DIRECTORY);
+    let fault = crate::store::test_barrier::fail(&selected_dir, "sync-dir");
+    assert!(gc.step().is_err(), "the first retirement requires a durable selection");
+    drop(fault);
+    assert!(matches!(gc.step().unwrap(), Step::More));
+
+    // The owner serializes this immutable plan. Further records must not force
+    // the already-confirmed CURRENT selection to disk again for every unlink.
+    // Source/pin directory barriers still run for each actual retirement.
+    let fault = crate::store::test_barrier::fail(&selected_dir, "sync-dir");
+    while matches!(gc.step().expect("selection barrier repeated per record"), Step::More) {}
+    drop(fault);
+    let mut plan = File::open(generation.join("gc.manifest")).unwrap();
+    let mut retired = 0;
+    while let Some(meta) = read_meta(&mut plan).unwrap() {
+        assert!(!generation.join(format!("gc-{:016x}.delta", meta.pin)).exists());
+        retired += 1;
+    }
+    assert!(retired > 1, "exercise a multi-record plan");
+    let mut reopened = SelectedRead::new(&store).unwrap().unwrap();
+    while matches!(reopened.step().unwrap(), Step::More) {}
+    assert!(reopened.basis.complete());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn selected_generation_batches_full_drive_flushes_before_publication() {
+    let (_tmp, store) = setup();
+    let scratch = store.root.join("store-work-v1").join(format!(
+        "retain-{}", hex::encode(rand::random::<[u8; 16]>())
+    ));
+    let mut selector = Selection::new(&store, scratch, None).unwrap();
+    while !matches!(selector.phase, Phase::Commit) {
+        selector.step(WorkLimit::default()).unwrap();
+    }
+    assert!(selector.ordinal > 3, "exercise multiple staged records and retirement pins");
+    let before = retained::current(&store.root.join(DIRECTORY)).unwrap();
+    let fault = crate::store::test_barrier::fail(&selector.staged, "selection-full-flush");
+    assert!(selector.step(WorkLimit::default()).is_err());
+    assert_eq!(retained::current(&store.root.join(DIRECTORY)).unwrap(), before);
+    let mut pins = File::open(selector.staged.join("gc.manifest")).unwrap();
+    while let Some(meta) = read_meta(&mut pins).unwrap() {
+        assert!(store.root.join(meta.source).exists(), "failed full flush must not retire source");
+        assert!(selector.staged.join(format!("gc-{:016x}.delta", meta.pin)).exists());
+    }
+    drop(fault);
+    while matches!(selector.step(WorkLimit::default()).unwrap(), Step::More) {}
+    assert_eq!(selector.stats().staging_full_flushes, 3,
+        "drive-wide flush count must depend on commit boundaries, not retained history size");
+    let mut reopened = SelectedRead::new(&store).unwrap().unwrap();
+    while matches!(reopened.step().unwrap(), Step::More) {}
+    assert!(reopened.basis.complete());
+}

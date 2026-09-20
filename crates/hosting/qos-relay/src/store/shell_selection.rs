@@ -284,7 +284,7 @@ impl Selection {
         bounded::increment(&mut self.ordinal)?;
         let path = self.staged.join(name);
         fs::hard_link(self.store.root.join(&meta.source), &path)?;
-        File::open(&path)?.sync_all()?;
+        self.sync_staged(&path)?;
         let mut selected = meta.clone();
         selected.source = path.strip_prefix(&self.store.root).unwrap().into();
         selected.key = vec![role.into()];
@@ -312,6 +312,30 @@ impl Selection {
         };
         if live {
             write_meta(&mut self.live_output, &selected)?
+        }
+        Ok(())
+    }
+    fn sync_staged(&mut self, path: &Path) -> Result<(), StoreError> {
+        let file = File::open(path)?;
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            // Rust's sync_all uses F_FULLFSYNC on macOS: a drive-wide flush.
+            // Stage every inode with fsync, then Phase::Commit's mandatory
+            // manifest sync_all flushes the complete batch before CURRENT can
+            // change. Hard links keep these files on the same filesystem.
+            // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html
+            loop {
+                // SAFETY: file owns this descriptor throughout the call.
+                if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { break; }
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted { return Err(error.into()); }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            bounded::increment(&mut self.sorter.stats.staging_full_flushes)?;
+            file.sync_all()?;
         }
         Ok(())
     }
@@ -831,7 +855,7 @@ impl Selection {
                         bounded::increment(&mut self.ordinal)?;
                         let pin = self.staged.join(format!("gc-{:016x}.delta", meta.pin));
                         fs::hard_link(self.store.root.join(&meta.source), &pin)?;
-                        File::open(&pin)?.sync_all()?;
+                        self.sync_staged(&pin)?;
                         write_meta(&mut self.gc_output, &meta)?;
                         return Ok(Step::More);
                     }
@@ -840,6 +864,9 @@ impl Selection {
                 self.phase = Phase::Commit;
             }
             Phase::Commit => {
+                #[cfg(test)]
+                super::test_barrier::check(&self.staged, "selection-full-flush")?;
+                self.sorter.stats.staging_full_flushes += 3;
                 self.output.sync_all()?;
                 self.live_output.sync_all()?;
                 self.gc_output.sync_all()?;
