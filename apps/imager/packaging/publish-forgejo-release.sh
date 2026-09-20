@@ -6,7 +6,7 @@ set -euo pipefail
 : "${GITHUB_REF_NAME:?missing release tag}"
 : "${FORGEJO_TOKEN:?missing release token}"
 
-release_repository="${TILO_RELEASE_REPOSITORY:-tilo/releases}"
+release_repository="${TILO_RELEASE_REPOSITORY:-qos/releases}"
 [[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
   || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
 [ "${GITHUB_REPOSITORY:-}" != "$release_repository" ] \
