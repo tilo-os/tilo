@@ -1936,6 +1936,15 @@ impl DrmScanout {
         );
     }
 
+    /// Rebind the established dumb-buffer front before imported GBM framebuffer objects are
+    /// released. KMS retains its own framebuffer reference after a successful flip, so dropping
+    /// userspace BO/FB owners first can leave the CRTC scanning an object we just destroyed.
+    pub fn restore_legacy_front(&mut self) {
+        self.flip_pending = false;
+        self.force_flush_via_set_crtc();
+        self.invalidate_xrgb_history();
+    }
+
     /// Power the display for idle/lock blanking, via the legacy DPMS property (`0 = On`, `3 = Off`
     /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips [`Self::present`] while blanked.
     pub fn set_dpms(&mut self, on: bool) {
@@ -2399,7 +2408,7 @@ mod tests {
 
     #[test]
     fn direct_scanout_never_renders_front_or_flip_pending_slots() {
-        let mut state = DirectScanoutState::new(0);
+        let state = DirectScanoutState::new(0);
         assert_eq!(state.render_slot(), Some(1));
         assert!(state.submit(1));
         assert_eq!(state.render_slot(), None, "both slots are owned by KMS");
