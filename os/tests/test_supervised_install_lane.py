@@ -1,4 +1,5 @@
 """Pure admission tests; no cluster, image, disk or VM operation."""
+import copy
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -41,7 +42,13 @@ class LaneAdmission(unittest.TestCase):
         verifier=lane.select_verifier_node(document,disk,vm)
         self.assertEqual((disk['metadata']['name'],vm['metadata']['name']),('disk','vm'))
         self.assertEqual(verifier['metadata']['name'],'verify')
-        self.assertEqual(lane.disk_manifest('tilo-disk-run1',disk)['spec']['containers'][0]['env'],
+        manifest=lane.disk_manifest('tilo-disk-run1',disk)
+        self.assertEqual(manifest['spec']['nodeSelector']['agent-sandbox.podesta.ai/kata'],'true')
+        self.assertEqual(manifest['spec']['nodeSelector']['katacontainers.io/kata-runtime'],'true')
+        self.assertEqual(manifest['spec']['tolerations'][-2:], [
+          {'key':'node.kubernetes.io/not-ready','operator':'Exists','effect':'NoExecute','tolerationSeconds':300},
+          {'key':'node.kubernetes.io/unreachable','operator':'Exists','effect':'NoExecute','tolerationSeconds':300}])
+        self.assertEqual(manifest['spec']['containers'][0]['env'],
                          [{'name':'REGISTRY_AUTH_FILE','value':'/work/registry-auth.json'}])
         self.assertEqual(lane.vm_manifest('tilo-vm-run1',vm)['spec']['containers'][0]
                          ['resources']['requests']['devic.es/kvm'],'1')
@@ -91,6 +98,23 @@ class LaneAdmission(unittest.TestCase):
         pod['status']['containerStatuses'][0]['imageID']='registry.invalid/latest'
         with self.assertRaisesRegex(ValueError,'running worker image'):
             lane.binding(pod,n)
+
+    def test_disk_binding_accepts_only_explicit_admission_defaults(self):
+        manifest=lane.disk_manifest('tilo-disk-run1',node('disk',disk=True))
+        manifest['spec']['nodeName']='disk'
+        pod={'metadata':{'name':'tilo-disk-run1','namespace':'kata-system','uid':'pod-uid'},
+             'spec':manifest['spec'],'status':{'phase':'Running','containerStatuses':[{
+               'ready':True,'restartCount':0,'imageID':lane.DISK_IMAGE}]}}
+        n={'metadata':{'uid':'node-uid'}}
+        self.assertEqual(lane.binding(pod,n,manifest)['image_id'],lane.DISK_IMAGE)
+        for change in ('selector','toleration'):
+            changed=copy.deepcopy(pod)
+            if change=='selector':
+                changed['spec']['nodeSelector']['unreviewed.example/selector']='true'
+            else:
+                changed['spec']['tolerations'].append({'operator':'Exists'})
+            with self.subTest(change=change),self.assertRaisesRegex(ValueError,'requested isolation'):
+                lane.binding(changed,n,manifest)
 
     def test_finalized_layer_audit_must_bind_creation(self):
         creation={'source':{'image_id':'sha256:'+'a'*64,'hardware_profile':'generic-arm64'},
