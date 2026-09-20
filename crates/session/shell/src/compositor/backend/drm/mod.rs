@@ -140,6 +140,11 @@ pub struct DrmPresenter {
     /// present already in progress. The lock is held across one complete
     /// render/reconfiguration operation.
     present_gate: Option<Arc<Mutex<()>>>,
+    /// Opt-in physical-hardware profiling. The production session wrapper
+    /// enables this while the readback presenter is under development so a
+    /// hard reset still leaves exact phase costs in the flight record.
+    profile_phases: bool,
+    profile_seq: u64,
 }
 
 impl DrmPresenter {
@@ -162,6 +167,7 @@ impl DrmPresenter {
             scene,
             None,
         );
+        self.emit_phase_profile();
     }
 
     fn render_frame(&mut self, frame: &FramePaint) {
@@ -180,6 +186,32 @@ impl DrmPresenter {
                 previous_revision: frame.previous_revision,
                 regions: frame.damage_regions.as_deref(),
             }),
+        );
+        self.emit_phase_profile();
+    }
+
+    fn emit_phase_profile(&mut self) {
+        if !self.profile_phases {
+            return;
+        }
+        let Some(timing) = self
+            .paint
+            .as_ref()
+            .and_then(paint::VelloDrmBridge::last_phase_timing)
+        else {
+            return;
+        };
+        self.profile_seq = self.profile_seq.saturating_add(1);
+        tracing::info!(
+            target: "tilo::render_phase",
+            seq = self.profile_seq,
+            submit_us = timing.submit_us,
+            gpu_readback_map_us = timing.completed_readback_map_us,
+            settle_us = timing.settle_us,
+            cpu_swizzle_us = timing.cpu_copy_swizzle_us,
+            readback_bytes = timing.readback_bytes,
+            output_bytes = timing.cpu_output_bytes,
+            "DRM readback frame phases"
         );
     }
 
@@ -301,7 +333,10 @@ fn paint_scanouts(
     }
     if paint.is_none() {
         match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
-            Ok(b) => *paint = Some(b),
+            Ok(mut bridge) => {
+                bridge.set_phase_timing_enabled(std::env::var_os("TILO_DRM_PHASE_TRACE").is_some());
+                *paint = Some(bridge);
+            }
             Err(e) => {
                 tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
                 return;
@@ -749,6 +784,8 @@ impl Backend for DrmBackend {
             // The scanouts and the commands addressed to them travel together: whoever owns one owns the other.
             commands: self.commands.take(),
             present_gate: self.inner.dispatch.present_gate.clone(),
+            profile_phases: std::env::var_os("TILO_DRM_PHASE_TRACE").is_some(),
+            profile_seq: 0,
         }))
     }
 
