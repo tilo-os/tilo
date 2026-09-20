@@ -574,7 +574,7 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             let authority = ticket.authority.clone();
             let source = StateSource::new(peer, session);
             let workspace = ws.clone();
-            let receipt = owner.submit_prepared(
+            let admission = owner.submit_prepared_wait(
                 1,
                 async move {
                     authorize_replay(&workspace, &source, &authority).await?;
@@ -582,8 +582,8 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                 },
                 move |state, authority| state.advance_replay(&authority, written),
                 |result| async { result },
-            )?;
-            match replay_wait(receipt, peer, session, private_rx, write).await? {
+            );
+            match replay_wait(admission, peer, session, private_rx, write).await? {
                 ReplayAdvance::Preparing => {}
                 ReplayAdvance::Batch(mut frames) => {
                     while let Some(frame) = frames.front() {
@@ -613,7 +613,7 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                         let workspace = ws.clone();
                         let checking_workspace = ws.clone();
                         let checking_source = source.clone();
-                        let receipt = owner.submit_prepared(
+                        let admission = owner.submit_prepared_wait(
                             1,
                             async move {
                                 authorize_replay(&workspace, &source, &authority).await?;
@@ -630,9 +630,9 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                                 })
                             },
                             |result| async { result },
-                        )?;
+                        );
                         if matches!(
-                            replay_wait(receipt, peer, session, private_rx, write).await?,
+                            replay_wait(admission, peer, session, private_rx, write).await?,
                             Step::Done(_)
                         ) {
                             break;
@@ -717,20 +717,31 @@ fn authorize_replay_now(
     Ok(())
 }
 async fn replay_wait<T, W: tokio::io::AsyncWrite + Unpin>(
-    receipt: tokio::sync::oneshot::Receiver<Result<T, StoreError>>,
+    admission: impl std::future::Future<
+        Output = Result<tokio::sync::oneshot::Receiver<Result<T, StoreError>>, StoreError>,
+    >,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     private_rx: &mut mpsc::Receiver<PrivateOutbound>,
     write: &mut W,
 ) -> Result<T, PeerError> {
-    let completed = crate::persistence::receipt(receipt);
+    // Both bounded admission and durable completion must leave the private
+    // writer live; awaiting admission before this select would stall replies.
+    let completed = async {
+        let receipt = admission.await?;
+        crate::persistence::receipt(receipt).await
+    };
     tokio::pin!(completed);
+    let mut private_open = session.v2;
     loop {
         tokio::select! {
             biased;
             result = &mut completed => return Ok(result?),
-            private = private_rx.recv(), if session.v2 => {
-                if let Some(private) = private { write_private(private, peer, session, write).await?; }
+            private = private_rx.recv(), if private_open => {
+                match private {
+                    Some(private) => write_private(private, peer, session, write).await?,
+                    None => private_open = false,
+                }
             }
         }
     }
@@ -937,7 +948,7 @@ async fn handle_subscribe(
     let ticket = ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned())?;
     let capture = ticket.authority.clone();
     let bind = ticket.authority.clone();
-    let rx = owner.submit_resumable(
+    let rx = owner.submit_resumable_wait(
         1,
         async { Ok(()) },
         move |state, _| state.capture_replay(&capture),
@@ -990,7 +1001,8 @@ async fn handle_subscribe(
             drop(wr);
             Ok(result)
         },
-    )?;
+    )
+    .await?;
     crate::persistence::receipt(rx).await?;
     *replay = Some((workspace_id, ticket));
     if !subscribed.contains(&workspace_id) {
@@ -1767,9 +1779,10 @@ async fn handle_sync_request(
     drop(wr);
     let owner = crate::persistence::handle(&ws).await;
     let source = StateSource::new(peer, session);
-    owner.submit(
+    owner.submit_prepared_wait(
         have_heads.len().saturating_mul(32),
-        move |state| Ok(state.changes(&have_heads)),
+        async { Ok(()) },
+        move |state, ()| Ok(state.changes(&have_heads)),
         move |result| async move {
             let changes = result?;
             let wr = crate::workspace_io::fresh_membership(&ws).await?;
@@ -1799,7 +1812,8 @@ async fn handle_sync_request(
             }
             Ok(changes)
         },
-    )?;
+    )
+    .await?;
     Ok(None)
 }
 

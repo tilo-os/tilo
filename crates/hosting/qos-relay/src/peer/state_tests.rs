@@ -735,6 +735,151 @@ async fn failed_sync_fallback_does_not_advance_the_materialized_retry_fence() {
 }
 
 #[tokio::test]
+async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
+    use automerge::transaction::Transactable;
+
+    for change in [
+        "unchanged",
+        "unsubscribed",
+        "replaced",
+        "revoked",
+        "removed",
+        "closed",
+        "cancelled",
+    ] {
+        let mut fixture = Fixture::new();
+        let mut document = automerge::AutoCommit::new();
+        document
+            .put(automerge::ROOT, "value", "sync after capacity")
+            .unwrap();
+        let expected_heads = document.get_heads();
+        fixture.workspace.lock().await.doc = Some(document);
+        let device = fixture.source.peer.device_public_key;
+        if change == "unsubscribed" {
+            fixture.workspace.lock().await.remove_subscriber(&device);
+        }
+        let owner = crate::persistence::handle(&fixture.workspace).await;
+        let (release, reached) =
+            crate::store::test_barrier::install(fixture.store.root(), "hold-owner");
+        owner
+            .read(1, |state| {
+                crate::store::test_barrier::pause(state.store.root(), "hold-owner");
+                Ok(())
+            })
+            .unwrap();
+        reached.await.unwrap();
+        let mut queued = Vec::new();
+        for _ in 0..32 {
+            queued.push(owner.read(1, |_| Ok(())).unwrap());
+        }
+        let registry = fixture.registry.clone();
+        let source = fixture.source.clone();
+        let private = fixture.private.clone();
+        let metrics = fixture.metrics.clone();
+        let live = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let connection_live = live.clone();
+        let mut task = tokio::spawn(async move {
+            let session = SessionCtx {
+                workspaces: &registry,
+                autobind: None,
+                outbound: &source.tx,
+                state_outbound: None,
+                connection_live: Some(&connection_live),
+                own_user_public_key: &source.own_user,
+                metrics: &metrics,
+                trust_policy: &source.policy,
+                disconnect: &source.disconnect,
+                v2: true,
+                private_tx: &private,
+                revocations: &source.revocations,
+            };
+            handle_sync_request(&source.peer, &session, 7, vec![]).await
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut task)
+                .await
+                .is_err(),
+            "full owner queue rejected SyncRequest ({change})"
+        );
+        match change {
+            "replaced" => {
+                let (replacement, _rx) = mpsc::channel(32);
+                fixture.workspace.lock().await.add_subscriber(Subscriber {
+                    device_public_key: device,
+                    role: PeerRole::Device,
+                    tx: replacement,
+                    disconnect: fixture.source.disconnect.clone(),
+                });
+            }
+            "revoked" => {
+                let mut entry = qos_user_identity::RevocationEntry {
+                    user_public_key: fixture.source.own_user,
+                    revoked_device_public_key: device,
+                    revoked_at_ns: 1,
+                    reason: qos_user_identity::RevocationReason::Lost,
+                    signature: [0; 64],
+                };
+                qos_user_identity::sign_revocation_entry(&mut entry, &fixture.root_key).unwrap();
+                fixture
+                    .source
+                    .revocations
+                    .write()
+                    .unwrap()
+                    .insert(entry)
+                    .unwrap();
+            }
+            "removed" => crate::workspace_io::replace_membership(
+                &fixture.workspace,
+                vec![fixture.recipient.device_public_key],
+            )
+            .await
+            .unwrap(),
+            "closed" => live.store(false, std::sync::atomic::Ordering::SeqCst),
+            "cancelled" => task.abort(),
+            _ => {}
+        }
+        // Cancellation must remove the capacity waiter before the owner resumes.
+        if change == "cancelled" {
+            assert!(matches!((&mut task).await, Err(error) if error.is_cancelled()));
+        }
+        drop(release);
+        if change != "cancelled" {
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(3), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for receipt in queued {
+            crate::persistence::receipt(receipt).await.unwrap();
+        }
+        fixture.drained().await;
+        if matches!(change, "unchanged" | "unsubscribed") {
+            let Envelope::SyncResponse {
+                workspace_id,
+                delta_since,
+            } = fixture._receivers[0]
+                .try_recv()
+                .expect("missing authorized sync response")
+            else {
+                panic!("unexpected sync reply")
+            };
+            assert_eq!(workspace_id, 7);
+            let mut received = automerge::AutoCommit::new();
+            received.load_incremental(&delta_since).unwrap();
+            assert_eq!(received.get_heads(), expected_heads);
+        }
+        assert!(
+            fixture._receivers[0].try_recv().is_err(),
+            "SyncRequest published an extra or unauthorized response ({change})"
+        );
+    }
+}
+
+#[tokio::test]
 async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes() {
     let mut fixture = Fixture::new();
     let (release, reached) =
@@ -960,6 +1105,176 @@ impl Fixture {
             .await
             .unwrap();
         replay.unwrap()
+    }
+}
+
+#[tokio::test]
+async fn replay_capture_waits_for_owner_capacity_and_can_be_cancelled() {
+    for cancel in [false, true] {
+        let fixture = Arc::new(Fixture::new());
+        fixture
+            .workspace
+            .lock()
+            .await
+            .remove_subscriber(&fixture.recipient.device_public_key);
+        let owner = crate::persistence::handle(&fixture.workspace).await;
+        let (release, reached) =
+            crate::store::test_barrier::install(fixture.store.root(), "hold-owner");
+        owner
+            .read(1, |state| {
+                crate::store::test_barrier::pause(state.store.root(), "hold-owner");
+                Ok(())
+            })
+            .unwrap();
+        reached.await.unwrap();
+        let mut queued = Vec::new();
+        for _ in 0..32 {
+            queued.push(owner.read(1, |_| Ok(())).unwrap());
+        }
+        let subscribing = fixture.clone();
+        let mut task = tokio::spawn(async move { subscribing.subscribe_ticket().await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut task)
+                .await
+                .is_err(),
+            "full owner queue rejected replay capture"
+        );
+        if cancel {
+            task.abort();
+        }
+        drop(release);
+        if cancel {
+            assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+        } else {
+            let (_, ticket) = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+                .await
+                .unwrap()
+                .unwrap();
+            drop(ticket);
+        }
+        for receipt in queued {
+            crate::persistence::receipt(receipt).await.unwrap();
+        }
+        fixture.drained().await;
+        assert_eq!(
+            fixture
+                .workspace
+                .lock()
+                .await
+                .subscribers
+                .contains_key(&fixture.recipient.device_public_key),
+            !cancel
+        );
+    }
+}
+
+#[tokio::test]
+async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
+    // A full queue exercises admission; one free slot exercises the receipt.
+    for (queued_count, replace_session) in [(32, false), (31, false), (32, true)] {
+        let fixture = Arc::new(Fixture::new());
+        let device = fixture.recipient.device_public_key;
+        fixture
+            .store
+            .enqueue_pending(
+                &device,
+                1,
+                &crate::transport::encode(&fixture.envelope(0)).unwrap(),
+            )
+            .unwrap();
+        let ticket = fixture.subscribe_ticket().await;
+        let owner = crate::persistence::handle(&fixture.workspace).await;
+        let (release, reached) =
+            crate::store::test_barrier::install(fixture.store.root(), "hold-owner");
+        owner
+            .read(1, |state| {
+                crate::store::test_barrier::pause(state.store.root(), "hold-owner");
+                Ok(())
+            })
+            .unwrap();
+        reached.await.unwrap();
+        for _ in 0..queued_count {
+            owner.read(1, |_| Ok(())).unwrap();
+        }
+        let (private_tx, mut private_rx) = mpsc::channel(1);
+        let reply = EnvelopeV2::ActionsReady {
+            room: uuid::Uuid::new_v4(),
+            capability: crate::transport_v2::ActionCapability::TransportOnly,
+        };
+        private_tx
+            .send(PrivateOutbound::Reply(reply.clone()))
+            .await
+            .unwrap();
+        let (mut write, read) = tokio::io::duplex(4096);
+        let writer = fixture.clone();
+        let task = tokio::spawn(async move {
+            let session = SessionCtx {
+                workspaces: &writer.registry,
+                autobind: None,
+                outbound: &writer.recipient_tx,
+                state_outbound: None,
+                connection_live: None,
+                own_user_public_key: &writer.source.own_user,
+                metrics: &writer.metrics,
+                trust_policy: &writer.source.policy,
+                disconnect: &writer.source.disconnect,
+                v2: true,
+                private_tx: &writer.private,
+                revocations: &writer.source.revocations,
+            };
+            finish_replay_write(
+                ReplayWrite {
+                    ticket: Some(ticket),
+                    reply: None,
+                    replaying: true,
+                },
+                &writer.recipient,
+                &session,
+                &std::sync::atomic::AtomicUsize::new(1),
+                &mut private_rx,
+                &mut write,
+            )
+            .await
+        });
+        let mut reader = crate::transport_v2::SessionReader::new(read, true);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(3), reader.read_next())
+                .await
+                .expect("private reply stalled behind replay owner capacity")
+                .unwrap(),
+            Some(reply)
+        );
+        assert!(!task.is_finished());
+        if replace_session {
+            let (replacement, _rx) = mpsc::channel(32);
+            fixture.workspace.lock().await.add_subscriber(Subscriber {
+                device_public_key: device,
+                role: PeerRole::Device,
+                tx: replacement,
+                disconnect: fixture.source.disconnect.clone(),
+            });
+        }
+        drop(release);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(3), task)
+            .await
+            .unwrap()
+            .unwrap();
+        if replace_session {
+            assert!(result.is_err());
+            assert_eq!(fixture.store.count_pending(&device).unwrap(), 1);
+            assert!(reader.read_next().await.unwrap().is_none());
+        } else {
+            result.unwrap();
+            assert!(matches!(
+                reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(Envelope::Delta { .. }))
+            ));
+            assert!(matches!(
+                reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::State(Envelope::Ready { .. }))
+            ));
+            assert_eq!(fixture.store.count_pending(&device).unwrap(), 0);
+        }
     }
 }
 

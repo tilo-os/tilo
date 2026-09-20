@@ -293,6 +293,39 @@ impl Persistence {
         )
     }
 
+    /// Wait for bounded owner capacity before an ordered single-step operation.
+    /// Dropping admission releases its permits; admitted work still completes.
+    pub(crate) async fn submit_prepared_wait<P, PF, T, F, C, CF>(
+        &self,
+        bytes: usize,
+        preparation: PF,
+        operation: F,
+        completion: C,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        P: Send + 'static,
+        PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+        T: Send + 'static,
+        F: FnOnce(&mut State, P) -> Result<T, StoreError> + Send + 'static,
+        C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+        CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
+        let mut operation = Some(operation);
+        self.submit_resumable_wait(
+            bytes,
+            preparation,
+            move |state, prepared| {
+                operation.take().expect("single-step operation")(
+                    state,
+                    prepared.take().expect("preparation"),
+                )
+                .map(Step::Done)
+            },
+            completion,
+        )
+        .await
+    }
+
     /// Keep the admitted transaction's owner position across fixed quanta, but
     /// return the global blocking worker before awaiting the next quantum.
     pub(crate) fn submit_resumable<P, PF, T, F, C, CF>(
@@ -333,7 +366,7 @@ impl Persistence {
         Ok(rx)
     }
 
-    /// Durable inbound state applies capacity-driven backpressure instead of
+    /// Durable state and replay apply capacity-driven backpressure instead of
     /// turning a healthy replay burst into a connection error.
     pub(crate) async fn submit_resumable_wait<P, PF, T, F, C, CF>(
         &self,
