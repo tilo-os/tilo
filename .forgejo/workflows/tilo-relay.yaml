@@ -18,6 +18,8 @@ on:
       - "os/base-snapshot.env"
       - "os/rpms-snapshot.env"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
+      - "os/dev/verify-rpm-snapshot-buildkit.py"
+      - "os/tests/test_rpm_snapshot_buildkit.py"
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/collab/tilo-user-identity/**"
@@ -54,6 +56,8 @@ on:
       - "os/base-snapshot.env"
       - "os/rpms-snapshot.env"
       - "os/dev/verify-rpm-snapshot-package-set.sh"
+      - "os/dev/verify-rpm-snapshot-buildkit.py"
+      - "os/tests/test_rpm_snapshot_buildkit.py"
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/collab/tilo-user-identity/**"
@@ -83,6 +87,11 @@ on:
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
   workflow_dispatch:
+    inputs:
+      require_compiler_cache:
+        description: Fail before compiling if the shared compiler cache is unavailable
+        type: boolean
+        default: false
 
 concurrency:
   group: tilo-relay-image-${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && 'publication' || github.ref }}
@@ -168,9 +177,81 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.REGISTRY_TOKEN }}
+          persist-credentials: false
 
       - name: Verify the relay-only Compose contract
         run: bash os/containers/tilo-relay/test-contract.sh
+
+      - name: Restore the pinned compiler-cache client
+        id: sccache-asset
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: os/external-assets/cache
+          key: relay-sccache-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+
+      - name: Materialize the pinned compiler-cache client
+        run: |
+          case "$(uname -m)" in
+            x86_64) target=x86_64 ;;
+            aarch64) target=aarch64 ;;
+            *) echo "unsupported relay architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          ./os/dev/cache-github-assets.sh "sccache-v0.17.0-${target}-unknown-linux-musl.tar.gz"
+
+      - name: Save the pinned compiler-cache client
+        if: steps.sccache-asset.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: os/external-assets/cache
+          key: relay-sccache-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+
+      - name: Bind the runner compiler-cache configuration
+        id: compiler-cache
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DISPATCH_REQUIRE_CACHE: ${{ inputs.require_compiler_cache }}
+        run: |
+          set -euo pipefail
+          require=0
+          if [ "${DISPATCH_REQUIRE_CACHE:-false}" = true ]; then
+            require=1
+          elif [ "${{ github.event_name }}" = pull_request ] &&
+               git diff --name-only "$BASE_SHA...HEAD" -- \
+                 .forgejo/workflows/tilo-relay.yaml \
+                 os/containers/tilo-relay/Containerfile \
+                 os/containers/tilo-relay/probe-sccache.py | grep -q .; then
+            require=1
+          fi
+          printf 'required=%s\n' "$require" >> "$GITHUB_OUTPUT"
+          if [ "$require" = 1 ]; then
+            printf 'nonce=%s-%s\n' "${{ github.run_id }}" "${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+          else
+            printf 'nonce=\n' >> "$GITHUB_OUTPUT"
+          fi
+
+          available=1
+          required=(SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_KEY_PREFIX SCCACHE_S3_USE_SSL)
+          for name in "${required[@]}"; do
+            value="${!name:-}"
+            test -n "$value" || available=0
+            case "$value" in *$'\n'*|*$'\r'*) available=0 ;; esac
+          done
+          case "${SCCACHE_ENDPOINT:-}" in https://s3.*.amazonaws.com) ;; *) available=0 ;; esac
+          case "${SCCACHE_BUCKET:-}" in podesta-agent-sccache-*) ;; *) available=0 ;; esac
+          case "${SCCACHE_S3_KEY_PREFIX:-}" in forgejo-runners/v[0-9]*) ;; *) available=0 ;; esac
+          test "${SCCACHE_S3_USE_SSL:-}" = true || available=0
+          printf 'configured=%s\n' "$available" >> "$GITHUB_OUTPUT"
+          if [ "$available" != 1 ]; then
+            echo "::notice::runner compiler cache configuration is absent or unsupported; normal builds compile without it"
+            exit 0
+          fi
+          {
+            printf 'bucket=%s\n' "$SCCACHE_BUCKET"
+            printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
+            printf 'region=%s\n' "$SCCACHE_REGION"
+            printf 'prefix=%s\n' "$SCCACHE_S3_KEY_PREFIX"
+            printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
+          } >> "$GITHUB_OUTPUT"
 
       # Login is required on every build (build-only or push): the
       # Containerfile FROMs the private frozen RPM repo, which needs
@@ -212,16 +293,19 @@ jobs:
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
           echo "rpms=$RPMS_REF"
 
-      - name: Verify the frozen RPM package set
-        run: ./os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"
-
-      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
-        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
-
       - name: Set up buildx for registry cache export
+        id: buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
+          # The compiler cache is a cluster-local service. The default nested
+          # Docker bridge cannot resolve Kubernetes service DNS.
+          driver-opts: network=host
+
+      - name: Verify the frozen RPM package set
+        env:
+          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -242,18 +326,35 @@ jobs:
       - name: Build the tilo-relay image (push only on tags/dispatch)
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        env:
-          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
         with:
+          builder: ${{ steps.buildx.outputs.name }}
           context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
           file: os/containers/tilo-relay/Containerfile
           push: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Source bytes and pinned base/RPM refs invalidate the build. A
+          # commit timestamp is not an artifact input and changes on rebase.
           build-args: |
-            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            SOURCE_DATE_EPOCH=0
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
+            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
+            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
+            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
+            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
+            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
+            TILO_COMPILER_CACHE_CONFIGURED=${{ steps.compiler-cache.outputs.configured }}
+            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
+            TILO_CACHE_PROBE_NONCE=${{ steps.compiler-cache.outputs.nonce }}
+          # The runner injects these least-privilege credentials. BuildKit
+          # exposes them only to the compile RUN, never an image layer or arg.
+          secret-envs: |
+            aws_access_key_id=AWS_ACCESS_KEY_ID
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+            aws_session_token=AWS_SESSION_TOKEN
           cache-from: type=registry,ref=code.podesta.ai/qos/tilo-relay-buildcache:latest
           cache-to: type=registry,ref=code.podesta.ai/qos/tilo-relay-buildcache:latest,mode=max
           provenance: false

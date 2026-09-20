@@ -17,7 +17,7 @@ ROOT = TOOLS.parent
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 
-from ci import affected_packages as ci_select
+from ci import workspace_graph as ci_select
 
 
 CONFIG = ROOT / "dist/apps/app-collections.toml"
@@ -50,7 +50,7 @@ VERIFICATION_INPUTS = {
     "tools/ci/app_release_history.py",
     "tools/apps/app_release.py",
     "tools/ci/__init__.py",
-    "tools/ci/affected_packages.py",
+    "tools/ci/workspace_graph.py",
     "tools/apps/app_channel_manifest.py",
     "tools/apps/canonical_app_verifier.py",
     "tools/apps/create_app_receipt.py",
@@ -161,6 +161,83 @@ def changed_paths(base: str, root: Path = ROOT) -> list[str]:
     return ci_select.changed_files(root, base, "HEAD")
 
 
+def _lock_packages(raw: bytes) -> dict[tuple[str, str, str], dict]:
+    parsed = tomllib.loads(raw.decode("utf-8"))
+    return {
+        (package["name"], package["version"], package.get("source", "")): package
+        for package in parsed.get("package", [])
+    }
+
+
+def _lock_dependency_name(spec: str) -> str:
+    # Cargo.lock package names cannot contain whitespace. The remaining package
+    # id, when present, is a version and source used to disambiguate duplicates.
+    return spec.split(maxsplit=1)[0]
+
+
+def lockfile_affected_packages(
+    base: str,
+    metadata: dict,
+    root: Path = ROOT,
+) -> set[str] | None:
+    """Return workspace packages reached by the changed lockfile records.
+
+    Cargo.lock contains the complete external dependency graph, while the cheap
+    ``cargo metadata --no-deps`` result contains each workspace package's direct
+    dependencies. Joining the two by Cargo package name lets a lockfile-only
+    update select the workspace reverse closure instead of every app. Duplicate
+    external versions deliberately collapse to one name, which can over-select
+    but cannot omit another version's consumers.
+
+    ``None`` means the comparison could not be proved. Callers retain the old
+    full-fleet behavior in that case.
+    """
+    merge_base = ci_select.comparison_merge_base(root, base, "HEAD")
+    before = subprocess.run(
+        ["git", "show", f"{merge_base}:Cargo.lock"],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    if before.returncode:
+        return None
+    try:
+        old = _lock_packages(before.stdout)
+        new = _lock_packages((root / "Cargo.lock").read_bytes())
+    except (KeyError, OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+
+    changed_names = {
+        key[0] for key in old.keys() | new.keys() if old.get(key) != new.get(key)
+    }
+    if not changed_names:
+        return set()
+
+    # Propagate through both graphs so removing a dependency is attributed to
+    # its former consumers and adding one is attributed to its new consumers.
+    reverse_names: dict[str, set[str]] = {}
+    for package in [*old.values(), *new.values()]:
+        consumer = package["name"]
+        for dependency in package.get("dependencies", []):
+            reverse_names.setdefault(_lock_dependency_name(dependency), set()).add(consumer)
+    affected_names = ci_select.closure(changed_names, reverse_names)
+
+    packages, _ = ci_select.package_maps(metadata, root)
+    workspace_seeds = {
+        name
+        for name, package in packages.items()
+        if name in affected_names
+        or any(
+            dependency["name"] in affected_names
+            for dependency in package.get("dependencies", [])
+        )
+    }
+    return ci_select.closure(
+        workspace_seeds,
+        ci_select.reverse_dependencies(packages, root),
+    )
+
+
 def input_classification(paths: list[str], metadata: dict | None = None,
                          root: Path = ROOT) -> dict[str, list[str]]:
     """Artifact invalidation versus metadata revalidation, not compile commands.
@@ -197,9 +274,13 @@ def apps_from_changes(
     catalog: dict[str, dict],
     metadata: dict | None = None,
     root: Path = ROOT,
+    lock_affected_packages: set[str] | None = None,
 ) -> list[str]:
     if any(
-        path in GLOBAL_INPUTS
+        (
+            path in GLOBAL_INPUTS
+            and not (path == "Cargo.lock" and lock_affected_packages is not None)
+        )
         or path.startswith(GLOBAL_PREFIXES + FULL_REBUILD_PREFIXES)
         for path in paths
     ):
@@ -221,6 +302,7 @@ def apps_from_changes(
             for path in paths
             if (owner := ci_select.owner_for(path, by_dir)) is not None
         }
+        seeds.update(lock_affected_packages or ())
         affected = ci_select.closure(seeds, ci_select.reverse_dependencies(packages, root))
         if affected & FLEET_BUILD_PACKAGES:
             return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
@@ -262,12 +344,18 @@ def plan(args: argparse.Namespace) -> dict:
     elif args.base:
         changes = changed_paths(args.base, args.root)
         metadata = ci_select.cargo_metadata(args.root)
+        lock_affected = (
+            lockfile_affected_packages(args.base, metadata, args.root)
+            if "Cargo.lock" in changes
+            else None
+        )
         classification = input_classification(changes, metadata, args.root)
         selected = apps_from_changes(
             changes,
             catalog,
             metadata,
             args.root,
+            lock_affected,
         )
         reason = "apps affected by the commit range"
         kinds = [kind for kind, inputs in classification.items() if inputs]

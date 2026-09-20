@@ -41,13 +41,30 @@ progress_script="$(dirname "${BASH_SOURCE[0]}")/../tools/ci/process_progress.py"
 # legitimately be silent that long while linking a large workspace target, so
 # emit one compact progress line per minute until the command exits.
 (
-    while sleep 60; do
+    # A foreground sleep survives killing this subshell and keeps the runner's
+    # output pipe open for the rest of the minute. Wait on an owned child so a
+    # signal interrupts the wait, then terminate and reap that child on exit.
+    heartbeat_child=""
+    # Query this subshell's own jobs: TERM can arrive after launching a child
+    # but before assigning its PID below. Never signal unrelated descendants.
+    trap 'for child in $(jobs -pr); do
+        kill "$child" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true' EXIT
+    trap 'exit 0' TERM INT
+    while true; do
+        sleep 60 &
+        heartbeat_child=$!
+        wait "$heartbeat_child" || exit 0
+        heartbeat_child=""
         echo "==> ${label}: still running ($(( $(date +%s) - start ))s)"
         # A wrapper heartbeat alone cannot distinguish work from a stuck child.
         # Numeric descendant CPU/RSS/I/O counters let successive receipts show
         # progress without exposing process arguments or environment secrets.
-        timeout 5s python3 "$progress_script" --root-pid "$$" 2>/dev/null ||
-            echo 'CI_PROCESS_PROGRESS=unavailable'
+        timeout 5s python3 "$progress_script" --root-pid "$$" 2>/dev/null &
+        heartbeat_child=$!
+        wait "$heartbeat_child" || echo 'CI_PROCESS_PROGRESS=unavailable'
+        heartbeat_child=""
     done
 ) &
 heartbeat_pid=$!
@@ -69,6 +86,13 @@ fi
 # failed crate and is usually the most useful line in the log.
 pattern='^error(\[E[0-9]+\])?:|^error: |could not compile|^thread .* panicked at|^test result: FAILED|^---- .* stdout ----|The system library .* was not found|^failures:$'
 distilled="$(grep -nE "$pattern" "$log" | head -40)"
+# clippy-diff deliberately prints newly introduced lints as warnings: Cargo ran
+# successfully, but the diagnostic ratchet rejected the new sites. Preserve the
+# warning, source location and lint name when that explicit verdict is present.
+if [ -z "$distilled" ] && grep -qE '^introduced [0-9]+ Clippy diagnostic site\(s\):$' "$log"; then
+    clippy_pattern='^introduced [0-9]+ Clippy diagnostic site\(s\):$|^warning: |^[[:space:]]+--> .*:[0-9]+:[0-9]+$|^[[:space:]]+= (help|note):.*(rust-clippy|clippy::)'
+    distilled="$(grep -nE "$clippy_pattern" "$log" | head -40)"
+fi
 # Annotations get the lines that identify the fault, not the structural markers a
 # test harness prints around it ("failures:", "---- x stdout ----"). Those stay
 # in the block below, where their surrounding context makes them worth reading.
@@ -97,6 +121,9 @@ failed_tests="$(awk '/^failures:$/{f=1;next} /^test result:/{f=0} f && /^ /{prin
 
 # Annotations: the forge shows these against the run itself.
 annotations="$(grep -E "$headline" "$log" | head -5)"
+if [ -z "$annotations" ] && grep -qE '^introduced [0-9]+ Clippy diagnostic site\(s\):$' "$log"; then
+    annotations="$(grep -E '^warning: ' "$log" | head -5)"
+fi
 if [ -n "$annotations" ]; then
     echo "$annotations" | while IFS= read -r line; do
         echo "::error::${label}: ${line}"
