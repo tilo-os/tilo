@@ -82,7 +82,7 @@ A wrapper binary ships in the same workspace. Subcommands take human-friendly ar
 
 ```bash
 cargo build -p shell --bin tilo-control      # lands in target/debug, NOT on PATH
-alias qc='cargo run -q --bin tilo-control --' # or: cargo install --path shell --bin tilo-control
+alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/shell --bin tilo-control
 
 qc list-targets                             # PNAME (X, Y, W, H) per line
 qc click add_workspace                      # click_named
@@ -465,11 +465,13 @@ desktop session (or enter the development container first):
 
 ```bash
 cargo build -p shell
-cargo test -p shell --test control_socket_test -- --ignored --test-threads 1
+cargo test --locked -p shell --test it control_socket_test:: -- --ignored --test-threads 1
 ```
 
 The test spawns the binary itself. It is intentionally separate from the
 offscreen lanes until the native compositor can run without a host display.
+`control_socket_test` is a module inside the shared `it` test binary, not a
+separate Cargo target. Keep the module filter when opting into ignored tests.
 
 ## Desktop UX journeys
 
