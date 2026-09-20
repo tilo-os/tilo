@@ -663,7 +663,6 @@ impl Pane {
 
     fn search_box_rect(&self) -> Rect {
         let r = self.rect;
-        let s = self.scale();
         // Leave room for the refresh button on the far right.
         let x1 = self.refresh_box_rect().x0 - 10.0;
         // Adapt the search width to the (often narrow) list column, always
