@@ -22,7 +22,7 @@ class PushEventTests(unittest.TestCase):
             "tool_name": "exec", "session_id": "01a0bfbb-8102-7371-97ff-b025f1181eca",
             "cwd": "C:/Users/xaver/.codex/worktrees/9245/qos",
             "tool_input": {"code": code or 'text(await tools.exec_command({cmd:"git push origin HEAD:refs/heads/codex/dev-package-identity; git status --short",workdir:"C:/Users/xaver/qos-registry-submission",max_output_tokens:1500}));'},
-            "tool_response": {"content": [{"type": "text", "text": "completed"}]},
+            "tool_response": {"content": [{"type": "text", "text": json.dumps({"exit_code": 0, "output": "completed"})}]},
         }
 
     def test_actual_pr157_code_selects_child_worktree_not_outer_root(self):
@@ -68,10 +68,35 @@ class PushEventTests(unittest.TestCase):
             self.assertFalse(pushes_current_branch(args, "main"))
 
     def test_explicit_failure_or_running_command_does_not_start(self):
-        for response in [{"exit_code": 1}, {"session_id": 123}, {"isError": True}]:
+        for response in [{"exit_code": 1}, {"session_id": 123}, {"isError": True},
+                         "Script running with cell ID 42",
+                         {"content": [{"type": "text", "text": json.dumps({"exit_code": 1, "output": "failed"})}]},
+                         {"content": [{"type": "text", "text": json.dumps({"exit_code": None, "session_id": 123})}]},
+                         {"content": [{"type": "text", "text": "Script running with cell ID 42"}]},
+                         {"content": [{"type": "text", "text": "completed"}]}]:
             event = self.event()
             event["tool_response"] = response
             self.assertIsNone(push_target(event))
+
+    def test_string_and_nested_completed_results(self):
+        result = {"exit_code": 0, "output": "remote branch updated", "wall_time_seconds": 1.2}
+        for response in [result, json.dumps(result), {"content": [{"type": "text", "text": json.dumps(result)}]}]:
+            event = self.event()
+            event["tool_response"] = response
+            self.assertIsNotNone(push_target(event))
+
+    def test_scp_remote_and_credential_redaction(self):
+        with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, "git@code.podesta.ai:qos/qos.git", "")):
+            self.assertEqual(watch_ci.forgejo_target(Path.cwd()), ("code.podesta.ai", "qos/qos"))
+        secret = "dummy-secret-never-deliver"
+        with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, f"https://user:{secret}@code.podesta.ai/invalid", "")):
+            with self.assertRaises(ValueError) as error:
+                watch_ci.forgejo_target(Path.cwd())
+            self.assertNotIn(secret, str(error.exception))
+        event = self.event()
+        with patch.object(watch_ci, "run", side_effect=ValueError(f"https://user:{secret}@host")), patch.object(watch_ci, "deliver") as deliver, patch("sys.stdin", io.StringIO(json.dumps(event))):
+            self.assertEqual(watch_ci.main(), 0)
+            self.assertNotIn(secret, deliver.call_args.args[1])
 
     def test_main_delivers_to_author_once_with_nested_workdir(self):
         event = self.event()
@@ -98,6 +123,14 @@ class PushEventTests(unittest.TestCase):
                 self.assertTrue(all(cwd.replace("\\", "/") == "C:/Users/xaver/qos-registry-submission" for _, cwd in calls))
                 receipt = next((Path(directory) / "codex-ci-watch").glob("*.json"))
                 self.assertEqual(json.loads(receipt.read_text())["state"], "reported")
+                event["session_id"] = "a-second-task"
+                secret = "dummy-secret-never-persist"
+                watch.side_effect = ValueError(f"https://user:{secret}@host")
+                with patch("sys.stdin", io.StringIO(json.dumps(event))):
+                    self.assertEqual(watch_ci.main(), 0)
+                self.assertNotIn(secret, deliver.call_args.args[1])
+                for receipt in (Path(directory) / "codex-ci-watch").glob("*.json"):
+                    self.assertNotIn(secret, receipt.read_text())
 
 
 if __name__ == "__main__":

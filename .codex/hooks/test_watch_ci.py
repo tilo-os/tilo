@@ -52,7 +52,7 @@ class WatchCiTests(unittest.TestCase):
                     'cmd: "git status --short; git push -u origin topic"});'
                 )
             },
-            "tool_response": {"content": [{"type": "text", "text": "done"}]},
+            "tool_response": {"content": [{"type": "text", "text": json.dumps({"exit_code": 0, "output": "done"})}]},
         }
         self.assertTrue(watch_ci.pushed_successfully(event))
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
-import os
+import re
 import subprocess
 import sys
 import time
@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from push_event import push_target, pushes_current_branch
+from watch_receipt import WatchReceipt, acquire
 
 
 DISCOVERY_TIMEOUT_SECONDS = 90
@@ -50,20 +51,11 @@ def pushed_successfully(event: dict[str, Any]) -> bool:
     return push_target(event) is not None
 
 
-def claim_watch(cwd: Path, session_id: str, sha: str) -> Path | None:
+def claim_watch(cwd: Path, session_id: str, sha: str) -> WatchReceipt | None:
     common = run(["git", "rev-parse", "--git-common-dir"], cwd=cwd).stdout.strip()
     directory = (cwd / common).resolve() / "codex-ci-watch"
-    directory.mkdir(parents=True, exist_ok=True)
     key = hashlib.sha256(f"{session_id}:{sha}".encode()).hexdigest()
-    receipt = directory / f"{key}.json"
-    try:
-        fd = os.open(receipt, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        return None
-    with os.fdopen(fd, "w", encoding="utf-8") as output:
-        json.dump({"session_id": session_id, "sha": sha, "cwd": str(cwd),
-                   "state": "watching", "pid": os.getpid(), "started": dt.datetime.now(dt.timezone.utc).isoformat()}, output)
-    return receipt
+    return acquire(directory / f"{key}.json", cwd=cwd, session_id=session_id, sha=sha)
 
 
 def branch_is_on_remote(cwd: Path, sha: str, branch: str) -> bool:
@@ -89,11 +81,11 @@ def forgejo_target(cwd: Path) -> tuple[str, str]:
     else:
         match = re.fullmatch(r"(?:[^@]+@)?([^:]+):(.+)", remote)
         if match is None:
-            raise ValueError(f"cannot identify Forgejo repository from {remote!r}")
+            raise ValueError("origin does not identify a Forgejo owner/repository")
         host, repo = match.groups()
     repo = repo.removesuffix(".git").strip("/")
     if not host or repo.count("/") != 1:
-        raise ValueError(f"cannot identify Forgejo repository from {remote!r}")
+        raise ValueError("origin does not identify a Forgejo owner/repository")
     return host, repo
 
 
@@ -266,7 +258,6 @@ def main() -> int:
         return 0
     cwd = Path(cwd_value)
 
-    receipt = None
     try:
         sha = run(["git", "rev-parse", "HEAD"], cwd=cwd).stdout.strip()
         branch = run(
@@ -280,29 +271,31 @@ def main() -> int:
         receipt = claim_watch(cwd, session_id, sha)
         if receipt is None:
             return 0
-        started = dt.datetime.now(dt.timezone.utc)
-        outcome, runs = watch(
-            cwd=cwd,
-            host=host,
-            repo=repo,
-            sha=sha,
-            started=started,
-        )
-        message = result_message(outcome=outcome, runs=runs, sha=sha, branch=branch)
-    except (
-        OSError,
-        ValueError,
-        json.JSONDecodeError,
-        subprocess.SubprocessError,
-    ) as error:
-        message = f"[CI watcher] Could not watch Forgejo CI after the push: {error}."
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        deliver(session_id, safe_error(error), cwd)
+        return 0
 
-    deliver(session_id, message, cwd)
-    if receipt is not None:
-        data = json.loads(receipt.read_text(encoding="utf-8"))
-        data.update(state="reported", message=message)
-        receipt.write_text(json.dumps(data), encoding="utf-8")
+    with receipt:
+        try:
+            outcome, runs = watch(
+                cwd=cwd, host=host, repo=repo, sha=sha, started=receipt.started,
+            )
+            message = result_message(outcome=outcome, runs=runs, sha=sha, branch=branch)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            message = safe_error(error)
+        # A crash after queueing but before marking reported is ambiguous. Never
+        # recover that state automatically and risk duplicate user notifications.
+        receipt.save(state="delivering")
+        deliver(session_id, message, cwd)
+        receipt.save(state="reported", message=message)
     return 0
+
+
+def safe_error(error: Exception) -> str:
+    # Exception strings can include URLs with embedded credentials or command
+    # arguments. Report the failure category, never that untrusted text.
+    return ("[CI watcher] Could not watch Forgejo CI after the push "
+            f"({type(error).__name__}); inspect the hook configuration and Forgejo access.")
 
 
 if __name__ == "__main__":

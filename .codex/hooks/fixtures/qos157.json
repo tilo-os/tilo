@@ -11,7 +11,7 @@
     "content": [
       {
         "type": "text",
-        "text": "completed"
+        "text": "{\"exit_code\": 0, \"output\": \"push completed\", \"wall_time_seconds\": 1}"
       }
     ]
   }

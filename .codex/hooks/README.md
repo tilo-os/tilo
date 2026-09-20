@@ -10,12 +10,15 @@ calls, shell directory changes and pushes to other refs are intentionally not
 interpreted. This is a notification adapter, not a JavaScript or shell runtime.
 
 The process checks the exact HEAD against the origin branch before watching.
-An exclusive receipt in the repository's common Git directory under
+A nonblocking kernel-held lock in the repository's common Git directory under
 `codex-ci-watch/` deduplicates the session/commit across repository and global
 hooks. Receipts retain the intended task, worktree, commit and reported result.
-They contain no credentials. A crashed watcher is not silently restarted: inspect
-the recorded process state and CI before removing its receipt. Never delete a
-receipt merely because observation timed out.
+They contain no credentials. A later matching invocation can recover a crashed
+watcher only after obtaining its released kernel lock, only before delivery began,
+and for at most three attempts. It retains the original discovery timestamp.
+Elapsed time alone never permits takeover. Crashes during delivery remain
+ambiguous and need inspection; they are not retried automatically. Corrupt or
+completed receipts also cannot trigger automatic duplicate messages.
 
 ## Installation scope
 
@@ -25,7 +28,8 @@ In particular, the observed Windows user's global hooks configuration was empty;
 the infra push had no local hook. No global hook has been enabled by this change.
 
 For cross-repository coverage, install a reviewed, fixed copy of `watch_ci.py`
-and `push_event.py` together outside mutable checkouts, and add one global
+and its `push_event.py` and `watch_receipt.py` modules outside mutable checkouts,
+and add one global
 `PostToolUse` entry using the matcher in the repository configuration. Its command
 must use the installed Python executable and an absolute path to that reviewed
 copy. Do not resolve the script from an untrusted repository in a global hook.

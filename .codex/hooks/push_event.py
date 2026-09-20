@@ -8,6 +8,41 @@ import shlex
 from pathlib import Path, PureWindowsPath
 
 
+def completed_successfully(response: object) -> bool:
+    """Only a terminal command result proves success, never wrapper completion."""
+    results = []
+
+    def collect(value: object, depth: int = 0) -> bool:
+        if depth > 4:
+            return False
+        if isinstance(value, str):
+            if len(value) > 1_000_000:
+                return False
+            try:
+                return collect(json.loads(value), depth + 1)
+            except ValueError:
+                return False
+        if not isinstance(value, dict):
+            return False
+        if value.get("isError") or value.get("is_error") or value.get("session_id") or value.get("cell_id"):
+            return False
+        if "exit_code" in value or "exitCode" in value:
+            code = value.get("exit_code", value.get("exitCode"))
+            if type(code) is not int or code != 0:
+                return False
+            results.append(value)
+            return True
+        if value == {}:  # A literal apply_patch result preceding the command.
+            return True
+        content = value.get("content")
+        if not isinstance(content, list) or not content:
+            return False
+        return all(isinstance(item, dict) and item.get("type") == "text"
+                   and collect(item.get("text"), depth + 1) for item in content)
+
+    return collect(response) and len(results) == 1
+
+
 def literal_call(code: str) -> dict | None:
     """Accept one literal exec_command call and its ordinary output wrapper only.
 
@@ -131,14 +166,7 @@ def push_target(event: dict) -> tuple[Path, list[str]] | None:
     cwd = data.get("workdir", event.get("cwd"))
     if not isinstance(command, str) or not isinstance(cwd, str) or not (Path(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute()):
         return None
-    response = event.get("tool_response")
-    if isinstance(response, dict):
-        if response.get("isError") or response.get("is_error") or response.get("session_id"):
-            return None
-        code = response.get("exit_code", response.get("exitCode"))
-        if code is not None and code != 0:
-            return None
-    elif not isinstance(response, str):
+    if not completed_successfully(event.get("tool_response")):
         return None
     arguments = push_arguments(command)
     return (Path(cwd), arguments) if arguments is not None else None
