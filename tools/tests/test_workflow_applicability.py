@@ -308,7 +308,7 @@ jobs:
             text = (ROOT/'.github/workflows'/name).read_text(encoding='utf-8')
             gate_job = job(text, '  applicability:')
             self.assertIn("if: ${{ github.event_name == 'pull_request' }}", gate_job)
-            self.assertIn('runs-on: ubuntu-24.04', gate_job)
+            self.assertIn('runs-on: blacksmith-4vcpu-ubuntu-2404', gate_job)
             self.assertIn('timeout-minutes: 5', gate_job)
             self.assertNotIn('    container:', gate_job)
             self.assertIn('fetch-depth: 2', gate_job)

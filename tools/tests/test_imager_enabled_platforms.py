@@ -54,12 +54,12 @@ class EnabledImagerPlatforms(unittest.TestCase):
             self.assertNotIn("imager-macos", block)
         install = section(self.workflow, "homebrew-install-test", 2)
         self.assertNotIn("package_kind: cask", install)
-        self.assertIn("runner: ubuntu-24.04", install)
-        self.assertIn("runner: ubuntu-24.04-arm", install)
+        self.assertEqual(re.findall(r"runner: (\S+)", install),
+                         ["blacksmith-4vcpu-ubuntu-2404", "blacksmith-4vcpu-ubuntu-2404-arm"])
         deferred = section(self.workflow, "homebrew-macos-install-test", 2)
         self.assertIn("    if: ${{ false }}", deferred)
-        self.assertIn("runner: macos-15-intel", deferred)
-        self.assertIn("runner: macos-15", deferred)
+        self.assertEqual(re.findall(r"runner: (\S+)", deferred),
+                         ["blacksmith-6vcpu-macos-15", "blacksmith-6vcpu-macos-15"])
         homebrew = section(self.workflow, "homebrew", 2)
         self.assertIn('TILO_IMAGER_MACOS_ENABLED: "0"', homebrew)
         for job in ("homebrew", "winget", "site-downloads"):
