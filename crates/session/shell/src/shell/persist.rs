@@ -384,8 +384,12 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
                         // "Not installed" even though a fresh palette launch
                         // worked. Unknown foreign windows deliberately retain
                         // their announced identity.
-                        let durable_app_id = crate::shell::host_apps::app_for_window_id(app_id)
-                            .map_or_else(|| app_id.clone(), |app| app.desktop_id);
+                        let durable_app_id = crate::shell::launcher::launch_key_for_app_id(app_id)
+                            .or_else(|| {
+                                crate::shell::host_apps::app_for_window_id(app_id)
+                                    .map(|app| app.desktop_id)
+                            })
+                            .unwrap_or_else(|| app_id.clone());
                         tab.tile = TileContent::LocalApp {
                             app_id: durable_app_id,
                             label: tab.title.clone(),
@@ -896,7 +900,7 @@ mod tests {
         std::fs::create_dir_all(&applications).expect("applications directory");
         std::fs::write(
             applications.join("rygel-preferences.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nStartupWMClass=org.gnome.Rygel.Preferences\n",
+            "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nNotShowIn=GNOME;\n",
         )
         .expect("desktop entry");
         let previous_data_home = std::env::var_os("XDG_DATA_HOME");
@@ -904,6 +908,16 @@ mod tests {
         // tests out until the original value is restored below.
         unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
         crate::shell::host_apps::invalidate_cache();
+        crate::shell::launcher::clear_launched_for_test();
+        let app = crate::shell::host_apps::find("rygel-preferences")
+            .expect("Rygel desktop entry should scan");
+        let mut launch_identities = app.window_identities.clone();
+        launch_identities.push("org.gnome.Rygel.Preferences".into());
+        crate::shell::launcher::remember_launch_named(
+            &app.desktop_id,
+            &launch_identities,
+            &app.name,
+        );
 
         let dir = tempfile::tempdir().expect("state directory");
         let path = dir.path().join("state.json");
@@ -942,6 +956,7 @@ mod tests {
         );
 
         crate::shell::host_apps::invalidate_cache();
+        crate::shell::launcher::clear_launched_for_test();
         unsafe {
             if let Some(previous) = previous_data_home {
                 std::env::set_var("XDG_DATA_HOME", previous);
