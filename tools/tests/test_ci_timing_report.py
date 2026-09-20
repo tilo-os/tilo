@@ -77,6 +77,36 @@ class TimingTests(unittest.TestCase):
         self.assertIsNone(timing.elapsed("2026-09-18T21:00:00Z", "1970-01-01T00:00:00Z"))
         self.assertIn("unknown", timing.human_summary(timing.report({"runs": [{"id": 1}]})))
 
+    def test_named_jobs_are_compared_without_inventing_missing_values(self):
+        evidence = {"runs": [
+            {"id": 10, "created": "2026-09-18T21:00:00Z", "started": "2026-09-18T21:00:10Z",
+             "stopped": "2026-09-18T21:01:10Z", "jobs": [
+                 {"id": 1, "name": "quality", "created_at": "2026-09-18T21:00:00Z",
+                  "started_at": "2026-09-18T21:00:10Z"},
+                 {"id": 2, "name": "removed"}]},
+            {"id": 11, "created": "2026-09-18T22:00:00Z", "started": "2026-09-18T22:00:02Z",
+             "stopped": "2026-09-18T22:00:42Z", "jobs": [
+                 {"id": 3, "name": "quality", "created_at": "2026-09-18T22:00:00Z",
+                  "started_at": "2026-09-18T22:00:02Z"},
+                 {"id": 4, "name": "added"}]},
+        ]}
+        result = timing.report(evidence)
+        result["comparison"] = timing.comparison(result)
+        self.assertEqual(result["comparison"]["queue_seconds_delta"], -8)
+        self.assertEqual(result["comparison"]["wall_seconds_delta"], -20)
+        self.assertEqual(result["comparison"]["jobs"], [{
+            "name": "quality", "queue_seconds_delta": -8,
+            "runner_to_create_seconds_delta": None,
+            "runner_to_finish_seconds_delta": None,
+        }])
+        summary = timing.human_summary(result)
+        self.assertIn("Job quality (1)", summary)
+        self.assertIn("Change 10→11: queue -8.000s; wall -20.000s", summary)
+
+    def test_comparison_requires_exactly_two_runs(self):
+        with self.assertRaisesRegex(ValueError, "exactly two"):
+            timing.comparison({"runs": [{"id": 1, "jobs": []}]})
+
 
 if __name__ == "__main__":
     unittest.main()
