@@ -16,6 +16,7 @@
 //! stranger keeps the same colour across sessions.
 
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use crate::widget::history::HistoryAuthor;
