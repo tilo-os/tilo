@@ -756,10 +756,17 @@ fn default_demo_tabs(
         RuntimeTile::App(Box::new(editor)),
     ));
 
-    tabs.push(RuntimeTab::new(
-        "Browser",
-        RuntimeTile::App(Box::new(BrowserWidget::new())),
-    ));
+    let browser = match BrowserWidget::try_new() {
+        Ok(widget) => RuntimeTile::App(Box::new(widget)),
+        Err(error) => {
+            tracing::warn!("Browser unavailable: {error}");
+            RuntimeTile::Stub {
+                kind: UiKind::Browser,
+                label: format!("Browser unavailable: {error}"),
+            }
+        }
+    };
+    tabs.push(RuntimeTab::new("Browser", browser));
 
     DemoTabs {
         tabs,
@@ -964,7 +971,9 @@ fn try_to_ui_tile_for_tab(
                 };
                 UiTile::App(Box::new(widget))
             }
-            ShellKind::Browser => UiTile::App(Box::new(BrowserWidget::new())),
+            ShellKind::Browser => UiTile::App(Box::new(
+                BrowserWidget::try_new().map_err(hosted_inputs::HostedTileError::Browser)?,
+            )),
             // Each opens on an empty document — prose the shell wrote would
             // be indistinguishable from prose the user wrote.
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
