@@ -87,10 +87,10 @@ on:
 
 concurrency:
   # Each broker runner has its own Kata guest kernel, DinD storage and FUSE
-  # device. Keep iterations of one PR/ref ordered without blocking unrelated
-  # work; networked fixtures use distinct identities for each execution.
-  group: fs-fuse-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: false
+  # device. Replace superseded heavy PR runs, but keep manual and scheduled
+  # validation separate and uncancelled. Check/lint use their own commit groups.
+  group: fs-fuse-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_HOME: /cargo-home
