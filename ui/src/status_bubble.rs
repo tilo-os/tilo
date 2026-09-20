@@ -122,9 +122,13 @@ pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64
     // `TextRenderer` applies the user's text scale to metrics, so the pill
     // geometry must use the same effective font size.  Otherwise at 200% the
     // glyphs extend through the lower edge of a 30px bubble.
-    let scaled_text_size = f64::from(text_size) * f64::from(tr.text_scale());
-    let h = (scaled_text_size + 16.0).max(30.0);
+    let h = pill_height(text_size, tr.text_scale());
     (w, h)
+}
+
+/// Height shared by layout reservations and the rendered status pill.
+pub fn pill_height(text_size: f32, text_scale: f32) -> f64 {
+    (f64::from(text_size) * f64::from(text_scale) + 16.0).max(30.0)
 }
 
 /// The caller sets opacity by wrapping this in a `scene.push_layer(...

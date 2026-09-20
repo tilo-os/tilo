@@ -32,6 +32,11 @@ use crate::storage;
 /// size that shows the sidebar and a full page.
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 720);
 
+const MULTILINE_FIRST: &str =
+    "Let's go. Hi this is ada speaking. Why does pressing Enter not work?";
+const MULTILINE_SECOND: &str = "This second paragraph should wrap naturally while I keep typing, and every line should remain visible below the first paragraph.";
+const MULTILINE_CONTINUATION: &str = "This continues the same paragraph after Shift+Enter, with enough text to wrap onto another visible line.";
+
 /// Parse a `WxH` string like `800x600` into a `(u32, u32)` viewport.
 pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
     let (w, h) = s.split_once('x').or_else(|| s.split_once('X'))?;
@@ -45,10 +50,11 @@ pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
     clippy::too_many_lines,
     reason = "one visual fixture keeps its mutually linked page corpus readable in one place"
 )]
-fn seed_sample_workspace(
+pub(crate) fn seed_sample_workspace(
     root: &Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    storage::ensure_layout(root)?;
     let mut ws = Workspace::new();
 
     let inbox = ws.create_page(None);
@@ -138,7 +144,7 @@ Things worth coming back to.
         (
             projects,
             "\
-Active work, one page each.
+Active work, one note each.
 
 - [[Launch checklist]]
 ",
@@ -196,7 +202,23 @@ f(x) = cases(x^2 & "if" x >= 0, -x & "otherwise")
     for (id, body) in bodies {
         storage::write_page_body(root, id, body)?;
     }
-    if scenario == Some("image") {
+    if scenario == Some("adjacent_code_fences") {
+        storage::write_page_body(
+            root,
+            launch,
+            "## Two separate examples\n\nEach Python example keeps its own code block.\n\n```python\nmessage = \"First example\"\nprint(message)\n```\n\n```python\nmessage = \"Second example\"\nprint(message.upper())\n```\n\nContinue writing below either block with Ctrl+Enter.\n",
+        )?;
+    }
+    if scenario == Some("scrolled") {
+        let mut body = storage::read_page_body(root, launch)?;
+        for index in 1..=20 {
+            body.push_str(&format!(
+                "\nFollow-up item {index}: keep the document readable while scrolling.\n\n"
+            ));
+        }
+        storage::write_page_body(root, launch, &body)?;
+    }
+    if matches!(scenario, Some("image" | "image_edit")) {
         // Reuse a checked-in PNG fixture to exercise the real decoder and
         // workspace-relative loader without network access.
         let fixture = include_bytes!("../../settings/shots/settings.png");
@@ -297,6 +319,10 @@ pub fn render_to_path(
     scenario: Option<&str>,
     text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if crate::capture::supports(scenario) {
+        return crate::capture::render_to_path(viewport, out, scenario, text_scale)
+            .map_err(Into::into);
+    }
     // Hermetic workspace root — unique per process so parallel shots
     // don't collide, cleaned up on exit.
     let root: PathBuf = std::env::temp_dir().join(format!("notes-shots-{}", uuid::Uuid::new_v4()));
@@ -306,6 +332,12 @@ pub fn render_to_path(
     }
 
     let mut app = NotesApp::spawn(root.clone())?;
+    // Search needs canonical bodies before querying the provider. Other
+    // scenarios install isolated editor fixtures below; prematurely adopting
+    // the legacy document would replace those fixtures on their next sync.
+    if scenario == Some("fulltext_search") {
+        app.bypass_seed_grace_for_test();
+    }
 
     let (w, h) = viewport;
     // `TILO_SHOTS_THEME=light|high-contrast` renders the shot under that theme
@@ -341,9 +373,16 @@ pub fn render_to_path(
     // Run the layout cycle until the responsive structure settles, keeping
     // the final taffy tree so a scenario can dispatch events against a live
     // layout (the same tree the frame draws from).
-    let kept = settle_layout(&mut app, &theme, &mut text_renderer, w, h)?;
+    settle_layout(&mut app, &theme, &mut text_renderer, w, h)?;
 
-    drive_scenario(&mut app, &mut state, &kept.0, kept.1, scenario);
+    let scenario_result = drive_scenario(
+        &mut app,
+        &mut state,
+        &theme,
+        &mut text_renderer,
+        viewport,
+        scenario,
+    );
     if scenario == Some("transclusion") {
         app.sync(&mut state.doc, &state.root);
     }
@@ -381,7 +420,8 @@ pub fn render_to_path(
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, Color::from_rgba8(15, 17, 21, 255), out);
     let _ = std::fs::remove_dir_all(&root);
-    Ok(())
+    // Keep the failed state as visual evidence, while still failing the check.
+    scenario_result
 }
 
 /// Build a `PresenceCtx` with two simulated collaborators for the
@@ -499,6 +539,7 @@ fn named_key_event(k: winit::keyboard::NamedKey) -> WindowEvent {
 }
 
 fn dispatch_drag(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    reveal_sidebar(app, send);
     // Grab a lower row and drag it up between the first two rows — the
     // ghost floats at the cursor and the list reflows a gap.
     if let (Some(from), Some(dst)) = (
@@ -536,6 +577,7 @@ fn dispatch_block_drag(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, 
 }
 
 fn dispatch_menu(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    reveal_sidebar(app, send);
     if let Some(row) = app.sidebar_row_center_for_test(1) {
         send(app, &cursor_event(row.x, row.y));
         send(app, &mouse_event(ElementState::Pressed, MouseButton::Right));
@@ -543,6 +585,7 @@ fn dispatch_menu(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &Windo
 }
 
 fn dispatch_rename(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    reveal_sidebar(app, send);
     // Double-click a page row to open the in-place rename field —
     // plain-chrome, sitting exactly over the row's label.
     if let Some(row) = app.sidebar_row_center_for_test(1) {
@@ -554,6 +597,7 @@ fn dispatch_rename(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &Win
 }
 
 fn dispatch_rename_commit(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    reveal_sidebar(app, send);
     // Open the rename field, edit it, then click well outside it —
     // focus-out commits the edit and closes the field.
     if let Some(row) = app.sidebar_row_center_for_test(1) {
@@ -568,6 +612,7 @@ fn dispatch_rename_commit(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesAp
 }
 
 fn dispatch_slash_applied(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    reveal_sidebar(app, send);
     // Fresh page → open the block menu → filter to "Heading 1" → click that row.
     let btn = app.sidebar_new_page_btn_center_for_test();
     send(app, &cursor_event(btn.x, btn.y));
@@ -575,11 +620,10 @@ fn dispatch_slash_applied(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesAp
     for s in ["/", "h", "1"] {
         send(app, &char_key_event(s));
     }
-    let (cx, cy) = {
-        let rect = app.main_panel_mut().editor().slash_menu().rect();
-        (rect.center().x, rect.y0 + 14.0)
+    let Some(row) = app.main_panel_mut().editor().slash_menu().row_rect(0) else {
+        return;
     };
-    send(app, &cursor_event(cx, cy));
+    send(app, &cursor_event(row.center().x, row.center().y));
     send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
     for s in ["O", "v", "e", "r", "v", "i", "e", "w"] {
         send(app, &char_key_event(s));
@@ -587,6 +631,7 @@ fn dispatch_slash_applied(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesAp
 }
 
 fn dispatch_heading(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    reveal_sidebar(app, send);
     // Fresh page → type a `# ` markdown shortcut: the paragraph promotes
     // to an H1 and the prefix is stripped as the space lands.
     let btn = app.sidebar_new_page_btn_center_for_test();
@@ -614,6 +659,7 @@ fn dispatch_title_edit(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, 
 }
 
 fn dispatch_recipes(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    reveal_sidebar(app, send);
     // Select the "Recipes" row (index 4) so the shot shows the numbered
     // "Method" list rendered with its ordinals.
     if let Some(row) = app.sidebar_row_center_for_test(4) {
@@ -623,6 +669,7 @@ fn dispatch_recipes(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &Wi
 }
 
 fn dispatch_formula(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    reveal_sidebar(app, send);
     // Select the formula notebook row (index 5) so the shot shows TeX and
     // Typst previews.
     if let Some(row) = app.sidebar_row_center_for_test(5) {
@@ -635,6 +682,7 @@ fn dispatch_transclusion(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp
     // Hydrate the embedded legacy fixture page through the production open
     // path, then return to the source page so its live preview has real text.
     for index in [3, 2] {
+        reveal_sidebar(app, send);
         if let Some(row) = app.sidebar_row_center_for_test(index) {
             send(app, &cursor_event(row.x, row.y));
             send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
@@ -646,6 +694,7 @@ fn dispatch_transclusion(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp
 /// `send` to dispatch each synthetic [`WindowEvent`] into `app`.
 fn dispatch_scenario(
     app: &mut NotesApp,
+    theme: &Theme,
     send: &mut impl FnMut(&mut NotesApp, &WindowEvent),
     scenario: Option<&str>,
 ) {
@@ -653,13 +702,185 @@ fn dispatch_scenario(
         Some("drawer") => app.open_drawer_for_shots(),
         Some("drag") => dispatch_drag(app, send),
         Some("block_drag") => dispatch_block_drag(app, send),
+        Some("block_type_menu") => {
+            let first_id = app
+                .main_panel_mut()
+                .editor()
+                .blocks()
+                .first()
+                .map(|block| block.id.clone());
+            if let Some(first_id) = first_id {
+                let target = format!("notes.block-type:{first_id}");
+                if let Some(handle) = semantic_target_rect(app.main_panel_mut().editor(), &target) {
+                    send(app, &cursor_event(handle.center().x, handle.center().y));
+                    send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+                    send(app, &mouse_event(ElementState::Released, MouseButton::Left));
+                }
+            }
+        }
         Some("menu") => dispatch_menu(app, send),
+        Some("note_menu") => {
+            let title = app.main_title_center_for_test();
+            send(app, &cursor_event(title.x, title.y));
+            send(app, &mouse_event(ElementState::Pressed, MouseButton::Right));
+        }
         Some("rename") => dispatch_rename(app, send),
         Some("rename_commit") => dispatch_rename_commit(app, send),
         // The editor holds focus on load; `/` opens the block menu.
         Some("slash") => send(app, &char_key_event("/")),
         Some("slash_applied") => dispatch_slash_applied(app, send),
         Some("heading") => dispatch_heading(app, send),
+        Some("multiline_typing" | "paragraph_click") => {
+            reveal_sidebar(app, send);
+            let button = app.sidebar_new_page_btn_center_for_test();
+            send(app, &cursor_event(button.x, button.y));
+            send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+            send(app, &mouse_event(ElementState::Released, MouseButton::Left));
+            for character in MULTILINE_FIRST.chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+            send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+            for character in MULTILINE_SECOND.chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+            send(
+                app,
+                &WindowEvent::ModifiersChanged(Modifiers::from(
+                    winit::keyboard::ModifiersState::SHIFT,
+                )),
+            );
+            send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+            send(app, &WindowEvent::ModifiersChanged(Modifiers::default()));
+            for character in MULTILINE_CONTINUATION.chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+            if scenario == Some("paragraph_click") {
+                for (index, offset) in [(0, 10), (1, 15), (0, 45)] {
+                    let caret = app.main_panel_mut().editor().blocks()[index]
+                        .line
+                        .caret_rect(theme, offset);
+                    send(app, &cursor_event(caret.x0 + 0.1, caret.center().y));
+                    send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+                    send(app, &mouse_event(ElementState::Released, MouseButton::Left));
+                }
+            }
+        }
+        Some("rich_outline") => {
+            app.main_panel_mut().editor_mut().set_blocks(crate::markdown::specs_to_blocks(&crate::markdown::parse(
+                "1. Prepare the release\n\n  Keep the explanation with its list item. Paragraphs can wrap here without losing their place in the outline.\n\n  ```python\n  if ready:\n      publish()\n  ```\n\n  - [x] Check the writing experience\n    1. Review keyboard navigation\n    2. Read the screenshots critically\n\n2. Share the finished note\n",
+            )));
+        }
+        Some("mixed_outline") => {
+            app.main_panel_mut().editor_mut().set_blocks(vec![
+                ui::widget::Block::heading(1, "A release, step by step"),
+                ui::widget::Block::numbered(0, "Prepare the release"),
+                ui::widget::Block::bullet(1, "Check the writing experience"),
+                ui::widget::Block::checklist(2, true, "Long paragraphs wrap without clipping"),
+                ui::widget::Block::checklist(2, false, "Review keyboard navigation\nKeep this explanation inside the same checklist item."),
+                ui::widget::Block::numbered(1, "Ask for a second review"),
+                ui::widget::Block::bullet(2, "Read the screenshots critically"),
+                ui::widget::Block::numbered(1, "Address the findings"),
+                ui::widget::Block::numbered(0, "Share the finished note"),
+            ]);
+        }
+        Some("typed_lists") => {
+            reveal_sidebar(app, send);
+            let button = app.sidebar_new_page_btn_center_for_test();
+            send(app, &cursor_event(button.x, button.y));
+            send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+            for (index, line) in [
+                "- Gather ideas",
+                "Write a first draft",
+                "",
+                "1. Review the draft",
+                "Share with the team",
+                "",
+                "- [ ] Follow up tomorrow",
+            ]
+            .iter()
+            .enumerate()
+            {
+                if index > 0 {
+                    send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+                }
+                for character in line.chars() {
+                    send(app, &char_key_event(&character.to_string()));
+                }
+            }
+        }
+        Some("fenced_code" | "fenced_code_opening") => {
+            reveal_sidebar(app, send);
+            let button = app.sidebar_new_page_btn_center_for_test();
+            send(app, &cursor_event(button.x, button.y));
+            send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+            for character in "```python".chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+            if scenario == Some("fenced_code") {
+                for line in [
+                    "message = \"Hello from a Python code block\"",
+                    "print(message)",
+                    "for value in range(3):",
+                    "    print(value)",
+                    "```",
+                    "A note below the code.",
+                ] {
+                    send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+                    for character in line.chars() {
+                        send(app, &char_key_event(&character.to_string()));
+                    }
+                }
+            }
+        }
+        Some("code_keyboard" | "code_keyboard_active" | "code_group_drag" | "code_group_drop") => {
+            reveal_sidebar(app, send);
+            let button = app.sidebar_new_page_btn_center_for_test();
+            send(app, &cursor_event(button.x, button.y));
+            send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+            for character in "```python".chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+            send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+            for character in "if ready:".chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+            send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+            send(app, &named_key_event(winit::keyboard::NamedKey::Tab));
+            for character in "print('Ready')".chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+            send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+            for character in "print('Still code')".chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+            if scenario != Some("code_keyboard_active") {
+                send(
+                    app,
+                    &WindowEvent::ModifiersChanged(Modifiers::from(
+                        winit::keyboard::ModifiersState::CONTROL,
+                    )),
+                );
+                send(app, &named_key_event(winit::keyboard::NamedKey::Enter));
+                send(app, &WindowEvent::ModifiersChanged(Modifiers::default()));
+                for character in "Back to writing, without touching the mouse.".chars() {
+                    send(app, &char_key_event(&character.to_string()));
+                }
+            }
+            if matches!(scenario, Some("code_group_drag" | "code_group_drop")) {
+                let editor = app.main_panel_mut().editor();
+                let first_id = editor.blocks()[0].id.clone();
+                let handle =
+                    semantic_target_rect(editor, &format!("notes.block-move:{first_id}:down"))
+                        .expect("code movement handle");
+                let destination = editor.blocks()[3].line.get_rect().center();
+                send(app, &cursor_event(handle.center().x, handle.center().y));
+                send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+                send(app, &cursor_event(handle.center().x + 48.0, destination.y));
+                if scenario == Some("code_group_drop") {
+                    send(app, &mouse_event(ElementState::Released, MouseButton::Left));
+                }
+            }
+        }
         Some("quote") => {
             app.main_panel_mut().editor_mut().set_blocks(vec![
                 ui::widget::Block::heading(2, "A thought worth keeping"),
@@ -670,6 +891,30 @@ fn dispatch_scenario(
                     "Quotes remain editable, linkable, draggable blocks—not pasted decoration.",
                 ),
             ]);
+        }
+        Some("find") => {
+            app.main_panel_mut().editor_mut().set_blocks(vec![
+                ui::widget::Block::heading(1, "Migration plan"),
+                ui::widget::Block::paragraph(
+                    "The workspace migration keeps every linked decision close to the work.",
+                ),
+                ui::widget::Block::checklist(0, true, "Inventory the current workspace"),
+                ui::widget::Block::checklist(0, false, "Review the migration guide"),
+                ui::widget::Block::quote(
+                    "A careful migration should feel boring, reversible, and easy to verify.",
+                ),
+            ]);
+            send(
+                app,
+                &WindowEvent::ModifiersChanged(Modifiers::from(
+                    winit::keyboard::ModifiersState::CONTROL,
+                )),
+            );
+            send(app, &char_key_event("f"));
+            send(app, &WindowEvent::ModifiersChanged(Modifiers::default()));
+            for character in "migration".chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
         }
         Some("title_edit") => dispatch_title_edit(app, send),
         Some("recipes") => dispatch_recipes(app, send),
@@ -695,29 +940,84 @@ fn dispatch_scenario(
                 ),
             ]);
         }
-        Some("table") => {
+        Some("table") | Some("table_cell_edit") => {
             app.main_panel_mut().editor_mut().set_blocks(vec![
-                ui::widget::Block::heading(1, "Tables without leaving the page"),
+                ui::widget::Block::heading(1, "Tables without leaving the note"),
                 ui::widget::Block::paragraph(
-                    "Edit familiar Markdown source while the structured, themed table updates underneath.",
+                    "Track owners and progress together.",
                 ),
                 ui::widget::Block::table(
                     "| Project | Owner | Status |\n| :--- | :--- | ---: |\n| Search | Mina | Shipped |\n| Import | Jules | In review |\n| Mobile polish | Sam | Next |",
-                    false,
+                    true,
                 ),
             ]);
+            if scenario == Some("table_cell_edit") {
+                let center = app.main_panel_mut().get_rect().center();
+                send(app, &cursor_event(center.x, center.y));
+                let target = app
+                    .main_panel_mut()
+                    .editor()
+                    .blocks()
+                    .last()
+                    .map(|block| format!("notes.table-cell:{}:1:1", block.id));
+                if let Some(target) = target
+                    && let Some(rect) = semantic_target_rect(app.main_panel_mut().editor(), &target)
+                {
+                    send(app, &cursor_event(rect.center().x, rect.center().y));
+                    send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+                    send(app, &mouse_event(ElementState::Released, MouseButton::Left));
+                    send(app, &named_key_event(winit::keyboard::NamedKey::End));
+                    send(app, &char_key_event(" Chen"));
+                }
+            }
         }
-        Some("image") => {
+        Some("table_large") | Some("table_large_scrolled") => {
+            let header = (1..=10)
+                .map(|column| format!("Field {column}"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let separator = ["---"; 10].join(" | ");
+            let mut source = format!("| {header} |\n| {separator} |\n");
+            for row in 1..=16 {
+                let cells = (1..=10).map(|column| {
+                    if row == 1 && column == 1 {
+                        "A long cell with important details that must remain readable on a narrow display".to_string()
+                    } else {
+                        format!("Row {row}, field {column}")
+                    }
+                }).collect::<Vec<_>>().join(" | ");
+                source.push_str(&format!("| {cells} |\n"));
+            }
+            app.main_panel_mut().editor_mut().set_blocks(vec![
+                ui::widget::Block::heading(1, "Every detail belongs in the note"),
+                ui::widget::Block::table(&source, true),
+            ]);
+            if scenario == Some("table_large_scrolled") {
+                let center = app.main_panel_mut().get_rect().center();
+                send(app, &cursor_event(center.x, center.y));
+                send(app, &scroll_event(-1000.0));
+            }
+        }
+        Some("image") | Some("image_edit") => {
             app.main_panel_mut().editor_mut().set_blocks(vec![
                 ui::widget::Block::heading(1, "Images stay part of the note"),
                 ui::widget::Block::paragraph(
                     "Workspace-relative images load asynchronously without blocking typing or escaping the collaboration sandbox.",
                 ),
-                ui::widget::Block::paragraph("![A warm red square](image.png)"),
+                ui::widget::Block::paragraph("![Settings external accounts](image.png)"),
             ]);
             assert!(app.main_panel_mut().editor_mut().prewarm_images_for_shots());
+            if scenario == Some("image_edit") {
+                let center = app.main_panel_mut().get_rect().center();
+                send(app, &cursor_event(center.x, center.y));
+            }
         }
         Some("shortcuts") => app.shortcuts_mut().set_visible(true),
+        Some("shortcuts_bottom") => {
+            app.shortcuts_mut().set_visible(true);
+            send(app, &cursor_event(0.0, 0.0));
+            send(app, &named_key_event(winit::keyboard::NamedKey::End));
+        }
         Some("tag_palette") => {
             app.palette_mut().set_anchor(Point::new(400.0, 80.0));
             app.palette_mut().set_visible(true);
@@ -725,7 +1025,29 @@ fn dispatch_scenario(
                 send(app, &char_key_event(s));
             }
         }
+        Some("fulltext_search") => {
+            send(
+                app,
+                &WindowEvent::ModifiersChanged(Modifiers::from(
+                    winit::keyboard::ModifiersState::CONTROL,
+                )),
+            );
+            send(app, &char_key_event("k"));
+            send(app, &WindowEvent::ModifiersChanged(Modifiers::default()));
+            for character in "migration".chars() {
+                send(app, &char_key_event(&character.to_string()));
+            }
+        }
         Some("scrolled") => {
+            let first = app
+                .main_panel_mut()
+                .editor()
+                .blocks()
+                .first()
+                .map(|block| block.line.get_rect());
+            if let Some(rect) = first {
+                send(app, &cursor_event(rect.center().x, rect.center().y));
+            }
             for _ in 0..8 {
                 send(app, &scroll_event(-3.0));
             }
@@ -761,32 +1083,418 @@ fn reduced_motion_requested() -> bool {
         })
 }
 
-/// Dispatch the events that drive `app` into the requested interaction
-/// state, against the settled `taffy`/`child` layout, before the frame is
-/// drawn. Produces output identical to the live binary reaching the same
-/// state through real input.
+/// Reveal navigation through its real toggle before targeting sidebar controls.
+fn reveal_sidebar(app: &mut NotesApp, send: &mut impl FnMut(&mut NotesApp, &WindowEvent)) {
+    if app.built_narrow_for_test() && !app.drawer_open_for_test() {
+        let toggle = app.menu_btn_center_for_test();
+        send(app, &cursor_event(toggle.x, toggle.y));
+        send(app, &mouse_event(ElementState::Pressed, MouseButton::Left));
+        send(app, &mouse_event(ElementState::Released, MouseButton::Left));
+    }
+}
+
+fn semantic_target_rect(widget: &dyn Widget, target: &str) -> Option<Rect> {
+    semantic_target(widget, target)
+        .and_then(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect))
+}
+
+fn semantic_target(widget: &dyn Widget, target: &str) -> Option<ui::a11y::AccessNode> {
+    fn find(node: ui::a11y::AccessNode, target: &str) -> Option<ui::a11y::AccessNode> {
+        if node.action_target.as_deref() == Some(target) {
+            return Some(node);
+        }
+        node.children
+            .into_iter()
+            .find_map(|child| find(child, target))
+    }
+    widget.accessibility().and_then(|node| find(node, target))
+}
+
+/// Retain intrinsic-size caches between input events, just like the live host.
+/// Rebuilding every frame conceals stale wrapped-text measurements.
+struct RetainedScenarioLayout {
+    tree: TaffyTree<()>,
+    nodes: HashMap<NodeId, *mut dyn Widget>,
+    bindings: ui::bound_dispatch::BoundNodeMap,
+    child: NodeId,
+    root: NodeId,
+}
+
+fn settle_scenario_layout(
+    cached: &mut Option<RetainedScenarioLayout>,
+    app: &mut NotesApp,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    viewport: (u32, u32),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let available = Size {
+        width: AvailableSpace::Definite(num::f32_of_u32(viewport.0)),
+        height: AvailableSpace::Definite(num::f32_of_u32(viewport.1)),
+    };
+    for _ in 0..8 {
+        if app.take_structure_dirty() {
+            *cached = None;
+        }
+        if cached.is_none() {
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let child = app.build_layout(&mut tree, theme, &mut nodes);
+            let root = tree.new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(num::f32_of_u32(viewport.0)),
+                        height: Dimension::length(num::f32_of_u32(viewport.1)),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )?;
+            let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+            // SAFETY: app is exclusively borrowed and stable throughout this
+            // scenario; structural invalidation discards these maps first.
+            unsafe { bindings.rebuild(app, &tree, root, &nodes) };
+            *cached = Some(RetainedScenarioLayout {
+                tree,
+                nodes,
+                bindings,
+                child,
+                root,
+            });
+        }
+        let layout = cached.as_mut().ok_or("scenario layout missing")?;
+        // SAFETY: the maps were built together and no input is dispatched
+        // between structure validation and this solve.
+        unsafe {
+            ui::widget::compute_widget_layout(
+                &mut layout.tree,
+                layout.root,
+                available,
+                &layout.nodes,
+                &layout.bindings,
+                text,
+            )?;
+        }
+        app.apply_layout(&layout.tree, layout.child, Point::ORIGIN);
+        if !app.take_structure_dirty() {
+            return Ok(());
+        }
+        *cached = None;
+    }
+    Err("retained scenario layout did not settle".into())
+}
+
+/// Dispatch against retained layout and synchronize each input like the live loop.
 fn drive_scenario(
     app: &mut NotesApp,
     state: &mut ui::State,
-    taffy: &TaffyTree<()>,
-    child: NodeId,
+    theme: &Theme,
+    text_renderer: &mut TextRenderer,
+    viewport: (u32, u32),
     scenario: Option<&str>,
-) {
+) -> Result<(), Box<dyn std::error::Error>> {
+    let original_note = app.main_panel_mut().page_id();
+    let mut layout_error = None;
+    let mut modifiers = Modifiers::default();
+    let mut retained = None;
     let mut send = |app: &mut NotesApp, ev: &WindowEvent| {
-        let no_mods = Modifiers::default();
+        if layout_error.is_some() {
+            return;
+        }
+        if let Err(error) =
+            settle_scenario_layout(&mut retained, app, theme, text_renderer, viewport)
+        {
+            layout_error = Some(error);
+            return;
+        }
+        let layout = retained.as_ref().expect("settled scenario layout");
+        if let WindowEvent::ModifiersChanged(value) = ev {
+            modifiers = *value;
+        }
         let mut handled = false;
         let mut ft = None;
         app.handle_event(
             ev,
             1.0,
-            &no_mods,
+            &modifiers,
             &mut state.doc,
             &state.root,
             &mut handled,
             &mut ft,
-            child,
-            taffy,
+            layout.child,
+            &layout.tree,
+        );
+        // Real input is followed by the normal CRDT projection pass. Without
+        // it a screenshot can show another note's tags, stale caret geometry,
+        // or click the hidden sidebar using the previous viewport's layout.
+        app.sync(&mut state.doc, &state.root);
+        if let Err(error) =
+            settle_scenario_layout(&mut retained, app, theme, text_renderer, viewport)
+        {
+            layout_error = Some(error);
+            return;
+        }
+        // Retained rich controls publish their exact painted cell/button
+        // geometry during the frame. Include that real pass before the next
+        // synthetic pointer targets the accessibility tree.
+        let mut frame = Scene::new();
+        app.draw_with_presence(
+            &mut frame,
+            Affine::IDENTITY,
+            text_renderer,
+            theme,
+            &PresenceCtx::empty(),
+            &PermissionContext::permissive(),
         );
     };
-    dispatch_scenario(app, &mut send, scenario);
+    dispatch_scenario(app, theme, &mut send, scenario);
+    if let Some(error) = layout_error {
+        return Err(error);
+    }
+    if scenario == Some("image_edit") {
+        // Exercise the exported semantic action explicitly. The shared
+        // button's queued host dispatch belongs to ui::App, which this
+        // offscreen NotesApp renderer does not impersonate.
+        let target = app
+            .main_panel_mut()
+            .editor()
+            .blocks()
+            .last()
+            .map(|block| format!("notes.image-edit:{}", block.id))
+            .ok_or("image editing scenario has no image block")?;
+        if !app.main_panel_mut().editor_mut().perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut state.doc,
+            &state.root,
+        ) {
+            return Err("image editing semantic action was not handled".into());
+        }
+        app.sync(&mut state.doc, &state.root);
+        let (taffy, child) = settle_layout(app, theme, text_renderer, viewport.0, viewport.1)?;
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            &named_key_event(winit::keyboard::NamedKey::End),
+            1.0,
+            &Modifiers::default(),
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            child,
+            &taffy,
+        );
+        app.sync(&mut state.doc, &state.root);
+        settle_layout(app, theme, text_renderer, viewport.0, viewport.1)?;
+    }
+    // Scenarios may replace blocks directly without sending an input event.
+    // Validate the final measured geometry, never the new blocks' zero rects.
+    settle_scenario_layout(&mut retained, app, theme, text_renderer, viewport)?;
+    let observed = match scenario {
+        Some("menu") => {
+            app.sidebar_menu_open_for_test()
+                && (!app.built_narrow_for_test() || app.drawer_open_for_test())
+        }
+        Some("note_menu") => app.note_menu_open_for_test(),
+        Some("drag") => app.sidebar_drag_active_for_test(),
+        Some("slash") => app.editor_slash_menu_visible_for_test(),
+        Some("title_edit") => app.main_title_editing_for_test(),
+        Some("fulltext_search") => {
+            let palette = app.palette_mut();
+            palette.is_visible()
+                && palette.query() == "migration"
+                && palette
+                    .highlighted()
+                    .is_some_and(|result| result.title == "Launch checklist")
+        }
+        Some("table_cell_edit") => {
+            let editor = app.main_panel_mut().editor();
+            editor.blocks().last().is_some_and(|block| {
+                semantic_target(editor, &format!("notes.table-cell:{}:1:1", block.id))
+                    .is_some_and(|cell| cell.value.as_deref() == Some("Mina Chen"))
+            })
+        }
+        Some("image_edit") => {
+            let editor = app.main_panel_mut().editor();
+            editor.blocks().last().is_some_and(|block| {
+                block.line.is_focused()
+                    && semantic_target_rect(editor, &format!("notes.image-done:{}", block.id))
+                        .is_some()
+            })
+        }
+        Some("scrolled") | Some("table_large_scrolled") => {
+            app.main_panel_mut().scroll_y_for_test() > 0.0
+        }
+        Some("typed_lists") => {
+            let blocks = app.main_panel_mut().editor().blocks();
+            blocks.len() == 5
+                && matches!(blocks[0].kind, ui::widget::BlockKind::Bullet { .. })
+                && matches!(blocks[1].kind, ui::widget::BlockKind::Bullet { .. })
+                && matches!(blocks[2].kind, ui::widget::BlockKind::Numbered { .. })
+                && matches!(blocks[3].kind, ui::widget::BlockKind::Numbered { .. })
+                && matches!(
+                    blocks[4].kind,
+                    ui::widget::BlockKind::Checklist { done: false, .. }
+                )
+                && blocks[4].text() == "Follow up tomorrow"
+        }
+        Some("multiline_typing" | "paragraph_click") => {
+            let blocks = app.main_panel_mut().editor().blocks();
+            blocks.len() == 2
+                && blocks[0].text() == MULTILINE_FIRST
+                && blocks[1].text() == format!("{MULTILINE_SECOND}\n{MULTILINE_CONTINUATION}")
+                && (scenario != Some("paragraph_click") || blocks[0].line.cursor_pos() == 45)
+                && blocks
+                    .windows(2)
+                    .all(|pair| pair[1].line.get_rect().y0 + 0.5 >= pair[0].line.get_rect().y1)
+                && blocks.iter().all(|block| {
+                    let rect = block.line.get_rect();
+                    let (_, text_height) = text_renderer.measure(
+                        block.text(),
+                        block.kind.font_size(),
+                        Some(num::f32_of_f64(rect.width())),
+                    );
+                    rect.height() + 0.5 >= f64::from(text_height)
+                })
+        }
+        Some("adjacent_code_fences") => {
+            let blocks = app.main_panel_mut().editor().blocks();
+            let code = blocks
+                .iter()
+                .filter(|block| matches!(block.kind, ui::widget::BlockKind::CodeBlock { .. }))
+                .collect::<Vec<_>>();
+            code.len() == 4
+                && code[0].same_code_group(code[1])
+                && !code[1].same_code_group(code[2])
+                && code[2].same_code_group(code[3])
+                // 28px language header + 4px background padding on
+                // each box + a visible 8px gap at normal scale.
+                && code[2].line.get_rect().y0 >= code[1].line.get_rect().y1 + 44.0
+        }
+        Some("code_group_drop") => {
+            let blocks = app.main_panel_mut().editor().blocks();
+            blocks.len() == 4
+                && blocks[0].text() == "Back to writing, without touching the mouse."
+                && blocks[1].text() == "if ready:"
+                && blocks[2].text() == "    print('Ready')"
+                && blocks[3].text() == "    print('Still code')"
+        }
+        Some("rich_outline") => {
+            let blocks = app.main_panel_mut().editor().blocks();
+            blocks.iter().map(|b| b.indent()).collect::<Vec<_>>() == [0, 1, 1, 1, 1, 2, 2, 0]
+                && matches!(blocks[2].kind, ui::widget::BlockKind::CodeBlock { .. })
+                && blocks[2].same_code_group(&blocks[3])
+                && (blocks[1].line.get_rect().x0 - blocks[0].line.get_rect().x0).abs() < 1.0
+                && blocks[5].line.get_rect().x0 > blocks[4].line.get_rect().x0
+        }
+        Some("code_keyboard" | "code_keyboard_active" | "code_group_drag") => {
+            let blocks = app.main_panel_mut().editor().blocks();
+            blocks.len()
+                == if scenario != Some("code_keyboard_active") {
+                    4
+                } else {
+                    3
+                }
+                && blocks[0].text() == "if ready:"
+                && blocks[1].text() == "    print('Ready')"
+                && blocks[2].text() == "    print('Still code')"
+                && (scenario == Some("code_keyboard_active")
+                    || matches!(blocks[3].kind, ui::widget::BlockKind::Paragraph))
+        }
+        Some("fenced_code" | "fenced_code_opening") => {
+            let blocks = app.main_panel_mut().editor().blocks();
+            blocks.first().is_some_and(|block| {
+                matches!(&block.kind,
+                ui::widget::BlockKind::CodeBlock { lang: Some(language) } if language == "python")
+            }) && if scenario == Some("fenced_code_opening") {
+                blocks.len() == 1 && blocks.first().is_some_and(|block| block.text().is_empty())
+            } else {
+                blocks.first().is_some_and(|block| {
+                    block.text() == "message = \"Hello from a Python code block\""
+                }) && blocks.last().is_some_and(|block| {
+                    matches!(block.kind, ui::widget::BlockKind::Paragraph)
+                        && block.text() == "A note below the code."
+                })
+            }
+        }
+        Some("heading") => {
+            app.main_panel_mut().page_id() != original_note
+                && app
+                    .main_panel_mut()
+                    .editor()
+                    .blocks()
+                    .first()
+                    .is_some_and(|block| block.text() == "Roadmap")
+        }
+        Some("slash_applied") => {
+            app.main_panel_mut().page_id() != original_note
+                && app
+                    .main_panel_mut()
+                    .editor()
+                    .blocks()
+                    .first()
+                    .is_some_and(|block| block.text() == "Overview")
+        }
+        _ => true,
+    };
+    if !observed {
+        let detail = match scenario {
+            Some("rich_outline") => format!(
+                "{:?}",
+                app.main_panel_mut()
+                    .editor()
+                    .blocks()
+                    .iter()
+                    .map(|block| (
+                        block.text(),
+                        block.indent(),
+                        &block.kind,
+                        block.line.get_rect()
+                    ))
+                    .collect::<Vec<_>>()
+            ),
+            Some("multiline_typing") => format!(
+                "retained rows: {:?}",
+                app.main_panel_mut()
+                    .editor()
+                    .blocks()
+                    .iter()
+                    .map(|block| {
+                        let rect = block.line.get_rect();
+                        let (_, text_height) = text_renderer.measure(
+                            block.text(),
+                            block.kind.font_size(),
+                            Some(num::f32_of_f64(rect.width())),
+                        );
+                        (block.text(), block.soft_break, rect, text_height)
+                    })
+                    .collect::<Vec<_>>()
+            ),
+            Some("fulltext_search") => {
+                let palette = app.palette_mut();
+                format!(
+                    "visible={} query={:?} result={:?}",
+                    palette.is_visible(),
+                    palette.query(),
+                    palette.highlighted().map(|result| &result.title)
+                )
+            }
+            Some("image_edit") => {
+                let editor = app.main_panel_mut().editor();
+                format!(
+                    "image={:?}",
+                    editor.blocks().last().map(|block| (
+                        block.line.is_focused(),
+                        semantic_target_rect(editor, &format!("notes.image-done:{}", block.id))
+                    ))
+                )
+            }
+            _ => String::new(),
+        };
+        return Err(format!(
+            "screenshot scenario {scenario:?} did not reach its requested state: {detail}"
+        )
+        .into());
+    }
+    Ok(())
 }

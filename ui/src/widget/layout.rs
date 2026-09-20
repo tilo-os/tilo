@@ -47,6 +47,21 @@ pub unsafe fn compute_widget_layout(
     bindings: &BoundNodeMap,
     text: &mut TextRenderer,
 ) -> Result<(), WidgetLayoutError> {
+    // Intrinsic content can change without changing a Taffy style or topology.
+    // Invalidate the measured node itself: marking only the root leaves cached
+    // descendant heights intact and clips paragraphs as they wrap while typing.
+    for &node in nodes.keys() {
+        // SAFETY: use the same admission/lifetime checks as measurement below.
+        let needs_measure = unsafe {
+            mutate_bound_node(bindings, nodes, node, |widget| {
+                widget.layout_needs_measure()
+            })
+        }
+        .unwrap_or(false);
+        if needs_measure {
+            taffy.mark_dirty(node)?;
+        }
+    }
     for _ in 0..8 {
         taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
             // SAFETY: caller owns the stable matching tree, each callback is
