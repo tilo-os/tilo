@@ -197,9 +197,14 @@ cmp "$tmp/expected" "$log"
 XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_WRITE_LOGOUT=1 \
   "$test_wrapper" --backend drm
 cat >"$tmp/expected" <<'EOF'
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
+dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
 cmp "$tmp/expected" "$log"
 request_path=$(cat "$log.request-path")

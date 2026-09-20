@@ -756,6 +756,9 @@ promote_target_uki() {
     || die "installed entry differs from signed target composefs identity"
   /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw root=tilo-auto \
     || die "target UKI lacks Tilo root discovery"
+  /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" \
+    | grep -qw 'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec' \
+    || die "target UKI lacks the signed TILO_BOOT mount contract"
   ! /usr/libexec/tilo-uki-cmdline show "$TARGET_VARIANT" | grep -qw tilo.install \
     || die "target UKI still contains the live installer marker"
   # bootc stores SHA256(.linux + .initrd) in deployment origin metadata.
