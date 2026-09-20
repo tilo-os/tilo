@@ -1321,6 +1321,7 @@ impl VelloDrmBridge {
         target: &ui::dmabuf_import::ImportedRenderTarget,
         deadline: Instant,
     ) -> Result<GpuFrameStats, BridgeError> {
+        self.last_phase_timing = None;
         if (target.width, target.height) != self.target.size {
             return Err(BridgeError::InvalidSize(format!(
                 "imported BGRA target is {}x{}, expected {}x{}",
