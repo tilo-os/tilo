@@ -80,6 +80,7 @@ jobs:
           test "$(uname -m)" = "$VERIFIER_ARCH"
           cargo build --release --locked -p pkg-cli -p runtime-bundle
           target/release/tilo-pkg --help >/dev/null
+          target/release/tilo-pkg catalogue-entries --help >/dev/null
           target/release/tilo-runtime-bundle --help >/dev/null
           mkdir -p target/verifier-bundle target/verifier-repeat
           for directory in target/verifier-bundle target/verifier-repeat; do

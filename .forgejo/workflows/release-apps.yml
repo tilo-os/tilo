@@ -300,6 +300,13 @@ jobs:
           QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
           RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
         run: |
+          # Main publication, including a manual retry, uses the same immutable
+          # development identity. Tags keep their declared stable app versions.
+          unset TILO_APP_DEV_SOURCE
+          if [[ $GITHUB_REF == refs/heads/main \
+                && ( $GITHUB_EVENT_NAME == push || '${{ needs.plan.outputs.publish }}' == true ) ]]; then
+            export TILO_APP_DEV_SOURCE="$GITHUB_SHA"
+          fi
           if [[ -n ${QPKG_PUBLISHER_IDENTITY:-} ]]; then
             identity="$RUNNER_TEMP/tilo-app-publisher.json"
             (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$identity")
@@ -322,7 +329,7 @@ jobs:
           }
           trap cleanup_identities EXIT
           build_log=$(mktemp "$RUNNER_TEMP/tilo-app-build.XXXXXX")
-          if ! dist/apps/package-apps.sh 2> >(tee "$build_log" >&2); then
+          if ! dist/apps/package-apps.sh 2>&1 | tee "$build_log"; then
             if ! grep -Eq 'truncated or malformed archive|failed to read object file' "$build_log"; then
               exit 1
             fi
@@ -638,3 +645,55 @@ jobs:
             fi
             echo '::notice::advanced the default OS app-collection channel'
           fi
+
+  submit-catalogue:
+    # Opt in only after public DNS, root pin, server ARM support and the
+    # canonical verifier bundle containing catalogue-entries are deployed.
+    if: needs.publish.result == 'success' && vars.TILO_APP_CATALOGUE_SUBMISSION_ENABLED == 'true'
+    needs: [plan, build, publish]
+    # The provisioned verifier policy currently pins the x86 native tools.
+    # They verify both app architectures without executing app payloads.
+    runs-on: runner
+    timeout-minutes: 10
+    container:
+      image: ${{ needs.plan.outputs.builder_image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release
+      - name: Submit signed app entries to the catalogue
+        env:
+          QPKG_PUBLISHER_IDENTITY: ${{ secrets.QPKG_PUBLISHER_IDENTITY }}
+          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
+          FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
+          FINAL_RECEIPT_POLICY_SHA256: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256 }}
+          BUILDER_IMAGE: ${{ needs.plan.outputs.builder_image }}
+          CATALOGUE_URL: ${{ vars.TILO_APP_CATALOGUE_URL }}
+          CATALOGUE_OWNER_KEY: ${{ vars.TILO_APP_CATALOGUE_OWNER_KEY }}
+          PACKAGE_PUBLIC_BASE: ${{ vars.TILO_APP_CATALOGUE_ARTIFACT_BASE_URL }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          [[ -n $QPKG_PUBLISHER_IDENTITY ]] || { echo 'publisher identity is required' >&2; exit 1; }
+          identity=$(mktemp "$RUNNER_TEMP/catalogue-publisher.XXXXXX")
+          trap 'rm -f "$identity"' EXIT
+          (umask 077; printf '%s' "$QPKG_PUBLISHER_IDENTITY" > "$identity")
+          unset QPKG_PUBLISHER_IDENTITY
+          policy="$RUNNER_TEMP/catalogue-verifier-policy.json"
+          printf '%s' "$FINAL_RECEIPT_POLICY" > "$policy"
+          verifiers="$RUNNER_TEMP/catalogue-verifiers"
+          python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch \
+            --trust-policy "$policy" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
+            --builder-image "$BUILDER_IMAGE" --output "$verifiers"
+          "$verifiers/tilo-pkg" catalogue-entries --help >/dev/null
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          python3 -I tools/ci/python.py tools/apps/submit_catalogue.py \
+            --registry "$CATALOGUE_URL" --owner-key "$CATALOGUE_OWNER_KEY" \
+            --public-base "$PACKAGE_PUBLIC_BASE" --version "$VERSION" \
+            --release release --pkg-binary "$verifiers/tilo-pkg" --identity "$identity"

@@ -152,7 +152,7 @@ class BundleTests(unittest.TestCase):
         text = (Path(__file__).parents[2] / '.forgejo/workflows/release-apps.yml').read_text()
         self.assertNotIn('name: canonical-verifiers-', text)
         self.assertNotIn('cp target/release/tilo-pkg target/release/tilo-runtime-bundle', text)
-        self.assertEqual(text.count('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch'), 2)
+        self.assertEqual(text.count('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch'), 3)
         self.assertIn('    branches: [main]', text)
 
 

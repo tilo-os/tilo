@@ -29,6 +29,8 @@
     )
 )]
 
+mod catalogue;
+
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -166,7 +168,18 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
-    /// Print a signed registry entry for a .qpkg — the JSON shape a
+    /// Prepare signed, per-app catalogue requests from an authenticated snapshot.
+    CatalogueEntries {
+        #[arg(long)]
+        snapshot: PathBuf,
+        #[arg(long)]
+        owner_key: String,
+        #[arg(long)]
+        artifacts: PathBuf,
+        #[arg(long)]
+        identity: PathBuf,
+    },
+    /// Print a signed registry entry for a .qpkg -- the JSON shape a
     /// registry's `/entries` serves. For a static-directory self-hosted
     /// registry, collect printed entries into an `entries` file and serve
     /// the directory over HTTP.
@@ -223,6 +236,12 @@ fn main() -> Result<()> {
             serve,
         ),
         Command::Keygen { out } => cmd_keygen(&out),
+        Command::CatalogueEntries {
+            snapshot,
+            owner_key,
+            artifacts,
+            identity,
+        } => catalogue::prepare(&snapshot, &owner_key, &artifacts, &identity),
         Command::Entry {
             url,
             identity,
@@ -758,16 +777,8 @@ fn registry_entry_for(
     // Use the same trust-boundary path as `publish`: this verifies every
     // signed blob, materialized payload limits and payload shape before any
     // registry metadata is signed.
-    let (built, package_id) = app_registry::build_entry(
-        qpkg_bytes,
-        &publisher,
-        Some(pkg::manifest::Arch::X86_64),
-        None,
-    )
-    .map_err(|error| anyhow!("verify qpkg for registry entry: {error}"))?;
-    if built.arch != pkg::manifest::Arch::X86_64 {
-        bail!("the public registry currently supports only x86_64 packages");
-    }
+    let (built, package_id) = app_registry::build_entry(qpkg_bytes, &publisher, None, None)
+        .map_err(|error| anyhow!("verify qpkg for registry entry: {error}"))?;
     let meta = app_registry::qpkg::load(qpkg_bytes).map_err(|e| anyhow!("load qpkg: {e}"))?;
     let package = &meta.manifest.package;
     let now = std::env::var("SOURCE_DATE_EPOCH")
@@ -806,7 +817,7 @@ fn registry_entry_for(
         {
             if !same_artifact(existing, &version) {
                 bail!(
-                    "version {} for target x86_64 already exists with different package bytes or metadata",
+                    "version {} for this architecture already exists with different package bytes or metadata",
                     version.version
                 );
             }
@@ -918,10 +929,13 @@ fn cmd_entry(
         "{}",
         serde_json::to_string_pretty(&output).context("encode entry")?
     );
-    // `registry_entry_for` always builds exactly one version; `.first()`
-    // avoids indexing so a future refactor there can't turn this into a panic.
-    let version = entry.versions.first().map_or("?", |v| v.version.as_str());
-    eprintln!("entry: {}@{version} -> {url}", entry.package_id);
+    // History may contain a newer version than the artifact selected here.
+    let selected = app_registry::qpkg::load(&qpkg_bytes)
+        .map_err(|error| anyhow!("read selected package metadata: {error}"))?;
+    eprintln!(
+        "entry: {}@{} -> {url}",
+        entry.package_id, selected.manifest.package.version
+    );
     Ok(())
 }
 
