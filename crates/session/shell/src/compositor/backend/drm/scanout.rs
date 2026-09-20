@@ -329,6 +329,38 @@ pub(crate) fn physical_card_identity(card_path: &Path) -> Option<String> {
     valid_config_identity(&identity).then_some(identity)
 }
 
+/// Exact PCI identity for a DRM card node, derived from the canonical sysfs device path when
+/// `drmGetBusid` is unavailable (notably amdgpu through some seat/session fd stacks). The final
+/// component must itself be a complete PCI BDF; platform/USB identities never become an unsafe
+/// same-GPU claim.
+fn sysfs_pci_bus_id_at(
+    sys_dev_char: &Path,
+    device: smithay::reexports::rustix::fs::Dev,
+) -> Option<String> {
+    let major = smithay::reexports::rustix::fs::major(device);
+    let minor = smithay::reexports::rustix::fs::minor(device);
+    let canonical =
+        std::fs::canonicalize(sys_dev_char.join(format!("{major}:{minor}")).join("device")).ok()?;
+    let component = canonical.file_name()?.to_str()?;
+    parse_pci_bdf(component).map(|_| format!("pci:{component}"))
+}
+
+fn sysfs_pci_bus_id_for_dev(device: smithay::reexports::rustix::fs::Dev) -> Option<String> {
+    sysfs_pci_bus_id_at(Path::new("/sys/dev/char"), device)
+}
+
+fn card_pci_bus_id(card: &Card) -> Option<String> {
+    card.get_bus_id()
+        .ok()
+        .and_then(|identity| identity.into_string().ok())
+        .filter(|identity| parse_pci_bdf(identity).is_some())
+        .or_else(|| {
+            smithay::reexports::rustix::fs::fstat(&card.0)
+                .ok()
+                .and_then(|stat| sysfs_pci_bus_id_for_dev(stat.st_rdev))
+        })
+}
+
 fn same_physical_card_identity(existing: Option<&str>, candidate: Option<&str>) -> bool {
     matches!((existing, candidate), (Some(existing), Some(candidate)) if existing == candidate)
 }
@@ -404,6 +436,7 @@ pub struct CardHandle {
     /// future `cardN` path can be recognised as this physical GPU before a
     /// second libseat open is attempted.
     physical_identity: Option<String>,
+    pci_bus_id: Option<String>,
 }
 
 /// One connected connector as the hotplug path sees it: enough to decide whether it is new, gone, or re-moded, and to modeset it if new.
@@ -485,6 +518,7 @@ impl CardHandle {
             .and_then(|id| id.into_string().ok())
             .filter(|id| valid_config_identity(id));
         let physical_identity = physical_card_identity(card_path);
+        let pci_bus_id = card_pci_bus_id(&card);
         let config_identity = config_identity(drm_bus_id, physical_identity.clone(), device_id);
         Ok(Self {
             card,
@@ -492,6 +526,7 @@ impl CardHandle {
             card_path: card_path.to_path_buf(),
             config_identity,
             physical_identity,
+            pci_bus_id,
         })
     }
 
@@ -541,11 +576,7 @@ impl CardHandle {
     /// dma-buf scanout uses this as a positive same-device proof; a missing or
     /// non-PCI identity deliberately leaves the established CPU path active.
     pub fn drm_bus_id(&self) -> Option<String> {
-        self.card
-            .get_bus_id()
-            .ok()
-            .and_then(|identity| identity.into_string().ok())
-            .filter(|identity| valid_config_identity(identity))
+        self.pci_bus_id.clone()
     }
 
     /// Give up DRM master. Called before a VT switch completes: the incoming session cannot modeset until we have.
@@ -750,7 +781,13 @@ impl CardHandle {
                 return None;
             }
         };
-        match DrmScanout::from_card(card_dup, snapshot.handle, crtc, snapshot.mode) {
+        match DrmScanout::from_card(
+            card_dup,
+            snapshot.handle,
+            crtc,
+            snapshot.mode,
+            self.pci_bus_id.clone(),
+        ) {
             Ok(scanout) => Some(ScanoutBuild {
                 device_id: self.device_id,
                 connector_id: snapshot.connector_id,
@@ -1091,6 +1128,8 @@ fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<u
 )]
 pub struct DrmScanout {
     card: Card,
+    /// Positive PCI identity captured from the exact session-opened device before this fd is cloned.
+    pci_bus_id: Option<String>,
     crtc: crtc::Handle,
     connector: connector::Handle,
     mode: Mode,
@@ -1209,7 +1248,8 @@ impl DrmScanout {
             .or_else(|| res.crtcs().first().copied())
             .ok_or("no crtc available for connector")?;
 
-        Self::from_card(card, connector, crtc, mode)
+        let pci_bus_id = card_pci_bus_id(&card);
+        Self::from_card(card, connector, crtc, mode, pci_bus_id)
     }
 
     /// Allocate framebuffers, modeset `connector` on `crtc` at `mode`, and set up the hardware
@@ -1221,6 +1261,7 @@ impl DrmScanout {
         connector: connector::Handle,
         crtc: crtc::Handle,
         mode: Mode,
+        pci_bus_id: Option<String>,
     ) -> Result<Self, String> {
         let (mw, mh) = mode.size();
         let (width, height) = (u32::from(mw), u32::from(mh));
@@ -1280,6 +1321,7 @@ impl DrmScanout {
 
         Ok(Self {
             card,
+            pci_bus_id,
             crtc,
             connector,
             mode,
@@ -1360,11 +1402,7 @@ impl DrmScanout {
 
     /// PCI bus identity of the KMS device which owns this output.
     pub fn drm_bus_id(&self) -> Option<String> {
-        self.card
-            .get_bus_id()
-            .ok()
-            .and_then(|identity| identity.into_string().ok())
-            .filter(|identity| valid_config_identity(identity))
+        self.pci_bus_id.clone()
     }
 
     /// Direct presentation currently relies on the hardware cursor plane;
@@ -2300,9 +2338,64 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sysfs_pci_identity_is_bound_to_the_exact_device_number() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temp sysfs");
+        let sys_dev_char = root.path().join("dev/char");
+        let pci_device = root.path().join("devices/0000:66:00.0");
+        std::fs::create_dir_all(&sys_dev_char).expect("dev char root");
+        std::fs::create_dir_all(&pci_device).expect("pci device");
+
+        let dev = smithay::reexports::rustix::fs::makedev(226, 1);
+        let node = sys_dev_char.join("226:1");
+        std::fs::create_dir(&node).expect("char node");
+        symlink(&pci_device, node.join("device")).expect("device link");
+
+        assert_eq!(
+            sysfs_pci_bus_id_at(&sys_dev_char, dev).as_deref(),
+            Some("pci:0000:66:00.0")
+        );
+        assert_eq!(
+            sysfs_pci_bus_id_at(
+                &sys_dev_char,
+                smithay::reexports::rustix::fs::makedev(226, 0)
+            ),
+            None,
+            "another card's dev_t must not inherit this identity"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sysfs_pci_identity_rejects_non_pci_and_malformed_devices() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temp sysfs");
+        let sys_dev_char = root.path().join("dev/char");
+        std::fs::create_dir_all(&sys_dev_char).expect("dev char root");
+
+        for (minor, component) in [(1, "platform-gpu"), (2, "0000:66:00.8")] {
+            let target = root.path().join("devices").join(component);
+            let node = sys_dev_char.join(format!("226:{minor}"));
+            std::fs::create_dir_all(&target).expect("device target");
+            std::fs::create_dir(&node).expect("char node");
+            symlink(&target, node.join("device")).expect("device link");
+            assert_eq!(
+                sysfs_pci_bus_id_at(
+                    &sys_dev_char,
+                    smithay::reexports::rustix::fs::makedev(226, minor)
+                ),
+                None
+            );
+        }
+    }
+
     #[test]
     fn direct_scanout_never_renders_front_or_flip_pending_slots() {
-        let state = DirectScanoutState::new(0);
+        let mut state = DirectScanoutState::new(0);
         assert_eq!(state.render_slot(), Some(1));
         assert!(state.submit(1));
         assert_eq!(state.render_slot(), None, "both slots are owned by KMS");
@@ -2319,7 +2412,7 @@ mod tests {
 
     #[test]
     fn direct_scanout_renderer_or_pageflip_failure_keeps_back_slot_available() {
-        let mut state = DirectScanoutState::new(0);
+        let state = DirectScanoutState::new(0);
         let slot = state.render_slot().expect("initial back slot");
 
         // Renderer failure performs no transition and therefore cannot expose
