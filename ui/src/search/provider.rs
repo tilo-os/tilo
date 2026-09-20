@@ -1094,6 +1094,9 @@ pub struct SearchResult {
     /// Optional secondary line rendered dimmer under the title (e.g. an email
     /// address, a file path, a command description).
     pub subtitle: Option<String>,
+    /// Plain-text detail rendered by the shared result surface for the
+    /// selected or hovered row without changing row geometry.
+    pub preview: Option<String>,
     /// Grouping label, e.g. `"Contacts"`, `"Files"`, `"Commands"`. Rows sharing
     /// a `kind` are bucketed together under this label in the results overlay,
     /// so a mixed query reads as sectioned groups rather than one flat list.
@@ -1123,6 +1126,7 @@ impl SearchResult {
         Self {
             title: title.into(),
             subtitle: None,
+            preview: None,
             kind: kind.into(),
             action_id: action_id.into(),
             icon: None,
@@ -1170,6 +1174,12 @@ impl SearchResult {
     #[must_use]
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_preview(mut self, preview: impl Into<String>) -> Self {
+        self.preview = Some(preview.into());
         self
     }
 
