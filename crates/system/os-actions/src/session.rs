@@ -34,7 +34,7 @@ pub enum SessionAction {
 pub fn perform_session_action(action: SessionAction) -> Result<(), String> {
     match action {
         SessionAction::Lock => run("loginctl", &["lock-session"]),
-        SessionAction::Logout => request_wrapper_logout(),
+        SessionAction::Logout => request_logout(),
         // A greeter is a display-manager session, not a magic logind session
         // id. Ask the active display manager to create/activate its greeter.
         // GDM deliberately permits this exact method to ordinary local users
@@ -78,13 +78,21 @@ fn request_wrapper_logout_at(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("writing Tilo logout request: {error}"))
 }
 
-fn request_wrapper_logout() -> Result<(), String> {
+/// Request an orderly compositor-owned logout through the display-manager
+/// wrapper's private channel.
+///
+/// This is intentionally synchronous: it only creates and writes one private
+/// local file, then publishes an in-process edge. Running it on a worker can
+/// strand an otherwise-idle compositor because completing the worker does not
+/// itself wake the compositor event loop.
+pub fn request_logout() -> Result<(), String> {
     request_wrapper_logout_at(&logout_request_path()?)?;
     // The wrapper owns teardown, but it cannot observe the request until this
     // compositor exits. Publish an in-process edge for the native frame loop;
     // the request file remains the cross-process proof that this was an
     // intentional logout rather than a compositor crash.
     LOGOUT_REQUESTED.store(true, Ordering::Release);
+    tracing::info!(target: "tilo::session", "logout requested through session wrapper");
     Ok(())
 }
 

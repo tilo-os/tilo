@@ -115,7 +115,7 @@ pub use privacy::{
     ActiveMediaUse, KillState, MediaKind, PrivacyStatus, active_media_uses, get_privacy_status,
     monitor_media_usage, revoke_media_client,
 };
-pub use session::{SessionAction, perform_session_action, take_logout_request};
+pub use session::{SessionAction, perform_session_action, request_logout, take_logout_request};
 pub use time::{
     TimeSyncStatus, get_ntp, get_time_sync_status, list_timezones, now_clock, now_date, set_ntp,
     set_timezone, valid_timezone,

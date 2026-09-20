@@ -8018,6 +8018,40 @@ impl ShellOverlayHost {
         Rect::new(x1 - popover_w, y0, x1, y0 + popover_h)
     }
 
+    /// Convert a pointer in painted coordinates back into Quick Settings'
+    /// stable layout coordinates. The popover's entrance animation scales
+    /// around its top-centre and translates upward; hit-testing the resting
+    /// rectangles made controls visibly move out from under the pointer.
+    fn untransform_quick_settings_pointer(&self, point: Point, now: Instant) -> Point {
+        let openness = self.qs_transition.value(now);
+        let dy = -10.0 * f64::from(1.0 - openness);
+        let scale = 0.95 + 0.05 * f64::from(openness);
+        if !scale.is_finite() || scale <= f64::EPSILON {
+            return point;
+        }
+        let rect = self.quick_settings_rect();
+        let cx = rect.center().x;
+        let cy = rect.y0;
+        Point::new(
+            cx + (point.x - cx) / scale,
+            cy + (point.y - cy - dy) / scale,
+        )
+    }
+
+    #[cfg(test)]
+    fn transform_quick_settings_point_for_test(&self, point: Point, now: Instant) -> Point {
+        let openness = self.qs_transition.value(now);
+        let dy = -10.0 * f64::from(1.0 - openness);
+        let scale = 0.95 + 0.05 * f64::from(openness);
+        let rect = self.quick_settings_rect();
+        let cx = rect.center().x;
+        let cy = rect.y0;
+        Point::new(
+            cx + (point.x - cx) * scale,
+            cy + (point.y - cy) * scale + dy,
+        )
+    }
+
     /// A drill-in is a compact continuation of Quick Settings, not a blank
     /// fixed-height sheet. Its height follows the actual rows and grows only
     /// when discovery gives us something to show. This keeps an empty Wi-Fi
@@ -10520,6 +10554,23 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // Super+L is the conventional immediate lock gesture and is already
+        // reserved by client-input routing and advertised by the shortcut
+        // guide. Publish the same compositor-owned edge as the power menu;
+        // never delegate to logind or let a focused client consume it.
+        if super_down
+            && !mstate.control_key()
+            && !mstate.alt_key()
+            && !shift_down
+            && let Key::Character(key) = logical_key
+            && key.eq_ignore_ascii_case("l")
+        {
+            if !repeat && let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().request_session_lock();
+            }
+            *handled = true;
+            return true;
+        }
         // Optional Vim navigation is intentionally a full Super+Ctrl layer,
         // never a bare/Ctrl-only text chord. This keeps H/J/K/L available to
         // terminals and editors and matches the promise in Settings.
@@ -11577,6 +11628,19 @@ impl ShellOverlayHost {
                     }
                     return true;
                 }
+                // Logout is a tiny, private file write plus an in-process
+                // edge. Do it on this input tick so the native loop observes
+                // the edge before it parks. The other actions may block on
+                // logind/GDM and therefore remain on workers.
+                if action == os_actions::SessionAction::Logout {
+                    if let Err(error) = os_actions::request_logout() {
+                        let _ = self.session_action_channel.0.send(SessionActionResult {
+                            action,
+                            result: Err(error),
+                        });
+                    }
+                    return true;
+                }
                 let results = self.session_action_channel.0.clone();
                 std::thread::spawn(move || {
                     let result = os_actions::perform_session_action(action);
@@ -11804,6 +11868,7 @@ impl ShellOverlayHost {
     /// Reached only once `flags.quick_settings` is true, at which point
     /// every path absorbs the click.
     fn handle_shell_quick_settings_click(&mut self, p: Point, handled: &mut bool) {
+        let p = self.untransform_quick_settings_pointer(p, Instant::now());
         let qs_rect = self.quick_settings_rect();
         if !qs_rect.contains(p) {
             if let Some(chrome) = self.chrome.clone() {
@@ -22743,6 +22808,29 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    #[serial_test::serial(logout_request_env)]
+    fn logout_power_action_publishes_its_edge_before_dispatch_returns() {
+        let (host, _chrome) = host_with_chrome();
+        let directory = tempfile::tempdir().unwrap();
+        let request = directory.path().join("logout-request");
+        // SAFETY: this test is serialized with every test using this process
+        // environment key and restores it before returning.
+        unsafe { std::env::set_var("TILO_SESSION_LOGOUT_REQUEST", &request) };
+
+        assert!(
+            host.apply_power_menu_outcome(PowerMenuClick::Execute(
+                os_actions::SessionAction::Logout
+            ))
+        );
+        assert_eq!(std::fs::read_to_string(&request).unwrap(), "logout\n");
+        assert!(os_actions::take_logout_request());
+        assert!(!os_actions::take_logout_request());
+
+        // SAFETY: paired with the serialized set above.
+        unsafe { std::env::remove_var("TILO_SESSION_LOGOUT_REQUEST") };
+    }
+
+    #[test]
     fn logout_inhibitor_does_not_cross_block_switch_user() {
         let (mut host, chrome) = host_with_chrome();
         let registry = tilo_power_mgmt::InhibitRegistry::new();
@@ -25418,6 +25506,31 @@ mod overlay_event_absorb_tests {
     }
 
     #[test]
+    fn quick_settings_power_tile_tracks_its_entrance_animation() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        h.host.set_quick_settings_capture_openness(500);
+        paint(&mut h);
+        let stable_power = h
+            .host
+            .quick_settings_semantic_rects()
+            .into_iter()
+            .find_map(|(name, rect)| (name == "quick_settings_power").then_some(rect))
+            .expect("the visible Power tile has semantic geometry");
+        let painted_power = h
+            .host
+            .transform_quick_settings_point_for_test(stable_power.center(), Instant::now());
+
+        let _ = pump(&mut h, &cursor_moved_at(painted_power));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(
+            h.host.power_menu.is_open(),
+            "clicking the visibly transformed Power tile must open its menu"
+        );
+        assert!(!h.chrome.borrow().overlays.quick_settings);
+    }
+
+    #[test]
     fn overlay_absorbs_keyboard_text_and_release_when_qs_open() {
         let mut h = build_harness();
         h.chrome.borrow_mut().overlays.quick_settings = true;
@@ -26794,6 +26907,16 @@ mod tests {
             !h.chrome.borrow().overlays.projection,
             "the same familiar chord closes the sheet again"
         );
+    }
+
+    #[test]
+    fn super_l_requests_the_compositor_lock_once() {
+        let mut h = build_harness();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+
+        assert!(pump(&mut h, &key_press(Key::Character("l".into())), sup));
+        assert!(h.chrome.borrow_mut().take_session_lock_request());
+        assert!(!h.chrome.borrow_mut().take_session_lock_request());
     }
 
     #[test]
