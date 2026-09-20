@@ -61,8 +61,10 @@ pub fn app_root() -> Box<dyn Widget> {
     )
     .with_id("region-select")
     .on_action(form.binding("region").expect("region field exists"));
-    let reset = Button::new("reset-form", "Reset form", None)
-        .on_action(form.reset_binding().expect("initial field values are valid"));
+    let reset = Button::new("reset-form", "Reset form", None).on_action(
+        form.reset_binding()
+            .expect("initial field values are valid"),
+    );
 
     let root = Box::new(ui::column![
         Text::new("starter-title").with_role(TextRole::Title),
