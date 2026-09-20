@@ -116,3 +116,15 @@ requirement to preserve Windows during installation.
 
 Choose and perform the encryption change explicitly; preparation must not
 silently suspend protection or start decryption.
+
+## Windows alongside preflight
+
+Before the physical Lenovo alongside procedure, run the read-only,
+machine-checkable [Windows dual-boot preflight](lenovo-dualboot-preflight.md).
+It blocks that procedure until BitLocker is fully off, the final required
+unallocated extent exists, a safe external installation medium is identified,
+and the Windows ESP matches its recorded baseline. It does not replace the
+installer's own target-identity checks or authorize a partition change.
+
+The [Lenovo dual-boot evidence matrix](lenovo-dualboot-audit.md) lists what the
+preflight, generic VM acceptance, and the eventual physical clean boot prove.
