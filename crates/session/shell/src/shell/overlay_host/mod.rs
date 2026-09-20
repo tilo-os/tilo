@@ -68,7 +68,7 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, Image, ImageFit, OutputSpan,
+    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan,
     PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
     context_menu::ContextMenu,
 };
@@ -18304,6 +18304,7 @@ impl ShellOverlayHost {
         )
     }
 
+    #[cfg(test)]
     fn draw_shortcut_help_button(
         &mut self,
         scene: &mut Scene,
