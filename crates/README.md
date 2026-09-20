@@ -2,26 +2,25 @@
 
 The root `Cargo.toml` lists every workspace member, grouped by domain. Package
 names and binaries stay stable when directories move. `apps/README.md` describes
-the desktop applications; `shell/`, `ui/`, and `fs/` contain the core compositor,
-toolkit, and filesystem.
+the desktop applications; `session/shell/` contains the desktop surface, while
+`sdk/ui-core/` implements the application toolkit behind `sdk/tilo-app`,
+while `system/fs/` owns the collaborative filesystem service.
 
 | Directory | Role |
 |---|---|
 | `agent/` | Provider configuration, model gateway, and local-model services |
-| `app/` | Public application SDK (`tilo-app`) |
 | `collab/` | Production collaboration protocols, actions, identity primitives, and reference state |
 | `dev/` | Developer tools, UI schema/graph support, generated-code checks, and collaboration probes |
-| `doc/` | Native document model, import/export adapters, and the separately built WASM codec |
-| `format/` | Format-provider interfaces and host |
+| `doc/` | Native document model, format-provider interfaces, import/export adapters, and the separately built WASM codec |
 | `hosting/` | Relay and home-peer services |
-| `identity/` | User identity |
 | `media/` | Shared media primitives, OCR, thumbnail generation, and vision libraries |
 | `packaging/` | Package format, registry, installation, sandboxed launch, and app hosting |
 | `runtime/` | App-facing service clients, CLI helpers, and optional dynamic SDK |
-| `session/` | Greeter, installer, unlock helper, and power entrypoints |
+| `sdk/` | Public application SDK (`tilo-app`) and its private UI implementation (`ui-core`) |
+| `session/` | Desktop shell, greeter, installer, unlock helper, and power entrypoints |
 | `system/` | OS integration, policy, settings, device services, and system tools |
 | `text/` | Shared text services such as spellchecking |
-| `windows/` | Windows compatibility catalogue and services |
+| `windows/` | Windows compatibility catalogue, services, and managed VM integration |
 
 ## Developer tools and fixtures
 
@@ -31,8 +30,8 @@ toolkit, and filesystem.
   `scripts/sandboxed-app-collab.py`.
 - `dev/tilo-dev-template-smoke`: compiles generated app code to validate the SDK templates.
 - `collab/collab-fixtures`: shared collaboration test fixtures.
-- `packaging/hello` and `packaging/notes-cli`: executable packaging/SDK examples,
-  used by walkthroughs and integration scripts.
+- `../examples/packaging/hello` and `../examples/packaging/notes-cli`: executable
+  packaging/SDK examples used by walkthroughs and integration scripts.
 - `packaging/launcher/tests/fixtures/hello`: independent launcher test fixture.
 
 Zero incoming Cargo dependencies do not imply that a crate is unused: binaries

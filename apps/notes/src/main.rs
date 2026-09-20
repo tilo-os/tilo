@@ -87,8 +87,6 @@ const SHOT_SCENARIOS: &[&str] = &[
     "shortcuts",
     "shortcuts_bottom",
     "find",
-    "tag_palette",
-    "fulltext_search",
     "scrolled",
     "sidebar_scroll",
 ];
@@ -100,6 +98,7 @@ const SHOT_SCENARIOS: &[&str] = &[
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::from_definition(notes::definition())
+            .max_positionals(1)
             .component_host(prepare_component)
             .native_services()
             .capture_scenario(capture_scenario)
@@ -119,6 +118,7 @@ fn prepare_component(
     } else if args.native_audit {
         notes::capture::prepare_fixture(Some("first_note"), inputs)
     } else {
+        notes::hosting::set_native_launch_target(args.positionals().first().cloned());
         notes::hosting::prepare_native(inputs)
     }
 }

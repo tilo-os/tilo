@@ -63,9 +63,9 @@ pub struct ImportProgress {
     pub current: Option<PathBuf>,
 }
 
-/// Actual metadata read from a photo container. `orientation` is exposed even
-/// when the current renderer does not transform pixels yet, so import clients
-/// can draw the correct rotation without reparsing source bytes.
+/// Actual metadata read from a photo container. `orientation` records the
+/// source container faithfully; the shared pixel decoder independently
+/// normalises it so every thumbnail, analysis and export sees upright pixels.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExifMetadata {
     pub captured_at: Option<String>,
@@ -114,6 +114,9 @@ pub fn index_directory<F>(
 where
     F: FnMut(ImportProgress),
 {
+    if !root.is_absolute() {
+        return Err("Select an authorised absolute folder path".to_owned());
+    }
     let root_meta =
         fs::symlink_metadata(root).map_err(|_| "The selected folder is unavailable".to_owned())?;
     if !root_meta.file_type().is_dir() || root_meta.file_type().is_symlink() {
@@ -142,7 +145,17 @@ where
                 report.cancelled = true;
                 break;
             }
-            let Ok(entry) = entry else { continue };
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    report.failures.push(ImportFailure {
+                        source: directory.clone(),
+                        message: "Could not read one item in this folder".to_owned(),
+                        retryable: true,
+                    });
+                    continue;
+                }
+            };
             let path = entry.path();
             let Ok(meta) = fs::symlink_metadata(&path) else {
                 report.failures.push(ImportFailure {
@@ -155,11 +168,22 @@ where
             // Refusing links closes traversal loops and avoids silently
             // importing an unrelated tree through a selected directory.
             if meta.file_type().is_symlink() {
+                report.failures.push(ImportFailure {
+                    source: path,
+                    message: "Symbolic links are not followed during photo import".to_owned(),
+                    retryable: false,
+                });
                 continue;
             }
             if meta.is_dir() {
                 if depth < options.limits.max_depth {
                     stack.push((path, depth + 1));
+                } else {
+                    report.failures.push(ImportFailure {
+                        source: path,
+                        message: "This folder is deeper than the safe import limit".to_owned(),
+                        retryable: false,
+                    });
                 }
                 continue;
             }
@@ -241,7 +265,10 @@ pub fn index_file(
         .portable();
     let mut photo = LibraryPhoto::from_image(open);
     photo.image.name = name.to_owned();
-    photo.captured_at.clone_from(&exif.captured_at);
+    photo.captured_at = exif
+        .captured_at
+        .as_deref()
+        .and_then(crate::actions::canonical_capture_at_value);
     if options.retain_exif_location {
         photo.location.clone_from(&exif.location);
     }
@@ -368,6 +395,46 @@ pub fn cancellation_token() -> Arc<AtomicBool> {
 mod tests {
     use super::*;
 
+    fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
+        use image::ImageEncoder as _;
+
+        let rgb = vec![
+            255, 0, 0, 0, 255, 0, 0, 0, 255, // first row
+            255, 255, 0, 0, 255, 255, 255, 0, 255, // second row
+        ];
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95)
+            .write_image(&rgb, 3, 2, image::ExtendedColorType::Rgb8)
+            .expect("encode test JPEG");
+        let mut payload = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0".to_vec();
+        payload.extend_from_slice(&[
+            0x12,
+            0x01,
+            0x03,
+            0x00,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            orientation as u8,
+            (orientation >> 8) as u8,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ]);
+        let segment_length = u16::try_from(payload.len() + 2).expect("small APP1 segment");
+        let mut tagged = Vec::with_capacity(jpeg.len() + payload.len() + 4);
+        tagged.extend_from_slice(&jpeg[..2]);
+        tagged.extend_from_slice(&[0xff, 0xe1]);
+        tagged.extend_from_slice(&segment_length.to_be_bytes());
+        tagged.extend_from_slice(&payload);
+        tagged.extend_from_slice(&jpeg[2..]);
+        tagged
+    }
+
     fn png(path: &Path) {
         let file = fs::File::create(path).unwrap();
         let mut encoder = png::Encoder::new(file, 2, 1);
@@ -425,10 +492,99 @@ mod tests {
     }
 
     #[test]
+    fn relative_and_symlink_roots_are_refused() {
+        let cancelled = AtomicBool::new(false);
+        assert_eq!(
+            index_directory(
+                Path::new("relative/photos"),
+                ImportOptions::default(),
+                &cancelled,
+                |_| {},
+            )
+            .unwrap_err(),
+            "Select an authorised absolute folder path"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let parent = tempfile::tempdir().unwrap();
+            let real = parent.path().join("real");
+            fs::create_dir(&real).unwrap();
+            let linked = parent.path().join("linked");
+            symlink(&real, &linked).unwrap();
+            assert_eq!(
+                index_directory(&linked, ImportOptions::default(), &cancelled, |_| {},)
+                    .unwrap_err(),
+                "Select a real folder, not a symbolic link"
+            );
+        }
+    }
+
+    #[test]
     fn exif_reader_has_no_synthetic_fallback_for_a_plain_png() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("plain.png");
         png(&path);
         assert!(read_exif(&path).is_none());
+    }
+
+    #[test]
+    fn import_keeps_addressed_source_bytes_but_records_upright_dimensions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("portrait.jpg");
+        let source = jpeg_with_orientation(6);
+        fs::write(&path, &source).unwrap();
+
+        let indexed = index_file(&path, ImportOptions::default(), &AtomicBool::new(false))
+            .expect("index oriented JPEG");
+
+        assert_eq!(indexed.exif.orientation, Some(6));
+        assert_eq!(
+            (indexed.photo.image.width, indexed.photo.image.height),
+            (2, 3)
+        );
+        let hash = indexed
+            .photo
+            .image
+            .content
+            .as_deref()
+            .expect("portable content address");
+        assert_eq!(
+            qdoc::blobstore::get(hash).as_deref(),
+            Some(source.as_slice())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_failures_are_retained_without_aborting_valid_photos() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let good = directory.path().join("good.png");
+        png(&good);
+        fs::write(directory.path().join("broken.png"), b"not a photograph").unwrap();
+        symlink(&good, directory.path().join("linked.png")).unwrap();
+        let report = index_directory(
+            directory.path(),
+            ImportOptions::default(),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(report.photos.len(), 1);
+        assert_eq!(report.photos[0].source.file_name().unwrap(), "good.png");
+        assert!(report.failures.iter().any(|failure| {
+            failure.source.ends_with("broken.png")
+                && failure.message.contains("cannot be decoded")
+                && failure.retryable
+        }));
+        assert!(report.failures.iter().any(|failure| {
+            failure.source.ends_with("linked.png")
+                && failure.message.contains("Symbolic links")
+                && !failure.retryable
+        }));
     }
 }

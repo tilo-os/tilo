@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "check_app_resource_action_contract.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_app_resource_action_contract.py"
 SPEC = importlib.util.spec_from_file_location("check_app_resource_action_contract", SCRIPT)
 contract = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -18,7 +18,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         self,
         source: str,
         *,
-        dependencies: str = 'ui={package="tilo-app",path="../../crates/app/tilo-app"}\n',
+        dependencies: str = 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
         app_name: str = "sample",
     ) -> Path:
         temporary = tempfile.TemporaryDirectory()
@@ -228,8 +228,8 @@ class AppResourceActionContractTests(unittest.TestCase):
             "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
             "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
             dependencies=(
-                'ui={package="tilo-app",path="../../crates/app/tilo-app"}\n'
-                'ui_core={package="ui",path="../../ui"}\n'
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n'
             ),
             app_name="agent",
         )
@@ -241,8 +241,8 @@ class AppResourceActionContractTests(unittest.TestCase):
             "fn resources() {}\nstruct ActionDescriptor; struct BrokerActionSurface;\n"
             "enum CollabRequest { InvokePublishedAction, PublishedInvocationStatus }\n",
             dependencies=(
-                'ui={package="tilo-app",path="../../crates/app/tilo-app"}\n'
-                'rendering={path="../../ui"}\n'
+                'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
+                'rendering={path="../../crates/sdk/ui-core"}\n'
             ),
             app_name="agent",
         )
@@ -260,7 +260,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         manifest.write_text(
             manifest.read_text(encoding="utf-8")
             + "\n[target.'cfg(unix)'.dependencies]\n"
-            + 'ui={package="tilo-app",path="../../crates/app/tilo-app"}\n',
+            + 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
             encoding="utf-8",
         )
         violations, _ = contract.audit(root)
@@ -269,7 +269,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         manifest.write_text(
             manifest.read_text(encoding="utf-8")
             + "\n[target.'cfg(windows)'.dependencies]\n"
-            + 'ui_core={package="ui",path="../../ui"}\n',
+            + 'ui_core={package="ui",path="../../crates/sdk/ui-core"}\n',
             encoding="utf-8",
         )
         violations, _ = contract.audit(root)
@@ -314,9 +314,9 @@ class AppResourceActionContractTests(unittest.TestCase):
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
         )
-        tools = root / "tools"
-        tools.mkdir()
-        (tools / contract.BASELINE).write_text(
+        baseline = root / contract.BASELINE
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(
             '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
             encoding="utf-8",
         )
@@ -339,9 +339,9 @@ class AppResourceActionContractTests(unittest.TestCase):
             " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
         )
-        tools = root / "tools"
-        tools.mkdir()
-        (tools / contract.BASELINE).write_text(
+        baseline = root / contract.BASELINE
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(
             '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
             encoding="utf-8",
         )
@@ -419,6 +419,84 @@ class AppResourceActionContractTests(unittest.TestCase):
         )
         violations, _ = contract.audit(root)
         self.assertEqual(violations, [])
+
+    def test_prepared_launch_installs_the_registered_registry(self):
+        source = (
+            "use tilo_actions::{ActionRegistry, ActionSpec};\n"
+            "pub fn register(_: &mut ActionRegistry) {}\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        launch = "fn main() { LaunchSpec::new(root).prepare_legacy_with_args(prepare); }\n"
+        inputs = (
+            "fn inputs(args: &Args) -> Result<LegacyLaunchInputs, Error> { {\n"
+            " let mut registry = ActionRegistry::new();\n"
+            " actions::register(&mut registry);\n"
+            " Ok(ui::launch::LegacyLaunchInputs::new(state, widget, autosave)\n"
+            " .with_records(records, room.doc).with_registry(registry),) } }\n"
+        )
+        wrapper = (
+            "fn prepare(args: &Args) -> Result<LegacyLaunchInputs, Error> {\n"
+            " inputs(args).map_err(|error| Error::Operation(error.to_string())) }\n"
+        )
+        cases = {
+            "forwarded": (launch + wrapper + inputs, True),
+            "direct": (launch + inputs.replace("fn inputs(", "fn prepare("), True),
+            "widget_owned_persistence": (
+                launch + wrapper + inputs.replace(
+                    ".with_records(records, room.doc).with_registry(registry)",
+                    ".with_registry(registry).with_widget_owned_persistence()",
+                ), True,
+            ),
+            "widget_owned_overwritten_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)",
+                    ".with_registry(registry).with_widget_owned_persistence().with_registry(other)",
+                ), False,
+            ),
+            "widget_owned_missing_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)", ".with_widget_owned_persistence()",
+                ), False,
+            ),
+            "disconnected": (
+                launch + wrapper + inputs.replace("with_registry(registry)", "with_registry(other)"),
+                False,
+            ),
+            "missing_installation": (
+                launch + wrapper + inputs.replace(".with_registry(registry)", ""), False,
+            ),
+            "shadowed_registry": (
+                launch + wrapper + inputs.replace(
+                    " Ok(", " let registry = ActionRegistry::new(); Ok("
+                ), False,
+            ),
+            "overwritten_registry": (
+                launch + wrapper + inputs.replace(
+                    ".with_registry(registry)", ".with_registry(registry).with_registry(other)"
+                ), False,
+            ),
+            "discarded_helper_result": (
+                launch + inputs + "fn prepare(args: &Args) -> Result<LegacyLaunchInputs, Error> {"
+                " inputs(args)?; Ok(LegacyLaunchInputs::new(state, widget, autosave)) }", False,
+            ),
+            "discarded_inputs": (
+                launch + wrapper + inputs.replace(
+                    "),) } }", "),); Ok(LegacyLaunchInputs::new(state, widget, autosave)) } }"
+                ), False,
+            ),
+            "dead_preparer": ("fn main() { launch(root); }" + wrapper + inputs, False),
+        }
+        for name, (main_source, accepted) in cases.items():
+            with self.subTest(name=name):
+                root = self.fixture(source)
+                (root / "apps/sample/src/main.rs").write_text(main_source, encoding="utf-8")
+                violations, _ = contract.audit(root)
+                if accepted:
+                    self.assertEqual(violations, [])
+                else:
+                    self.assertTrue(any("production app launch" in v.reason for v in violations))
 
     def test_new_opaque_search_activation_is_rejected(self):
         root = self.fixture(

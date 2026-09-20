@@ -19,17 +19,16 @@ exclude = [
 # the full workspace nightly.
 default-members = [
     "crates/doc/qdoc",
-    "fs",
-    "shell",
-    "ui",
+    "crates/system/fs",
+    "crates/session/shell",
+    "crates/sdk/ui-core",
     "crates/packaging/pkg",
     "crates/runtime/runtime",
 ]
 members = [
     # Core product surfaces
-    "fs",
-    "shell",
-    "ui",
+    "crates/session/shell",
+    "crates/sdk/ui-core",
 
     # Applications
     "apps/agent",
@@ -92,8 +91,8 @@ members = [
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
 
-    # App
-    "crates/app/tilo-app",
+    # SDK
+    "crates/sdk/tilo-app",
 
     # Collab
     "crates/collab/actions",
@@ -103,6 +102,7 @@ members = [
     "crates/collab/reference",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-user-identity",
 
     # Dev
     "crates/dev/collab-link",
@@ -115,21 +115,16 @@ members = [
     "crates/dev/ui-graph",
 
     # Doc
+    "crates/doc/format-host",
+    "crates/doc/format-provider-wit",
     "crates/doc/qdoc",
     "crates/doc/qdoc-epub",
     "crates/doc/qdoc-html",
     "crates/doc/qdoc-pdf",
     "crates/doc/qdoc-rtf",
 
-    # Format
-    "crates/format/format-host",
-    "crates/format/format-provider-wit",
-
     # Hosting
     "crates/hosting/tilo-relay",
-
-    # Identity
-    "crates/identity/tilo-user-identity",
 
     # Media
     "crates/media/core",
@@ -143,15 +138,17 @@ members = [
     "crates/packaging/app-host",
     "crates/packaging/app-registry",
     "crates/packaging/cli-shim",
-    "crates/packaging/hello",
     "crates/packaging/install",
     "crates/packaging/launcher",
-    "crates/packaging/notes-cli",
     "crates/packaging/pkg",
     "crates/packaging/pkg-cli",
     "crates/packaging/registry-server",
     "crates/packaging/registry-types",
     "crates/packaging/runtime-bundle",
+
+    # Examples
+    "examples/packaging/hello",
+    "examples/packaging/notes-cli",
 
     # Runtime
     "crates/runtime/cli",
@@ -168,7 +165,6 @@ members = [
     # Session
     "crates/session/greeter",
     "crates/session/installer",
-    "crates/session/tilo-power",
     "crates/session/tilo-unlock-helper",
 
     # System
@@ -179,6 +175,7 @@ members = [
     "crates/system/private-fs",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
+    "crates/system/fs",
     "crates/system/os-actions",
     "crates/system/power",
     "crates/system/projector",
@@ -193,7 +190,6 @@ members = [
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
-    "crates/system/windows-vm",
 
     # Text
     "crates/text/spellcheck",
@@ -201,6 +197,7 @@ members = [
     # Windows
     "crates/windows/compat-catalogue",
     "crates/windows/compat-service",
+    "crates/windows/windows-vm",
 ]
 resolver = "2"
 
@@ -271,7 +268,7 @@ must_use_candidate = "allow"
 # ---------------------------------------------------------------------------
 # UI toolkit stack
 #
-# Prefer the re-exports in `ui/src/lib.rs`. Direct dependencies must use
+# Prefer the re-exports in `crates/sdk/ui-core/src/lib.rs`. Direct dependencies must use
 # compatible versions to share types such as `vello::Scene`.
 # ---------------------------------------------------------------------------
 vello = "0.9"
@@ -364,6 +361,7 @@ gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 rustypipe = { version = "0.11", default-features = false }
+rquickjs = "0.9"
 # Sender-side discovery and transports for FCast and Google Cast. Disable the
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
@@ -467,6 +465,11 @@ debug-assertions = true
 # Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
 # pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
+# libspa-sys 0.10.1 lets bindgen discover newer PipeWire inline functions
+# through transitive headers, but its emitted C wrapper includes only the
+# narrower wrapper.h. Keep the missing direct includes locally until upstream
+# ships the same fix; clean Fedora 44 builds otherwise fail in static_fns.c.
+libspa-sys = { path = "vendor/libspa-sys" }
 # Pinned DX12 compiled-shader import/export; see vendor/wgpu-hal/TILO-PATCH.md.
 wgpu-hal = { path = "vendor/wgpu-hal" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }

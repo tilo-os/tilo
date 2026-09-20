@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.check_workflow_timeouts import audit
+from tools.policy.check_workflow_timeouts import audit
 
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -33,6 +33,9 @@ completion = module('transform_completion', 'complete-initramfs-rebind.py')
 rebind = completion.rebind
 hardware = rebind.hardware
 REQUIRED_MODULES = {'crypt', 'systemd-cryptsetup', 'tpm2-tss', 'plymouth', 'tilo-rollback'}
+OMITTED_MODULES = {'network', 'network-legacy', 'network-manager', 'nfs', 'iscsi',
+    'nvmf', 'nbd', 'fcoe', 'fcoe-uefi', 'nbde', 'clevis', 'clevis-pin-null',
+    'clevis-pin-sss', 'clevis-pin-tang', 'clevis-pin-tpm2', 'crypt-ssh'}
 MODULES = Path('usr/lib/tilo/initramfs-modules.txt')
 RUNTIME_FIELDS = ('Cmd', 'Entrypoint', 'Env', 'User', 'WorkingDir', 'StopSignal',
                   'Volumes', 'ExposedPorts', 'Healthcheck', 'Shell', 'OnBuild')
@@ -104,6 +107,8 @@ def create_arguments(image_id, kver, epoch, hooks):
         '--env', f'SOURCE_DATE_EPOCH={epoch}', '--entrypoint=/usr/bin/dracut', image_id,
         '--force', '--reproducible', '--no-hostonly', '--no-hostonly-cmdline', '-v',
         '--kver', kver, '--add', ' '.join(sorted(REQUIRED_MODULES)),
+        '--omit', ' '.join(sorted(OMITTED_MODULES)), '--omit-drivers', 'ext4 xfs',
+        '--compress', 'zstd',
         f'/usr/lib/modules/{kver}/initramfs.img']
 
 
@@ -111,6 +116,8 @@ def module_evidence(log):
     modules = set(re.findall(r'Including module: ([a-z0-9_-]+)', log))
     if not REQUIRED_MODULES <= modules:
         raise ValueError('dracut did not report every required module')
+    if modules & OMITTED_MODULES:
+        raise ValueError('dracut included an omitted local-root module')
     return ('\n'.join(sorted(modules)) + '\n').encode()
 
 

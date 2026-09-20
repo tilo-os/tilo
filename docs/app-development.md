@@ -1192,7 +1192,7 @@ must converge on the same `ActionBinding` and action address. Do not wire a
 direct callback beside `invoke_resource_operation`; bind the control and let
 the host invoke that operation handler. Do not add a second socket, command
 enum, hidden test callback, or agent-only implementation. CI runs
-`tools/check_app_resource_action_contract.py`, and the runtime independently
+`tools/policy/check_app_resource_action_contract.py`, and the runtime independently
 validates the concrete surface before publishing it.
 
 Every `ActionSpec` carries an `ActionContract`. Defaults are deliberately

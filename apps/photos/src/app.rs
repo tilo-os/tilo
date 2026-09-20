@@ -17,29 +17,33 @@
 //! the edits change. That check is what keeps a rotate from re-decoding the
 //! file, and what keeps the decoded buffer from being rebuilt on every frame.
 
-use std::cell::Cell;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
+use ui::animation::{Animated, Curve, Transition};
+use ui::chrome::fill_scrim;
 use ui::icons::{Icon, draw_icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexedScrollbar,
-    EmptyState, ImageViewer, ScrollMetrics, SearchField, TextInput, Widget,
+    Button, ButtonFace, ButtonStyle, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind,
+    DateIndexedScrollbar, EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout,
+    ModalSpec, ProgressBar, ScrollMetrics, SearchField, SegmentedFace, TextInput, TextInputKind,
+    ToggleGroup, Widget,
 };
 use winit::keyboard::{Key, NamedKey};
 
@@ -47,11 +51,13 @@ use crate::doc::PhotosDoc;
 use crate::model::{Edits, LibraryPhoto, OpenImage, Rect01};
 use crate::pixels::{self, Rgba};
 use crate::strings::tr;
+use crate::timeline_projection::{TimelineGeometry, TimelinePhoto, TimelineProjection};
 
 /// Toolbar height, and the status bar's. Both are chrome around the canvas,
 /// which takes everything left over.
 const BAR_H: f32 = 48.0;
 const PAD: f32 = 12.0;
+const RETAINED_CONTROL_OPERATION_TYPE: &str = "tilo.ui.control.invoke";
 
 /// Button height. Deliberately shorter than the bar so the controls sit in
 /// the strip rather than filling it edge to edge.
@@ -78,6 +84,83 @@ const ICON_GAP: f32 = 6.0;
 const LABEL_PAD_X: f32 = 12.0;
 /// Gap between adjacent buttons.
 const BTN_GAP: f32 = 6.0;
+
+/// Coarse, bundled coastlines for the private/offline Places overview. These
+/// are intentionally only continental silhouettes: they add orientation but
+/// cannot be mistaken for current navigation data or a precision basemap.
+const OFFLINE_WORLD_LANDMASSES: &[&[(f64, f64)]] = &[
+    &[
+        (72.0, -168.0),
+        (70.0, -140.0),
+        (60.0, -125.0),
+        (50.0, -124.0),
+        (32.0, -117.0),
+        (18.0, -104.0),
+        (8.0, -83.0),
+        (20.0, -74.0),
+        (45.0, -61.0),
+        (58.0, -72.0),
+        (72.0, -95.0),
+        (72.0, -168.0),
+    ],
+    &[
+        (13.0, -81.0),
+        (6.0, -77.0),
+        (-8.0, -78.0),
+        (-25.0, -70.0),
+        (-55.0, -68.0),
+        (-52.0, -42.0),
+        (-20.0, -40.0),
+        (2.0, -50.0),
+        (13.0, -61.0),
+        (13.0, -81.0),
+    ],
+    &[
+        (36.0, -10.0),
+        (51.0, -5.0),
+        (61.0, 15.0),
+        (70.0, 40.0),
+        (58.0, 65.0),
+        (72.0, 110.0),
+        (62.0, 165.0),
+        (45.0, 145.0),
+        (20.0, 121.0),
+        (7.0, 106.0),
+        (22.0, 78.0),
+        (10.0, 43.0),
+        (31.0, 31.0),
+        (36.0, -10.0),
+    ],
+    &[
+        (35.0, -17.0),
+        (31.0, 31.0),
+        (12.0, 44.0),
+        (-12.0, 43.0),
+        (-35.0, 20.0),
+        (-30.0, 10.0),
+        (-5.0, 8.0),
+        (15.0, -17.0),
+        (35.0, -17.0),
+    ],
+    &[
+        (-10.0, 113.0),
+        (-18.0, 146.0),
+        (-39.0, 147.0),
+        (-44.0, 115.0),
+        (-25.0, 112.0),
+        (-10.0, 113.0),
+    ],
+    &[
+        (-63.0, -180.0),
+        (-70.0, -120.0),
+        (-72.0, -60.0),
+        (-68.0, 0.0),
+        (-72.0, 60.0),
+        (-69.0, 120.0),
+        (-63.0, 180.0),
+        (-63.0, -180.0),
+    ],
+];
 /// Horizontal room a group separator occupies, rule included.
 const SEP_W: f32 = 17.0;
 
@@ -92,13 +175,19 @@ const CANVAS_INSET: f32 = 10.0;
 const THUMBNAIL_MAX_W: u32 = 320;
 const THUMBNAIL_MAX_H: u32 = 180;
 const THUMBNAIL_QUEUE_LIMIT: usize = 4;
-const DIRECTORY_IMPORT_QUEUE: usize = 16;
 const DIRECTORY_IMPORT_PER_FRAME: usize = 2;
-const DIRECTORY_IMPORT_MAX_FILES: usize = 10_000;
+/// A receipt must not retain an unbounded directory's diagnostics. The total
+/// count remains visible; these are the concrete entries a person can inspect.
+const DIRECTORY_FAILURE_DETAIL_LIMIT: usize = 20;
+const DIRECTORY_FAILURES_PER_PAGE: usize = 4;
 const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// One bounded materialized library page. This is intentionally independent
 /// of the number of cards that happen to fit in a particular window.
 const LIBRARY_PAGE_SIZE: usize = 24;
+/// People, places, and albums are projected one bounded page at a time. The
+/// backing vectors retain the full collection so “Browse all” is real rather
+/// than a prettier name for truncation.
+const COLLECTION_PAGE_SIZE: usize = 4;
 
 /// A four-column shelf is only useful while each photograph remains a
 /// recognisable, comfortably targetable card. At tablet widths a two-column
@@ -163,69 +252,6 @@ pub fn timeline_virtual_range(
     start..end
 }
 
-/// Build continuous chronological rows from document-owned image dimensions.
-/// A row never crosses a capture day; complete rows fill the available width,
-/// while a day's final partial row remains at its natural target height.
-fn justified_timeline_layout(
-    items: &[LibraryItem],
-    available_width: f64,
-    target_height: f64,
-    gap: f64,
-) -> Vec<TimelineItemLayout> {
-    let mut layout = Vec::with_capacity(items.len());
-    let mut start = 0;
-    while start < items.len() {
-        let day = &items[start].captured_at;
-        let mut day_end = start + 1;
-        while day_end < items.len() && items[day_end].captured_at == *day {
-            day_end += 1;
-        }
-        let mut row_start = start;
-        while row_start < day_end {
-            let mut row_end = row_start;
-            let mut aspect_sum = 0.0;
-            while row_end < day_end {
-                let next_aspect = items[row_end].aspect_ratio.clamp(0.35, 3.0);
-                let next_count = row_end - row_start + 1;
-                let next_width = (aspect_sum + next_aspect) * target_height
-                    + gap * next_count.saturating_sub(1) as f64;
-                aspect_sum += next_aspect;
-                row_end += 1;
-                if next_width >= available_width || next_count >= 6 {
-                    break;
-                }
-            }
-            let fills_row = row_end < day_end || aspect_sum * target_height >= available_width;
-            let height = if fills_row {
-                ((available_width - gap * (row_end - row_start - 1) as f64) / aspect_sum)
-                    .clamp(76.0, 320.0)
-            } else {
-                target_height.clamp(76.0, 320.0)
-            };
-            let mut used = 0.0;
-            for index in row_start..row_end {
-                let is_last = index + 1 == row_end;
-                let width = if fills_row && is_last {
-                    (available_width - used).max(44.0)
-                } else {
-                    let width = (items[index].aspect_ratio.clamp(0.35, 3.0) * height).round();
-                    used += width + gap;
-                    width
-                };
-                layout.push(TimelineItemLayout {
-                    width,
-                    height,
-                    row_start: index == row_start,
-                    row_end: is_last,
-                });
-            }
-            row_start = row_end;
-        }
-        start = day_end;
-    }
-    layout
-}
-
 /// Measured rows for the compact library masthead.  Compact and 200% text
 /// share this source of truth so the count, selection affordance, density,
 /// collection rail, and first date never occupy the same vertical space.
@@ -274,10 +300,16 @@ fn compact_library_header_geometry(
             timeline_y: album_actions.y1 + 10.0,
         }
     } else {
-        let albums_y = top + 24.0;
+        // A compact library still needs one quiet line of context beneath its
+        // title.  Without it, the icon-only density controls read as an
+        // unrelated toolbar and a small library has no indication that its
+        // chronology is complete.  Give the count its own baseline rather
+        // than squeezing it into the title/control row.
+        let count_y = top + 26.0;
+        let albums_y = top + 50.0;
         CompactHeaderGeometry {
             title_y: top,
-            count_y: top + 3.0,
+            count_y,
             controls: Rect::new(
                 bounds.x1 - 118.0,
                 bounds.y0 + 8.0,
@@ -324,7 +356,52 @@ struct PeopleScanProgress {
     last_error: Option<String>,
 }
 
+/// The exact local batch admitted to the one analysis worker.  This is kept
+/// in memory rather than in the CRDT (or the checkpoint) because it contains
+/// no biometric result, and because a cursor is only durable *after* this
+/// batch succeeds.
+#[derive(Clone, Debug)]
+struct PendingPeopleScan {
+    start: usize,
+    scanned: usize,
+    total: usize,
+}
+
 impl PeopleScanProgress {
+    /// Plan a bounded contiguous slice without moving the durable cursor.
+    /// The caller commits `advance_after_success` only after the face worker
+    /// has returned and its opaque local clusters were accepted.
+    fn batch_range(&self, available: usize, limit: usize) -> Option<(usize, usize)> {
+        (available > 0).then(|| {
+            let start = self.next_offset % available;
+            // Do not wrap a final partial batch: every locally available
+            // photograph is covered once before the next pass begins.
+            (start, limit.min(available.saturating_sub(start)))
+        })
+    }
+
+    fn advance_after_success(&mut self, start: usize, scanned: usize, total: usize) {
+        if total == 0 {
+            return;
+        }
+        self.next_offset = start.saturating_add(scanned) % total;
+        self.last_library_size = total;
+        self.completed_batches = self.completed_batches.saturating_add(1);
+        self.status = if self.next_offset == 0 {
+            "complete"
+        } else {
+            "paused"
+        }
+        .to_owned();
+        self.last_error = None;
+    }
+
+    fn record_failure(&mut self, error: String) {
+        // In particular, do not alter next_offset here: retry must send the
+        // same slice, not skip photographs whose private analysis failed.
+        self.status = "error".to_owned();
+        self.last_error = Some(error);
+    }
     fn load() -> Self {
         let Some(path) = Self::path() else {
             return Self::default();
@@ -361,8 +438,17 @@ impl PeopleScanProgress {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageAnalysisComponent {
+    Ocr,
+    Vision,
+}
+
 enum AnalysisOutcome {
-    Image(Result<crate::model::ImageAnalysis, String>),
+    Image {
+        component: ImageAnalysisComponent,
+        result: Result<crate::model::ImageAnalysis, String>,
+    },
     People(Result<crate::people::VerifiedFaceClusterBatch, String>),
 }
 
@@ -404,6 +490,16 @@ fn analysis_failure(
     }
 }
 
+fn mark_analysis_shared(analysis: &mut crate::model::ImageAnalysis) {
+    "shared".clone_into(&mut analysis.provenance.scope);
+    if let Some(provenance) = &mut analysis.ocr_provenance {
+        "shared".clone_into(&mut provenance.scope);
+    }
+    if let Some(provenance) = &mut analysis.vision_provenance {
+        "shared".clone_into(&mut provenance.scope);
+    }
+}
+
 fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) {
     while let Ok(job) = rx.recv() {
         if tx
@@ -412,12 +508,14 @@ fn analysis_worker(rx: &Receiver<AnalysisJob>, tx: &SyncSender<AnalysisResult>) 
                 photo_id: job.photo_id,
                 content: job.content,
                 result: match job.kind {
-                    AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image(
-                        crate::analysis::recognize_text(&job.image, &language),
-                    ),
-                    AnalysisJobKind::Vision { capability } => AnalysisOutcome::Image(
-                        crate::analysis::analyze_image(&job.image, &capability),
-                    ),
+                    AnalysisJobKind::Ocr { language } => AnalysisOutcome::Image {
+                        component: ImageAnalysisComponent::Ocr,
+                        result: crate::analysis::recognize_text(&job.image, &language),
+                    },
+                    AnalysisJobKind::Vision { capability } => AnalysisOutcome::Image {
+                        component: ImageAnalysisComponent::Vision,
+                        result: crate::analysis::analyze_image(&job.image, &capability),
+                    },
                     AnalysisJobKind::People { capability, images } => {
                         AnalysisOutcome::People(crate::analysis::detect_people(images, &capability))
                     }
@@ -501,6 +599,23 @@ enum AlbumEditorHit {
 enum MetadataEditorHit {
     Save,
     Cancel,
+    Organize,
+    TimeAndPlace,
+    ClearFolder,
+    ClearPeople,
+    ClearTags,
+    ClearCapturedAt,
+    ClearLocation,
+    /// Set the draft location to the centre of the offline reference map.
+    /// Pointer activation uses the exact point under the pointer instead.
+    PlaceOnMap,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum MetadataEditorSection {
+    #[default]
+    Organize,
+    TimeAndPlace,
 }
 
 /// The local selection shelf. Selection is intentionally not a CRDT value:
@@ -512,8 +627,10 @@ enum SelectionHit {
     SelectAll,
     Clear,
     Favorite,
+    EditDetails,
     ChooseAlbum,
     CancelDestinationChooser,
+    CloseDestinationChooser,
     ApplyDestination,
     PreviousDestinationPage,
     NextDestinationPage,
@@ -532,8 +649,10 @@ enum TimelineHit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LibraryDestination {
     Timeline,
+    Albums,
     People,
     Places,
+    Analysis,
 }
 
 #[derive(Clone)]
@@ -544,12 +663,79 @@ struct PlaceItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PlacesHit {
     Timeline,
+    Albums,
     People,
     Places,
+    Analysis,
     ToggleList,
     ZoomIn,
     ZoomOut,
-    Marker(String),
+    /// A canonical place key, never a representative photo id.  A marker is
+    /// a collection affordance and must not silently choose one photo from it.
+    Place(String),
+    /// A photo row inside an already-open place collection.
+    Photo(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CollectionPageHit {
+    AlbumsPrevious,
+    AlbumsNext,
+    PeoplePrevious,
+    PeopleNext,
+    PlacesPrevious,
+    PlacesNext,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectoryStatusHit {
+    Stop,
+    Details,
+    Dismiss,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PeopleSelection {
+    Approved(String),
+    Suggestion(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PeopleIntent {
+    Back,
+    ToggleRecognition,
+    Scan,
+    CancelScan,
+    OpenApproved(String),
+    OpenSuggestion(String),
+    BrowseApproved,
+    SaveName,
+    BeginMerge,
+    MergeApprovedInto(String),
+    ApproveSuggestion,
+    RejectSuggestion,
+    HideSuggestion,
+    RestoreSuggestion,
+    MergeSuggestionWith(String),
+    ToggleHidden,
+    Page(bool),
+    DeleteLocalData,
+    ConfirmDeleteLocalData,
+}
+
+struct PeopleControl {
+    intent: PeopleIntent,
+    label: String,
+    bounds: Rect,
+    button: Button,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibraryAnalysisHit {
+    Start,
+    Pause,
+    Resume,
+    RetryFailures,
 }
 
 /// One chooser page always fits: six chips in a desktop row or a 3×2 compact
@@ -565,10 +751,6 @@ struct LibraryItem {
     name: String,
     favorite: bool,
     captured_at: String,
-    /// Intrinsic geometry is document metadata, available before thumbnail
-    /// hydration.  Keeping it in the projected item avoids a 3:2 placeholder
-    /// grid that jumps every time a decoder finishes.
-    aspect_ratio: f64,
 }
 
 /// Presentation-only geometry for a stable justified row.
@@ -576,8 +758,6 @@ struct LibraryItem {
 struct TimelineItemLayout {
     width: f64,
     height: f64,
-    row_start: bool,
-    row_end: bool,
 }
 
 #[derive(Clone)]
@@ -794,6 +974,36 @@ struct Rendered {
     rgba: Rgba,
 }
 
+/// The compact, explicitly shared context shown beside an open photograph.
+///
+/// This is a projection of the library record, not a second metadata store:
+/// it gives the viewer useful orientation without turning a filename or a
+/// device-local EXIF read into collaboration state.  The persistent editor
+/// remains the library's canonical metadata action surface.
+#[derive(Clone, Debug)]
+struct ViewerDetails {
+    name: String,
+    dimensions: String,
+    edited: bool,
+    favorite: bool,
+    description: Option<String>,
+    captured_at: Option<String>,
+    place: Option<String>,
+    people: Vec<String>,
+    tags: Vec<String>,
+    folder: Option<String>,
+}
+
+fn viewer_copy(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let clipped: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{clipped}…")
+    } else {
+        clipped
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "library mode and the three independent transient album-editor flags have distinct event and reconciliation lifecycles"
@@ -809,6 +1019,9 @@ pub struct PhotosApp {
     original: Option<(String, Rgba)>,
     rendered: Option<Rendered>,
     viewer: Option<ImageViewer>,
+    /// Bounded presentation projection for the open-view information card.
+    /// It is refreshed from the document and never written back from paint.
+    viewer_details: Option<ViewerDetails>,
     buttons: Vec<(Hit, Button)>,
     pending: Rc<Cell<Option<Hit>>>,
     /// Where the last export went, or why it failed. Shown in the status line
@@ -834,7 +1047,17 @@ pub struct PhotosApp {
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
     directory_picker: Option<ui::portal::PortalChannel>,
+    directory_picker_retain_exif_location: bool,
     directory_import: Option<DirectoryImport>,
+    /// Last completed local job remains visible until the next one begins.
+    /// Paths stay device-local and are reduced to file names in presentation.
+    directory_import_receipt: Option<DirectoryImportReceipt>,
+    directory_import_details_open: bool,
+    directory_import_details_page: usize,
+    directory_import_details_layout: Option<ModalLayout>,
+    directory_import_pending: Rc<Cell<Option<DirectoryStatusHit>>>,
+    directory_import_buttons: Vec<(DirectoryStatusHit, Button)>,
+    directory_import_progress: ProgressBar,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     pending_resource_open: Option<(tilo_actions::InvocationId, String)>,
@@ -843,6 +1066,16 @@ pub struct PhotosApp {
     active_analysis: HashSet<tilo_actions::InvocationId>,
     cancelled_analysis: HashSet<tilo_actions::InvocationId>,
     active_people_scans: HashSet<tilo_actions::InvocationId>,
+    pending_people_scans: HashMap<tilo_actions::InvocationId, PendingPeopleScan>,
+    library_analysis: crate::library_analysis::LibraryAnalysisState,
+    library_analysis_capability: Option<tilo_vision::LocalVisionCapability>,
+    library_analysis_pending: Rc<Cell<Option<LibraryAnalysisHit>>>,
+    library_analysis_buttons: Vec<(LibraryAnalysisHit, Button)>,
+    library_analysis_progress: ProgressBar,
+    library_analysis_failure_hits: Vec<(String, Rect)>,
+    /// (shared analyzed, locally available unprocessed, awaiting local bytes)
+    /// over the complete library, never the current visual filter.
+    library_analysis_coverage: (usize, usize, usize),
     /// Private People-review state. It is intentionally neither a document
     /// field nor a resource: unconfirmed face proposals belong only on this
     /// device until an explicit review commits a compact label membership.
@@ -854,6 +1087,20 @@ pub struct PhotosApp {
     /// A distinct People collection surface. Its private suggestion state is
     /// visually and semantically separated from shared approved labels.
     people_mode: bool,
+    people_selection: Option<PeopleSelection>,
+    /// The person review sheet enters with the shared motion primitive.  The
+    /// renderer snaps it open when reduced motion is requested.
+    people_detail_transition: Transition,
+    people_merge_mode: bool,
+    people_show_hidden: bool,
+    people_review_page: usize,
+    people_approved: Vec<crate::people::SharedPerson>,
+    people_delete_confirm: bool,
+    people_name_input: TextInput,
+    people_name_bounds: Rect,
+    people_controls: Vec<PeopleControl>,
+    people_control_signature: String,
+    people_pending: Rc<RefCell<Option<PeopleIntent>>>,
     canvas_state: CanvasState,
     search_provider: crate::search::PhotosSearchProvider,
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
@@ -875,19 +1122,43 @@ pub struct PhotosApp {
     /// changing the shared `SearchField` interaction contract.
     library_search: SearchField,
     library_query: String,
+    /// Incremental results from the retained full-text catalogue. A broad
+    /// query advances by one bounded candidate page per sync; paint and
+    /// filtering never scan or normalize the whole corpus.
+    library_query_indexed: String,
+    library_query_generation: u64,
+    library_query_cursor: Option<ui::search::SearchCursor>,
+    library_query_matches: HashSet<String>,
+    library_query_complete: bool,
     library_destination: LibraryDestination,
     places_list_mode: bool,
     places_viewport: crate::places::MapViewport,
+    /// The exact canonical place collection currently opened from a resource,
+    /// map marker, keyboard, or accessibility action. Presentation-only.
+    places_open_key: Option<String>,
     places_items: Vec<PlaceItem>,
+    places_page: usize,
     places_hits: Vec<(PlacesHit, Rect)>,
+    collection_page_hits: Vec<(CollectionPageHit, Rect, bool)>,
+    collection_page_buttons: Vec<(CollectionPageHit, Button)>,
+    collection_page_pending: Rc<Cell<Option<CollectionPageHit>>>,
     places_map_bounds: Rect,
     places_drag_origin: Option<Point>,
+    /// A short local response to a map pan or zoom. It deliberately animates
+    /// only presentation geometry—camera position itself stays immediate so
+    /// keyboard, pointer, agents, and screen readers all observe the same
+    /// completed operation at once.
+    places_camera_feedback: Option<Animated<f64>>,
+    places_motion_reduced: bool,
     /// Count for the always-addressable Favorites virtual collection. This is
     /// a scalar projection of the shared library, so paint never walks the
     /// document and the chip stays bounded even for a very large collection.
     library_favorite_count: usize,
     library_offset: usize,
     library_albums: Vec<(String, String, usize)>,
+    /// At most four stable member ids per album for the bounded cover mosaic.
+    library_album_covers: HashMap<String, Vec<String>>,
+    albums_page: usize,
     active_album: Option<String>,
     /// Metadata browse filters originate from canonical folder/person
     /// resources. They are local presentation state, just like an album view;
@@ -909,6 +1180,7 @@ pub struct PhotosApp {
     /// resource tree still resolve every stable id outside this shelf.
     library_folders: Vec<(String, usize)>,
     library_people: Vec<(String, usize)>,
+    people_page: usize,
     /// One bounded representative image per approved person, selected from
     /// the shared metadata projection and rendered from the existing cache.
     library_person_covers: HashMap<String, String>,
@@ -930,10 +1202,12 @@ pub struct PhotosApp {
     /// This remains local UI state: collaborators should never change a
     /// person's preferred thumbnail size.
     timeline_density: u8,
-    /// Fractional row offset: pixel-wheel scrolling is smooth while the
-    /// materialised slice still advances only when its leading row changes.
-    timeline_scroll_row: f64,
-    timeline_last_columns: usize,
+    /// Exact variable-height chronology coordinate.
+    timeline_scroll_y: f64,
+    timeline_projection: TimelineProjection,
+    timeline_projection_heads: Vec<automerge::ChangeHash>,
+    timeline_projection_filter: String,
+    timeline_viewport_height: f64,
     /// Shared chronological navigation face.  It owns no library data: the
     /// current row offset/density remain private presentation state, while
     /// date boundaries are a bounded projection of canonical photo metadata.
@@ -942,6 +1216,7 @@ pub struct PhotosApp {
     timeline_index_metrics: ScrollMetrics,
     library_details_cards: Vec<(String, Rect)>,
     album_cards: Vec<(Option<String>, Rect)>,
+    album_edit_cards: Vec<(String, Rect)>,
     album_editor: bool,
     album_editor_id: Option<String>,
     album_editor_creating: bool,
@@ -958,14 +1233,35 @@ pub struct PhotosApp {
     album_page_buttons: Vec<(AlbumEditorHit, Button)>,
     album_page_pending: Rc<Cell<Option<AlbumEditorHit>>>,
     metadata_editor: bool,
-    metadata_editor_id: Option<String>,
+    metadata_editor_ids: Vec<String>,
     metadata_folder_input: TextInput,
     metadata_people_input: TextInput,
     metadata_tags_input: TextInput,
     metadata_captured_at_input: TextInput,
-    /// Tab order in the details sheet: four shared fields, Cancel, Save.
+    metadata_place_input: TextInput,
+    metadata_latitude_input: TextInput,
+    metadata_longitude_input: TextInput,
+    metadata_location_map: crate::places::MapViewport,
+    metadata_location_map_bounds: Rect,
+    /// A draft-only provenance choice. It becomes durable only on Save, and
+    /// lets collaborators distinguish deliberate map placement from typing.
+    metadata_location_from_map: bool,
+    /// Whether each field started with multiple values in a multi-photo edit.
+    /// An untouched empty mixed field means Keep, never Clear.
+    metadata_mixed: [bool; 5],
+    /// A visible Clear command resolves the otherwise ambiguous empty mixed
+    /// field without magic sentinel text.
+    metadata_force_clear: [bool; 5],
+    metadata_editor_section: MetadataEditorSection,
+    /// Tab order within the active section plus Cancel and Save.
     metadata_editor_focus: usize,
     metadata_editor_hits: Vec<(MetadataEditorHit, Rect)>,
+    /// The metadata sheet is laid out over the media canvas, but its command
+    /// controls are still real toolkit buttons. Keeping them retained gives
+    /// hover/press/focus treatment, native action publication and keyboard
+    /// activation to the same controls a pointer user sees.
+    metadata_editor_buttons: Vec<(MetadataEditorHit, Button)>,
+    metadata_editor_pending: Rc<Cell<Option<MetadataEditorHit>>>,
     /// At most two viewportfuls of decoded thumbnails.  Originals are never
     /// scanned at draw time, and a large library cannot turn a frame into a
     /// disk-I/O loop.
@@ -1023,15 +1319,46 @@ struct DirectoryImport {
     receiver: Receiver<DirectoryImportEvent>,
     cancel: Arc<AtomicBool>,
     invocation: Option<tilo_actions::InvocationId>,
+    mode: DirectoryImportMode,
     discovered: usize,
     imported: usize,
+    refreshed: usize,
+    unchanged: usize,
     skipped: usize,
-    done: bool,
+    sequence: u64,
+    pending: VecDeque<crate::import::IndexedPhoto>,
+    failures: Vec<crate::import::ImportFailure>,
+    worker_done: bool,
+    cancelled: bool,
+    limit_reached: bool,
+    produced_resources: Vec<String>,
+    /// Keeps deterministic offscreen progress fixtures alive. Real jobs own
+    /// their sender on the worker and always leave this empty.
+    _shot_sender: Option<std::sync::mpsc::Sender<DirectoryImportEvent>>,
 }
 
 enum DirectoryImportEvent {
-    Candidate(std::path::PathBuf),
-    Finished,
+    Progress(crate::import::ImportProgress),
+    Finished(Result<crate::import::ImportReport, String>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectoryImportMode {
+    Import,
+    Reindex,
+}
+
+#[derive(Clone, Debug)]
+struct DirectoryImportReceipt {
+    mode: DirectoryImportMode,
+    discovered: usize,
+    imported: usize,
+    refreshed: usize,
+    unchanged: usize,
+    failures: Vec<crate::import::ImportFailure>,
+    failure_count: usize,
+    cancelled: bool,
+    limit_reached: bool,
 }
 
 impl Default for PhotosApp {
@@ -1041,14 +1368,331 @@ impl Default for PhotosApp {
 }
 
 impl PhotosApp {
+    fn discover_library_analysis_capability() -> Result<tilo_vision::LocalVisionCapability, String>
+    {
+        tilo_vision::discover_local_capability(&agent_provider_config::ProviderConfig::load())
+            .ok_or_else(|| {
+                "No verified local image-analysis model is ready. Install and start one in Settings."
+                    .to_owned()
+            })
+    }
+
+    fn begin_library_analysis(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        doc: &AutoCommit,
+        retry_failures: bool,
+    ) -> Result<(), String> {
+        if self.library_analysis.phase == crate::library_analysis::LibraryAnalysisPhase::Running {
+            return Err("Photo analysis is already running on this device".to_owned());
+        }
+        let capability = Self::discover_library_analysis_capability()?;
+        if retry_failures {
+            if !self.library_analysis.begin_retry(
+                invocation,
+                capability.model_label.clone(),
+                capability.revision.clone(),
+            ) {
+                return Err("There are no failed photographs to retry".to_owned());
+            }
+        } else {
+            let library = PhotosDoc::library(doc);
+            let mut unavailable = 0;
+            let targets = library
+                .photos
+                .into_iter()
+                .filter(|photo| {
+                    !photo.analysis.as_ref().is_some_and(|analysis| {
+                        analysis.has_vision_component(
+                            photo.image.content.as_deref(),
+                            &capability.revision,
+                        )
+                    })
+                })
+                .filter_map(|photo| {
+                    if photo.image.content.is_some() && crate::doc::bytes_of(&photo.image).is_some()
+                    {
+                        Some(photo.id)
+                    } else {
+                        unavailable += 1;
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            self.library_analysis.begin(
+                invocation,
+                targets,
+                unavailable,
+                capability.model_label.clone(),
+                capability.revision.clone(),
+            );
+        }
+        self.library_analysis_capability = Some(capability);
+        self.active_analysis.insert(invocation);
+        self.schedule_next_library_analysis(doc)?;
+        Ok(())
+    }
+
+    fn resume_library_analysis(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        doc: &AutoCommit,
+    ) -> Result<(), String> {
+        let capability = Self::discover_library_analysis_capability()?;
+        if self.library_analysis.model_revision.as_deref() != Some(capability.revision.as_str()) {
+            return Err(
+                "The local model changed while analysis was paused. Start a new scan so provenance stays consistent."
+                    .to_owned(),
+            );
+        }
+        if !self.library_analysis.resume(invocation) {
+            return Err("Photo analysis is not paused".to_owned());
+        }
+        self.library_analysis_capability = Some(capability);
+        self.active_analysis.insert(invocation);
+        self.schedule_next_library_analysis(doc)?;
+        Ok(())
+    }
+
+    fn pause_library_analysis(&mut self) -> bool {
+        let invocation = self.library_analysis.invocation;
+        let paused = self.library_analysis.pause();
+        if paused {
+            if let Some(invocation) = invocation {
+                self.active_analysis.remove(&invocation);
+            }
+            self.notice = Some(
+                "Photo analysis will pause after the photograph already being processed".to_owned(),
+            );
+        }
+        paused
+    }
+
+    fn activate_library_analysis(&mut self, hit: LibraryAnalysisHit, doc: &AutoCommit) -> bool {
+        let operation = match hit {
+            LibraryAnalysisHit::Start => crate::actions::PhotosOperation::AnalyzeLibrary,
+            LibraryAnalysisHit::Pause => crate::actions::PhotosOperation::PauseLibraryAnalysis,
+            LibraryAnalysisHit::Resume => crate::actions::PhotosOperation::ResumeLibraryAnalysis,
+            LibraryAnalysisHit::RetryFailures => {
+                crate::actions::PhotosOperation::RetryLibraryAnalysisFailures
+            }
+        };
+        let Ok(encoded) = tilo_actions::EncodedAction::encode_operation(
+            crate::actions::PHOTOS_OPERATION_TYPE,
+            &operation,
+        ) else {
+            self.notice = Some("Photo analysis action could not be prepared".to_owned());
+            return false;
+        };
+        let _ = &encoded;
+        #[cfg(test)]
+        {
+            self.last_library_action = Some(encoded);
+        }
+        let invocation = tilo_actions::InvocationId::new();
+        let result = match hit {
+            LibraryAnalysisHit::Start => self.begin_library_analysis(invocation, doc, false),
+            LibraryAnalysisHit::Pause => self
+                .pause_library_analysis()
+                .then_some(())
+                .ok_or_else(|| "Photo analysis is not running".to_owned()),
+            LibraryAnalysisHit::Resume => self.resume_library_analysis(invocation, doc),
+            LibraryAnalysisHit::RetryFailures => self.begin_library_analysis(invocation, doc, true),
+        };
+        if let Err(error) = result {
+            self.notice = Some(error);
+            return false;
+        }
+        true
+    }
+
+    fn schedule_next_library_analysis(&mut self, doc: &AutoCommit) -> Result<(), String> {
+        loop {
+            let Some(photo_id) = self
+                .library_analysis
+                .take_next(|id| PhotosDoc::photo(doc, id).map(|photo| photo.image.name))
+            else {
+                if self.library_analysis.finish_if_empty()
+                    && let Some(invocation) = self.library_analysis.invocation
+                {
+                    self.active_analysis.remove(&invocation);
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(serde_json::json!({
+                                "analyzed": self.library_analysis.succeeded,
+                                "failed": self.library_analysis.failed,
+                                "unavailable": self.library_analysis.unavailable,
+                            })),
+                            resources: vec!["photos.library-analysis".to_owned()],
+                        },
+                    });
+                    self.notice = Some(format!(
+                        "Photo analysis finished: {} analyzed, {} failed",
+                        self.library_analysis.succeeded, self.library_analysis.failed
+                    ));
+                }
+                return Ok(());
+            };
+            let Some(photo) = PhotosDoc::photo(doc, &photo_id) else {
+                let _ = self.library_analysis.record_failure(
+                    crate::library_analysis::LibraryAnalysisFailure {
+                        photo_id: photo_id.clone(),
+                        name: photo_id,
+                        message: "The photograph was removed before analysis started".to_owned(),
+                    },
+                );
+                continue;
+            };
+            let capability = self.library_analysis_capability.clone().ok_or_else(|| {
+                "The verified local image-analysis model is no longer available".to_owned()
+            })?;
+            let invocation = self
+                .library_analysis
+                .invocation
+                .ok_or_else(|| "Photo analysis lost its invocation identity".to_owned())?;
+            let sender = self
+                .analysis_tx
+                .as_ref()
+                .ok_or_else(|| "local image analysis is unavailable on this device".to_owned())?;
+            sender
+                .try_send(AnalysisJob {
+                    invocation,
+                    photo_id,
+                    content: photo.image.content.clone(),
+                    image: photo.image,
+                    kind: AnalysisJobKind::Vision { capability },
+                })
+                .map_err(|_| "local image analysis worker is busy; retry shortly".to_owned())?;
+            return Ok(());
+        }
+    }
+
+    fn drain_library_analysis_result(&mut self, completed: AnalysisResult, doc: &mut AutoCommit) {
+        let photo_name = self
+            .library_analysis
+            .current_name
+            .clone()
+            .unwrap_or_else(|| completed.photo_id.clone());
+        let stale = PhotosDoc::photo(doc, &completed.photo_id)
+            .as_ref()
+            .is_none_or(|photo| photo.image.content != completed.content);
+        let item_result = match completed.result {
+            AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Vision,
+                result: Ok(mut analysis),
+            } if !stale => {
+                mark_analysis_shared(&mut analysis);
+                let action = crate::actions::PhotosAction::MergeImageAnalysis {
+                    photo_id: completed.photo_id.clone(),
+                    analysis,
+                };
+                self.actions
+                    .try_dispatch_with_context(
+                        doc,
+                        crate::actions::PHOTOS_ACTION_TYPE,
+                        &action,
+                        tilo_actions::ActionContext::for_action(
+                            "org.tilo.Photos",
+                            "Photos",
+                            &action,
+                        ),
+                    )
+                    .map_err(|error| error.to_string())
+            }
+            AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Ocr,
+                ..
+            } => {
+                Err("The image-analysis worker returned an OCR result for a vision scan".to_owned())
+            }
+            AnalysisOutcome::Image { result: Ok(_), .. } => {
+                Err("The photograph changed before local analysis finished".to_owned())
+            }
+            AnalysisOutcome::Image {
+                result: Err(error), ..
+            } => Err(error),
+            AnalysisOutcome::People(_) => {
+                Err("The image-analysis worker returned the wrong result kind".to_owned())
+            }
+        };
+        match item_result {
+            Ok(()) => {
+                let _ = self.library_analysis.record_success(&completed.photo_id);
+            }
+            Err(message) => {
+                let _ = self.library_analysis.record_failure(
+                    crate::library_analysis::LibraryAnalysisFailure {
+                        photo_id: completed.photo_id,
+                        name: photo_name,
+                        message,
+                    },
+                );
+            }
+        }
+        if let Some(invocation) = self.library_analysis.invocation {
+            if self.library_analysis.phase
+                == crate::library_analysis::LibraryAnalysisPhase::Complete
+            {
+                self.active_analysis.remove(&invocation);
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({
+                            "analyzed": self.library_analysis.succeeded,
+                            "failed": self.library_analysis.failed,
+                            "unavailable": self.library_analysis.unavailable,
+                        })),
+                        resources: vec!["photos.library-analysis".to_owned()],
+                    },
+                });
+                self.notice = Some(format!(
+                    "Photo analysis finished: {} analyzed, {} failed",
+                    self.library_analysis.succeeded, self.library_analysis.failed
+                ));
+            } else {
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Progress {
+                    invocation,
+                    sequence: u64::try_from(self.library_analysis.completed).unwrap_or(u64::MAX),
+                    phase: if self.library_analysis.phase
+                        == crate::library_analysis::LibraryAnalysisPhase::Paused
+                    {
+                        "paused".to_owned()
+                    } else {
+                        "analyzing".to_owned()
+                    },
+                    completed: Some(
+                        u64::try_from(self.library_analysis.completed).unwrap_or(u64::MAX),
+                    ),
+                    total: Some(u64::try_from(self.library_analysis.total).unwrap_or(u64::MAX)),
+                    message: Some(format!(
+                        "{} analyzed, {} failed",
+                        self.library_analysis.succeeded, self.library_analysis.failed
+                    )),
+                });
+            }
+        }
+        if self.library_analysis.phase == crate::library_analysis::LibraryAnalysisPhase::Running {
+            if let Err(error) = self.schedule_next_library_analysis(doc) {
+                self.library_analysis.pause();
+                self.notice = Some(format!("Photo analysis paused: {error}"));
+            }
+        }
+    }
+
     fn drain_analysis_results(&mut self, doc: &mut AutoCommit) {
         while let Ok(completed) = self.analysis_rx.try_recv() {
+            if self.library_analysis.invocation == Some(completed.invocation) {
+                self.drain_library_analysis_result(completed, doc);
+                continue;
+            }
             self.active_analysis.remove(&completed.invocation);
             self.active_people_scans.remove(&completed.invocation);
+            let pending_people_scan = self.pending_people_scans.remove(&completed.invocation);
             if self.cancelled_analysis.remove(&completed.invocation) {
                 continue;
             }
-            let stale = matches!(&completed.result, AnalysisOutcome::Image(_))
+            let stale = matches!(&completed.result, AnalysisOutcome::Image { .. })
                 && PhotosDoc::photo(doc, &completed.photo_id)
                     .as_ref()
                     .is_none_or(|photo| photo.image.content != completed.content);
@@ -1066,11 +1710,14 @@ impl PhotosApp {
                 }
             } else {
                 match completed.result {
-                    AnalysisOutcome::Image(Ok(mut analysis)) => {
-                        "shared".clone_into(&mut analysis.provenance.scope);
-                        let action = crate::actions::PhotosAction::SetImageAnalysis {
+                    AnalysisOutcome::Image {
+                        component: _,
+                        result: Ok(mut analysis),
+                    } => {
+                        mark_analysis_shared(&mut analysis);
+                        let action = crate::actions::PhotosAction::MergeImageAnalysis {
                             photo_id: completed.photo_id,
-                            analysis: Some(analysis),
+                            analysis,
                         };
                         match self.actions.try_dispatch_with_context(
                             doc,
@@ -1095,35 +1742,73 @@ impl PhotosApp {
                             Err(error) => analysis_failure(completed.invocation, error.to_string()),
                         }
                     }
-                    AnalysisOutcome::Image(Err(error)) => {
-                        analysis_failure(completed.invocation, error)
-                    }
+                    AnalysisOutcome::Image {
+                        result: Err(error), ..
+                    } => analysis_failure(completed.invocation, error),
                     AnalysisOutcome::People(Err(error)) => {
-                        self.people_scan_progress.status = "error".to_owned();
-                        self.people_scan_progress.last_error = Some(error.clone());
+                        self.people_scan_progress.record_failure(error.clone());
                         self.people_scan_progress.save();
                         analysis_failure(completed.invocation, error)
                     }
                     AnalysisOutcome::People(Ok(batch)) => {
                         let added = self.people_controller.ingest_verified_face_clusters(batch);
-                        self.people_scan_progress.status = "paused".to_owned();
-                        self.people_scan_progress.completed_batches = self
-                            .people_scan_progress
-                            .completed_batches
-                            .saturating_add(1);
-                        self.people_scan_progress.last_error = None;
-                        self.people_scan_progress.save();
-                        self.notice = Some(if added == 0 {
-                            "No new local face suggestions were found in this batch".to_owned()
+                        if let Some(pending) = pending_people_scan {
+                            self.people_scan_progress.advance_after_success(
+                                pending.start,
+                                pending.scanned,
+                                pending.total,
+                            );
+                            self.people_scan_progress.save();
+                            self.notice = Some(if added == 0 {
+                                "No new local face suggestions were found in this batch".to_owned()
+                            } else {
+                                format!(
+                                    "{added} local People suggestion{} ready to review",
+                                    if added == 1 { " is" } else { "s are" }
+                                )
+                            });
+                            if self.people_scan_progress.next_offset != 0 {
+                                if let Err(error) =
+                                    self.schedule_people_scan_batch(completed.invocation, doc)
+                                {
+                                    self.people_scan_progress.record_failure(error.clone());
+                                    self.people_scan_progress.save();
+                                    analysis_failure(completed.invocation, error)
+                                } else {
+                                    tilo_actions::InvocationUpdate::Progress {
+                                        invocation: completed.invocation,
+                                        sequence: self.people_scan_progress.completed_batches,
+                                        phase: "scanning".to_owned(),
+                                        completed: Some(
+                                            u64::try_from(self.people_scan_progress.next_offset)
+                                                .unwrap_or(u64::MAX),
+                                        ),
+                                        total: Some(
+                                            u64::try_from(
+                                                self.people_scan_progress.last_library_size,
+                                            )
+                                            .unwrap_or(u64::MAX),
+                                        ),
+                                        message: Some("Scanning the next local batch".to_owned()),
+                                    }
+                                }
+                            } else {
+                                tilo_actions::InvocationUpdate::Succeeded {
+                                    invocation: completed.invocation,
+                                    output: tilo_actions::ActionOutput::default(),
+                                }
+                            }
                         } else {
-                            format!(
-                                "{added} local People suggestion{} ready to review",
-                                if added == 1 { " is" } else { "s are" }
+                            self.people_scan_progress.record_failure(
+                                "People scan result lost its local checkpoint; retry this batch"
+                                    .to_owned(),
+                            );
+                            self.people_scan_progress.save();
+                            analysis_failure(
+                                completed.invocation,
+                                "People scan result lost its local checkpoint; retry this batch"
+                                    .to_owned(),
                             )
-                        });
-                        tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: completed.invocation,
-                            output: tilo_actions::ActionOutput::default(),
                         }
                     }
                 }
@@ -1167,12 +1852,20 @@ impl PhotosApp {
             .map(|_| thumbnail_job_tx);
         let pending: Rc<Cell<Option<Hit>>> = Rc::new(Cell::new(None));
         let album_page_pending: Rc<Cell<Option<AlbumEditorHit>>> = Rc::new(Cell::new(None));
+        let metadata_editor_pending: Rc<Cell<Option<MetadataEditorHit>>> = Rc::new(Cell::new(None));
         let timeline_density_pending: Rc<Cell<Option<TimelineHit>>> = Rc::new(Cell::new(None));
+        let collection_page_pending: Rc<Cell<Option<CollectionPageHit>>> = Rc::new(Cell::new(None));
+        let people_pending = Rc::new(RefCell::new(None));
+        let library_analysis_pending: Rc<Cell<Option<LibraryAnalysisHit>>> =
+            Rc::new(Cell::new(None));
+        let directory_import_pending: Rc<Cell<Option<DirectoryStatusHit>>> =
+            Rc::new(Cell::new(None));
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
             buttons.push((*hit, build_button(*hit, key, *icon, *face, &pending)));
         }
+        let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
             actions: ui::ActionHost::new(),
             #[cfg(test)]
@@ -1180,6 +1873,7 @@ impl PhotosApp {
             original: None,
             rendered: None,
             viewer: None,
+            viewer_details: None,
             buttons,
             pending,
             notice: None,
@@ -1196,7 +1890,16 @@ impl PhotosApp {
             compact_more_hits: Vec::new(),
             picker: None,
             directory_picker: None,
+            directory_picker_retain_exif_location: true,
             directory_import: None,
+            directory_import_receipt: None,
+            directory_import_details_open: false,
+            directory_import_details_page: 0,
+            directory_import_details_layout: None,
+            directory_import_buttons: build_directory_import_buttons(&directory_import_pending),
+            directory_import_pending,
+            directory_import_progress: ProgressBar::indeterminate()
+                .with_label("Indexing photo folder"),
             resource_invocation: None,
             resource_result: None,
             pending_resource_open: None,
@@ -1205,9 +1908,33 @@ impl PhotosApp {
             active_analysis: HashSet::new(),
             cancelled_analysis: HashSet::new(),
             active_people_scans: HashSet::new(),
+            pending_people_scans: HashMap::new(),
+            library_analysis: crate::library_analysis::LibraryAnalysisState::default(),
+            library_analysis_capability: initial_analysis_capability,
+            library_analysis_buttons: build_library_analysis_buttons(&library_analysis_pending),
+            library_analysis_progress: ProgressBar::new(0.0).with_label("Photo analysis"),
+            library_analysis_pending,
+            library_analysis_failure_hits: Vec::new(),
+            library_analysis_coverage: (0, 0, 0),
             people_controller: crate::people::PeopleController::new(),
             people_scan_progress: PeopleScanProgress::load(),
             people_mode: false,
+            people_selection: None,
+            people_detail_transition: Transition::closed(),
+            people_merge_mode: false,
+            people_show_hidden: false,
+            people_review_page: 0,
+            people_approved: Vec::new(),
+            people_delete_confirm: false,
+            people_name_input: TextInput::local()
+                .with_id("photos-people-name")
+                .with_kind(TextInputKind::Name)
+                .with_enter_submits(true)
+                .with_placeholder("Name this person"),
+            people_name_bounds: Rect::ZERO,
+            people_controls: Vec::new(),
+            people_control_signature: String::new(),
+            people_pending,
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
             search_heads: Vec::new(),
@@ -1220,16 +1947,30 @@ impl PhotosApp {
                 .with_id("photos-library-search")
                 .with_placeholder("Search photos, people, places, text"),
             library_query: String::new(),
+            library_query_indexed: String::new(),
+            library_query_generation: 0,
+            library_query_cursor: None,
+            library_query_matches: HashSet::new(),
+            library_query_complete: true,
             library_destination: LibraryDestination::Timeline,
             places_list_mode: false,
             places_viewport: crate::places::MapViewport::default(),
+            places_open_key: None,
             places_items: Vec::new(),
+            places_page: 0,
             places_hits: Vec::new(),
+            collection_page_hits: Vec::new(),
+            collection_page_buttons: build_collection_page_buttons(&collection_page_pending),
+            collection_page_pending,
             places_map_bounds: Rect::ZERO,
             places_drag_origin: None,
+            places_camera_feedback: None,
+            places_motion_reduced: false,
             library_favorite_count: 0,
             library_offset: 0,
             library_albums: Vec::new(),
+            library_album_covers: HashMap::new(),
+            albums_page: 0,
             active_album: None,
             active_folder: None,
             active_person: None,
@@ -1239,6 +1980,7 @@ impl PhotosApp {
             active_favorites: false,
             library_folders: Vec::new(),
             library_people: Vec::new(),
+            people_page: 0,
             library_person_covers: HashMap::new(),
             library_tags: Vec::new(),
             metadata_filter_cards: Vec::new(),
@@ -1249,13 +1991,17 @@ impl PhotosApp {
             library_select_button: build_library_header_button("photos-library-select", "Select"),
             library_album_buttons: build_library_album_buttons(),
             timeline_density: 1,
-            timeline_scroll_row: 0.0,
-            timeline_last_columns: 1,
+            timeline_scroll_y: 0.0,
+            timeline_projection: TimelineProjection::default(),
+            timeline_projection_heads: Vec::new(),
+            timeline_projection_filter: String::new(),
+            timeline_viewport_height: 0.0,
             timeline_index: DateIndexedScrollbar::new("photos:timeline-index"),
             timeline_index_markers: Vec::new(),
             timeline_index_metrics: ScrollMetrics::new(0.0, 0.0, 0.0),
             library_details_cards: Vec::new(),
             album_cards: Vec::new(),
+            album_edit_cards: Vec::new(),
             album_editor: false,
             album_editor_id: None,
             album_editor_creating: false,
@@ -1268,13 +2014,38 @@ impl PhotosApp {
             album_page_buttons: build_album_page_buttons(&album_page_pending),
             album_page_pending,
             metadata_editor: false,
-            metadata_editor_id: None,
-            metadata_folder_input: TextInput::local().with_id("photos-metadata-folder"),
-            metadata_people_input: TextInput::local().with_id("photos-metadata-people"),
-            metadata_tags_input: TextInput::local().with_id("photos-metadata-tags"),
-            metadata_captured_at_input: TextInput::local().with_id("photos-metadata-captured-at"),
+            metadata_editor_ids: Vec::new(),
+            metadata_folder_input: TextInput::local()
+                .with_id("photos-metadata-folder")
+                .with_placeholder("Mixed — leave unchanged"),
+            metadata_people_input: TextInput::local()
+                .with_id("photos-metadata-people")
+                .with_placeholder("Mixed — leave unchanged"),
+            metadata_tags_input: TextInput::local()
+                .with_id("photos-metadata-tags")
+                .with_placeholder("Mixed — leave unchanged"),
+            metadata_captured_at_input: TextInput::local()
+                .with_id("photos-metadata-captured-at")
+                .with_placeholder("Mixed — leave unchanged"),
+            metadata_place_input: TextInput::local()
+                .with_id("photos-metadata-place")
+                .with_placeholder("Optional place name"),
+            metadata_latitude_input: TextInput::local()
+                .with_id("photos-metadata-latitude")
+                .with_placeholder("Latitude"),
+            metadata_longitude_input: TextInput::local()
+                .with_id("photos-metadata-longitude")
+                .with_placeholder("Longitude"),
+            metadata_location_map: crate::places::MapViewport::default(),
+            metadata_location_map_bounds: Rect::ZERO,
+            metadata_location_from_map: false,
+            metadata_mixed: [false; 5],
+            metadata_force_clear: [false; 5],
+            metadata_editor_section: MetadataEditorSection::Organize,
             metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
+            metadata_editor_buttons: build_metadata_editor_buttons(&metadata_editor_pending),
+            metadata_editor_pending,
             library_thumbnails: HashMap::new(),
             thumbnail_unavailable: HashSet::new(),
             original_decode_failed: None,
@@ -1478,6 +2249,16 @@ impl PhotosApp {
         &self.people_controller
     }
 
+    /// Runtime constructor for the device-local People review queue. Tests
+    /// use [`Self::new`] so they never read or mutate the signed-in user's
+    /// private recognition state.
+    #[must_use]
+    pub fn new_persistent() -> Self {
+        let mut app = Self::new();
+        app.people_controller = crate::people::PeopleController::persistent();
+        app
+    }
+
     /// Mutable local People controller. Callers use this for explicit opt-in,
     /// review, hiding, splitting, and deletion of private clusters.
     pub fn people_controller_mut(&mut self) -> &mut crate::people::PeopleController {
@@ -1501,6 +2282,506 @@ impl PhotosApp {
         true
     }
 
+    fn refresh_people_controls(&mut self) {
+        let clusters: Vec<_> = self
+            .people_controller
+            .all_clusters()
+            .map(|cluster| {
+                (
+                    cluster.id.clone(),
+                    cluster.display_name.clone(),
+                    cluster.photos.len(),
+                    cluster.hidden,
+                    cluster.rejected,
+                )
+            })
+            .collect();
+        let signature = format!(
+            "{:?}|{}|{}|{}|{}|{:?}|{:?}",
+            self.people_selection,
+            self.people_merge_mode,
+            self.people_show_hidden,
+            self.people_review_page,
+            self.people_controller.privacy().recognition_enabled,
+            self.people_approved
+                .iter()
+                .map(|person| (&person.label, person.count()))
+                .collect::<Vec<_>>(),
+            clusters
+        );
+        if signature == self.people_control_signature {
+            return;
+        }
+        self.people_control_signature = signature;
+        self.people_controls.clear();
+        let pending = Rc::clone(&self.people_pending);
+        let recognition_enabled = self.people_controller.privacy().recognition_enabled;
+        let mut push = |intent: PeopleIntent, label: String, primary: bool, danger: bool| {
+            let visible_label = match &intent {
+                PeopleIntent::OpenApproved(_) => "View photos",
+                PeopleIntent::OpenSuggestion(_) => "Review",
+                _ => label.as_str(),
+            };
+            let button = Button::new(
+                &format!("photos-people-control-{}", self.people_controls.len()),
+                visible_label,
+                None,
+            )
+            .with_accessible_name(&label);
+            let mut button = if matches!(
+                &intent,
+                PeopleIntent::Back
+                    | PeopleIntent::OpenApproved(_)
+                    | PeopleIntent::OpenSuggestion(_)
+                    | PeopleIntent::BrowseApproved
+                    | PeopleIntent::BeginMerge
+                    | PeopleIntent::ToggleHidden
+                    | PeopleIntent::Page(_)
+            ) {
+                let queued = intent.clone();
+                let pending = Rc::clone(&pending);
+                button.on_view(move || *pending.borrow_mut() = Some(queued.clone()))
+            } else {
+                let queued = intent.clone();
+                let pending = Rc::clone(&pending);
+                button.on_effect(move || *pending.borrow_mut() = Some(queued.clone()))
+            }
+            .fill_width(44.0);
+            if primary || matches!(&intent, PeopleIntent::OpenSuggestion(_)) {
+                button = button.primary();
+            } else if danger {
+                button = button.danger();
+            } else if matches!(
+                &intent,
+                PeopleIntent::Back | PeopleIntent::ToggleHidden | PeopleIntent::DeleteLocalData
+            ) {
+                button = button.ghost();
+            }
+            if matches!(intent, PeopleIntent::Scan) && !recognition_enabled {
+                button = button.with_enabled(false);
+            }
+            self.people_controls.push(PeopleControl {
+                intent,
+                label,
+                bounds: Rect::ZERO,
+                button,
+            });
+        };
+
+        push(
+            PeopleIntent::Back,
+            if self.people_selection.is_some() {
+                "Back to People"
+            } else {
+                "Back to Library"
+            }
+            .to_owned(),
+            false,
+            false,
+        );
+        if self.people_selection.is_none() {
+            let recognition_on = self.people_controller.privacy().recognition_enabled;
+            push(
+                PeopleIntent::ToggleRecognition,
+                if recognition_on {
+                    "Turn recognition off"
+                } else {
+                    "Turn recognition on"
+                }
+                .to_owned(),
+                false,
+                false,
+            );
+            if self.active_people_scans.is_empty() {
+                push(
+                    PeopleIntent::Scan,
+                    "Scan local library".to_owned(),
+                    true,
+                    false,
+                );
+            } else {
+                push(
+                    PeopleIntent::CancelScan,
+                    "Pause scanning".to_owned(),
+                    false,
+                    false,
+                );
+            }
+            let page_size = if self.canvas_rect.width() < 760.0 {
+                2
+            } else {
+                8
+            };
+            let start = self.people_review_page.saturating_mul(page_size);
+            for person in self.people_approved.iter().skip(start).take(page_size) {
+                push(
+                    PeopleIntent::OpenApproved(person.label.clone()),
+                    format!(
+                        "{}  ·  {} photo{}",
+                        person.label,
+                        person.count(),
+                        if person.count() == 1 { "" } else { "s" }
+                    ),
+                    false,
+                    false,
+                );
+            }
+            let visible_clusters: Vec<_> = self
+                .people_controller
+                .all_clusters()
+                .filter(|cluster| self.people_show_hidden || (!cluster.hidden && !cluster.rejected))
+                .skip(start)
+                .take(page_size)
+                .map(|cluster| {
+                    (
+                        cluster.id.clone(),
+                        cluster.display_name.clone(),
+                        cluster.photos.len(),
+                        cluster.hidden || cluster.rejected,
+                    )
+                })
+                .collect();
+            for (id, name, count, hidden) in visible_clusters {
+                let state = if hidden { "hidden" } else { "review" };
+                push(
+                    PeopleIntent::OpenSuggestion(id),
+                    format!(
+                        "{}  ·  {count} photo{}  ·  {state}",
+                        name.unwrap_or_else(|| "Unnamed suggestion".to_owned()),
+                        if count == 1 { "" } else { "s" }
+                    ),
+                    false,
+                    false,
+                );
+            }
+            push(
+                PeopleIntent::ToggleHidden,
+                if self.people_show_hidden {
+                    "Hide dismissed suggestions"
+                } else {
+                    "Review hidden suggestions"
+                }
+                .to_owned(),
+                false,
+                false,
+            );
+            if self.people_review_page > 0 {
+                push(
+                    PeopleIntent::Page(false),
+                    "Previous".to_owned(),
+                    false,
+                    false,
+                );
+            }
+            let total = self.people_approved.len().max(
+                self.people_controller
+                    .all_clusters()
+                    .filter(|cluster| {
+                        self.people_show_hidden || (!cluster.hidden && !cluster.rejected)
+                    })
+                    .count(),
+            );
+            if start.saturating_add(page_size) < total {
+                push(PeopleIntent::Page(true), "Next".to_owned(), false, false);
+            }
+            push(
+                if self.people_delete_confirm {
+                    PeopleIntent::ConfirmDeleteLocalData
+                } else {
+                    PeopleIntent::DeleteLocalData
+                },
+                if self.people_delete_confirm {
+                    "Confirm deleting local face data"
+                } else {
+                    "Delete local face data"
+                }
+                .to_owned(),
+                false,
+                self.people_delete_confirm,
+            );
+        } else {
+            match self.people_selection.clone() {
+                Some(PeopleSelection::Approved(name)) => {
+                    if self.people_merge_mode {
+                        for person in &self.people_approved {
+                            if person.label != name {
+                                push(
+                                    PeopleIntent::MergeApprovedInto(person.label.clone()),
+                                    format!("Merge into {}", person.label),
+                                    false,
+                                    false,
+                                );
+                            }
+                        }
+                    } else {
+                        push(
+                            PeopleIntent::BrowseApproved,
+                            "Browse photographs".to_owned(),
+                            true,
+                            false,
+                        );
+                        push(PeopleIntent::SaveName, "Save name".to_owned(), false, false);
+                        push(
+                            PeopleIntent::BeginMerge,
+                            "Merge person…".to_owned(),
+                            false,
+                            false,
+                        );
+                    }
+                }
+                Some(PeopleSelection::Suggestion(id)) => {
+                    let hidden = self
+                        .people_controller
+                        .cluster(&id)
+                        .is_some_and(|cluster| cluster.hidden || cluster.rejected);
+                    if self.people_merge_mode {
+                        let candidates: Vec<_> = self
+                            .people_controller
+                            .all_clusters()
+                            .filter(|cluster| cluster.id != id && !cluster.rejected)
+                            .map(|cluster| {
+                                (
+                                    cluster.id.clone(),
+                                    cluster
+                                        .display_name
+                                        .clone()
+                                        .unwrap_or_else(|| "Unnamed suggestion".to_owned()),
+                                )
+                            })
+                            .collect();
+                        for (candidate, name) in candidates {
+                            push(
+                                PeopleIntent::MergeSuggestionWith(candidate),
+                                format!("Combine with {name}"),
+                                false,
+                                false,
+                            );
+                        }
+                    } else if hidden {
+                        push(
+                            PeopleIntent::RestoreSuggestion,
+                            "Return to review".to_owned(),
+                            true,
+                            false,
+                        );
+                    } else {
+                        push(
+                            PeopleIntent::ApproveSuggestion,
+                            "Approve and add to People".to_owned(),
+                            true,
+                            false,
+                        );
+                        push(
+                            PeopleIntent::HideSuggestion,
+                            "Decide later".to_owned(),
+                            false,
+                            false,
+                        );
+                        push(
+                            PeopleIntent::RejectSuggestion,
+                            "Dismiss suggestion".to_owned(),
+                            false,
+                            false,
+                        );
+                        push(
+                            PeopleIntent::BeginMerge,
+                            "Combine…".to_owned(),
+                            false,
+                            false,
+                        );
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn select_people_item(&mut self, selection: PeopleSelection) {
+        let initial = match &selection {
+            PeopleSelection::Approved(name) => name.clone(),
+            PeopleSelection::Suggestion(id) => self
+                .people_controller
+                .cluster(id)
+                .and_then(|cluster| cluster.display_name.clone())
+                .unwrap_or_default(),
+        };
+        self.people_selection = Some(selection);
+        self.people_detail_transition
+            .set_open(true, Duration::from_millis(190), Curve::EaseOut);
+        self.people_merge_mode = false;
+        self.people_delete_confirm = false;
+        self.people_name_input.set_text(&initial);
+        self.people_name_input.set_focus(false);
+        self.people_control_signature.clear();
+    }
+
+    fn handle_people_intent(&mut self, intent: PeopleIntent, doc: &mut AutoCommit) {
+        match intent {
+            PeopleIntent::Back => {
+                if self.people_selection.is_some() {
+                    self.people_selection = None;
+                    self.people_merge_mode = false;
+                    self.people_detail_transition.set_open(
+                        false,
+                        Duration::from_millis(160),
+                        Curve::EaseOut,
+                    );
+                } else {
+                    self.library_destination = LibraryDestination::Timeline;
+                    self.people_mode = false;
+                }
+            }
+            PeopleIntent::ToggleRecognition => {
+                let enabled = !self.people_controller.privacy().recognition_enabled;
+                self.people_controller.set_recognition_enabled(enabled);
+                if enabled {
+                    self.people_controller
+                        .discover_face_capability(&agent_provider_config::ProviderConfig::load());
+                }
+                self.notice = Some(self.people_controller.capability().summary().to_owned());
+            }
+            PeopleIntent::Scan => {
+                let invocation = tilo_actions::InvocationId::new();
+                let payload =
+                    serde_json::to_vec(&crate::actions::PhotosOperation::AnalyzePeopleLibrary)
+                        .unwrap_or_default();
+                if let Err(error) = self.start_resource_operation_with_document(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::PHOTOS_OPERATION_TYPE,
+                    &payload,
+                    doc,
+                    &automerge::ROOT,
+                ) {
+                    self.notice = Some(error);
+                } else {
+                    self.notice = Some("Scanning the next local batch…".to_owned());
+                }
+            }
+            PeopleIntent::CancelScan => {
+                for invocation in self.active_people_scans.drain() {
+                    self.active_analysis.remove(&invocation);
+                    self.cancelled_analysis.insert(invocation);
+                    self.pending_people_scans.remove(&invocation);
+                }
+                self.people_scan_progress.status = "cancelled".to_owned();
+                self.people_scan_progress.save();
+                self.notice = Some("People scan paused".to_owned());
+            }
+            PeopleIntent::OpenApproved(name) => {
+                self.select_people_item(PeopleSelection::Approved(name));
+            }
+            PeopleIntent::OpenSuggestion(id) => {
+                self.select_people_item(PeopleSelection::Suggestion(id));
+            }
+            PeopleIntent::BrowseApproved => {
+                if let Some(PeopleSelection::Approved(name)) = &self.people_selection {
+                    self.active_person = Some(name.clone());
+                    self.library_destination = LibraryDestination::Timeline;
+                    self.people_mode = false;
+                    self.timeline_scroll_y = 0.0;
+                }
+            }
+            PeopleIntent::SaveName => {
+                if let Some(PeopleSelection::Approved(from)) = self.people_selection.clone() {
+                    let to = self.people_name_input.value().trim().to_owned();
+                    if to.is_empty() {
+                        self.notice = Some("Enter a name first".to_owned());
+                    } else {
+                        self.commit_library_action(
+                            doc,
+                            &crate::actions::PhotosAction::RenamePerson {
+                                from: from.clone(),
+                                to: to.clone(),
+                            },
+                        );
+                        self.people_selection = Some(PeopleSelection::Approved(to));
+                        self.notice = Some("Person renamed in the shared library".to_owned());
+                    }
+                }
+            }
+            PeopleIntent::BeginMerge => self.people_merge_mode = true,
+            PeopleIntent::MergeApprovedInto(to) => {
+                if let Some(PeopleSelection::Approved(from)) = self.people_selection.clone() {
+                    self.commit_library_action(
+                        doc,
+                        &crate::actions::PhotosAction::RenamePerson { from, to },
+                    );
+                    self.people_selection = None;
+                    self.people_merge_mode = false;
+                    self.notice = Some("People and their photographs were merged".to_owned());
+                }
+            }
+            PeopleIntent::ApproveSuggestion => {
+                if let Some(PeopleSelection::Suggestion(id)) = self.people_selection.clone() {
+                    let name = self.people_name_input.value().trim().to_owned();
+                    if matches!(
+                        self.people_controller.confirm_suggestion(&id, &name),
+                        crate::people::PeopleChange::Unchanged
+                    ) || !self.approve_people_cluster(doc, &id)
+                    {
+                        self.notice = Some("Enter a short name before approving".to_owned());
+                    } else {
+                        let _ = self.people_controller.set_hidden(&id, true);
+                        self.people_selection = None;
+                    }
+                }
+            }
+            PeopleIntent::RejectSuggestion => {
+                if let Some(PeopleSelection::Suggestion(id)) = self.people_selection.clone() {
+                    let _ = self.people_controller.reject_suggestion(&id);
+                    self.people_selection = None;
+                    self.notice = Some("Suggestion dismissed on this device".to_owned());
+                }
+            }
+            PeopleIntent::HideSuggestion => {
+                if let Some(PeopleSelection::Suggestion(id)) = self.people_selection.clone() {
+                    let _ = self.people_controller.set_hidden(&id, true);
+                    self.people_selection = None;
+                    self.notice = Some("Suggestion hidden; you can restore it later".to_owned());
+                }
+            }
+            PeopleIntent::RestoreSuggestion => {
+                if let Some(PeopleSelection::Suggestion(id)) = self.people_selection.clone() {
+                    let _ = self.people_controller.restore_suggestion(&id);
+                    self.people_selection = None;
+                    self.notice = Some("Suggestion returned to review".to_owned());
+                }
+            }
+            PeopleIntent::MergeSuggestionWith(source) => {
+                if let Some(PeopleSelection::Suggestion(destination)) =
+                    self.people_selection.clone()
+                {
+                    let _ = self.people_controller.merge_clusters(&destination, &source);
+                    self.people_merge_mode = false;
+                    self.notice = Some("Local suggestions combined for review".to_owned());
+                }
+            }
+            PeopleIntent::ToggleHidden => self.people_show_hidden = !self.people_show_hidden,
+            PeopleIntent::Page(forward) => {
+                self.people_review_page = if forward {
+                    self.people_review_page.saturating_add(1)
+                } else {
+                    self.people_review_page.saturating_sub(1)
+                };
+            }
+            PeopleIntent::DeleteLocalData => {
+                self.people_delete_confirm = true;
+                self.notice = Some(
+                    "Activate again to delete local face suggestions and model identity".to_owned(),
+                );
+            }
+            PeopleIntent::ConfirmDeleteLocalData => {
+                self.people_controller.delete_all_local_biometric_data();
+                self.people_delete_confirm = false;
+                self.people_selection = None;
+                self.notice =
+                    Some("Local face data deleted; approved shared names were kept".to_owned());
+            }
+        }
+        self.people_control_signature.clear();
+    }
+
     /// Reveal the bounded library grid.  Kept public for the deterministic
     /// offscreen gallery; ordinary interaction reaches it through the same
     /// toolbar button and semantic action as a user.
@@ -1515,6 +2796,7 @@ impl PhotosApp {
         self.active_object = None;
         self.active_pet = None;
         self.active_favorites = false;
+        self.timeline_scroll_y = 0.0;
         self.library_remove_confirm = None;
         self.finish_selection();
     }
@@ -1569,13 +2851,46 @@ impl PhotosApp {
         let Some(index) = index else {
             return Err("that timeline boundary is no longer in the shared library".to_owned());
         };
-        let columns = timeline_column_count(
-            self.canvas_rect.width(),
-            self.timeline_density,
-            self.large_text_toolbar,
-        )
-        .max(1);
-        self.timeline_scroll_row = index as f64 / columns as f64;
+        if let Some(offset) = self
+            .timeline_projection
+            .day_offset(&photos[index].0, self.timeline_viewport_height)
+        {
+            self.timeline_scroll_y = offset;
+            return Ok(());
+        }
+        // A semantic action can arrive before the first painted frame. Build
+        // the same lightweight metadata projection now so the jump is exact
+        // rather than falling back to a guessed fixed-height row.
+        let library = PhotosDoc::library(doc);
+        self.timeline_projection
+            .replace(library.photos.iter().map(|photo| {
+                TimelinePhoto {
+                    id: photo.id.clone(),
+                    name: photo.image.name.clone(),
+                    favorite: photo.favorite,
+                    day: photo
+                        .captured_at
+                        .as_deref()
+                        .map_or_else(|| "Undated".to_owned(), capture_day),
+                    captured_at: photo.captured_at.clone().unwrap_or_default(),
+                    aspect_ratio: if photo.image.width > 0 && photo.image.height > 0 {
+                        f64::from(photo.image.width) / f64::from(photo.image.height)
+                    } else {
+                        1.5
+                    },
+                }
+            }));
+        let width = (self.canvas_rect.width() - f64::from(PAD * 2.0) - 18.0).max(44.0);
+        self.timeline_projection.set_geometry(TimelineGeometry {
+            width,
+            target_height: 168.0,
+            gap: 16.0,
+            compact: self.canvas_rect.width() < LIBRARY_DESKTOP_MASTHEAD_MIN_W,
+        });
+        self.timeline_scroll_y = self
+            .timeline_projection
+            .day_offset(&photos[index].0, self.timeline_viewport_height)
+            .unwrap_or(0.0);
         Ok(())
     }
 
@@ -1586,6 +2901,41 @@ impl PhotosApp {
         self.show_library();
         self.people_mode = true;
         self.library_destination = LibraryDestination::People;
+    }
+
+    /// Reveal albums as a first-class collection. Opening the collection is
+    /// presentation-only; opening a specific album still resolves its stable
+    /// resource id and then enters the chronological photo view.
+    pub fn show_albums(&mut self) {
+        self.show_library();
+        self.people_mode = false;
+        self.library_destination = LibraryDestination::Albums;
+    }
+
+    /// Pose the album overview for deterministic offscreen visual coverage.
+    pub fn show_albums_for_shot(&mut self) {
+        self.show_albums();
+    }
+
+    /// Pose one real local suggestion for the deterministic visual gallery.
+    /// The named cluster must already exist; this never invents recognition
+    /// output or runs on a live launch.
+    pub fn show_people_suggestion_for_shot(&mut self, cluster_id: &str) {
+        self.show_people();
+        if self.people_controller.cluster(cluster_id).is_some() {
+            self.select_people_item(PeopleSelection::Suggestion(cluster_id.to_owned()));
+            // Acceptance shots exercise the settled visual state. Live entry
+            // still starts the shared transition in `select_people_item`.
+            self.people_detail_transition = Transition::open();
+        }
+    }
+
+    /// Reveal the whole-library local-analysis dashboard for deterministic
+    /// visual acceptance. No scan is started and no result is fabricated.
+    pub fn show_library_analysis(&mut self) {
+        self.show_library();
+        self.library_destination = LibraryDestination::Analysis;
+        self.library_analysis_capability = Self::discover_library_analysis_capability().ok();
     }
 
     fn begin_selection(&mut self) {
@@ -1719,6 +3069,7 @@ impl PhotosApp {
                         .all(|id| library.photo(id).is_some_and(|photo| photo.favorite));
                 self.set_selected_favorite(doc, !all_favorite);
             }
+            SelectionHit::EditDetails => self.begin_selected_metadata_editor(doc),
             SelectionHit::ChooseAlbum => {
                 if self.selected_photo_ids.is_empty() || self.library_albums.is_empty() {
                     self.notice = Some("Select photographs and create an album first".to_owned());
@@ -1727,7 +3078,7 @@ impl PhotosApp {
                     self.selection_album_page = 0;
                 }
             }
-            SelectionHit::CancelDestinationChooser => {
+            SelectionHit::CancelDestinationChooser | SelectionHit::CloseDestinationChooser => {
                 self.selection_album_chooser = false;
             }
             SelectionHit::ApplyDestination => {
@@ -1780,15 +3131,169 @@ impl PhotosApp {
         }
     }
 
+    /// Pose a mixed-value multi-photo edit on its location section. This is
+    /// the state most likely to regress silently because blank means “keep”
+    /// until the user explicitly clears or replaces the dimension.
+    pub fn show_batch_metadata_editor_for_shot(&mut self, doc: &AutoCommit) {
+        self.show_selection_for_shot(doc);
+        self.begin_selected_metadata_editor(doc);
+        self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
+    }
+
     /// Pose the offline Places destination for deterministic visual coverage.
     pub fn show_places_for_shot(&mut self) {
         self.show_library();
         self.library_destination = LibraryDestination::Places;
+        self.places_open_key = None;
         self.places_viewport = crate::places::MapViewport {
-            latitude: 37.0,
-            longitude: -40.0,
+            latitude: 18.0,
+            longitude: 0.0,
             zoom: 1.5,
         };
+    }
+
+    /// Apply a local map-camera change and give the marker layer a restrained
+    /// settle cue. The viewport is presentation state, so the animation never
+    /// delays a semantic action or writes shared metadata.
+    fn set_places_viewport(&mut self, viewport: crate::places::MapViewport) {
+        let viewport = viewport.clamped();
+        if self.places_viewport == viewport {
+            return;
+        }
+        self.places_viewport = viewport;
+        if !self.places_motion_reduced {
+            self.places_camera_feedback = Some(Animated::new(
+                1.0,
+                0.0,
+                Duration::from_millis(180),
+                Curve::EaseOut,
+            ));
+        }
+    }
+
+    fn zoom_places_by(&mut self, delta: f64) {
+        self.set_places_viewport(crate::places::MapViewport {
+            zoom: self.places_viewport.zoom + delta,
+            ..self.places_viewport
+        });
+    }
+
+    fn places_camera_feedback(&mut self) -> f64 {
+        let Some(feedback) = self.places_camera_feedback else {
+            return 0.0;
+        };
+        let value = feedback.current(Instant::now());
+        if feedback.done(Instant::now()) {
+            self.places_camera_feedback = None;
+            0.0
+        } else {
+            value
+        }
+    }
+
+    /// Open the exact durable collection behind a Places resource or marker.
+    /// This reads only shared metadata, so it remains usable offline and
+    /// deliberately fails if a collaborator removed the addressed place.
+    fn open_place_collection(&mut self, doc: &AutoCommit, place_key: &str) -> Result<(), String> {
+        let photos: Vec<_> = PhotosDoc::library(doc)
+            .photos
+            .into_iter()
+            .filter(|photo| {
+                photo.location.as_ref().is_some_and(|location| {
+                    location.is_valid() && location.place_key() == place_key
+                })
+            })
+            .collect();
+        let Some(location) = photos.first().and_then(|photo| photo.location.as_ref()) else {
+            return Err("that place is no longer in the shared library".to_owned());
+        };
+        self.show_library();
+        self.library_destination = LibraryDestination::Places;
+        self.places_open_key = Some(place_key.to_owned());
+        self.places_list_mode = true;
+        self.places_page = 0;
+        self.set_places_viewport(crate::places::MapViewport {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            zoom: 12.0,
+        });
+        self.notice = Some(format!(
+            "Showing {} shared photograph{} at this place offline",
+            photos.len(),
+            if photos.len() == 1 { "" } else { "s" }
+        ));
+        Ok(())
+    }
+
+    /// Pose a running folder import for hermetic offscreen visual coverage.
+    /// The held sender prevents the ordinary sync loop from treating this
+    /// deterministic fixture as a crashed worker.
+    pub fn show_directory_import_progress_for_shot(&mut self) {
+        self.show_library();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.directory_import_receipt = None;
+        self.directory_import_details_open = false;
+        self.directory_import = Some(DirectoryImport {
+            receiver,
+            cancel: Arc::new(AtomicBool::new(false)),
+            invocation: None,
+            mode: DirectoryImportMode::Import,
+            discovered: 184,
+            imported: 112,
+            refreshed: 0,
+            unchanged: 7,
+            skipped: 2,
+            sequence: 184,
+            pending: VecDeque::new(),
+            failures: vec![
+                crate::import::ImportFailure {
+                    source: "damaged-scan.jpg".into(),
+                    message: "This image cannot be decoded safely".into(),
+                    retryable: true,
+                },
+                crate::import::ImportFailure {
+                    source: "archive-link".into(),
+                    message: "Symbolic links are not followed during photo import".into(),
+                    retryable: false,
+                },
+            ],
+            worker_done: false,
+            cancelled: false,
+            limit_reached: false,
+            produced_resources: Vec::new(),
+            _shot_sender: Some(sender),
+        });
+    }
+
+    /// Pose a completed partial import with a deliberately bounded issue
+    /// receipt. It exists only for offscreen regression images.
+    pub fn show_directory_import_errors_for_shot(&mut self) {
+        self.show_library();
+        self.directory_import = None;
+        let failures = (1..=9)
+            .map(|number| crate::import::ImportFailure {
+                source: format!("photo-{number:02}.jpg").into(),
+                message: if number % 3 == 0 {
+                    "This image cannot be decoded safely".into()
+                } else {
+                    "Could not read this image".into()
+                },
+                retryable: number % 3 != 0,
+            })
+            .collect();
+        self.directory_import_receipt = Some(DirectoryImportReceipt {
+            mode: DirectoryImportMode::Import,
+            discovered: 268,
+            imported: 241,
+            refreshed: 0,
+            unchanged: 0,
+            failures,
+            failure_count: 27,
+            cancelled: false,
+            limit_reached: false,
+        });
+        self.directory_import_details_open = true;
+        self.directory_import_details_page = 0;
     }
 
     /// Pose the ordinary selection shelf for deterministic visual coverage.
@@ -2010,23 +3515,142 @@ impl PhotosApp {
     /// Open the compact, shared-widget metadata sheet for an explicit card.
     /// Nothing is inferred from pixels: people are only labels the user types.
     fn begin_metadata_editor(&mut self, doc: &AutoCommit, photo_id: &str) {
-        let Some(photo) = PhotosDoc::library(doc).photo(photo_id).cloned() else {
-            self.notice = Some("That photograph is no longer in the library".to_owned());
+        self.begin_metadata_editor_for_ids(doc, vec![photo_id.to_owned()]);
+    }
+
+    fn begin_selected_metadata_editor(&mut self, doc: &AutoCommit) {
+        let mut ids: Vec<_> = self.selected_photo_ids.iter().cloned().collect();
+        ids.sort_unstable();
+        if ids.is_empty() {
+            self.notice = Some("Select at least one photograph first".to_owned());
             return;
+        }
+        self.begin_metadata_editor_for_ids(doc, ids);
+    }
+
+    fn begin_metadata_editor_for_ids(&mut self, doc: &AutoCommit, photo_ids: Vec<String>) {
+        let library = PhotosDoc::library(doc);
+        if photo_ids.is_empty()
+            || photo_ids.len() > crate::actions::MAX_BATCH_PHOTOS
+            || !photo_ids.iter().all(|id| library.photo(id).is_some())
+        {
+            self.notice = Some("A selected photograph is no longer in the library".to_owned());
+            return;
+        }
+        let photos: Vec<_> = photo_ids
+            .iter()
+            .filter_map(|id| library.photo(id))
+            .collect();
+        let common = |values: Vec<String>| {
+            values
+                .first()
+                .filter(|first| values.iter().all(|value| value == *first))
+                .cloned()
         };
+        let folders: Vec<_> = photos
+            .iter()
+            .map(|photo| photo.folder.clone().unwrap_or_default())
+            .collect();
+        let people: Vec<_> = photos.iter().map(|photo| photo.people.join(", ")).collect();
+        let tags: Vec<_> = photos.iter().map(|photo| photo.tags.join(", ")).collect();
+        let captured: Vec<_> = photos
+            .iter()
+            .map(|photo| photo.captured_at.clone().unwrap_or_default())
+            .collect();
+        let locations: Vec<_> = photos.iter().map(|photo| photo.location.clone()).collect();
+        let common_folder = common(folders);
+        let common_people = common(people);
+        let common_tags = common(tags);
+        let common_captured = common(captured);
+        let common_location = locations
+            .first()
+            .filter(|first| locations.iter().all(|value| value == *first))
+            .cloned();
+
         self.metadata_editor = true;
-        self.metadata_editor_id = Some(photo.id);
+        self.metadata_editor_ids = photo_ids;
+        self.metadata_mixed = [
+            common_folder.is_none(),
+            common_people.is_none(),
+            common_tags.is_none(),
+            common_captured.is_none(),
+            common_location.is_none(),
+        ];
+        self.metadata_force_clear = [false; 5];
         self.metadata_folder_input
-            .set_text(photo.folder.as_deref().unwrap_or_default());
+            .set_text(common_folder.as_deref().unwrap_or_default());
         self.metadata_people_input
-            .set_text(&photo.people.join(", "));
-        self.metadata_tags_input.set_text(&photo.tags.join(", "));
+            .set_text(common_people.as_deref().unwrap_or_default());
+        self.metadata_tags_input
+            .set_text(common_tags.as_deref().unwrap_or_default());
         self.metadata_captured_at_input
-            .set_text(photo.captured_at.as_deref().unwrap_or_default());
+            .set_text(common_captured.as_deref().unwrap_or_default());
+        if let Some(Some(location)) = common_location {
+            self.metadata_place_input
+                .set_text(location.label.as_deref().unwrap_or_default());
+            self.metadata_latitude_input
+                .set_text(&format!("{:.6}", location.latitude));
+            self.metadata_longitude_input
+                .set_text(&format!("{:.6}", location.longitude));
+            self.metadata_location_map.latitude = location.latitude;
+            self.metadata_location_map.longitude = location.longitude;
+            self.metadata_location_map.zoom = 4.0;
+            self.metadata_location_from_map = location.provenance.source == "map";
+        } else {
+            self.metadata_place_input.set_text("");
+            self.metadata_latitude_input.set_text("");
+            self.metadata_longitude_input.set_text("");
+            self.metadata_location_map = crate::places::MapViewport::default();
+            self.metadata_location_from_map = false;
+        }
+        for (input, mixed, ordinary) in [
+            (
+                &mut self.metadata_folder_input,
+                self.metadata_mixed[0],
+                "Folder",
+            ),
+            (
+                &mut self.metadata_people_input,
+                self.metadata_mixed[1],
+                "Add people (+); = replaces, - removes",
+            ),
+            (
+                &mut self.metadata_tags_input,
+                self.metadata_mixed[2],
+                "Add tags (+); = replaces, - removes",
+            ),
+            (
+                &mut self.metadata_captured_at_input,
+                self.metadata_mixed[3],
+                "Date and time",
+            ),
+        ] {
+            input.set_placeholder(if mixed {
+                "Mixed — leave unchanged"
+            } else {
+                ordinary
+            });
+        }
+        let location_hint = if self.metadata_mixed[4] {
+            "Mixed — leave unchanged"
+        } else {
+            "Latitude"
+        };
+        self.metadata_latitude_input.set_placeholder(location_hint);
+        self.metadata_longitude_input
+            .set_placeholder(if self.metadata_mixed[4] {
+                "Mixed — leave unchanged"
+            } else {
+                "Longitude"
+            });
         self.metadata_folder_input.set_focus(true);
         self.metadata_people_input.set_focus(false);
         self.metadata_tags_input.set_focus(false);
         self.metadata_captured_at_input.set_focus(false);
+        self.metadata_place_input.set_focus(false);
+        self.metadata_latitude_input.set_focus(false);
+        self.metadata_longitude_input.set_focus(false);
+        self.metadata_editor_section = MetadataEditorSection::Organize;
         self.metadata_editor_focus = 0;
         self.album_editor = false;
         // The sheet owns the full privacy explanation. Keeping a duplicate
@@ -2036,54 +3660,241 @@ impl PhotosApp {
 
     fn cancel_metadata_editor(&mut self) {
         self.metadata_editor = false;
-        self.metadata_editor_id = None;
+        self.metadata_editor_ids.clear();
         self.metadata_folder_input.set_focus(false);
         self.metadata_people_input.set_focus(false);
         self.metadata_tags_input.set_focus(false);
         self.metadata_captured_at_input.set_focus(false);
+        self.metadata_place_input.set_focus(false);
+        self.metadata_latitude_input.set_focus(false);
+        self.metadata_longitude_input.set_focus(false);
         self.metadata_editor_focus = 0;
         self.notice = Some("Photo details discarded".to_owned());
     }
 
     fn save_metadata_editor(&mut self, doc: &mut AutoCommit) {
-        let Some(photo_id) = self.metadata_editor_id.clone() else {
+        if self.metadata_editor_ids.is_empty() {
             return;
-        };
-        let labels = |input: &TextInput| {
-            input
-                .value()
-                .split(',')
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
+        }
         let optional = |input: &TextInput| {
             let value = input.value().trim();
             (!value.is_empty()).then(|| value.to_owned())
         };
+        let text_patch = |input: &TextInput, mixed: bool, clear: bool| {
+            if clear {
+                crate::actions::MetadataPatch::Clear
+            } else if mixed && input.value().trim().is_empty() {
+                crate::actions::MetadataPatch::Keep
+            } else {
+                optional(input).map_or(
+                    crate::actions::MetadataPatch::Clear,
+                    crate::actions::MetadataPatch::Set,
+                )
+            }
+        };
+        let labels_patch = |input: &TextInput, mixed: bool, clear: bool| {
+            if clear {
+                crate::actions::MetadataLabelsPatch::Clear
+            } else {
+                let raw = input.value().trim();
+                let (mode, raw) = match raw.strip_prefix('=') {
+                    Some(value) => ("set", value),
+                    None => match raw.strip_prefix('+') {
+                        Some(value) => ("add", value),
+                        None => match raw.strip_prefix('-') {
+                            Some(value) => ("remove", value),
+                            None if self.metadata_editor_ids.len() > 1 && !raw.is_empty() => {
+                                ("add", raw)
+                            }
+                            None => ("set", raw),
+                        },
+                    },
+                };
+                let values = raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                if mixed && values.is_empty() {
+                    crate::actions::MetadataLabelsPatch::Keep
+                } else {
+                    match mode {
+                        "add" => crate::actions::MetadataLabelsPatch::Add(values),
+                        "remove" => crate::actions::MetadataLabelsPatch::Remove(values),
+                        _ if values.is_empty() => crate::actions::MetadataLabelsPatch::Clear,
+                        _ => crate::actions::MetadataLabelsPatch::Set(values),
+                    }
+                }
+            }
+        };
+        let latitude = self.metadata_latitude_input.value().trim();
+        let longitude = self.metadata_longitude_input.value().trim();
+        let location = if self.metadata_force_clear[4] {
+            crate::actions::MetadataPatch::Clear
+        } else if self.metadata_mixed[4] && latitude.is_empty() && longitude.is_empty() {
+            crate::actions::MetadataPatch::Keep
+        } else if latitude.is_empty() && longitude.is_empty() {
+            crate::actions::MetadataPatch::Clear
+        } else {
+            let (Ok(latitude), Ok(longitude)) = (latitude.parse::<f64>(), longitude.parse::<f64>())
+            else {
+                self.notice =
+                    Some("Location needs numeric latitude and longitude together".to_owned());
+                return;
+            };
+            crate::actions::MetadataPatch::Set(crate::model::PhotoLocation {
+                latitude,
+                longitude,
+                label: optional(&self.metadata_place_input),
+                provenance: crate::model::LocationProvenance {
+                    source: if self.metadata_location_from_map {
+                        "map".to_owned()
+                    } else {
+                        "user".to_owned()
+                    },
+                    scope: "shared".to_owned(),
+                },
+            })
+        };
         self.commit_library_action(
             doc,
-            &crate::actions::PhotosAction::SetMetadata {
-                photo_id,
-                folder: optional(&self.metadata_folder_input),
-                people: labels(&self.metadata_people_input),
-                tags: labels(&self.metadata_tags_input),
-                captured_at: optional(&self.metadata_captured_at_input),
+            &crate::actions::PhotosAction::SetMetadataBatch {
+                photo_ids: self.metadata_editor_ids.clone(),
+                folder: text_patch(
+                    &self.metadata_folder_input,
+                    self.metadata_mixed[0],
+                    self.metadata_force_clear[0],
+                ),
+                people: labels_patch(
+                    &self.metadata_people_input,
+                    self.metadata_mixed[1],
+                    self.metadata_force_clear[1],
+                ),
+                tags: labels_patch(
+                    &self.metadata_tags_input,
+                    self.metadata_mixed[2],
+                    self.metadata_force_clear[2],
+                ),
+                captured_at: text_patch(
+                    &self.metadata_captured_at_input,
+                    self.metadata_mixed[3],
+                    self.metadata_force_clear[3],
+                ),
+                location,
             },
         );
+        let count = self.metadata_editor_ids.len();
         self.metadata_editor = false;
-        self.metadata_editor_id = None;
+        self.metadata_editor_ids.clear();
         self.metadata_editor_focus = 0;
-        self.notice = Some("Shared photo details saved".to_owned());
+        self.notice = Some(if count == 1 {
+            "Shared photo details saved".to_owned()
+        } else {
+            format!("Shared details saved for {count} photographs")
+        });
+        if count > 1 {
+            self.finish_selection();
+        }
     }
 
     fn set_metadata_editor_focus(&mut self, focus: usize) {
-        self.metadata_editor_focus = focus.min(5);
-        self.metadata_folder_input.set_focus(focus == 0);
-        self.metadata_people_input.set_focus(focus == 1);
-        self.metadata_tags_input.set_focus(focus == 2);
-        self.metadata_captured_at_input.set_focus(focus == 3);
+        let max = if self.metadata_editor_section == MetadataEditorSection::Organize {
+            4
+        } else {
+            5
+        };
+        self.metadata_editor_focus = focus.min(max);
+        let organize = self.metadata_editor_section == MetadataEditorSection::Organize;
+        self.metadata_folder_input.set_focus(organize && focus == 0);
+        self.metadata_people_input.set_focus(organize && focus == 1);
+        self.metadata_tags_input.set_focus(organize && focus == 2);
+        self.metadata_captured_at_input
+            .set_focus(!organize && focus == 0);
+        self.metadata_place_input.set_focus(!organize && focus == 1);
+        self.metadata_latitude_input
+            .set_focus(!organize && focus == 2);
+        self.metadata_longitude_input
+            .set_focus(!organize && focus == 3);
+    }
+
+    fn set_metadata_editor_section(&mut self, section: MetadataEditorSection) {
+        self.metadata_editor_section = section;
+        self.set_metadata_editor_focus(0);
+    }
+
+    fn clear_metadata_dimension(&mut self, dimension: usize) {
+        self.metadata_force_clear[dimension] = !self.metadata_force_clear[dimension];
+        if !self.metadata_force_clear[dimension] {
+            return;
+        }
+        match dimension {
+            0 => self.metadata_folder_input.set_text(""),
+            1 => self.metadata_people_input.set_text(""),
+            2 => self.metadata_tags_input.set_text(""),
+            3 => self.metadata_captured_at_input.set_text(""),
+            4 => {
+                self.metadata_place_input.set_text("");
+                self.metadata_latitude_input.set_text("");
+                self.metadata_longitude_input.set_text("");
+                self.metadata_location_from_map = false;
+            }
+            _ => {}
+        }
+    }
+
+    /// Write an explicit offline-map point into the draft fields. No document
+    /// update occurs here: batch edits retain their mixed values until the
+    /// user deliberately saves this one shared provenance-bearing patch.
+    fn set_metadata_location_from_map_point(&mut self, point: Point) -> bool {
+        let bounds = self.metadata_location_map_bounds;
+        if !bounds.contains(point) {
+            return false;
+        }
+        let Some((latitude, longitude)) = self.metadata_location_map.unproject(
+            point.x - bounds.x0,
+            point.y - bounds.y0,
+            bounds.width(),
+            bounds.height(),
+        ) else {
+            return false;
+        };
+        self.metadata_latitude_input
+            .set_text(&format!("{latitude:.6}"));
+        self.metadata_longitude_input
+            .set_text(&format!("{longitude:.6}"));
+        // Re-centre the private draft map so its persistent crosshair is an
+        // honest confirmation of the point just chosen.
+        self.metadata_location_map.latitude = latitude;
+        self.metadata_location_map.longitude = longitude;
+        self.metadata_mixed[4] = false;
+        self.metadata_force_clear[4] = false;
+        self.metadata_location_from_map = true;
+        self.notice =
+            Some("Offline map point selected; it will be shared only after Save".to_owned());
+        true
+    }
+
+    fn activate_metadata_editor_hit(&mut self, hit: MetadataEditorHit, doc: &mut AutoCommit) {
+        match hit {
+            MetadataEditorHit::Save => self.save_metadata_editor(doc),
+            MetadataEditorHit::Cancel => self.cancel_metadata_editor(),
+            MetadataEditorHit::Organize => {
+                self.set_metadata_editor_section(MetadataEditorSection::Organize)
+            }
+            MetadataEditorHit::TimeAndPlace => {
+                self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace)
+            }
+            MetadataEditorHit::ClearFolder => self.clear_metadata_dimension(0),
+            MetadataEditorHit::ClearPeople => self.clear_metadata_dimension(1),
+            MetadataEditorHit::ClearTags => self.clear_metadata_dimension(2),
+            MetadataEditorHit::ClearCapturedAt => self.clear_metadata_dimension(3),
+            MetadataEditorHit::ClearLocation => self.clear_metadata_dimension(4),
+            MetadataEditorHit::PlaceOnMap => {
+                let bounds = self.metadata_location_map_bounds;
+                let _ = self.set_metadata_location_from_map_point(bounds.center());
+            }
+        }
     }
 
     fn begin_edit_album(&mut self, doc: &AutoCommit) {
@@ -2213,6 +4024,58 @@ impl PhotosApp {
         }
     }
 
+    fn page_collection(&mut self, hit: CollectionPageHit) -> bool {
+        let place_total = self
+            .places_items
+            .iter()
+            .filter(|item| {
+                self.places_open_key.as_ref().is_none_or(|key| {
+                    item.photo
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| location.place_key() == *key)
+                })
+            })
+            .count();
+        let page_size = if matches!(
+            hit,
+            CollectionPageHit::AlbumsPrevious | CollectionPageHit::AlbumsNext
+        ) && self.library_destination == LibraryDestination::Albums
+            && self.canvas_rect.width() >= 700.0
+        {
+            8
+        } else {
+            COLLECTION_PAGE_SIZE
+        };
+        let (page, total, forward) = match hit {
+            CollectionPageHit::AlbumsPrevious => {
+                (&mut self.albums_page, self.library_albums.len(), false)
+            }
+            CollectionPageHit::AlbumsNext => {
+                (&mut self.albums_page, self.library_albums.len(), true)
+            }
+            CollectionPageHit::PeoplePrevious => {
+                (&mut self.people_page, self.library_people.len(), false)
+            }
+            CollectionPageHit::PeopleNext => {
+                (&mut self.people_page, self.library_people.len(), true)
+            }
+            CollectionPageHit::PlacesPrevious => (&mut self.places_page, place_total, false),
+            CollectionPageHit::PlacesNext => (&mut self.places_page, place_total, true),
+        };
+        let pages = total.max(1).div_ceil(page_size);
+        let next = if forward {
+            page.saturating_add(1).min(pages.saturating_sub(1))
+        } else {
+            page.saturating_sub(1)
+        };
+        if next == *page {
+            return false;
+        }
+        *page = next;
+        true
+    }
+
     fn library_page_label(&self) -> String {
         if self.library_total == 0 {
             "Showing 0 of 0".to_owned()
@@ -2228,9 +4091,6 @@ impl PhotosApp {
     /// their resulting layout testable for parity.
     fn adjust_timeline_density(&mut self, increase: bool) -> bool {
         let before = self.timeline_density;
-        let anchor = (self.timeline_scroll_row * self.timeline_last_columns.max(1) as f64)
-            .round()
-            .max(0.0);
         if increase {
             self.timeline_density = self.timeline_density.saturating_add(1).min(4);
         } else {
@@ -2239,18 +4099,26 @@ impl PhotosApp {
         if before == self.timeline_density {
             return false;
         }
-        let columns = timeline_column_count(
-            self.canvas_rect.width(),
-            self.timeline_density,
-            self.large_text_toolbar,
-        );
-        self.timeline_scroll_row = anchor / columns.max(1) as f64;
-        self.timeline_last_columns = columns;
         true
     }
 
     fn scroll_timeline_rows(&mut self, delta: f64) {
-        self.timeline_scroll_row = (self.timeline_scroll_row + delta).max(0.0);
+        // Keyboard rows remain a useful semantic step, but the canonical
+        // offset is pixels so portrait and justified rows scroll smoothly.
+        self.timeline_scroll_y = self.timeline_projection.clamp_scroll(
+            self.timeline_scroll_y + delta * 168.0,
+            self.timeline_viewport_height,
+        );
+    }
+
+    fn scroll_timeline_pixels(&mut self, delta: f64) {
+        if !delta.is_finite() {
+            return;
+        }
+        self.timeline_scroll_y = self.timeline_projection.clamp_scroll(
+            self.timeline_scroll_y + delta,
+            self.timeline_viewport_height,
+        );
     }
 
     /// Apply every chronological-index input through the same local scroll
@@ -2260,7 +4128,7 @@ impl PhotosApp {
     fn apply_timeline_index_intent(&mut self, intent: DateIndexIntent) -> bool {
         match intent {
             DateIndexIntent::ScrollTo { position } => {
-                self.timeline_scroll_row =
+                self.timeline_scroll_y =
                     DateIndexedScrollbar::offset_for(self.timeline_index_metrics, position);
                 true
             }
@@ -2386,6 +4254,26 @@ impl PhotosApp {
                 }
                 _ => {}
             }
+            if self.metadata_editor_section == MetadataEditorSection::TimeAndPlace
+                && matches!(self.metadata_editor_focus, 2 | 3)
+            {
+                // Coordinates subsequently authored through the shared text
+                // input are no longer accurately described as a map pin.
+                self.metadata_location_from_map = false;
+            }
+        }
+        if matches!(
+            event,
+            winit::event::WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            }
+        ) && self.metadata_editor_section == MetadataEditorSection::TimeAndPlace
+            && self.set_metadata_location_from_map_point(self.pointer)
+        {
+            *handled = true;
+            return true;
         }
         if matches!(
             event,
@@ -2433,6 +4321,52 @@ impl PhotosApp {
 
     #[allow(
         clippy::too_many_arguments,
+        reason = "forwards the toolkit event contract to retained collection paging controls"
+    )]
+    fn handle_collection_page_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if !self.library_mode || self.collection_page_hits.is_empty() {
+            return false;
+        }
+        for (hit, button) in &mut self.collection_page_buttons {
+            if self
+                .collection_page_hits
+                .iter()
+                .any(|(visible, _, _)| visible == hit)
+            {
+                let mut sink = None;
+                button.handle_event(
+                    event,
+                    scale_factor,
+                    &modifiers,
+                    doc,
+                    path,
+                    handled,
+                    &mut sink,
+                    node_id,
+                    taffy,
+                );
+            }
+        }
+        if let Some(hit) = self.collection_page_pending.take() {
+            self.page_collection(hit);
+            *handled = true;
+            return true;
+        }
+        false
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
         reason = "the metadata sheet embeds four shared TextInputs under the Widget event contract"
     )]
     fn handle_metadata_editor_event(
@@ -2449,15 +4383,43 @@ impl PhotosApp {
         if !self.metadata_editor {
             return false;
         }
+        // The sheet floats over a custom media surface, so dispatch its
+        // retained controls explicitly. They still use the normal widget
+        // event contract and publish the same action surface as every other
+        // button in the app.
+        for (_, button) in &mut self.metadata_editor_buttons {
+            let mut sink = None;
+            button.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                doc,
+                path,
+                handled,
+                &mut sink,
+                node_id,
+                taffy,
+            );
+        }
+        if let Some(hit) = self.metadata_editor_pending.take() {
+            self.activate_metadata_editor_hit(hit, doc);
+            *handled = true;
+            return true;
+        }
         if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == winit::event::ElementState::Pressed
         {
+            let focus_count = if self.metadata_editor_section == MetadataEditorSection::Organize {
+                5
+            } else {
+                6
+            };
             match &key.logical_key {
                 Key::Named(NamedKey::Tab) => {
                     self.set_metadata_editor_focus(if modifiers.state().shift_key() {
-                        (self.metadata_editor_focus + 5) % 6
+                        (self.metadata_editor_focus + focus_count - 1) % focus_count
                     } else {
-                        (self.metadata_editor_focus + 1) % 6
+                        (self.metadata_editor_focus + 1) % focus_count
                     });
                     *handled = true;
                     return true;
@@ -2474,12 +4436,12 @@ impl PhotosApp {
                     *handled = true;
                     return true;
                 }
-                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == 4 => {
+                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == focus_count - 2 => {
                     self.cancel_metadata_editor();
                     *handled = true;
                     return true;
                 }
-                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == 5 => {
+                Key::Named(NamedKey::Enter) if self.metadata_editor_focus == focus_count - 1 => {
                     self.save_metadata_editor(doc);
                     *handled = true;
                     return true;
@@ -2492,6 +4454,9 @@ impl PhotosApp {
             &mut self.metadata_people_input,
             &mut self.metadata_tags_input,
             &mut self.metadata_captured_at_input,
+            &mut self.metadata_place_input,
+            &mut self.metadata_latitude_input,
+            &mut self.metadata_longitude_input,
         ] {
             let mut sink = None;
             input.handle_event(
@@ -2519,10 +4484,7 @@ impl PhotosApp {
             .find(|(_, rect)| rect.contains(self.pointer))
             .copied()
         {
-            match hit {
-                MetadataEditorHit::Save => self.save_metadata_editor(doc),
-                MetadataEditorHit::Cancel => self.cancel_metadata_editor(),
-            }
+            self.activate_metadata_editor_hit(hit, doc);
             *handled = true;
         }
         true
@@ -2552,7 +4514,11 @@ impl PhotosApp {
                         .send(),
                 );
             }
-            crate::actions::PhotosOperation::ImportDirectory { path: None, .. } => {
+            crate::actions::PhotosOperation::ImportDirectory {
+                path: None,
+                retain_exif_location,
+            } => {
+                self.directory_picker_retain_exif_location = retain_exif_location;
                 self.directory_picker = Some(
                     ui::portal::PickRequest::directory("Import photo folder", "Import folder")
                         .thread_name("photos-portal-directory-import")
@@ -2560,21 +4526,39 @@ impl PhotosApp {
                 );
             }
             crate::actions::PhotosOperation::ImportDirectory {
-                path: Some(path), ..
+                path: Some(path),
+                retain_exif_location,
             } => {
-                self.begin_directory_import(std::path::PathBuf::from(path), None);
+                self.begin_directory_import(
+                    std::path::PathBuf::from(path),
+                    None,
+                    DirectoryImportMode::Import,
+                    retain_exif_location,
+                );
             }
             crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } => {
                 return Err(format!(
                     "Camera import requires document dispatch: {media_id} ({name})"
                 ));
             }
-            crate::actions::PhotosOperation::ReindexDirectory { .. } => {
-                return Err("directory indexing requires the Photos indexing job host".to_owned());
+            crate::actions::PhotosOperation::ReindexDirectory {
+                path,
+                retain_exif_location,
+            } => {
+                self.begin_directory_import(
+                    std::path::PathBuf::from(path),
+                    None,
+                    DirectoryImportMode::Reindex,
+                    retain_exif_location,
+                );
             }
             crate::actions::PhotosOperation::AnalyzeText { .. }
             | crate::actions::PhotosOperation::AnalyzeImage { .. }
-            | crate::actions::PhotosOperation::AnalyzePeopleLibrary => {
+            | crate::actions::PhotosOperation::AnalyzePeopleLibrary
+            | crate::actions::PhotosOperation::AnalyzeLibrary
+            | crate::actions::PhotosOperation::PauseLibraryAnalysis
+            | crate::actions::PhotosOperation::ResumeLibraryAnalysis
+            | crate::actions::PhotosOperation::RetryLibraryAnalysisFailures => {
                 return Err("local image analysis requires document dispatch".to_owned());
             }
             crate::actions::PhotosOperation::Copy => {
@@ -2608,6 +4592,7 @@ impl PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewAlbums => self.show_albums(),
             crate::actions::PhotosOperation::ViewTimeline { anchor } => {
                 self.view_timeline(doc, anchor.as_ref())?;
             }
@@ -2617,6 +4602,13 @@ impl PhotosApp {
                 self.library_destination = LibraryDestination::People;
                 self.notice = Some(
                     "People is local-first: install a signed face model, then review every suggestion before sharing labels".to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ViewLibraryAnalysis => {
+                self.show_library_analysis();
+                self.notice = Some(
+                    "Local analysis makes descriptions, objects, pets, and text searchable"
+                        .to_owned(),
                 );
             }
             crate::actions::PhotosOperation::ManagePeopleRecognition => {
@@ -2635,23 +4627,11 @@ impl PhotosApp {
             crate::actions::PhotosOperation::ViewPlaces => {
                 self.show_library();
                 self.library_destination = LibraryDestination::Places;
+                self.places_open_key = None;
                 self.notice = Some("Showing offline Places".to_owned());
             }
             crate::actions::PhotosOperation::ViewPlace { place_key } => {
-                self.show_library();
-                self.library_destination = LibraryDestination::Places;
-                if let Some(photo) = PhotosDoc::library(doc).photos.iter().find(|photo| {
-                    photo
-                        .location
-                        .as_ref()
-                        .is_some_and(|location| location.place_key() == place_key)
-                }) && let Some(location) = &photo.location
-                {
-                    self.places_viewport.latitude = location.latitude;
-                    self.places_viewport.longitude = location.longitude;
-                    self.places_viewport.zoom = 12.0;
-                }
-                self.notice = Some("Showing selected place offline".to_owned());
+                self.open_place_collection(doc, &place_key)?;
             }
             crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
@@ -2682,6 +4662,7 @@ impl PhotosApp {
         self.active_pet = None;
         self.active_favorites = false;
         self.library_offset = 0;
+        self.timeline_scroll_y = 0.0;
         self.album_editor = false;
         self.album_delete_confirm = false;
         self.notice = Some("Showing selected album".to_owned());
@@ -2726,6 +4707,7 @@ impl PhotosApp {
         self.active_pet = None;
         self.active_favorites = false;
         self.library_offset = 0;
+        self.timeline_scroll_y = 0.0;
         self.album_editor = false;
         self.album_delete_confirm = false;
         self.notice = Some("Showing shared photo metadata view".to_owned());
@@ -2761,6 +4743,7 @@ impl PhotosApp {
         self.active_pet = pet.then_some(label);
         self.active_favorites = false;
         self.library_offset = 0;
+        self.timeline_scroll_y = 0.0;
         self.album_editor = false;
         self.notice = Some("Showing explicitly shared image analysis".to_owned());
         Ok(())
@@ -2786,10 +4769,52 @@ impl PhotosApp {
         self.active_pet = None;
         self.active_favorites = true;
         self.library_offset = 0;
+        self.timeline_scroll_y = 0.0;
         self.album_editor = false;
         self.album_delete_confirm = false;
         self.notice = Some("Showing favorite photographs".to_owned());
         Ok(())
+    }
+
+    /// Project the open photograph's portable library record into the small
+    /// viewer card. Content identity wins; old path-only records retain their
+    /// legacy match so opening one still has useful context.
+    fn viewer_details_for(doc: &AutoCommit, open: &OpenImage, edits: Edits) -> ViewerDetails {
+        let photo = PhotosDoc::library(doc).photos.into_iter().find(|photo| {
+            match (&open.content, &photo.image.content) {
+                (Some(open_content), Some(photo_content)) => open_content == photo_content,
+                (None, None) => open.path == photo.image.path,
+                _ => false,
+            }
+        });
+        let (width, height) = open.edited_size(&edits);
+        ViewerDetails {
+            name: open.name.clone(),
+            dimensions: format!("{width} × {height}"),
+            edited: !edits.is_identity(),
+            favorite: photo.as_ref().is_some_and(|photo| photo.favorite),
+            description: photo
+                .as_ref()
+                .and_then(|photo| photo.analysis.as_ref())
+                .map(|analysis| analysis.description.trim())
+                .filter(|description| !description.is_empty())
+                .map(str::to_owned),
+            captured_at: photo.as_ref().and_then(|photo| photo.captured_at.clone()),
+            place: photo.as_ref().and_then(|photo| {
+                photo
+                    .location
+                    .as_ref()
+                    .filter(|location| location.is_valid())
+                    .map(crate::model::PhotoLocation::display_name)
+            }),
+            people: photo
+                .as_ref()
+                .map_or_else(Vec::new, |photo| photo.people.clone()),
+            tags: photo
+                .as_ref()
+                .map_or_else(Vec::new, |photo| photo.tags.clone()),
+            folder: photo.and_then(|photo| photo.folder),
+        }
     }
 
     /// Re-derive the rendering if the path or the edits have moved.
@@ -2797,6 +4822,7 @@ impl PhotosApp {
         let Some(open) = PhotosDoc::image(doc) else {
             self.rendered = None;
             self.viewer = None;
+            self.viewer_details = None;
             self.original = None;
             self.canvas_state = if self.notice.is_some() {
                 CanvasState::Error
@@ -2806,6 +4832,7 @@ impl PhotosApp {
             return;
         };
         let edits = PhotosDoc::edits(doc);
+        self.viewer_details = Some(Self::viewer_details_for(doc, &open, edits));
 
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
@@ -3011,7 +5038,7 @@ impl PhotosApp {
                 |(path, _)| path.rsplit('/').next().unwrap_or(path).to_owned(),
             )
         };
-        let (image_name, image_description) = match self.rendered.as_ref() {
+        let (image_name, mut image_description) = match self.rendered.as_ref() {
             Some(rendered) if rendered.edits.is_identity() => {
                 (image_label(), tr("photos-image-help"))
             }
@@ -3021,14 +5048,243 @@ impl PhotosApp {
             ),
             None => self.empty_state_text(),
         };
+        if let Some(details) = self.viewer_details.as_ref() {
+            let mut shared = Vec::new();
+            if let Some(description) = details.description.as_deref() {
+                shared.push(format!("{}: {description}", tr("photos-description")));
+            }
+            if let Some(captured_at) = details.captured_at.as_deref() {
+                shared.push(format!("{}: {captured_at}", tr("photos-captured")));
+            }
+            if let Some(place) = details.place.as_deref() {
+                shared.push(format!("{}: {place}", tr("photos-place")));
+            }
+            if !details.people.is_empty() {
+                shared.push(format!(
+                    "{}: {}",
+                    tr("photos-people"),
+                    details.people.join(", ")
+                ));
+            }
+            if !details.tags.is_empty() {
+                shared.push(format!(
+                    "{}: {}",
+                    tr("photos-tags"),
+                    details.tags.join(", ")
+                ));
+            }
+            if let Some(folder) = details.folder.as_deref() {
+                shared.push(format!("{}: {folder}", tr("photos-folder")));
+            }
+            if !shared.is_empty() {
+                image_description.push_str(". ");
+                image_description.push_str(&tr("photos-shared-details"));
+                image_description.push_str(": ");
+                image_description.push_str(&shared.join(". "));
+            }
+        }
         let canvas = if self.library_mode {
             let mut cards = Vec::new();
-            if self.library_destination == LibraryDestination::Places {
-                cards.extend(self.places_hits.iter().map(|(hit, bounds)| {
+            cards.extend(self.places_hits.iter().filter_map(|(hit, bounds)| {
+                let (name, target) = match hit {
+                    PlacesHit::Timeline => ("Timeline", "photos:library:timeline"),
+                    PlacesHit::Albums => ("Albums", "photos:library:albums"),
+                    PlacesHit::People => ("People", "photos:library:people"),
+                    PlacesHit::Places => ("Places", "photos:library:places"),
+                    PlacesHit::Analysis => ("Photo analysis", "photos:library:analysis"),
+                    PlacesHit::ToggleList
+                    | PlacesHit::ZoomIn
+                    | PlacesHit::ZoomOut
+                    | PlacesHit::Place(_)
+                    | PlacesHit::Photo(_) => return None,
+                };
+                Some(
+                    AccessNode::new(Role::RadioButton)
+                        .with_name(name)
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            checked: Some(match hit {
+                                PlacesHit::Timeline => {
+                                    self.library_destination == LibraryDestination::Timeline
+                                }
+                                PlacesHit::Albums => {
+                                    self.library_destination == LibraryDestination::Albums
+                                }
+                                PlacesHit::People => {
+                                    self.library_destination == LibraryDestination::People
+                                }
+                                PlacesHit::Places => {
+                                    self.library_destination == LibraryDestination::Places
+                                }
+                                PlacesHit::Analysis => {
+                                    self.library_destination == LibraryDestination::Analysis
+                                }
+                                _ => false,
+                            }),
+                            ..Default::default()
+                        })
+                        .with_action_target(target),
+                )
+            }));
+            if self.library_destination == LibraryDestination::Analysis {
+                cards.extend(
+                    self.library_analysis_buttons
+                        .iter()
+                        .filter_map(|(hit, button)| {
+                            let bounds = button.get_rect();
+                            if bounds == Rect::ZERO {
+                                return None;
+                            }
+                            let (name, target) = match hit {
+                                LibraryAnalysisHit::Start => {
+                                    ("Analyze unprocessed photos", "photos:analysis:start")
+                                }
+                                LibraryAnalysisHit::Pause => {
+                                    ("Pause after this photo", "photos:analysis:pause")
+                                }
+                                LibraryAnalysisHit::Resume => {
+                                    ("Resume photo analysis", "photos:analysis:resume")
+                                }
+                                LibraryAnalysisHit::RetryFailures => {
+                                    ("Retry failed photos", "photos:analysis:retry")
+                                }
+                            };
+                            Some(
+                                AccessNode::new(Role::Button)
+                                    .with_name(name)
+                                    .with_bounds(bounds)
+                                    .with_state(AccessState {
+                                        focusable: button.is_focusable(),
+                                        focused: button.is_focused(),
+                                        disabled: !button.is_enabled(),
+                                        ..Default::default()
+                                    })
+                                    .with_action_target(target),
+                            )
+                        }),
+                );
+                cards.extend(
+                    self.library_analysis_failure_hits
+                        .iter()
+                        .map(|(id, bounds)| {
+                            let failure = self
+                                .library_analysis
+                                .failures()
+                                .find(|failure| failure.photo_id == *id);
+                            AccessNode::new(Role::Button)
+                                .with_name(failure.map_or_else(
+                                    || "Open failed photograph".to_owned(),
+                                    |failure| format!("Open {}", failure.name),
+                                ))
+                                .with_description(
+                                    failure.map_or("Local analysis failed", |failure| {
+                                        failure.message.as_str()
+                                    }),
+                                )
+                                .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(format!("photos:analysis:failure:{id}"))
+                                .with_hashed_key(format!("photos:analysis-failure:{id}"))
+                        }),
+                );
+                AccessNode::new(Role::Group)
+                    .with_name("Photo analysis")
+                    .with_description("Local descriptions, text, objects, and pets. Pixels stay on this device; approved compact results become searchable in the shared library.")
+                    .with_bounds(self.canvas_rect)
+                    .with_hashed_key("photos:library-analysis")
+                    .with_live(Politeness::Polite)
+                    .with_children(cards)
+            } else if self.library_destination == LibraryDestination::Albums {
+                cards.extend(self.album_cards.iter().filter_map(|(id, bounds)| {
+                    let id = id.as_ref()?;
+                    let (_, name, count) = self
+                        .library_albums
+                        .iter()
+                        .find(|(album_id, _, _)| album_id == id)?;
+                    Some(
+                        AccessNode::new(Role::ListItem)
+                            .with_name(format!(
+                                "{name}, {count} photo{}",
+                                if *count == 1 { "" } else { "s" }
+                            ))
+                            .with_description("Open this shared album")
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_hashed_key(format!("photos:album-card:{id}"))
+                            .with_action_target(format!("photos:library-album:{id}")),
+                    )
+                }));
+                cards.extend(self.album_edit_cards.iter().map(|(id, bounds)| {
+                    AccessNode::new(Role::Button)
+                        .with_name("Edit album")
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            ..Default::default()
+                        })
+                        .with_hashed_key(format!("photos:album-edit:{id}"))
+                        .with_action_target(format!("photos:album-edit:{id}"))
+                }));
+                AccessNode::new(Role::List)
+                    .with_name("Albums")
+                    .with_description("Shared photo collections")
+                    .with_bounds(self.canvas_rect)
+                    .with_hashed_key("photos:albums")
+                    .with_children(cards)
+            } else if self.library_destination == LibraryDestination::People || self.people_mode {
+                if self.people_selection.is_some() && !self.people_merge_mode {
+                    cards.push(
+                        AccessNode::new(Role::TextInput)
+                            .with_name("Person name")
+                            .with_value(self.people_name_input.value())
+                            .with_bounds(self.people_name_input.get_rect())
+                            .with_state(AccessState {
+                                focusable: true,
+                                focused: self.people_name_input.is_focused(),
+                                ..Default::default()
+                            })
+                            .with_hashed_key("photos:people:name")
+                            .with_action_target("photos:people:name"),
+                    );
+                }
+                cards.extend(
+                    self.people_controls
+                        .iter()
+                        .enumerate()
+                        .map(|(index, control)| {
+                            AccessNode::new(Role::Button)
+                                .with_name(control.label.clone())
+                                .with_bounds(control.button.get_rect())
+                                .with_state(AccessState {
+                                    focusable: control.button.is_focusable(),
+                                    focused: control.button.is_focused(),
+                                    disabled: !control.button.is_enabled(),
+                                    ..Default::default()
+                                })
+                                .with_action_target(format!("photos:people:control:{index}"))
+                        }),
+                );
+                AccessNode::new(Role::Group)
+                    .with_name("People")
+                    .with_description("Approved shared names and private suggestions awaiting review on this device")
+                    .with_bounds(self.canvas_rect)
+                    .with_hashed_key("photos:people")
+                    .with_children(cards)
+            } else if self.library_destination == LibraryDestination::Places {
+                cards.extend(self.places_hits.iter().filter_map(|(hit, bounds)| {
                     let (name, target) = match hit {
-                        PlacesHit::Timeline => ("Timeline", "photos:places:timeline".to_owned()),
-                        PlacesHit::People => ("People", "photos:places:people".to_owned()),
-                        PlacesHit::Places => ("Places", "photos:places:places".to_owned()),
+                        PlacesHit::Timeline
+                        | PlacesHit::Albums
+                        | PlacesHit::People
+                        | PlacesHit::Places
+                        | PlacesHit::Analysis => return None,
                         PlacesHit::ToggleList => (
                             if self.places_list_mode {
                                 "Show map"
@@ -3039,20 +5295,55 @@ impl PhotosApp {
                         ),
                         PlacesHit::ZoomIn => ("Zoom in", "photos:places:zoom-in".to_owned()),
                         PlacesHit::ZoomOut => ("Zoom out", "photos:places:zoom-out".to_owned()),
-                        PlacesHit::Marker(id) => (
-                            "Open photograph at this place",
-                            format!("photos:places:photo:{id}"),
-                        ),
+                        PlacesHit::Place(key) => {
+                            ("Open place collection", format!("photos:places:open:{key}"))
+                        }
+                        PlacesHit::Photo(id) => {
+                            ("Open photograph", format!("photos:places:photo:{id}"))
+                        }
                     };
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_bounds(*bounds)
-                        .with_state(AccessState {
-                            focusable: true,
-                            ..Default::default()
-                        })
-                        .with_action_target(target)
+                    Some(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_bounds(*bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_action_target(target),
+                    )
                 }));
+                // These semantic controls intentionally share the same pure
+                // camera operation as keyboard arrows and pointer drag. They
+                // make panning available to screen readers and agents without
+                // introducing coordinate-only automation.
+                for (name, target) in [
+                    ("Pan map left", "photos:places:pan-left"),
+                    ("Pan map right", "photos:places:pan-right"),
+                    ("Pan map up", "photos:places:pan-up"),
+                    ("Pan map down", "photos:places:pan-down"),
+                ] {
+                    cards.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_description(
+                                "Move the offline map without changing shared location data",
+                            )
+                            .with_bounds(self.places_map_bounds)
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            })
+                            .with_action_target(target),
+                    );
+                }
+                cards.extend(
+                    self.collection_page_hits
+                        .iter()
+                        .map(|(hit, bounds, enabled)| {
+                            collection_page_access_node(*hit, *bounds, *enabled)
+                        }),
+                );
                 AccessNode::new(Role::Group)
                     .with_name("Places")
                     .with_description("Offline map of explicitly shared photo locations. Arrow keys pan; plus and minus zoom; L changes to the list.")
@@ -3233,6 +5524,13 @@ impl PhotosApp {
                             )
                         })
                 }));
+                cards.extend(
+                    self.collection_page_hits
+                        .iter()
+                        .map(|(hit, bounds, enabled)| {
+                            collection_page_access_node(*hit, *bounds, *enabled)
+                        }),
+                );
                 for (hit, bounds) in &self.timeline_density_hits {
                     let (name, target) = match hit {
                         TimelineHit::ZoomOut => {
@@ -3308,6 +5606,11 @@ impl PhotosApp {
                             "photos:selection:favorite",
                             self.selected_photo_ids.is_empty(),
                         ),
+                        SelectionHit::EditDetails => (
+                            "Edit details for selected photographs",
+                            "photos:selection:edit-details",
+                            self.selected_photo_ids.is_empty(),
+                        ),
                         SelectionHit::ChooseAlbum => (
                             "Choose destination album",
                             "photos:selection:choose-album",
@@ -3316,6 +5619,11 @@ impl PhotosApp {
                         SelectionHit::CancelDestinationChooser => (
                             "Cancel destination choice",
                             "photos:selection:destination-cancel",
+                            false,
+                        ),
+                        SelectionHit::CloseDestinationChooser => (
+                            "Close destination chooser",
+                            "photos:selection:destination-close",
                             false,
                         ),
                         SelectionHit::ApplyDestination => (
@@ -3383,15 +5691,28 @@ impl PhotosApp {
                     );
                 }
                 if self.metadata_editor {
-                    for (name, input) in [
-                        ("Folder", &self.metadata_folder_input),
-                        ("People", &self.metadata_people_input),
-                        ("Tags", &self.metadata_tags_input),
-                        ("Captured", &self.metadata_captured_at_input),
-                    ] {
+                    // The inspector owns the interaction scope. Keeping the
+                    // dimmed grid's cards in the a11y tree would let a screen
+                    // reader activate controls that pointer and keyboard users
+                    // correctly cannot reach while editing details.
+                    cards.clear();
+                    let fields: &[(&str, &str, &TextInput)] = match self.metadata_editor_section {
+                        MetadataEditorSection::Organize => &[
+                            ("Folder", "folder", &self.metadata_folder_input),
+                            ("People", "people", &self.metadata_people_input),
+                            ("Tags", "tags", &self.metadata_tags_input),
+                        ],
+                        MetadataEditorSection::TimeAndPlace => &[
+                            ("Captured", "captured", &self.metadata_captured_at_input),
+                            ("Place name", "place", &self.metadata_place_input),
+                            ("Latitude", "latitude", &self.metadata_latitude_input),
+                            ("Longitude", "longitude", &self.metadata_longitude_input),
+                        ],
+                    };
+                    for (name, target, input) in fields {
                         cards.push(
                             AccessNode::new(Role::TextInput)
-                                .with_name(name)
+                                .with_name(*name)
                                 .with_value(input.value())
                                 .with_bounds(input.get_rect())
                                 .with_state(AccessState {
@@ -3399,7 +5720,8 @@ impl PhotosApp {
                                     focused: input.is_focused(),
                                     ..Default::default()
                                 })
-                                .with_hashed_key(format!("photos:metadata:{name}")),
+                                .with_hashed_key(format!("photos:metadata:{name}"))
+                                .with_action_target(format!("photos:metadata:field:{target}")),
                         );
                     }
                     for (hit, bounds) in &self.metadata_editor_hits {
@@ -3410,11 +5732,82 @@ impl PhotosApp {
                             MetadataEditorHit::Cancel => {
                                 ("Cancel photo details", "photos:metadata:cancel")
                             }
+                            MetadataEditorHit::Organize => {
+                                ("Organize fields", "photos:metadata:organize")
+                            }
+                            MetadataEditorHit::TimeAndPlace => {
+                                ("Time and place fields", "photos:metadata:time-and-place")
+                            }
+                            MetadataEditorHit::ClearFolder => {
+                                ("Clear folder", "photos:metadata:clear-folder")
+                            }
+                            MetadataEditorHit::ClearPeople => {
+                                ("Clear people", "photos:metadata:clear-people")
+                            }
+                            MetadataEditorHit::ClearTags => {
+                                ("Clear tags", "photos:metadata:clear-tags")
+                            }
+                            MetadataEditorHit::ClearCapturedAt => {
+                                ("Clear capture time", "photos:metadata:clear-captured-at")
+                            }
+                            MetadataEditorHit::ClearLocation => {
+                                ("Clear location", "photos:metadata:clear-location")
+                            }
+                            MetadataEditorHit::PlaceOnMap => (
+                                "Set location from offline map centre",
+                                "photos:metadata:place-on-map",
+                            ),
                         };
                         cards.push(
                             AccessNode::new(Role::Button)
                                 .with_name(name)
                                 .with_bounds(*bounds)
+                                .with_state(AccessState {
+                                    focusable: true,
+                                    ..Default::default()
+                                })
+                                .with_action_target(target),
+                        );
+                    }
+                    for (hit, button) in &self.metadata_editor_buttons {
+                        let bounds = button.get_rect();
+                        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+                            continue;
+                        }
+                        let (name, target) = match hit {
+                            MetadataEditorHit::Save => {
+                                ("Save photo details", "photos:metadata:save")
+                            }
+                            MetadataEditorHit::Cancel => {
+                                ("Cancel photo details", "photos:metadata:cancel")
+                            }
+                            MetadataEditorHit::Organize => {
+                                ("Organize fields", "photos:metadata:organize")
+                            }
+                            MetadataEditorHit::TimeAndPlace => {
+                                ("Time and place fields", "photos:metadata:time-and-place")
+                            }
+                            MetadataEditorHit::ClearFolder => {
+                                ("Clear folder", "photos:metadata:clear-folder")
+                            }
+                            MetadataEditorHit::ClearPeople => {
+                                ("Clear people", "photos:metadata:clear-people")
+                            }
+                            MetadataEditorHit::ClearTags => {
+                                ("Clear tags", "photos:metadata:clear-tags")
+                            }
+                            MetadataEditorHit::ClearCapturedAt => {
+                                ("Clear capture time", "photos:metadata:clear-captured-at")
+                            }
+                            MetadataEditorHit::ClearLocation => {
+                                ("Clear location", "photos:metadata:clear-location")
+                            }
+                            MetadataEditorHit::PlaceOnMap => continue,
+                        };
+                        cards.push(
+                            AccessNode::new(Role::Button)
+                                .with_name(name)
+                                .with_bounds(bounds)
                                 .with_state(AccessState {
                                     focusable: true,
                                     ..Default::default()
@@ -3550,6 +5943,168 @@ impl PhotosApp {
                     .with_hashed_key("photos:status"),
             );
         }
+        if let Some(job) = self.directory_import.as_ref() {
+            let mut status_children = vec![
+                AccessNode::new(Role::StaticText)
+                    .with_name(if job.mode == DirectoryImportMode::Reindex {
+                        "Reindexing photo folder"
+                    } else {
+                        "Importing photo folder"
+                    })
+                    .with_description(format!(
+                        "{} found, {} imported, {} refreshed, {} issues",
+                        job.discovered,
+                        job.imported,
+                        job.refreshed,
+                        job.failures.len()
+                    ))
+                    .with_live(Politeness::Polite)
+                    .with_hashed_key("photos:directory-import-progress"),
+                AccessNode::new(Role::Button)
+                    .with_name("Stop")
+                    .with_action_target("photos:directory-import:stop")
+                    .with_hashed_key("photos:directory-import-stop"),
+            ];
+            if !job.failures.is_empty() {
+                status_children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Details")
+                        .with_description(format!("Inspect {} import issues", job.failures.len()))
+                        .with_action_target("photos:directory-import:details")
+                        .with_hashed_key("photos:directory-import-details"),
+                );
+            }
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Photo folder progress")
+                    .with_state(AccessState {
+                        busy: true,
+                        ..Default::default()
+                    })
+                    .with_children(status_children)
+                    .with_hashed_key("photos:directory-import-status"),
+            );
+        } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+            let mut status_children = vec![
+                AccessNode::new(Role::StaticText)
+                    .with_name(if receipt.mode == DirectoryImportMode::Reindex {
+                        "Photo folder reindex result"
+                    } else {
+                        "Photo folder import result"
+                    })
+                    .with_description(format!(
+                        "{} imported, {} refreshed, {} unchanged, {} issues",
+                        receipt.imported,
+                        receipt.refreshed,
+                        receipt.unchanged,
+                        receipt.failure_count,
+                    ))
+                    .with_live(Politeness::Polite)
+                    .with_hashed_key("photos:directory-import-result"),
+            ];
+            if receipt.failure_count > 0 {
+                status_children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Details")
+                        .with_description(format!(
+                            "Inspect {} retained issue details",
+                            receipt.failures.len()
+                        ))
+                        .with_action_target("photos:directory-import:details")
+                        .with_hashed_key("photos:directory-import-details"),
+                );
+            }
+            status_children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Dismiss")
+                    .with_action_target("photos:directory-import:dismiss")
+                    .with_hashed_key("photos:directory-import-dismiss"),
+            );
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Photo folder result")
+                    .with_children(status_children)
+                    .with_hashed_key("photos:directory-import-status"),
+            );
+        }
+        if self.directory_import_details_open {
+            let (failures, total) = if let Some(job) = self.directory_import.as_ref() {
+                (&job.failures[..], job.failures.len())
+            } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+                (&receipt.failures[..], receipt.failure_count)
+            } else {
+                (&[][..], 0)
+            };
+            let retained = failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT);
+            let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
+            let page = self.directory_import_details_page.min(pages - 1);
+            let mut detail_children = failures
+                .iter()
+                .take(retained)
+                .skip(page * DIRECTORY_FAILURES_PER_PAGE)
+                .take(DIRECTORY_FAILURES_PER_PAGE)
+                .enumerate()
+                .map(|(index, failure)| {
+                    let name = failure
+                        .source
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Unavailable item");
+                    AccessNode::new(Role::ListItem)
+                        .with_name(name)
+                        .with_description(format!(
+                            "{}. {}",
+                            failure.message,
+                            if failure.retryable {
+                                "This item can be retried"
+                            } else {
+                                "This item needs a change before retrying"
+                            }
+                        ))
+                        .with_hashed_key(&format!("photos:directory-failure:{page}:{index}"))
+                })
+                .collect::<Vec<_>>();
+            detail_children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(format!(
+                        "Showing {} retained details out of {total} issues, page {} of {pages}",
+                        retained,
+                        page + 1
+                    ))
+                    .with_hashed_key("photos:directory-failure-summary"),
+            );
+            for (key, label, disabled) in [
+                ("details-previous", "Previous", page == 0),
+                ("details-next", "Next", page + 1 >= pages),
+                ("details-close", "Close", false),
+            ] {
+                detail_children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(label)
+                        .with_state(AccessState {
+                            disabled,
+                            focusable: !disabled,
+                            ..Default::default()
+                        })
+                        .with_action_target(format!("photos:directory-import:{key}"))
+                        .with_hashed_key(&format!("photos:directory-import:{key}")),
+                );
+            }
+            children.push(
+                AccessNode::new(Role::Dialog)
+                    .with_name("Folder import issues")
+                    .with_description(format!(
+                        "{retained} issue details retained; {} additional issues",
+                        total.saturating_sub(retained)
+                    ))
+                    .with_state(AccessState {
+                        modal: true,
+                        ..Default::default()
+                    })
+                    .with_children(detail_children)
+                    .with_hashed_key("photos:directory-import-dialog"),
+            );
+        }
         AccessNode::new(Role::Group)
             .with_name(tr("photos-app"))
             .with_bounds(self.rect)
@@ -3596,6 +6151,73 @@ impl PhotosApp {
         }
     }
 
+    fn perform_directory_semantic_action(&mut self, target: &str, action: &AccessAction) -> bool {
+        let Some(command) = target.strip_prefix("photos:directory-import:") else {
+            return false;
+        };
+        if matches!(action, AccessAction::Focus) {
+            let status_hit = match command {
+                "stop" => Some(DirectoryStatusHit::Stop),
+                "details" => Some(DirectoryStatusHit::Details),
+                "dismiss" => Some(DirectoryStatusHit::Dismiss),
+                _ => None,
+            };
+            if let Some(hit) = status_hit {
+                let available = match hit {
+                    DirectoryStatusHit::Stop => self.directory_import.is_some(),
+                    DirectoryStatusHit::Details => {
+                        self.directory_import
+                            .as_ref()
+                            .is_some_and(|job| !job.failures.is_empty())
+                            || self
+                                .directory_import_receipt
+                                .as_ref()
+                                .is_some_and(|receipt| receipt.failure_count > 0)
+                    }
+                    DirectoryStatusHit::Dismiss => {
+                        self.directory_import.is_none() && self.directory_import_receipt.is_some()
+                    }
+                };
+                if available {
+                    for (candidate, button) in &mut self.directory_import_buttons {
+                        button.set_focus(*candidate == hit);
+                    }
+                }
+                return available;
+            }
+            if !self.directory_import_details_open {
+                return false;
+            }
+            let retained = self.directory_import.as_ref().map_or_else(
+                || {
+                    self.directory_import_receipt
+                        .as_ref()
+                        .map_or(0, |receipt| receipt.failures.len())
+                },
+                |job| job.failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT),
+            );
+            let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
+            return match command {
+                "details-previous" => self.directory_import_details_page > 0,
+                "details-next" => self.directory_import_details_page + 1 < pages,
+                "details-close" => true,
+                _ => false,
+            };
+        }
+        if !matches!(action, AccessAction::Activate) {
+            return false;
+        }
+        match command {
+            "stop" => self.activate_directory_status(DirectoryStatusHit::Stop),
+            "details" => self.activate_directory_status(DirectoryStatusHit::Details),
+            "dismiss" => self.activate_directory_status(DirectoryStatusHit::Dismiss),
+            "details-previous" => self.page_directory_details(false),
+            "details-next" => self.page_directory_details(true),
+            "details-close" => self.close_directory_details(),
+            _ => false,
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the library semantics mirror every visible card, editor, and metadata filter target"
@@ -3606,6 +6228,154 @@ impl PhotosApp {
         action: &AccessAction,
         doc: &mut AutoCommit,
     ) -> bool {
+        if let Some(destination) = target.strip_prefix("photos:library:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            if matches!(action, AccessAction::Activate) {
+                match destination {
+                    "timeline" => {
+                        self.people_mode = false;
+                        self.library_destination = LibraryDestination::Timeline;
+                    }
+                    "albums" => self.show_albums(),
+                    "people" => self.show_people(),
+                    "places" => {
+                        self.people_mode = false;
+                        self.library_destination = LibraryDestination::Places;
+                    }
+                    "analysis" => self.show_library_analysis(),
+                    _ => return false,
+                }
+            }
+            return true;
+        }
+        if let Some(command) = target.strip_prefix("photos:places:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            if matches!(action, AccessAction::Focus) {
+                return true;
+            }
+            if let Some(photo_id) = command.strip_prefix("photo:") {
+                if PhotosDoc::photo(doc, photo_id).is_none() {
+                    return false;
+                }
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::SelectPhoto {
+                        photo_id: photo_id.to_owned(),
+                    },
+                );
+                self.library_mode = false;
+                return true;
+            }
+            match command {
+                "toggle-list" => self.places_list_mode = !self.places_list_mode,
+                "zoom-in" => self.zoom_places_by(1.0),
+                "zoom-out" => self.zoom_places_by(-1.0),
+                "pan-left" => self.set_places_viewport(self.places_viewport.panned(
+                    44.0,
+                    0.0,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                )),
+                "pan-right" => self.set_places_viewport(self.places_viewport.panned(
+                    -44.0,
+                    0.0,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                )),
+                "pan-up" => self.set_places_viewport(self.places_viewport.panned(
+                    0.0,
+                    44.0,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                )),
+                "pan-down" => self.set_places_viewport(self.places_viewport.panned(
+                    0.0,
+                    -44.0,
+                    self.places_map_bounds.width(),
+                    self.places_map_bounds.height(),
+                )),
+                _ => {
+                    let Some(key) = command.strip_prefix("open:") else {
+                        return false;
+                    };
+                    return self.open_place_collection(doc, key).is_ok();
+                }
+            }
+            return true;
+        }
+        if let Some(album_id) = target.strip_prefix("photos:album-edit:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            if matches!(action, AccessAction::Activate) {
+                if PhotosDoc::album(doc, album_id).is_none() {
+                    return false;
+                }
+                self.active_album = Some(album_id.to_owned());
+                self.begin_edit_album(doc);
+            }
+            return true;
+        }
+        if let Some(command) = target.strip_prefix("photos:collection-page:") {
+            if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
+                return false;
+            }
+            let hit = match command {
+                "albums-previous" => CollectionPageHit::AlbumsPrevious,
+                "albums-next" => CollectionPageHit::AlbumsNext,
+                "people-previous" => CollectionPageHit::PeoplePrevious,
+                "people-next" => CollectionPageHit::PeopleNext,
+                "places-previous" => CollectionPageHit::PlacesPrevious,
+                "places-next" => CollectionPageHit::PlacesNext,
+                _ => return false,
+            };
+            if matches!(action, AccessAction::Activate) {
+                self.page_collection(hit);
+            }
+            return true;
+        }
+        if target == "photos:people:name" {
+            return match action {
+                AccessAction::Focus => {
+                    self.people_name_input.set_focus(true);
+                    true
+                }
+                AccessAction::SetValue(value) => {
+                    self.people_name_input.set_text(value);
+                    true
+                }
+                _ => false,
+            };
+        }
+        if let Some(index) = target
+            .strip_prefix("photos:people:control:")
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            let Some(control) = self.people_controls.get(index) else {
+                return false;
+            };
+            return match action {
+                AccessAction::Focus => {
+                    for item in &mut self.people_controls {
+                        item.button.set_focus(false);
+                    }
+                    if let Some(control) = self.people_controls.get_mut(index) {
+                        control.button.set_focus(true);
+                    }
+                    true
+                }
+                AccessAction::Activate if control.button.is_enabled() => {
+                    let intent = control.intent.clone();
+                    self.handle_people_intent(intent, doc);
+                    true
+                }
+                _ => false,
+            };
+        }
         if target.starts_with("photos:timeline-index:") {
             if matches!(action, AccessAction::Focus) {
                 self.timeline_index.set_focus(true);
@@ -3629,6 +6399,47 @@ impl PhotosApp {
                 _ => false,
             };
         }
+        if let Some(command) = target.strip_prefix("photos:analysis:") {
+            if let Some(photo_id) = command.strip_prefix("failure:") {
+                if matches!(action, AccessAction::Focus) {
+                    return self
+                        .library_analysis
+                        .failures()
+                        .any(|failure| failure.photo_id == photo_id);
+                }
+                if !matches!(action, AccessAction::Activate)
+                    || !self
+                        .library_analysis
+                        .failures()
+                        .any(|failure| failure.photo_id == photo_id)
+                {
+                    return false;
+                }
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::SelectPhoto {
+                        photo_id: photo_id.to_owned(),
+                    },
+                );
+                self.library_mode = false;
+                return true;
+            }
+            let hit = match command {
+                "start" => LibraryAnalysisHit::Start,
+                "pause" => LibraryAnalysisHit::Pause,
+                "resume" => LibraryAnalysisHit::Resume,
+                "retry" => LibraryAnalysisHit::RetryFailures,
+                _ => return false,
+            };
+            if matches!(action, AccessAction::Focus) {
+                for (candidate, button) in &mut self.library_analysis_buttons {
+                    button.set_focus(*candidate == hit);
+                }
+                return true;
+            }
+            return matches!(action, AccessAction::Activate)
+                && self.activate_library_analysis(hit, doc);
+        }
         if let Some(command) = target.strip_prefix("photos:selection:") {
             if !matches!(action, AccessAction::Activate | AccessAction::Focus) {
                 return false;
@@ -3650,8 +6461,10 @@ impl PhotosApp {
                     "all" => SelectionHit::SelectAll,
                     "clear" => SelectionHit::Clear,
                     "favorite" => SelectionHit::Favorite,
+                    "edit-details" => SelectionHit::EditDetails,
                     "choose-album" => SelectionHit::ChooseAlbum,
                     "destination-cancel" => SelectionHit::CancelDestinationChooser,
+                    "destination-close" => SelectionHit::CloseDestinationChooser,
                     "destination-apply" => SelectionHit::ApplyDestination,
                     "destination-previous" => SelectionHit::PreviousDestinationPage,
                     "destination-next" => SelectionHit::NextDestinationPage,
@@ -3695,12 +6508,63 @@ impl PhotosApp {
             return true;
         }
         if let Some(command) = target.strip_prefix("photos:metadata:") {
+            if let Some(field) = command.strip_prefix("field:") {
+                let focus = match field {
+                    "folder" => 0,
+                    "people" => 1,
+                    "tags" => 2,
+                    "captured" => 0,
+                    "place" => 1,
+                    "latitude" => 2,
+                    "longitude" => 3,
+                    _ => return false,
+                };
+                return match action {
+                    AccessAction::Focus => {
+                        self.set_metadata_editor_focus(focus);
+                        true
+                    }
+                    AccessAction::SetValue(value) => {
+                        match field {
+                            "folder" => self.metadata_folder_input.set_text(value),
+                            "people" => self.metadata_people_input.set_text(value),
+                            "tags" => self.metadata_tags_input.set_text(value),
+                            "captured" => self.metadata_captured_at_input.set_text(value),
+                            "place" => self.metadata_place_input.set_text(value),
+                            "latitude" => {
+                                self.metadata_latitude_input.set_text(value);
+                                self.metadata_location_from_map = false;
+                            }
+                            "longitude" => {
+                                self.metadata_longitude_input.set_text(value);
+                                self.metadata_location_from_map = false;
+                            }
+                            _ => return false,
+                        }
+                        true
+                    }
+                    _ => false,
+                };
+            }
             if !matches!(action, AccessAction::Activate) {
                 return matches!(action, AccessAction::Focus);
             }
             match command {
                 "save" => self.save_metadata_editor(doc),
                 "cancel" => self.cancel_metadata_editor(),
+                "organize" => self.set_metadata_editor_section(MetadataEditorSection::Organize),
+                "time-and-place" => {
+                    self.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace)
+                }
+                "clear-folder" => self.clear_metadata_dimension(0),
+                "clear-people" => self.clear_metadata_dimension(1),
+                "clear-tags" => self.clear_metadata_dimension(2),
+                "clear-captured-at" => self.clear_metadata_dimension(3),
+                "clear-location" => self.clear_metadata_dimension(4),
+                "place-on-map" => {
+                    let bounds = self.metadata_location_map_bounds;
+                    let _ = self.set_metadata_location_from_map_point(bounds.center());
+                }
                 _ => return false,
             }
             return true;
@@ -3713,11 +6577,13 @@ impl PhotosApp {
                 return true;
             }
             self.active_album = (album_id != "all").then(|| album_id.to_owned());
+            self.library_destination = LibraryDestination::Timeline;
             self.active_folder = None;
             self.active_person = None;
             self.active_tag = None;
             self.active_favorites = false;
             self.library_offset = 0;
+            self.timeline_scroll_y = 0.0;
             return true;
         }
         if let Some(id) = target.strip_prefix("photos:library-details:") {
@@ -3831,116 +6697,411 @@ impl PhotosApp {
         &mut self,
         path: std::path::PathBuf,
         invocation: Option<tilo_actions::InvocationId>,
+        mode: DirectoryImportMode,
+        retain_exif_location: bool,
     ) {
-        let (sender, receiver) = std::sync::mpsc::sync_channel(DIRECTORY_IMPORT_QUEUE);
+        if self.directory_import.is_some() {
+            self.notice = Some("A photo folder job is already running".into());
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
-        let _ = std::thread::Builder::new()
+        let spawn = std::thread::Builder::new()
             .name("photos-directory-import".into())
             .spawn(move || {
-                let mut pending = vec![path];
-                let mut seen = 0usize;
-                while let Some(directory) = pending.pop() {
-                    if worker_cancel.load(Ordering::Relaxed) || seen >= DIRECTORY_IMPORT_MAX_FILES {
-                        break;
-                    }
-                    let Ok(entries) = std::fs::read_dir(directory) else {
-                        continue;
-                    };
-                    for entry in entries.flatten() {
-                        if worker_cancel.load(Ordering::Relaxed)
-                            || seen >= DIRECTORY_IMPORT_MAX_FILES
-                        {
-                            break;
-                        }
-                        let path = entry.path();
-                        if path.is_dir() {
-                            pending.push(path);
-                            continue;
-                        }
-                        if !path.is_file() || !is_importable_photo(&path) {
-                            continue;
-                        }
-                        seen = seen.saturating_add(1);
-                        if sender.send(DirectoryImportEvent::Candidate(path)).is_err() {
-                            return;
-                        }
-                    }
-                }
-                let _ = sender.send(DirectoryImportEvent::Finished);
+                let result = crate::import::index_directory(
+                    &path,
+                    crate::import::ImportOptions {
+                        retain_exif_location,
+                        ..crate::import::ImportOptions::default()
+                    },
+                    &worker_cancel,
+                    |progress| {
+                        let _ = sender.send(DirectoryImportEvent::Progress(progress));
+                    },
+                );
+                let _ = sender.send(DirectoryImportEvent::Finished(result));
             });
+        if spawn.is_err() {
+            self.notice = Some("Photos could not start the folder indexing job".into());
+            if let Some(invocation) = invocation {
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "photos.directory_worker_unavailable".into(),
+                        message: "Photos could not start the folder indexing job".into(),
+                        details: None,
+                        retryable: true,
+                    },
+                });
+            }
+            return;
+        }
+        self.directory_import_receipt = None;
+        self.directory_import_details_open = false;
+        self.directory_import_details_page = 0;
         self.directory_import = Some(DirectoryImport {
             receiver,
             cancel,
             invocation,
+            mode,
             discovered: 0,
             imported: 0,
+            refreshed: 0,
+            unchanged: 0,
             skipped: 0,
-            done: false,
+            sequence: 0,
+            pending: VecDeque::new(),
+            failures: Vec::new(),
+            worker_done: false,
+            cancelled: false,
+            limit_reached: false,
+            produced_resources: Vec::new(),
+            _shot_sender: None,
         });
-        self.notice = Some("Preparing folder import…".into());
+        self.notice = Some(match mode {
+            DirectoryImportMode::Import => "Preparing folder import…".into(),
+            DirectoryImportMode::Reindex => "Preparing folder reindex…".into(),
+        });
+    }
+
+    fn stop_directory_import(&mut self) -> bool {
+        let Some(job) = self.directory_import.as_mut() else {
+            return false;
+        };
+        job.cancel.store(true, Ordering::Release);
+        job.cancelled = true;
+        job.pending.clear();
+        if let Some(invocation) = job.invocation.take() {
+            self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(
+                    "Folder indexing was stopped; completed photographs were kept".into(),
+                ),
+            });
+        }
+        self.resource_invocation = None;
+        self.notice = Some("Stopping folder indexing… completed photographs are kept".into());
+        true
+    }
+
+    fn activate_directory_status(&mut self, hit: DirectoryStatusHit) -> bool {
+        match hit {
+            DirectoryStatusHit::Stop => self.stop_directory_import(),
+            DirectoryStatusHit::Details => {
+                let has_failures = self
+                    .directory_import
+                    .as_ref()
+                    .is_some_and(|job| !job.failures.is_empty())
+                    || self
+                        .directory_import_receipt
+                        .as_ref()
+                        .is_some_and(|receipt| receipt.failure_count > 0);
+                if has_failures {
+                    self.directory_import_details_open = true;
+                    self.directory_import_details_page = 0;
+                }
+                has_failures
+            }
+            DirectoryStatusHit::Dismiss => {
+                if self.directory_import.is_some() || self.directory_import_receipt.is_none() {
+                    return false;
+                }
+                self.directory_import_receipt = None;
+                self.directory_import_details_open = false;
+                self.directory_import_details_layout = None;
+                true
+            }
+        }
+    }
+
+    fn page_directory_details(&mut self, forward: bool) -> bool {
+        if !self.directory_import_details_open {
+            return false;
+        }
+        let retained = self.directory_import.as_ref().map_or_else(
+            || {
+                self.directory_import_receipt
+                    .as_ref()
+                    .map_or(0, |receipt| receipt.failures.len())
+            },
+            |job| job.failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT),
+        );
+        let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
+        let next = if forward {
+            (self.directory_import_details_page + 1).min(pages - 1)
+        } else {
+            self.directory_import_details_page.saturating_sub(1)
+        };
+        if next == self.directory_import_details_page {
+            return false;
+        }
+        self.directory_import_details_page = next;
+        true
+    }
+
+    fn close_directory_details(&mut self) -> bool {
+        if !self.directory_import_details_open {
+            return false;
+        }
+        self.directory_import_details_open = false;
+        self.directory_import_details_layout = None;
+        true
     }
 
     fn drain_directory_import(&mut self, doc: &mut AutoCommit) {
         if self.directory_import.is_none() {
             return;
         }
-        for _ in 0..DIRECTORY_IMPORT_PER_FRAME {
+        loop {
             let event = self
                 .directory_import
                 .as_ref()
-                .map(|import| import.receiver.try_recv());
+                .map(|job| job.receiver.try_recv());
             match event {
                 None => return,
-                Some(Ok(DirectoryImportEvent::Candidate(path))) => {
-                    if let Some(import) = self.directory_import.as_mut() {
-                        import.discovered = import.discovered.saturating_add(1);
-                    }
-                    let before = PhotosDoc::library(doc).photos.len();
-                    self.open_path(doc, &path.to_string_lossy());
-                    let imported = PhotosDoc::library(doc).photos.len() > before;
-                    if let Some(import) = self.directory_import.as_mut() {
-                        if imported {
-                            import.imported = import.imported.saturating_add(1);
-                        } else {
-                            import.skipped = import.skipped.saturating_add(1);
-                        }
+                Some(Ok(DirectoryImportEvent::Progress(progress))) => {
+                    let Some(job) = self.directory_import.as_mut() else {
+                        return;
+                    };
+                    job.discovered = progress.discovered;
+                    job.skipped = progress.skipped;
+                    job.sequence = job.sequence.saturating_add(1);
+                    if let Some(invocation) = job.invocation {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Progress {
+                            invocation,
+                            sequence: job.sequence,
+                            phase: "indexing".into(),
+                            completed: Some(progress.indexed as u64),
+                            total: None,
+                            message: Some(format!(
+                                "{} photographs discovered; {} could not be indexed",
+                                progress.discovered, progress.skipped
+                            )),
+                        });
                     }
                 }
-                Some(Ok(DirectoryImportEvent::Finished)) => {
-                    if let Some(import) = self.directory_import.as_mut() {
-                        import.done = true;
+                Some(Ok(DirectoryImportEvent::Finished(Ok(report)))) => {
+                    if let Some(job) = self.directory_import.as_mut() {
+                        job.discovered = report.discovered;
+                        job.skipped = report.failures.len();
+                        let cancellation_was_requested = job.cancelled;
+                        job.cancelled |= report.cancelled;
+                        job.limit_reached = report.limit_reached;
+                        job.failures = report.failures;
+                        if !cancellation_was_requested {
+                            job.pending = report.photos.into();
+                        }
+                        job.worker_done = true;
                     }
+                    break;
+                }
+                Some(Ok(DirectoryImportEvent::Finished(Err(message)))) => {
+                    let Some(mut job) = self.directory_import.take() else {
+                        return;
+                    };
+                    self.notice = Some(message.clone());
+                    if let Some(invocation) = job.invocation.take() {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "photos.directory_index_failed".into(),
+                                message,
+                                details: None,
+                                retryable: true,
+                            },
+                        });
+                    }
+                    return;
                 }
                 Some(Err(std::sync::mpsc::TryRecvError::Empty)) => break,
                 Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
-                    if let Some(import) = self.directory_import.as_mut() {
-                        import.done = true;
+                    let Some(mut job) = self.directory_import.take() else {
+                        return;
+                    };
+                    let message = "The photo folder worker stopped before returning a result";
+                    self.notice = Some(message.into());
+                    if let Some(invocation) = job.invocation.take() {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "photos.directory_worker_stopped".into(),
+                                message: message.into(),
+                                details: None,
+                                retryable: true,
+                            },
+                        });
+                    }
+                    return;
+                }
+            }
+        }
+
+        for _ in 0..DIRECTORY_IMPORT_PER_FRAME {
+            let indexed = self
+                .directory_import
+                .as_mut()
+                .and_then(|job| job.pending.pop_front());
+            let Some(indexed) = indexed else { break };
+            let existing = PhotosDoc::photo(doc, &indexed.photo.id);
+            let mode = self
+                .directory_import
+                .as_ref()
+                .map_or(DirectoryImportMode::Import, |job| job.mode);
+            let (action, changed) = match (mode, existing.as_ref()) {
+                (DirectoryImportMode::Reindex, Some(current)) => {
+                    let capture_changes =
+                        current.captured_at.is_none() && indexed.photo.captured_at.is_some();
+                    let location_changes = current.location.as_ref().is_none_or(|location| {
+                        location.provenance.source == "exif"
+                            && current.location != indexed.photo.location
+                    });
+                    (
+                        crate::actions::PhotosAction::RefreshImportedMetadata {
+                            photo_id: indexed.photo.id.clone(),
+                            captured_at: indexed.photo.captured_at.clone(),
+                            location: indexed.photo.location.clone(),
+                        },
+                        capture_changes || location_changes,
+                    )
+                }
+                (_, Some(_)) => (
+                    crate::actions::PhotosAction::ImportPhoto {
+                        photo: indexed.photo.clone(),
+                    },
+                    false,
+                ),
+                (_, None) => (
+                    crate::actions::PhotosAction::ImportPhoto {
+                        photo: indexed.photo.clone(),
+                    },
+                    true,
+                ),
+            };
+            if !changed {
+                if let Some(job) = self.directory_import.as_mut() {
+                    job.unchanged = job.unchanged.saturating_add(1);
+                }
+                continue;
+            }
+            match self.actions.try_dispatch_with_context(
+                doc,
+                crate::actions::PHOTOS_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("org.tilo.Photos", "Photos", &action),
+            ) {
+                Ok(()) => {
+                    if let Some(job) = self.directory_import.as_mut() {
+                        if existing.is_some() {
+                            job.refreshed = job.refreshed.saturating_add(1);
+                        } else {
+                            job.imported = job.imported.saturating_add(1);
+                        }
+                        job.produced_resources.push(indexed.photo.id);
+                    }
+                }
+                Err(error) => {
+                    if let Some(job) = self.directory_import.as_mut() {
+                        job.skipped = job.skipped.saturating_add(1);
+                        job.failures.push(crate::import::ImportFailure {
+                            source: indexed.source,
+                            message: error.to_string(),
+                            retryable: false,
+                        });
                     }
                 }
             }
         }
-        let Some(import) = self.directory_import.as_ref() else {
-            return;
-        };
-        if import.done {
+
+        let finished = self
+            .directory_import
+            .as_ref()
+            .is_some_and(|job| job.worker_done && job.pending.is_empty());
+        if finished {
+            let mut job = self.directory_import.take().expect("checked above");
+            let noun = if job.mode == DirectoryImportMode::Import {
+                "import"
+            } else {
+                "reindex"
+            };
             let message = format!(
-                "Folder import finished: {} imported, {} skipped",
-                import.imported, import.skipped
+                "Folder {noun} finished: {} imported · {} refreshed · {} unchanged · {} issue{}",
+                job.imported,
+                job.refreshed,
+                job.unchanged,
+                job.failures.len(),
+                if job.failures.len() == 1 { "" } else { "s" }
             );
-            let invocation = import.invocation;
-            self.notice = Some(message.clone());
-            self.directory_import = None;
-            if let Some(invocation) = invocation {
-                self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
+            self.notice = Some(message);
+            let failure_count = job.failures.len();
+            self.directory_import_receipt = Some(DirectoryImportReceipt {
+                mode: job.mode,
+                discovered: job.discovered,
+                imported: job.imported,
+                refreshed: job.refreshed,
+                unchanged: job.unchanged,
+                failures: job
+                    .failures
+                    .iter()
+                    .take(DIRECTORY_FAILURE_DETAIL_LIMIT)
+                    .cloned()
+                    .collect(),
+                failure_count,
+                cancelled: job.cancelled,
+                limit_reached: job.limit_reached,
+            });
+            if let Some(invocation) = job.invocation.take() {
+                let failures: Vec<_> = job
+                    .failures
+                    .iter()
+                    .take(50)
+                    .map(|failure| serde_json::json!({
+                        "name": failure.source.file_name().and_then(|name| name.to_str()).unwrap_or("Unavailable item"),
+                        "message": failure.message,
+                        "retryable": failure.retryable,
+                    }))
+                    .collect();
+                self.resource_result = Some(if job.cancelled {
+                    tilo_actions::InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some(
+                            "Folder indexing was cancelled; completed photographs were kept".into(),
+                        ),
+                    }
+                } else {
+                    tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(serde_json::json!({
+                                "operation": noun,
+                                "discovered": job.discovered,
+                                "imported": job.imported,
+                                "refreshed": job.refreshed,
+                                "unchanged": job.unchanged,
+                                "failed": job.failures.len(),
+                                "limit_reached": job.limit_reached,
+                                "failures": failures,
+                            })),
+                            resources: job.produced_resources,
+                        },
+                    }
                 });
             }
-        } else {
+            self.resource_invocation = None;
+        } else if let Some(job) = self.directory_import.as_ref() {
             self.notice = Some(format!(
-                "Importing folder: {} found · {} imported · {} skipped",
-                import.discovered, import.imported, import.skipped
+                "{} folder: {} found · {} imported · {} refreshed · {} issue{}",
+                if job.mode == DirectoryImportMode::Import {
+                    "Importing"
+                } else {
+                    "Reindexing"
+                },
+                job.discovered,
+                job.imported,
+                job.refreshed,
+                job.failures.len(),
+                if job.failures.len() == 1 { "" } else { "s" }
             ));
         }
     }
@@ -3952,7 +7113,12 @@ impl PhotosApp {
                 Ok(ui::portal::PortalOutcome::Opened(path)) => {
                     self.directory_picker = None;
                     let invocation = self.resource_invocation.take();
-                    self.begin_directory_import(path, invocation);
+                    self.begin_directory_import(
+                        path,
+                        invocation,
+                        DirectoryImportMode::Import,
+                        self.directory_picker_retain_exif_location,
+                    );
                 }
                 Ok(ui::portal::PortalOutcome::Cancelled) => {
                     self.directory_picker = None;
@@ -4066,6 +7232,31 @@ impl PhotosApp {
 
     /// The status line: the file, its edited size, and any notice.
     fn status_text(&self, doc: &AutoCommit) -> String {
+        if self.library_mode {
+            let mut s = match self.library_destination {
+                LibraryDestination::Timeline => format!("{} photographs", self.library_total),
+                LibraryDestination::Albums => {
+                    format!("Albums  ·  {} collections", self.library_albums.len())
+                }
+                LibraryDestination::People => {
+                    format!("People  ·  {} photographs", self.library_total)
+                }
+                LibraryDestination::Places => {
+                    format!("Places  ·  {} photographs", self.library_total)
+                }
+                LibraryDestination::Analysis => {
+                    let (searchable, ready, awaiting) = self.library_analysis_coverage;
+                    format!(
+                        "Photo analysis  ·  {searchable} searchable  ·  {ready} ready  ·  {awaiting} awaiting local bytes"
+                    )
+                }
+            };
+            for detail in self.notice.iter().chain(self.search_refresh_error.iter()) {
+                s.push_str("  ·  ");
+                s.push_str(detail);
+            }
+            return s;
+        }
         let Some(open) = PhotosDoc::image(doc) else {
             return self
                 .notice
@@ -4093,6 +7284,190 @@ impl PhotosApp {
         s
     }
 
+    /// Paint a quiet information card over the viewer rather than giving the
+    /// photograph a competing permanent sidebar.  The card uses only the
+    /// portable, explicitly shared library record, so a collaborator sees
+    /// the same description, people, and place without this surface ever
+    /// reading device-local EXIF or paths.
+    fn draw_viewer_details(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        use vello::peniko::Fill;
+
+        let Some(details) = self.viewer_details.as_ref() else {
+            return;
+        };
+        // On short windows, preserving a usable, contain-fit photograph is
+        // more valuable than placing a card over most of it. The full shared
+        // detail is still present in the image accessibility description.
+        if self.canvas_rect.width() < 340.0 || self.canvas_rect.height() < 300.0 {
+            return;
+        }
+        let compact = self.canvas_rect.width() < 720.0 || theme.text_scale > 1.25;
+        let horizontal_inset = if compact { 14.0 } else { 20.0 };
+        let card_width = if compact {
+            self.canvas_rect.width() - horizontal_inset * 2.0
+        } else {
+            self.canvas_rect.width().min(460.0)
+        };
+        let has_caption = details.description.is_some();
+        let card_height = if compact {
+            if has_caption { 138.0 } else { 112.0 }
+        } else if has_caption {
+            148.0
+        } else {
+            120.0
+        };
+        let card = Rect::new(
+            self.canvas_rect.x0 + horizontal_inset,
+            self.canvas_rect.y1 - card_height - horizontal_inset,
+            self.canvas_rect.x0 + horizontal_inset + card_width,
+            self.canvas_rect.y1 - horizontal_inset,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.window_card.with_alpha(0.94),
+            None,
+            &RoundedRect::from_rect(card, theme.radius_standard),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(card, theme.radius_standard),
+        );
+
+        let icon = Rect::new(
+            card.x0 + 14.0,
+            card.y0 + 14.0,
+            card.x0 + 34.0,
+            card.y0 + 34.0,
+        );
+        draw_icon(
+            scene,
+            transform,
+            icon,
+            Icon::Image,
+            theme.accent_primary,
+            1.4,
+        );
+        let title_right = if details.favorite {
+            card.x1 - 38.0
+        } else {
+            card.x1 - 14.0
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            &viewer_copy(&details.name, if compact { 34 } else { 52 }),
+            16.0,
+            theme.text_primary,
+            transform * Affine::translate((card.x0 + 42.0, card.y0 + 13.0)),
+            Some((title_right - card.x0 - 42.0) as f32),
+            TextWeight::Semibold,
+        );
+        if details.favorite {
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    card.x1 - 30.0,
+                    card.y0 + 14.0,
+                    card.x1 - 14.0,
+                    card.y0 + 30.0,
+                ),
+                Icon::Star,
+                theme.accent_primary,
+                1.6,
+            );
+        }
+        let state = if details.edited {
+            format!("{} · {}", details.dimensions, tr("photos-edited"))
+        } else {
+            format!("{} · {}", details.dimensions, tr("photos-shared-details"))
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            &state,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((card.x0 + 42.0, card.y0 + 37.0)),
+            Some((card.x1 - card.x0 - 56.0) as f32),
+            TextWeight::Regular,
+        );
+
+        let mut y = card.y0 + 62.0;
+        if let Some(description) = details.description.as_deref() {
+            text_renderer.draw_text_weighted(
+                scene,
+                &viewer_copy(description, if compact { 76 } else { 108 }),
+                13.0,
+                theme.text_primary,
+                transform * Affine::translate((card.x0 + 14.0, y)),
+                Some((card.width() - 28.0) as f32),
+                TextWeight::Regular,
+            );
+            y += 24.0;
+        }
+        let mut context = Vec::new();
+        if let Some(captured_at) = details.captured_at.as_deref() {
+            context.push(format!("{}: {captured_at}", tr("photos-captured")));
+        }
+        if let Some(place) = details.place.as_deref() {
+            context.push(format!("{}: {place}", tr("photos-place")));
+        }
+        if context.is_empty() {
+            context.push(tr("photos-no-shared-context"));
+        }
+        text_renderer.draw_text_weighted(
+            scene,
+            &viewer_copy(&context.join(" · "), if compact { 56 } else { 76 }),
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((card.x0 + 14.0, y)),
+            Some((card.width() - 28.0) as f32),
+            TextWeight::Regular,
+        );
+        y += 21.0;
+        let mut labels = Vec::new();
+        if !details.people.is_empty() {
+            labels.push(format!(
+                "{}: {}",
+                tr("photos-people"),
+                details.people.join(", ")
+            ));
+        }
+        if !details.tags.is_empty() {
+            labels.push(
+                details
+                    .tags
+                    .iter()
+                    .map(|tag| format!("#{tag}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+        if let Some(folder) = details.folder.as_deref() {
+            labels.push(format!("{}: {folder}", tr("photos-folder")));
+        }
+        if !labels.is_empty() && y < card.y1 - 10.0 {
+            text_renderer.draw_text_weighted(
+                scene,
+                &viewer_copy(&labels.join(" · "), if compact { 56 } else { 78 }),
+                12.0,
+                theme.text_dim,
+                transform * Affine::translate((card.x0 + 14.0, y)),
+                Some((card.width() - 28.0) as f32),
+                TextWeight::Regular,
+            );
+        }
+    }
+
     fn refresh_search_provider(
         &self,
         doc: &AutoCommit,
@@ -4102,6 +7477,35 @@ impl PhotosApp {
             return Err(ui::search::SearchCatalogError::NonCanonicalResult);
         }
         self.search_provider.sync(doc)
+    }
+
+    fn advance_library_query(&mut self) {
+        let query = self.library_query.trim().to_owned();
+        let generation = self.search_provider.generation();
+        if query.is_empty() {
+            self.library_query_indexed.clear();
+            self.library_query_generation = generation;
+            self.library_query_cursor = None;
+            self.library_query_matches.clear();
+            self.library_query_complete = true;
+            return;
+        }
+        if self.library_query_indexed != query || self.library_query_generation != generation {
+            self.library_query_indexed.clone_from(&query);
+            self.library_query_generation = generation;
+            self.library_query_cursor = None;
+            self.library_query_matches.clear();
+            self.library_query_complete = false;
+        }
+        if self.library_query_complete {
+            return;
+        }
+        let (ids, next, _inspected) = self
+            .search_provider
+            .photo_matches_page(&query, self.library_query_cursor.as_ref());
+        self.library_query_matches.extend(ids);
+        self.library_query_cursor = next;
+        self.library_query_complete = self.library_query_cursor.is_none();
     }
 
     fn empty_state_text(&self) -> (String, String) {
@@ -4292,6 +7696,219 @@ impl PhotosApp {
             .unwrap()
     }
 
+    fn layout_people_controls(&mut self) {
+        let bounds = self.canvas_rect;
+        let pad = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
+        let content = Rect::new(
+            bounds.x0 + pad,
+            bounds.y0 + 18.0,
+            bounds.x1 - pad,
+            bounds.y1 - 18.0,
+        );
+        let wide = content.width() >= 760.0;
+        let overview = self.people_selection.is_none();
+        // Keep the navigation and recognition card in separate vertical
+        // bands.  The former implementation put the card *over* the
+        // segmented navigation, leaving a very confusing invisible route
+        // control in the People overview.
+        let recognition_top = content.y0 + 118.0;
+        let recognition_bottom = recognition_top + if wide { 86.0 } else { 122.0 };
+        let body_y = if overview {
+            recognition_bottom + 30.0
+        } else {
+            content.y0 + 124.0
+        };
+        let mut action_row = 0usize;
+        let approved_count = self
+            .people_controls
+            .iter()
+            .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
+            .count();
+        let people_lane_w = if overview && wide {
+            (content.width() * 0.67).max(420.0)
+        } else {
+            content.width()
+        };
+        let columns = if overview && wide {
+            if people_lane_w >= 760.0 { 3 } else { 2 }
+        } else if wide {
+            3
+        } else {
+            1
+        };
+        let gap = 12.0;
+        let card_width = if wide {
+            (people_lane_w - gap * (columns - 1) as f64) / columns as f64
+        } else {
+            content.width()
+        };
+        self.people_name_bounds = Rect::ZERO;
+        if self.people_selection.is_some() && !self.people_merge_mode {
+            let form_x = if wide {
+                content.x0 + content.width() * 0.52
+            } else {
+                content.x0
+            };
+            self.people_name_bounds = Rect::new(
+                form_x,
+                body_y + if wide { 116.0 } else { 338.0 },
+                content.x1,
+                body_y + if wide { 160.0 } else { 382.0 },
+            );
+        }
+        let mut approved_index = 0usize;
+        let mut suggestion_index = 0usize;
+        for control in &mut self.people_controls {
+            control.bounds = match &control.intent {
+                PeopleIntent::Back => Rect::new(
+                    content.x1 - 152.0_f64.min(content.width()),
+                    content.y0,
+                    content.x1,
+                    content.y0 + 44.0,
+                ),
+                PeopleIntent::ToggleRecognition if !wide => Rect::new(
+                    content.x0 + 12.0,
+                    recognition_top + 64.0,
+                    content.x0 + (content.width() - 8.0) * 0.5,
+                    recognition_top + 108.0,
+                ),
+                PeopleIntent::ToggleRecognition => Rect::new(
+                    content.x1 - 356.0,
+                    recognition_top + 21.0,
+                    content.x1 - 182.0,
+                    recognition_top + 65.0,
+                ),
+                PeopleIntent::Scan | PeopleIntent::CancelScan if !wide => Rect::new(
+                    content.x0 + (content.width() + 8.0) * 0.5,
+                    recognition_top + 64.0,
+                    content.x1 - 12.0,
+                    recognition_top + 108.0,
+                ),
+                PeopleIntent::Scan | PeopleIntent::CancelScan => Rect::new(
+                    content.x1 - 170.0,
+                    recognition_top + 21.0,
+                    content.x1,
+                    recognition_top + 65.0,
+                ),
+                PeopleIntent::OpenApproved(_) => {
+                    let index = approved_index;
+                    approved_index += 1;
+                    if wide {
+                        let row = index / columns;
+                        let column = index % columns;
+                        let x = content.x0 + column as f64 * (card_width + gap);
+                        let y = body_y + 34.0 + row as f64 * 236.0;
+                        Rect::new(x + 12.0, y + 176.0, x + card_width - 12.0, y + 220.0)
+                    } else {
+                        let y = body_y + 34.0 + index as f64 * 92.0;
+                        Rect::new(content.x1 - 122.0, y + 20.0, content.x1 - 12.0, y + 64.0)
+                    }
+                }
+                PeopleIntent::OpenSuggestion(_) => {
+                    let index = suggestion_index;
+                    suggestion_index += 1;
+                    if overview && wide {
+                        let lane_x = content.x0 + people_lane_w + 20.0;
+                        let y = body_y + 34.0 + index as f64 * 164.0;
+                        Rect::new(lane_x + 108.0, y + 92.0, content.x1 - 12.0, y + 136.0)
+                    } else {
+                        let approved_rows = approved_count.div_ceil(columns);
+                        let section_y = if wide {
+                            body_y + 42.0 + approved_rows as f64 * 236.0
+                        } else {
+                            body_y + 42.0 + approved_count as f64 * 92.0
+                        };
+                        if wide {
+                            let row = index / columns;
+                            let column = index % columns;
+                            let x = content.x0 + column as f64 * (card_width + gap);
+                            let y = section_y + 36.0 + row as f64 * 236.0;
+                            Rect::new(x + 12.0, y + 176.0, x + card_width - 12.0, y + 220.0)
+                        } else {
+                            let y = section_y + 36.0 + index as f64 * 92.0;
+                            Rect::new(content.x1 - 122.0, y + 20.0, content.x1 - 12.0, y + 64.0)
+                        }
+                    }
+                }
+                PeopleIntent::BrowseApproved
+                | PeopleIntent::SaveName
+                | PeopleIntent::BeginMerge
+                | PeopleIntent::ApproveSuggestion
+                | PeopleIntent::RejectSuggestion
+                | PeopleIntent::HideSuggestion
+                | PeopleIntent::RestoreSuggestion => {
+                    let row = action_row;
+                    action_row += 1;
+                    let x = if wide {
+                        content.x0 + content.width() * 0.52
+                    } else {
+                        content.x0
+                    };
+                    Rect::new(
+                        x,
+                        body_y + if wide { 176.0 } else { 392.0 } + row as f64 * 52.0,
+                        content.x1,
+                        body_y + if wide { 220.0 } else { 436.0 } + row as f64 * 52.0,
+                    )
+                }
+                PeopleIntent::MergeApprovedInto(_) | PeopleIntent::MergeSuggestionWith(_) => {
+                    let row = action_row;
+                    action_row += 1;
+                    Rect::new(
+                        content.x0 + if wide { content.width() * 0.52 } else { 0.0 },
+                        body_y + if wide { 176.0 } else { 392.0 } + row as f64 * 52.0,
+                        content.x1,
+                        body_y + if wide { 220.0 } else { 436.0 } + row as f64 * 52.0,
+                    )
+                }
+                PeopleIntent::ToggleHidden if !wide => Rect::new(
+                    content.x0,
+                    content.y1 - 96.0,
+                    content.x0 + (content.width() - 8.0) * 0.5,
+                    content.y1 - 52.0,
+                ),
+                PeopleIntent::DeleteLocalData | PeopleIntent::ConfirmDeleteLocalData if !wide => {
+                    Rect::new(
+                        content.x0 + (content.width() + 8.0) * 0.5,
+                        content.y1 - 96.0,
+                        content.x1,
+                        content.y1 - 52.0,
+                    )
+                }
+                PeopleIntent::Page(forward) if !wide => {
+                    let half = (content.width() - 8.0) * 0.5;
+                    let x = if *forward {
+                        content.x0 + half + 8.0
+                    } else {
+                        content.x0
+                    };
+                    Rect::new(x, content.y1 - 44.0, x + half, content.y1)
+                }
+                PeopleIntent::ToggleHidden => Rect::new(
+                    content.x0,
+                    content.y1 - 44.0,
+                    content.x0 + 210.0,
+                    content.y1,
+                ),
+                PeopleIntent::Page(forward) => {
+                    let half = 96.0;
+                    let x = if *forward {
+                        content.x0 + 316.0
+                    } else {
+                        content.x0 + 216.0
+                    };
+                    Rect::new(x, content.y1 - 96.0, x + half, content.y1 - 52.0)
+                }
+                PeopleIntent::DeleteLocalData | PeopleIntent::ConfirmDeleteLocalData => Rect::new(
+                    content.x1 - 210.0,
+                    content.y1 - 44.0,
+                    content.x1,
+                    content.y1,
+                ),
+            };
+        }
+    }
+
     /// Lay out the canvas: the `ImageViewer` if a photograph is open, else a
     /// placeholder leaf sized to soak the remaining height. `flex_basis: 0`
     /// with `min_size: 0` is what stops a large image's intrinsic size from
@@ -4309,18 +7926,91 @@ impl PhotosApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let canvas = match self.viewer.as_mut() {
-            Some(v) => v.build_layout(taffy, theme, node_map),
-            None => taffy
-                .new_leaf(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::auto(),
+        let people_surface = self.library_mode
+            && (self.library_destination == LibraryDestination::People || self.people_mode);
+        let canvas = if people_surface {
+            self.layout_people_controls();
+            let mut children = Vec::new();
+            let show_name = self.people_selection.is_some() && !self.people_merge_mode;
+            if show_name {
+                let field = self.people_name_input.build_layout(taffy, theme, node_map);
+                let rect = self.people_name_bounds;
+                let _ = taffy.set_style(
+                    field,
+                    Style {
+                        position: Position::Absolute,
+                        inset: taffy::Rect {
+                            left: LengthPercentageAuto::length(
+                                (rect.x0 - self.canvas_rect.x0) as f32,
+                            ),
+                            top: LengthPercentageAuto::length(
+                                (rect.y0 - self.canvas_rect.y0) as f32,
+                            ),
+                            right: LengthPercentageAuto::auto(),
+                            bottom: LengthPercentageAuto::auto(),
+                        },
+                        size: Size {
+                            width: Dimension::length(rect.width() as f32),
+                            height: Dimension::length(rect.height() as f32),
+                        },
+                        ..Default::default()
                     },
-                    flex_grow: 1.0,
-                    ..Default::default()
-                })
-                .unwrap(),
+                );
+                children.push(field);
+            }
+            for control in &mut self.people_controls {
+                let node = control.button.build_layout(taffy, theme, node_map);
+                let rect = control.bounds;
+                let _ = taffy.set_style(
+                    node,
+                    Style {
+                        position: Position::Absolute,
+                        inset: taffy::Rect {
+                            left: LengthPercentageAuto::length(
+                                (rect.x0 - self.canvas_rect.x0) as f32,
+                            ),
+                            top: LengthPercentageAuto::length(
+                                (rect.y0 - self.canvas_rect.y0) as f32,
+                            ),
+                            right: LengthPercentageAuto::auto(),
+                            bottom: LengthPercentageAuto::auto(),
+                        },
+                        size: Size {
+                            width: Dimension::length(rect.width() as f32),
+                            height: Dimension::length(rect.height() as f32),
+                        },
+                        ..Default::default()
+                    },
+                );
+                children.push(node);
+            }
+            taffy
+                .new_with_children(
+                    Style {
+                        position: Position::Relative,
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::percent(1.0),
+                        },
+                        ..Default::default()
+                    },
+                    &children,
+                )
+                .unwrap()
+        } else {
+            match self.viewer.as_mut() {
+                Some(v) => v.build_layout(taffy, theme, node_map),
+                None => taffy
+                    .new_leaf(Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
+                        flex_grow: 1.0,
+                        ..Default::default()
+                    })
+                    .unwrap(),
+            }
         };
         taffy
             .set_style(
@@ -4420,6 +8110,1000 @@ impl PhotosApp {
     /// A deliberately calm People home: approved shared identities are a
     /// collection, while local face work is a private review queue. It never
     /// paints a made-up suggestion when no signed face model is installed.
+    fn draw_collection_pager(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        page: usize,
+        total: usize,
+        previous: CollectionPageHit,
+        next: CollectionPageHit,
+    ) {
+        self.collection_page_hits.clear();
+        let page_size = if matches!(previous, CollectionPageHit::AlbumsPrevious)
+            && self.library_destination == LibraryDestination::Albums
+            && self.canvas_rect.width() >= 700.0
+        {
+            8
+        } else {
+            COLLECTION_PAGE_SIZE
+        };
+        let pages = total.max(1).div_ceil(page_size);
+        if pages <= 1 {
+            return;
+        }
+        let previous_enabled = page > 0;
+        let next_enabled = page + 1 < pages;
+        let button_w = 88.0;
+        let label_w = 104.0;
+        let previous_rect = Rect::new(bounds.x0, bounds.y0, bounds.x0 + button_w, bounds.y1);
+        let next_rect = Rect::new(bounds.x1 - button_w, bounds.y0, bounds.x1, bounds.y1);
+        let presence = PresenceCtx::empty();
+        for (hit, rect, enabled) in [
+            (previous, previous_rect, previous_enabled),
+            (next, next_rect, next_enabled),
+        ] {
+            if let Some((_, button)) = self
+                .collection_page_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_enabled(enabled);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, &presence);
+            }
+            self.collection_page_hits.push((hit, rect, enabled));
+        }
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!("Page {} of {pages}", page + 1),
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((bounds.center().x - label_w * 0.5, bounds.y0 + 12.0)),
+            Some(label_w as f32),
+            TextWeight::Regular,
+        );
+    }
+
+    fn draw_directory_import_status(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        use vello::peniko::Fill;
+        let (title, summary, issue_count, active) =
+            if let Some(job) = self.directory_import.as_ref() {
+                (
+                    if job.mode == DirectoryImportMode::Import {
+                        "Importing photo folder"
+                    } else {
+                        "Reindexing photo folder"
+                    }
+                    .to_owned(),
+                    format!(
+                        "{} found · {} imported · {} refreshed · {} issue{}",
+                        job.discovered,
+                        job.imported,
+                        job.refreshed,
+                        job.failures.len(),
+                        if job.failures.len() == 1 { "" } else { "s" }
+                    ),
+                    job.failures.len(),
+                    true,
+                )
+            } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+                let noun = if receipt.mode == DirectoryImportMode::Reindex {
+                    "Reindex complete"
+                } else {
+                    "Import complete"
+                };
+                (
+                    noun.to_owned(),
+                    format!(
+                        "{} found · {} imported · {} refreshed · {} unchanged · {} issue{}{}{}",
+                        receipt.discovered,
+                        receipt.imported,
+                        receipt.refreshed,
+                        receipt.unchanged,
+                        receipt.failure_count,
+                        if receipt.failure_count == 1 { "" } else { "s" },
+                        if receipt.cancelled {
+                            " · cancelled"
+                        } else {
+                            ""
+                        },
+                        if receipt.limit_reached {
+                            " · folder limit reached"
+                        } else {
+                            ""
+                        },
+                    ),
+                    receipt.failure_count,
+                    false,
+                )
+            } else {
+                self.directory_import_details_layout = None;
+                return;
+            };
+        let compact = self.canvas_rect.width() < 620.0;
+        let height = if compact { 142.0 } else { 98.0 };
+        let bounds = Rect::new(
+            self.canvas_rect.x0 + 16.0,
+            (self.canvas_rect.y1 - height - 12.0).max(self.canvas_rect.y0 + 8.0),
+            self.canvas_rect.x1 - 16.0,
+            self.canvas_rect.y1 - 12.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(bounds, 10.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(bounds, 10.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &title,
+            14.0,
+            theme.text_primary,
+            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 15.0)),
+            Some((bounds.width() - if compact { 32.0 } else { 260.0 }) as f32),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &summary,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((bounds.x0 + 16.0, bounds.y0 + 41.0)),
+            Some((bounds.width() - if compact { 32.0 } else { 260.0 }) as f32),
+            TextWeight::Regular,
+        );
+
+        if active {
+            let progress_right = if compact {
+                bounds.x1 - 16.0
+            } else {
+                bounds.x1 - 244.0
+            };
+            self.directory_import_progress
+                .apply_layout_external(Rect::new(
+                    bounds.x0 + 16.0,
+                    bounds.y0 + 68.0,
+                    progress_right,
+                    bounds.y0 + 76.0,
+                ));
+            self.directory_import_progress.draw(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &PresenceCtx::empty(),
+            );
+        }
+
+        let visible = |hit| match hit {
+            DirectoryStatusHit::Stop => active,
+            DirectoryStatusHit::Details => issue_count > 0,
+            DirectoryStatusHit::Dismiss => !active,
+        };
+        let mut shown = self
+            .directory_import_buttons
+            .iter()
+            .filter(|(hit, _)| visible(*hit))
+            .count();
+        let button_y = if compact {
+            bounds.y1 - 50.0
+        } else {
+            bounds.y0 + 29.0
+        };
+        let mut button_x = if compact {
+            bounds.x0 + 16.0
+        } else {
+            bounds.x1 - 16.0 - shown as f64 * 104.0 - shown.saturating_sub(1) as f64 * 8.0
+        };
+        for (hit, button) in &mut self.directory_import_buttons {
+            if visible(*hit) {
+                let rect = Rect::new(button_x, button_y, button_x + 104.0, button_y + 40.0);
+                button.set_enabled(true);
+                button.apply_layout_external(rect);
+                button.draw(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &PresenceCtx::empty(),
+                );
+                button_x += 112.0;
+                shown = shown.saturating_sub(1);
+            } else {
+                button.set_enabled(false);
+                button.apply_layout_external(Rect::ZERO);
+            }
+        }
+    }
+
+    fn draw_directory_import_details(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.directory_import_details_open {
+            self.directory_import_details_layout = None;
+            return;
+        }
+        let (failures, failure_count) = if let Some(job) = self.directory_import.as_ref() {
+            (&job.failures[..], job.failures.len())
+        } else if let Some(receipt) = self.directory_import_receipt.as_ref() {
+            (&receipt.failures[..], receipt.failure_count)
+        } else {
+            self.directory_import_details_open = false;
+            self.directory_import_details_layout = None;
+            return;
+        };
+        if failures.is_empty() {
+            self.directory_import_details_open = false;
+            self.directory_import_details_layout = None;
+            return;
+        }
+        let retained = failures.len().min(DIRECTORY_FAILURE_DETAIL_LIMIT);
+        let pages = retained.div_ceil(DIRECTORY_FAILURES_PER_PAGE).max(1);
+        self.directory_import_details_page = self
+            .directory_import_details_page
+            .min(pages.saturating_sub(1));
+        let page = self.directory_import_details_page;
+        let actions = [
+            ModalAction::secondary("Previous").enabled(page > 0),
+            ModalAction::secondary("Next").enabled(page + 1 < pages),
+            ModalAction::primary("Close"),
+        ];
+        let base_spec = ModalSpec::new("Folder import issues")
+            .actions(&actions)
+            .body_height(282.0)
+            .max_width(620.0)
+            .dismiss_on_scrim(true);
+        let layout = ModalFrame::layout(self.rect, &base_spec, text_renderer, theme);
+        let actions = [
+            ModalAction::secondary("Previous")
+                .enabled(page > 0)
+                .hovered(layout.actions[0].contains(self.pointer)),
+            ModalAction::secondary("Next")
+                .enabled(page + 1 < pages)
+                .hovered(layout.actions[1].contains(self.pointer)),
+            ModalAction::primary("Close").hovered(layout.actions[2].contains(self.pointer)),
+        ];
+        let spec = ModalSpec::new("Folder import issues")
+            .actions(&actions)
+            .body_height(282.0)
+            .max_width(620.0)
+            .dismiss_on_scrim(true)
+            .close_hovered(layout.close.is_some_and(|rect| rect.contains(self.pointer)));
+        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
+        let (ink, dim) = ModalFrame::ink(theme);
+        let not_retained = failure_count.saturating_sub(retained);
+        let overview = if not_retained == 0 {
+            format!(
+                "{failure_count} issue{} · page {} of {pages}",
+                if failure_count == 1 { "" } else { "s" },
+                page + 1
+            )
+        } else {
+            format!(
+                "{failure_count} issues · {retained} details retained · {not_retained} additional"
+            )
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            &overview,
+            12.0,
+            dim,
+            transform * Affine::translate((layout.body.x0, layout.body.y0 + 2.0)),
+            Some(layout.body.width() as f32),
+            TextWeight::Regular,
+        );
+        let list = Rect::new(
+            layout.body.x0,
+            layout.body.y0 + 26.0,
+            layout.body.x1,
+            layout.body.y1,
+        );
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &list,
+        );
+        for (row, failure) in failures
+            .iter()
+            .take(retained)
+            .skip(page * DIRECTORY_FAILURES_PER_PAGE)
+            .take(DIRECTORY_FAILURES_PER_PAGE)
+            .enumerate()
+        {
+            let y = list.y0 + row as f64 * 58.0;
+            let name = failure
+                .source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Unavailable item");
+            text_renderer.draw_text_weighted(
+                scene,
+                name,
+                13.0,
+                ink,
+                transform * Affine::translate((list.x0, y + 5.0)),
+                Some((list.width() - 118.0) as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                if failure.retryable {
+                    "Can retry"
+                } else {
+                    "Needs a change"
+                },
+                11.0,
+                if failure.retryable {
+                    theme.accent_primary
+                } else {
+                    dim
+                },
+                transform * Affine::translate((list.x1 - 104.0, y + 6.0)),
+                Some(104.0),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &failure.message,
+                11.0,
+                dim,
+                transform * Affine::translate((list.x0, y + 28.0)),
+                Some(list.width() as f32),
+                TextWeight::Regular,
+            );
+            if row + 1 < DIRECTORY_FAILURES_PER_PAGE {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &Rect::new(list.x0, y + 54.0, list.x1, y + 55.0),
+                );
+            }
+        }
+        scene.pop_layer();
+        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        self.directory_import_details_layout = Some(layout);
+    }
+
+    /// Paint the shared library destination control over a canvas-owned
+    /// header. `ToggleGroup::paint` keeps the interaction language identical
+    /// to retained segmented controls while this app preserves its bounded
+    /// custom timeline/map hit testing.
+    fn draw_library_navigation(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+    ) {
+        let labels = ["Timeline", "Albums", "People", "Places", "Analyze"];
+        let intents = [
+            PlacesHit::Timeline,
+            PlacesHit::Albums,
+            PlacesHit::People,
+            PlacesHit::Places,
+            PlacesHit::Analysis,
+        ];
+        let selected = match self.library_destination {
+            LibraryDestination::Timeline => 0,
+            LibraryDestination::Albums => 1,
+            LibraryDestination::People => 2,
+            LibraryDestination::Places => 3,
+            LibraryDestination::Analysis => 4,
+        };
+        let segment_width = bounds.width() / labels.len() as f64;
+        let segments: Vec<_> = (0..labels.len())
+            .map(|index| {
+                Rect::new(
+                    bounds.x0 + segment_width * index as f64,
+                    bounds.y0,
+                    if index + 1 == labels.len() {
+                        bounds.x1
+                    } else {
+                        bounds.x0 + segment_width * (index + 1) as f64
+                    },
+                    bounds.y1,
+                )
+            })
+            .collect();
+        ToggleGroup::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &SegmentedFace::new(&segments, &labels, selected)
+                .pill()
+                .radius(8.0)
+                .text_size(12.0),
+        );
+        self.places_hits.extend(intents.into_iter().zip(segments));
+    }
+
+    /// First-class album overview. Album cards are a bounded projection over
+    /// canonical album resources; their covers reuse the asynchronous
+    /// thumbnail cache and never decode originals during paint.
+    fn draw_albums(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use vello::peniko::Fill;
+
+        self.library_cards.clear();
+        self.library_details_cards.clear();
+        self.metadata_filter_cards.clear();
+        self.places_hits.clear();
+        self.album_cards.clear();
+        self.album_edit_cards.clear();
+        self.album_editor_hits.clear();
+        self.collection_page_hits.clear();
+
+        let bounds = self.canvas_rect;
+        let compact = bounds.width() < 700.0 || theme.text_scale > 1.25;
+        let inset = if compact { 16.0 } else { 28.0 };
+        let content = Rect::new(
+            bounds.x0 + inset,
+            bounds.y0 + 16.0,
+            bounds.x1 - inset,
+            bounds.y1 - 16.0,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Albums",
+            if compact { 23.0 } else { 28.0 },
+            theme.text_primary,
+            transform * Affine::translate((content.x0, content.y0)),
+            Some(180.0),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!(
+                "{} album{} · shared and available on every device",
+                self.library_albums.len(),
+                if self.library_albums.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ),
+            13.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, content.y0 + 35.0)),
+            Some((content.width() - 220.0).max(120.0) as f32),
+            TextWeight::Regular,
+        );
+
+        let nav_y = if compact {
+            content.y0 + 64.0
+        } else {
+            content.y0
+        };
+        let nav_w = if compact {
+            content.width()
+        } else {
+            content.width().min(450.0)
+        };
+        let nav_x = if compact {
+            content.x0
+        } else {
+            content.x1 - nav_w
+        };
+        self.draw_library_navigation(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(nav_x, nav_y, nav_x + nav_w, nav_y + 40.0),
+        );
+
+        let actions_y = nav_y + if compact { 54.0 } else { 58.0 };
+        for (hit, rect, enabled) in [
+            (
+                AlbumEditorHit::New,
+                Rect::new(content.x0, actions_y, content.x0 + 118.0, actions_y + 44.0),
+                true,
+            ),
+            (
+                AlbumEditorHit::Edit,
+                Rect::new(
+                    content.x0 + 126.0,
+                    actions_y,
+                    content.x0 + 252.0,
+                    actions_y + 44.0,
+                ),
+                self.active_album.is_some(),
+            ),
+        ] {
+            if hit == AlbumEditorHit::Edit && !enabled {
+                continue;
+            }
+            if let Some((_, button)) = self
+                .library_album_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_enabled(enabled);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, presence);
+            }
+            if enabled {
+                self.album_editor_hits.push((hit, rect));
+            }
+        }
+
+        let grid_y = actions_y + 62.0;
+        if self.library_albums.is_empty() {
+            let empty = Rect::new(content.x0, grid_y, content.x1, content.y1);
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    empty.center().x - 28.0,
+                    empty.y0 + 44.0,
+                    empty.center().x + 28.0,
+                    empty.y0 + 100.0,
+                ),
+                Icon::Image,
+                theme.text_dim,
+                1.5,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                "Bring related moments together",
+                20.0,
+                theme.text_primary,
+                transform * Affine::translate((empty.x0, empty.y0 + 118.0)),
+                Some(empty.width() as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                "Create an album, then select photographs to add them. Albums preserve shared membership and history.",
+                14.0,
+                theme.text_dim,
+                transform * Affine::translate((empty.x0, empty.y0 + 151.0)),
+                Some(empty.width() as f32),
+                TextWeight::Regular,
+            );
+            self.draw_album_editor(scene, transform, text_renderer, theme, presence);
+            return;
+        }
+
+        let columns = if content.width() >= 1080.0 {
+            4
+        } else if content.width() >= 720.0 {
+            3
+        } else if content.width() >= 430.0 {
+            2
+        } else {
+            1
+        };
+        let gap = if compact { 12.0 } else { 18.0 };
+        let card_w = (content.width() - gap * (columns - 1) as f64) / columns as f64;
+        let card_h = if columns == 1 { 188.0 } else { 220.0 };
+        let album_page_size = if compact { COLLECTION_PAGE_SIZE } else { 8 };
+        let start = self.albums_page * album_page_size;
+        for (index, (id, name, count)) in self
+            .library_albums
+            .iter()
+            .skip(start)
+            .take(album_page_size)
+            .enumerate()
+        {
+            let row = index / columns;
+            let column = index % columns;
+            let card = Rect::new(
+                content.x0 + column as f64 * (card_w + gap),
+                grid_y + row as f64 * (card_h + gap),
+                content.x0 + column as f64 * (card_w + gap) + card_w,
+                grid_y + row as f64 * (card_h + gap) + card_h,
+            );
+            if card.y0 >= content.y1 {
+                break;
+            }
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                if card.contains(self.pointer) {
+                    theme.bg_hover
+                } else {
+                    theme.tokens.colors.surfaces.window_card
+                },
+                None,
+                &RoundedRect::from_rect(card, 12.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &RoundedRect::from_rect(card, 12.0),
+            );
+            let preview = Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x1 - 8.0, card.y1 - 60.0);
+            let covers = self
+                .library_album_covers
+                .get(id)
+                .cloned()
+                .unwrap_or_default();
+            if covers.is_empty() {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(preview, 8.0),
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    preview.inflate(-preview.width() * 0.35, -preview.height() * 0.28),
+                    Icon::Image,
+                    theme.text_dim,
+                    1.5,
+                );
+            } else {
+                let mosaic_columns = if covers.len() == 1 { 1 } else { 2 };
+                let mosaic_rows = covers.len().div_ceil(mosaic_columns);
+                // A slim gutter makes an album cover read as a collection of
+                // moments rather than one accidentally sliced photograph.
+                // Keep the raised preview underneath so the gutter inherits
+                // the system surface rather than a hard-coded colour.
+                let mosaic_gap = 3.0;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(preview, 8.0),
+                );
+                for (cover_index, cover_id) in covers.iter().enumerate() {
+                    let col = cover_index % mosaic_columns;
+                    let row = cover_index / mosaic_columns;
+                    let cell = Rect::new(
+                        preview.x0 + preview.width() * col as f64 / mosaic_columns as f64,
+                        preview.y0 + preview.height() * row as f64 / mosaic_rows as f64,
+                        preview.x0 + preview.width() * (col + 1) as f64 / mosaic_columns as f64,
+                        preview.y0 + preview.height() * (row + 1) as f64 / mosaic_rows as f64,
+                    );
+                    let tile = Rect::new(
+                        cell.x0 + if col == 0 { 0.0 } else { mosaic_gap * 0.5 },
+                        cell.y0 + if row == 0 { 0.0 } else { mosaic_gap * 0.5 },
+                        cell.x1
+                            - if col + 1 == mosaic_columns {
+                                0.0
+                            } else {
+                                mosaic_gap * 0.5
+                            },
+                        cell.y1
+                            - if row + 1 == mosaic_rows {
+                                0.0
+                            } else {
+                                mosaic_gap * 0.5
+                            },
+                    );
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.neutral[2],
+                        None,
+                        &tile,
+                    );
+                    if let Some(image) = self.library_thumbnails.get(cover_id) {
+                        let scale = (tile.width() / f64::from(image.width))
+                            .max(tile.height() / f64::from(image.height));
+                        let drawn_w = f64::from(image.width) * scale;
+                        let drawn_h = f64::from(image.height) * scale;
+                        scene.push_layer(
+                            Fill::NonZero,
+                            vello::peniko::BlendMode::default(),
+                            1.0,
+                            transform,
+                            &tile,
+                        );
+                        scene.draw_image(
+                            image,
+                            transform
+                                * Affine::translate((
+                                    tile.center().x - drawn_w * 0.5,
+                                    tile.center().y - drawn_h * 0.5,
+                                ))
+                                * Affine::scale(scale),
+                        );
+                        scene.pop_layer();
+                    } else {
+                        let icon_size = tile.width().min(tile.height()).min(36.0);
+                        draw_icon(
+                            scene,
+                            transform,
+                            Rect::new(
+                                tile.center().x - icon_size * 0.5,
+                                tile.center().y - icon_size * 0.5,
+                                tile.center().x + icon_size * 0.5,
+                                tile.center().y + icon_size * 0.5,
+                            ),
+                            Icon::Image,
+                            theme.text_dim,
+                            1.25,
+                        );
+                    }
+                }
+            }
+            text_renderer.draw_text_weighted(
+                scene,
+                name,
+                15.0,
+                theme.text_primary,
+                transform * Affine::translate((card.x0 + 14.0, card.y1 - 45.0)),
+                Some((card.width() - 78.0) as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &format!("{count} photo{}", if *count == 1 { "" } else { "s" }),
+                12.0,
+                theme.text_dim,
+                transform * Affine::translate((card.x0 + 14.0, card.y1 - 23.0)),
+                Some((card.width() - 78.0) as f32),
+                TextWeight::Regular,
+            );
+            let edit = Rect::new(
+                card.x1 - 54.0,
+                card.y1 - 50.0,
+                card.x1 - 10.0,
+                card.y1 - 6.0,
+            );
+            // Keep the secondary card operation on the shared button face:
+            // hover and focus feedback must agree with People, Places, and
+            // the metadata inspector even though card activation itself is
+            // handled by this bounded gallery surface.
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(edit, "")
+                    .style(ButtonStyle::Ghost)
+                    .icon(Icon::Pencil)
+                    .radius(10.0)
+                    .hovered(edit.contains(self.pointer))
+                    .accessible_name("Edit album"),
+            );
+            self.album_edit_cards.push((id.clone(), edit));
+            self.album_cards.push((Some(id.clone()), card));
+        }
+        self.draw_collection_pager(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(content.x1 - 292.0, actions_y, content.x1, actions_y + 44.0),
+            self.albums_page,
+            self.library_albums.len(),
+            CollectionPageHit::AlbumsPrevious,
+            CollectionPageHit::AlbumsNext,
+        );
+        self.draw_album_editor(scene, transform, text_renderer, theme, presence);
+    }
+
+    /// Paint a small, cropped cover mosaic without decoding or retaining any
+    /// image beyond the bounded thumbnail cache.  A group of photographs is
+    /// much more legible than a generic avatar, particularly when a person
+    /// has not been named yet.
+    fn draw_people_mosaic(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        photo_ids: &[String],
+    ) {
+        use vello::peniko::Fill;
+
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.neutral[2],
+            None,
+            &RoundedRect::from_rect(rect, 10.0),
+        );
+        if photo_ids.is_empty() {
+            draw_icon(
+                scene,
+                transform,
+                rect.inflate(-rect.width() * 0.35, -rect.height() * 0.35),
+                Icon::Users,
+                theme.text_dim,
+                1.5,
+            );
+            return;
+        }
+        let count = photo_ids.len().min(4);
+        let columns = if count == 1 { 1 } else { 2 };
+        let rows = count.div_ceil(columns);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &RoundedRect::from_rect(rect, 10.0),
+        );
+        for (index, photo_id) in photo_ids.iter().take(count).enumerate() {
+            let column = index % columns;
+            let row = index / columns;
+            let tile = Rect::new(
+                rect.x0 + rect.width() * column as f64 / columns as f64,
+                rect.y0 + rect.height() * row as f64 / rows as f64,
+                rect.x0 + rect.width() * (column + 1) as f64 / columns as f64,
+                rect.y0 + rect.height() * (row + 1) as f64 / rows as f64,
+            );
+            if let Some(image) = self.library_thumbnails.get(photo_id) {
+                let scale = (tile.width() / f64::from(image.width))
+                    .max(tile.height() / f64::from(image.height));
+                let drawn_w = f64::from(image.width) * scale;
+                let drawn_h = f64::from(image.height) * scale;
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &tile,
+                );
+                scene.draw_image(
+                    image,
+                    transform
+                        * Affine::translate((
+                            tile.center().x - drawn_w * 0.5,
+                            tile.center().y - drawn_h * 0.5,
+                        ))
+                        * Affine::scale(scale),
+                );
+                scene.pop_layer();
+            } else {
+                draw_icon(
+                    scene,
+                    transform,
+                    tile.inflate(-tile.width() * 0.36, -tile.height() * 0.30),
+                    Icon::Image,
+                    theme.text_dim,
+                    1.25,
+                );
+            }
+        }
+        scene.pop_layer();
+    }
+
+    fn draw_people_card(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        title: &str,
+        subtitle: &str,
+        photo_ids: &[String],
+        private: bool,
+        compact: bool,
+    ) {
+        use vello::peniko::Fill;
+
+        let hovered = card.contains(self.pointer);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if hovered {
+                theme.bg_hover
+            } else {
+                theme.tokens.colors.surfaces.window_card
+            },
+            None,
+            &RoundedRect::from_rect(card, 12.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(card, 12.0),
+        );
+        let (mosaic, copy_x, title_y, subtitle_y, copy_w) = if compact {
+            (
+                Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x0 + 94.0, card.y1 - 8.0),
+                card.x0 + 108.0,
+                card.y0 + 17.0,
+                card.y0 + 42.0,
+                (card.x1 - card.x0 - 130.0).max(72.0),
+            )
+        } else {
+            (
+                Rect::new(
+                    card.x0 + 10.0,
+                    card.y0 + 10.0,
+                    card.x1 - 10.0,
+                    card.y0 + 118.0,
+                ),
+                card.x0 + 14.0,
+                card.y0 + 132.0,
+                card.y0 + 156.0,
+                card.width() - 28.0,
+            )
+        };
+        self.draw_people_mosaic(scene, transform, theme, mosaic, photo_ids);
+        text_renderer.draw_text_weighted(
+            scene,
+            title,
+            if compact { 15.0 } else { 16.0 },
+            theme.text_primary,
+            transform * Affine::translate((copy_x, title_y)),
+            Some(copy_w as f32),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            subtitle,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((copy_x, subtitle_y)),
+            Some(copy_w as f32),
+            TextWeight::Regular,
+        );
+        if private {
+            let private_x = if compact { copy_x } else { card.x0 + 14.0 };
+            let private_y = if compact {
+                card.y0 + 64.0
+            } else {
+                card.y0 + 180.0
+            };
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(private_x, private_y, private_x + 14.0, private_y + 14.0),
+                Icon::Shield,
+                theme.text_dim,
+                1.2,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                "Private on this device",
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((private_x + 19.0, private_y - 1.0)),
+                Some((card.x1 - private_x - 28.0) as f32),
+                TextWeight::Medium,
+            );
+        }
+    }
+
     fn draw_people(
         &mut self,
         scene: &mut Scene,
@@ -4428,23 +9112,522 @@ impl PhotosApp {
         theme: &Theme,
     ) {
         use vello::peniko::Fill;
-        // This distinct collection must not leave stale library-card hit
-        // targets alive behind it when a person opens People from a timeline.
+
         self.library_cards.clear();
         self.library_details_cards.clear();
         self.metadata_filter_cards.clear();
         let bounds = self.canvas_rect;
-        let inset = f64::from(PAD) + 18.0;
+        let inset = if bounds.width() < 520.0 { 16.0 } else { 28.0 };
         let content = Rect::new(
             bounds.x0 + inset,
             bounds.y0 + 18.0,
             bounds.x1 - inset,
             bounds.y1 - 18.0,
         );
+        let wide = content.width() >= 760.0;
+        let nav = Rect::new(
+            content.x0,
+            content.y0 + 62.0,
+            content.x1.min(content.x0 + 520.0),
+            content.y0 + 102.0,
+        );
+        let recognition_top = content.y0 + 118.0;
+        let recognition = Rect::new(
+            content.x0,
+            recognition_top,
+            content.x1,
+            recognition_top + if wide { 86.0 } else { 122.0 },
+        );
+
         text_renderer.draw_text_weighted(
             scene,
             "People",
-            28.0,
+            if wide { 30.0 } else { 26.0 },
+            theme.text_primary,
+            transform * Affine::translate((content.x0, content.y0)),
+            Some((content.width() - 164.0).max(160.0) as f32),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Your people, with private suggestions kept on this device until you choose to share a name.",
+            13.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, content.y0 + 37.0)),
+            Some((content.width() - 164.0).max(180.0) as f32),
+            TextWeight::Regular,
+        );
+        self.draw_library_navigation(scene, transform, text_renderer, theme, nav);
+
+        if let Some(selection) = self.people_selection.clone() {
+            let body_y = content.y0 + 124.0;
+            let (title, subtitle, photo_ids, private, hidden) = match &selection {
+                PeopleSelection::Approved(name) => {
+                    let ids = self
+                        .people_approved
+                        .iter()
+                        .find(|person| &person.label == name)
+                        .map_or_else(Vec::new, |person| person.photo_ids.clone());
+                    (
+                        name.clone(),
+                        format!(
+                            "{} shared photograph{}",
+                            ids.len(),
+                            if ids.len() == 1 { "" } else { "s" }
+                        ),
+                        ids,
+                        false,
+                        false,
+                    )
+                }
+                PeopleSelection::Suggestion(id) => self.people_controller.cluster(id).map_or_else(
+                    || {
+                        (
+                            "Suggestion unavailable".to_owned(),
+                            "This local suggestion is no longer available.".to_owned(),
+                            Vec::new(),
+                            true,
+                            true,
+                        )
+                    },
+                    |cluster| {
+                        (
+                            cluster
+                                .display_name
+                                .clone()
+                                .unwrap_or_else(|| "Who is this?".to_owned()),
+                            format!(
+                                "{} · {} photograph{}",
+                                cluster.origin.label(),
+                                cluster.photos.len(),
+                                if cluster.photos.len() == 1 { "" } else { "s" }
+                            ),
+                            cluster.visible_photo_ids(),
+                            true,
+                            cluster.hidden || cluster.rejected,
+                        )
+                    },
+                ),
+            };
+            let panel = Rect::new(content.x0, body_y, content.x1, content.y1);
+            let reveal = if theme.reduce_motion {
+                1.0_f32
+            } else {
+                self.people_detail_transition.value(Instant::now())
+            };
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                reveal as f32,
+                transform,
+                &RoundedRect::from_rect(panel, 14.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.window_card,
+                None,
+                &RoundedRect::from_rect(panel, 14.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &RoundedRect::from_rect(panel, 14.0),
+            );
+            let (mosaic, copy_x) = if wide {
+                (
+                    Rect::new(
+                        panel.x0 + 18.0,
+                        panel.y0 + 18.0,
+                        panel.x0 + panel.width() * 0.47,
+                        panel.y0 + 254.0,
+                    ),
+                    panel.x0 + panel.width() * 0.52,
+                )
+            } else {
+                (
+                    Rect::new(
+                        panel.x0 + 14.0,
+                        panel.y0 + 14.0,
+                        panel.x1 - 14.0,
+                        panel.y0 + 180.0,
+                    ),
+                    panel.x0 + 16.0,
+                )
+            };
+            self.draw_people_mosaic(scene, transform, theme, mosaic, &photo_ids);
+            let copy_y = if wide {
+                panel.y0 + 24.0
+            } else {
+                panel.y0 + 202.0
+            };
+            if private {
+                let badge = Rect::new(copy_x, copy_y, copy_x + 22.0, copy_y + 22.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(badge, 6.0),
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    badge.inflate(-5.0, -5.0),
+                    Icon::Shield,
+                    theme.text_dim,
+                    1.2,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    "PRIVATE SUGGESTION",
+                    11.0,
+                    theme.text_dim,
+                    transform * Affine::translate((copy_x + 30.0, copy_y + 3.0)),
+                    Some((panel.x1 - copy_x - 44.0) as f32),
+                    TextWeight::Semibold,
+                );
+            }
+            let title_y = copy_y + if private { 40.0 } else { 0.0 };
+            text_renderer.draw_text_weighted(
+                scene,
+                if self.people_merge_mode {
+                    "Combine people"
+                } else {
+                    &title
+                },
+                24.0,
+                theme.text_primary,
+                transform * Affine::translate((copy_x, title_y)),
+                Some((panel.x1 - copy_x - 20.0) as f32),
+                TextWeight::Semibold,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                if self.people_merge_mode {
+                    "Choose another person or suggestion to combine with this one. Nothing is shared until you approve a named suggestion."
+                } else if hidden {
+                    "This suggestion is hidden on this device. You can return it to the review queue."
+                } else {
+                    &subtitle
+                },
+                13.0,
+                theme.text_dim,
+                transform * Affine::translate((copy_x, title_y + 36.0)),
+                Some((panel.x1 - copy_x - 20.0) as f32),
+                TextWeight::Regular,
+            );
+            if !self.people_merge_mode && !hidden {
+                text_renderer.draw_text_weighted(
+                    scene,
+                    if private {
+                        "Name this person"
+                    } else {
+                        "Display name"
+                    },
+                    12.0,
+                    theme.text_dim,
+                    transform * Affine::translate((copy_x, title_y + 82.0)),
+                    Some((panel.x1 - copy_x - 20.0) as f32),
+                    TextWeight::Medium,
+                );
+                if wide {
+                    text_renderer.draw_text_weighted(
+                        scene,
+                        if private {
+                            "Approving adds only this name and these photo memberships to the shared library."
+                        } else {
+                            "This name and its photo memberships are shared with your collaborators."
+                        },
+                        12.0,
+                        theme.text_dim,
+                        transform * Affine::translate((copy_x, panel.y1 - 42.0)),
+                        Some((panel.x1 - copy_x - 20.0) as f32),
+                        TextWeight::Regular,
+                    );
+                }
+            }
+            scene.pop_layer();
+            return;
+        }
+
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.window_card,
+            None,
+            &RoundedRect::from_rect(recognition, 12.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(recognition, 12.0),
+        );
+        let shield = Rect::new(
+            recognition.x0 + 16.0,
+            recognition.y0 + 18.0,
+            recognition.x0 + 52.0,
+            recognition.y0 + 54.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(shield, 10.0),
+        );
+        draw_icon(
+            scene,
+            transform,
+            shield.inflate(-9.0, -9.0),
+            Icon::Shield,
+            theme.text_primary,
+            1.4,
+        );
+        let recognition_copy_x = recognition.x0 + 64.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            "On-device recognition",
+            15.0,
+            theme.text_primary,
+            transform * Affine::translate((recognition_copy_x, recognition.y0 + 16.0)),
+            Some(if wide {
+                300.0
+            } else {
+                (recognition.width() - 80.0) as f32
+            }),
+            TextWeight::Semibold,
+        );
+        let scan_state = match self.people_scan_progress.status.as_str() {
+            "running" => "Scanning locally. Suggestions will appear here for review.",
+            "error" => self
+                .people_scan_progress
+                .last_error
+                .as_deref()
+                .unwrap_or("The last local scan could not finish."),
+            "cancelled" => "Scanning is paused. Start again to continue from the next local batch.",
+            _ => self.people_controller.capability().summary(),
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            scan_state,
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((recognition_copy_x, recognition.y0 + 42.0)),
+            Some(if wide {
+                (recognition.width() - 450.0).max(220.0) as f32
+            } else {
+                (recognition.width() - 80.0) as f32
+            }),
+            TextWeight::Regular,
+        );
+        let body_y = recognition.y1 + 30.0;
+        let people_lane_w = if wide {
+            (content.width() * 0.67).max(420.0)
+        } else {
+            content.width()
+        };
+        let review_x = if wide {
+            content.x0 + people_lane_w + 20.0
+        } else {
+            content.x0
+        };
+        let review_w = if wide {
+            content.x1 - review_x
+        } else {
+            content.width()
+        };
+        text_renderer.draw_text_weighted(
+            scene,
+            "People you’ve named",
+            18.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, body_y)),
+            Some(people_lane_w as f32),
+            TextWeight::Semibold,
+        );
+        if wide {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Review queue",
+                18.0,
+                theme.text_primary,
+                transform * Affine::translate((review_x, body_y)),
+                Some(review_w as f32),
+                TextWeight::Semibold,
+            );
+        }
+        let approved_controls: Vec<_> = self
+            .people_controls
+            .iter()
+            .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
+            .collect();
+        if approved_controls.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                "People you approve will be shared here as searchable collections.",
+                13.0,
+                theme.text_dim,
+                transform * Affine::translate((content.x0, body_y + 34.0)),
+                Some(people_lane_w as f32),
+                TextWeight::Regular,
+            );
+        }
+        for control in approved_controls {
+            let PeopleIntent::OpenApproved(name) = &control.intent else {
+                continue;
+            };
+            let person = self
+                .people_approved
+                .iter()
+                .find(|person| &person.label == name);
+            let count = person.map_or(0, crate::people::SharedPerson::count);
+            let photo_ids = person.map_or_else(Vec::new, |person| person.photo_ids.clone());
+            let card = if wide {
+                Rect::new(
+                    control.bounds.x0 - 12.0,
+                    control.bounds.y0 - 176.0,
+                    control.bounds.x1 + 12.0,
+                    control.bounds.y1 + 8.0,
+                )
+            } else {
+                Rect::new(
+                    content.x0,
+                    control.bounds.y0 - 20.0,
+                    content.x1,
+                    control.bounds.y1 + 20.0,
+                )
+            };
+            self.draw_people_card(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                card,
+                name,
+                &format!(
+                    "{count} photograph{} · shared",
+                    if count == 1 { "" } else { "s" }
+                ),
+                &photo_ids,
+                false,
+                !wide,
+            );
+        }
+        if !wide {
+            let approved_count = self
+                .people_controls
+                .iter()
+                .filter(|control| matches!(control.intent, PeopleIntent::OpenApproved(_)))
+                .count();
+            text_renderer.draw_text_weighted(
+                scene,
+                "Suggestions to review",
+                18.0,
+                theme.text_primary,
+                transform
+                    * Affine::translate((content.x0, body_y + 42.0 + approved_count as f64 * 92.0)),
+                Some(content.width() as f32),
+                TextWeight::Semibold,
+            );
+        }
+        let suggestion_controls: Vec<_> = self
+            .people_controls
+            .iter()
+            .filter(|control| matches!(control.intent, PeopleIntent::OpenSuggestion(_)))
+            .collect();
+        if suggestion_controls.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                match self.people_controller.capability() {
+                    crate::people::FaceCapability::DisabledByOwner => "Turn on recognition when you want private suggestions from this device.",
+                    crate::people::FaceCapability::NoVerifiedFaceModel => "Recognition is on, but this device does not have a verified local face model yet.",
+                    crate::people::FaceCapability::Ready { .. } => "No suggestions are waiting for review.",
+                },
+                13.0,
+                theme.text_dim,
+                transform * Affine::translate((review_x, body_y + 34.0)),
+                Some(review_w as f32),
+                TextWeight::Regular,
+            );
+        }
+        for control in suggestion_controls {
+            let PeopleIntent::OpenSuggestion(id) = &control.intent else {
+                continue;
+            };
+            let Some(cluster) = self.people_controller.cluster(id) else {
+                continue;
+            };
+            let card = if wide {
+                Rect::new(
+                    review_x,
+                    control.bounds.y0 - 92.0,
+                    content.x1,
+                    control.bounds.y1 + 16.0,
+                )
+            } else {
+                Rect::new(
+                    content.x0,
+                    control.bounds.y0 - 20.0,
+                    content.x1,
+                    control.bounds.y1 + 20.0,
+                )
+            };
+            self.draw_people_card(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                card,
+                cluster
+                    .display_name
+                    .as_deref()
+                    .unwrap_or("Suggested person"),
+                &format!(
+                    "{} photograph{} · {}",
+                    cluster.photos.len(),
+                    if cluster.photos.len() == 1 { "" } else { "s" },
+                    cluster.origin.label()
+                ),
+                &cluster.visible_photo_ids(),
+                true,
+                true,
+            );
+        }
+    }
+
+    fn draw_library_analysis(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use vello::peniko::Fill;
+
+        self.library_cards.clear();
+        self.library_details_cards.clear();
+        self.metadata_filter_cards.clear();
+        self.places_hits.clear();
+        self.library_analysis_failure_hits.clear();
+
+        let compact = self.canvas_rect.width() < 700.0 || theme.text_scale > 1.25;
+        let inset = if compact { 16.0 } else { 30.0 };
+        let content = Rect::new(
+            self.canvas_rect.x0 + inset,
+            self.canvas_rect.y0 + 16.0,
+            self.canvas_rect.x1 - inset,
+            self.canvas_rect.y1 - 16.0,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Photo analysis",
+            if compact { 23.0 } else { 28.0 },
             theme.text_primary,
             transform * Affine::translate((content.x0, content.y0)),
             Some(content.width() as f32),
@@ -4452,215 +9635,379 @@ impl PhotosApp {
         );
         text_renderer.draw_text_weighted(
             scene,
-            "Private recognition stays on this device. Only names you approve are shared.",
+            "Search inside your photographs without sending pixels away.",
             14.0,
             theme.text_dim,
-            transform * Affine::translate((content.x0, content.y0 + 37.0)),
+            transform * Affine::translate((content.x0, content.y0 + 36.0)),
             Some(content.width() as f32),
             TextWeight::Regular,
         );
-        let capability = self.people_controller.capability().summary();
-        let privacy = if self.people_controller.privacy().recognition_enabled {
-            "On for this device"
-        } else {
-            "Off for this device"
-        };
-        let notice = Rect::new(
-            content.x0,
-            content.y0 + 66.0,
-            content.x1,
-            content.y0 + 126.0,
+        self.draw_library_navigation(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(
+                content.x0,
+                content.y0 + 58.0,
+                if compact {
+                    content.x1
+                } else {
+                    (content.x0 + 450.0).min(content.x1)
+                },
+                content.y0 + 98.0,
+            ),
+        );
+
+        let card_y = content.y0 + 116.0;
+        let card_h = if compact { 174.0 } else { 142.0 };
+        let status_card = RoundedRect::from_rect(
+            Rect::new(content.x0, card_y, content.x1, card_y + card_h),
+            12.0,
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            theme.tokens.colors.surfaces.window_card,
             None,
-            &notice,
+            &status_card,
         );
-        scene.fill(
-            Fill::NonZero,
+        scene.stroke(
+            &Stroke::new(1.0),
             transform,
             theme.border_standard,
             None,
-            &Rect::new(notice.x0, notice.y0, notice.x1, notice.y0 + 1.0),
+            &status_card,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.accent[6],
+            None,
+            &RoundedRect::from_rect(
+                Rect::new(
+                    content.x0,
+                    card_y + 10.0,
+                    content.x0 + 3.0,
+                    card_y + card_h - 10.0,
+                ),
+                2.0,
+            ),
+        );
+
+        let (model_title, model_detail) = self.library_analysis_capability.as_ref().map_or_else(
+            || {
+                (
+                    "Local model unavailable".to_owned(),
+                    "Install and start a verified local vision model in Settings.".to_owned(),
+                )
+            },
+            |capability| {
+                let revision = capability.revision.chars().take(10).collect::<String>();
+                (
+                    capability.model_label.clone(),
+                    format!("Verified local model · revision {revision}"),
+                )
+            },
         );
         text_renderer.draw_text_weighted(
             scene,
-            privacy,
-            14.0,
+            &model_title,
+            17.0,
             theme.text_primary,
-            transform * Affine::translate((notice.x0 + 16.0, notice.y0 + 13.0)),
-            Some(220.0),
+            transform * Affine::translate((content.x0 + 18.0, card_y + 16.0)),
+            Some(if compact {
+                (content.width() - 36.0) as f32
+            } else {
+                (content.width() * 0.42) as f32
+            }),
             TextWeight::Medium,
         );
         text_renderer.draw_text_weighted(
             scene,
-            capability,
-            13.0,
+            &model_detail,
+            12.0,
             theme.text_dim,
-            transform * Affine::translate((notice.x0 + 16.0, notice.y0 + 34.0)),
-            Some((notice.width() - 32.0) as f32),
+            transform * Affine::translate((content.x0 + 18.0, card_y + 42.0)),
+            Some(if compact {
+                (content.width() - 36.0) as f32
+            } else {
+                (content.width() * 0.42) as f32
+            }),
             TextWeight::Regular,
         );
-        // `library_people` is the bounded projection refreshed from the same
-        // document as the canonical resource tree; draw never materializes a
-        // large CRDT collection merely to paint this overview.
-        let mut y = notice.y1 + 30.0;
-        text_renderer.draw_text_weighted(
-            scene,
-            "Approved people",
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0, y)),
-            Some(content.width() as f32),
-            TextWeight::Medium,
-        );
-        y += 28.0;
-        let people: Vec<_> = self.library_people.iter().take(8).collect();
-        if people.is_empty() {
-            text_renderer.draw_text_weighted(
-                scene,
-                "No approved names yet. Review a local suggestion before sharing it.",
-                14.0,
-                theme.text_dim,
-                transform * Affine::translate((content.x0, y)),
-                Some(content.width() as f32),
-                TextWeight::Regular,
-            );
-        } else {
-            for (index, (name, count)) in people.into_iter().enumerate() {
-                let columns = if content.width() < 620.0 { 2 } else { 4 };
-                let gap = 12.0;
-                let card_w = (content.width() - gap * (columns - 1) as f64) / columns as f64;
-                let x = content.x0 + (index % columns) as f64 * (card_w + gap);
-                let card_y = y + (index / columns) as f64 * 184.0;
-                let card = Rect::new(x, card_y, x + card_w, card_y + 170.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.window_card,
-                    None,
-                    &card,
-                );
-                let preview = Rect::new(card.x0, card.y0, card.x1, card.y0 + 112.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.neutral[2],
-                    None,
-                    &preview,
-                );
-                if let Some(id) = self.library_person_covers.get(name)
-                    && let Some(image) = self.library_thumbnails.get(id)
-                {
-                    let scale = (preview.width() / f64::from(image.width))
-                        .max(preview.height() / f64::from(image.height));
-                    let image_transform = transform
-                        * Affine::translate((
-                            preview.x0 + (preview.width() - f64::from(image.width) * scale) * 0.5,
-                            preview.y0 + (preview.height() - f64::from(image.height) * scale) * 0.5,
-                        ))
-                        * Affine::scale(scale);
-                    scene.draw_image(image, image_transform);
-                } else {
-                    let avatar = Rect::from_center_size(preview.center(), (38.0, 38.0));
-                    draw_icon(scene, transform, avatar, Icon::Image, theme.text_dim, 1.5);
-                }
-                text_renderer.draw_text_weighted(
-                    scene,
-                    name,
-                    15.0,
-                    theme.text_primary,
-                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 124.0)),
-                    Some((card.width() - 24.0) as f32),
-                    TextWeight::Medium,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &format!("{count} photos · approved"),
-                    12.0,
-                    theme.text_dim,
-                    transform * Affine::translate((card.x0 + 12.0, card.y0 + 146.0)),
-                    Some((card.width() - 24.0) as f32),
-                    TextWeight::Regular,
-                );
-            }
-        }
-        let suggestions: Vec<_> = self
-            .people_controller
-            .visible_clusters()
-            .into_iter()
-            .filter(|cluster| cluster.is_proposal())
-            .take(6)
-            .collect();
-        let suggestion_y = if self.library_people.is_empty() {
-            y + 44.0
-        } else {
-            let columns = if content.width() < 620.0 { 2 } else { 4 };
-            y + (self.library_people.len().min(8).div_ceil(columns) as f64) * 184.0 + 12.0
+
+        let phase = self.library_analysis.phase;
+        let phase_label = match phase {
+            crate::library_analysis::LibraryAnalysisPhase::Idle => "Ready",
+            crate::library_analysis::LibraryAnalysisPhase::Running => "Analyzing locally",
+            crate::library_analysis::LibraryAnalysisPhase::Paused => "Paused",
+            crate::library_analysis::LibraryAnalysisPhase::Complete => "Finished",
         };
-        text_renderer.draw_text_weighted(
-            scene,
-            "Local suggestions",
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content.x0, suggestion_y)),
-            Some(content.width() as f32),
-            TextWeight::Medium,
-        );
-        let suggestion_copy = if suggestions.is_empty() {
-            "No local suggestions yet. Enable recognition, then scan a local batch.".to_owned()
+        let (analyzed, available, awaiting) = self.library_analysis_coverage;
+        let summary = if phase == crate::library_analysis::LibraryAnalysisPhase::Idle {
+            format!(
+                "{analyzed} searchable · {available} ready to analyze · {awaiting} awaiting local bytes"
+            )
         } else {
             format!(
-                "{} suggestion{} waiting for a name and approval; none are shared.",
-                suggestions.len(),
-                if suggestions.len() == 1 { "" } else { "s" }
+                "{} of {} finished · {} succeeded · {} failed",
+                self.library_analysis.completed,
+                self.library_analysis.total,
+                self.library_analysis.succeeded,
+                self.library_analysis.failed
             )
         };
         text_renderer.draw_text_weighted(
             scene,
-            &suggestion_copy,
-            14.0,
+            phase_label,
+            13.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0 + 18.0, card_y + 72.0)),
+            Some(180.0),
+            TextWeight::Semibold,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &summary,
+            12.0,
             theme.text_dim,
-            transform * Affine::translate((content.x0, suggestion_y + 25.0)),
+            transform * Affine::translate((content.x0 + 18.0, card_y + 94.0)),
+            Some((content.width() - 36.0) as f32),
+            TextWeight::Regular,
+        );
+        if !compact {
+            for (index, (value, label)) in [
+                (analyzed, "Searchable"),
+                (available, "Ready"),
+                (awaiting, "Waiting"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let x = content.x0 + content.width() * (0.49 + index as f64 * 0.17);
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &value.to_string(),
+                    24.0,
+                    theme.text_primary,
+                    transform * Affine::translate((x, card_y + 34.0)),
+                    Some((content.width() * 0.13) as f32),
+                    TextWeight::Semibold,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    label,
+                    11.0,
+                    theme.text_dim,
+                    transform * Affine::translate((x, card_y + 68.0)),
+                    Some((content.width() * 0.13) as f32),
+                    TextWeight::Medium,
+                );
+            }
+        }
+        self.library_analysis_progress
+            .set_progress(self.library_analysis.progress() as f32);
+        let progress_y = card_y + if compact { 124.0 } else { 116.0 };
+        self.library_analysis_progress
+            .apply_layout_external(Rect::new(
+                content.x0 + 18.0,
+                progress_y,
+                content.x1 - 18.0,
+                progress_y + 8.0,
+            ));
+        self.library_analysis_progress
+            .draw(scene, transform, text_renderer, theme, presence);
+        if let Some(name) = self.library_analysis.current_name.as_deref() {
+            text_renderer.draw_text_weighted(
+                scene,
+                &format!("Now: {name}"),
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((content.x0 + 18.0, progress_y + 17.0)),
+                Some((content.width() - 36.0) as f32),
+                TextWeight::Regular,
+            );
+        }
+
+        let controls_y = card_y + card_h + 14.0;
+        let visible_hit = match phase {
+            crate::library_analysis::LibraryAnalysisPhase::Running => LibraryAnalysisHit::Pause,
+            crate::library_analysis::LibraryAnalysisPhase::Paused => LibraryAnalysisHit::Resume,
+            _ => LibraryAnalysisHit::Start,
+        };
+        let primary_w = if compact { content.width() } else { 250.0 };
+        for (hit, button) in &mut self.library_analysis_buttons {
+            let visible = *hit == visible_hit
+                || (*hit == LibraryAnalysisHit::RetryFailures
+                    && self.library_analysis.has_failures()
+                    && phase != crate::library_analysis::LibraryAnalysisPhase::Running);
+            button.set_enabled(match *hit {
+                LibraryAnalysisHit::Start => {
+                    self.library_analysis_capability.is_some() && available > 0
+                }
+                LibraryAnalysisHit::Pause => {
+                    phase == crate::library_analysis::LibraryAnalysisPhase::Running
+                }
+                LibraryAnalysisHit::Resume => {
+                    phase == crate::library_analysis::LibraryAnalysisPhase::Paused
+                }
+                LibraryAnalysisHit::RetryFailures => self.library_analysis.has_failures(),
+            });
+            let x = if *hit == LibraryAnalysisHit::RetryFailures {
+                content.x0 + primary_w + 10.0
+            } else {
+                content.x0
+            };
+            let width = if compact { content.width() } else { 250.0 };
+            let y = if compact && *hit == LibraryAnalysisHit::RetryFailures {
+                controls_y + 54.0
+            } else {
+                controls_y
+            };
+            if visible {
+                button.apply_layout_external(Rect::new(x, y, x + width, y + 44.0));
+                button.draw(scene, transform, text_renderer, theme, presence);
+            } else {
+                button.apply_layout_external(Rect::ZERO);
+            }
+        }
+
+        let info_y = controls_y
+            + if compact && self.library_analysis.has_failures() {
+                116.0
+            } else {
+                66.0
+            };
+        text_renderer.draw_text_weighted(
+            scene,
+            "What becomes searchable",
+            17.0,
+            theme.text_primary,
+            transform * Affine::translate((content.x0, info_y)),
+            Some(content.width() as f32),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Descriptions, visible text, objects, and pets. Original pixels stay on this device. The compact result and its model provenance are shared with this photo library so collaborators and system search see the same truth.",
+            13.0,
+            theme.text_dim,
+            transform * Affine::translate((content.x0, info_y + 28.0)),
             Some(content.width() as f32),
             TextWeight::Regular,
         );
-        let progress = &self.people_scan_progress;
-        let progress_copy = match progress.status.as_str() {
-            "running" => format!(
-                "Scanning locally: next batch starts at photo {} of {}. You can cancel; scanning resumes from there.",
-                progress.next_offset.saturating_add(1),
-                progress.last_library_size
-            ),
-            "cancelled" => format!(
-                "Local scan paused after {} batch(es). Start Scan local library for faces to resume.",
-                progress.completed_batches
-            ),
-            "error" => format!(
-                "Last local scan failed: {}. Retry resumes at the next batch.",
-                progress
-                    .last_error
-                    .as_deref()
-                    .unwrap_or("local model unavailable")
-            ),
-            "paused" if progress.completed_batches > 0 => format!(
-                "{} local batch(es) completed. Scan again to continue through this device's library.",
-                progress.completed_batches
-            ),
-            _ => String::new(),
-        };
-        if !progress_copy.is_empty() {
+        let capability_cards_y = info_y + if compact { 92.0 } else { 66.0 };
+        let capability_columns = if compact { 2 } else { 4 };
+        let capability_gap = 10.0;
+        let capability_w = (content.width() - capability_gap * (capability_columns - 1) as f64)
+            / capability_columns as f64;
+        for (index, (title, detail, icon)) in [
+            ("Visible text", "Full-text OCR", Icon::Search),
+            ("Scenes", "Descriptions + objects", Icon::Sparkles),
+            ("Pets", "Separate pet facets", Icon::Star),
+            ("People", "Private review in People", Icon::Users),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let column = index % capability_columns;
+            let row = index / capability_columns;
+            let x = content.x0 + column as f64 * (capability_w + capability_gap);
+            let y = capability_cards_y + row as f64 * 70.0;
+            let card = RoundedRect::from_rect(Rect::new(x, y, x + capability_w, y + 60.0), 9.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.window_card,
+                None,
+                &card,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &card,
+            );
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(x + 14.0, y + 20.0, x + 32.0, y + 38.0),
+                icon,
+                theme.tokens.colors.accent[6],
+                1.5,
+            );
             text_renderer.draw_text_weighted(
                 scene,
-                &progress_copy,
-                12.0,
+                title,
+                13.0,
+                theme.text_primary,
+                transform * Affine::translate((x + 48.0, y + 10.0)),
+                Some((capability_w - 60.0) as f32),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                detail,
+                11.0,
                 theme.text_dim,
-                transform * Affine::translate((content.x0, suggestion_y + 48.0)),
-                Some(content.width() as f32),
+                transform * Affine::translate((x + 48.0, y + 33.0)),
+                Some((capability_w - 60.0) as f32),
                 TextWeight::Regular,
             );
+        }
+
+        let capability_rows = 4usize.div_ceil(capability_columns);
+        let failure_y = capability_cards_y + capability_rows as f64 * 70.0 + 12.0;
+        if self.library_analysis.has_failures() {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Needs attention",
+                17.0,
+                theme.text_primary,
+                transform * Affine::translate((content.x0, failure_y)),
+                Some(content.width() as f32),
+                TextWeight::Medium,
+            );
+            for (index, failure) in self.library_analysis.failures().rev().take(4).enumerate() {
+                let y = failure_y + 30.0 + index as f64 * 46.0;
+                let row = Rect::new(content.x0, y, content.x1, y + 40.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &row,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.semantic.danger,
+                    None,
+                    &Rect::new(row.x0, row.y0, row.x0 + 3.0, row.y1),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &failure.name,
+                    13.0,
+                    theme.text_primary,
+                    transform * Affine::translate((row.x0 + 12.0, row.y0 + 6.0)),
+                    Some((row.width() * 0.38) as f32),
+                    TextWeight::Medium,
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &failure.message,
+                    12.0,
+                    theme.text_dim,
+                    transform * Affine::translate((row.x0 + row.width() * 0.42, row.y0 + 7.0)),
+                    Some((row.width() * 0.55) as f32),
+                    TextWeight::Regular,
+                );
+                self.library_analysis_failure_hits
+                    .push((failure.photo_id.clone(), row));
+            }
         }
     }
 
@@ -4681,8 +10028,17 @@ impl PhotosApp {
         self.timeline_density_hits.clear();
         self.library_details_cards.clear();
         self.places_hits.clear();
+        self.collection_page_hits.clear();
         if self.library_items.is_empty() {
-            let (title, body) = if self.library_query.trim().is_empty() {
+            let (title, body) = if !self.library_query.trim().is_empty()
+                && !self.library_query_complete
+            {
+                (
+                    "Searching photographs…".to_owned(),
+                    "Matching names, people, places, recognized text, and image descriptions locally."
+                        .to_owned(),
+                )
+            } else if self.library_query.trim().is_empty() {
                 (
                     tr("photos-library-empty-title"),
                     tr("photos-library-empty-body"),
@@ -4722,8 +10078,12 @@ impl PhotosApp {
         // Compact library navigation is photo-first. Collections remain
         // canonical/searchable, while their dense chip rail moves out of the
         // small viewport instead of pushing the first date below the fold.
-        let album_h = if desktop_library && !self.library_albums.is_empty() {
-            38.0
+        let album_h = if desktop_library {
+            // Album creation/editing shares this secondary collection rail;
+            // reserving it even for an empty library keeps those controls out
+            // of the primary destination masthead and avoids first-use layout
+            // shifts when the first album appears.
+            52.0
         } else {
             0.0
         };
@@ -4761,68 +10121,34 @@ impl PhotosApp {
         // First-class destinations use the same stable local navigation
         // target rather than turning People/Places into a search suggestion.
         if desktop_library {
-            let mut tab_x = masthead.x0 + 224.0;
-            for (hit, label, selected) in [
-                (
-                    PlacesHit::Timeline,
-                    "Timeline",
-                    self.library_destination == LibraryDestination::Timeline,
+            self.draw_library_navigation(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    masthead.x0 + 224.0,
+                    masthead.y0 + 12.0,
+                    masthead.x1 - 224.0,
+                    masthead.y0 + 48.0,
                 ),
-                (
-                    PlacesHit::People,
-                    "People",
-                    self.library_destination == LibraryDestination::People,
-                ),
-                (PlacesHit::Places, "Places", false),
-            ] {
-                let tab = Rect::new(tab_x, masthead.y0 + 13.0, tab_x + 78.0, masthead.y0 + 47.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if selected {
-                        theme.tokens.colors.accent[6]
-                    } else {
-                        theme.tokens.colors.surfaces.window_card
-                    },
-                    None,
-                    &tab,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &tab,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    label,
-                    11.0,
-                    theme.text_primary,
-                    transform * Affine::translate((tab.x0 + 9.0, tab.y0 + 10.0)),
-                    Some(60.0),
-                    TextWeight::Medium,
-                );
-                self.places_hits.push((hit, tab));
-                tab_x += 84.0;
-            }
+            );
         }
-        let count = if desktop_library {
+        let count = if !self.library_query.trim().is_empty() && !self.library_query_complete {
+            format!("{} matches so far · searching locally", self.library_total)
+        } else if desktop_library {
             format!("{} photographs · shared library", self.library_total)
         } else if large_text {
             format!("{} photos", self.library_total)
         } else {
-            // Compact layouts state selection progress in the contextual bar
-            // and keep the masthead free for density controls. A duplicate
-            // right-aligned range would sit directly behind the expand button.
-            String::new()
+            format!("{} photos", self.library_total)
         };
         let count_width = if desktop_library {
             260.0
         } else if large_text {
             180.0
         } else {
-            100.0
+            180.0
         };
         text_renderer.draw_text_weighted(
             scene,
@@ -4833,17 +10159,13 @@ impl PhotosApp {
                 * Affine::translate((
                     if desktop_library {
                         masthead.x0 + 16.0
-                    } else if large_text {
-                        bounds.x0 + f64::from(PAD)
                     } else {
-                        bounds.x1 - f64::from(PAD) - count_width
+                        bounds.x0 + f64::from(PAD)
                     },
                     if desktop_library {
                         heading_y + 32.0
-                    } else if large_text {
-                        compact_header.count_y
                     } else {
-                        heading_y + 3.0
+                        compact_header.count_y
                     },
                 )),
             Some(count_width as f32),
@@ -4857,7 +10179,16 @@ impl PhotosApp {
         } else {
             compact_header.controls.y0
         };
-        let density_x = bounds.x1 - f64::from(PAD) - 96.0;
+        let density_x = if desktop_library {
+            bounds.x1 - f64::from(PAD) - 96.0
+        } else if large_text {
+            compact_header.controls.x1 + 8.0
+        } else {
+            // Keep the two density controls immediately before Select on a
+            // compact masthead. They previously occupied the exact same rect
+            // and painted a second control underneath it.
+            compact_header.controls.x0 - 104.0
+        };
         for (hit, rect, enabled) in [
             (
                 TimelineHit::ZoomOut,
@@ -4914,23 +10245,36 @@ impl PhotosApp {
                     format!("All photos ({})", self.library_total)
                 },
             )];
-            albums.extend(self.library_albums.iter().map(|(id, name, count)| {
-                (
-                    Some(id.clone()),
-                    if large_text {
-                        compact_label(name, 12)
-                    } else {
-                        format!("{name} ({count})")
-                    },
-                )
-            }));
+            albums.extend(
+                self.library_albums
+                    .iter()
+                    .skip(self.albums_page * COLLECTION_PAGE_SIZE)
+                    .take(COLLECTION_PAGE_SIZE)
+                    .map(|(id, name, count)| {
+                        (
+                            Some(id.clone()),
+                            if large_text {
+                                compact_label(name, 12)
+                            } else {
+                                format!("{name} ({count})")
+                            },
+                        )
+                    }),
+            );
+            let album_pages = self
+                .library_albums
+                .len()
+                .max(1)
+                .div_ceil(COLLECTION_PAGE_SIZE);
+            let album_chip_limit =
+                bounds.x1 - f64::from(PAD) - 232.0 - if album_pages > 1 { 308.0 } else { 0.0 };
             for (album_id, label) in albums {
                 let width = if large_text {
                     (label.chars().count() as f64 * 13.0 + 22.0).clamp(64.0, 190.0)
                 } else {
                     (label.chars().count() as f64 * 7.2 + 18.0).min(150.0)
                 };
-                if x + width > bounds.x1 - f64::from(PAD) {
+                if x + width > album_chip_limit {
                     break;
                 }
                 let chip = Rect::new(x, y, x + width, y + if large_text { 44.0 } else { 26.0 });
@@ -4969,6 +10313,22 @@ impl PhotosApp {
                 self.album_cards.push((album_id, chip));
                 x += width + 8.0;
             }
+            self.draw_collection_pager(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    bounds.x1 - f64::from(PAD) - 292.0,
+                    y - 7.0,
+                    bounds.x1 - f64::from(PAD),
+                    y + 33.0,
+                ),
+                self.albums_page,
+                self.library_albums.len(),
+                CollectionPageHit::AlbumsPrevious,
+                CollectionPageHit::AlbumsNext,
+            );
         }
         // Metadata filters are deliberately in the shelf rather than hidden
         // behind global search: folders and people are an everyday browse
@@ -5287,36 +10647,100 @@ impl PhotosApp {
         // Cards are photographs in every responsive mode.  A compact screen
         // opens a card directly or enters selection; it never trades half a
         // tile for a filename and three permanent action buttons.
-        let default_card_h = default_preview_h;
-        let rows =
-            ((bounds.y1 - top - f64::from(PAD)).max(0.0) / (default_card_h + gap)).floor() as usize;
-        // The index speaks in chronological *rows*, the exact continuous
-        // coordinate used by the virtualised timeline. It is not derived from
-        // `library_items.len()`: that is just the 120-item materialisation
-        // window and would make the thumb lie about a large collection.
-        let content_rows = self.library_total.div_ceil(columns.max(1));
+        let viewport_height = (bounds.y1 - top - f64::from(PAD)).max(0.0);
+        self.timeline_viewport_height = viewport_height;
+        let timeline_left = bounds.x0 + f64::from(PAD);
+        let timeline_width = bounds.x1 - f64::from(PAD) - 18.0 - timeline_left;
+        // Header controls need their compact arrangement well before the
+        // photographs need to collapse to a single column. Keeping those
+        // breakpoints independent gives tablets and narrow desktop strips a
+        // useful, expressive chronology instead of two enormous image rows.
+        let single_column_timeline = timeline_width < 520.0;
+        // At 200% text, retain two genuinely readable photographs rather
+        // than either stretching one tile across the whole desktop or
+        // squeezing a justified row into three narrow targets.
+        let timeline_layout_width = if large_text && !single_column_timeline {
+            timeline_width.min(1_216.0)
+        } else {
+            timeline_width
+        };
+        let timeline_target_height = if large_text && !single_column_timeline {
+            410.0
+        } else {
+            default_preview_h
+        };
+        let anchor = self.timeline_projection.anchor_at(self.timeline_scroll_y);
+        let geometry_changed = self.timeline_projection.set_geometry(TimelineGeometry {
+            width: timeline_layout_width.max(44.0),
+            target_height: timeline_target_height,
+            gap,
+            compact: single_column_timeline,
+        });
+        if geometry_changed
+            && let Some(anchor) = anchor.as_ref()
+            && let Some(restored) = self
+                .timeline_projection
+                .restore_anchor(anchor, viewport_height)
+        {
+            self.timeline_scroll_y = restored;
+        }
+        self.timeline_scroll_y = self
+            .timeline_projection
+            .clamp_scroll(self.timeline_scroll_y, viewport_height);
         self.timeline_index_metrics = ScrollMetrics::new(
-            f64::from(u32::try_from(content_rows).unwrap_or(u32::MAX)),
-            f64::from(u32::try_from(rows.max(1)).unwrap_or(u32::MAX)),
-            self.timeline_scroll_row,
+            self.timeline_projection.total_height(),
+            viewport_height,
+            self.timeline_scroll_y,
         );
+        self.timeline_index_markers = self
+            .timeline_projection
+            .date_markers(viewport_height)
+            .into_iter()
+            .map(|(day, position, major)| {
+                DateIndexMarker::new(
+                    day.clone(),
+                    timeline_date_label(&day),
+                    position,
+                    if major {
+                        DateIndexMarkerKind::Major
+                    } else {
+                        DateIndexMarkerKind::Minor
+                    },
+                )
+            })
+            .collect();
         self.timeline_index.set_rect(Rect::new(
             bounds.x1 - f64::from(PAD) - ui::widget::date_indexed_scrollbar::DEFAULT_TRACK_WIDTH,
             top + 4.0,
             bounds.x1 - f64::from(PAD),
             bounds.y1 - f64::from(PAD),
         ));
-        // The editor is modal at large text: leaving a partially visible
-        // ultra-wide thumbnail behind it creates a false second target and
-        // can make its action row look clipped. The local grid decision still
-        // drops to one lane, ready for the sheet to close, but the sheet owns
-        // the visual surface while it is active.
-        let visible = if large_text && self.metadata_editor {
-            0
+        let visible_days = self
+            .timeline_projection
+            .visible_days(self.timeline_scroll_y, viewport_height);
+        let visible_items: Vec<_> = if large_text && self.metadata_editor {
+            Vec::new()
         } else {
-            // Two overscan rows make a wheel/pinch density change feel
-            // immediate while keeping rendering and thumbnail decoding bounded.
-            timeline_virtual_range(self.library_items.len(), 0, rows, columns).len()
+            self.timeline_projection
+                .visible_photos(self.timeline_scroll_y, viewport_height)
+                .into_iter()
+                .map(|entry| {
+                    (
+                        LibraryItem {
+                            id: entry.photo.id.clone(),
+                            name: entry.photo.name.clone(),
+                            favorite: entry.photo.favorite,
+                            captured_at: entry.photo.day.clone(),
+                        },
+                        TimelineItemLayout {
+                            width: entry.width,
+                            height: entry.height,
+                        },
+                        timeline_left + entry.x,
+                        top + entry.y,
+                    )
+                })
+                .collect()
         };
         // Clip the moving content to the measured canvas region so a fast
         // scroll can never paint over the search/header or status bar.
@@ -5328,83 +10752,35 @@ impl PhotosApp {
             transform,
             &timeline_clip,
         );
-        // The canonical scroll anchor is an item offset. Do not apply the old
-        // fixed-row fractional translation to justified rows: it could bisect
-        // a variable-height row and orphan its date heading.
-        let mut timeline_y = top;
-        let timeline_left = bounds.x0 + f64::from(PAD);
-        let timeline_width = bounds.x1 - f64::from(PAD) - 18.0 - timeline_left;
-        let timeline_layout = if desktop_library {
-            justified_timeline_layout(
-                &self.library_items[..visible],
-                timeline_width.max(44.0),
-                default_preview_h,
-                gap,
-            )
-        } else {
-            // Phone and 200% layouts use one full-width photo per row. This
-            // keeps portrait cards above the 44px interaction minimum and
-            // avoids putting the old footer/actions inside a narrow row.
-            self.library_items[..visible]
-                .iter()
-                .map(|item| TimelineItemLayout {
-                    width: timeline_width.max(44.0),
-                    height: (timeline_width / item.aspect_ratio.clamp(0.35, 3.0))
-                        .clamp(140.0, 420.0),
-                    row_start: true,
-                    row_end: true,
-                })
-                .collect()
-        };
-        let mut timeline_x = timeline_left;
-        let mut previous_day = String::new();
-        let mut painted_items = 0usize;
-        for (item, item_layout) in self
-            .library_items
-            .iter()
-            .take(visible)
-            .zip(timeline_layout.iter().copied())
-        {
+        for day in visible_days {
+            let heading_y = top + day.y;
+            let day_rule = Rect::new(
+                timeline_left,
+                heading_y + 24.0,
+                bounds.x1 - f64::from(PAD) - 18.0,
+                heading_y + 25.0,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &timeline_date_label(&day.key),
+                if large_text { 15.0 } else { 13.0 },
+                theme.text_primary,
+                transform * Affine::translate((day_rule.x0, heading_y + 4.0)),
+                Some(day_rule.width() as f32),
+                TextWeight::Medium,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.border_standard,
+                None,
+                &Rect::new(day_rule.x0 + 148.0, day_rule.y0, day_rule.x1, day_rule.y1),
+            );
+        }
+        for (item, item_layout, projected_x, projected_y) in &visible_items {
             let id = &item.id;
             let name = &item.name;
             let favorite = item.favorite;
-            if item_layout.row_start && item.captured_at != previous_day {
-                let group_top = timeline_y;
-                // Do not leave an orphan date label at the bottom of a
-                // viewport; every heading earns room for its first photo.
-                if painted_items > 0
-                    && group_top + 34.0 + default_card_h > bounds.y1 - f64::from(PAD)
-                {
-                    break;
-                }
-                timeline_y = group_top;
-                let day_label = timeline_date_label(&item.captured_at);
-                let day_rule = Rect::new(
-                    bounds.x0 + f64::from(PAD),
-                    timeline_y + 24.0,
-                    bounds.x1 - f64::from(PAD) - 18.0,
-                    timeline_y + 25.0,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &day_label,
-                    if large_text { 15.0 } else { 13.0 },
-                    theme.text_primary,
-                    transform * Affine::translate((day_rule.x0, timeline_y + 4.0)),
-                    Some(day_rule.width() as f32),
-                    TextWeight::Medium,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(day_rule.x0 + 148.0, day_rule.y0, day_rule.x1, day_rule.y1),
-                );
-                timeline_y += 34.0;
-                timeline_x = timeline_left;
-                previous_day.clone_from(&item.captured_at);
-            }
             // The desktop timeline reserves no artificial 3:2 tray.  Its
             // width stays predictable for scrolling while every item's
             // height is derived from document-owned intrinsic dimensions.
@@ -5417,13 +10793,11 @@ impl PhotosApp {
             // one tall portrait. Paint that first card (the clip protects the
             // masthead) so a chronological view never degenerates into an
             // empty canvas plus a misleading continuation card.
-            if painted_items > 0 && timeline_y + item_card_h > bounds.y1 - f64::from(PAD) {
-                break;
-            }
-            let x = timeline_x;
-            let y = timeline_y;
+            let x = *projected_x;
+            let y = *projected_y;
             let card = Rect::new(x, y, x + card_w, y + item_card_h);
             let preview = Rect::new(x, y, x + card_w, y + item_preview_h);
+            let card_fully_visible = card.y0 >= top && card.y1 <= bounds.y1;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -5537,7 +10911,7 @@ impl PhotosApp {
                     .floor()
                     .max(8.0) as usize,
             );
-            if desktop_library && !self.album_editor && !self.selection_mode {
+            if card_fully_visible && desktop_library && !self.album_editor && !self.selection_mode {
                 if card.contains(self.pointer) {
                     // Desktop controls are deliberately transient: the
                     // photograph remains the dominant surface until someone
@@ -5623,6 +10997,56 @@ impl PhotosApp {
                     );
                 }
                 self.library_details_cards.push((id.clone(), details));
+            } else if card_fully_visible
+                && !self.album_editor
+                && !self.selection_mode
+                && card.width() >= 148.0
+            {
+                // Touch and enlarged-text layouts cannot depend on hover.
+                // Keep the image dominant while providing an honest 44px
+                // action shelf on tiles wide enough to contain all controls.
+                let overlay = Rect::new(card.x0, action_y, card.x1, card.y1);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.neutral[0].with_alpha(0.82),
+                    None,
+                    &overlay,
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(details.center(), (16.0, 16.0)),
+                    Icon::Pencil,
+                    theme.tokens.colors.accent[6],
+                    1.5,
+                );
+                let confirmed = self.library_remove_confirm.as_deref() == Some(id);
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(remove.center(), (16.0, 16.0)),
+                    if confirmed { Icon::Check } else { Icon::Trash2 },
+                    if confirmed {
+                        theme.tokens.colors.semantic.danger
+                    } else {
+                        theme.text_dim
+                    },
+                    1.5,
+                );
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(star.center(), (17.0, 17.0)),
+                    Icon::Star,
+                    if favorite {
+                        theme.tokens.colors.accent[6]
+                    } else {
+                        theme.text_dim
+                    },
+                    1.5,
+                );
+                self.library_details_cards.push((id.clone(), details));
             }
             if self.album_editor && self.album_editor_members.contains(id) {
                 scene.fill(
@@ -5658,90 +11082,8 @@ impl PhotosApp {
                     2.0,
                 );
             }
-            self.library_cards.push((id.clone(), card, favorite));
-            painted_items += 1;
-            if item_layout.row_end {
-                timeline_y += item_card_h + gap;
-                timeline_x = timeline_left;
-            } else {
-                timeline_x += card_w + gap;
-            }
-        }
-        // Never leave a short final viewport looking like a failed virtual
-        // list. The continuation/end card is derived from the actual next
-        // record and bounded materialisation window — no inferred memories,
-        // locations, or dates are fabricated here.
-        let remaining = self.library_items.len().saturating_sub(painted_items);
-        let can_summarise = painted_items > 0
-            && (remaining > 0
-                || (self.timeline_index_markers.len() == 1
-                    && self.library_items.len() == self.library_total
-                    && self.library_items.len() < visible
-                    && (timeline_x - timeline_left).abs() < f64::EPSILON));
-        if can_summarise {
-            let summary_y = timeline_y + 2.0;
-            let summary_bottom = (summary_y + 122.0).min(bounds.y1 - f64::from(PAD));
-            if summary_bottom - summary_y >= 82.0 {
-                let summary = Rect::new(
-                    bounds.x0 + f64::from(PAD),
-                    summary_y,
-                    bounds.x1 - f64::from(PAD),
-                    summary_bottom,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.raised,
-                    None,
-                    &summary,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &summary,
-                );
-                let (title, body) = if let Some(next) = self.library_items.get(painted_items) {
-                    let remaining_total = self.library_total.saturating_sub(painted_items);
-                    let count = if remaining_total == 1 {
-                        "1 photo remains".to_owned()
-                    } else {
-                        format!("{remaining_total} photos remain")
-                    };
-                    (
-                        format!("Continue to {}", timeline_date_label(&next.captured_at)),
-                        format!("{count} · Scroll, drag the date index, or choose a date marker."),
-                    )
-                } else if self.library_total == 1 {
-                    (
-                        "This day is complete · 1 photo shown".to_owned(),
-                        "Use + / −, pinch, or Ctrl + wheel to change timeline density.".to_owned(),
-                    )
-                } else {
-                    (
-                        format!("This day is complete · {} photos shown", self.library_total),
-                        "Use + / −, pinch, or Ctrl + wheel to change timeline density.".to_owned(),
-                    )
-                };
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &title,
-                    if large_text { 15.0 } else { 13.0 },
-                    theme.text_primary,
-                    transform * Affine::translate((summary.x0 + 14.0, summary.y0 + 15.0)),
-                    Some((summary.width() - 28.0) as f32),
-                    TextWeight::Medium,
-                );
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &body,
-                    if large_text { 13.0 } else { 11.0 },
-                    theme.text_dim,
-                    transform * Affine::translate((summary.x0 + 14.0, summary.y0 + 43.0)),
-                    Some((summary.width() - 28.0) as f32),
-                    TextWeight::Regular,
-                );
+            if card_fully_visible {
+                self.library_cards.push((id.clone(), card, favorite));
             }
         }
         scene.pop_layer();
@@ -5773,13 +11115,21 @@ impl PhotosApp {
     ) {
         use vello::peniko::Fill;
         self.places_hits.clear();
+        self.collection_page_hits.clear();
         let bounds = Rect::new(
             self.canvas_rect.x0 + 10.0,
             self.canvas_rect.y0 + 10.0,
             self.canvas_rect.x1 - 10.0,
             self.canvas_rect.y1 - 10.0,
         );
-        let heading = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + 58.0);
+        let compact = bounds.width() < 760.0 || theme.text_scale > 1.25;
+        // Build the location projection once per frame. The heading, marker
+        // layer, and desktop rail all describe the same canonical collections
+        // without cloning or regrouping library photographs during paint.
+        let place_clusters =
+            crate::places::clusters(self.places_items.iter().map(|item| &item.photo));
+        let heading_h = if compact { 86.0 } else { 68.0 };
+        let heading = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + heading_h);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -5794,72 +11144,100 @@ impl PhotosApp {
             None,
             &heading,
         );
+        let open_place = self.places_open_key.as_ref().and_then(|key| {
+            self.places_items.iter().find_map(|item| {
+                item.photo.location.as_ref().and_then(|location| {
+                    (location.place_key() == *key).then(|| location.display_name())
+                })
+            })
+        });
+        let visible_place_count = self
+            .places_items
+            .iter()
+            .filter(|item| {
+                self.places_open_key.as_ref().is_none_or(|key| {
+                    item.photo
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| location.place_key() == *key)
+                })
+            })
+            .count();
         text_renderer.draw_text_weighted(
             scene,
-            "Places",
-            22.0,
+            open_place.as_deref().unwrap_or("Places"),
+            if compact { 23.0 } else { 25.0 },
             theme.text_primary,
-            transform * Affine::translate((heading.x0 + 14.0, heading.y0 + 12.0)),
-            Some(180.0),
+            transform * Affine::translate((heading.x0 + 16.0, heading.y0 + 14.0)),
+            Some(if compact { 210.0 } else { 290.0 }),
             TextWeight::Medium,
         );
         text_renderer.draw_text_weighted(
             scene,
             &format!(
-                "{} photos with an explicitly shared location",
-                self.places_items.len()
+                "{} photographs · {} named place{}{}",
+                visible_place_count,
+                place_clusters.len(),
+                if place_clusters.len() == 1 { "" } else { "s" },
+                if open_place.is_some() {
+                    " at this place"
+                } else {
+                    ""
+                }
             ),
             12.0,
             theme.text_dim,
-            transform * Affine::translate((heading.x0 + 14.0, heading.y0 + 36.0)),
-            Some((heading.width() - 310.0).max(80.0) as f32),
+            transform * Affine::translate((heading.x0 + 16.0, heading.y0 + 42.0)),
+            Some(if compact {
+                (heading.width() - 32.0).max(80.0) as f32
+            } else {
+                (heading.width() - 510.0).max(80.0) as f32
+            }),
             TextWeight::Regular,
         );
-        let mut x = heading.x1 - 300.0;
-        for (hit, label) in [
-            (PlacesHit::Timeline, "Timeline"),
-            (PlacesHit::People, "People"),
-            (PlacesHit::Places, "Places"),
-        ] {
-            let active = matches!(hit, PlacesHit::Places);
-            let rect = Rect::new(x, heading.y0 + 10.0, x + 78.0, heading.y0 + 46.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if active {
-                    theme.tokens.colors.accent[6]
-                } else {
-                    theme.tokens.colors.surfaces.window_card
-                },
-                None,
-                &rect,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
+        if !compact {
+            self.draw_library_navigation(
                 scene,
-                label,
-                11.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 9.0, rect.y0 + 11.0)),
-                Some(60.0),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    (heading.x1 - 450.0).max(heading.x0 + 360.0),
+                    heading.y0 + 14.0,
+                    heading.x1 - 10.0,
+                    heading.y0 + 54.0,
+                ),
             );
-            self.places_hits.push((hit, rect));
-            x += 84.0;
+        } else {
+            self.draw_library_navigation(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                Rect::new(
+                    heading.x0 + 12.0,
+                    heading.y0 + 56.0,
+                    heading.x1 - 12.0,
+                    heading.y1 - 10.0,
+                ),
+            );
         }
         if self.places_items.is_empty() {
             self.draw_empty_state(scene, transform, text_renderer, theme, "No places yet", "Import photos with GPS metadata or add an explicit shared location in photo details. Photos does not guess or upload locations.");
             return;
         }
-        let map = Rect::new(bounds.x0, heading.y1 + 10.0, bounds.x1, bounds.y1);
+        let content = Rect::new(bounds.x0, heading.y1 + 12.0, bounds.x1, bounds.y1);
+        let show_overview = !self.places_list_mode && self.places_open_key.is_none();
+        let rail_w = if show_overview && content.width() >= 960.0 {
+            300.0
+        } else {
+            0.0
+        };
+        let map = Rect::new(content.x0, content.y0, content.x1 - rail_w, content.y1);
         self.places_map_bounds = map;
-        let toggle = Rect::new(map.x1 - 112.0, map.y0 + 12.0, map.x1 - 12.0, map.y0 + 48.0);
+        let rail =
+            (rail_w > 0.0).then(|| Rect::new(map.x1 + 12.0, content.y0, content.x1, content.y1));
+        let toggle = Rect::new(map.x1 - 132.0, map.y0 + 12.0, map.x1 - 12.0, map.y0 + 50.0);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -5876,11 +11254,15 @@ impl PhotosApp {
         );
         text_renderer.draw_text_weighted(
             scene,
-            if self.places_list_mode { "Map" } else { "List" },
+            if self.places_list_mode {
+                "Map"
+            } else {
+                "Photo list"
+            },
             12.0,
             theme.text_primary,
-            transform * Affine::translate((toggle.x0 + 28.0, toggle.y0 + 11.0)),
-            Some(60.0),
+            transform * Affine::translate((toggle.x0 + 14.0, toggle.y0 + 11.0)),
+            Some((toggle.width() - 28.0) as f32),
             TextWeight::Medium,
         );
         self.places_hits.push((PlacesHit::ToggleList, toggle));
@@ -5891,7 +11273,7 @@ impl PhotosApp {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.neutral[2],
+            theme.tokens.colors.neutral[1],
             None,
             &map,
         );
@@ -5902,11 +11284,64 @@ impl PhotosApp {
             None,
             &map,
         );
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &map,
+        );
+        // A bundled, deliberately low-detail land silhouette gives the
+        // offline map genuine geographic orientation without contacting a
+        // tile provider. Roads and live place data belong to Maps; Photos
+        // needs a calm spatial index that remains useful on an airplane.
+        for landmass in OFFLINE_WORLD_LANDMASSES {
+            let mut coast = BezPath::new();
+            let mut visible_points = 0_usize;
+            for &(latitude, longitude) in *landmass {
+                let location = crate::model::PhotoLocation {
+                    latitude,
+                    longitude,
+                    label: None,
+                    provenance: crate::model::LocationProvenance::default(),
+                };
+                let Some((x, y)) =
+                    self.places_viewport
+                        .project(&location, map.width(), map.height())
+                else {
+                    continue;
+                };
+                let point = (map.x0 + x, map.y0 + y);
+                if visible_points == 0 {
+                    coast.move_to(point);
+                } else {
+                    coast.line_to(point);
+                }
+                visible_points += 1;
+            }
+            if visible_points >= 3 {
+                coast.close_path();
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.neutral[3],
+                    None,
+                    &coast,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.tokens.colors.neutral[5],
+                    None,
+                    &coast,
+                );
+            }
+        }
         // Calm offline geographic grid: it retains spatial orientation while
         // clearly avoiding a claim that live roads/tiles were downloaded.
-        for step in 1..10 {
-            let fx = map.x0 + map.width() * f64::from(step) / 10.0;
-            let fy = map.y0 + map.height() * f64::from(step) / 10.0;
+        for step in 1..6 {
+            let fx = map.x0 + map.width() * f64::from(step) / 6.0;
+            let fy = map.y0 + map.height() * f64::from(step) / 6.0;
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -5922,17 +11357,50 @@ impl PhotosApp {
                 &Rect::new(map.x0, fy, map.x1, fy + 1.0),
             );
         }
+        let map_summary = Rect::new(map.x0 + 14.0, map.y0 + 14.0, map.x0 + 226.0, map.y0 + 84.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised.with_alpha(0.94),
+            None,
+            &RoundedRect::from_rect(map_summary, 12.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(map_summary, 12.0),
+        );
         text_renderer.draw_text_weighted(
             scene,
-            "Offline map · no map provider is contacted",
+            "Your places",
+            13.0,
+            theme.text_primary,
+            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 12.0)),
+            Some(150.0),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Drag to explore · scroll to zoom",
             11.0,
             theme.text_dim,
-            transform * Affine::translate((map.x0 + 12.0, map.y1 - 22.0)),
-            Some(260.0),
+            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 34.0)),
+            Some((map_summary.width() - 24.0) as f32),
             TextWeight::Regular,
         );
-        let zoom_out = Rect::new(map.x0 + 12.0, map.y0 + 12.0, map.x0 + 52.0, map.y0 + 52.0);
-        let zoom_in = Rect::new(map.x0 + 12.0, map.y0 + 58.0, map.x0 + 52.0, map.y0 + 98.0);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Offline and private",
+            11.0,
+            theme.tokens.colors.accent[8],
+            transform * Affine::translate((map_summary.x0 + 12.0, map_summary.y0 + 51.0)),
+            Some((map_summary.width() - 24.0) as f32),
+            TextWeight::Medium,
+        );
+        let zoom_out = Rect::new(map.x0 + 14.0, map.y1 - 98.0, map.x0 + 54.0, map.y1 - 58.0);
+        let zoom_in = Rect::new(map.x0 + 14.0, map.y1 - 52.0, map.x0 + 54.0, map.y1 - 12.0);
         for (hit, rect, label) in [
             (PlacesHit::ZoomOut, zoom_out, "−"),
             (PlacesHit::ZoomIn, zoom_in, "+"),
@@ -5940,7 +11408,7 @@ impl PhotosApp {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.surfaces.raised,
+                theme.tokens.colors.surfaces.raised.with_alpha(0.94),
                 None,
                 &rect,
             );
@@ -5962,12 +11430,8 @@ impl PhotosApp {
             );
             self.places_hits.push((hit, rect));
         }
-        let photos: Vec<_> = self
-            .places_items
-            .iter()
-            .map(|item| item.photo.clone())
-            .collect();
-        for cluster in crate::places::clusters(&photos, self.places_viewport.zoom) {
+        let camera_feedback = self.places_camera_feedback();
+        for cluster in &place_clusters {
             let location = crate::model::PhotoLocation {
                 latitude: cluster.latitude,
                 longitude: cluster.longitude,
@@ -5984,7 +11448,8 @@ impl PhotosApp {
             if !map.contains(point) {
                 continue;
             }
-            let radius = (14.0 + (cluster.count() as f64).sqrt() * 3.0).min(28.0);
+            let radius = (16.0 + (cluster.count() as f64).sqrt() * 2.5).min(25.0)
+                * (1.0 + camera_feedback * 0.10);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -6004,6 +11469,13 @@ impl PhotosApp {
             {
                 let side = (radius * 1.25).max(18.0);
                 let scale = (side / f64::from(image.width)).min(side / f64::from(image.height));
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &Circle::new(point, radius - 3.0),
+                );
                 let image_transform = transform
                     * Affine::translate((
                         point.x - f64::from(image.width) * scale * 0.5,
@@ -6011,14 +11483,26 @@ impl PhotosApp {
                     ))
                     * Affine::scale(scale);
                 scene.draw_image(image, image_transform);
+                scene.pop_layer();
             }
+            let count_badge = Rect::from_center_size(
+                Point::new(point.x + radius - 3.0, point.y - radius + 3.0),
+                (18.0, 18.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[8],
+                None,
+                &RoundedRect::from_rect(count_badge, 9.0),
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 &cluster.count().to_string(),
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((point.x - 4.0, point.y - 7.0)),
-                Some(16.0),
+                10.0,
+                theme.tokens.colors.surfaces.base,
+                transform * Affine::translate((count_badge.x0 + 6.0, count_badge.y0 + 4.0)),
+                Some(10.0),
                 TextWeight::Medium,
             );
             let hit = Rect::new(
@@ -6027,11 +11511,174 @@ impl PhotosApp {
                 point.x + radius,
                 point.y + radius,
             );
-            if let Some(photo_id) = cluster.photo_ids.first() {
-                self.places_hits
-                    .push((PlacesHit::Marker(photo_id.clone()), hit));
+            self.places_hits
+                .push((PlacesHit::Place(cluster.key.clone()), hit));
+            if map.width() >= 520.0 {
+                let label_width =
+                    (cluster.label.chars().count() as f64 * 6.5 + 24.0).clamp(72.0, 180.0);
+                let label_x =
+                    (point.x - label_width * 0.5).clamp(map.x0 + 6.0, map.x1 - label_width - 6.0);
+                let label_y = (point.y + radius + 8.0).min(map.y1 - 38.0);
+                let label = Rect::new(label_x, label_y, label_x + label_width, label_y + 30.0);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &RoundedRect::from_rect(label, 10.0),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &cluster.label,
+                    10.0,
+                    theme.text_primary,
+                    transform * Affine::translate((label.x0 + 10.0, label.y0 + 8.0)),
+                    Some((label.width() - 20.0) as f32),
+                    TextWeight::Medium,
+                );
             }
         }
+        scene.pop_layer();
+        // The mode switch belongs to map chrome, so paint it after the clipped
+        // cartography instead of letting the map substrate cover it.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &toggle,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &toggle,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Photo list",
+            12.0,
+            theme.text_primary,
+            transform * Affine::translate((toggle.x0 + 14.0, toggle.y0 + 11.0)),
+            Some((toggle.width() - 28.0) as f32),
+            TextWeight::Medium,
+        );
+        if let Some(rail) = rail {
+            self.draw_places_overview_rail(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rail,
+                &place_clusters,
+            );
+        }
+    }
+
+    /// A compact, keyboard-addressable summary of the canonical collections
+    /// shown on the map.  It keeps the map spatial while making the next
+    /// useful decision obvious on a desktop: choose the city, not a random
+    /// representative photograph.
+    fn draw_places_overview_rail(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+        clusters: &[crate::places::PlaceCluster],
+    ) {
+        use vello::peniko::Fill;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(rail, 14.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &RoundedRect::from_rect(rail, 14.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "Places",
+            18.0,
+            theme.text_primary,
+            transform * Affine::translate((rail.x0 + 16.0, rail.y0 + 18.0)),
+            Some((rail.width() - 32.0) as f32),
+            TextWeight::Medium,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!("{} collections in this library", clusters.len()),
+            12.0,
+            theme.text_dim,
+            transform * Affine::translate((rail.x0 + 16.0, rail.y0 + 44.0)),
+            Some((rail.width() - 32.0) as f32),
+            TextWeight::Regular,
+        );
+        let row_h = 82.0;
+        let mut y = rail.y0 + 76.0;
+        for cluster in clusters.iter().take(5) {
+            if y + row_h > rail.y1 - 12.0 {
+                break;
+            }
+            let row = Rect::new(rail.x0 + 10.0, y, rail.x1 - 10.0, y + row_h - 6.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.neutral[2],
+                None,
+                &RoundedRect::from_rect(row, 10.0),
+            );
+            let marker = Point::new(row.x0 + 26.0, row.y0 + row.height() * 0.5);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[6],
+                None,
+                &Circle::new(marker, 14.0),
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &cluster.label,
+                14.0,
+                theme.text_primary,
+                transform * Affine::translate((row.x0 + 52.0, row.y0 + 13.0)),
+                Some((row.width() - 68.0) as f32),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &format!(
+                    "{} photo{} · open collection",
+                    cluster.count(),
+                    if cluster.count() == 1 { "" } else { "s" }
+                ),
+                11.0,
+                theme.text_dim,
+                transform * Affine::translate((row.x0 + 52.0, row.y0 + 37.0)),
+                Some((row.width() - 68.0) as f32),
+                TextWeight::Regular,
+            );
+            self.places_hits
+                .push((PlacesHit::Place(cluster.key.clone()), row));
+            y += row_h;
+        }
+        text_renderer.draw_text_weighted(
+            scene,
+            "Locations stay on your device until you choose to share them.",
+            11.0,
+            theme.text_dim,
+            transform * Affine::translate((rail.x0 + 16.0, rail.y1 - 30.0)),
+            Some((rail.width() - 32.0) as f32),
+            TextWeight::Regular,
+        );
     }
 
     fn draw_places_list(
@@ -6043,8 +11690,36 @@ impl PhotosApp {
         map: Rect,
     ) {
         use vello::peniko::Fill;
+        let items: Vec<PlaceItem> = self
+            .places_items
+            .iter()
+            .filter(|item| {
+                self.places_open_key.as_ref().is_none_or(|key| {
+                    item.photo
+                        .location
+                        .as_ref()
+                        .is_some_and(|location| location.place_key() == *key)
+                })
+            })
+            .cloned()
+            .collect();
+        self.draw_collection_pager(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            Rect::new(map.x0 + 12.0, map.y0 + 8.0, map.x1 - 124.0, map.y0 + 48.0),
+            self.places_page,
+            items.len(),
+            CollectionPageHit::PlacesPrevious,
+            CollectionPageHit::PlacesNext,
+        );
         let mut y = map.y0 + 64.0;
-        for item in self.places_items.iter().take(8) {
+        for item in items
+            .iter()
+            .skip(self.places_page * COLLECTION_PAGE_SIZE)
+            .take(COLLECTION_PAGE_SIZE)
+        {
             if y + 58.0 > map.y1 {
                 break;
             }
@@ -6089,7 +11764,7 @@ impl PhotosApp {
                 TextWeight::Regular,
             );
             self.places_hits
-                .push((PlacesHit::Marker(item.photo.id.clone()), row));
+                .push((PlacesHit::Photo(item.photo.id.clone()), row));
             y += 58.0;
         }
     }
@@ -6165,14 +11840,14 @@ impl PhotosApp {
 
         if !self.selection_mode {
             // The normal desktop masthead has intentional empty room between
-            // its library identity and album management. On compact layouts
-            // this short, named control follows the heading rather than
-            // replacing a destructive card affordance.
+            // its destination tabs and the right-edge density controls. On
+            // compact layouts this short, named control follows the heading
+            // rather than replacing a destructive card affordance.
             let rect = if desktop_library {
                 Rect::new(
-                    masthead.x1 - 500.0,
+                    masthead.x1 - 216.0,
                     masthead.y0 + 16.0,
-                    masthead.x1 - 388.0,
+                    masthead.x1 - 104.0,
                     masthead.y1 - 16.0,
                 )
             } else {
@@ -6247,6 +11922,12 @@ impl PhotosApp {
                     selected > 0,
                 ),
                 (
+                    SelectionHit::EditDetails,
+                    "Edit details",
+                    112.0,
+                    selected > 0,
+                ),
+                (
                     if self.selection_destination_album.is_some() {
                         SelectionHit::AddToAlbum
                     } else {
@@ -6286,6 +11967,8 @@ impl PhotosApp {
                 TextWeight::Medium,
             );
             let row_y = selection_y + 4.0;
+            let middle_x = x + 98.0;
+            let middle_w = ((max_x - 84.0 - middle_x - 6.0) * 0.5).max(72.0);
             for (hit, label, rect, enabled) in [
                 (
                     SelectionHit::Done,
@@ -6294,13 +11977,19 @@ impl PhotosApp {
                     true,
                 ),
                 (
+                    SelectionHit::EditDetails,
+                    "Details",
+                    Rect::new(middle_x, row_y, middle_x + middle_w, row_y + 40.0),
+                    selected > 0,
+                ),
+                (
                     if self.selection_destination_album.is_some() {
                         SelectionHit::AddToAlbum
                     } else {
                         SelectionHit::ChooseAlbum
                     },
                     destination_label.as_str(),
-                    Rect::new(x + 106.0, row_y, max_x - 84.0, row_y + 40.0),
+                    Rect::new(middle_x + middle_w + 6.0, row_y, max_x - 84.0, row_y + 40.0),
                     selected > 0 && !self.library_albums.is_empty(),
                 ),
             ] {
@@ -6333,8 +12022,6 @@ impl PhotosApp {
         theme: &Theme,
         bounds: Rect,
     ) {
-        use vello::peniko::Fill;
-
         self.selection_destination_hits.clear();
         if !self.library_mode || !self.selection_album_chooser {
             return;
@@ -6350,50 +12037,54 @@ impl PhotosApp {
         self.selection_album_page = self.selection_album_page.min(page_count.saturating_sub(1));
         let start = self.selection_album_page * SELECTION_ALBUMS_PER_PAGE;
         let end = (start + SELECTION_ALBUMS_PER_PAGE).min(self.library_albums.len());
-        let narrow = theme.text_scale > 1.25 || bounds.width() < 700.0;
-        let sheet = if narrow {
-            Rect::new(
-                bounds.x0 + f64::from(PAD),
-                bounds.y0 + 54.0,
-                bounds.x1 - f64::from(PAD),
-                bounds.y1 - 54.0,
-            )
-        } else {
-            Rect::from_center_size(bounds.center(), (600.0, 540.0))
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.neutral[0].with_alpha(0.78),
-            None,
-            &bounds,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(sheet, 14.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(sheet, 14.0),
-        );
-        let content_left = sheet.x0 + if narrow { 20.0 } else { 18.0 };
-        text_renderer.draw_text_weighted(
-            scene,
-            "Choose destination album",
-            17.0,
-            theme.text_primary,
-            transform * Affine::translate((content_left, sheet.y0 + 20.0)),
-            Some((sheet.x1 - content_left - 18.0) as f32),
-            TextWeight::Medium,
-        );
+        let previous_enabled = self.selection_album_page > 0;
+        let next_enabled = end < self.library_albums.len();
+        let apply_enabled = self.selection_destination_album.is_some();
+
+        // This used to be a hand-painted panel with four local button
+        // imitations.  ModalFrame gives the chooser the same elevation,
+        // close target, focus treatment, and platform action order as the
+        // People and metadata surfaces while retaining its canonical album
+        // resource ids and existing accessibility tree.
+        let base_actions = [
+            ModalAction::secondary("Previous").enabled(previous_enabled),
+            ModalAction::secondary("Next").enabled(next_enabled),
+            ModalAction::secondary("Cancel"),
+            ModalAction::primary("Use album").enabled(apply_enabled),
+        ];
+        let base_spec = ModalSpec::new("Choose destination album")
+            .actions(&base_actions)
+            .body_height(310.0)
+            .max_width(620.0)
+            .dismiss_on_scrim(false);
+        let layout = ModalFrame::layout(bounds, &base_spec, text_renderer, theme);
+        let actions = [
+            ModalAction::secondary("Previous")
+                .enabled(previous_enabled)
+                .hovered(layout.actions[0].contains(self.pointer)),
+            ModalAction::secondary("Next")
+                .enabled(next_enabled)
+                .hovered(layout.actions[1].contains(self.pointer)),
+            ModalAction::secondary("Cancel").hovered(layout.actions[2].contains(self.pointer)),
+            ModalAction::primary("Use album")
+                .enabled(apply_enabled)
+                .hovered(layout.actions[3].contains(self.pointer)),
+        ];
+        let spec = ModalSpec::new("Choose destination album")
+            .actions(&actions)
+            .body_height(310.0)
+            .max_width(620.0)
+            .dismiss_on_scrim(false)
+            .close_hovered(layout.close.is_some_and(|rect| rect.contains(self.pointer)));
+        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
+
+        let (ink, dim) = ModalFrame::ink(theme);
+        // Primary-button rows use the theme's contrast-checked accent ink;
+        // album choices stay readable in every system theme without baking
+        // a foreground colour into this app-owned presentation.
+        let selected_ink = theme.tokens.colors.on_accent(4.5);
         let summary = format!(
-            "Albums {}–{} of {}",
+            "Albums {}–{} of {} · choose one destination",
             start + 1,
             end,
             self.library_albums.len()
@@ -6402,176 +12093,77 @@ impl PhotosApp {
             scene,
             &summary,
             12.0,
-            theme.text_dim,
-            transform
-                * Affine::translate((content_left, sheet.y0 + if narrow { 61.0 } else { 49.0 })),
-            Some((sheet.x1 - content_left - 18.0) as f32),
+            dim,
+            transform * Affine::translate((layout.body.x0, layout.body.y0 + 2.0)),
+            Some(layout.body.width() as f32),
             TextWeight::Regular,
         );
-        let footer_y = sheet.y1 - if narrow { 118.0 } else { 58.0 };
-        let list_top = sheet.y0 + if narrow { 102.0 } else { 76.0 };
-        let list_bottom = footer_y - 12.0;
-        let row_h = ((list_bottom - list_top) / SELECTION_ALBUMS_PER_PAGE as f64).clamp(
-            if narrow { 58.0 } else { 42.0 },
-            if narrow { 66.0 } else { 54.0 },
-        );
+        let list_top = layout.body.y0 + 30.0;
+        let list_bottom = layout.body.y1 - 2.0;
+        let visible_count = end.saturating_sub(start).max(1);
+        let row_h = ((list_bottom - list_top) / visible_count as f64).clamp(54.0, 68.0);
         let visible_albums = self.library_albums.get(start..end).unwrap_or_default();
         for (index, (id, name, count)) in visible_albums.iter().enumerate() {
             let y = list_top + index as f64 * row_h;
-            let row = Rect::new(sheet.x0 + 12.0, y, sheet.x1 - 12.0, y + row_h - 6.0);
+            let row = Rect::new(layout.body.x0, y, layout.body.x1, y + row_h - 6.0);
             let chosen = self.selection_destination_album.as_deref() == Some(id);
-            scene.fill(
-                Fill::NonZero,
+            Button::paint(
+                scene,
                 transform,
-                if chosen {
-                    theme.tokens.colors.accent[6]
-                } else {
-                    theme.tokens.colors.neutral[3]
-                },
-                None,
-                &RoundedRect::from_rect(row, 9.0),
-            );
-            scene.stroke(
-                &Stroke::new(if chosen { 2.0 } else { 1.0 }),
-                transform,
-                if chosen {
-                    theme.tokens.colors.accent[8]
-                } else {
-                    theme.border_standard
-                },
-                None,
-                &RoundedRect::from_rect(row, 9.0),
+                text_renderer,
+                theme,
+                &ButtonFace::new(row, "")
+                    .style(if chosen {
+                        ButtonStyle::Primary
+                    } else {
+                        ButtonStyle::Neutral
+                    })
+                    .radius(10.0)
+                    .hovered(row.contains(self.pointer))
+                    .accessible_name(&format!("Use {name} as destination album")),
             );
             text_renderer.draw_text_weighted(
                 scene,
                 name,
                 13.0,
-                theme.text_primary,
+                if chosen { selected_ink } else { ink },
                 transform * Affine::translate((row.x0 + 14.0, row.y0 + 12.0)),
-                Some((row.width() - if narrow { 166.0 } else { 126.0 }) as f32),
+                Some((row.width() - 128.0) as f32),
                 TextWeight::Medium,
             );
             text_renderer.draw_text_weighted(
                 scene,
-                &format!("{count} photos"),
+                &format!("{count} photo{}", if *count == 1 { "" } else { "s" }),
                 11.0,
                 if chosen {
-                    theme.text_primary
+                    selected_ink.with_alpha(0.78)
                 } else {
-                    theme.text_dim
+                    dim
                 },
-                transform
-                    * Affine::translate((
-                        row.x1 - if narrow { 142.0 } else { 98.0 },
-                        row.y0 + 14.0,
-                    )),
-                Some(if narrow { 126.0 } else { 84.0 }),
+                transform * Affine::translate((row.x1 - 100.0, row.y0 + 14.0)),
+                Some(86.0),
                 TextWeight::Regular,
             );
             self.selection_destination_hits.push((id.clone(), row));
         }
-        let button = |scene: &mut Scene,
-                      text_renderer: &mut TextRenderer,
-                      rect: Rect,
-                      label: &str,
-                      enabled: bool| {
-            let shape = RoundedRect::from_rect(rect, 9.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if enabled {
-                    theme.tokens.colors.surfaces.window_card
-                } else {
-                    theme.tokens.colors.neutral[2]
-                },
-                None,
-                &shape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &shape,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                if enabled {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                },
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 12.0)),
-                Some((rect.width() - 22.0) as f32),
-                TextWeight::Medium,
-            );
-        };
-        let (previous, next, cancel, apply) = if narrow {
-            let gap = 8.0;
-            let half = (sheet.width() - 24.0 - gap) / 2.0;
-            let left = sheet.x0 + 12.0;
-            let right = sheet.x1 - 12.0;
-            (
-                Rect::new(left, footer_y, left + half, footer_y + 46.0),
-                Rect::new(left + half + gap, footer_y, right, footer_y + 46.0),
-                Rect::new(left, footer_y + 54.0, left + half, footer_y + 100.0),
-                Rect::new(left + half + gap, footer_y + 54.0, right, footer_y + 100.0),
-            )
-        } else {
-            (
-                Rect::new(sheet.x0 + 12.0, footer_y, sheet.x0 + 112.0, footer_y + 42.0),
-                Rect::new(
-                    sheet.x0 + 120.0,
-                    footer_y,
-                    sheet.x0 + 202.0,
-                    footer_y + 42.0,
-                ),
-                Rect::new(
-                    sheet.x1 - 222.0,
-                    footer_y,
-                    sheet.x1 - 126.0,
-                    footer_y + 42.0,
-                ),
-                Rect::new(sheet.x1 - 118.0, footer_y, sheet.x1 - 12.0, footer_y + 42.0),
-            )
-        };
-        button(
-            scene,
-            text_renderer,
-            previous,
-            "Previous",
-            self.selection_album_page > 0,
-        );
-        button(
-            scene,
-            text_renderer,
-            next,
-            "Next",
-            end < self.library_albums.len(),
-        );
-        button(scene, text_renderer, cancel, "Cancel", true);
-        button(
-            scene,
-            text_renderer,
-            apply,
-            "Use album",
-            self.selection_destination_album.is_some(),
-        );
-        if self.selection_album_page > 0 {
+        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        if previous_enabled {
             self.selection_hits
-                .push((SelectionHit::PreviousDestinationPage, previous));
+                .push((SelectionHit::PreviousDestinationPage, layout.actions[0]));
         }
-        if end < self.library_albums.len() {
+        if next_enabled {
             self.selection_hits
-                .push((SelectionHit::NextDestinationPage, next));
+                .push((SelectionHit::NextDestinationPage, layout.actions[1]));
         }
         self.selection_hits
-            .push((SelectionHit::CancelDestinationChooser, cancel));
-        if self.selection_destination_album.is_some() {
+            .push((SelectionHit::CancelDestinationChooser, layout.actions[2]));
+        if let Some(close) = layout.close {
             self.selection_hits
-                .push((SelectionHit::ApplyDestination, apply));
+                .push((SelectionHit::CloseDestinationChooser, close));
+        }
+        if apply_enabled {
+            self.selection_hits
+                .push((SelectionHit::ApplyDestination, layout.actions[3]));
         }
     }
 
@@ -6590,10 +12182,16 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.album_editor_hits.clear();
         if !self.library_mode || self.metadata_editor {
             return;
         }
+        // The Albums overview owns its visible New/Edit controls. Keep those
+        // retained hit targets intact unless an editor sheet is actually
+        // replacing them.
+        if !self.album_editor && self.library_destination == LibraryDestination::Albums {
+            return;
+        }
+        self.album_editor_hits.clear();
         // On phone and 200% the library opens with chronology above the fold.
         // Album editing remains available through its canonical resource
         // action; it does not occupy a permanent New/Edit row in front of
@@ -6606,38 +12204,6 @@ impl PhotosApp {
         }
         if self.album_editor && theme.text_scale > 1.25 {
             self.draw_large_text_album_editor(scene, transform, text_renderer, theme, presence);
-            return;
-        }
-        // At enlarged text, keep album management visible rather than making
-        // a core workflow search/agent-only. Its dedicated row is part of
-        // `CompactHeaderGeometry`, so it cannot collide with the collection
-        // rail above or the date heading below.
-        if !self.album_editor && theme.text_scale > 1.25 {
-            let bounds = self.canvas_rect;
-            let row =
-                compact_library_header_geometry(bounds, true, !self.library_albums.is_empty())
-                    .album_actions;
-            let button_w = (row.width() - 8.0) * 0.5;
-            let new = Rect::new(row.x0, row.y0, row.x0 + button_w, row.y1);
-            let edit = Rect::new(new.x1 + 8.0, row.y0, row.x1, row.y1);
-            for (hit, rect, enabled) in [
-                (AlbumEditorHit::New, new, true),
-                (AlbumEditorHit::Edit, edit, self.active_album.is_some()),
-            ] {
-                if let Some((_, button)) = self
-                    .library_album_buttons
-                    .iter_mut()
-                    .find(|(candidate, _)| *candidate == hit)
-                {
-                    button.set_enabled(enabled);
-                    button.apply_layout_external(rect);
-                    button.draw(scene, transform, text_renderer, theme, presence);
-                }
-                if enabled {
-                    self.album_editor_hits.push((hit, rect));
-                }
-            }
-            self.album_editor_rect = Rect::new(new.x0, new.y0, edit.x1, edit.y1);
             return;
         }
         let bounds = self.canvas_rect;
@@ -6678,16 +12244,17 @@ impl PhotosApp {
             && theme.text_scale <= 1.25
             && bounds.width() >= LIBRARY_DESKTOP_MASTHEAD_MIN_W;
         let panel = if desktop_header_actions {
-            // The normal wide masthead already reserves its right side for
-            // destination, selection and density controls. Album management
-            // belongs beside the title, where it remains discoverable without
-            // painting over those independent actions.
-            Rect::new(
-                bounds.x0 + 132.0,
-                bounds.y0 + 10.0,
-                bounds.x0 + 366.0,
-                bounds.y0 + 54.0,
-            )
+            // Album management belongs to the album rail, not between the
+            // Library title and its first-class destination tabs. When the
+            // rail is paged, leave its shared pager the rightmost lane.
+            let album_pages = self
+                .library_albums
+                .len()
+                .max(1)
+                .div_ceil(COLLECTION_PAGE_SIZE);
+            let pager_reserve = if album_pages > 1 { 300.0 } else { 0.0 };
+            let right = bounds.x1 - f64::from(PAD) - pager_reserve;
+            Rect::new(right - 226.0, bounds.y0 + 72.0, right, bounds.y0 + 116.0)
         } else {
             Rect::new(
                 if narrow {
@@ -6727,19 +12294,27 @@ impl PhotosApp {
             }
             return;
         }
+        let panel_radius = f64::from(theme.tokens.radii.lg);
+        ui::surface::shadow(
+            scene,
+            transform,
+            panel,
+            panel_radius,
+            &theme.tokens.elevation.e3,
+        );
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
-            &panel,
+            &RoundedRect::from_rect(panel, panel_radius),
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        scene.stroke(
+            &Stroke::new(1.0),
             transform,
             theme.border_standard,
             None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+            &RoundedRect::from_rect(panel, panel_radius),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -6825,38 +12400,33 @@ impl PhotosApp {
         let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 88.0, y + 44.0);
         let save = Rect::new(panel.x1 - 92.0, y, panel.x1 - 16.0, y + 44.0);
         let delete = Rect::new(save.x0 - 88.0, y, save.x0 - 8.0, y + 44.0);
-        for (hit, rect, label) in [
-            (AlbumEditorHit::Cancel, cancel, "Cancel"),
-            (AlbumEditorHit::Save, save, "Save"),
+        for (hit, rect, label, style, focused) in [
+            (
+                AlbumEditorHit::Cancel,
+                cancel,
+                "Cancel",
+                ButtonStyle::Neutral,
+                self.album_editor_focus == 1,
+            ),
+            (
+                AlbumEditorHit::Save,
+                save,
+                "Save",
+                ButtonStyle::Primary,
+                self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 },
+            ),
         ] {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.neutral[3],
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                label,
-                13.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0)),
-                Some((rect.width() - 16.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .style(style)
+                    .radius(10.0)
+                    .hovered(rect.contains(self.pointer))
+                    .focused(focused),
             );
-            let focused = matches!(hit, AlbumEditorHit::Cancel) && self.album_editor_focus == 1
-                || matches!(hit, AlbumEditorHit::Save)
-                    && self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 };
-            if focused {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + 2.0),
-                );
-            }
             self.album_editor_hits.push((hit, rect));
         }
         if !self.album_editor_creating {
@@ -6865,31 +12435,17 @@ impl PhotosApp {
             } else {
                 (AlbumEditorHit::Delete, "Delete")
             };
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.semantic.danger,
-                None,
-                &delete,
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                label,
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((delete.x0 + 7.0, delete.y0 + 14.0)),
-                Some((delete.width() - 10.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(delete, label)
+                    .style(ButtonStyle::Danger)
+                    .radius(10.0)
+                    .hovered(delete.contains(self.pointer))
+                    .focused(self.album_editor_focus == 2),
             );
-            if self.album_editor_focus == 2 {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.accent[6],
-                    None,
-                    &Rect::new(delete.x0, delete.y0, delete.x1, delete.y0 + 2.0),
-                );
-            }
             self.album_editor_hits.push((hit, delete));
         }
     }
@@ -6939,19 +12495,27 @@ impl PhotosApp {
             },
         );
         self.album_editor_rect = panel;
+        let panel_radius = f64::from(theme.tokens.radii.lg);
+        ui::surface::shadow(
+            scene,
+            transform,
+            panel,
+            panel_radius,
+            &theme.tokens.elevation.e3,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
-            &panel,
+            &RoundedRect::from_rect(panel, panel_radius),
         );
-        scene.fill(
-            Fill::NonZero,
+        scene.stroke(
+            &Stroke::new(1.0),
             transform,
             theme.border_standard,
             None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+            &RoundedRect::from_rect(panel, panel_radius),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -7013,29 +12577,16 @@ impl PhotosApp {
                 AlbumEditorHit::NextPage => self.can_page_library(true),
                 _ => false,
             };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if enabled {
-                    theme.tokens.colors.neutral[3]
-                } else {
-                    theme.tokens.colors.neutral[2]
-                },
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                label,
-                12.0,
-                if enabled {
-                    theme.text_primary
-                } else {
-                    theme.text_dim
-                },
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 12.0)),
-                Some((rect.width() - 24.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .style(ButtonStyle::Neutral)
+                    .radius(10.0)
+                    .hovered(enabled && rect.contains(self.pointer))
+                    .disabled(!enabled),
             );
             if enabled {
                 self.album_editor_hits.push((hit, rect));
@@ -7119,29 +12670,32 @@ impl PhotosApp {
             panel.x1 - 16.0,
             action_y - 10.0,
         );
-        for (hit, rect, label, color) in [
+        for (hit, rect, label, style, focused) in [
             (
                 AlbumEditorHit::Cancel,
                 cancel,
                 "Cancel",
-                theme.tokens.colors.neutral[3],
+                ButtonStyle::Neutral,
+                self.album_editor_focus == 1,
             ),
             (
                 AlbumEditorHit::Save,
                 save,
                 "Save",
-                theme.tokens.colors.accent[6],
+                ButtonStyle::Primary,
+                self.album_editor_focus == if self.album_editor_creating { 2 } else { 3 },
             ),
         ] {
-            scene.fill(Fill::NonZero, transform, color, None, &rect);
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                label,
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 17.0)),
-                Some((rect.width() - 24.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .style(style)
+                    .radius(12.0)
+                    .hovered(rect.contains(self.pointer))
+                    .focused(focused),
             );
             self.album_editor_hits.push((hit, rect));
         }
@@ -7151,25 +12705,23 @@ impl PhotosApp {
             } else {
                 AlbumEditorHit::Delete
             };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.semantic.danger,
-                None,
-                &delete,
-            );
-            text_renderer.draw_text_weighted(
+            Button::paint(
                 scene,
-                if self.album_delete_confirm {
-                    "Delete album?"
-                } else {
-                    "Delete album"
-                },
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((delete.x0 + 12.0, delete.y0 + 17.0)),
-                Some((delete.width() - 24.0) as f32),
-                TextWeight::Medium,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(
+                    delete,
+                    if self.album_delete_confirm {
+                        "Delete album?"
+                    } else {
+                        "Delete album"
+                    },
+                )
+                .style(ButtonStyle::Danger)
+                .radius(12.0)
+                .hovered(delete.contains(self.pointer))
+                .focused(self.album_editor_focus == 2),
             );
             self.album_editor_hits.push((hit, delete));
         }
@@ -7190,327 +12742,382 @@ impl PhotosApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.metadata_editor_hits.clear();
-        if !self.metadata_editor {
-            return;
-        }
-        if theme.text_scale > 1.25 {
-            self.draw_large_text_metadata_editor(scene, transform, text_renderer, theme, presence);
-            return;
-        }
-        let bounds = self.canvas_rect;
-        let narrow = bounds.width() < 620.0;
-        let panel_w = if narrow { bounds.width() - 16.0 } else { 420.0 };
-        let scale = f64::from(theme.text_scale);
-        // Keep each field's scaled label, input, and its own focus ring on a
-        // separate line. The former fixed 66px rhythm made 200% text paint
-        // through the next field and the footer actions.
-        let panel_h = (408.0 * scale).min((bounds.height() - 24.0).max(0.0));
-        let panel = Rect::new(
-            if narrow {
-                bounds.x0 + 8.0
-            } else {
-                bounds.x1 - panel_w - 12.0
-            },
-            if narrow {
-                (bounds.y1 - panel_h - 8.0).max(bounds.y0 + 8.0)
-            } else {
-                bounds.y0 + 12.0
-            },
-            if narrow {
-                bounds.x1 - 8.0
-            } else {
-                bounds.x1 - 12.0
-            },
-            if narrow {
-                bounds.y1 - 8.0
-            } else {
-                (bounds.y0 + 12.0 + panel_h).min(bounds.y1 - 8.0)
-            },
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &panel,
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.border_standard,
-            None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Photo details",
-            18.0,
-            theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0 * scale)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Medium,
-        );
-        text_renderer.draw_text_weighted(
-            scene,
-            "Shared labels only — no automatic people identification",
-            12.0,
-            theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 48.0 * scale)),
-            Some((panel.width() - 32.0) as f32),
-            TextWeight::Regular,
-        );
-        let fields = [
-            ("Folder", &mut self.metadata_folder_input),
-            ("People (comma-separated)", &mut self.metadata_people_input),
-            ("Tags (comma-separated)", &mut self.metadata_tags_input),
-            ("Captured", &mut self.metadata_captured_at_input),
-        ];
-        for (index, (label, input)) in fields.into_iter().enumerate() {
-            // Leave a full scaled line after the privacy subtitle.  At 200%
-            // the sentence wraps, so the old 70px origin put “Folder” on its
-            // second line even though the field rectangles themselves fit.
-            let y = panel.y0 + 90.0 * scale + index as f64 * 60.0 * scale;
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                theme.text_dim,
-                transform * Affine::translate((panel.x0 + 16.0, y)),
-                Some((panel.width() - 32.0) as f32),
-                TextWeight::Regular,
-            );
-            input.apply_layout_external(Rect::new(
-                panel.x0 + 16.0,
-                y + 17.0 * scale,
-                panel.x1 - 16.0,
-                y + 55.0 * scale,
-            ));
-            input.draw(scene, transform, text_renderer, theme, presence);
-        }
-        let y = panel.y1 - 64.0 * scale;
-        let cancel = Rect::new(
-            panel.x0 + 16.0,
-            y,
-            panel.x0 + 112.0 * scale,
-            y + 44.0 * scale,
-        );
-        let save = Rect::new(
-            panel.x1 - 96.0 * scale,
-            y,
-            panel.x1 - 16.0,
-            y + 44.0 * scale,
-        );
-        for (hit, rect, label, color) in [
-            (
-                MetadataEditorHit::Cancel,
-                cancel,
-                "Cancel",
-                theme.tokens.colors.neutral[3],
-            ),
-            (
-                MetadataEditorHit::Save,
-                save,
-                "Save",
-                theme.tokens.colors.accent[6],
-            ),
-        ] {
-            let focused = matches!(hit, MetadataEditorHit::Cancel)
-                && self.metadata_editor_focus == 4
-                || matches!(hit, MetadataEditorHit::Save) && self.metadata_editor_focus == 5;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                if focused { theme.bg_hover } else { color },
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                13.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0 * scale)),
-                Some((rect.width() - 16.0) as f32),
-                TextWeight::Medium,
-            );
-            self.metadata_editor_hits.push((hit, rect));
-        }
-    }
-
-    /// Reflow the details form for enlarged text. Font scaling belongs to the
-    /// text renderer; multiplying every desktop offset by the same factor
-    /// produced an 816 px form in a 728 px phone canvas and hid Captured under
-    /// the footer. This rhythm reserves a complete row for every label/input
-    /// and anchors the actions only after those rows.
-    fn draw_large_text_metadata_editor(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
         use vello::peniko::Fill;
 
+        if !self.metadata_editor {
+            self.metadata_editor_hits.clear();
+            return;
+        }
+        for (_, button) in &mut self.metadata_editor_buttons {
+            button.apply_layout_external(Rect::ZERO);
+        }
         let bounds = self.canvas_rect;
-        let narrow = bounds.width() < 620.0;
+        let narrow = bounds.width() < 720.0;
         let panel_w = if narrow {
-            bounds.width() - 16.0
+            (bounds.width() - 16.0).max(0.0)
         } else {
-            480.0_f64.min(bounds.width() - 24.0)
+            536.0_f64.min(bounds.width() - 28.0)
         };
+        // On a narrow strip this is a true detail sheet, not an awkwardly
+        // translucent sidebar over an interactive photo grid. The shared
+        // scrim keeps the context visible while presenting one focus scope.
+        if narrow {
+            fill_scrim(scene, transform, bounds, 0.42, theme);
+        }
+        let panel_bottom = (bounds.y0 + 700.0).min(bounds.y1 - 8.0);
         let panel = Rect::new(
             if narrow {
                 bounds.x0 + 8.0
             } else {
-                bounds.x1 - panel_w - 12.0
+                bounds.x1 - panel_w - 14.0
             },
             bounds.y0 + 8.0,
-            bounds.x1 - if narrow { 8.0 } else { 12.0 },
-            bounds.y1 - 8.0,
+            bounds.x1 - if narrow { 8.0 } else { 14.0 },
+            panel_bottom,
         );
+        let panel_shape = RoundedRect::from_rect(panel, 12.0);
         scene.fill(
             Fill::NonZero,
             transform,
             theme.tokens.colors.surfaces.raised,
             None,
-            &panel,
+            &panel_shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             theme.border_standard,
             None,
-            &panel,
+            &panel_shape,
         );
+
+        let count = self.metadata_editor_ids.len();
+        let title = if count == 1 {
+            "Photo details".to_owned()
+        } else {
+            format!("Edit {count} photographs")
+        };
+        let subtitle = if count == 1 {
+            "Organize this photograph or correct when and where it was taken."
+        } else {
+            "Only fields you change are applied. Mixed values stay untouched."
+        };
         text_renderer.draw_text_weighted(
             scene,
-            "Photo details",
-            18.0,
+            &title,
+            20.0,
             theme.text_primary,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 16.0)),
+            transform * Affine::translate((panel.x0 + 20.0, panel.y0 + 18.0)),
             Some((panel.width() - 32.0) as f32),
             TextWeight::Medium,
         );
         text_renderer.draw_text_weighted(
             scene,
-            "No automatic face matching",
-            12.0,
+            subtitle,
+            11.0,
             theme.text_dim,
-            transform * Affine::translate((panel.x0 + 16.0, panel.y0 + 62.0)),
+            transform * Affine::translate((panel.x0 + 20.0, panel.y0 + 50.0)),
             Some((panel.width() - 32.0) as f32),
             TextWeight::Regular,
         );
 
-        self.draw_large_metadata_fields(scene, transform, text_renderer, theme, presence, panel);
-        self.draw_large_metadata_actions(scene, transform, text_renderer, theme, panel);
-    }
-
-    fn draw_large_metadata_fields(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        panel: Rect,
-    ) {
-        let available_for_fields = (panel.height() - 178.0).max(288.0);
-        let row_h = (available_for_fields / 4.0).clamp(72.0, 92.0);
-        let fields = [
-            ("Folder", &mut self.metadata_folder_input),
-            ("People (comma-separated)", &mut self.metadata_people_input),
-            ("Tags (comma-separated)", &mut self.metadata_tags_input),
-            ("Captured", &mut self.metadata_captured_at_input),
-        ];
-        for (index, (label, input)) in fields.into_iter().enumerate() {
-            let y = panel.y0 + 106.0 + index as f64 * row_h;
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                11.0,
-                theme.text_dim,
-                transform * Affine::translate((panel.x0 + 16.0, y)),
-                Some((panel.width() - 32.0) as f32),
-                TextWeight::Regular,
-            );
-            input.apply_layout_external(Rect::new(
-                panel.x0 + 16.0,
-                y + 24.0,
-                panel.x1 - 16.0,
-                (y + row_h - 4.0).max(y + 68.0),
-            ));
-            input.draw(scene, transform, text_renderer, theme, presence);
+        let tab_y = panel.y0 + if theme.text_scale > 1.25 { 92.0 } else { 82.0 };
+        let tab_gap = 8.0;
+        let tab_w = (panel.width() - 40.0 - tab_gap) * 0.5;
+        let mut hits = Vec::new();
+        for (section, hit, _label, x) in [
+            (
+                MetadataEditorSection::Organize,
+                MetadataEditorHit::Organize,
+                "Organize",
+                panel.x0 + 20.0,
+            ),
+            (
+                MetadataEditorSection::TimeAndPlace,
+                MetadataEditorHit::TimeAndPlace,
+                "Time & place",
+                panel.x0 + 20.0 + tab_w + tab_gap,
+            ),
+        ] {
+            let rect = Rect::new(x, tab_y, x + tab_w, tab_y + 40.0);
+            if let Some((_, button)) = self
+                .metadata_editor_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_style(if self.metadata_editor_section == section {
+                    ButtonStyle::Primary
+                } else {
+                    ButtonStyle::Neutral
+                });
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, presence);
+            }
         }
-    }
 
-    fn draw_large_metadata_actions(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-    ) {
-        use vello::peniko::Fill;
+        let fields_y = tab_y + 58.0;
+        let footer_y = panel.y1 - 68.0;
+        let label_and_input =
+            |scene: &mut Scene,
+             text_renderer: &mut TextRenderer,
+             input: &mut TextInput,
+             label: &str,
+             mixed: bool,
+             clear_hit: MetadataEditorHit,
+             force_clear: bool,
+             rect: Rect,
+             buttons: &mut Vec<(MetadataEditorHit, Button)>| {
+                let visible_label = if mixed {
+                    format!("{label} · Mixed — unchanged")
+                } else {
+                    label.to_owned()
+                };
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &visible_label,
+                    11.0,
+                    theme.text_dim,
+                    transform * Affine::translate((rect.x0, rect.y0)),
+                    Some((rect.width() - 64.0) as f32),
+                    TextWeight::Medium,
+                );
+                let clear = Rect::new(rect.x1 - 92.0, rect.y0 - 8.0, rect.x1, rect.y0 + 28.0);
+                if let Some((_, button)) = buttons
+                    .iter_mut()
+                    .find(|(candidate, _)| *candidate == clear_hit)
+                {
+                    button.set_style(if force_clear {
+                        ButtonStyle::Danger
+                    } else {
+                        ButtonStyle::Ghost
+                    });
+                    button.apply_layout_external(clear);
+                    button.draw(scene, transform, text_renderer, theme, presence);
+                }
+                input.apply_layout_external(Rect::new(rect.x0, rect.y0 + 24.0, rect.x1, rect.y1));
+                input.draw(scene, transform, text_renderer, theme, presence);
+            };
 
-        let action_y = panel.y1 - 64.0;
-        let action_w = ((panel.width() - 40.0) * 0.5).max(96.0);
-        let cancel = Rect::new(
-            panel.x0 + 16.0,
-            action_y,
-            panel.x0 + 16.0 + action_w,
-            panel.y1 - 12.0,
+        match self.metadata_editor_section {
+            MetadataEditorSection::Organize => {
+                let row_h = ((footer_y - fields_y - 12.0) / 3.0).clamp(70.0, 94.0);
+                for (index, (label, input, hit)) in [
+                    (
+                        "Folder",
+                        &mut self.metadata_folder_input,
+                        MetadataEditorHit::ClearFolder,
+                    ),
+                    (
+                        "People",
+                        &mut self.metadata_people_input,
+                        MetadataEditorHit::ClearPeople,
+                    ),
+                    (
+                        "Tags",
+                        &mut self.metadata_tags_input,
+                        MetadataEditorHit::ClearTags,
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let y = fields_y + index as f64 * row_h;
+                    label_and_input(
+                        scene,
+                        text_renderer,
+                        input,
+                        label,
+                        self.metadata_mixed[index],
+                        hit,
+                        self.metadata_force_clear[index],
+                        Rect::new(panel.x0 + 20.0, y, panel.x1 - 20.0, y + row_h - 8.0),
+                        &mut self.metadata_editor_buttons,
+                    );
+                }
+            }
+            MetadataEditorSection::TimeAndPlace => {
+                // Location deserves a real pick surface, not the old 58px
+                // strip that made every coordinate edit feel accidental.
+                // Keep enough fixed room for the date, place and coordinate
+                // fields first; the map absorbs the responsive remainder.
+                let row_h = 68.0;
+                let map_h = (footer_y - fields_y - row_h * 3.0 - 42.0).clamp(94.0, 154.0);
+                label_and_input(
+                    scene,
+                    text_renderer,
+                    &mut self.metadata_captured_at_input,
+                    "Captured",
+                    self.metadata_mixed[3],
+                    MetadataEditorHit::ClearCapturedAt,
+                    self.metadata_force_clear[3],
+                    Rect::new(
+                        panel.x0 + 20.0,
+                        fields_y,
+                        panel.x1 - 20.0,
+                        fields_y + row_h - 8.0,
+                    ),
+                    &mut self.metadata_editor_buttons,
+                );
+                label_and_input(
+                    scene,
+                    text_renderer,
+                    &mut self.metadata_place_input,
+                    "Place name",
+                    self.metadata_mixed[4],
+                    MetadataEditorHit::ClearLocation,
+                    self.metadata_force_clear[4],
+                    Rect::new(
+                        panel.x0 + 20.0,
+                        fields_y + row_h,
+                        panel.x1 - 20.0,
+                        fields_y + row_h * 2.0 - 8.0,
+                    ),
+                    &mut self.metadata_editor_buttons,
+                );
+                let map = Rect::new(
+                    panel.x0 + 20.0,
+                    fields_y + row_h * 2.0,
+                    panel.x1 - 20.0,
+                    fields_y + row_h * 2.0 + map_h,
+                );
+                self.metadata_location_map_bounds = map;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.neutral[2],
+                    None,
+                    &map,
+                );
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &map,
+                );
+                for step in 1..5 {
+                    let x = map.x0 + map.width() * f64::from(step) / 5.0;
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.border_standard,
+                        None,
+                        &Rect::new(x, map.y0, x + 1.0, map.y1),
+                    );
+                }
+                for step in 1..3 {
+                    let y = map.y0 + map.height() * f64::from(step) / 3.0;
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        theme.border_standard,
+                        None,
+                        &Rect::new(map.x0, y, map.x1, y + 1.0),
+                    );
+                }
+                let center = map.center();
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    transform,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    &Circle::new(center, 7.0),
+                );
+                text_renderer.draw_text_weighted(
+                    scene,
+                    "Click to pin a location · saved only when you save changes",
+                    10.0,
+                    theme.text_primary,
+                    transform * Affine::translate((map.x0 + 12.0, map.y0 + 10.0)),
+                    Some((map.width() - 20.0) as f32),
+                    TextWeight::Medium,
+                );
+                hits.push((MetadataEditorHit::PlaceOnMap, map));
+                let y = map.y1 + 12.0;
+                let gap = 10.0;
+                let field_w = (panel.width() - 40.0 - gap) * 0.5;
+                for (label, input, x) in [
+                    (
+                        "Latitude",
+                        &mut self.metadata_latitude_input,
+                        panel.x0 + 20.0,
+                    ),
+                    (
+                        "Longitude",
+                        &mut self.metadata_longitude_input,
+                        panel.x0 + 20.0 + field_w + gap,
+                    ),
+                ] {
+                    let visible_label = if self.metadata_mixed[4] {
+                        format!("{label} · Mixed")
+                    } else {
+                        label.to_owned()
+                    };
+                    text_renderer.draw_text_weighted(
+                        scene,
+                        &visible_label,
+                        11.0,
+                        theme.text_dim,
+                        transform * Affine::translate((x, y)),
+                        Some(field_w as f32),
+                        TextWeight::Medium,
+                    );
+                    input.apply_layout_external(Rect::new(
+                        x,
+                        y + 24.0,
+                        x + field_w,
+                        y + row_h - 8.0,
+                    ));
+                    input.draw(scene, transform, text_renderer, theme, presence);
+                }
+            }
+        }
+
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.border_standard,
+            None,
+            &Rect::new(
+                panel.x0 + 20.0,
+                footer_y - 12.0,
+                panel.x1 - 20.0,
+                footer_y - 11.0,
+            ),
         );
-        let save = Rect::new(
-            panel.x1 - 16.0 - action_w,
-            action_y,
-            panel.x1 - 16.0,
-            panel.y1 - 12.0,
-        );
-        for (hit, rect, label, color) in [
+        let cancel = Rect::new(panel.x0 + 20.0, footer_y, panel.x0 + 142.0, panel.y1 - 16.0);
+        let save = Rect::new(panel.x1 - 156.0, footer_y, panel.x1 - 20.0, panel.y1 - 16.0);
+        let footer_focus = if self.metadata_editor_section == MetadataEditorSection::Organize {
+            (3, 4)
+        } else {
+            (4, 5)
+        };
+        for (hit, rect, focused, style) in [
             (
                 MetadataEditorHit::Cancel,
                 cancel,
-                "Cancel",
-                theme.tokens.colors.neutral[3],
+                self.metadata_editor_focus == footer_focus.0,
+                ButtonStyle::Neutral,
             ),
             (
                 MetadataEditorHit::Save,
                 save,
-                "Save",
-                theme.tokens.colors.accent[6],
+                self.metadata_editor_focus == footer_focus.1,
+                ButtonStyle::Primary,
             ),
         ] {
-            let focused = matches!(hit, MetadataEditorHit::Cancel)
-                && self.metadata_editor_focus == 4
-                || matches!(hit, MetadataEditorHit::Save) && self.metadata_editor_focus == 5;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if focused { theme.bg_hover } else { color },
-                None,
-                &rect,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.border_standard,
-                None,
-                &rect,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                12.0,
-                theme.text_primary,
-                transform * Affine::translate((rect.x0 + 12.0, rect.y0 + 13.0)),
-                Some((rect.width() - 24.0) as f32),
-                TextWeight::Medium,
-            );
-            self.metadata_editor_hits.push((hit, rect));
+            if let Some((_, button)) = self
+                .metadata_editor_buttons
+                .iter_mut()
+                .find(|(candidate, _)| *candidate == hit)
+            {
+                button.set_style(style);
+                button.set_focus(focused);
+                button.apply_layout_external(rect);
+                button.draw(scene, transform, text_renderer, theme, presence);
+            }
         }
+        self.metadata_editor_hits = hits;
     }
 }
 
@@ -7653,8 +13260,17 @@ fn build_button(
     } else {
         item_width(face, &label)
     };
-    Button::new(key, shown, None)
-        .with_icon(icon)
+    let button = Button::new(key, shown, None);
+    // The large-text overflow face paints a deliberately smaller “More”
+    // caption below. An icon-only Button centres its glyph in the entire
+    // word-sized slot, so retaining the ellipsis here would paint it through
+    // that caption instead of beside it.
+    let button = if matches!(face, Face::LargeOverflow) {
+        button
+    } else {
+        button.with_icon(icon)
+    };
+    button
         .with_size(width, BTN_H)
         .tooltip(label.clone())
         .with_accessible_name(&label)
@@ -7694,6 +13310,64 @@ fn build_album_page_buttons(
     .collect()
 }
 
+/// Native controls layered over the custom metadata inspector. The inspector
+/// owns responsive geometry; `Button` owns interaction states, focus, action
+/// publication, tooltips, and the accessible name. This keeps the sheet from
+/// becoming a painted collection of fake controls merely because it is docked
+/// over the photo canvas.
+fn build_metadata_editor_buttons(
+    pending: &Rc<Cell<Option<MetadataEditorHit>>>,
+) -> Vec<(MetadataEditorHit, Button)> {
+    [
+        (MetadataEditorHit::Organize, "organize", "Organize"),
+        (
+            MetadataEditorHit::TimeAndPlace,
+            "time-place",
+            "Time & place",
+        ),
+        (
+            MetadataEditorHit::ClearFolder,
+            "clear-folder",
+            "Clear folder",
+        ),
+        (
+            MetadataEditorHit::ClearPeople,
+            "clear-people",
+            "Clear people",
+        ),
+        (MetadataEditorHit::ClearTags, "clear-tags", "Clear tags"),
+        (
+            MetadataEditorHit::ClearCapturedAt,
+            "clear-captured-at",
+            "Clear capture time",
+        ),
+        (
+            MetadataEditorHit::ClearLocation,
+            "clear-location",
+            "Clear location",
+        ),
+        (
+            MetadataEditorHit::PlaceOnMap,
+            "place-on-map",
+            "Set location from offline map",
+        ),
+        (MetadataEditorHit::Cancel, "cancel", "Cancel"),
+        (MetadataEditorHit::Save, "save", "Save changes"),
+    ]
+    .into_iter()
+    .map(|(hit, id, label)| {
+        let slot = Rc::clone(pending);
+        (
+            hit,
+            Button::new(&format!("photos-metadata-{id}"), label, None)
+                .tooltip(label)
+                .with_accessible_name(label)
+                .on_effect(move || slot.set(Some(hit))),
+        )
+    })
+    .collect()
+}
+
 fn build_library_header_button(id: &str, label: &str) -> Button {
     Button::new(id, label, None)
         .with_size(142.0, 44.0)
@@ -7712,6 +13386,86 @@ fn build_library_album_buttons() -> Vec<(AlbumEditorHit, Button)> {
     ]
     .into_iter()
     .map(|(hit, id, label)| (hit, build_library_header_button(id, label)))
+    .collect()
+}
+
+fn build_collection_page_buttons(
+    pending: &Rc<Cell<Option<CollectionPageHit>>>,
+) -> Vec<(CollectionPageHit, Button)> {
+    [
+        (
+            CollectionPageHit::AlbumsPrevious,
+            "photos-albums-previous",
+            "Previous",
+        ),
+        (CollectionPageHit::AlbumsNext, "photos-albums-next", "Next"),
+        (
+            CollectionPageHit::PeoplePrevious,
+            "photos-people-previous",
+            "Previous",
+        ),
+        (CollectionPageHit::PeopleNext, "photos-people-next", "Next"),
+        (
+            CollectionPageHit::PlacesPrevious,
+            "photos-places-previous",
+            "Previous",
+        ),
+        (CollectionPageHit::PlacesNext, "photos-places-next", "Next"),
+    ]
+    .into_iter()
+    .map(|(hit, id, label)| {
+        let slot = pending.clone();
+        (
+            hit,
+            Button::new(id, label, None)
+                .with_size(88.0, 40.0)
+                .tooltip(label)
+                .with_accessible_name(label)
+                .on_effect(move || slot.set(Some(hit))),
+        )
+    })
+    .collect()
+}
+
+fn build_directory_import_buttons(
+    pending: &Rc<Cell<Option<DirectoryStatusHit>>>,
+) -> Vec<(DirectoryStatusHit, Button)> {
+    [
+        (
+            DirectoryStatusHit::Stop,
+            "photos-directory-stop",
+            "Stop",
+            Icon::Square,
+        ),
+        (
+            DirectoryStatusHit::Details,
+            "photos-directory-details",
+            "Details",
+            Icon::List,
+        ),
+        (
+            DirectoryStatusHit::Dismiss,
+            "photos-directory-dismiss",
+            "Dismiss",
+            Icon::X,
+        ),
+    ]
+    .into_iter()
+    .map(|(hit, id, label, icon)| {
+        let button = Button::new(id, label, None)
+            .with_icon(icon)
+            .with_size(104.0, 40.0)
+            .tooltip(label)
+            .with_accessible_name(label);
+        let button = if hit == DirectoryStatusHit::Details {
+            let slot = pending.clone();
+            button.on_view(move || slot.set(Some(hit)))
+        } else {
+            let slot = pending.clone();
+            button.on_effect(move || slot.set(Some(hit)))
+        };
+        (hit, button)
+    })
     .collect()
 }
 
@@ -7745,6 +13499,51 @@ fn build_timeline_density_buttons(
                 .with_size(44.0, 44.0)
                 .tooltip(name)
                 .with_accessible_name(name)
+                .on_effect(move || slot.set(Some(hit))),
+        )
+    })
+    .collect()
+}
+
+fn build_library_analysis_buttons(
+    pending: &Rc<Cell<Option<LibraryAnalysisHit>>>,
+) -> Vec<(LibraryAnalysisHit, Button)> {
+    [
+        (
+            LibraryAnalysisHit::Start,
+            "photos-analysis-start",
+            "Analyze unprocessed photos",
+            Icon::Sparkles,
+        ),
+        (
+            LibraryAnalysisHit::Pause,
+            "photos-analysis-pause",
+            "Pause after this photo",
+            Icon::Pause,
+        ),
+        (
+            LibraryAnalysisHit::Resume,
+            "photos-analysis-resume",
+            "Resume analysis",
+            Icon::Play,
+        ),
+        (
+            LibraryAnalysisHit::RetryFailures,
+            "photos-analysis-retry",
+            "Retry failed photos",
+            Icon::Refresh,
+        ),
+    ]
+    .into_iter()
+    .map(|(hit, id, label, icon)| {
+        let slot = pending.clone();
+        (
+            hit,
+            Button::new(id, label, None)
+                .with_icon(icon)
+                .with_size(220.0, 44.0)
+                .tooltip(label)
+                .with_accessible_name(label)
                 .on_effect(move || slot.set(Some(hit))),
         )
     })
@@ -7806,6 +13605,27 @@ fn timeline_date_label(captured_at: &str) -> String {
     }
 }
 
+fn collection_page_access_node(hit: CollectionPageHit, bounds: Rect, enabled: bool) -> AccessNode {
+    let (name, target) = match hit {
+        CollectionPageHit::AlbumsPrevious => ("Previous albums", "albums-previous"),
+        CollectionPageHit::AlbumsNext => ("More albums", "albums-next"),
+        CollectionPageHit::PeoplePrevious => ("Previous people", "people-previous"),
+        CollectionPageHit::PeopleNext => ("More people", "people-next"),
+        CollectionPageHit::PlacesPrevious => ("Previous places", "places-previous"),
+        CollectionPageHit::PlacesNext => ("More places", "places-next"),
+    };
+    AccessNode::new(Role::Button)
+        .with_name(name)
+        .with_description("Browse the complete collection one bounded page at a time")
+        .with_bounds(bounds)
+        .with_state(AccessState {
+            focusable: enabled,
+            disabled: !enabled,
+            ..Default::default()
+        })
+        .with_action_target(format!("photos:collection-page:{target}"))
+}
+
 /// Preserve a capture day as the timeline's chronological identity. Display
 /// formatting must never become the sort/group key: doing so would collapse
 /// every "Jun" from different years into one ambiguous bucket.
@@ -7818,56 +13638,11 @@ fn capture_day(captured_at: &str) -> String {
         .to_owned()
 }
 
-/// Materialise lightweight chronological boundaries for the shared index.
-/// The collection stays virtual: this walks metadata already projected during
-/// `sync`, creates at most one marker per visible capture day, and the widget
-/// later paints/exports only a bounded sample.  Newest-first remains position
-/// zero so the date index and the timeline use the same direction.
-fn timeline_index_markers(items: &[LibraryItem], columns: usize) -> Vec<DateIndexMarker> {
-    let denominator = items.len().saturating_sub(1).max(1) as f64;
-    let columns = columns.max(1);
-    let mut markers = Vec::new();
-    let mut previous_day = "";
-    let mut previous_year = "";
-    for (index, item) in items.iter().enumerate() {
-        if item.captured_at == previous_day {
-            continue;
-        }
-        let year = item.captured_at.get(..4).unwrap_or_default();
-        let kind = if year.len() == 4 && year != previous_year {
-            previous_year = year;
-            DateIndexMarkerKind::Major
-        } else {
-            DateIndexMarkerKind::Minor
-        };
-        let row = index / columns;
-        markers.push(DateIndexMarker::new(
-            format!("{}:{}", item.captured_at, row),
-            timeline_date_label(&item.captured_at),
-            index as f64 / denominator,
-            kind,
-        ));
-        previous_day = &item.captured_at;
-    }
-    markers
-}
-
 /// Read at most the encoded-image budget plus one sentinel byte. A hostile
 /// file can otherwise exhaust memory before the decoder gets a chance to
 /// enforce its decoded-pixel limit.
 fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
     pixels::read_bounded(std::fs::File::open(path).ok()?, pixels::MAX_ENCODED_BYTES)
-}
-
-fn is_importable_photo(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "png" | "jpg" | "jpeg" | "webp"
-            )
-        })
 }
 
 impl PhotosApp {
@@ -7893,6 +13668,124 @@ impl PhotosApp {
                 .insert(result.id, to_peniko(&preview));
         } else {
             self.thumbnail_unavailable.insert(result.id);
+        }
+    }
+
+    /// Every toolkit button retained by Photos outside `Widget::children`.
+    ///
+    /// Photos lays these controls over several custom-painted surfaces, so
+    /// the ordinary recursive widget plumbing cannot discover them. Keep the
+    /// inventory in one place so resource publication, policy refresh,
+    /// invocation draining, and operation dispatch cannot drift apart.
+    fn retained_buttons(&self) -> Vec<&Button> {
+        let mut buttons = Vec::new();
+        buttons.extend(self.buttons.iter().map(|(_, button)| button));
+        buttons.extend(
+            self.directory_import_buttons
+                .iter()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(
+            self.library_analysis_buttons
+                .iter()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(
+            self.collection_page_buttons
+                .iter()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(
+            self.timeline_density_buttons
+                .iter()
+                .map(|(_, button)| button),
+        );
+        buttons.push(&self.library_select_button);
+        buttons.extend(self.library_album_buttons.iter().map(|(_, button)| button));
+        buttons.extend(self.album_page_buttons.iter().map(|(_, button)| button));
+        buttons.extend(
+            self.metadata_editor_buttons
+                .iter()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(self.people_controls.iter().map(|control| &control.button));
+        buttons
+    }
+
+    fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
+        let mut buttons = Vec::new();
+        buttons.extend(self.buttons.iter_mut().map(|(_, button)| button));
+        buttons.extend(
+            self.directory_import_buttons
+                .iter_mut()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(
+            self.library_analysis_buttons
+                .iter_mut()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(
+            self.collection_page_buttons
+                .iter_mut()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(
+            self.timeline_density_buttons
+                .iter_mut()
+                .map(|(_, button)| button),
+        );
+        buttons.push(&mut self.library_select_button);
+        buttons.extend(
+            self.library_album_buttons
+                .iter_mut()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(self.album_page_buttons.iter_mut().map(|(_, button)| button));
+        buttons.extend(
+            self.metadata_editor_buttons
+                .iter_mut()
+                .map(|(_, button)| button),
+        );
+        buttons.extend(
+            self.people_controls
+                .iter_mut()
+                .map(|control| &mut control.button),
+        );
+        buttons
+    }
+
+    /// Apply callbacks after the host has admitted and dispatched an emitted
+    /// control action. Pointer handling only queues the action; the callback
+    /// runs after that event has returned, so `sync` is the common completion
+    /// boundary for pointer, keyboard, accessibility, and agent activation.
+    fn drain_action_control_pending(&mut self, doc: &mut AutoCommit) {
+        self.drain_pending(doc);
+        if let Some(hit) = self.directory_import_pending.take() {
+            self.activate_directory_status(hit);
+        }
+        if let Some(hit) = self.library_analysis_pending.take() {
+            self.activate_library_analysis(hit, doc);
+        }
+        if let Some(hit) = self.collection_page_pending.take() {
+            self.page_collection(hit);
+        }
+        if let Some(hit) = self.timeline_density_pending.take() {
+            self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
+        }
+        if let Some(hit) = self.album_page_pending.take() {
+            match hit {
+                AlbumEditorHit::PreviousPage => self.page_library(false),
+                AlbumEditorHit::NextPage => self.page_library(true),
+                _ => {}
+            }
+        }
+        if let Some(hit) = self.metadata_editor_pending.take() {
+            self.activate_metadata_editor_hit(hit, doc);
+        }
+        let people = self.people_pending.borrow_mut().take();
+        if let Some(intent) = people {
+            self.handle_people_intent(intent, doc);
         }
     }
 
@@ -7928,6 +13821,15 @@ impl PhotosApp {
             return;
         };
         for photo in sources {
+            // The channel itself is bounded, but the decoder can take a job
+            // between two `try_send` calls. Without this independent
+            // accounting fence a fast worker lets one sync enqueue an
+            // arbitrarily large visible slice while `thumbnail_queued`
+            // continues to grow. Keep the whole in-flight generation—not
+            // merely the instantaneous channel depth—strictly bounded.
+            if self.thumbnail_queued.len() >= THUMBNAIL_QUEUE_LIMIT {
+                break;
+            }
             if self.library_thumbnails.contains_key(&photo.id)
                 || self.thumbnail_unavailable.contains(&photo.id)
                 || self.thumbnail_queued.contains(&photo.id)
@@ -7949,8 +13851,29 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        self.places_motion_reduced = reduced;
+        if reduced {
+            // Reduced motion keeps the camera operation immediate and every
+            // marker fully present; only the decorative settle cue disappears.
+            self.places_camera_feedback = None;
+        }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        (!self.places_motion_reduced
+            && self
+                .places_camera_feedback
+                .is_some_and(|feedback| !feedback.done(Instant::now())))
+            || (!self.places_motion_reduced
+                && self.people_detail_transition.is_animating(Instant::now()))
+    }
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::PHOTOS_OPERATION_TYPE]
+        &[
+            crate::actions::PHOTOS_OPERATION_TYPE,
+            RETAINED_CONTROL_OPERATION_TYPE,
+        ]
     }
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
@@ -7978,6 +13901,7 @@ impl Widget for PhotosApp {
                 self.metadata_editor = false;
             }
             crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewAlbums => self.show_albums(),
             crate::actions::PhotosOperation::ViewTimeline { anchor } => {
                 self.view_timeline(doc, anchor.as_ref())?;
             }
@@ -7987,6 +13911,13 @@ impl Widget for PhotosApp {
                 self.library_destination = LibraryDestination::People;
                 self.notice = Some(
                     "People recognition is local and opt-in; install a verified face model to begin"
+                        .to_owned(),
+                );
+            }
+            crate::actions::PhotosOperation::ViewLibraryAnalysis => {
+                self.show_library_analysis();
+                self.notice = Some(
+                    "Local analysis makes descriptions, objects, pets, and text searchable"
                         .to_owned(),
                 );
             }
@@ -8000,23 +13931,11 @@ impl Widget for PhotosApp {
             crate::actions::PhotosOperation::ViewPlaces => {
                 self.show_library();
                 self.library_destination = LibraryDestination::Places;
+                self.places_open_key = None;
                 self.notice = Some("Showing offline Places".to_owned());
             }
             crate::actions::PhotosOperation::ViewPlace { place_key } => {
-                self.show_library();
-                self.library_destination = LibraryDestination::Places;
-                if let Some(photo) = PhotosDoc::library(doc).photos.iter().find(|photo| {
-                    photo
-                        .location
-                        .as_ref()
-                        .is_some_and(|location| location.place_key() == place_key)
-                }) && let Some(location) = &photo.location
-                {
-                    self.places_viewport.latitude = location.latitude;
-                    self.places_viewport.longitude = location.longitude;
-                    self.places_viewport.zoom = 12.0;
-                }
-                self.notice = Some("Showing selected place offline".to_owned());
+                self.open_place_collection(doc, &place_key)?;
             }
             crate::actions::PhotosOperation::ViewAlbum { album_id } => {
                 self.view_album(doc, &album_id)?;
@@ -8052,6 +13971,27 @@ impl Widget for PhotosApp {
         Ok(true)
     }
 
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            for button in self.retained_buttons_mut() {
+                if let Some(output) =
+                    button.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(output));
+                }
+            }
+        }
+        self.invoke_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
+    }
+
     fn start_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -8061,6 +14001,15 @@ impl Widget for PhotosApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            for button in self.retained_buttons_mut() {
+                if let Some(started) = button
+                    .start_resource_operation(invocation, kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(started));
+                }
+            }
+        }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
@@ -8096,12 +14045,50 @@ impl Widget for PhotosApp {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if type_id == RETAINED_CONTROL_OPERATION_TYPE {
+            for button in self.retained_buttons_mut() {
+                if let Some(started) = button.start_resource_operation_with_document(
+                    invocation, kind, type_id, payload, doc, path,
+                )? {
+                    return Ok(Some(started));
+                }
+            }
+        }
         if kind == tilo_actions::OperationKind::Document {
             return Ok(None);
         }
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        match &operation {
+            crate::actions::PhotosOperation::AnalyzeLibrary => {
+                self.begin_library_analysis(invocation, doc, false)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::ResumeLibraryAnalysis => {
+                self.resume_library_analysis(invocation, doc)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::RetryLibraryAnalysisFailures => {
+                self.begin_library_analysis(invocation, doc, true)?;
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::PhotosOperation::PauseLibraryAnalysis => {
+                if !self.pause_library_analysis() {
+                    return Err("Photo analysis is not running".to_owned());
+                }
+                return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput {
+                        value: Some(serde_json::json!({
+                            "completed": self.library_analysis.completed,
+                            "remaining": self.library_analysis.remaining(),
+                        })),
+                        resources: vec!["photos.library-analysis".to_owned()],
+                    },
+                )));
+            }
+            _ => {}
+        }
         if let crate::actions::PhotosOperation::AnalyzeText {
             resource_id,
             language,
@@ -8109,6 +14096,9 @@ impl Widget for PhotosApp {
         {
             let photo = PhotosDoc::photo(doc, &resource_id)
                 .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            if photo.image.content.is_none() {
+                return Err("This legacy photograph needs a verified content identity before text recognition can be shared".to_owned());
+            }
             let sender = self
                 .analysis_tx
                 .as_ref()
@@ -8130,6 +14120,9 @@ impl Widget for PhotosApp {
         if let crate::actions::PhotosOperation::AnalyzeImage { resource_id } = operation {
             let photo = PhotosDoc::photo(doc, &resource_id)
                 .ok_or_else(|| "that photograph is no longer in the library".to_owned())?;
+            if photo.image.content.is_none() {
+                return Err("This legacy photograph needs a verified content identity before image analysis can be shared".to_owned());
+            }
             let capability = tilo_vision::discover_local_capability(
                 &agent_provider_config::ProviderConfig::load(),
             )
@@ -8159,66 +14152,7 @@ impl Widget for PhotosApp {
             operation,
             crate::actions::PhotosOperation::AnalyzePeopleLibrary
         ) {
-            if !self.people_controller.privacy().recognition_enabled {
-                return Err("People recognition is off on this device. Enable it in People before scanning local photographs.".to_owned());
-            }
-            let config = agent_provider_config::ProviderConfig::load();
-            self.people_controller.discover_face_capability(&config);
-            let capability =
-                tilo_vision::discover_local_face_capability(&config).ok_or_else(|| {
-                    "No verified local face model is ready. Install and start one in Settings."
-                        .to_owned()
-                })?;
-            let library = PhotosDoc::library(doc);
-            let locally_available: Vec<_> = library
-                .photos
-                .into_iter()
-                .filter(|photo| crate::doc::bytes_of(&photo.image).is_some())
-                .map(|photo| (photo.id, photo.image))
-                .collect();
-            if locally_available.is_empty() {
-                return Err(
-                    "No locally available photographs are ready for People recognition.".to_owned(),
-                );
-            }
-            let start = self.people_scan_progress.next_offset % locally_available.len();
-            let photos: Vec<_> = locally_available
-                .iter()
-                .cycle()
-                .skip(start)
-                .take(tilo_vision::MAX_FACE_BATCH.min(locally_available.len()))
-                .cloned()
-                .collect();
-            self.people_scan_progress.next_offset =
-                start.saturating_add(photos.len()) % locally_available.len();
-            self.people_scan_progress.last_library_size = locally_available.len();
-            self.people_scan_progress.status = "running".to_owned();
-            self.people_scan_progress.last_error = None;
-            self.people_scan_progress.save();
-            let Some((_, first)) = photos.first() else {
-                return Err(
-                    "No locally available photographs are ready for People recognition.".to_owned(),
-                );
-            };
-            let sender = self.analysis_tx.as_ref().ok_or_else(|| {
-                "local People recognition is unavailable on this device".to_owned()
-            })?;
-            sender
-                .try_send(AnalysisJob {
-                    invocation,
-                    photo_id: "photos.people".to_owned(),
-                    content: None,
-                    image: first.clone(),
-                    kind: AnalysisJobKind::People {
-                        capability,
-                        images: photos,
-                    },
-                })
-                .map_err(|_| {
-                    "local image analysis is busy; wait for the current photos to finish".to_owned()
-                })?;
-            self.active_analysis.insert(invocation);
-            self.active_people_scans.insert(invocation);
+            self.schedule_people_scan_batch(invocation, doc)?;
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
 
@@ -8258,9 +14192,19 @@ impl Widget for PhotosApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
+        if cancellation_requested && self.library_analysis.is_running_invocation(invocation) {
+            self.pause_library_analysis();
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(
+                    "photo analysis paused; the current local photograph may finish safely".into(),
+                ),
+            });
+        }
         if cancellation_requested && self.active_analysis.remove(&invocation) {
             self.cancelled_analysis.insert(invocation);
             if self.active_people_scans.remove(&invocation) {
+                self.pending_people_scans.remove(&invocation);
                 self.people_scan_progress.status = "cancelled".to_owned();
                 self.people_scan_progress.save();
             }
@@ -8287,13 +14231,18 @@ impl Widget for PhotosApp {
             // caller has cancelled the action.
             self.picker = None;
             self.directory_picker = None;
-            if let Some(import) = self.directory_import.take() {
+            if let Some(import) = self.directory_import.as_mut() {
                 import.cancel.store(true, Ordering::Relaxed);
+                import.invocation = None;
+                import.cancelled = true;
+                import.pending.clear();
             }
             self.resource_invocation = None;
             return Some(tilo_actions::InvocationUpdate::Cancelled {
                 invocation,
-                message: Some("photo selection was cancelled".into()),
+                message: Some(
+                    "folder indexing was cancelled; completed photographs are kept".into(),
+                ),
             });
         }
         if self
@@ -8313,6 +14262,7 @@ impl Widget for PhotosApp {
     )]
     fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
         PhotosDoc::seed(doc);
+        self.drain_action_control_pending(doc);
         self.drain_analysis_results(doc);
         if let Some((invocation, path)) = self.pending_resource_open.take() {
             self.open_path(doc, &path);
@@ -8339,7 +14289,7 @@ impl Widget for PhotosApp {
         self.library_search.sync(doc, path);
         if let Some(query) = self.library_search.take_dirty() {
             self.library_query = query;
-            self.timeline_scroll_row = 0.0;
+            self.timeline_scroll_y = 0.0;
         }
 
         // An address can arrive before its bytes. Do not offer Copy, Save or
@@ -8358,10 +14308,27 @@ impl Widget for PhotosApp {
                 Err(error) => Some(format!("Photo search kept its previous index: {error}")),
             };
             self.thumbnail_unavailable.clear();
-            self.search_heads = heads;
+            self.search_heads = heads.clone();
         }
+        self.advance_library_query();
         self.status = self.status_text(doc);
         let library = PhotosDoc::library(doc);
+        self.library_analysis_coverage = library.photos.iter().fold(
+            (0usize, 0usize, 0usize),
+            |(analyzed, available, awaiting), photo| {
+                if photo.analysis.as_ref().is_some_and(|analysis| {
+                    analysis
+                        .vision_provenance_for_content(photo.image.content.as_deref())
+                        .is_some()
+                }) {
+                    (analyzed + 1, available, awaiting)
+                } else if crate::doc::bytes_of(&photo.image).is_some() {
+                    (analyzed, available + 1, awaiting)
+                } else {
+                    (analyzed, available, awaiting + 1)
+                }
+            },
+        );
         self.selection_all_favorite = !self.selected_photo_ids.is_empty()
             && self
                 .selected_photo_ids
@@ -8383,24 +14350,9 @@ impl Widget for PhotosApp {
                 .find(|album| &album.id == id)
                 .map(|album| &album.photo_ids)
         });
-        let query = self.library_query.trim().to_lowercase();
+        let query_active = !self.library_query.trim().is_empty();
         let matches_filter = |photo: &LibraryPhoto| {
-            let query_matches = query.is_empty()
-                || format!(
-                    "{} {} {} {} {} {} {}",
-                    photo.image.name,
-                    photo.folder.as_deref().unwrap_or_default(),
-                    photo.people.join(" "),
-                    photo.tags.join(" "),
-                    photo.captured_at.as_deref().unwrap_or_default(),
-                    photo.metadata_summary(),
-                    photo
-                        .analysis
-                        .as_ref()
-                        .map_or_else(String::new, crate::model::ImageAnalysis::searchable_text),
-                )
-                .to_lowercase()
-                .contains(&query);
+            let query_matches = !query_active || self.library_query_matches.contains(&photo.id);
             membership.is_none_or(|ids| ids.contains(&photo.id))
                 && query_matches
                 && (!self.active_favorites || photo.favorite)
@@ -8438,20 +14390,6 @@ impl Widget for PhotosApp {
         self.library_offset = self
             .library_offset
             .min(self.library_total.saturating_sub(1));
-        let timeline_columns = timeline_column_count(
-            self.canvas_rect.width(),
-            self.timeline_density,
-            self.large_text_toolbar,
-        );
-        self.timeline_last_columns = timeline_columns;
-        self.timeline_scroll_row = self
-            .timeline_scroll_row
-            .min(self.library_total.saturating_sub(1) as f64 / timeline_columns.max(1) as f64);
-        let browse_offset = if self.album_editor {
-            self.library_offset
-        } else {
-            (self.timeline_scroll_row.floor() as usize).saturating_mul(timeline_columns)
-        };
         let mut timeline_items: Vec<_> = library
             .photos
             .iter()
@@ -8464,14 +14402,6 @@ impl Widget for PhotosApp {
                     .captured_at
                     .as_deref()
                     .map_or_else(|| "Undated".to_owned(), capture_day),
-                aspect_ratio: if photo.image.width > 0 && photo.image.height > 0 {
-                    f64::from(photo.image.width) / f64::from(photo.image.height)
-                } else {
-                    // Legacy path-only records did not retain dimensions.
-                    // Keep their geometry stable without pretending to know
-                    // the original aspect ratio.
-                    1.5
-                },
             })
             .collect();
         // A timeline reads newest-first.  The id tie-breaker makes peers with
@@ -8485,12 +14415,64 @@ impl Widget for PhotosApp {
                 .then_with(|| right.captured_at.cmp(&left.captured_at))
                 .then_with(|| left.id.cmp(&right.id))
         });
-        self.timeline_index_markers = timeline_index_markers(&timeline_items, timeline_columns);
-        self.library_items = timeline_items
+        let projection_filter = format!(
+            "{}\u{1f}{}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?}\u{1f}{}",
+            self.library_query_indexed,
+            self.library_query_matches.len(),
+            self.active_album,
+            self.active_folder,
+            self.active_person,
+            self.active_tag,
+            self.active_object,
+            self.active_pet,
+            self.active_favorites
+        );
+        if self.timeline_projection_heads != heads
+            || self.timeline_projection_filter != projection_filter
+        {
+            self.timeline_projection.reconcile(
+                library
+                    .photos
+                    .iter()
+                    .filter(|photo| matches_filter(photo))
+                    .map(|photo| TimelinePhoto {
+                        id: photo.id.clone(),
+                        name: photo.image.name.clone(),
+                        favorite: photo.favorite,
+                        day: photo
+                            .captured_at
+                            .as_deref()
+                            .map_or_else(|| "Undated".to_owned(), capture_day),
+                        captured_at: photo.captured_at.clone().unwrap_or_default(),
+                        aspect_ratio: if photo.image.width > 0 && photo.image.height > 0 {
+                            f64::from(photo.image.width) / f64::from(photo.image.height)
+                        } else {
+                            1.5
+                        },
+                    }),
+            );
+            self.timeline_projection_heads = heads.clone();
+            self.timeline_projection_filter = projection_filter;
+            self.library_total = self.timeline_projection.len();
+        }
+        // Markers are rebuilt from exact pixel day offsets during draw, once
+        // the real viewport and responsive geometry are known.
+        self.timeline_index_markers.clear();
+        let visible_ids: HashSet<_> = self
+            .timeline_projection
+            .visible_photos(self.timeline_scroll_y, self.timeline_viewport_height)
             .into_iter()
-            .skip(browse_offset)
-            .take(120)
+            .map(|entry| entry.photo.id.clone())
             .collect();
+        self.library_items = if visible_ids.is_empty() {
+            timeline_items.into_iter().take(120).collect()
+        } else {
+            timeline_items
+                .into_iter()
+                .filter(|item| visible_ids.contains(&item.id))
+                .take(120)
+                .collect()
+        };
         self.places_items = library
             .photos
             .iter()
@@ -8506,8 +14488,21 @@ impl Widget for PhotosApp {
         self.library_albums = library
             .albums
             .iter()
-            .take(24)
             .map(|album| (album.id.clone(), album.name.clone(), album.photo_ids.len()))
+            .collect();
+        self.library_album_covers = library
+            .albums
+            .iter()
+            .map(|album| {
+                let covers = album
+                    .photo_ids
+                    .iter()
+                    .filter(|id| library.photo(id).is_some())
+                    .take(4)
+                    .cloned()
+                    .collect();
+                (album.id.clone(), covers)
+            })
             .collect();
         let mut folders = std::collections::BTreeMap::<String, usize>::new();
         let mut people = std::collections::BTreeMap::<String, usize>::new();
@@ -8523,10 +14518,32 @@ impl Widget for PhotosApp {
                 *tags.entry(tag.clone()).or_default() += 1;
             }
         }
+        self.people_approved = crate::people::approved_people(&library);
         self.library_folders = folders.into_iter().take(6).collect();
-        self.library_people = people.into_iter().take(6).collect();
+        self.library_people = people.into_iter().collect();
+        let album_page_size = if self.library_destination == LibraryDestination::Albums
+            && self.canvas_rect.width() >= 700.0
+        {
+            8
+        } else {
+            COLLECTION_PAGE_SIZE
+        };
+        self.albums_page = self
+            .albums_page
+            .min(self.library_albums.len().saturating_sub(1) / album_page_size);
+        self.people_page = self
+            .people_page
+            .min(self.library_people.len().saturating_sub(1) / COLLECTION_PAGE_SIZE);
+        self.places_page = self
+            .places_page
+            .min(self.places_items.len().saturating_sub(1) / COLLECTION_PAGE_SIZE);
         self.library_person_covers.clear();
-        for (person, _) in &self.library_people {
+        for (person, _) in self
+            .library_people
+            .iter()
+            .skip(self.people_page * COLLECTION_PAGE_SIZE)
+            .take(COLLECTION_PAGE_SIZE)
+        {
             if let Some(photo) = library
                 .photos
                 .iter()
@@ -8534,6 +14551,22 @@ impl Widget for PhotosApp {
             {
                 self.library_person_covers
                     .insert(person.clone(), photo.id.clone());
+            }
+        }
+        // The dedicated People management surface may show approved people
+        // outside the current browse-shelf page, so add their bounded covers
+        // without changing collection-page navigation.
+        for person in &self.people_approved {
+            if self.library_person_covers.contains_key(&person.label) {
+                continue;
+            }
+            if let Some(photo) = library
+                .photos
+                .iter()
+                .find(|photo| photo.people.iter().any(|label| label == &person.label))
+            {
+                self.library_person_covers
+                    .insert(person.label.clone(), photo.id.clone());
             }
         }
         self.library_tags = tags.into_iter().take(6).collect();
@@ -8553,6 +14586,16 @@ impl Widget for PhotosApp {
                 .take(24)
                 .map(|item| item.photo.clone())
                 .collect();
+        } else if self.library_destination == LibraryDestination::Albums {
+            thumbnail_sources = self
+                .library_albums
+                .iter()
+                .skip(self.albums_page * album_page_size)
+                .take(album_page_size)
+                .flat_map(|(id, _, _)| self.library_album_covers.get(id).into_iter().flatten())
+                .filter_map(|photo_id| library.photo(photo_id).cloned())
+                .take(24)
+                .collect();
         } else {
             for cover in self.library_person_covers.values() {
                 if thumbnail_sources.iter().all(|photo| &photo.id != cover)
@@ -8563,8 +14606,21 @@ impl Widget for PhotosApp {
             }
             thumbnail_sources.truncate(24);
         }
+        if self.library_destination == LibraryDestination::People {
+            for cluster in self.people_controller.all_clusters() {
+                for photo_id in cluster.visible_photo_ids().into_iter().take(4) {
+                    if thumbnail_sources.iter().all(|photo| photo.id != photo_id)
+                        && let Some(photo) = library.photo(&photo_id).cloned()
+                    {
+                        thumbnail_sources.push(photo);
+                    }
+                }
+            }
+            thumbnail_sources.truncate(40);
+        }
         self.drain_thumbnail_results();
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
+        self.refresh_people_controls();
     }
 
     #[allow(
@@ -8667,13 +14723,34 @@ impl Widget for PhotosApp {
         }
         if let Some(&canvas) = children.get(2) {
             let cl = taffy.layout(canvas).unwrap();
+            let canvas_origin =
+                Point::new(x + f64::from(cl.location.x), y + f64::from(cl.location.y));
             self.canvas_rect = Rect::new(
-                x + f64::from(cl.location.x),
-                y + f64::from(cl.location.y),
-                x + f64::from(cl.location.x) + f64::from(cl.size.width),
-                y + f64::from(cl.location.y) + f64::from(cl.size.height),
+                canvas_origin.x,
+                canvas_origin.y,
+                canvas_origin.x + f64::from(cl.size.width),
+                canvas_origin.y + f64::from(cl.size.height),
             );
-            if let Some(v) = self.viewer.as_mut() {
+            let people_surface = self.library_mode
+                && (self.library_destination == LibraryDestination::People || self.people_mode);
+            if people_surface {
+                let canvas_children = taffy.children(canvas).unwrap_or_default();
+                let show_name = self.people_selection.is_some() && !self.people_merge_mode;
+                let mut index = 0usize;
+                if show_name {
+                    if let Some(&field) = canvas_children.get(index) {
+                        self.people_name_input
+                            .apply_layout(taffy, field, canvas_origin);
+                    }
+                    index += 1;
+                }
+                for control in &mut self.people_controls {
+                    if let Some(&button) = canvas_children.get(index) {
+                        control.button.apply_layout(taffy, button, canvas_origin);
+                    }
+                    index += 1;
+                }
+            } else if let Some(v) = self.viewer.as_mut() {
                 v.apply_layout(taffy, canvas, here);
             }
         }
@@ -8769,15 +14846,29 @@ impl Widget for PhotosApp {
         if self.library_mode {
             self.library_search
                 .draw(scene, transform, text_renderer, theme, presence);
-            if self.library_destination == LibraryDestination::People || self.people_mode {
+            if self.library_destination == LibraryDestination::Albums {
+                self.draw_albums(scene, transform, text_renderer, theme, presence);
+            } else if self.library_destination == LibraryDestination::People || self.people_mode {
                 self.draw_people(scene, transform, text_renderer, theme);
+                if self.people_selection.is_some() && !self.people_merge_mode {
+                    self.people_name_input
+                        .draw(scene, transform, text_renderer, theme, presence);
+                }
+                for control in &mut self.people_controls {
+                    control
+                        .button
+                        .draw(scene, transform, text_renderer, theme, presence);
+                }
             } else if self.library_destination == LibraryDestination::Places {
                 self.draw_places(scene, transform, text_renderer, theme, presence);
+            } else if self.library_destination == LibraryDestination::Analysis {
+                self.draw_library_analysis(scene, transform, text_renderer, theme, presence);
             } else {
                 self.draw_library(scene, transform, text_renderer, theme, presence);
             }
         } else if let Some(v) = self.viewer.as_mut() {
             v.draw(scene, transform, text_renderer, theme, presence);
+            self.draw_viewer_details(scene, transform, text_renderer, theme);
         } else {
             let (title, body) = self.empty_state_text();
             self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
@@ -8785,6 +14876,8 @@ impl Widget for PhotosApp {
         // This is deliberately after the canvas/library so the compact menu
         // is a real popup rather than a panel hidden behind the grid.
         self.draw_compact_more(scene, transform, text_renderer, theme);
+
+        self.draw_directory_import_status(scene, transform, text_renderer, theme);
 
         if !self.status.is_empty() {
             let inner = self.status_rect;
@@ -8798,6 +14891,7 @@ impl Widget for PhotosApp {
                 TextWeight::Regular,
             );
         }
+        self.draw_directory_import_details(scene, transform, text_renderer, theme);
     }
 
     #[allow(
@@ -8822,14 +14916,176 @@ impl Widget for PhotosApp {
                 && self.library_destination == LibraryDestination::Places
                 && let Some(previous) = self.places_drag_origin.replace(next)
             {
-                self.places_viewport = self.places_viewport.panned(
+                self.set_places_viewport(self.places_viewport.panned(
                     next.x - previous.x,
                     next.y - previous.y,
                     self.places_map_bounds.width(),
                     self.places_map_bounds.height(),
-                );
+                ));
             }
             self.pointer = next;
+        }
+        if self.directory_import_details_open {
+            if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+                && key.state == winit::event::ElementState::Pressed
+            {
+                match &key.logical_key {
+                    Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                        self.close_directory_details();
+                    }
+                    Key::Named(NamedKey::ArrowLeft) => {
+                        self.page_directory_details(false);
+                    }
+                    Key::Named(NamedKey::ArrowRight) => {
+                        self.page_directory_details(true);
+                    }
+                    _ => return,
+                }
+                *handled = true;
+                return;
+            }
+            if matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            ) {
+                if let Some(layout) = self.directory_import_details_layout.clone() {
+                    match layout.hit(self.pointer) {
+                        Some(ModalHit::Close | ModalHit::Scrim) => {
+                            self.close_directory_details();
+                        }
+                        Some(ModalHit::Action(0)) => {
+                            self.page_directory_details(false);
+                        }
+                        Some(ModalHit::Action(1)) => {
+                            self.page_directory_details(true);
+                        }
+                        Some(ModalHit::Action(2)) => {
+                            self.close_directory_details();
+                        }
+                        Some(ModalHit::Card | ModalHit::Action(_)) | None => {}
+                    }
+                }
+                *handled = true;
+                return;
+            }
+            // A modal swallows pointer/keyboard input that it does not use;
+            // cursor motion still reaches it so hover feedback remains live.
+            if !matches!(event, winit::event::WindowEvent::CursorMoved { .. }) {
+                *handled = true;
+                return;
+            }
+        }
+        for (_, button) in &mut self.directory_import_buttons {
+            let mut sink = None;
+            button.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                doc,
+                path,
+                handled,
+                &mut sink,
+                node_id,
+                taffy,
+            );
+        }
+        if self.directory_import_pending.get().is_none()
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((hit, _)) = self
+                .directory_import_buttons
+                .iter()
+                .find(|(_, button)| button.is_enabled() && button.get_rect().contains(self.pointer))
+        {
+            self.directory_import_pending.set(Some(*hit));
+        }
+        if let Some(hit) = self.directory_import_pending.take() {
+            if self.activate_directory_status(hit) {
+                *handled = true;
+            }
+            return;
+        }
+        if *handled {
+            return;
+        }
+        let people_surface = self.library_mode
+            && (self.library_destination == LibraryDestination::People || self.people_mode);
+        if people_surface {
+            if let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+                && key.state == winit::event::ElementState::Pressed
+                && matches!(key.logical_key, Key::Named(NamedKey::Escape))
+            {
+                self.handle_people_intent(PeopleIntent::Back, doc);
+                *handled = true;
+                return;
+            }
+            let root_children = taffy.children(node_id).unwrap_or_default();
+            if let Some(&canvas) = root_children.get(2) {
+                let canvas_children = taffy.children(canvas).unwrap_or_default();
+                let show_name = self.people_selection.is_some() && !self.people_merge_mode;
+                let mut index = 0usize;
+                if show_name {
+                    if let Some(&field) = canvas_children.get(index) {
+                        self.people_name_input.handle_event(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            doc,
+                            path,
+                            handled,
+                            focus_target,
+                            field,
+                            taffy,
+                        );
+                    }
+                    index += 1;
+                    if self.people_name_input.take_submit() {
+                        let intent = match self.people_selection {
+                            Some(PeopleSelection::Approved(_)) => PeopleIntent::SaveName,
+                            Some(PeopleSelection::Suggestion(_)) => PeopleIntent::ApproveSuggestion,
+                            None => PeopleIntent::Back,
+                        };
+                        self.handle_people_intent(intent, doc);
+                        *handled = true;
+                        return;
+                    }
+                }
+                for control in &mut self.people_controls {
+                    if let Some(&button) = canvas_children.get(index) {
+                        control.button.handle_event(
+                            event,
+                            scale_factor,
+                            modifiers,
+                            doc,
+                            path,
+                            handled,
+                            focus_target,
+                            button,
+                            taffy,
+                        );
+                    }
+                    index += 1;
+                }
+            }
+            let pending = self.people_pending.borrow_mut().take();
+            if let Some(intent) = pending {
+                self.handle_people_intent(intent, doc);
+                *handled = true;
+                return;
+            }
+            if *handled {
+                return;
+            }
         }
         if self.library_mode
             && self.library_destination == LibraryDestination::Places
@@ -8861,6 +15117,51 @@ impl Widget for PhotosApp {
         ) {
             self.places_drag_origin = None;
         }
+        if self.library_mode && self.library_destination == LibraryDestination::Analysis {
+            for (_, button) in &mut self.library_analysis_buttons {
+                let mut sink = None;
+                button.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    doc,
+                    path,
+                    handled,
+                    &mut sink,
+                    node_id,
+                    taffy,
+                );
+                if sink.is_some() {
+                    *focus_target = sink;
+                }
+            }
+            if let Some(hit) = self.library_analysis_pending.take() {
+                self.activate_library_analysis(hit, doc);
+                *handled = true;
+                return;
+            }
+            if matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            ) && let Some((photo_id, _)) = self
+                .library_analysis_failure_hits
+                .iter()
+                .find(|(_, bounds)| bounds.contains(self.pointer))
+                .cloned()
+            {
+                self.commit_library_action(
+                    doc,
+                    &crate::actions::PhotosAction::SelectPhoto { photo_id },
+                );
+                self.library_mode = false;
+                *handled = true;
+                return;
+            }
+        }
         if self.library_mode
             && self.library_destination == LibraryDestination::Places
             && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
@@ -8869,8 +15170,7 @@ impl Widget for PhotosApp {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
                 winit::event::MouseScrollDelta::PixelDelta(point) => point.y / 80.0,
             };
-            self.places_viewport.zoom = (self.places_viewport.zoom + amount * 0.25)
-                .clamp(crate::places::MIN_ZOOM, crate::places::MAX_ZOOM);
+            self.zoom_places_by(amount * 0.25);
             *handled = true;
             return;
         }
@@ -8902,6 +15202,7 @@ impl Widget for PhotosApp {
                     self.people_mode = false;
                     self.library_destination = LibraryDestination::Timeline;
                 }
+                PlacesHit::Albums => self.show_albums(),
                 PlacesHit::People => {
                     self.people_mode = true;
                     self.library_destination = LibraryDestination::People;
@@ -8910,27 +15211,20 @@ impl Widget for PhotosApp {
                     self.people_mode = false;
                     self.library_destination = LibraryDestination::Places;
                 }
+                PlacesHit::Analysis => {
+                    self.people_mode = false;
+                    self.show_library_analysis();
+                }
                 PlacesHit::ToggleList => self.places_list_mode = !self.places_list_mode,
-                PlacesHit::ZoomIn => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom + 1.0).min(crate::places::MAX_ZOOM)
+                PlacesHit::ZoomIn => self.zoom_places_by(1.0),
+                PlacesHit::ZoomOut => self.zoom_places_by(-1.0),
+                PlacesHit::Place(key) => {
+                    let _ = self.open_place_collection(doc, &key);
                 }
-                PlacesHit::ZoomOut => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
-                }
-                PlacesHit::Marker(id) => {
-                    let _ = self.actions.try_dispatch_with_context(
+                PlacesHit::Photo(id) => {
+                    self.commit_library_action(
                         doc,
-                        crate::actions::PHOTOS_ACTION_TYPE,
-                        &crate::actions::PhotosAction::SelectPhoto {
-                            photo_id: id.clone(),
-                        },
-                        tilo_actions::ActionContext::for_action(
-                            "org.tilo.Photos",
-                            "Photos",
-                            &crate::actions::PhotosAction::SelectPhoto { photo_id: id },
-                        ),
+                        &crate::actions::PhotosAction::SelectPhoto { photo_id: id },
                     );
                     self.library_mode = false;
                 }
@@ -8945,45 +15239,39 @@ impl Widget for PhotosApp {
         {
             match &key.logical_key {
                 Key::Named(NamedKey::ArrowLeft) => {
-                    self.places_viewport = self.places_viewport.panned(
+                    self.set_places_viewport(self.places_viewport.panned(
                         44.0,
                         0.0,
-                        self.canvas_rect.width(),
-                        self.canvas_rect.height(),
-                    )
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    ))
                 }
                 Key::Named(NamedKey::ArrowRight) => {
-                    self.places_viewport = self.places_viewport.panned(
+                    self.set_places_viewport(self.places_viewport.panned(
                         -44.0,
                         0.0,
-                        self.canvas_rect.width(),
-                        self.canvas_rect.height(),
-                    )
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    ))
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    self.places_viewport = self.places_viewport.panned(
+                    self.set_places_viewport(self.places_viewport.panned(
                         0.0,
                         44.0,
-                        self.canvas_rect.width(),
-                        self.canvas_rect.height(),
-                    )
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    ))
                 }
                 Key::Named(NamedKey::ArrowDown) => {
-                    self.places_viewport = self.places_viewport.panned(
+                    self.set_places_viewport(self.places_viewport.panned(
                         0.0,
                         -44.0,
-                        self.canvas_rect.width(),
-                        self.canvas_rect.height(),
-                    )
+                        self.places_map_bounds.width(),
+                        self.places_map_bounds.height(),
+                    ))
                 }
-                Key::Character(key) if key == "+" || key == "=" => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom + 1.0).min(crate::places::MAX_ZOOM)
-                }
-                Key::Character(key) if key == "-" => {
-                    self.places_viewport.zoom =
-                        (self.places_viewport.zoom - 1.0).max(crate::places::MIN_ZOOM)
-                }
+                Key::Character(key) if key == "+" || key == "=" => self.zoom_places_by(1.0),
+                Key::Character(key) if key == "-" => self.zoom_places_by(-1.0),
                 Key::Character(key) if key.eq_ignore_ascii_case("l") => {
                     self.places_list_mode = !self.places_list_mode
                 }
@@ -9082,7 +15370,11 @@ impl Widget for PhotosApp {
         // narrow track/preview lane owns the pointer (or it holds a drag / AT
         // focus). Ordinary scrolling anywhere else remains the timeline's
         // smooth wheel path below.
-        if self.library_mode && !self.album_editor && !self.metadata_editor {
+        if self.library_mode
+            && self.library_destination == LibraryDestination::Timeline
+            && !self.album_editor
+            && !self.metadata_editor
+        {
             let index_owns_event = self.timeline_index.contains_interaction_point(self.pointer)
                 || self.timeline_index.is_dragging()
                 || self.timeline_index.is_focused();
@@ -9134,6 +15426,7 @@ impl Widget for PhotosApp {
         // ordinary wheel for chronological browsing; otherwise a trackpad
         // scroll would unexpectedly rearrange the entire library.
         if self.library_mode
+            && self.library_destination == LibraryDestination::Timeline
             && !self.album_editor
             && !self.metadata_editor
             && modifiers.state().control_key()
@@ -9155,6 +15448,7 @@ impl Widget for PhotosApp {
         // same event; macOS/iOS use it natively.  Ctrl-wheel above remains the
         // fallback on compositors that do not advertise pinch gestures.
         if self.library_mode
+            && self.library_destination == LibraryDestination::Timeline
             && !self.album_editor
             && !self.metadata_editor
             && let winit::event::WindowEvent::PinchGesture { delta, .. } = event
@@ -9193,6 +15487,19 @@ impl Widget for PhotosApp {
                 taffy,
             )
         {
+            return;
+        }
+
+        if self.handle_collection_page_event(
+            event,
+            scale_factor,
+            *modifiers,
+            doc,
+            path,
+            handled,
+            node_id,
+            taffy,
+        ) {
             return;
         }
 
@@ -9258,6 +15565,27 @@ impl Widget for PhotosApp {
                 .copied()
         {
             self.adjust_timeline_density(matches!(hit, TimelineHit::ZoomIn));
+            *handled = true;
+            return;
+        }
+
+        if self.library_mode
+            && matches!(
+                event,
+                winit::event::WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                }
+            )
+            && let Some((album_id, _)) = self
+                .album_edit_cards
+                .iter()
+                .find(|(_, rect)| rect.contains(self.pointer))
+                .cloned()
+        {
+            self.active_album = Some(album_id);
+            self.begin_edit_album(doc);
             *handled = true;
             return;
         }
@@ -9381,6 +15709,7 @@ impl Widget for PhotosApp {
                 .cloned()
         {
             self.active_album = album_id;
+            self.library_destination = LibraryDestination::Timeline;
             self.active_folder = None;
             self.active_person = None;
             self.active_tag = None;
@@ -9413,6 +15742,7 @@ impl Widget for PhotosApp {
                 self.active_tag = card.tag;
                 self.active_favorites = false;
                 self.library_offset = 0;
+                self.timeline_scroll_y = 0.0;
                 self.notice = None;
             }
             *handled = true;
@@ -9438,15 +15768,14 @@ impl Widget for PhotosApp {
             return;
         }
         if self.library_mode
+            && self.library_destination == LibraryDestination::Timeline
             && let winit::event::WindowEvent::MouseWheel { delta, .. } = event
         {
-            let rows = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y.signum()),
-                winit::event::MouseScrollDelta::PixelDelta(position) => {
-                    (-position.y / 96.0).clamp(-3.0, 3.0)
-                }
+            let pixels = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
+                winit::event::MouseScrollDelta::PixelDelta(position) => -position.y,
             };
-            self.scroll_timeline_rows(rows);
+            self.scroll_timeline_pixels(pixels);
             *handled = true;
             return;
         }
@@ -9575,6 +15904,7 @@ impl Widget for PhotosApp {
         _path: &ObjId,
     ) -> bool {
         self.perform_toolbar_semantic_action(target, action, state)
+            || self.perform_directory_semantic_action(target, action)
             || self.perform_library_semantic_action(target, action, state)
     }
 
@@ -9601,6 +15931,11 @@ impl Widget for PhotosApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         use tilo_actions::ResourceProvider;
         let mut resources = crate::actions::PhotosResources.resources(doc);
+        resources.extend(
+            self.retained_buttons()
+                .into_iter()
+                .flat_map(|button| button.resources(doc)),
+        );
         if let Some(error) = &self.search_refresh_error {
             resources.push(crate::actions::search_status_resource(error));
         }
@@ -9617,7 +15952,39 @@ impl Widget for PhotosApp {
         }
         self.search_provider
             .resource(id)
+            .or_else(|| {
+                self.retained_buttons()
+                    .into_iter()
+                    .flat_map(|button| button.resources(doc))
+                    .find(|resource| resource.id.as_str() == id)
+            })
             .or_else(|| crate::actions::PhotosResources.resource(doc, id))
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.retained_buttons_mut()
+            .into_iter()
+            .find_map(Widget::take_control_invocation)
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        // Photos projects its custom media surfaces and retained buttons into
+        // one complete semantic tree above. Inventory that visible tree once:
+        // appending every retained widget here also advertises controls that
+        // are currently hidden (other routes, closed sheets, disabled jobs),
+        // producing orphan automation bindings with no matching UI target.
+        // The buttons' canonical resources remain published by `resources`
+        // and are dispatched through the same retained widgets.
+        ui::widget::semantic_action_bindings(self.accessibility())
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for button in self.retained_buttons_mut() {
+            button.refresh_control_action_availability(allowed);
+        }
     }
 
     /// Keep the palette projection derived from the same fresh document
@@ -9633,6 +16000,105 @@ impl Widget for PhotosApp {
 }
 
 impl PhotosApp {
+    /// Admit one fresh contiguous People slice plus a bounded, device-local
+    /// anchor set from earlier local suggestions. Anchors use ordinary local
+    /// pixels only to let the signed runtime bridge disjoint batches; they do
+    /// not count toward cursor progress and never leave this device.
+    fn schedule_people_scan_batch(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        doc: &AutoCommit,
+    ) -> Result<(), String> {
+        if !self.people_controller.privacy().recognition_enabled {
+            return Err("People recognition is off on this device. Enable it in People before scanning local photographs.".to_owned());
+        }
+        let config = agent_provider_config::ProviderConfig::load();
+        self.people_controller.discover_face_capability(&config);
+        let capability = tilo_vision::discover_local_face_capability(&config).ok_or_else(|| {
+            "No verified local face model is ready. Install and start one in Settings.".to_owned()
+        })?;
+        let locally_available: Vec<_> = PhotosDoc::library(doc)
+            .photos
+            .into_iter()
+            .filter(|photo| crate::doc::bytes_of(&photo.image).is_some())
+            .map(|photo| (photo.id, photo.image))
+            .collect();
+        let anchor_ids = self.people_controller.reconciliation_anchor_photo_ids(2);
+        let anchor_count = anchor_ids
+            .iter()
+            .filter(|id| {
+                locally_available
+                    .iter()
+                    .any(|(available, _)| available == *id)
+            })
+            .count()
+            .min(tilo_vision::MAX_FACE_BATCH.saturating_sub(1));
+        let (start, scan_len) = self
+            .people_scan_progress
+            .batch_range(
+                locally_available.len(),
+                tilo_vision::MAX_FACE_BATCH.saturating_sub(anchor_count),
+            )
+            .ok_or_else(|| {
+                "No locally available photographs are ready for People recognition.".to_owned()
+            })?;
+        let mut photos: Vec<_> = locally_available
+            .iter()
+            .skip(start)
+            .take(scan_len)
+            .cloned()
+            .collect();
+        for id in anchor_ids {
+            if photos.iter().any(|(photo_id, _)| photo_id == &id) {
+                continue;
+            }
+            if let Some(anchor) = locally_available
+                .iter()
+                .find(|(photo_id, _)| photo_id == &id)
+            {
+                photos.push(anchor.clone());
+            }
+        }
+        let Some((_, first)) = photos.first() else {
+            return Err(
+                "No locally available photographs are ready for People recognition.".to_owned(),
+            );
+        };
+        let sender = self
+            .analysis_tx
+            .as_ref()
+            .ok_or_else(|| "local People recognition is unavailable on this device".to_owned())?;
+        sender
+            .try_send(AnalysisJob {
+                invocation,
+                photo_id: "photos.people".to_owned(),
+                content: None,
+                image: first.clone(),
+                kind: AnalysisJobKind::People {
+                    capability,
+                    images: photos,
+                },
+            })
+            .map_err(|_| {
+                "local image analysis is busy; wait for the current photos to finish".to_owned()
+            })?;
+        self.people_scan_progress.status = "running".to_owned();
+        self.people_scan_progress.last_error = None;
+        self.people_scan_progress.last_library_size = locally_available.len();
+        self.people_scan_progress.save();
+        self.active_analysis.insert(invocation);
+        self.active_people_scans.insert(invocation);
+        self.pending_people_scans.insert(
+            invocation,
+            PendingPeopleScan {
+                start,
+                scanned: scan_len,
+                total: locally_available.len(),
+            },
+        );
+        Ok(())
+    }
+
     fn is_toolbar_hit_enabled(&self, hit: Hit) -> bool {
         self.buttons
             .iter()
@@ -9788,1379 +16254,5 @@ impl ui::widget::AppWidget for PhotosApp {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::actions::{PHOTOS_OPERATION_TYPE, PhotosOperation, PhotosResources};
-    use crate::model::{Album, LibraryPhoto};
-    use crate::shots_pattern;
-    use automerge::ROOT;
-    use tilo_actions::{Action, ResourceProvider};
-
-    fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
-        resource.id.0 == id
-            || resource
-                .children
-                .iter()
-                .any(|child| has_resource_id(child, id))
-    }
-
-    #[test]
-    fn timeline_geometry_keeps_200_percent_text_legible_and_density_bounded() {
-        assert_eq!(timeline_column_count(390.0, 4, false), 2);
-        assert_eq!(timeline_column_count(620.0, 4, false), 2);
-        assert_eq!(timeline_column_count(390.0, 4, true), 1);
-        assert_eq!(timeline_column_count(1_440.0, 0, false), 4);
-        assert_eq!(timeline_column_count(1_440.0, 4, false), 6);
-        assert_eq!(timeline_column_count(1_440.0, 4, true), 2);
-    }
-
-    #[test]
-    fn compact_header_rows_are_non_overlapping_at_200_percent() {
-        let header =
-            compact_library_header_geometry(Rect::new(0.0, 94.0, 390.0, 820.0), true, true);
-        let title = Rect::new(12.0, header.title_y, 378.0, header.title_y + 26.0);
-        let count = Rect::new(12.0, header.count_y, 192.0, header.count_y + 22.0);
-        let albums = Rect::new(12.0, header.albums_y, 378.0, header.albums_y + 44.0);
-        let album_actions = header.album_actions;
-        assert!(title.y1 <= count.y0);
-        assert!(count.y1 <= header.controls.y0);
-        assert!(header.controls.y1 <= albums.y0);
-        assert!(albums.y1 <= album_actions.y0);
-        assert!((album_actions.height() - 44.0).abs() < f64::EPSILON);
-        assert!(album_actions.y1 <= header.timeline_y);
-        assert!(header.timeline_y > 94.0);
-    }
-
-    #[test]
-    fn timeline_virtual_window_has_stable_overscan_without_materialising_the_library() {
-        assert_eq!(timeline_virtual_range(500, 12, 4, 5), 60..90);
-        assert_eq!(timeline_virtual_range(3, 4, 4, 1), 3..3);
-    }
-
-    #[test]
-    fn justified_timeline_preserves_aspects_and_never_crosses_a_day() {
-        let item = |id: &str, day: &str, aspect_ratio| LibraryItem {
-            id: id.into(),
-            name: id.into(),
-            favorite: false,
-            captured_at: day.into(),
-            aspect_ratio,
-        };
-        let items = vec![
-            item("wide", "2026-06-18", 2.0),
-            item("portrait", "2026-06-18", 0.5),
-            item("square", "2026-06-18", 1.5),
-            item("next-day", "2026-06-17", 1.5),
-        ];
-        let layout = justified_timeline_layout(&items, 600.0, 160.0, 12.0);
-        assert_eq!(layout.len(), items.len());
-        assert!(layout[0].row_start);
-        assert!(layout[2].row_end);
-        assert!(layout[3].row_start && layout[3].row_end);
-        let first_day_width = layout[..3].iter().map(|entry| entry.width).sum::<f64>() + 24.0;
-        assert!((first_day_width - 600.0).abs() <= 1.0);
-        assert!(
-            layout
-                .iter()
-                .all(|entry| entry.width >= 44.0 && entry.height >= 76.0)
-        );
-    }
-
-    #[test]
-    fn density_reanchors_the_same_first_photo() {
-        let mut app = PhotosApp::new();
-        app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
-        app.timeline_density = 1;
-        app.timeline_last_columns = 5;
-        app.timeline_scroll_row = 6.0;
-        assert!(app.adjust_timeline_density(true));
-        assert!(
-            (app.timeline_scroll_row * app.timeline_last_columns as f64 - 30.0).abs()
-                < f64::EPSILON
-        );
-    }
-
-    #[test]
-    fn date_index_uses_timeline_rows_and_preserves_virtual_scroll_anchor() {
-        let mut app = PhotosApp::new();
-        app.timeline_index_metrics = ScrollMetrics::new(100.0, 10.0, 20.0);
-        assert!(app.apply_timeline_index_intent(DateIndexIntent::ScrollTo { position: 0.5 }));
-        assert!((app.timeline_scroll_row - 45.0).abs() < f64::EPSILON);
-        // A hover preview may redraw a label but must never mutate the scroll
-        // anchor or create an accidental shared action.
-        assert!(app.apply_timeline_index_intent(DateIndexIntent::PreviewChanged(None)));
-        assert!((app.timeline_scroll_row - 45.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn canonical_timeline_day_operation_jumps_to_its_shared_capture_boundary() {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let mut newer = LibraryPhoto::from_image(OpenImage::from_path("newer.png", 20, 10));
-        newer.captured_at = Some("2026-09-07 08:14".into());
-        let mut older = LibraryPhoto::from_image(OpenImage::from_path("older.png", 20, 10));
-        older.captured_at = Some("2026-08-01".into());
-        PhotosDoc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary {
-                photos: vec![newer, older],
-                ..Default::default()
-            },
-        );
-        let mut app = PhotosApp::new();
-        app.view_timeline(
-            &doc,
-            Some(&crate::actions::TimelineAnchor::Day {
-                day: "2026-08-01".into(),
-            }),
-        )
-        .expect("a published day anchor jumps to its timeline boundary");
-        assert!(app.library_mode);
-        assert_eq!(app.library_destination, LibraryDestination::Timeline);
-        assert!(app.timeline_scroll_row > 0.0);
-    }
-
-    #[test]
-    fn date_index_boundaries_are_chronological_and_mark_year_changes() {
-        let items = vec![
-            LibraryItem {
-                id: "new".into(),
-                name: "new".into(),
-                favorite: false,
-                captured_at: "2026-02-03".into(),
-                aspect_ratio: 1.5,
-            },
-            LibraryItem {
-                id: "same-day".into(),
-                name: "same-day".into(),
-                favorite: false,
-                captured_at: "2026-02-03".into(),
-                aspect_ratio: 1.5,
-            },
-            LibraryItem {
-                id: "old".into(),
-                name: "old".into(),
-                favorite: false,
-                captured_at: "2025-12-31".into(),
-                aspect_ratio: 1.5,
-            },
-        ];
-        let markers = timeline_index_markers(&items, 2);
-        assert_eq!(markers.len(), 2, "one boundary per capture day");
-        assert_eq!(markers[0].kind, DateIndexMarkerKind::Major);
-        assert_eq!(markers[1].kind, DateIndexMarkerKind::Major);
-        assert!(markers[0].position < markers[1].position);
-        assert_eq!(markers[0].label, "Feb 03, 2026");
-        assert_eq!(markers[1].label, "Dec 31, 2025");
-    }
-
-    #[test]
-    fn date_index_labels_keep_non_iso_values_honest() {
-        assert_eq!(timeline_date_label("2026-09-18"), "Sep 18, 2026");
-        assert_eq!(timeline_date_label("Undated"), "Undated");
-        assert_eq!(timeline_date_label("2026-13-01"), "2026-13-01");
-        assert_eq!(capture_day("2026-09-18 08:14"), "2026-09-18");
-        assert_eq!(capture_day("Jun 2026"), "Jun");
-    }
-
-    #[test]
-    fn every_local_analysis_kind_uses_the_same_bounded_queue() {
-        let (sender, _receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
-        let image = OpenImage::from_path("queue.png", 2, 2);
-        for language in ["eng", "deu"] {
-            sender
-                .try_send(AnalysisJob {
-                    invocation: tilo_actions::InvocationId::new(),
-                    photo_id: "photos.photo:queue".to_owned(),
-                    content: None,
-                    image: image.clone(),
-                    kind: AnalysisJobKind::Ocr {
-                        language: language.to_owned(),
-                    },
-                })
-                .unwrap();
-        }
-        assert!(
-            sender
-                .try_send(AnalysisJob {
-                    invocation: tilo_actions::InvocationId::new(),
-                    photo_id: "photos.photo:queue".to_owned(),
-                    content: None,
-                    image,
-                    kind: AnalysisJobKind::Ocr {
-                        language: "fra".to_owned(),
-                    },
-                })
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn cancelled_or_stale_analysis_can_never_persist() {
-        let mut app = PhotosApp::new();
-        let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
-        app.analysis_rx = receiver;
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-
-        let cancelled = tilo_actions::InvocationId::new();
-        app.cancelled_analysis.insert(cancelled);
-        sender
-            .send(AnalysisResult {
-                invocation: cancelled,
-                photo_id: "photos.photo:missing".to_owned(),
-                content: None,
-                result: AnalysisOutcome::Image(Ok(crate::model::ImageAnalysis {
-                    ocr_text: "must not persist".to_owned(),
-                    ..crate::model::ImageAnalysis::default()
-                })),
-            })
-            .unwrap();
-        app.drain_analysis_results(&mut doc);
-        assert!(app.resource_result.is_none());
-
-        let stale = tilo_actions::InvocationId::new();
-        sender
-            .send(AnalysisResult {
-                invocation: stale,
-                photo_id: "photos.photo:missing".to_owned(),
-                content: None,
-                result: AnalysisOutcome::Image(Ok(crate::model::ImageAnalysis {
-                    ocr_text: "also must not persist".to_owned(),
-                    ..crate::model::ImageAnalysis::default()
-                })),
-            })
-            .unwrap();
-        app.drain_analysis_results(&mut doc);
-        assert!(matches!(
-            app.resource_result,
-            Some(tilo_actions::InvocationUpdate::Failed { error, .. })
-                if error.code == "photos.analysis_stale"
-        ));
-        assert!(PhotosDoc::library(&doc).photos.is_empty());
-    }
-
-    #[test]
-    fn pinch_and_ctrl_wheel_use_the_same_density_event_path() {
-        use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
-        use winit::keyboard::ModifiersState;
-
-        let mut app = PhotosApp::new();
-        app.library_mode = true;
-        app.canvas_rect = Rect::new(0.0, 48.0, 1_280.0, 800.0);
-        let mut doc = AutoCommit::new();
-        let mut tree = TaffyTree::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let mut focus = None;
-        let mut handled = false;
-        let no_modifiers = winit::event::Modifiers::default();
-        app.handle_event(
-            &WindowEvent::PinchGesture {
-                device_id: DeviceId::dummy(),
-                delta: 0.2,
-                phase: TouchPhase::Moved,
-            },
-            1.0,
-            &no_modifiers,
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-        assert!(handled);
-        let after_pinch = app.timeline_density;
-
-        handled = false;
-        let ctrl = winit::event::Modifiers::from(ModifiersState::CONTROL);
-        app.handle_event(
-            &WindowEvent::MouseWheel {
-                device_id: DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(0.0, -1.0),
-                phase: TouchPhase::Moved,
-            },
-            1.0,
-            &ctrl,
-            &mut doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-        assert!(handled);
-        assert_eq!(app.timeline_density, after_pinch + 1);
-    }
-
-    #[test]
-    fn people_review_commits_only_an_explicit_membership_action() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let photo = LibraryPhoto::from_image(
-            OpenImage::from_path("/photos/person.png", 20, 10)
-                .with_content(qdoc::blobstore::hash_bytes(b"people-review")),
-        );
-        let photo_id = photo.id.clone();
-        crate::actions::PhotosAction::ImportPhoto { photo }
-            .apply(&mut doc)
-            .unwrap();
-        assert!(app.people_controller_mut().add_cluster(
-            "manual-person",
-            [photo_id.clone()],
-            crate::people::ProposalOrigin::ImportedOrManual,
-        ));
-        assert_eq!(
-            app.people_controller_mut()
-                .confirm_suggestion("manual-person", "Sam"),
-            crate::people::PeopleChange::Updated
-        );
-        assert!(app.approve_people_cluster(&mut doc, "manual-person"));
-        assert_eq!(PhotosDoc::photo(&doc, &photo_id).unwrap().people, ["Sam"]);
-        assert_eq!(
-            app.people_controller()
-                .cluster("manual-person")
-                .unwrap()
-                .origin,
-            crate::people::ProposalOrigin::ImportedOrManual
-        );
-    }
-
-    #[test]
-    fn opening_an_album_operation_only_changes_the_local_filter_and_refuses_stale_ids() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
-        let mut library = crate::model::PhotoLibrary::default();
-        library.photos.push(photo.clone());
-        library.albums.push(Album {
-            id: "photos.album:trip".into(),
-            name: "Trip".into(),
-            photo_ids: vec![photo.id],
-        });
-        PhotosDoc::set_library(&mut doc, &library);
-        let before = PhotosDoc::library(&doc);
-        let payload = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ViewAlbum {
-                album_id: "photos.album:trip".into(),
-            },
-        )
-        .unwrap();
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                tilo_actions::OperationKind::Effect,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-                &doc,
-                &ROOT,
-            )
-            .unwrap()
-        );
-        assert!(app.library_mode);
-        assert_eq!(app.active_album.as_deref(), Some("photos.album:trip"));
-        assert_eq!(
-            PhotosDoc::library(&doc),
-            before,
-            "navigation must not alter membership"
-        );
-
-        let stale = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ViewAlbum {
-                album_id: "photos.album:gone".into(),
-            },
-        )
-        .unwrap();
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                tilo_actions::OperationKind::Effect,
-                PHOTOS_OPERATION_TYPE,
-                &stale.payload,
-                &doc,
-                &ROOT,
-            )
-            .is_err()
-        );
-        assert_eq!(PhotosDoc::library(&doc), before);
-    }
-
-    #[test]
-    fn opening_favorites_uses_a_local_view_and_refuses_an_empty_stale_collection() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let mut favorite =
-            LibraryPhoto::from_image(OpenImage::from_path("/photos/favorite.png", 20, 10));
-        favorite.favorite = true;
-        PhotosDoc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary {
-                photos: vec![favorite],
-                albums: Vec::new(),
-            },
-        );
-        let before = PhotosDoc::library(&doc);
-        let payload = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ViewFavorites,
-        )
-        .expect("favorite view operation encodes");
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                tilo_actions::OperationKind::View,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-                &doc,
-                &ROOT,
-            )
-            .expect("favorite collection is present")
-        );
-        assert!(app.library_mode);
-        assert!(app.active_favorites);
-        assert_eq!(
-            PhotosDoc::library(&doc),
-            before,
-            "opening a view is not a write"
-        );
-
-        PhotosDoc::set_library(&mut doc, &crate::model::PhotoLibrary::default());
-        assert!(
-            Widget::invoke_resource_operation(
-                &mut app,
-                tilo_actions::OperationKind::View,
-                PHOTOS_OPERATION_TYPE,
-                &payload.payload,
-                &doc,
-                &ROOT,
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the end-to-end parity test deliberately compares favorite and membership envelopes across UI, AT, and resource routes"
-    )]
-    fn selection_is_local_but_its_favorite_and_album_results_are_canonical_actions() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
-        let second = LibraryPhoto::from_image(OpenImage::from_path("/photos/second.png", 20, 10));
-        PhotosDoc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary {
-                photos: vec![first.clone(), second.clone()],
-                albums: vec![Album {
-                    id: "photos.album:trip".into(),
-                    name: "Trip".into(),
-                    photo_ids: Vec::new(),
-                }],
-            },
-        );
-        app.library_cards = vec![
-            (first.id.clone(), Rect::new(0.0, 0.0, 44.0, 44.0), false),
-            (second.id.clone(), Rect::new(48.0, 0.0, 92.0, 44.0), false),
-        ];
-        app.library_albums = vec![("photos.album:trip".into(), "Trip".into(), 0)];
-        app.begin_selection();
-        app.toggle_library_selection(&first.id, false);
-        app.toggle_library_selection(&second.id, true);
-        assert_eq!(
-            app.selected_photo_ids.len(),
-            2,
-            "range selects visible cards"
-        );
-        app.set_selected_favorite(&mut doc, true);
-        assert!(
-            PhotosDoc::library(&doc)
-                .photos
-                .iter()
-                .all(|photo| photo.favorite)
-        );
-        assert!(!app.selection_mode, "selection itself never persists");
-
-        app.library_cards = vec![
-            (first.id.clone(), Rect::new(0.0, 0.0, 44.0, 44.0), true),
-            (second.id.clone(), Rect::new(48.0, 0.0, 92.0, 44.0), true),
-        ];
-        app.begin_selection();
-        app.select_all_visible();
-        let mut selected_ids = [first.id.clone(), second.id.clone()];
-        selected_ids.sort_unstable();
-        assert!(app.perform_library_semantic_action(
-            "photos:selection:favorite",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        let favorites = PhotosResources
-            .resources(&doc)
-            .pop()
-            .expect("library root")
-            .actions
-            .into_iter()
-            .find(|action| action.id == "set-favorites")
-            .expect("favorite batch is published");
-        let expected_favorite = favorites
-            .build_args([
-                (
-                    "photo_ids".into(),
-                    tilo_actions::ArgValue::Array(
-                        selected_ids
-                            .iter()
-                            .cloned()
-                            .map(serde_json::Value::String)
-                            .collect(),
-                    ),
-                ),
-                ("favorite".into(), tilo_actions::ArgValue::Boolean(false)),
-            ])
-            .expect("published favorite contract accepts the selection result");
-        assert_eq!(
-            app.last_library_action.as_ref(),
-            Some(&expected_favorite),
-            "the AT batch control and resource action produce byte-identical envelopes"
-        );
-        assert!(
-            PhotosDoc::library(&doc)
-                .photos
-                .iter()
-                .all(|photo| !photo.favorite),
-            "the same batch command also has an explicit unfavorite result"
-        );
-
-        app.begin_selection();
-        app.select_all_visible();
-        assert!(app.perform_library_semantic_action(
-            "photos:selection:choose-album",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert!(app.selection_album_chooser);
-        assert!(app.perform_library_semantic_action(
-            "photos:selection:destination:photos.album:trip",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert_eq!(
-            app.selection_destination_album.as_deref(),
-            Some("photos.album:trip"),
-            "the target album is an explicit, stable choice rather than the current view"
-        );
-        app.add_selected_to_destination_album(&mut doc);
-        let album = PhotosResources
-            .resource(&doc, "photos.album:trip")
-            .expect("chosen album remains published");
-        let membership = album
-            .actions
-            .into_iter()
-            .find(|action| action.id == "set-membership")
-            .expect("album membership is published");
-        let expected_membership = membership
-            .build_args([(
-                "photo_ids".into(),
-                tilo_actions::ArgValue::Array(
-                    selected_ids
-                        .iter()
-                        .cloned()
-                        .map(serde_json::Value::String)
-                        .collect(),
-                ),
-            )])
-            .expect("published membership contract accepts the selection result");
-        assert_eq!(
-            app.last_library_action.as_ref(),
-            Some(&expected_membership),
-            "the pointer batch control and resource action produce byte-identical envelopes"
-        );
-        assert_eq!(
-            PhotosDoc::library(&doc).albums[0].photo_ids,
-            vec![first.id, second.id],
-            "album membership uses the same absolute document action agents invoke"
-        );
-    }
-
-    #[test]
-    fn destination_chooser_pages_every_album_and_refuses_a_stale_target() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
-        let albums: Vec<_> = (1..=SELECTION_ALBUMS_PER_PAGE + 1)
-            .map(|number| Album {
-                id: format!("photos.album:destination-{number}"),
-                name: format!("Destination {number}"),
-                photo_ids: Vec::new(),
-            })
-            .collect();
-        PhotosDoc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary {
-                photos: vec![photo.clone()],
-                albums: albums.clone(),
-            },
-        );
-        app.library_albums = albums
-            .iter()
-            .map(|album| (album.id.clone(), album.name.clone(), 0))
-            .collect();
-        app.library_cards = vec![(photo.id.clone(), Rect::ZERO, false)];
-        app.begin_selection();
-        app.select_all_visible();
-        assert!(app.perform_library_semantic_action(
-            "photos:selection:choose-album",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert!(app.perform_library_semantic_action(
-            "photos:selection:destination-next",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert_eq!(app.selection_album_page, 1);
-        assert!(app.perform_library_semantic_action(
-            "photos:selection:destination:photos.album:destination-7",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert_eq!(
-            app.selection_destination_album.as_deref(),
-            Some("photos.album:destination-7")
-        );
-        PhotosDoc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary {
-                photos: vec![photo],
-                albums: Vec::new(),
-            },
-        );
-        assert!(!app.perform_library_semantic_action(
-            "photos:selection:destination:photos.album:destination-7",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert_eq!(
-            app.notice.as_deref(),
-            Some("That destination album is no longer available")
-        );
-    }
-
-    #[test]
-    fn unresolved_share_reference_returns_a_canonical_operation_failure() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let payload = tilo_actions::EncodedAction::encode_operation(
-            PHOTOS_OPERATION_TYPE,
-            &PhotosOperation::ShareReference {
-                resource_id: "photos.photo:missing".into(),
-            },
-        )
-        .expect("share operation encodes");
-
-        let error = Widget::invoke_resource_operation(
-            &mut app,
-            tilo_actions::OperationKind::Effect,
-            PHOTOS_OPERATION_TYPE,
-            &payload.payload,
-            &doc,
-            &ROOT,
-        )
-        .expect_err("a missing resource cannot claim that its reference was shared");
-        assert_eq!(error, tr("photos-share-failed"));
-        assert_eq!(
-            app.notice.as_deref(),
-            Some(tr("photos-share-failed").as_str())
-        );
-    }
-
-    #[test]
-    fn metadata_views_are_local_filters_with_honest_stale_results() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let mut in_folder =
-            LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
-        in_folder.folder = Some("Travel".into());
-        in_folder.people = vec!["Élodie".into()];
-        in_folder.tags = vec!["golden-hour".into()];
-        let other = LibraryPhoto::from_image(OpenImage::from_path("/photos/two.png", 20, 10));
-        let library = crate::model::PhotoLibrary {
-            photos: vec![in_folder, other],
-            ..Default::default()
-        };
-        PhotosDoc::set_library(&mut doc, &library);
-
-        app.view_metadata_filter(&doc, Some("Travel".into()), None, None)
-            .expect("existing folder enters a view");
-        app.sync(&mut doc, &ROOT);
-        assert!(app.library_mode);
-        assert_eq!(app.library_total, 1);
-        assert_eq!(app.active_folder.as_deref(), Some("Travel"));
-        assert!(app.active_person.is_none());
-
-        app.view_metadata_filter(&doc, None, Some("Élodie".into()), None)
-            .expect("existing person enters a view");
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(app.library_total, 1);
-        assert_eq!(app.active_person.as_deref(), Some("Élodie"));
-        assert!(app.active_folder.is_none());
-        app.view_metadata_filter(&doc, None, None, Some("golden-hour".into()))
-            .expect("existing tag enters a view");
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(app.library_total, 1);
-        assert_eq!(app.active_tag.as_deref(), Some("golden-hour"));
-        assert!(app.active_folder.is_none());
-        assert!(app.active_person.is_none());
-        assert!(
-            app.view_metadata_filter(&doc, Some("Missing".into()), None, None)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn accessibility_exposes_and_routes_every_toolbar_control() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        app.sync(&mut doc, &ROOT);
-
-        let empty = app.accessibility_tree();
-        assert_eq!(empty.role, Role::Group);
-        assert_eq!(empty.children[0].role, Role::Toolbar);
-        assert_eq!(
-            empty.children[0].children.len(),
-            SLOTS
-                .iter()
-                .filter(|slot| matches!(slot, Slot::Item(_)))
-                .count()
-        );
-        assert_eq!(empty.children[1].role, Role::Image);
-        assert_eq!(
-            empty.children[0].children[0].action_target.as_deref(),
-            Some("photos:toolbar:photos-open")
-        );
-        assert!(
-            empty.children[0]
-                .children
-                .iter()
-                .find(|node| {
-                    node.action_target.as_deref() == Some("photos:toolbar:photos-rotate-right")
-                })
-                .is_some_and(|node| node.state.disabled),
-            "rotate must be unavailable without a photograph"
-        );
-        assert!(
-            !app.perform_toolbar_semantic_action(
-                "photos:toolbar:photos-rotate-right",
-                &AccessAction::Activate,
-                &mut doc,
-            ),
-            "a disabled semantic control must reject activation"
-        );
-
-        let image = OpenImage::from_path("/tmp/accessible.png", 100, 50);
-        PhotosDoc::set_image(&mut doc, Some(&image));
-        app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
-        app.refresh(&doc);
-        app.sync(&mut doc, &ROOT);
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            "photos:toolbar:photos-rotate-right",
-            &AccessAction::Activate,
-            &mut doc,
-            &ROOT,
-        ));
-        assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
-        assert!(
-            app.take_committed_action().is_some(),
-            "the semantic route must create the normal undo boundary"
-        );
-
-        app.sync(&mut doc, &ROOT);
-        let opened = app.accessibility_tree();
-        assert_eq!(
-            opened.children[1].name.as_deref(),
-            Some("accessible.png — edited")
-        );
-        let status = opened
-            .children
-            .last()
-            .expect("opened image has status text");
-        assert_eq!(status.role, Role::StaticText);
-        assert_eq!(status.live, Some(Politeness::Polite));
-    }
-
-    #[test]
-    fn compact_more_is_a_keyboard_menu_with_a_share_action() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let image = OpenImage::from_path("/tmp/compact.png", 100, 50);
-        PhotosDoc::set_image(&mut doc, Some(&image));
-        app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
-        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        app.sync(&mut doc, &ROOT);
-        app.compact_more_open = true;
-
-        // Crop and Reset start disabled, so Down must land on Copy rather
-        // than trapping a keyboard user on unavailable commands.
-        app.step_compact_more_focus(true);
-        assert_eq!(app.focused_compact_more_hit(), Some(Hit::Copy));
-        app.step_compact_more_focus(true);
-        assert_eq!(app.focused_compact_more_hit(), Some(Hit::Share));
-
-        let toolbar = app.toolbar_semantics();
-        let menu = toolbar
-            .children
-            .iter()
-            .find(|node| node.role == Role::Menu)
-            .expect("narrow overflow exposes a menu");
-        assert!(menu.children.iter().any(|item| {
-            item.action_target.as_deref() == Some("photos:toolbar:photos-share")
-                && item.state.focused
-                && item.state.focusable
-        }));
-    }
-
-    #[test]
-    fn metadata_sheet_focus_is_a_six_stop_keyboard_cycle() {
-        let mut app = PhotosApp::new();
-        for focus in 0..6 {
-            app.set_metadata_editor_focus(focus);
-            assert_eq!(app.metadata_editor_focus, focus);
-            assert_eq!(app.metadata_folder_input.is_focused(), focus == 0);
-            assert_eq!(app.metadata_people_input.is_focused(), focus == 1);
-            assert_eq!(app.metadata_tags_input.is_focused(), focus == 2);
-            assert_eq!(app.metadata_captured_at_input.is_focused(), focus == 3);
-        }
-        app.set_metadata_editor_focus(99);
-        assert_eq!(app.metadata_editor_focus, 5);
-        assert!(
-            !app.metadata_folder_input.is_focused()
-                && !app.metadata_people_input.is_focused()
-                && !app.metadata_tags_input.is_focused()
-                && !app.metadata_captured_at_input.is_focused(),
-            "button focus must leave a single semantic keyboard owner"
-        );
-    }
-
-    #[test]
-    fn unavailable_bytes_and_bad_bytes_have_distinct_honest_canvas_states() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let waiting =
-            OpenImage::from_path("/not-present/yet.png", 1200, 800).with_content("0".repeat(64));
-        PhotosDoc::set_image(&mut doc, Some(&waiting));
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(app.canvas_state, CanvasState::Loading);
-        assert!(!app.has_image());
-        assert_eq!(app.empty_state_text().0, tr("photos-loading-title"));
-        assert!(
-            app.buttons
-                .iter()
-                .filter(|(hit, _)| !matches!(hit, Hit::Open | Hit::Library))
-                .all(|(_, button)| !button.is_enabled())
-        );
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("bad.png");
-        std::fs::write(&path, b"not image data").unwrap();
-        let bad = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
-        PhotosDoc::set_image(&mut doc, Some(&bad));
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(app.canvas_state, CanvasState::Error);
-        assert_eq!(app.empty_state_text().0, tr("photos-error-title"));
-    }
-
-    #[test]
-    fn synchronized_app_registers_the_canonical_photo_search_provider() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let image = OpenImage::from_path("/pictures/München-夏.png", 800, 400);
-        PhotosDoc::set_image(&mut doc, Some(&image));
-        app.sync(&mut doc, &ROOT);
-        let before = app.search_provider.stats();
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(
-            app.search_provider.stats(),
-            before,
-            "unchanged sync rebuilt search"
-        );
-
-        let providers = Widget::search_providers(&app);
-        assert_eq!(providers.len(), 1);
-        let hit = providers[0].search("夏").pop().unwrap();
-        let address = hit.action_address().unwrap();
-        assert!(matches!(address.action.as_str(), "view" | "open"));
-        assert!(
-            PhotosResources
-                .resources(&doc)
-                .iter()
-                .any(|resource| has_resource_id(resource, &address.resource))
-        );
-    }
-
-    #[test]
-    fn a_large_library_fills_a_bounded_background_thumbnail_queue() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let mut library = crate::model::PhotoLibrary::default();
-        for index in 0..500 {
-            library
-                .photos
-                .push(LibraryPhoto::from_image(OpenImage::from_path(
-                    &format!("/unavailable/library-{index}.png"),
-                    32_000,
-                    32_000,
-                )));
-        }
-        PhotosDoc::set_library(&mut doc, &library);
-        app.sync(&mut doc, &ROOT);
-
-        assert_eq!(app.thumbnail_visible_ids.len(), 24);
-        assert!(app.thumbnail_queued.len() <= THUMBNAIL_QUEUE_LIMIT);
-        assert!(app.thumbnail_queued.len() >= 2);
-        assert!(app.library_thumbnails.len() <= THUMBNAIL_QUEUE_LIMIT);
-        assert!(
-            app.thumbnail_generation
-                .is_some_and(|generation| generation > 0)
-        );
-    }
-
-    #[test]
-    fn album_editor_pages_large_libraries_without_changing_shared_membership() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let mut library = crate::model::PhotoLibrary::default();
-        for index in 0..49 {
-            library
-                .photos
-                .push(LibraryPhoto::from_image(OpenImage::from_path(
-                    &format!("/photos/library-{index}.png"),
-                    20,
-                    10,
-                )));
-        }
-        PhotosDoc::set_library(&mut doc, &library);
-        app.library_total = library.photos.len();
-        app.library_mode = true;
-        app.album_editor = true;
-        app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
-        let before = PhotosDoc::library(&doc);
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        app.draw_album_editor(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-        let (_, previous) = app
-            .album_page_buttons
-            .iter()
-            .find(|(hit, _)| *hit == AlbumEditorHit::PreviousPage)
-            .expect("the editor has a previous-page control");
-        let (_, next) = app
-            .album_page_buttons
-            .iter()
-            .find(|(hit, _)| *hit == AlbumEditorHit::NextPage)
-            .expect("the editor has a next-page control");
-        assert!(!previous.is_enabled());
-        assert!(next.is_enabled());
-        let semantics = app.accessibility_tree();
-        let pager = &semantics.children[1].children;
-        assert!(pager.iter().any(|node| {
-            node.action_target.as_deref() == Some("photos:album-editor:previous-page")
-                && node.state.disabled
-                && node.name.as_deref() == Some("Show previous photographs")
-        }));
-        assert!(pager.iter().any(|node| {
-            node.action_target.as_deref() == Some("photos:album-editor:next-page")
-                && !node.state.disabled
-                && node.name.as_deref() == Some("Show next photographs")
-        }));
-
-        assert!(app.perform_library_semantic_action(
-            "photos:album-editor:next-page",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert_eq!(app.library_offset, 24);
-        assert!(app.perform_library_semantic_action(
-            "photos:album-editor:previous-page",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        // The preceding activation is valid from the second page and leaves
-        // the editor's membership draft local.
-        assert_eq!(app.library_offset, 0);
-
-        app.page_library(true);
-        assert_eq!(app.library_offset, 24);
-        app.page_library(true);
-        assert_eq!(app.library_offset, 48);
-        app.page_library(true);
-        assert_eq!(app.library_offset, 48);
-        app.page_library(false);
-        assert_eq!(app.library_offset, 24);
-        app.page_library(false);
-        assert_eq!(app.library_offset, 0);
-        assert_eq!(PhotosDoc::library(&doc), before);
-    }
-
-    #[test]
-    fn enlarged_library_keeps_density_navigation_without_metadata_chips() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let mut library = crate::model::PhotoLibrary::default();
-        for index in 0..5 {
-            let mut photo = LibraryPhoto::from_image(OpenImage::from_path(
-                &format!("/photos/library-{index}.png"),
-                20,
-                10,
-            ));
-            photo.tags = vec!["golden hour".into()];
-            library.photos.push(photo);
-        }
-        PhotosDoc::set_library(&mut doc, &library);
-        app.show_library();
-        app.large_text_toolbar = true;
-        app.canvas_rect = Rect::new(0.0, 48.0, 390.0, 796.0);
-        app.sync(&mut doc, &ROOT);
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark().with_text_scale(2.0);
-        text.set_text_scale(theme.text_scale);
-        app.draw_library(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-
-        assert!(app.metadata_filter_cards.is_empty());
-        let new_album = app
-            .album_editor_hits
-            .iter()
-            .find_map(|(hit, rect)| (*hit == AlbumEditorHit::New).then_some(*rect))
-            .expect("200% library exposes New album");
-        let header = compact_library_header_geometry(app.canvas_rect, true, false);
-        assert!(
-            new_album.y1 <= header.timeline_y,
-            "New album must finish before the timeline begins: {new_album:?} / {header:?}"
-        );
-        let semantics = app.accessibility_tree();
-        let children = &semantics.children[1].children;
-        assert!(
-            children.iter().any(|node| {
-                node.action_target.as_deref() == Some("photos:timeline:density-in")
-            })
-        );
-        assert!(!children.iter().any(|node| {
-            node.action_target
-                .as_deref()
-                .is_some_and(|target| target.starts_with("photos:library-page:"))
-        }));
-
-        let before = app.timeline_density;
-        assert!(app.perform_library_semantic_action(
-            "photos:timeline:density-in",
-            &AccessAction::Focus,
-            &mut doc,
-        ));
-        assert_eq!(
-            app.timeline_density, before,
-            "semantic focus must not navigate"
-        );
-        assert!(app.perform_library_semantic_action(
-            "photos:timeline:density-in",
-            &AccessAction::Activate,
-            &mut doc,
-        ));
-        assert_eq!(app.timeline_density, before + 1);
-        assert_eq!(PhotosDoc::library(&doc), library);
-    }
-
-    #[test]
-    fn cancelling_a_portal_invocation_is_terminal_and_drops_late_results() {
-        let mut app = PhotosApp::new();
-        let doc = AutoCommit::new();
-        let invocation = tilo_actions::InvocationId::new();
-        let (tx, rx) = std::sync::mpsc::channel();
-        app.picker = Some(rx);
-        app.resource_invocation = Some(invocation);
-
-        let update = Widget::poll_resource_operation(&mut app, invocation, true, &doc, &ROOT)
-            .expect("cancellation must resolve the accepted invocation");
-        assert!(matches!(
-            update,
-            tilo_actions::InvocationUpdate::Cancelled { invocation: id, .. } if id == invocation
-        ));
-        assert!(app.picker.is_none());
-        assert!(app.resource_invocation.is_none());
-        assert!(
-            tx.send(ui::portal::PortalOutcome::Opened("/late.png".into()))
-                .is_err(),
-            "a late portal completion must have no receiver after cancellation"
-        );
-
-        let direct = tilo_actions::InvocationId::new();
-        app.pending_resource_open = Some((direct, "/late-direct.png".into()));
-        assert!(matches!(
-            Widget::poll_resource_operation(&mut app, direct, true, &doc, &ROOT),
-            Some(tilo_actions::InvocationUpdate::Cancelled { invocation, .. })
-                if invocation == direct
-        ));
-        assert!(app.pending_resource_open.is_none());
-    }
-
-    #[test]
-    fn concurrent_album_drafts_mint_distinct_stable_ids() {
-        let doc = AutoCommit::new();
-        let mut left = PhotosApp::new();
-        let mut right = PhotosApp::new();
-        left.begin_new_album(&doc);
-        right.begin_new_album(&doc);
-        let left_id = left.album_editor_id.expect("left draft id");
-        let right_id = right.album_editor_id.expect("right draft id");
-        assert!(left_id.starts_with("photos.album:"));
-        assert!(right_id.starts_with("photos.album:"));
-        assert_ne!(left_id, right_id);
-    }
-
-    #[test]
-    fn a_stale_thumbnail_result_cannot_populate_a_replaced_library_slice() {
-        let mut app = PhotosApp::new();
-        app.thumbnail_generation = Some(8);
-        app.thumbnail_visible_ids = vec!["photos.photo:current".into()];
-        app.thumbnail_queued.insert("photos.photo:current".into());
-        app.accept_thumbnail_result(ThumbnailResult {
-            generation: 7,
-            id: "photos.photo:current".into(),
-            preview: Some(shots_pattern(16, 8)),
-        });
-        assert!(app.library_thumbnails.is_empty());
-        assert!(app.thumbnail_queued.contains("photos.photo:current"));
-
-        app.accept_thumbnail_result(ThumbnailResult {
-            generation: 8,
-            id: "photos.photo:current".into(),
-            preview: Some(shots_pattern(16, 8)),
-        });
-        assert!(app.library_thumbnails.contains_key("photos.photo:current"));
-        assert!(!app.thumbnail_queued.contains("photos.photo:current"));
-    }
-
-    #[test]
-    fn completed_thumbnail_wakes_its_idle_host_for_success_and_failure() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("thumbnail.png");
-        std::fs::write(&path, pixels::encode_png(&shots_pattern(16, 8)).unwrap()).unwrap();
-        let mut scope = ui::wake::WakeScope::new();
-        let _entry = scope.enter();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        scope
-            .bind(move |event| {
-                let _ = sender.send(event);
-            })
-            .unwrap();
-        let app = PhotosApp::new();
-        for (source, succeeds) in [(path, true), (directory.path().join("missing.png"), false)] {
-            app.thumbnail_tx
-                .as_ref()
-                .unwrap()
-                .send(ThumbnailJob {
-                    generation: 1,
-                    id: "photos.photo:wake".into(),
-                    image: OpenImage::from_path(&source.to_string_lossy(), 16, 8),
-                })
-                .unwrap();
-            let event = receiver
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("thumbnail completion must wake the idle host without user input");
-            assert!(scope.accepts(&event));
-            let result = app.thumbnail_rx.try_recv().unwrap();
-            assert_eq!(result.preview.is_some(), succeeds);
-        }
-    }
-
-    #[test]
-    fn exhausted_thumbnail_generation_fails_closed_without_reusing_a_token() {
-        let mut app = PhotosApp::new();
-        app.thumbnail_generation = Some(u64::MAX);
-        app.thumbnail_visible_ids = vec!["photos.photo:before".into()];
-        app.library_thumbnails.insert(
-            "photos.photo:before".into(),
-            to_peniko(&shots_pattern(16, 8)),
-        );
-        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/after.png", 16, 8));
-        let id = photo.id.clone();
-
-        app.schedule_library_thumbnail(vec![photo], true);
-        assert_eq!(app.thumbnail_generation, None);
-        assert!(app.thumbnail_queued.is_empty());
-        assert!(app.library_thumbnails.is_empty());
-
-        app.accept_thumbnail_result(ThumbnailResult {
-            generation: u64::MAX,
-            id,
-            preview: Some(shots_pattern(16, 8)),
-        });
-        assert!(app.library_thumbnails.is_empty());
-    }
-
-    #[test]
-    fn library_removal_requires_confirmation_and_routes_through_the_action_host() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/remove.png", 20, 10));
-        let id = photo.id.clone();
-        PhotosDoc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary {
-                photos: vec![photo],
-                albums: Vec::new(),
-            },
-        );
-        app.show_library();
-        app.sync(&mut doc, &ROOT);
-        let target = format!("photos:library-remove:{id}");
-        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
-        assert!(PhotosDoc::library(&doc).photo(&id).is_some());
-        assert_eq!(app.library_remove_confirm.as_deref(), Some(id.as_str()));
-        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
-        assert!(PhotosDoc::library(&doc).photo(&id).is_none());
-        assert!(app.take_committed_action().is_some());
-    }
-
-    #[test]
-    fn high_text_timeline_uses_readable_card_measures() {
-        let width = 1_440.0;
-        assert_eq!(timeline_column_count(width, 4, true), 2);
-        let two_column_card_width = (width - f64::from(PAD * 2.0) - 8.0) / 2.0;
-        assert!(
-            two_column_card_width >= 600.0,
-            "200% text needs a real reading measure, got {two_column_card_width}"
-        );
-    }
-
-    #[test]
-    fn regular_album_management_keeps_every_visible_control_at_44px() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
-        let mut library = crate::model::PhotoLibrary::default();
-        library.photos.push(photo.clone());
-        library.albums.push(Album {
-            id: "photos.album:trip".into(),
-            name: "Trip".into(),
-            photo_ids: vec![photo.id],
-        });
-        PhotosDoc::set_library(&mut doc, &library);
-        app.sync(&mut doc, &ROOT);
-        app.show_library();
-        app.active_album = Some("photos.album:trip".into());
-        app.canvas_rect = Rect::new(0.0, 0.0, 480.0, 900.0);
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let presence = PresenceCtx::empty();
-        app.draw_album_editor(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &presence,
-        );
-        assert_eq!(app.album_editor_hits.len(), 2);
-        assert!(
-            app.album_editor_hits
-                .iter()
-                .all(|(_, rect)| rect.height() >= 44.0)
-        );
-
-        app.begin_edit_album(&doc);
-        app.draw_album_editor(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            &presence,
-        );
-
-        assert!(
-            app.album_editor_hits
-                .iter()
-                .all(|(_, rect)| rect.height() >= 44.0)
-        );
-        assert!(
-            app.album_page_buttons
-                .iter()
-                .all(|(_, button)| button.get_rect().height() >= 44.0)
-        );
-        assert!(app.album_editor_hits.iter().all(|(_, rect)| {
-            rect.x0 >= app.canvas_rect.x0
-                && rect.x1 <= app.canvas_rect.x1
-                && rect.y0 >= app.canvas_rect.y0
-                && rect.y1 <= app.canvas_rect.y1
-        }));
-    }
-
-    #[test]
-    fn rejected_search_refresh_keeps_last_good_index_and_exports_diagnostic() {
-        let mut app = PhotosApp::new();
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
-        let first_id = first.id.clone();
-        PhotosDoc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary {
-                photos: vec![first],
-                albums: Vec::new(),
-            },
-        );
-        app.sync(&mut doc, &ROOT);
-        assert!(app.search_provider.resource(&first_id).is_some());
-
-        let mut library = PhotosDoc::library(&doc);
-        let second = LibraryPhoto::from_image(OpenImage::from_path("/photos/second.png", 20, 10));
-        let second_id = second.id.clone();
-        library.photos.push(second);
-        PhotosDoc::set_library(&mut doc, &library);
-        app.force_search_refresh_error = true;
-        app.sync(&mut doc, &ROOT);
-
-        assert!(app.search_provider.resource(&first_id).is_some());
-        assert!(app.search_provider.resource(&second_id).is_none());
-        assert!(app.status.contains("kept its previous index"));
-        let diagnostic = Widget::resource(&app, &doc, "photos.search-status")
-            .expect("rejected refresh is an exact addressable resource");
-        assert_eq!(diagnostic.kind, "photos.diagnostic");
-        assert!(diagnostic.actions.iter().any(|action| action.id == "open"));
-        assert!(
-            Widget::resources(&app, &doc)
-                .iter()
-                .any(|resource| resource.id.0 == "photos.search-status")
-        );
-    }
-}
+#[path = "app/tests.rs"]
+mod tests;

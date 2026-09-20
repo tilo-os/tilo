@@ -158,7 +158,7 @@ impl Drop for DataHome {
     }
 }
 
-/// The claim in `plan/rooms.md` — "an app opened in a room starts
+/// The claim in `docs/architecture/rooms.md` — "an app opened in a room starts
 /// empty" — as observable behaviour rather than a design statement.
 ///
 /// One app, two rooms: it writes a record in room A, and the same app

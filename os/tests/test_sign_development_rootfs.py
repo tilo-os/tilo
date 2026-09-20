@@ -15,11 +15,23 @@ sys.path.insert(0, str(DEV))
 SPEC = importlib.util.spec_from_file_location('rootfs_signing', DEV / 'sign-development-rootfs.py')
 producer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(producer)
+FIXTURE_SPEC = importlib.util.spec_from_file_location(
+    'development_rootfs_fixture', Path(__file__).with_name('development_rootfs.py'))
+fixture = importlib.util.module_from_spec(FIXTURE_SPEC)
+FIXTURE_SPEC.loader.exec_module(fixture)
 IMAGE = 'sha256:' + 'a' * 64
 REVISION = 'b' * 40
 
 
 class RootfsIdentityTests(unittest.TestCase):
+    def test_loader_layer_uses_verified_hashes_without_target_crypto_tools(self):
+        containerfile = (DEV.parent / 'Containerfile.development-loader').read_text()
+        self.assertIn('ARG ORIGINAL_SHA256', containerfile)
+        self.assertIn('ARG SIGNED_SHA256', containerfile)
+        self.assertIn('verify-authenticode-envelope.py', containerfile)
+        self.assertNotIn('/usr/bin/openssl', containerfile)
+        self.assertNotIn('verify-development-loader.py', containerfile)
+
     def test_podman_preserves_explicit_local_storage_without_caller_secrets(self):
         settings = {name: '/fixture/' + name.lower() for name in producer.LOCAL_STORAGE_ENVIRONMENT}
         settings.update({'PATH': '/untrusted/bin', 'UNRELATED_SECRET': 'not-for-child',
@@ -39,6 +51,13 @@ class RootfsIdentityTests(unittest.TestCase):
             producer.command(['/var/lib/identity/signer', 'sign-efi', '/input', '/output'])
         self.assertEqual(run.call_args.kwargs['env'],
                          {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/root'})
+
+    def test_failed_command_reports_bounded_stderr(self):
+        stderr = ('discarded-prefix-' + 'x' * 4096).encode()
+        with patch.object(producer.subprocess, 'run', return_value=subprocess.CompletedProcess(
+                [], 125, b'', stderr)), self.assertRaisesRegex(
+                    ValueError, r'^podman failed \(exit 125\): x{4096}$'):
+            producer.command(['podman', 'image', 'inspect', IMAGE])
 
     def image(self):
         return {'Id': IMAGE, 'Os': 'linux', 'Architecture': 'arm64',

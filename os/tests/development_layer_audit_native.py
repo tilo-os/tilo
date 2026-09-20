@@ -84,7 +84,7 @@ def main():
             root = mount(first)
             (root / 'private-sentinel').write_bytes(sentinel)
             (root / 'private-envelope.pem').write_bytes(
-                b'-----BEGIN PRIVATE KEY-----\nsynthetic-not-a-key\n-----END PRIVATE KEY-----\n')
+                b'-----BEGIN PRIVATE KEY-----\nc3ludGhldGljLW5vdC1hLWtleQ==\n-----END PRIVATE KEY-----\n')
             run('unmount', first)
             with_secret = commit(first)
             # A NEW container is essential: two commits of the same container

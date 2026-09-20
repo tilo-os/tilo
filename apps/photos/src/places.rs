@@ -136,16 +136,32 @@ impl MapViewport {
         let y = height / 2.0 - (location.latitude - self.latitude) * scale;
         Some((x, y))
     }
+
+    /// Convert a deliberate click in the local reference map back to WGS-84
+    /// coordinates. This is the inverse of [`Self::project`] and has no map
+    /// service or geocoding dependency.
+    #[must_use]
+    pub fn unproject(self, x: f64, y: f64, width: f64, height: f64) -> Option<(f64, f64)> {
+        if !(x.is_finite() && y.is_finite() && width > 0.0 && height > 0.0) {
+            return None;
+        }
+        let scale = 256.0 * 2.0_f64.powf(self.zoom) / 360.0;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        Some((
+            (self.latitude - (y - height / 2.0) / scale).clamp(-90.0, 90.0),
+            wrap_longitude(self.longitude + (x - width / 2.0) / scale),
+        ))
+    }
 }
 
-/// Group nearby photos for a readable marker layer. The bucket becomes finer
-/// as the user zooms in; at high zoom the key is the exact durable place key
-/// so named places remain independently addressable.
+/// Group photos into their canonical, addressable places for a readable marker
+/// layer.  A map viewport may change its scale, but it must not change what a
+/// marker *means*: activating one always opens the same shared collection,
+/// never whichever photograph happened to be first in a transient bucket.
 #[must_use]
-pub fn clusters(photos: &[LibraryPhoto], zoom: f64) -> Vec<PlaceCluster> {
-    let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
-    // At z=2 clusters span ~5.6°, at z=18 they preserve roughly 10m labels.
-    let bucket_degrees = (22.5 / 2.0_f64.powf((zoom - 1.0) / 2.0)).clamp(0.000_1, 22.5);
+pub fn clusters<'a>(photos: impl IntoIterator<Item = &'a LibraryPhoto>) -> Vec<PlaceCluster> {
     let mut grouped = BTreeMap::<String, (String, f64, f64, Vec<String>)>::new();
     for photo in photos {
         let Some(location) = &photo.location else {
@@ -154,13 +170,7 @@ pub fn clusters(photos: &[LibraryPhoto], zoom: f64) -> Vec<PlaceCluster> {
         if !location.is_valid() {
             continue;
         }
-        let lat_bucket = (location.latitude / bucket_degrees).floor() as i64;
-        let lon_bucket = (location.longitude / bucket_degrees).floor() as i64;
-        let key = if zoom >= 13.0 {
-            location.place_key()
-        } else {
-            format!("{lat_bucket}:{lon_bucket}")
-        };
+        let key = location.place_key();
         let entry = grouped
             .entry(key.clone())
             .or_insert_with(|| (location.display_name(), 0.0, 0.0, Vec::new()));
@@ -210,18 +220,22 @@ mod tests {
     }
 
     #[test]
-    fn clusters_are_deterministic_and_keep_canonical_photo_ids() {
+    fn clusters_are_canonical_collections_not_zoom_dependent_representatives() {
         let photos = vec![
             photo("a.png", 37.7749, -122.4194, "San Francisco"),
-            photo("b.png", 37.7750, -122.4195, "San Francisco"),
+            photo("b.png", 37.7749, -122.4194, "San Francisco"),
             photo("c.png", 48.8566, 2.3522, "Paris"),
         ];
-        let clusters = clusters(&photos, 14.0);
+        let clusters = clusters(&photos);
         assert_eq!(clusters.iter().map(PlaceCluster::count).sum::<usize>(), 3);
-        assert!(
-            clusters
-                .iter()
-                .any(|cluster| cluster.photo_ids.contains(&photos[0].id))
+        let san_francisco = clusters
+            .iter()
+            .find(|cluster| cluster.key == photos[0].location.as_ref().unwrap().place_key())
+            .unwrap();
+        assert_eq!(san_francisco.count(), 2);
+        assert_eq!(
+            san_francisco.photo_ids,
+            vec![photos[0].id.clone(), photos[1].id.clone()]
         );
         assert!(
             clusters
@@ -249,6 +263,9 @@ mod tests {
             "dateline should project nearby, got {x}"
         );
         assert!(y.is_finite());
+        let (latitude, longitude) = viewport.unproject(x, y, 1000.0, 600.0).unwrap();
+        assert!((latitude - location.latitude).abs() < 0.000_001);
+        assert!((longitude - location.longitude).abs() < 0.000_001);
         let moved = viewport
             .panned(40.0, -20.0, 1000.0, 600.0)
             .zoomed_at(1.0, x, y, 1000.0, 600.0);

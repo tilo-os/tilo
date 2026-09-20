@@ -564,11 +564,14 @@ mod tests {
         let sealed_path = directory.join("vault.enc");
         let key_before = std::fs::read(&key_path).unwrap();
         let sealed_before = std::fs::read(&sealed_path).unwrap();
-        let result = Command::new("icacls.exe")
-            .arg(&key_path)
-            .args(["/grant", "*S-1-1-0:(R)"])
-            .output()
-            .unwrap();
+        let result = bounded_command::run(
+            "icacls.exe",
+            &[key_path.to_str().unwrap(), "/grant", "*S-1-1-0:(R)"],
+            None,
+            4096,
+            Duration::from_secs(5),
+        )
+        .unwrap();
         assert!(result.status.success(), "{result:?}");
         assert!(local_file_key(&directory).is_none());
         assert!(vault.try_save().is_err());
@@ -817,11 +820,14 @@ mod tests {
         let key_path = dir.join("vault.key.dpapi");
         let key_before = std::fs::read(&key_path).unwrap();
         let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
-        let result = Command::new("icacls.exe")
-            .arg(&key_path)
-            .args(["/grant", "*S-1-1-0:(R)"])
-            .output()
-            .unwrap();
+        let result = bounded_command::run(
+            "icacls.exe",
+            &[key_path.to_str().unwrap(), "/grant", "*S-1-1-0:(R)"],
+            None,
+            4096,
+            Duration::from_secs(5),
+        )
+        .unwrap();
         assert!(result.status.success(), "{result:?}");
         assert!(SecretVault::open_in(&root).recovery_error().is_some());
         assert!(vault.try_save().is_err());

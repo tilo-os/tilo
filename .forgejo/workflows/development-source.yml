@@ -19,6 +19,7 @@ on:
       - os/dev/import-development-rootfs.py
       - os/dev/initramfs-trust.py
       - os/dev/complete-initramfs-rebind.py
+      - os/dev/installed_material_audit.py
       - os/dev/rebind-development-rootfs.py
       - os/tests/test_rebind_development_rootfs.py
       - os/tests/test_initramfs_trust.py
@@ -62,6 +63,7 @@ on:
       - os/tests/test_sign_development_rootfs.py
       - os/tests/development_rootfs.py
       - os/tests/Containerfile.development-source
+      - crates/system/tilo-crypto/**
       - .forgejo/workflows/development-source.yml
 
 jobs:
@@ -102,10 +104,10 @@ jobs:
           cp os/tests/{development_source_registry.py,development_signer.py,test_development_signer.py,test_development_loader.py,test_development_boot.py,test_development_prediction.py,development_prediction_native.py,test_development_source.py,development_stage_reuse.py,development_rootfs.py,test_sign_development_rootfs.py,test_private_disk_image.py,test_prepare_wpe_stage.py,wpe_stage_cache.py} "$context/"
           cp os/Containerfile.development-loader "$context/"
           cp os/dev/{retain-development-rootfs.py,import-development-rootfs.py,rebind-development-trust.py,initramfs-trust.py,complete-initramfs-rebind.py,rebind-development-rootfs.py} "$context/dev/"
-          cp os/dev/audit-rootfs-layers.py "$context/dev/"
+          cp os/dev/{audit-rootfs-layers.py,installed_material_audit.py} "$context/dev/"
           cp os/dev/wpe-stage-artifact.py "$context/dev/"
           cp os/tests/{test_wpe_stage_artifact.py,development_wpe_artifact_native.py} "$context/"
-          cp os/tests/{test_retain_development_rootfs.py,test_import_development_rootfs.py,test_rebind_development_trust.py,test_initramfs_trust.py,initramfs_trust_native.py,test_complete_initramfs_rebind.py,test_rebind_development_rootfs.py,test_development_trust.py,development_retention_native.py,tls_registry_fixture.py} "$context/"
+          cp os/tests/{test_retain_development_rootfs.py,test_import_development_rootfs.py,test_rebind_development_trust.py,test_initramfs_trust.py,initramfs_trust_native.py,test_complete_initramfs_rebind.py,test_rebind_development_rootfs.py,test_development_trust.py,development_retention_native.py,tls_registry_fixture.py,test_tls_registry_fixture.py} "$context/"
           cp os/tests/{test_rootfs_layer_audit.py,development_layer_audit_native.py} "$context/"
           cp "$(command -v cosign)" "$context/cosign"
           RUSTC_WRAPPER= cargo build --locked --release -p tilo-crypto

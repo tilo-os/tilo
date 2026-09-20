@@ -20,7 +20,9 @@ const OWNED_FIELDS: [&str; 6] = [
     "assets",
     "notes_import_v1",
 ];
-pub const MAX_ASSET_BYTES: usize = 20 * 1024 * 1024;
+/// Leaves headroom below the collaboration transport's 3 MiB document-frame
+/// cap for Automerge/action encoding overhead.
+pub const MAX_ASSET_BYTES: usize = 1024 * 1024;
 
 /// Initialize only a new notebook; existing Notes data is never reset or stamped.
 /// # Errors
@@ -52,14 +54,32 @@ pub fn initialize_empty(doc: &mut AutoCommit) -> Result<(), String> {
 /// # Errors
 /// Returns a migration-required or malformed-notebook diagnostic.
 pub fn validate(doc: &AutoCommit) -> Result<(), String> {
-    validated_workspace(doc).map(|_| ())
+    validated_workspace(doc, true).map(|_| ())
 }
 
 /// Project the current document, retaining a local selection only while it exists.
 /// # Errors
 /// Returns the same schema/structure errors as [`validate`].
 pub fn project(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
-    let mut workspace = validated_workspace(doc)?;
+    project_impl(doc, selected, true)
+}
+
+/// Per-frame projection after the component has validated the current asset
+/// revision separately. Image payloads can be large, so ordinary text edits
+/// must not hash every unchanged byte again.
+pub(crate) fn project_without_asset_rehash(
+    doc: &AutoCommit,
+    selected: Option<PageId>,
+) -> Result<Workspace, String> {
+    project_impl(doc, selected, false)
+}
+
+fn project_impl(
+    doc: &AutoCommit,
+    selected: Option<PageId>,
+    validate_image_bytes: bool,
+) -> Result<Workspace, String> {
+    let mut workspace = validated_workspace(doc, validate_image_bytes)?;
     workspace.data.selected =
         selected.filter(|id| workspace.data.pages.iter().any(|page| page.id == *id));
     Ok(workspace)
@@ -149,14 +169,18 @@ fn keyed_uuid(value: &str) -> Result<uuid::Uuid, String> {
     Ok(id)
 }
 
-fn validated_workspace(doc: &AutoCommit) -> Result<Workspace, String> {
+fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<Workspace, String> {
     if !matches!(schema_version(doc).ok(), Some(1 | 2)) {
         return Err("notebook schema version is missing or unsupported; migration required".into());
     }
     let pages = object(doc, &ROOT, "pages", ObjType::Map)?;
     let tags = object(doc, &ROOT, "tags", ObjType::Map)?;
     let assignments = object(doc, &ROOT, "tag_assignments", ObjType::Map)?;
-    validate_assets(doc)?;
+    if validate_image_bytes {
+        validate_assets(doc)?;
+    } else {
+        validate_asset_shape(doc)?;
+    }
     let mut data = WorkspaceData::default();
     for key in doc.keys(&pages) {
         let id = keyed_uuid(&key)?;
@@ -252,12 +276,46 @@ fn validate_assets(doc: &AutoCommit) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_asset_shape(doc: &AutoCommit) -> Result<(), String> {
+    let Some(assets) = assets_map(doc)? else {
+        return Ok(());
+    };
+    for key in doc.keys(&assets) {
+        if asset_digest(&key).is_none() {
+            return Err(format!("invalid asset digest {key}"));
+        }
+        let (value, _) = required(doc, &assets, &key)?;
+        if !matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Bytes(_)))
+        {
+            return Err(format!("asset {key} must be bytes"));
+        }
+    }
+    Ok(())
+}
+
+/// Cheap identity of every asset value. Automerge operation ids change when a
+/// payload is replaced, including same-sized corrupt replacements.
+pub(crate) fn asset_manifest(doc: &AutoCommit) -> Result<Vec<(String, String)>, String> {
+    let Some(assets) = assets_map(doc)? else {
+        return Ok(Vec::new());
+    };
+    let mut manifest = doc
+        .map_range(&assets, ..)
+        .map(|item| {
+            let id = format!("{:?}", item.id());
+            (item.key.into_owned(), id)
+        })
+        .collect::<Vec<_>>();
+    manifest.sort();
+    Ok(manifest)
+}
+
 pub fn validate_asset_payload(digest: &str, bytes: &[u8]) -> Result<(), String> {
     let Some(digest) = asset_digest(digest) else {
         return Err("image asset digest is invalid".into());
     };
     if bytes.is_empty() || bytes.len() > MAX_ASSET_BYTES {
-        return Err("image asset must be between 1 byte and 20 MiB".into());
+        return Err("image asset must be between 1 byte and 1 MiB".into());
     }
     if !(bytes.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10])
         || bytes.starts_with(&[0xff, 0xd8, 0xff])
@@ -293,6 +351,7 @@ pub fn put_asset(doc: &mut AutoCommit, digest: &str, bytes: &[u8]) -> Result<(),
 }
 
 pub fn asset_snapshot(doc: &AutoCommit) -> Result<HashMap<String, Vec<u8>>, String> {
+    validate_assets(doc)?;
     let Some(assets) = assets_map(doc)? else {
         return Ok(HashMap::new());
     };

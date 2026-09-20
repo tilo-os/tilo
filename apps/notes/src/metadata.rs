@@ -3,9 +3,9 @@
 //! No migration rewrites old notes or invents creation dates. Unstamped legacy
 //! changes retain an unknown date; new action timestamps survive saves and merges.
 use crate::model::PageId;
-use automerge::legacy::{Key, ObjectId, OpId};
 use automerge::{AutoCommit, ChangeHash};
 use std::collections::{HashMap, HashSet};
+use ui::history_source::{SchemaObjectId, schema_operations_since};
 
 const CATALOG: &str = include_str!("../locales/en-US.ftl");
 
@@ -60,9 +60,9 @@ pub struct NoteDates {
 #[derive(Default)]
 pub struct NoteDateIndex {
     heads: Vec<ChangeHash>,
-    objects: HashMap<ObjectId, PageId>,
-    page_maps: HashSet<ObjectId>,
-    assignments: HashSet<ObjectId>,
+    objects: HashMap<SchemaObjectId, PageId>,
+    page_maps: HashSet<SchemaObjectId>,
+    assignments: HashSet<SchemaObjectId>,
     dates: HashMap<PageId, NoteDates>,
 }
 
@@ -85,50 +85,43 @@ impl NoteDateIndex {
         {
             *self = Self::default();
         }
-        for change in doc.get_changes(&self.heads) {
-            let decoded = change.decode();
-            let timestamp = (decoded.time > 0).then_some(decoded.time);
-            for (offset, op) in decoded.operations.iter().enumerate() {
-                let new_object = ObjectId::Id(OpId(
-                    decoded.start_op.get().saturating_add(offset as u64),
-                    decoded.actor_id.clone(),
-                ));
-                let key = match &op.key {
-                    Key::Map(key) => Some(key.as_str()),
-                    _ => None,
-                };
-                if op.obj == ObjectId::Root && op.obj_type().is_some() {
-                    match key {
-                        Some("pages") => {
-                            self.page_maps.insert(new_object.clone());
+        for op in schema_operations_since(doc, &self.heads) {
+            let key = op.key.as_deref();
+            if op.object.is_root() && op.new_object.is_some() {
+                match key {
+                    Some("pages") => {
+                        if let Some(object) = op.new_object.clone() {
+                            self.page_maps.insert(object);
                         }
-                        Some("tag_assignments") => {
-                            self.assignments.insert(new_object.clone());
+                    }
+                    Some("tag_assignments") => {
+                        if let Some(object) = op.new_object.clone() {
+                            self.assignments.insert(object);
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
-                let mut page = self.objects.get(&op.obj).copied();
-                if self.page_maps.contains(&op.obj) && op.obj_type().is_some() {
-                    page = key.and_then(|key| key.parse().ok());
-                    if let Some(page) = page {
-                        self.dates.entry(page).or_insert(NoteDates {
-                            created: timestamp,
-                            edited: timestamp,
-                        });
-                    }
-                } else if self.assignments.contains(&op.obj) {
-                    page = key
-                        .and_then(|key| key.split_once(':'))
-                        .and_then(|(page, _)| page.parse().ok());
-                }
+            }
+            let mut page = self.objects.get(&op.object).copied();
+            if self.page_maps.contains(&op.object) && op.new_object.is_some() {
+                page = key.and_then(|key| key.parse().ok());
                 if let Some(page) = page {
-                    if op.obj_type().is_some() {
-                        self.objects.insert(new_object, page);
-                    }
-                    let dates = self.dates.entry(page).or_default();
-                    dates.edited = dates.edited.max(timestamp);
+                    self.dates.entry(page).or_insert(NoteDates {
+                        created: op.timestamp,
+                        edited: op.timestamp,
+                    });
                 }
+            } else if self.assignments.contains(&op.object) {
+                page = key
+                    .and_then(|key| key.split_once(':'))
+                    .and_then(|(page, _)| page.parse().ok());
+            }
+            if let Some(page) = page {
+                if let Some(new_object) = op.new_object {
+                    self.objects.insert(new_object, page);
+                }
+                let dates = self.dates.entry(page).or_default();
+                dates.edited = dates.edited.max(op.timestamp);
             }
         }
         self.heads = heads;

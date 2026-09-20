@@ -148,8 +148,8 @@ acceptance record.
 ## Source documents
 
 - Product direction: [`docs/product.md`](product.md).
-- Interaction and component rules: [`ui/HIG.md`](../ui/HIG.md).
+- Interaction and component rules: [`crates/sdk/ui-core/HIG.md`](../crates/sdk/ui-core/HIG.md).
 - Shell keyboard/containment map:
   [`docs/shell-navigation-keyboard-map.md`](shell-navigation-keyboard-map.md).
 - Current executable UI evidence: shell `shots` scenarios and
-  `shell/tests/e2e_shell_flows.rs`.
+  `crates/session/shell/tests/e2e_shell_flows.rs`.

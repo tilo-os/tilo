@@ -57,20 +57,20 @@ launcher = { path = "../../packaging/launcher" }
 install = { path = "../../packaging/install" }
 # Home-peer configuration is one signed filesystem bundle; the relay imports
 # its workspace tickets rather than asking the operator to duplicate ids.
-fs = { path = "../../../fs" }
+fs = { path = "../../system/fs" }
 collab-types = { path = "../../collab/collab-types" }
-# Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
+# Iroh 1.0.x — pinned to the same versions the `crates/system/fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay
 # fallback out of the box, so the relay is reachable from any device
-# without extra infrastructure. `fs/` already depends on iroh-blobs, so
+# without extra infrastructure. `crates/system/fs/` already depends on iroh-blobs, so
 # unifying on iroh here means one transport stack across CRDT-op fanout
 # and content hydration.
 iroh.workspace = true
 iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
-tilo-user-identity = { path = "../../identity/tilo-user-identity" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 
 # Workspace CRDT (same version as identity + shell).
