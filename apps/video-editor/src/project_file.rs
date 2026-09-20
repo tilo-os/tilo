@@ -47,7 +47,7 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic          b"TiloVEPRJ"
+//! 0       8     magic          b"TILO_VP1"
 //! 8       2     version        u16 LE — what wrote this file
 //! 10      2     min_reader     u16 LE — the oldest reader that may open it
 //! 12      4     payload_len    u32 LE — length of the Automerge document
@@ -78,9 +78,8 @@ use crate::model::Project;
 
 /// First eight bytes of every project file.
 ///
-/// This persisted identifier predates the product rename and must remain stable so existing
-/// projects continue to open.
-pub const MAGIC: &[u8; 8] = b"TiloVEPRJ";
+/// Keep the identifier exactly eight bytes so the following version fields remain aligned.
+pub const MAGIC: &[u8; 8] = b"TILO_VP1";
 
 /// The format version this build writes.
 pub const FORMAT_VERSION: u16 = 1;
@@ -480,7 +479,7 @@ mod tests {
     #[test]
     fn the_header_is_the_documented_layout() {
         let bytes = encode(&Project::new("x"));
-        assert_eq!(&bytes[..8], b"TiloVEPRJ");
+        assert_eq!(&bytes[..8], b"TILO_VP1");
         assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), FORMAT_VERSION);
         assert_eq!(
             u16::from_le_bytes([bytes[10], bytes[11]]),
