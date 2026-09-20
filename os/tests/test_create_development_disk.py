@@ -59,6 +59,90 @@ class FailureDiagnosticTests(unittest.TestCase):
         self.assertLess(self.path.stat().st_size, 800 * 1024)
 
 
+class BootcInstallRetryTests(unittest.TestCase):
+    def result(self, returncode, stderr=b''):
+        return SimpleNamespace(returncode=returncode, stdout=b'', stderr=stderr)
+
+    def test_pristine_identity_rejects_allocated_blocks_or_hostile_metadata(self):
+        disk = SimpleNamespace(validate=lambda: None, fileno=lambda: 7)
+        good = dict(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_gid=0,
+                    st_nlink=1, st_blocks=0, st_dev=1, st_ino=2, st_size=4096)
+        with patch.object(disk_creator.os, 'fstat', return_value=SimpleNamespace(**good)):
+            self.assertEqual(disk_creator._pristine_disk_identity(disk),
+                             (1, 2, 4096, stat.S_IFREG | 0o600, 0, 0, 1))
+        for field, value in [('st_blocks', 1), ('st_mode', stat.S_IFREG | 0o640),
+                             ('st_uid', 1), ('st_gid', 1), ('st_nlink', 2)]:
+            hostile = dict(good); hostile[field] = value
+            with self.subTest(field=field), \
+                    patch.object(disk_creator.os, 'fstat',
+                                 return_value=SimpleNamespace(**hostile)), \
+                    self.assertRaisesRegex(ValueError, 'unchanged pristine disk'):
+                disk_creator._pristine_disk_identity(disk)
+
+    def test_retries_only_exact_tls_failure_with_fixed_backoff(self):
+        results = [self.result(1, disk_creator.TRANSIENT_REGISTRY_TLS_ERROR + b'\n'),
+                   self.result(0)]
+        with patch.object(disk_creator.subprocess, 'run', side_effect=results) as run, \
+                patch.object(disk_creator, '_pristine_disk_identity',
+                             return_value=('same',)), \
+                patch.object(disk_creator.time, 'sleep') as sleep, \
+                patch.object(disk_creator, 'write_failure_diagnostic') as diagnostic:
+            self.assertEqual(disk_creator.bootc_install(
+                ['/usr/bin/podman'], object(), Path('/failure')), '')
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once_with(2)
+        diagnostic.assert_not_called()
+
+    def test_wrong_host_and_other_errors_never_retry(self):
+        for stderr in (disk_creator.TRANSIENT_REGISTRY_TLS_ERROR.replace(
+                b'code.podesta.ai', b'registry.invalid'), b'unrelated failure'):
+            with self.subTest(stderr=stderr), \
+                    patch.object(disk_creator.subprocess, 'run',
+                                 return_value=self.result(1, stderr)) as run, \
+                    patch.object(disk_creator, '_pristine_disk_identity',
+                                 return_value=('same',)), \
+                    patch.object(disk_creator.time, 'sleep') as sleep, \
+                    patch.object(disk_creator, 'write_failure_diagnostic') as diagnostic:
+                with self.assertRaisesRegex(ValueError, r'podman failed \(exit 1\)'):
+                    disk_creator.bootc_install(
+                        ['/usr/bin/podman'], object(), Path('/failure'))
+                self.assertEqual(run.call_count, 1)
+                sleep.assert_not_called()
+                diagnostic.assert_called_once()
+
+    def test_mutated_or_allocated_disk_aborts_before_retry(self):
+        failure = self.result(1, disk_creator.TRANSIENT_REGISTRY_TLS_ERROR)
+        for changed in (('changed',), ValueError('disk has allocated blocks')):
+            side_effect = [('same',), changed]
+            with self.subTest(changed=changed), \
+                    patch.object(disk_creator.subprocess, 'run', return_value=failure) as run, \
+                    patch.object(disk_creator, '_pristine_disk_identity',
+                                 side_effect=side_effect), \
+                    patch.object(disk_creator.time, 'sleep') as sleep, \
+                    patch.object(disk_creator, 'write_failure_diagnostic') as diagnostic:
+                with self.assertRaises(ValueError):
+                    disk_creator.bootc_install(
+                        ['/usr/bin/podman'], object(), Path('/failure'))
+                self.assertEqual(run.call_count, 1)
+                sleep.assert_not_called()
+                diagnostic.assert_called_once()
+
+    def test_stops_after_three_exact_failures_and_uses_two_backoffs(self):
+        failure = self.result(1, disk_creator.TRANSIENT_REGISTRY_TLS_ERROR + b'\r\n')
+        with patch.object(disk_creator.subprocess, 'run',
+                          side_effect=[failure, failure, failure]) as run, \
+                patch.object(disk_creator, '_pristine_disk_identity',
+                             return_value=('same',)), \
+                patch.object(disk_creator.time, 'sleep') as sleep, \
+                patch.object(disk_creator, 'write_failure_diagnostic') as diagnostic:
+            with self.assertRaisesRegex(ValueError, r'podman failed \(exit 1\)'):
+                disk_creator.bootc_install(
+                    ['/usr/bin/podman'], object(), Path('/failure'))
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (5,)])
+        diagnostic.assert_called_once()
+
+
 class FuseDeviceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -329,8 +413,11 @@ class CreationTests(unittest.TestCase):
             if fail:
                 raise ValueError('installer failed')
             return ''
+        def install(argv, *args, **kwargs):
+            return command(argv, **kwargs)
         with patch.object(disk_creator, 'command', command), \
-                patch.object(disk_creator, 'bootc_help', side_effect=command):
+                patch.object(disk_creator, 'bootc_help', side_effect=command), \
+                patch.object(disk_creator, 'bootc_install', side_effect=install):
             return disk_creator.create(self.args)
 
     def test_fixed_verified_id_and_signature_policy(self):
