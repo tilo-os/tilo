@@ -5604,6 +5604,7 @@ pub fn run() {
         // then stops Tilo's graphical targets and clears the shared user-manager
         // environment before GDM admits the next desktop.
         if os_actions::take_logout_request() {
+            tracing::info!(target: "tilo::session", "logout request observed by compositor loop");
             close_requested = true;
             continue;
         }

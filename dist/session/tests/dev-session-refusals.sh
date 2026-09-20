@@ -117,6 +117,7 @@ cat >"$lifecycle" <<'SH'
 case "${1:-}" in /*) ;; *) exit 73 ;; esac
 test -x "$1" || exit 74
 env | grep '^TILO_TEST_CONTROL=' >"$(dirname -- "$XDG_RUNTIME_DIR")/managed-environment"
+env | grep '^TILO_DEV_ATTEST_' | sort >"$(dirname -- "$XDG_RUNTIME_DIR")/attestation-environment"
 printf 'managed %s ::' "$1"
 shift
 if (( $# )); then
@@ -136,11 +137,11 @@ else
     fails=$((fails + 1))
 fi
 
-attest=$test_runtime/tilo-dev-session/active
-if [[ -r $attest ]] \
-    && grep -Fqx "path=$(realpath -e "$marked")" "$attest" \
-    && grep -Eq '^sha256=[0-9a-f]{64}$' "$attest"; then
-    echo "ok: developer launch records a protected binary attestation"
+attest_env=$scratch/attestation-environment
+if grep -Fqx "TILO_DEV_ATTEST_DIR=$test_runtime/tilo-dev-session" "$attest_env" \
+    && grep -Fqx "TILO_DEV_ATTEST_PATH=$(realpath -e "$marked")" "$attest_env" \
+    && grep -Eq '^TILO_DEV_ATTEST_SHA256=[0-9a-f]{64}$' "$attest_env"; then
+    echo "ok: developer launch hands validated attestation data to the lifecycle runner"
     pass=$((pass + 1))
 else
     echo "FAIL: developer launch attestation is missing or malformed"

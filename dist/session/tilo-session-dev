@@ -179,7 +179,6 @@ if [ "$VIRTUAL_DRM" -eq 1 ]; then
     fi
     export WGPU_BACKEND WGPU_ADAPTER_NAME VK_DRIVER_FILES
 fi
-ATTEST_TMP="$ATTEST_DIR/active.$$"
 TARGET_SHA256=
 if [ -f "$CONF_SHA" ]; then
     CONF_SHA_REAL=$(realpath -e -- "$CONF_SHA") || die "cannot resolve $CONF_SHA"
@@ -192,13 +191,17 @@ case "$TARGET_SHA256" in
     *) ;;
 esac
 [ "${#TARGET_SHA256}" -eq 64 ] || die "developer-session digest is malformed"
-{
-    printf 'pid=%s\n' "$$"
-    printf 'path=%s\n' "$TARGET_REAL"
-    printf 'sha256=%s\n' "$TARGET_SHA256"
-} >"$ATTEST_TMP" || die "cannot record developer-session attestation"
-chmod 600 -- "$ATTEST_TMP" || die "cannot protect developer-session attestation"
-mv -f -- "$ATTEST_TMP" "$ATTEST_DIR/active" || die "cannot publish developer-session attestation"
+
+# The lifecycle runner is the process that actually spawns the compositor, so
+# it is also the only process that can attest the compositor's real PID.  Pass
+# the already-validated path and digest through this private contract; the
+# runner publishes them atomically immediately after fork.  Recording $$ here
+# used to attest the wrapper, which becomes the runner after exec and made a
+# wedged compositor look healthy to the VM verifier.
+TILO_DEV_ATTEST_DIR=$ATTEST_DIR
+TILO_DEV_ATTEST_PATH=$TARGET_REAL
+TILO_DEV_ATTEST_SHA256=$TARGET_SHA256
+export TILO_DEV_ATTEST_DIR TILO_DEV_ATTEST_PATH TILO_DEV_ATTEST_SHA256
 
 # From this point on the developer session has the exact same lifecycle as the
 # installed session: graphical targets and services, activation environment,

@@ -203,6 +203,29 @@ wait "$wrapper_pid" || [[ $? == 143 ]]
 grep -Fqx 'shell-term' "$log"
 [[ $(grep -Fc 'systemctl --user stop tilo-graphical-session.target' "$log") == 1 ]]
 
+# The optional developer attestation must name the compositor itself, not the
+# lifecycle runner or a pipeline subshell. This is what makes a live-build
+# verifier able to distinguish a healthy shell from a merely healthy wrapper.
+attest_dir=$XDG_RUNTIME_DIR/tilo-dev-session
+mkdir -m 0700 "$attest_dir"
+digest=$(printf '%064d' 0)
+TILO_DEV_ATTEST_DIR=$attest_dir \
+TILO_DEV_ATTEST_PATH=$work/shell \
+TILO_DEV_ATTEST_SHA256=$digest \
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_HOLD=1 \
+    "$work/tilo-session" "$work/shell" &
+attest_wrapper_pid=$!
+for _ in $(seq 1 100); do
+    test -r "$attest_dir/active" && break
+    sleep 0.02
+done
+attested_pid=$(sed -n 's/^pid=//p' "$attest_dir/active")
+test "$(awk '{print $4}' "/proc/$attested_pid/stat")" = "$attest_wrapper_pid"
+tr '\0' '\n' <"/proc/$attested_pid/cmdline" | grep -Fqx "$work/shell"
+kill -TERM "$attest_wrapper_pid"
+wait "$attest_wrapper_pid" || [[ $? == 143 ]]
+test ! -e "$attest_dir/active"
+
 # Shell-requested logout must return success through the wrapper-owned cleanup
 # path, even if the shell uses a non-zero sentinel while exiting. Most
 # importantly, target/environment teardown happens exactly once rather than
