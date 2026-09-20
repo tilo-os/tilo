@@ -16,11 +16,27 @@ A new push requires fresh checks and a fresh merge request. The controller also
 checks that the branch is up to date and the change is eligible for routine
 integration; a green check alone does not merge a PR.
 
-Independent review is optional in the current pilot. After checks pass, the author
-can request **claude** through Forgejo's reviewer control. This holds merging until
-the requested review is resolved; an approval applies to the reviewed head only.
+Review is optional only for Rust source changes under an existing app's
+`apps/<app>/src/` directory. After checks pass, the author can request **claude**
+through Forgejo's reviewer control. This holds merging until the request is
+cancelled or receives an allowed approval for that head; change requests block.
 Automatic review-agent launches are currently disabled, so a native request alone
 does not start an agent. The eligibility comment reports review availability.
+
+Documentation, tools, workflow YAML and Python/shell/PowerShell scripts under
+`dist/` or `os/` use the reviewed operator path. After checks pass, obtain an
+official **claude** approval and post the author's `/merge <full-head-sha>` intent.
+An authorized operator then runs this command from the `PodestaAI/infra` checkout:
+
+```sh
+python scripts/run-qos-reviewed-merge.py PR FULL_HEAD_SHA --execute
+```
+
+It runs the deployed merge worker, which rechecks scope, current main, CI, author
+intent and approval before integration. Direct merges do not bypass that worker.
+Other paths, including Cargo manifests, `Cargo.lock`, vendored code and non-app
+Rust crates, currently have no supported admission path; they need a reviewed
+policy extension and appropriate validation first.
 
 The CI scheduler assigns runners and queue order. Submit normally; do not reserve
 build slots or negotiate them with other agents. The repository's Codex hook sends
@@ -33,7 +49,7 @@ After a merge, app packaging selects directly changed apps and apps that depend
 on changed shared crates, then reuses unchanged collection members. PRs run the
 selection plan without release-mode packaging. Shared runtime or toolchain changes
 can still select every app; see [Preview affected applications](#preview-affected-applications)
-for the current compile-versus-package distinction. Use **Release / apps** manual
+for how selection and shared runtime compatibility interact. Use **Release / apps** manual
 dispatch for a development artifact, selecting the smallest applicable app and
 architecture set and leaving `publish` off unless publication is intended.
 
