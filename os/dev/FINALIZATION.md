@@ -68,7 +68,10 @@ from this driver; see REMOTE-SIGNING.md.
 The evidence directory is root-owned0700. Export only these public files:
 
 1. `01-rebind.json`: authenticated raw import, public trust rebinding and dracut.
-2. `02-loader.json`: signed loader verified and added before root sealing.
+2. `02-loader.json`: signed loader verified and added before root sealing. The
+   signed rootfs is published immediately as a request-bound immutable registry
+   checkpoint so later assembly retries do not repeat trust rebinding or loader
+   signing.
 3. `03-provisional.json`: final split/UKI target assembled from retained rootfs.
 4. `04-composefs.json`: independently computed bootc1.16.4 root digest.
 5. `05-reseal.json`: immutable boot-only reseal layer.
@@ -81,8 +84,10 @@ The evidence directory is root-owned0700. Export only these public files:
 9. `result.json`, `status.json`: public outcome and current checkpoint status.
 
 Completed checkpoints are chained to the exact canonical request and previous
-receipt. Resuming with the same surviving store rechecks immutable image IDs
-and skips completed signing stages. A `.started-*` marker without an accepted
+receipt. An explicitly selected stage-2 or stage-5 artifact restores its
+immutable registry image only after verifying the complete receipt chain,
+stable request binding, manifest/config bytes, architecture and source revision.
+Stage-2 restore skips both rebind and loader signing. A `.started-*` marker without an accepted
 checkpoint forbids automatic retry. Inspect the actual live process and remote
 signing request; a marker alone does not prove the process has stopped. Resolve
 pending requests and durable local signer authorizations before explicitly
@@ -93,11 +98,11 @@ one request-owned local alias; only its verified immutable result is retained
 in checkpoints. No existing user tag is used. This preserves the coherent
 helper API without duplicating prediction construction.
 
-The CI store is ephemeral. Success therefore requires publication before the
-driver returns and the launcher removes its owned worker/store. Interrupted
-jobs export available bounded public checkpoints; local signing state/results
-remain on the operator machine. A new explicitly approved attempt may repeat
-cheap finalization stages from retained artifacts; it never recompiles apps.
+The CI store is ephemeral. Stages 2 and 5 are therefore published before their
+receipts are committed, and final success still requires publication before the
+launcher removes its owned worker/store. Interrupted jobs export available
+bounded public checkpoints; local signing state/results remain on the operator
+machine. A new explicitly approved attempt never recompiles apps.
 
 ## What success means
 
