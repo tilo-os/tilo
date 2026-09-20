@@ -475,20 +475,21 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--dev".to_string());
     argv.push("/dev".to_string());
 
+    // Bind the runtime and its canonical ELF interpreter paths before the
+    // broad read-only `/lib` and `/lib64` profile mounts below. Bubblewrap
+    // processes these actions in order: attempting to create
+    // `/lib/ld-linux.so.2` beneath an already-mounted read-only `/lib` fails
+    // before the app can exec. The later parent bind leaves the existing
+    // child mount visible, while the selected bundle itself lives under the
+    // sandbox-private `/run` tree.
+    push_runtime_bundle(&mut argv, runtime);
+
     // The system read profile: fixed, identical for every package, fed by
     // no manifest field.
     crate::profile::push_system_profile(
         &mut argv,
         egress_decision(manifest, capabilities).shares_host_network(),
     );
-
-    // Keep the runtime outside the broad host `/usr` and `/usr/lib` profile.
-    // A nested mount there is either hidden when the parent is mounted later,
-    // or cannot be created after the read-only parent mount. `/run` is private
-    // to this sandbox, so the selected bundle remains visible regardless of
-    // system-profile ordering. Canonical loader/libc paths are still re-bound
-    // because ELFs hard-code `INTERP` and ignore LD_LIBRARY_PATH for it.
-    push_runtime_bundle(&mut argv, runtime);
 
     // User-granted capabilities after the system profile (read-write wins
     // over read-only). `-try` variants throughout: a stale grant (deleted
@@ -1285,8 +1286,8 @@ mod tests {
             .position(|w| w[0] == "--ro-bind-try" && w[1] == "/usr/lib" && w[2] == "/usr/lib")
             .expect("system /usr/lib profile bind");
         assert!(
-            rt_pos > usr_lib_pos,
-            "the selected runtime must be mounted after /usr/lib so the host profile cannot cover it: {argv:?}"
+            rt_pos < usr_lib_pos,
+            "the selected runtime and its canonical loader children must be mounted before the broad read-only library profile: {argv:?}"
         );
         assert!(
             !argv.iter().any(|arg| arg.ends_with("/libgcc_s.so.1")),
