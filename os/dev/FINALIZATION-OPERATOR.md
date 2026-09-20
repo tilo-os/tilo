@@ -10,7 +10,12 @@ It never dispatches/restarts a build, grants signing authorization, or installs 
 Use a trusted Linux root shell, the authenticated `fgj` (or WSL-visible `fgj.exe`)
 CLI, and the existing AWS/EKS broker connection used by `broker_signing_runner.py`.
 The broker adapter currently uses local user `benn1x`, AWS profile
-`tilo-eks-operator`, and the existing on-prem broker context. Those infrastructure
+`tilo-eks-operator`, and the existing on-prem broker context. It authenticates the
+explicit on-prem, Frankfurt and Oregon targets, reads the broker's enabled CI target
+inventory, and requires the task or pinned Pod to match exactly one enabled target.
+An unknown target, unavailable target, duplicate match, changed target path or
+incorrect broker/workload/cluster label stops the operation. Tokens remain in the
+broker request stream and are not recorded in observations. Those infrastructure
 settings do not select hardware. The operation's `--hardware-profile` must match
 the profile authenticated by the retained-rootfs receipt (`null` is the generic
 profile); initialization records it as `generic`. The request's architecture and
