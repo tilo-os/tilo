@@ -245,6 +245,12 @@ jobs:
           token: ${{ github.token }}
           fetch-depth: 0
 
+      # checkout configures safe.directory under the action's temporary HOME.
+      # Later container steps use /github/home, so Git would otherwise reject
+      # this bind-mounted checkout as having dubious host ownership.
+      - name: Trust the checked-out workspace inside the job container
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Prepare Rust build caches
         id: rust-build
         uses: ./.github/actions/prepare-rust-build
