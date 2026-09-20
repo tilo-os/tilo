@@ -44,6 +44,7 @@ NON_COMPILING_DOCS = {
     "DEVELOPMENT.md",
     "docs/ci-performance.md",
     "docs/ci-emergency-relief.md",
+    "docs/headless-testing.md",
 }
 # These orchestration/validation helpers are exercised by the mandatory quality
 # job's tools/policy/run.sh unittest discovery. They are not Rust build
