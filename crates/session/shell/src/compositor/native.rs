@@ -1271,6 +1271,10 @@ struct FrameBuilderControlState<'a> {
     /// The compositor's actual stream/input authority. Layout-only tests have
     /// no compositor and therefore leave this absent.
     shares: Option<&'a crate::network::streaming::ShareRegistry>,
+    /// Read-only lock authentication status. Layout-only fixtures omit this;
+    /// the native transport supplies it so an acceptance client can wait for
+    /// an asynchronous verifier before entering a retry.
+    lock: Option<&'a LockController>,
 }
 
 impl ControlState for FrameBuilderControlState<'_> {
@@ -1707,6 +1711,16 @@ impl ControlState for FrameBuilderControlState<'_> {
             "pending_grants_count": chrome.pending_grants.len(),
         // Mirrored from the SessionManager each tick; lets a headless test observe lock/unlock transitions.
             "session_locked": chrome.session_locked(),
+            // Exact compositor-owned lock UI state. A harness must wait for
+            // an asynchronous PAM result before typing a retry; without this,
+            // the controller correctly swallows the second password while the
+            // first worker is still in flight and the failure looks like lost
+            // keyboard input.
+            "lock_auth": {
+                "verifying": self.lock.is_some_and(LockController::is_verifying),
+                "password_len": self.lock.map_or(0, LockController::buffer_len),
+                "error": self.lock.and_then(LockController::error),
+            },
             // Who this session is, and whether they may administer the room they're
             // in — read straight off the production helpers, not guessed from `owner`.
             "local_user_id": chrome.active_local_user(),
@@ -2619,6 +2633,7 @@ fn pump_test_control_conn(
                                     fb: frame_builder,
                                     doc: Some((&ctx.doc, &ctx.root_obj)),
                                     shares: Some(&state.share_registry),
+                                    lock: Some(lock),
                                 };
                                 test_control::dispatch_command(&cmd, &state)
                             }
@@ -8752,6 +8767,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
         let chrome = state.chrome_state_json();
         let overlays = chrome
@@ -8771,6 +8787,36 @@ mod tests {
     }
 
     #[test]
+    fn state_dump_exposes_retry_ready_lock_auth_without_password_contents() {
+        let fb = FrameBuilder::new((1600, 900));
+        let mut lock = LockController::new(
+            std::sync::Arc::new(crate::compositor::lock_auth::FixedVerifier::new("correct")),
+            "alice",
+        );
+        lock.push_str("secret-value");
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: Some(&lock),
+        };
+        let chrome = state.chrome_state_json();
+        let auth = chrome
+            .get("lock_auth")
+            .expect("native state dump must expose lock authentication status");
+        assert_eq!(auth.get("verifying"), Some(&serde_json::Value::Bool(false)));
+        assert_eq!(
+            auth.get("password_len").and_then(serde_json::Value::as_u64),
+            Some(12)
+        );
+        assert_eq!(auth.get("error"), Some(&serde_json::Value::Null));
+        assert!(
+            !chrome.to_string().contains("secret-value"),
+            "state dump must never disclose the password buffer"
+        );
+    }
+
+    #[test]
     fn state_dump_identifies_the_exact_nested_search_resource() {
         let fb = FrameBuilder::new((1600, 900));
         fb.chrome_handle().borrow_mut().search_resource_scope =
@@ -8785,6 +8831,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
 
         let scope = &state.chrome_state_json()["search_resource_scope"];
@@ -8802,6 +8849,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
 
         let presence = &state.chrome_state_json()["presence"];
@@ -8828,6 +8876,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
         let tree = state.workspace_tree_json();
         let workspaces = tree
@@ -8865,6 +8914,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
         let tree = state.workspace_tree_json();
         let found = tree
@@ -8945,6 +8995,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: Some(&shares),
+            lock: None,
         };
         let rows = state
             .sharing_json()
@@ -8970,6 +9021,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
         let (resp, actions) =
             test_control::dispatch_command(&test_control::Command::StateDump, &state);

@@ -196,7 +196,7 @@ gssh() {
   # helper. sshpass owns the one permitted password prompt; if it cannot
   # answer, fail the test instead of disrupting the physical session.
   command -v sshpass >/dev/null 2>&1 || die "sshpass is required for unattended VM access"
-  env -u SSH_ASKPASS SSH_ASKPASS_REQUIRE=never \
+  env -u SSH_ASKPASS -u SSH_ASKPASS_REQUIRE DISPLAY= WAYLAND_DISPLAY= \
     sshpass -p "$TILO_PASS" ssh -F /dev/null -p "$TILO_SSH_PORT" \
     -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o ConnectTimeout=5 -o LogLevel=ERROR -o BatchMode=no \
