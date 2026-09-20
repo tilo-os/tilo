@@ -3,7 +3,7 @@
 Current deployment and measured startup results are recorded in the
 [emergency runbook](ci-emergency-relief.md). CI has three complementary paths:
 
-- `check.yml` uses one x86-64 shard for ordinary push/PR feedback. It checks all
+- `check.yml` uses one x86-64 shard for targeted push/PR feedback. It checks all
   targets in the affected reverse-dependency closure, while linking and running
   tests for directly changed packages plus `collab-types`, `pkg`, and `qdoc`.
   Repository-wide build inputs and unmapped workspace paths retain full-workspace
@@ -34,12 +34,24 @@ references together only after reviewing the new image's candidate bundle.
 The candidate workflow uploads changed PNGs, a binary patch, its SHA-256, and a
 diff inventory; it deliberately has no repository-write step.
 
-Ordinary feedback uses one target tree to avoid recompiling shared dependencies
-across shards. Full native qualification may use up to two weighted shards per
+Targeted feedback uses one target tree to avoid recompiling shared dependencies
+across shards. Global build inputs and unmapped workspace changes use up to two
+cost-balanced x86-64 shards, each with the existing four Cargo workers. Small
+selections stay on one shard; coverage and runner labels are unchanged. This
+bounds ordinary affected checks at eight Cargo workers; shared dependency work
+can still be repeated across the two target trees. Full native qualification
+may use up to two weighted shards per
 architecture; small selections use fewer. Do not manually dispatch `check.yml`
 as a cheap repeat of ordinary feedback: dispatch explicitly selects the entire
 workspace on both architectures. Submit the updated task branch/PR normally;
 the [scheduler owns admission and runner slots](../AGENTS.md#ci).
+
+Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
+only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing
+check shard counts does not invalidate apps. Graph changes still invalidate
+release selection and the coordinator's trusted source hashes. Actual verifier
+changes still require current acceptance and currently rebuild apps; reusing
+binaries for verification-only changes remains separate work.
 
 To inspect the committed branch's selection locally, without starting a build
 or requesting a runner, run from the checkout:
@@ -77,6 +89,15 @@ helper with Rust or global build inputs still selects the affected closure or
 full workspace. Do not dispatch a full native check just to replace an intentional
 skipped Rust row for an audited helper edit.
 
+On pull requests only, that same existing-file prose allowlist and the exact
+`QUALITY_ONLY_HELPERS` source/test pairs may also make the independent security
+suite inapplicable. This security exception is narrower than the Rust exception:
+workflow and other `QUALITY_ONLY_CONTROL_INPUTS`, OS or security files, manifests,
+unknown paths, mixed changes, deletions, and helpers whose mapped observer is
+missing all keep the security suite required. Main pushes and manual dispatches
+always require it. The selector emits `security_required=true` by default and
+only the pull-request workflow enables the audited exception.
+
 For a change to either lint helper, run its production-path regression tests
 locally without compiling Rust:
 
@@ -90,10 +111,12 @@ PR comparison regressions. CI's `tools/policy/run.sh` still discovers all
 
 The workflow retains a skipped sentinel matrix row because a literally empty
 matrix removed the job and stranded its aggregate on this Forgejo installation.
-Selection and security must succeed before the aggregate accepts intentional
-Rust non-applicability. Repository policy, cargo-deny and cargo-machete remain
-active, so a docs-only change can still expose a broken baseline; a skipped Rust
-matrix does not certify those independent checks.
+The builder and selector must succeed before the aggregate accepts any
+intentional skip. It accepts a skipped security job only for a pull request with
+an exact `security_required=false` selector output; missing or malformed outputs
+fail. Repository policy, cargo-deny and cargo-machete remain active, so an
+allowlisted change can still expose a broken baseline; skipped native and
+security jobs do not certify those independent checks.
 
 For local documentation of installer or packaging behavior, run the relevant
 existing contract directly before waiting for CI:
