@@ -64,7 +64,8 @@ for path in /usr/bin/fs /usr/bin/file-explorer /usr/bin/tilo-launcher \
             /usr/bin/fusermount3 /usr/bin/cage /usr/libexec/tilo/files-atspi-smoke.sh \
             /usr/libexec/tilo/native-atspi-smoke.sh \
             /usr/libexec/tilo/atspi-external-client.py /usr/libexec/tilo/installed-atspi-apps.sh \
-            /usr/libexec/tilo-session; do
+            /usr/libexec/tilo-session \
+            /usr/bin/dbus-update-activation-environment; do
   require_exec "$path"
 done
 require_file /etc/fuse.conf
@@ -134,6 +135,10 @@ require_line /usr/share/wayland-sessions/shell.desktop "Exec=/usr/libexec/tilo-s
 require_line /usr/share/wayland-sessions/shell-peer-sync.desktop "Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync"
 require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user start "$SESSION_TARGET"'
 require_text /usr/libexec/tilo-session 'run_managed "$SHELL_BIN" "$@"'
+require_text /usr/libexec/tilo-session '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
+require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
+require_text /usr/libexec/tilo-session '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
+require_text /usr/libexec/tilo-session '"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE'
 if grep -Fq -- '--provision-identity' "$(at /usr/libexec/tilo-session)" \
    || grep -Fq -- '--verify-collaboration-identity' "$(at /usr/libexec/tilo-session)"; then
   die "session wrapper must let the trusted native compositor own first-login OOBE"
