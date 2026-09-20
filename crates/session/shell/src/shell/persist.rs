@@ -372,7 +372,7 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
-                    if let TileContent::Foreign { app_id, .. } = &tab.tile {
+                    if let TileContent::Foreign { app_id, surface_id } = &tab.tile {
                         // A mapped host window announces a toolkit/window-system
                         // identity, which need not be the desktop-file id that
                         // `run-host` accepts.  Keep the durable record keyed by
@@ -384,12 +384,14 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
                         // "Not installed" even though a fresh palette launch
                         // worked. Unknown foreign windows deliberately retain
                         // their announced identity.
-                        let durable_app_id = crate::shell::launcher::launch_key_for_app_id(app_id)
-                            .or_else(|| {
-                                crate::shell::host_apps::app_for_window_id(app_id)
-                                    .map(|app| app.desktop_id)
-                            })
-                            .unwrap_or_else(|| app_id.clone());
+                        let durable_app_id =
+                            crate::shell::launcher::launch_key_for_surface(*surface_id)
+                                .or_else(|| crate::shell::launcher::launch_key_for_app_id(app_id))
+                                .or_else(|| {
+                                    crate::shell::host_apps::app_for_window_id(app_id)
+                                        .map(|app| app.desktop_id)
+                                })
+                                .unwrap_or_else(|| app_id.clone());
                         tab.tile = TileContent::LocalApp {
                             app_id: durable_app_id,
                             label: tab.title.clone(),
@@ -918,6 +920,15 @@ mod tests {
             &launch_identities,
             &app.name,
         );
+        crate::shell::launcher::set_pending_placement_for_identities(
+            &app.desktop_id,
+            &launch_identities,
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        assert_eq!(
+            crate::shell::launcher::placement_for_toplevel("org.gnome.Rygel.Preferences", 90_102,),
+            Some(crate::shell::tab_binding::Placement::NewGroup)
+        );
 
         let dir = tempfile::tempdir().expect("state directory");
         let path = dir.path().join("state.json");
@@ -957,6 +968,7 @@ mod tests {
 
         crate::shell::host_apps::invalidate_cache();
         crate::shell::launcher::clear_launched_for_test();
+        crate::shell::launcher::clear_pending_placements();
         unsafe {
             if let Some(previous) = previous_data_home {
                 std::env::set_var("XDG_DATA_HOME", previous);
