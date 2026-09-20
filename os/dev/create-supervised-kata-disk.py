@@ -7,11 +7,15 @@ No pod creation, credential provisioning, node mutation or disk publication.
 """
 import argparse
 import base64
+import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import subprocess
+import tempfile
 import time
 import zipfile
 
@@ -102,7 +106,7 @@ print(json.dumps({'container':c,'sandbox':s,'pid':int(d.name),'start':(d/'stat')
 '''
 
 GUEST_RUN = r'''
-import base64,importlib.util,io,json,pathlib,sys,tempfile,types,zipfile
+import base64,importlib.util,io,json,os,pathlib,sys,tempfile,types,zipfile
 p=json.load(sys.stdin)
 with tempfile.TemporaryDirectory(prefix='tilo-supervised-helper-') as d:
  z=zipfile.ZipFile(io.BytesIO(base64.b64decode(p['helpers'])))
@@ -113,7 +117,23 @@ with tempfile.TemporaryDirectory(prefix='tilo-supervised-helper-') as d:
  spec=importlib.util.spec_from_file_location('disk_creator',pathlib.Path(d,'create-development-disk.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
  args=p['args']
  for name in ('public_bundle','output'):args[name]=pathlib.Path(args[name])
- print(json.dumps(m.create_from_supervised_controller(types.SimpleNamespace(**args),p['observation']),sort_keys=True))
+ auth=None
+ if p.get('registry_auth') is not None:
+  auth=pathlib.Path(d,'registry-auth.json');auth.write_bytes(base64.b64decode(p['registry_auth']));auth.chmod(0o600)
+  os.environ['REGISTRY_AUTH_FILE']=str(auth)
+ receipt=m.create_from_supervised_controller(types.SimpleNamespace(**args),p['observation'])
+ receipt['controller_helper']={'revision':p['helper_revision'],'bundle_sha256':p['helper_bundle_sha256']}
+ encoded=(json.dumps(receipt,sort_keys=True)+'\n').encode()
+ destination=args['output'].with_name('creation.json')
+ temporary=destination.with_name('.creation.json.tmp')
+ fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+ try:
+  with os.fdopen(fd,'wb') as stream:stream.write(encoded);stream.flush();os.fsync(stream.fileno())
+  os.replace(temporary,destination)
+ finally:
+  try:temporary.unlink()
+  except FileNotFoundError:pass
+ print(encoded.decode(),end='')
 '''
 
 
@@ -123,6 +143,80 @@ def checked(argv, payload=None):
         # Kubernetes and registry errors can contain sensitive configuration.
         raise ValueError(f'{Path(argv[0]).name} failed (exit {result.returncode})')
     return result.stdout
+
+
+def private_input(path, *, limit):
+    """Read one bounded, owned regular file without following a replacement."""
+    path = Path(path)
+    before = path.lstat()
+    if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+            or before.st_size < 2 or before.st_size > limit):
+        raise ValueError('private input must be a populated bounded regular file')
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(path, flags)
+    try:
+        current = os.fstat(fd)
+        if (current.st_dev, current.st_ino, current.st_size) != (before.st_dev, before.st_ino, before.st_size):
+            raise ValueError('private input changed while opening')
+        chunks = []
+        remaining = limit + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b''.join(chunks)
+        if len(data) != current.st_size:
+            raise ValueError('private input changed while reading')
+        return data
+    finally:
+        os.close(fd)
+
+
+def helper_bundle(revision):
+    """Archive exactly the tracked Python helpers at the requested checkout."""
+    if not re.fullmatch(r'[0-9a-f]{40}', revision):
+        raise ValueError('helper revision must be a full Git commit')
+    root = Path(__file__).resolve().parents[2]
+    actual = checked(['git', '-C', str(root), 'rev-parse', 'HEAD']).strip()
+    if actual != revision:
+        raise ValueError('helper checkout differs from requested revision')
+    if checked(['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=no', '--', 'os/dev']):
+        raise ValueError('tracked disk helpers differ from the helper revision')
+    names = checked(['git', '-C', str(root), 'ls-tree', '-r', '--name-only', revision, '--', 'os/dev']).splitlines()
+    names = [name for name in names if name.endswith('.py') and Path(name).parent.as_posix() == 'os/dev']
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name in names:
+            data = subprocess.run(['git', '-C', str(root), 'show', revision + ':' + name],
+                                  check=True, capture_output=True).stdout
+            archive.writestr(Path(name).name, data)
+    value = bundle.getvalue()
+    return value, hashlib.sha256(value).hexdigest()
+
+
+def persist_receipt(path, output):
+    """Validate and atomically persist the one guest receipt."""
+    try:
+        receipt = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise ValueError('guest did not return one creation receipt') from error
+    if receipt.get('disk_created') is not True or receipt.get('purpose') != 'tilo-development-unaccepted-test-disk':
+        raise ValueError('guest did not return a completed creation receipt')
+    path = Path(path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    encoded = (json.dumps(receipt, indent=2, sort_keys=True) + '\n').encode()
+    fd, temporary = tempfile.mkstemp(prefix='.creation-', suffix='.json', dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(encoded); stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
+    return receipt
 
 
 def inspect_pod(pod, node, expected_uid, guest_image):
@@ -332,6 +426,12 @@ def main():
     p.add_argument('--pins', type=Path, required=True, help='operator-reviewed exact host file SHA256 mapping')
     p.add_argument('--disk-args', type=Path, required=True, help='guest create args JSON; paths are inside guest')
     p.add_argument('--evidence', type=Path, required=True)
+    p.add_argument('--creation-receipt', type=Path,
+                   help='required for creation: private local copy of the accepted receipt')
+    p.add_argument('--registry-auth', type=Path,
+                   help='optional bounded registry auth file streamed only through authenticated exec')
+    p.add_argument('--helper-revision', required=True,
+                   help='full commit whose tracked os/dev Python helpers are executed')
     p.add_argument('--inspect-only', action='store_true')
     args = p.parse_args()
     k = ['kubectl', '--context', args.context]
@@ -360,16 +460,21 @@ def main():
     args.evidence.write_text(json.dumps({'observation':observation,'host':host},indent=2))
     if args.inspect_only:
         print(json.dumps({'inspected':True,'disk_created':False}));return
+    if args.creation_receipt is None:
+        raise ValueError('--creation-receipt is required for disk creation')
     disk_args = json.loads(args.disk_args.read_text())
-    bundle = io.BytesIO()
-    with zipfile.ZipFile(bundle,'w',zipfile.ZIP_DEFLATED) as archive:
-        for path in Path(__file__).parent.glob('*.py'):
-            archive.write(path,path.name)
-    payload = {'observation':observation,'args':disk_args,'helpers':base64.b64encode(bundle.getvalue()).decode()}
+    bundle, bundle_sha256 = helper_bundle(args.helper_revision)
+    registry_auth = private_input(args.registry_auth, limit=1024*1024) if args.registry_auth else None
+    payload = {'observation':observation,'args':disk_args,
+               'helpers':base64.b64encode(bundle).decode(),
+               'helper_revision':args.helper_revision,
+               'helper_bundle_sha256':bundle_sha256,
+               'registry_auth':base64.b64encode(registry_auth).decode() if registry_auth else None}
     output = checked(k+['-n',args.namespace,'exec','-i',args.pod,'-c',pod['spec']['containers'][0]['name'],'--','/usr/bin/unshare','--mount','--propagation','private','--','python3','-c',GUEST_RUN],json.dumps(payload))
     after = get('pod', args.pod, args.namespace)
     if inspect_pod(after,args.node,args.pod_uid,args.guest_image) != identity or after['spec'] != pod['spec']:
         raise ValueError('pod changed during disk creation; result not accepted')
+    persist_receipt(args.creation_receipt, output)
     print(output,end='')
 
 
