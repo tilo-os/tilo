@@ -2426,14 +2426,8 @@ impl Widget for TerminalWidget {
         } else {
             ui::tokens::TypeScale::default().base
         };
-        let (w, h) = text_renderer.measure_styled(
-            " ",
-            font_size,
-            None,
-            TextWeight::Regular,
-            false,
-            true,
-        );
+        let (w, h) =
+            text_renderer.measure_styled(" ", font_size, None, TextWeight::Regular, false, true);
         if w > 0.0 && h > 0.0 {
             self.char_w = f64::from(w).max(1.0);
             self.char_h = Self::cell_h(h);
