@@ -4567,6 +4567,7 @@ mod tests {
         assert_eq!(active_route(&handle.tree.borrow()).unwrap().ids().unwrap().3, notes_instance);
         assert_eq!(handle.activation_sequence.get(), activation + 1,
             "group pointer selection must cross the app activation boundary");
+        frame.relayout();
         let owner = frame.inspection().keyboard_focus_owner.unwrap();
         assert_eq!(frame.semantic_owner_instance(&owner), Some(notes_instance));
         assert!(!composer_focused(&frame), "Chat composer must clear its semantic focused flag");

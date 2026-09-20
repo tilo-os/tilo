@@ -3107,7 +3107,7 @@ impl Widget for ChatApp {
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
         // is painted last so it remains legible on rail, sidebar and popovers.
         let semantic = Self::deduplicate_semantic_hits(self.semantic_hits_from(&hits));
-        if let Some(index) = self.keyboard_target {
+        if self.host_focused && let Some(index) = self.keyboard_target {
             if let Some((rect, ..)) = semantic.get(index) {
                 crate::paint::stroke_round(scene, tf, *rect, 9.0, c.accent[7], 2.0);
             } else {
@@ -3200,10 +3200,11 @@ impl Widget for ChatApp {
                     Hit::FocusEdit => Some(&self.edit_input),
                     _ => None,
                 };
-                let focused = self.keyboard_target.map_or_else(
-                    || input.is_some_and(|input| ui::Widget::is_focused(input)),
-                    |target| target == index,
-                );
+                let focused = self.host_focused
+                    && self.keyboard_target.map_or_else(
+                        || input.is_some_and(|input| ui::Widget::is_focused(input)),
+                        |target| target == index,
+                    );
                 let mut state = AccessState::new()
                     .focusable(true)
                     .focused(focused);

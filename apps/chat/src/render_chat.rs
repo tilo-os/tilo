@@ -1445,11 +1445,23 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let box_r = Rect::new(x - 4.0, y - 3.0, x + w, y + 19.0);
+        let focused = self.is_focused();
         fill_round(scene, tf, box_r, 5.0, c.neutral[2]);
-        stroke_round(scene, tf, box_r, 5.0, c.border_focus, 1.4);
+        stroke_round(
+            scene,
+            tf,
+            box_r,
+            5.0,
+            if focused {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            if focused { 1.4 } else { 1.0 },
+        );
         self.rename_input
             .apply_layout_external(Rect::new(x, y, x + w - 8.0, y + 16.0));
-        self.rename_input.set_focus(true);
+        self.rename_input.set_focus(focused);
         self.rename_input.draw(scene, tf, tr, theme, presence);
         ChatApp::push_hit(hits, box_r, Hit::FocusRename);
     }
@@ -2344,8 +2356,20 @@ impl ChatApp {
             text_x + f64::from(text_w) + 8.0,
             *y + box_h,
         );
+        let focused = self.is_focused();
         fill_round(scene, tf, er, 10.0, c.neutral[2]);
-        stroke_round(scene, tf, er, 10.0, c.border_focus, 1.6);
+        stroke_round(
+            scene,
+            tf,
+            er,
+            10.0,
+            if focused {
+                c.border_focus
+            } else {
+                c.border_standard
+            },
+            if focused { 1.6 } else { 1.0 },
+        );
         self.edit_input.set_placeholder("Edit message…");
         self.edit_input.apply_layout_external(Rect::new(
             text_x - 10.0,
@@ -2353,7 +2377,7 @@ impl ChatApp {
             text_x + f64::from(text_w) + 10.0,
             *y + box_h,
         ));
-        self.edit_input.set_focus(true);
+        self.edit_input.set_focus(focused);
         self.edit_input.draw(scene, tf, tr, theme, presence);
         ChatApp::push_hit(hits, er, Hit::FocusEdit);
         *y += box_h;
@@ -2965,7 +2989,9 @@ impl ChatApp {
         }
         // While an inline message edit is in progress the caret lives in the
         // editor, not the composer.
-        let focused = matches!(self.focus, crate::app::Focus::Main) && self.editing.is_none();
+        let focused = self.is_focused()
+            && matches!(self.focus, crate::app::Focus::Main)
+            && self.editing.is_none();
         let draft = self.composer_main.value();
         let send_enabled = !draft.trim().is_empty();
         let inner = Self::draw_input_box(
@@ -3185,7 +3211,9 @@ impl ChatApp {
             Self::draw_read_only_composer(scene, tf, tr, theme, comp);
             return;
         }
-        let focused = matches!(self.focus, crate::app::Focus::Thread) && self.editing.is_none();
+        let focused = self.is_focused()
+            && matches!(self.focus, crate::app::Focus::Thread)
+            && self.editing.is_none();
         let draft = self.composer_thread.value();
         let send_enabled = !draft.trim().is_empty();
         let inner = Self::draw_input_box(
