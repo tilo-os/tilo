@@ -138,6 +138,9 @@ pub enum NotesOperation {
     OpenTag {
         tag: TagId,
     },
+    /// Finish a locally captured file import after fresh host admission. The
+    /// payload never contains a filesystem path or externally supplied bytes.
+    FinalizeImport,
 }
 
 /// Decode an operation payload owned by Notes.
@@ -288,6 +291,14 @@ pub enum NotesAction {
     /// note" path. Both ids are authored up front, so it is as replayable as
     /// the lower-level upsert + absolute membership operations.
     CreateAndAssignTag { page: String, tag: TagData },
+    /// Import one complete page in one executor transaction, so malformed
+    /// content cannot leave behind a successful-looking empty page.
+    ImportPage {
+        page: PageData,
+        ops: Vec<BlockEditOp>,
+        marks: Vec<(String, Vec<InlineMarkSpan>)>,
+        assets: Vec<(String, Vec<u8>)>,
+    },
 }
 
 fn update_page_tree(doc: &mut Doc, before: &[PageData], after: &[PageData]) -> Result<(), String> {
@@ -522,6 +533,12 @@ pub fn history_context(action: &NotesAction) -> tilo_actions::ActionContext {
             "notes.page",
             page.title.clone(),
         ),
+        NotesAction::ImportPage { page, .. } => (
+            "Import Markdown",
+            format!("notes.page:{}", page.id),
+            "notes.page",
+            page.title.clone(),
+        ),
         NotesAction::DuplicateSubtree { source, .. } => (
             "Duplicate note",
             format!("notes.page:{source}"),
@@ -667,6 +684,36 @@ impl Action for NotesAction {
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            NotesAction::ImportPage {
+                page,
+                ops,
+                marks,
+                assets,
+            } => {
+                let meta = page
+                    .to_meta()
+                    .ok_or_else(|| ActionError::Refused("invalid imported page identity".into()))?;
+                if meta.id.is_nil()
+                    || meta.parent.is_some()
+                    || !page.parent.is_empty()
+                    || NotesDoc::list_pages(doc)
+                        .iter()
+                        .any(|existing| existing.id == meta.id)
+                {
+                    return Err(ActionError::Refused(
+                        "import requires a new root page".into(),
+                    ));
+                }
+                for (digest, bytes) in assets {
+                    crate::notebook::put_asset(doc, digest, bytes).map_err(ActionError::Refused)?;
+                }
+                NotesDoc::upsert_page_meta(doc, &meta);
+                NotesDoc::apply_block_ops(doc, meta.id, ops).map_err(ActionError::Refused)?;
+                for (block_id, marks) in marks {
+                    NotesDoc::set_block_marks(doc, meta.id, block_id, marks)
+                        .map_err(ActionError::Refused)?;
+                }
+            }
             NotesAction::UpdatePageTree { before, after } => {
                 update_page_tree(doc, before, after).map_err(ActionError::Refused)?;
             }
@@ -1037,7 +1084,17 @@ fn view_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> Opt
         operation,
     )
     .ok()
-    .map(|spec| spec.retry_policy(RetryPolicy::Idempotent))
+    .map(|spec| {
+        let retry = if matches!(
+            operation,
+            NotesOperation::NavigateBack | NotesOperation::NavigateForward
+        ) {
+            RetryPolicy::AtMostOnce
+        } else {
+            RetryPolicy::Idempotent
+        };
+        spec.retry_policy(retry)
+    })
 }
 
 fn effect_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> Option<ActionSpec> {
@@ -1921,6 +1978,53 @@ mod tests {
     }
 
     #[test]
+    fn import_page_dispatch_rolls_back_invalid_body_and_replays_complete_page() {
+        let mut workspace = Workspace::default();
+        let page = workspace.create_page(None);
+        let meta = PageData::from_meta(workspace.get(page).unwrap());
+        let mut doc = AutoCommit::new();
+        let before = doc.get_heads();
+        let invalid = NotesAction::ImportPage {
+            page: meta.clone(),
+            ops: vec![BlockEditOp::Delete {
+                block_id: "missing-block".into(),
+            }],
+            marks: vec![],
+            assets: vec![],
+        };
+        assert!(
+            tilo_actions::dispatch(
+                &mut doc,
+                &invalid,
+                encode(&invalid),
+                &mut LocalTransport::new()
+            )
+            .is_err()
+        );
+        assert_eq!(doc.get_heads(), before);
+        assert!(
+            NotesDoc::list_pages(&doc).is_empty(),
+            "failed body must not leave phantom metadata"
+        );
+        let mut peer = doc.clone();
+        let (ops, marks) =
+            crate::MainPanel::seed_block_ops_with_marks("# Import\n\n**Rich content**", |_| None);
+        let valid = NotesAction::ImportPage {
+            page: meta,
+            ops,
+            marks,
+            assets: vec![],
+        };
+        let applied =
+            tilo_actions::dispatch(&mut doc, &valid, encode(&valid), &mut LocalTransport::new())
+                .unwrap();
+        tilo_actions::replay(&mut peer, applied.envelope(), &registry()).unwrap();
+        assert_eq!(doc.get_heads(), peer.get_heads());
+        assert_eq!(NotesDoc::page_block_snapshots(&doc, page).len(), 2);
+        assert!(!NotesDoc::page_block_marks(&doc, page).is_empty());
+    }
+
+    #[test]
     fn markdown_file_actions_are_portal_mediated_background_jobs() {
         let import = file_operation("import-markdown", "Import Markdown", None);
         assert!(import.params().is_empty());
@@ -2093,7 +2197,8 @@ mod tests {
 
         // The one palette surfaces the tree's actions as rows.
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/sdk/ui-core/assets/fonts"),
             "en-US",
         );
         let renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
@@ -2637,6 +2742,9 @@ mod tests {
             }
             NotesAction::DuplicateSubtree { .. } => {
                 panic!("new-child built the wrong action: DuplicateSubtree")
+            }
+            NotesAction::ImportPage { .. } => {
+                panic!("new-child built the wrong action: ImportPage")
             }
             NotesAction::DeletePage { id } => {
                 panic!("new-child built the wrong action: DeletePage {{ id: {id:?} }}")

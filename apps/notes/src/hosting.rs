@@ -7,6 +7,20 @@ use ui::application::{
 use ui::launch::LaunchError;
 use ui::record::{RecordCheckout, RecordId, RecordOpenError};
 
+static NATIVE_LAUNCH_TARGET: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Retain the parsed positional launch target until the component factory has
+/// a bound app instance. The native process hosts one Notes component.
+pub fn set_native_launch_target(target: Option<String>) {
+    if let Ok(mut pending) = NATIVE_LAUNCH_TARGET.lock() {
+        *pending = target;
+    }
+}
+
+pub(crate) fn take_native_launch_target() -> Option<String> {
+    NATIVE_LAUNCH_TARGET.lock().ok()?.take()
+}
+
 pub fn default_notebook() -> RecordCheckout {
     RecordCheckout::new(
         RecordId::derived("default-notebook", &RecordId::for_tab(0)),
@@ -25,9 +39,11 @@ pub fn prepare_native(
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let mut native = NativeProcessHost::open(crate::definition())?;
     let instance_id = native.instance_id();
-    let legacy_root = (!native.workspace_scoped())
-        .then(crate::storage::default_root)
-        .flatten();
+    let legacy_root = if native.workspace_scoped() {
+        None
+    } else {
+        crate::storage::default_root().map_err(LaunchError::Operation)?
+    };
     prepare_default(
         native.host_mut(),
         instance_id,

@@ -20,6 +20,13 @@ EPOCH = 1700000000
 ENVIRONMENT = os.environ.copy()
 
 
+def raw_rootfs_containerfile():
+    return (f'FROM {BASE}\n'
+            'RUN dnf -y install python3 systemd-boot-unsigned && dnf clean all\n'
+            'COPY rootfs/ /\n'
+            f'LABEL org.opencontainers.image.revision={REVISION}\n')
+
+
 def run(*arguments, env=None, error=None):
     result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             env=ENVIRONMENT if env is None else env)
@@ -72,11 +79,7 @@ def main():
                 '--official', str(bundle), '--destination', str(image_root / 'usr/share/tilo'),
                 '--mode', 'development', '--manifest-sha256', digest, '--registry-owner', 'ab' * 32,
                 '--target-ref', target, '--image-root', str(image_root))
-            (context / 'Containerfile').write_text(
-                f'FROM {BASE}\n'
-                'RUN dnf -y install python3 systemd-boot-unsigned && dnf clean all\n'
-                'COPY rootfs/ /\n'
-                f'LABEL org.opencontainers.image.revision={REVISION}\n')
+            (context / 'Containerfile').write_text(raw_rootfs_containerfile())
             iidfile = root / 'raw.iid'
             # Network is confined to the disposable fixture's initial package setup.
             podman('build', '--iidfile', str(iidfile), str(context))

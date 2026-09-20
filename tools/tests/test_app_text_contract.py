@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "check_app_text_contract.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_app_text_contract.py"
 SPEC = importlib.util.spec_from_file_location("check_app_text_contract", SCRIPT)
 contract = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -27,7 +27,7 @@ class AppTextContractTests(unittest.TestCase):
     def test_public_ui_text_surface_passes(self):
         root = self.fixture(
             '[package]\nname="sample"\nversion="0.1.0"\n'
-            '[dependencies]\nui={path="../../ui"}\n',
+            '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
             "use ui::text_render::TextRenderer;\n",
         )
         violations, apps, users = contract.audit(root)
@@ -37,7 +37,7 @@ class AppTextContractTests(unittest.TestCase):
     def test_private_shaper_dependency_and_glyph_paint_fail(self):
         root = self.fixture(
             '[package]\nname="sample"\nversion="0.1.0"\n'
-            '[dependencies]\nui={path="../../ui"}\ncosmic-text="0.19"\n',
+            '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\ncosmic-text="0.19"\n',
             "fn paint(scene: &mut vello::Scene) { scene.draw_glyphs(todo!()); }\n",
         )
         violations, _, _ = contract.audit(root)
@@ -48,7 +48,7 @@ class AppTextContractTests(unittest.TestCase):
     def test_product_font_literal_fails(self):
         root = self.fixture(
             '[package]\nname="sample"\nversion="0.1.0"\n'
-            '[dependencies]\nui={path="../../ui"}\n',
+            '[dependencies]\nui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n',
             'const FONT: &str = "Noto Serif";\n',
         )
         violations, _, _ = contract.audit(root)

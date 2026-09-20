@@ -123,7 +123,7 @@ so an app opened in one room cannot read what it wrote in another, and
 there is no manifest field with which to opt out. A launch with no
 workspace (`tilo-launcher run` from a shell, the CLI shim, a test) gets
 the `personal` room, which is a room like any other and not a bypass.
-`plan/rooms.md` — "an app opened in a room starts empty" — is this
+`docs/architecture/rooms.md` — "an app opened in a room starts empty" — is this
 sentence, at the filesystem layer.
 
 `crates/packaging/launcher/tests/room_confinement.rs` proves it by
@@ -267,7 +267,7 @@ Where a denial can be expressed as a state your app already handles, it is:
 So `/var/workspace` is a **filtered view**: an app that enumerates it sees
 exactly what it was granted, as an ordinary directory. There is no entry
 that appears and then fails, and no errno that distinguishes "hidden" from
-"not there" — `fs/tests/integration_test.rs` compares the two for every
+"not there" — `crates/system/fs/tests/integration_test.rs` compares the two for every
 operation. Nothing here is a reason to prompt the user; if a path is not
 there, treat it as not there.
 

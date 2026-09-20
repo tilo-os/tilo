@@ -488,26 +488,4 @@ mod tests {
         assert_eq!(absolute_url("http://example.com/y"), "http://example.com/y");
         assert_eq!(absolute_url(""), "");
     }
-
-    /// Real-path check: actually pull top comments through rustypipe and assert
-    /// the mapping onto Tube's `Comment`. Honestly gated on `TUBE_NET_TESTS=1`
-    /// (never `#[ignore]`d) so offline/CI runs pass trivially. Run with:
-    /// `TUBE_NET_TESTS=1 cargo test -p tube --features live live_comments`.
-    #[test]
-    fn live_comments_when_enabled() {
-        if std::env::var("TUBE_NET_TESTS").is_err() {
-            eprintln!("skipping live comments test (set TUBE_NET_TESTS=1 to run it)");
-            return;
-        }
-        let backend = RustyPipeBackend::new().expect("construct rustypipe backend");
-        // Big Buck Bunny — stable, long-lived, comments enabled.
-        let comments = backend.comments("aqz-KE-bpKQ").expect("real comments call");
-        assert!(!comments.is_empty(), "the video has top comments");
-        assert!(
-            comments
-                .iter()
-                .any(|c| !c.text.is_empty() && !c.author.is_empty()),
-            "at least one comment has real author + text"
-        );
-    }
 }

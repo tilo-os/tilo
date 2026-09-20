@@ -75,7 +75,7 @@ fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
     // Live and headless launches restore the same persistent image content.
     configure_blob_store();
     photos::strings::install();
-    let mut app = photos::PhotosApp::new();
+    let mut app = photos::PhotosApp::new_persistent();
     if args.value("--import-directory").is_some() || args.has("--library") {
         app.show_library();
     }
@@ -100,7 +100,7 @@ fn open_state(app_id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persis
     configure_blob_store();
     let (mut state, autosave) = ui::persist::open(app_id);
     if let Some(path) = requested_path(args) {
-        let mut opener = photos::PhotosApp::new();
+        let mut opener = photos::PhotosApp::new_persistent();
         photos::strings::install();
         opener.open_path(&mut state.doc, path);
     }
@@ -143,6 +143,12 @@ fn import_directory_at_startup(
                 .or_else(|| photos::analysis::recognize_text(&indexed.photo.image, "eng").ok());
             if let Some(mut analysis) = result {
                 "shared".clone_into(&mut analysis.provenance.scope);
+                if let Some(provenance) = &mut analysis.ocr_provenance {
+                    "shared".clone_into(&mut provenance.scope);
+                }
+                if let Some(provenance) = &mut analysis.vision_provenance {
+                    "shared".clone_into(&mut provenance.scope);
+                }
                 if !analysis.searchable_text().is_empty() {
                     indexed.photo.analysis = Some(analysis);
                 }
@@ -219,7 +225,11 @@ fn render_scenario(
     // necessary. A library shot gets a few more *offscreen-only* frames so
     // its real background thumbnail worker can settle; the live UI never
     // waits for a decode.
-    let settle_frames = if matches!(
+    let settle_frames = if matches!(scenario, "people" | "people-detail") {
+        // People cards intentionally use real library thumbnails rather than
+        // avatar placeholders, so let the bounded decoder queue settle.
+        20
+    } else if matches!(
         scenario,
         "library"
             | "places"
@@ -228,10 +238,10 @@ fn render_scenario(
             | "album-manage"
             | "metadata-edit"
     ) {
-        // The live view fills a four-item bounded queue per sync. Two frames
-        // exercise the real hydration path without turning a still-image
-        // acceptance render into an expensive background indexing loop.
-        2
+        // The live view fills a four-item bounded queue per sync. Acceptance
+        // images must let that real queue drain far enough to review the
+        // photograph layout itself rather than mostly reviewing placeholders.
+        20
     } else {
         2
     };

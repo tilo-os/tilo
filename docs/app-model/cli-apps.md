@@ -133,7 +133,7 @@ a place to put its own state, use `resolve_workspace_path`.
 
 ## Walkthrough: notes-cli
 
-The reference CLI shipped in-tree is `crates/packaging/notes-cli/`. Its
+The reference CLI shipped in-tree is `examples/packaging/notes-cli/`. Its
 manifest:
 
 ```toml
@@ -170,7 +170,7 @@ Install and run:
 
 ```
 $ tilo-pkg pack \
-    --manifest crates/packaging/notes-cli/manifest.toml \
+    --manifest examples/packaging/notes-cli/manifest.toml \
     --payload  demo/payload \
     --output   demo/notes-cli.qpkg
 packed qpkg:36c777e279b33bd1c7ca6ee8a5a7033e0e500abfc5e2262c2b2b0476a9f33eca (4 blobs)

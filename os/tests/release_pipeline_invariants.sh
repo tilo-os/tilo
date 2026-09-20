@@ -71,7 +71,9 @@ else
   bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
 fi
 
-if grep -Fq 'needs: [build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
+if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-builder-image.yml" \
+  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-builder-image.yml" \
   && grep -Fq 'runner: runner-arm64' "$workflows/build-builder-image.yml" \
   && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
@@ -129,8 +131,10 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && ok 'desktop, app and OS component tags are disjoint' \
   || bad 'a component tag can accidentally release another component'
 
-grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
-  && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
+! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$desktop" | grep -q '^    branches:' \
+  && [ "$(grep -c '      - "crates/session/shell/\*\*"' "$desktop")" -eq 1 ] \
+  && grep -Fq "if: github.event_name != 'pull_request'" "$desktop" \
+  && grep -Fq '  schedule:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
   && grep -Fq '[[ ${TILO_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
   && grep -Fq 'arm64_runner=runner-large-arm64' "$desktop" \
@@ -138,12 +142,13 @@ grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
   && grep -Fq 'release_arches: ${{ steps.lanes.outputs.release_arches }}' "$desktop" \
   && grep -Fq 'RELEASE_ARCHES: ${{ needs.validate.outputs.release_arches }}' "$desktop" \
   && grep -Fq 'verify-release-artifacts.sh release "$version" "$RELEASE_ARCHES"' "$desktop" \
-  && ok 'desktop push and pull-request triggers are path-scoped' \
+  && ok 'desktop PRs keep preflight while native packaging is scheduled or explicit' \
   || bad 'desktop packaging boundaries or native release lanes regressed'
 
 grep -Fq 'publish-os-payload:' "$desktop" \
   && grep -Fq 'TILO_DESKTOP_RELEASE_AUDIENCE' "$desktop" \
-  && grep -Fq '"with_browser":"1","publish":"true"' "$desktop" \
+  && grep -Fq 'CONTINUOUS_OS_RELEASE: "0"' "$desktop" \
+  && grep -Fq "if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'" "$desktop" \
   && grep -Fq 'TILO_DESKTOP_PAYLOAD_URL_X86_64' "$os" \
   && grep -Fq 'TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}' "$os" \
   && grep -Fq 'DESKTOP_RELEASE_ARGS=""' "$repo/os/Containerfile" \
@@ -157,7 +162,7 @@ grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
-  && grep -Fq 'CONTINUOUS_RELEASE: ${{ vars.TILO_CONTINUOUS_OS_RELEASE }}' "$os" \
+  && grep -Fq 'CONTINUOUS_RELEASE: "0"' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
@@ -166,18 +171,17 @@ grep -Fq 'with_browser=0' "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
-if [ "$(grep -Fc '      - "shell/**"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "ui/**"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "apps/file-explorer/tests/atspi_smoke.sh"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "tools/atspi_external_client.py"' "$os")" -eq 2 ] \
-  && [ "$(grep -Fc '      - "tools/check_atspi_endpoint_contract.py"' "$os")" -eq 2 ] \
+if ! grep -q '^  pull_request:' "$os" \
+  && ! sed -n '/^  push:/,/^  workflow_dispatch:/p' "$os" | grep -q '^    branches:' \
+  && grep -Fq '  schedule:' "$os" \
+  && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
-  && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/shell/tests/native_atspi_smoke.sh" \
-  && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Action.GetActions' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Action.DoAction 0' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Component.GrabFocus' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.EditableText.SetTextContents' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
+  && grep -Fq 'org.a11y.atspi.Text.GetText 0 -1' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'wait_for_names "New Folder"' "$repo/apps/file-explorer/tests/atspi_smoke.sh" \
   && grep -Fq 'at-spi2-core' "$repo/os/Containerfile" \
   && grep -Fq 'atspi-external-client.py' "$repo/os/Containerfile" \
@@ -196,7 +200,7 @@ grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager"
   && ok 'imager native jobs are reserved for explicit release rehearsals and tags' \
   || bad 'ordinary commits can still allocate or misroute native imager hosts'
 
-grep -Fq 'release/app-collections.toml' "$apps" \
+grep -Fq 'dist/apps/app-collections.toml' "$apps" \
   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$apps" \
   && grep -Fq '$package_api/tilo-app-collections/$VERSION/' "$apps" \
   && grep -Fq '$package_api/tilo-app-$name/$VERSION/$file' "$apps" \
@@ -207,12 +211,25 @@ grep -Fq 'release/app-collections.toml' "$apps" \
   && grep -Fq '$GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main' "$apps" \
   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$apps" \
   && grep -Fq 'REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}' "$apps" \
-  && grep -Fq 'tools/app_release.py --architecture-matrix' "$apps" \
-  && grep -Fq 'image: code.sandbox.example/qos/tilo-builder:latest' "$apps" \
+  && grep -Fq 'tools/apps/app_release.py --architecture-matrix' "$apps" \
+  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      builder_image: ${{ steps.builder.outputs.image }}' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        id: builder' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  plan:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '        run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '    needs: plan' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  build:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '      image: ${{ needs.plan.outputs.builder_image }}' >/dev/null \
   && grep -Fq 'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5' "$apps" \
   && grep -Fq 'enable-openid-connect: true' "$apps" \
   && grep -Fq 'TILO_APP_RELEASE_TAG_AUDIENCE' "$apps" \
-  && ! awk '/^  publish:/{publish=1} publish' "$apps" | grep -Fq 'secrets.REGISTRY_TOKEN' \
+  && grep -Fq 'TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}' "$apps" \
+  && grep -Fq 'bundle_url="$package_public_api/tilo-app-collections/' "$apps" \
+  && grep -Fq 'bundle_upload_url="$package_api/tilo-app-collections/' "$apps" \
+  && ! grep -Fq 'channel_url=$bundle_upload_url' "$apps" \
+  && grep -Fq 'tools/upload_immutable_packages.sh "$upload_manifest"' "$apps" \
+  && grep -Fq 'tools/reuse_prior_app_collection.sh' "$apps" \
+  && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  qualify-collection:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
+  && awk '{sub(/\r$/, "")} /^  publish:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$apps" | grep -Fx '          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}' >/dev/null \
+  && ! awk '{sub(/\r$/, "")} /^  publish:/{publish=1} publish && /^    steps:/{steps=1} publish && steps' "$apps" | grep -F 'secrets.REGISTRY_TOKEN' >/dev/null \
   && ok 'app collections serialize channel updates and remain durable across workflows' \
   || bad 'app releases can cancel a required channel update or cannot be consumed later'
 
@@ -231,9 +248,11 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && grep -Fq 'QPKG_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
   && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \
   && grep -Fq 'RUNTIME_BUNDLE_IDENTITY_FILE' "$repo/dist/apps/package-apps.sh" \
-  && grep -Fq -- '-C codegen-units=1' "$repo/tools/rustc-thin-app-wrapper.sh" \
-  && ! grep -Fq -- '--icf=all' "$repo/tools/rustc-thin-app-wrapper.sh" \
-  && grep -Fq 'shared runtime changed; the full collection must be rebuilt' "$apps" \
+  && grep -Fq -- '-C codegen-units=1' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
+  && ! grep -Fq -- '--icf=all' "$repo/tools/ci/rustc-thin-app-wrapper.sh" \
+  && grep -Fq 'tools/reuse_prior_app_collection.sh' "$apps" \
+  && grep -Fq 'shared runtime changed; the full collection must be rebuilt' \
+       "$repo/tools/reuse_prior_app_collection.sh" \
   && ok 'OS builds consume OIDC-authenticated pinned app and desktop inputs without rebuilding them' \
   || bad 'OS releases are still coupled to app source builds'
 
@@ -257,8 +276,8 @@ grep -Fq "PKGEXT='.pkg.tar.zst'" "$repo/dist/arch/build-arch.sh" \
   && ok 'Arch packages use the release artifact compression on every architecture' \
   || bad 'an Arch base image can silently change the release package extension'
 
-python3 "$repo/tools/app_release.py" --collection default > /dev/null \
-  && python3 "$repo/tools/app_release.py" --collection recovery > /dev/null \
+python3 "$repo/tools/apps/app_release.py" --collection default > /dev/null \
+  && python3 "$repo/tools/apps/app_release.py" --collection recovery > /dev/null \
   && ok 'named app collections resolve against the live manifest catalogue' \
   || bad 'an app collection is stale or invalid'
 

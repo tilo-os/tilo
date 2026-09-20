@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from fnmatch import fnmatchcase
 from pathlib import Path
 
-from tools.check_workflow_package_paths import (
+from tools.policy.check_workflow_package_paths import (
     audit,
     dependency_directories,
     pattern_covers,
@@ -102,7 +103,7 @@ jobs:
         )
 
     def test_repository_targeted_workflows_follow_package_closures(self) -> None:
-        from tools.check_workflow_package_paths import load_metadata
+        from tools.policy.check_workflow_package_paths import load_metadata
 
         repository_metadata = load_metadata(ROOT)
         relay_text = (
@@ -135,6 +136,28 @@ jobs:
                 for item in audit(repository_metadata, ROOT, package, workflow)
             )
         self.assertEqual(violations, [])
+
+    def test_relay_catalog_only_changes_do_not_build_an_unsigned_image(self) -> None:
+        source = (ROOT / ".forgejo/workflows/tilo-relay.yaml").read_text(
+            encoding="utf-8"
+        )
+        blocks = workflow_path_blocks(source)
+        self.assertEqual(len(blocks), 2)
+        for block in blocks:
+            # PR72 added only PDFium entries here; relay's catalog consumer is
+            # Cosign installation, which runs only for tags/manual publication.
+            self.assertFalse(any(
+                fnmatchcase("os/external-assets/github-assets.tsv", pattern)
+                for pattern in block
+            ))
+            for path in (
+                "crates/hosting/tilo-relay/src/main.rs",
+                "crates/system/fs/src/lib.rs",
+                ".forgejo/actions/install-cosign/action.yml",
+            ):
+                self.assertTrue(any(fnmatchcase(path, pattern) for pattern in block), path)
+        self.assertIn('    tags: ["v*"]', source)
+        self.assertIn("\n  workflow_dispatch:\n", source)
 
 
 if __name__ == "__main__":

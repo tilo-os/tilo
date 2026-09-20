@@ -4,19 +4,23 @@ use std::rc::Weak;
 use std::time::Instant;
 
 use objc2::rc::Retained;
-use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
+use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSRunningApplication,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSRunningApplication,
 };
 use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
 
 use super::event_handler::EventHandler;
-use super::event_loop::{notify_windows_of_exit, stop_app_immediately, ActiveEventLoop, PanicInfo};
+use super::event_loop::{ActiveEventLoop, PanicInfo, notify_windows_of_exit, stop_app_immediately};
 use super::observer::{EventLoopWaker, RunLoop};
-use super::{menu, WindowId, DEVICE_ID};
+use super::{DEVICE_ID, WindowId, menu};
 use crate::event::{DeviceEvent, Event, StartCause, WindowEvent};
 use crate::event_loop::{ActiveEventLoop as RootActiveEventLoop, ControlFlow};
 use crate::window::WindowId as RootWindowId;
+#[path = "../quit_request.rs"]
+mod quit_request;
+use quit_request::{PendingQuit, QuitDecision, QuitRequest};
 
 #[derive(Debug)]
 pub(super) struct AppState {
@@ -40,6 +44,7 @@ pub(super) struct AppState {
     start_time: Cell<Option<Instant>>,
     wait_timeout: Cell<Option<Instant>>,
     pending_redraw: RefCell<Vec<WindowId>>,
+    quit_request: RefCell<QuitRequest<WindowId>>,
     // NOTE: This is strongly referenced by our `NSWindowDelegate` and our `NSView` subclass, and
     // as such should be careful to not add fields that, in turn, strongly reference those.
 }
@@ -61,6 +66,11 @@ declare_class!(
     unsafe impl NSObjectProtocol for ApplicationDelegate {}
 
     unsafe impl NSApplicationDelegate for ApplicationDelegate {
+        #[method(applicationShouldTerminate:)]
+        fn app_should_terminate(&self, _: &NSApplication) -> NSApplicationTerminateReply {
+            self.request_application_quit()
+        }
+
         #[method(applicationDidFinishLaunching:)]
         fn app_did_finish_launching(&self, notification: &NSNotification) {
             self.did_finish_launching(notification)
@@ -98,6 +108,7 @@ impl ApplicationDelegate {
             start_time: Cell::new(None),
             wait_timeout: Cell::new(None),
             pending_redraw: RefCell::new(vec![]),
+            quit_request: RefCell::new(QuitRequest::new()),
         });
         unsafe { msg_send_id![super(this), init] }
     }
@@ -125,15 +136,21 @@ impl ApplicationDelegate {
             // See:
             // - https://github.com/rust-windowing/winit/issues/261
             // - https://github.com/rust-windowing/winit/issues/3958
-            let is_bundled =
-                unsafe { NSRunningApplication::currentApplication().bundleIdentifier().is_some() };
+            let is_bundled = unsafe {
+                NSRunningApplication::currentApplication()
+                    .bundleIdentifier()
+                    .is_some()
+            };
             if !is_bundled {
                 app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
             }
         }
 
         window_activation_hack(&app);
-        #[allow(deprecated)]
+        #[allow(
+            deprecated,
+            reason = "winit retains this AppKit activation fallback for supported older macOS releases"
+        )]
         app.activateIgnoringOtherApps(self.ivars().activate_ignoring_other_apps);
 
         if self.ivars().default_menu {
@@ -169,6 +186,71 @@ impl ApplicationDelegate {
         let app = NSApplication::sharedApplication(mtm);
         notify_windows_of_exit(&app);
         self.internal_exit();
+    }
+
+    fn live_quit_window(&self, id: WindowId) -> bool {
+        let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
+        app.windows().into_iter().any(|window| {
+            Retained::as_ptr(&window) as usize == id.0
+                && unsafe { window.delegate() }.is_some_and(|delegate| {
+                    delegate.is_kind_of::<super::window_delegate::WindowDelegate>()
+                })
+        })
+    }
+
+    pub(super) fn set_quit_request_window(
+        &self,
+        target: Option<WindowId>,
+    ) -> Result<(), crate::error::ExternalError> {
+        if target.is_some_and(|id| !self.live_quit_window(id)) {
+            return Err(crate::error::ExternalError::Ignored);
+        }
+        self.ivars().quit_request.borrow_mut().set_target(target);
+        Ok(())
+    }
+
+    pub(super) fn quit_window_destroyed(&self, id: WindowId) {
+        self.ivars().quit_request.borrow_mut().destroyed(id);
+    }
+
+    fn request_application_quit(&self) -> NSApplicationTerminateReply {
+        let decision = self
+            .ivars()
+            .quit_request
+            .borrow_mut()
+            .request(self.is_running());
+        match decision {
+            QuitDecision::Terminate => NSApplicationTerminateReply::NSTerminateNow,
+            QuitDecision::Cancel => NSApplicationTerminateReply::NSTerminateCancel,
+            QuitDecision::Forward(request) => {
+                // Always defer beyond applicationShouldTerminate:, even when
+                // no application event handler is currently on the stack.
+                self.queue_quit_request(request);
+                NSApplicationTerminateReply::NSTerminateCancel
+            }
+        }
+    }
+
+    fn queue_quit_request(&self, request: PendingQuit<WindowId>) {
+        let this = self.retain();
+        self.ivars().run_loop.queue_closure(move || {
+            if this.ivars().event_handler.in_use() {
+                this.queue_quit_request(request);
+                return;
+            }
+            let target = this.ivars().quit_request.borrow_mut().take(request);
+            if let Some(target) = target {
+                if this.is_running()
+                    && this.ivars().event_handler.ready()
+                    && this.live_quit_window(target)
+                {
+                    this.handle_window_event(target, WindowEvent::CloseRequested);
+                } else {
+                    tracing::warn!("refused native Quit for unavailable event loop or window");
+                }
+            }
+        });
+        self.ivars().run_loop.wakeup();
     }
 
     pub fn get(mtm: MainThreadMarker) -> Retained<Self> {
@@ -221,6 +303,7 @@ impl ApplicationDelegate {
     /// NOTE: that if the `NSApplication` has been launched then that state is preserved,
     /// and we won't need to re-launch the app if subsequent EventLoops are run.
     pub fn internal_exit(&self) {
+        self.ivars().quit_request.borrow_mut().set_target(None);
         self.handle_event(Event::LoopExiting);
 
         self.set_is_running(false);
@@ -263,15 +346,24 @@ impl ApplicationDelegate {
     }
 
     pub fn maybe_queue_window_event(&self, window_id: WindowId, event: WindowEvent) {
-        self.maybe_queue_event(Event::WindowEvent { window_id: RootWindowId(window_id), event });
+        self.maybe_queue_event(Event::WindowEvent {
+            window_id: RootWindowId(window_id),
+            event,
+        });
     }
 
     pub fn handle_window_event(&self, window_id: WindowId, event: WindowEvent) {
-        self.handle_event(Event::WindowEvent { window_id: RootWindowId(window_id), event });
+        self.handle_event(Event::WindowEvent {
+            window_id: RootWindowId(window_id),
+            event,
+        });
     }
 
     pub fn maybe_queue_device_event(&self, event: DeviceEvent) {
-        self.maybe_queue_event(Event::DeviceEvent { device_id: DEVICE_ID, event });
+        self.maybe_queue_event(Event::DeviceEvent {
+            device_id: DEVICE_ID,
+            event,
+        });
     }
 
     pub fn handle_redraw(&self, window_id: WindowId) {
@@ -313,15 +405,22 @@ impl ApplicationDelegate {
         if !self.ivars().event_handler.in_use() {
             self.handle_event(event);
         } else {
-            tracing::debug!(?event, "had to queue event since another is currently being handled");
+            tracing::debug!(
+                ?event,
+                "had to queue event since another is currently being handled"
+            );
             let this = self.retain();
-            self.ivars().run_loop.queue_closure(move || this.handle_event(event));
+            self.ivars()
+                .run_loop
+                .queue_closure(move || this.handle_event(event));
         }
     }
 
     #[track_caller]
     fn handle_event(&self, event: Event<HandlePendingUserEvents>) {
-        self.ivars().event_handler.handle_event(event, &ActiveEventLoop::new_root(self.retain()))
+        self.ivars()
+            .event_handler
+            .handle_event(event, &ActiveEventLoop::new_root(self.retain()))
     }
 
     /// dispatch `NewEvents(Init)` + `Resumed`
@@ -352,14 +451,23 @@ impl ApplicationDelegate {
         let start = self.ivars().start_time.get().unwrap();
         let cause = match self.control_flow() {
             ControlFlow::Poll => StartCause::Poll,
-            ControlFlow::Wait => StartCause::WaitCancelled { start, requested_resume: None },
+            ControlFlow::Wait => StartCause::WaitCancelled {
+                start,
+                requested_resume: None,
+            },
             ControlFlow::WaitUntil(requested_resume) => {
                 if Instant::now() >= requested_resume {
-                    StartCause::ResumeTimeReached { start, requested_resume }
+                    StartCause::ResumeTimeReached {
+                        start,
+                        requested_resume,
+                    }
                 } else {
-                    StartCause::WaitCancelled { start, requested_resume: Some(requested_resume) }
+                    StartCause::WaitCancelled {
+                        start,
+                        requested_resume: Some(requested_resume),
+                    }
                 }
-            },
+            }
         };
 
         self.handle_event(Event::NewEvents(cause));
@@ -408,7 +516,10 @@ impl ApplicationDelegate {
             ControlFlow::Poll => Some(Instant::now()),
             ControlFlow::WaitUntil(instant) => Some(instant),
         };
-        self.ivars().waker.borrow_mut().start_at(min_timeout(wait_timeout, app_timeout));
+        self.ivars()
+            .waker
+            .borrow_mut()
+            .start_at(min_timeout(wait_timeout, app_timeout));
     }
 }
 
@@ -419,7 +530,9 @@ pub(crate) struct HandlePendingUserEvents;
 /// equates to an infinite timeout, not a zero timeout (so can't just use
 /// `Option::min`)
 fn min_timeout(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
-    a.map_or(b, |a_timeout| b.map_or(Some(a_timeout), |b_timeout| Some(a_timeout.min(b_timeout))))
+    a.map_or(b, |a_timeout| {
+        b.map_or(Some(a_timeout), |b_timeout| Some(a_timeout.min(b_timeout)))
+    })
 }
 
 /// A hack to make activation of multiple windows work when creating them before

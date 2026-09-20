@@ -6,7 +6,7 @@
 //! shell try to do".
 //!
 //! A *file*, not the compositor's in-memory ring
-//! (`shell/src/shell/collab_broker.rs`): that ring records collaboration
+//! (`crates/session/shell/src/shell/collab_broker.rs`): that ring records collaboration
 //! ops keyed by `ArtifactId`, not a `trust-dir` request, and doesn't
 //! survive a restart — the wrong property for what you consult after the
 //! fact. What broker decisions share with it is only the vocabulary:

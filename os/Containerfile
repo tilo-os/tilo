@@ -67,6 +67,10 @@ COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /
 
 FROM ${RPMS_REF} AS rpms
 
+# Public trust parsing is a build-only operation. The pinned base supplies the
+# OpenSSL CLI while its ABI libraries remain part of the runtime package policy.
+FROM ${BASE_REF} AS public-trust-tools
+
 # ---- Custom kernel repo ----------------------------------------------------
 # Same "OCI image with /repo" shape as the frozen RPM repo (see
 # os/Containerfile.rpms), but its content is a rebuilt Fedora kernel with
@@ -281,7 +285,7 @@ FROM ${BASE_REF} AS builder
 #   * glib2-devel + libsoup3-devel supply .pc files. `wpe-webkit-2.0.pc`
 #     declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`, and
 #     pkg-config fails the whole lookup when any link in that chain is missing
-#     — which ui/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
+#     — which crates/sdk/ui-core/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
 #     found".
 #   * The rest supply plain shared objects. libWPEWebKit-2.0.so records them in
 #     DT_NEEDED, so linking `browser` against it makes ld open each one to
@@ -1480,6 +1484,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # through the ukify build spec, so use that existing transaction, render the
 # immutable PNGs, then remove both packages in the same layer. UKI construction
 # later uses its own throwaway uki-tools stage.
+# Retain the base's openssh and openssh-clients: virt-viewer requires them later,
+# and the frozen RPM transaction assumes dependencies already in the base remain
+# installed. The SSH server remains forbidden by the runtime crypto policy.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-ukify \
     && python3 /usr/local/bin/make-plymouth-assets.py /usr/share/plymouth/themes/tilo \
@@ -1487,10 +1494,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && test "$(plymouth-set-default-theme)" = tilo \
     && dnf --disablerepo='*' remove -y systemd-ukify python3-pillow \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && printf '%s\n' "$installed" | awk '/^(systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server)$/' \
+    && printf '%s\n' "$installed" | awk '/^(systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$/' \
            | xargs -r dnf --disablerepo='*' remove -y \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
-    && ! printf '%s\n' "$installed" | grep -Eq '^(python3-pillow|systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh|openssh-clients|openssh-server)$' \
+    && ! printf '%s\n' "$installed" | grep -Eq '^(python3-pillow|systemd-ukify|openssl|sbsigntools|efitools|mokutil|pesign|nss-tools|gnutls-utils|git|git-core|openvpn|NetworkManager-openvpn|openssh-server)$' \
+    && rpm -q openssh openssh-clients \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # The install-config drop-in that flips bootc's bootloader choice to
@@ -1989,17 +1997,25 @@ ARG TILO_PUBLIC_TRUST_MANIFEST_SHA256
 ARG TILO_TARGET_IMGREF
 ARG TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY
 COPY --from=public-trust / /run/tilo-public-trust/
-COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-official-trust/
-COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py /run/tilo-trust-tools/
-COPY os/etc/containers/policy.json /etc/containers/policy.json
-COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
-RUN python3 /run/tilo-trust-tools/install-public-trust.py \
+# One temporary directory avoids four full-OS snapshots for tiny static inputs.
+# Install individual files below so existing parent-directory modes stay intact.
+COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem \
+    os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py \
+    os/etc/containers/policy.json os/etc/containers/registries.d/code.sandbox.example.yaml \
+    /run/tilo-trust-inputs/
+RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \
+    mkdir -p /run/tilo-official-trust /run/tilo-trust-tools /etc/containers/registries.d \
+ && cp -a /run/tilo-trust-inputs/cosign.pub /run/tilo-trust-inputs/tpm2-pcr-signing.public.pem /run/tilo-official-trust/ \
+ && cp -a /run/tilo-trust-inputs/*.py /run/tilo-trust-tools/ \
+ && cp -a /run/tilo-trust-inputs/policy.json /etc/containers/policy.json \
+ && cp -a /run/tilo-trust-inputs/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml \
+ && PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
       --source /run/tilo-public-trust --official /run/tilo-official-trust \
       --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \
       --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
       --registry-owner "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
       --target-ref "$TILO_TARGET_IMGREF" --image-root / \
- && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools
+ && rm -rf /run/tilo-public-trust /run/tilo-official-trust /run/tilo-trust-tools /run/tilo-trust-inputs
 
 # Container signature policy: REQUIRE a valid cosign signature for
 # code.sandbox.example/qos/tilo (everything else stays permissive), so a tampered or
@@ -2119,12 +2135,17 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # no supported way to use them. The supported root is Btrfs; keep Ext4 and
     # XFS as signed modules for rescue/secondary filesystems after pivot_root,
     # but do not copy either parser into the pre-authentication initramfs.
+    # Omit the consumers as well as their parents: bootc explicitly adds
+    # clevis-pin-tpm2, and dracut can auto-select the other Clevis pins and
+    # network-root transports. Omitting only clevis/network leaves their
+    # dependencies unsatisfied. Local TPM unlock uses systemd-cryptsetup and
+    # tpm2-tss; local NVMe does not require the nvmf network-root module.
     find "/usr/lib/modules/$kver" -type f -path '*/fs/ext4/ext4.ko*' -print -quit \
       | grep -q . || { echo 'signed Ext4 rescue module is missing' >&2; exit 1; }; \
     find "/usr/lib/modules/$kver" -type f -path '*/fs/xfs/xfs.ko*' -print -quit \
       | grep -q . || { echo 'signed XFS rescue module is missing' >&2; exit 1; }; \
     dracut --force --reproducible --compress zstd -v --kver "$kver" \
-        --omit "network network-legacy network-manager nfs iscsi nbde clevis crypt-ssh" \
+        --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
         --omit-drivers "ext4 xfs" \
         --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback" \
         "/usr/lib/modules/$kver/initramfs.img" > /tmp/dracut.log 2>&1 \
@@ -2145,7 +2166,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
         echo "dracut did not include the $m module; an encrypted root could not be opened" >&2; \
         cat /usr/lib/tilo/initramfs-modules.txt >&2; exit 1; }; \
     done; \
-    for m in network network-legacy network-manager nfs iscsi nbde clevis crypt-ssh; do \
+    for m in network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh; do \
       ! grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || { \
         echo "unsupported initramfs module $m was included" >&2; exit 1; }; \
     done; \
@@ -2206,7 +2227,7 @@ RUN if ! printf '%s\n' "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" | grep -Eq '^[0-9a
 # install + graphical login by build-image.yml.
 COPY os/tests/collaborative-files-image-contract.sh /usr/libexec/tilo/collaborative-files-image-contract.sh
 COPY apps/file-explorer/tests/atspi_smoke.sh /usr/libexec/tilo/files-atspi-smoke.sh
-COPY shell/tests/native_atspi_smoke.sh /usr/libexec/tilo/native-atspi-smoke.sh
+COPY crates/session/shell/tests/native_atspi_smoke.sh /usr/libexec/tilo/native-atspi-smoke.sh
 COPY tools/atspi_external_client.py /usr/libexec/tilo/atspi-external-client.py
 COPY os/tests/installed_atspi_apps.sh /usr/libexec/tilo/installed-atspi-apps.sh
 RUN chmod 0755 /usr/libexec/tilo/collaborative-files-image-contract.sh \
