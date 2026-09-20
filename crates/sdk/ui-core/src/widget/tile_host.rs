@@ -1360,13 +1360,17 @@ impl Widget for TileHost {
         // `TileHost` has no `children()`, so the default recursive
         // implementation would always say false; override so the spawn
         // fade and a hosted app's own signal both bubble up. The opening
-        // card's indicator and its dissolve are motion too, and neither is
-        // visible through `children()` either.
+        // card itself is state, not an animation: its spinner reports its own
+        // motion through `inner`, and under reduced motion it is deliberately
+        // static. Treating `opening()` as perpetual motion pinned the whole
+        // compositor at display cadence until a slow app's first frame.
         let inner = match &self.content {
             TileContent::App(w) => w.needs_animation_frame(),
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         };
-        self.spawn_in_flight() || Widget::opening(self) || self.handover_in_flight() || inner
+        let opening_indicator =
+            Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
+        self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
     }
 }
 
@@ -2789,16 +2793,18 @@ mod tests {
         );
     }
 
-    /// Its indicator is the only thing distinguishing a wait from a hang,
-    /// and nothing else in the tile is animating to trigger a frame
-    /// otherwise.
+    /// Holding a place is not itself an animation. The hosted opening widget
+    /// (or the spinner painted by the host) must explicitly request motion;
+    /// otherwise a static reduced-motion card would keep the desktop awake
+    /// until the app presented its first frame.
     #[test]
-    fn a_tile_holding_a_place_keeps_asking_for_frames() {
-        let (host, _) = starting_host(false, true);
+    fn a_static_tile_holding_a_place_does_not_pump_frames_forever() {
+        let (mut host, _) = starting_host(false, true);
+        let theme = Theme::default().with_reduce_motion(true);
+        let _ = paint(&mut host, &theme);
         assert!(
-            host.needs_animation_frame(),
-            "the indicator on the opening card would sit frozen, which \
-             reads as an app that has stopped rather than one starting",
+            !host.needs_animation_frame(),
+            "opening state alone must not turn a slow app into a full-rate compositor loop",
         );
     }
 
