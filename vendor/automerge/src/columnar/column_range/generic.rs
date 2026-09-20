@@ -67,27 +67,23 @@ pub(crate) enum GenericColIter<'a> {
     Group(GroupIter<'a>),
 }
 
-impl GenericColIter<'_> {
-    fn try_next(&mut self) -> Result<Option<CellValue>, DecodeColumnError> {
+impl Iterator for GenericColIter<'_> {
+    type Item = Result<CellValue, DecodeColumnError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::Simple(s) => s
                 .next()
                 .transpose()
                 .map_err(|e| DecodeColumnError::decode_raw("a simple column", e))
-                .map(|v| v.map(CellValue::Simple)),
+                .map(|v| v.map(CellValue::Simple))
+                .transpose(),
             Self::Value(v) => v
                 .next()
                 .transpose()
-                .map(|v| v.map(|v| CellValue::Simple(SimpleValue::Value(v)))),
-            Self::Group(g) => g.next().transpose(),
+                .map(|v| v.map(|v| CellValue::Simple(SimpleValue::Value(v))))
+                .transpose(),
+            Self::Group(g) => g.next(),
         }
-    }
-}
-
-impl Iterator for GenericColIter<'_> {
-    type Item = Result<CellValue, DecodeColumnError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.try_next().transpose()
     }
 }
