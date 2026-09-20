@@ -3,6 +3,18 @@
 Build dependencies, local development and testing. See `AGENTS.md` for repository
 conventions.
 
+## Routine delivery workflow
+
+Routine changes land through pull requests to `main`. Each PR head revision gets
+its own affected-package check and fast-quality lint result; those runs are keyed
+to the exact event and commit and are not cancelled when a newer commit arrives.
+
+After a merge, app packaging selects directly changed apps and apps that depend
+on changed shared crates, then reuses unchanged collection members. OS
+publication remains explicit: use a `vMAJOR.MINOR.PATCH` release tag or manually run
+**Release / OS** from `main` with `publish` enabled. Ordinary `main` pushes and
+scheduled integration runs do not publish an OS release.
+
 ## Fast checks before assembly
 
 Run these from the checkout on Linux (including WSL), using Python 3.11+:
