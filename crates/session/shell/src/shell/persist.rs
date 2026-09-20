@@ -373,8 +373,21 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
                     if let TileContent::Foreign { app_id, .. } = &tab.tile {
+                        // A mapped host window announces a toolkit/window-system
+                        // identity, which need not be the desktop-file id that
+                        // `run-host` accepts.  Keep the durable record keyed by
+                        // the launch identity whenever the installed catalogue
+                        // can correlate it.  For example, Rygel Preferences
+                        // announces `org.gnome.Rygel.Preferences`, while its
+                        // launchable entry is `rygel-preferences.desktop`.
+                        // Persisting the former made a normal logout/login show
+                        // "Not installed" even though a fresh palette launch
+                        // worked. Unknown foreign windows deliberately retain
+                        // their announced identity.
+                        let durable_app_id = crate::shell::host_apps::app_for_window_id(app_id)
+                            .map_or_else(|| app_id.clone(), |app| app.desktop_id);
                         tab.tile = TileContent::LocalApp {
-                            app_id: app_id.clone(),
+                            app_id: durable_app_id,
                             label: tab.title.clone(),
                             note: String::new(),
                         };
@@ -871,6 +884,71 @@ mod tests {
                 .any(|tab| tab.id == loaded_group.active_tab),
             "symbolising a live surface must preserve the selected tab"
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn host_foreign_surface_persists_the_launchable_desktop_id() {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+
+        let data = tempfile::tempdir().expect("temporary XDG data home");
+        let applications = data.path().join("applications");
+        std::fs::create_dir_all(&applications).expect("applications directory");
+        std::fs::write(
+            applications.join("rygel-preferences.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Rygel Preferences\nExec=/bin/true\nStartupWMClass=org.gnome.Rygel.Preferences\n",
+        )
+        .expect("desktop entry");
+        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: `serial(process_env)` keeps other environment-mutating
+        // tests out until the original value is restored below.
+        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+        crate::shell::host_apps::invalidate_cache();
+
+        let dir = tempfile::tempdir().expect("state directory");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.workspaces[0].strips[0]
+            .window_groups
+            .push(WindowGroup {
+                id: 90_100,
+                tabs: Vec::new(),
+                active_tab: 0,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs.push(Tab {
+            id: 90_101,
+            title: "Rygel Preferences".into(),
+            tile: TileContent::Foreign {
+                app_id: "org.gnome.Rygel.Preferences".into(),
+                surface_id: 90_102,
+            },
+        });
+        group.active_tab = 90_101;
+
+        save_tree_to(&tree, &path).expect("save host window");
+        let loaded = load_tree_from(&path).expect("restart");
+        assert_eq!(
+            local_apps(&loaded),
+            vec![(90_101, "rygel-preferences".into())],
+            "restore must retain the desktop-file id accepted by run-host, not the transient WM class"
+        );
+        assert_eq!(
+            crate::shell::host_apps::find("rygel-preferences").map(|app| app.name),
+            Some("Rygel Preferences".into()),
+            "the persisted identity must resolve directly on the next login"
+        );
+
+        crate::shell::host_apps::invalidate_cache();
+        unsafe {
+            if let Some(previous) = previous_data_home {
+                std::env::set_var("XDG_DATA_HOME", previous);
+            } else {
+                std::env::remove_var("XDG_DATA_HOME");
+            }
+        }
     }
 
     #[test]
