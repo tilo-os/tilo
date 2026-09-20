@@ -2336,6 +2336,21 @@ pub fn remember_launch_named(key: &str, identities: &[String], display_name: &st
     ));
 }
 
+/// Return the durable launch key recorded for a mapped window identity.
+///
+/// This is stronger than desktop-entry inference: some real host entries do
+/// not declare `StartupWMClass` even though their process announces a
+/// different toolkit app-id. The launch table records the exact relationship
+/// at the user action that started the app, so persistence can retain the
+/// desktop-file id accepted by `run-host` on the next login.
+pub(crate) fn launch_key_for_app_id(app_id: &str) -> Option<String> {
+    let launched = lock(&LAUNCHED);
+    launched
+        .iter()
+        .find(|(_, identities, _)| identities_match(identities, app_id))
+        .map(|(key, _, _)| key.clone())
+}
+
 /// Forget every launch this session has recorded — for tests asserting
 /// the fallback resolution rather than a name a neighbouring test left,
 /// since the table is process-wide and append-only.
