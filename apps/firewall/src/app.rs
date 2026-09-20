@@ -1342,7 +1342,38 @@ impl Widget for FirewallApp {
             );
         }
         root.children.push(zones.accessibility());
-        root.children.push(self.rules_table_accessibility());
+        if !self.layout.content_seg.is_empty() {
+            let mut routes = AccessNode::new(Role::Group)
+                .with_name("Firewall content")
+                .with_description("Choose rules or services");
+            for (index, bounds) in self.layout.content_seg.iter().enumerate() {
+                let (name, route, selected) = if index == 0 {
+                    ("Rules", "rules", self.compact_view == CompactView::Rules)
+                } else {
+                    (
+                        "Services",
+                        "services",
+                        self.compact_view == CompactView::Services,
+                    )
+                };
+                routes.children.push(
+                    AccessNode::new(Role::ToggleButton)
+                        .with_name(name)
+                        .with_action_target(format!("firewall.route:{route}"))
+                        .with_bounds(*bounds)
+                        .with_state(AccessState::new().focusable(true).checked(selected)),
+                );
+            }
+            root.children.push(routes);
+        }
+        if self.layout.compact_services {
+            root.children.push(self.services_accessibility());
+        } else {
+            root.children.push(self.rules_table_accessibility());
+            if self.layout.services_visible {
+                root.children.push(self.services_accessibility());
+            }
+        }
         Some(root)
     }
 
@@ -1502,6 +1533,30 @@ impl Widget for FirewallApp {
             self.retry_connect(state);
             return true;
         }
+        if let Some(route) = target.strip_prefix("firewall.route:")
+            && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
+        {
+            self.compact_view = match route {
+                "rules" => CompactView::Rules,
+                "services" => CompactView::Services,
+                _ => return false,
+            };
+            self.set_form_focus(None);
+            self.relayout();
+            return true;
+        }
+        if let Some(target) = target.strip_prefix("firewall.service.toggle:")
+            && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
+            && let Some((zone, service)) = target.split_once(':')
+            && ZoneKind::from_name(zone) == Some(self.selected_zone)
+            && let Some(index) = ServiceCatalog::ALL
+                .iter()
+                .position(|candidate| candidate.id == service)
+        {
+            self.toggle_service(index, state);
+            self.relayout();
+            return true;
+        }
         if let Some(name) = target.strip_prefix("firewall.zone:")
             && matches!(action, A11yAction::Activate | A11yAction::Focus)
             && let Some(zone) = ZoneKind::from_name(name)
@@ -1560,6 +1615,54 @@ impl Widget for FirewallApp {
 }
 
 impl FirewallApp {
+    fn services_accessibility(&self) -> AccessNode {
+        let zone = self.config.zone(self.selected_zone);
+        let panel = if self.layout.compact_services {
+            self.layout.table
+        } else {
+            self.layout.services
+        };
+        let mut services = VirtualListSemantics::new(
+            format!("Services in {}", self.selected_zone.name()),
+            panel,
+            ServiceCatalog::ALL.len(),
+        )
+        .description("Network services allowed through this firewall zone");
+        for (index, row, toggle) in &self.layout.service_rows {
+            let Some(service) = ServiceCatalog::ALL.get(*index) else {
+                continue;
+            };
+            let enabled = zone.is_some_and(|zone| zone.has_service(service.id));
+            let target = format!(
+                "firewall.service.toggle:{}:{}",
+                self.selected_zone.name(),
+                service.id
+            );
+            services.push(
+                ListSemanticRow::static_row(
+                    format!(
+                        "firewall.service:{}:{}",
+                        self.selected_zone.name(),
+                        service.id
+                    ),
+                    service.name,
+                    *row,
+                    index + 1,
+                )
+                .description(format!(
+                    "{}; {}/{}",
+                    service.description, service.ports, service.proto
+                ))
+                .children([AccessNode::new(Role::Switch)
+                    .with_name(format!("Allow {}", service.name))
+                    .with_action_target(target)
+                    .with_bounds(*toggle)
+                    .with_state(AccessState::new().focusable(true).checked(enabled))]),
+            );
+        }
+        services.accessibility()
+    }
+
     fn rules_table_accessibility(&self) -> AccessNode {
         let table_name = format!("Rules in {}", self.selected_zone.name());
         let (target, proto, action, source, controls) = rule_columns(self.layout.table);
@@ -3824,10 +3927,39 @@ mod tests {
             assert_eq!(app.layout.content_seg.len(), 2);
             assert_eq!(app.layout.service_rows.len(), ServiceCatalog::ALL.len());
             let semantics = app.accessibility().expect("compact services semantics");
-            assert!(semantics.children.iter().any(|node| {
-                node.name.as_deref() == Some("Services in public")
-                    && node.children.len() == ServiceCatalog::ALL.len()
+            let services = semantics
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some("Services in public"))
+                .expect("compact services list");
+            assert_eq!(services.children.len(), ServiceCatalog::ALL.len());
+            assert!(services.children.iter().all(|row| {
+                row.role == Role::ListItem
+                    && row.pos_in_set.is_some()
+                    && row.set_size == Some(ServiceCatalog::ALL.len())
+                    && row.children.iter().any(|control| {
+                        control.role == Role::Switch
+                            && control.action_target.is_some()
+                            && control.state.checked.is_some()
+                    })
             }));
+
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &automerge::ROOT);
+            let ssh_was_enabled = app
+                .selected_zone_ref()
+                .is_some_and(|zone| zone.has_service("ssh"));
+            assert!(app.perform_semantic_action(
+                "firewall.service.toggle:public:ssh",
+                &A11yAction::ToggleCheck,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_ne!(
+                app.selected_zone_ref()
+                    .is_some_and(|zone| zone.has_service("ssh")),
+                ssh_was_enabled
+            );
         }
     }
 
