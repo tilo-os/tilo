@@ -17,7 +17,7 @@ ROOT = TOOLS.parent
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 
-from ci import affected_packages as ci_select
+from ci import workspace_graph as ci_select
 
 
 CONFIG = ROOT / "dist/apps/app-collections.toml"
@@ -49,7 +49,7 @@ PACKAGING_INPUTS = {
 VERIFICATION_INPUTS = {
     "tools/apps/app_release.py",
     "tools/ci/__init__.py",
-    "tools/ci/affected_packages.py",
+    "tools/ci/workspace_graph.py",
     "tools/apps/app_channel_manifest.py",
     "tools/apps/canonical_app_verifier.py",
     "tools/apps/create_app_receipt.py",

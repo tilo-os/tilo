@@ -306,16 +306,20 @@ pub fn inspect_bytes(
         .ok_or_else(|| BundleReviewError::UnsupportedTarget {
             version: version.version.clone(),
         })?;
-    if target.architecture != "x86_64" {
-        return Err(BundleReviewError::UnsupportedTarget {
-            version: version.version.clone(),
-        });
-    }
+    let architecture = match target.architecture.as_str() {
+        "x86_64" => pkg::manifest::Arch::X86_64,
+        "aarch64" => pkg::manifest::Arch::AArch64,
+        _ => {
+            return Err(BundleReviewError::UnsupportedTarget {
+                version: version.version.clone(),
+            });
+        }
+    };
     let manifest_isa = meta
         .manifest
         .package
         .isa
-        .for_arch(pkg::manifest::Arch::X86_64)
+        .for_arch(architecture)
         .map(|isa| isa.wire_label().to_string());
     if manifest_isa.as_deref() != Some(target.isa.as_str())
         || meta.manifest.package.runtime != target.runtime
@@ -459,7 +463,35 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn arm_artifact_inspection_binds_architecture_and_isa() {
+        let identity = SigningIdentity::generate();
+        let (bytes, package_id) = signed_qpkg_arch(&identity, "aarch64 = \"v8.2-a\"");
+        let mut entry = sample_entry("https://example.com/arm.qpkg");
+        entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
+        let version = &mut entry.versions[0];
+        version.qpkg_root_hash_hex = hex::encode(package_id.as_bytes());
+        version.qpkg_size_bytes = bytes.len() as u64;
+        version.qpkg_blake3_hex = Some(blake3::hash(&bytes).to_hex().to_string());
+        let target = version.target.as_mut().unwrap();
+        target.architecture = "aarch64".into();
+        target.isa = "aarch64-v8.2".into();
+        assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
+        entry.versions[0].target.as_mut().unwrap().isa = "aarch64-v9".into();
+        assert!(matches!(
+            inspect_bytes(&entry, &entry.versions[0], &bytes),
+            Err(BundleReviewError::TargetMismatch { .. })
+        ));
+    }
+
     fn signed_qpkg(identity: &SigningIdentity) -> (Vec<u8>, pkg::PackageId) {
+        signed_qpkg_arch(identity, "x86_64 = \"v3\"")
+    }
+
+    fn signed_qpkg_arch(
+        identity: &SigningIdentity,
+        architecture: &str,
+    ) -> (Vec<u8>, pkg::PackageId) {
         let publisher = hex::encode(identity.public_key_bytes());
         let dir = tempfile::tempdir().unwrap();
         let payload = dir.path().join("payload");
@@ -473,7 +505,7 @@ version = "1.0.0"
 kind = "app"
 
 [package.isa]
-x86_64 = "v3"
+{architecture}
 
 [publisher]
 identity = "ed25519:{publisher}"

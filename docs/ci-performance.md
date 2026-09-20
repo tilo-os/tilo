@@ -46,6 +46,13 @@ as a cheap repeat of ordinary feedback: dispatch explicitly selects the entire
 workspace on both architectures. Submit the updated task branch/PR normally;
 the [scheduler owns admission and runner slots](../AGENTS.md#ci).
 
+Check scheduling lives in `tools/ci/affected_packages.py`; app releases share
+only the Git and Cargo graph helpers in `tools/ci/workspace_graph.py`. Changing
+check shard counts does not invalidate apps. Graph changes still invalidate
+release selection and the coordinator's trusted source hashes. Actual verifier
+changes still require current acceptance and currently rebuild apps; reusing
+binaries for verification-only changes remains separate work.
+
 To inspect the committed branch's selection locally, without starting a build
 or requesting a runner, run from the checkout:
 

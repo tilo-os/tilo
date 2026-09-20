@@ -50,7 +50,7 @@ class SelectorTests(unittest.TestCase):
         # whose production command must fail rather than convert absence to skip.
         for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
                      "vendor/openh264-sys2/build.rs", "os/tests/test_openh264_source_order.py",
-                     ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py"):
+                     ".forgejo/workflows/check.yml", "tools/ci/affected_packages.py", "tools/ci/workspace_graph.py"):
             with self.subTest(path=path):
                 plan = ci_select.make_plan(self.metadata, self.root, [path], 2)
                 self.assertTrue(plan["native_dependencies_required"])
@@ -61,7 +61,7 @@ class SelectorTests(unittest.TestCase):
     def test_native_contract_bootstrap_does_not_break_other_dependencies_or_full_runs(self):
         for changes in (["Cargo.lock"], ["Cargo.toml"], ["rust-toolchain.toml"],
                         [".forgejo/workflows/check.yml", "tools/ci/affected_packages.py",
-                         "os/tests/test_openh264_source_order.py"], []):
+                         "os/tests/test_openh264_source_order.py"], ["tools/ci/workspace_graph.py"], []):
             with self.subTest(changes=changes):
                 self.assertFalse(ci_select.native_dependencies_required(self.root, changes))
                 self.assertFalse(ci_select.native_dependencies_required(self.root, changes, force_full=True))
@@ -113,6 +113,7 @@ class SelectorTests(unittest.TestCase):
             "DEVELOPMENT.md",
             "docs/ci-performance.md",
             "docs/ci-emergency-relief.md",
+            "docs/headless-testing.md",
             "docs/designs/ci.md",
         ]
         for path in prose:
@@ -215,7 +216,7 @@ class SelectorTests(unittest.TestCase):
                 self.assertTrue(ci_select.ALWAYS_PACKAGES.issubset(plan["selected"]))
 
     def test_audited_developer_docs_omit_only_rust(self) -> None:
-        paths = ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md"]
+        paths = ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md", "docs/headless-testing.md"]
         for changes in [[path] for path in paths] + [paths + ["docs/designs/ci.md"]]:
             with self.subTest(changes=changes):
                 plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -223,8 +224,24 @@ class SelectorTests(unittest.TestCase):
                 self.assertEqual(plan["selected_count"], 0)
                 self.assertEqual(plan["matrix"], {"include": []})
 
+    def test_headless_guide_and_agent_instructions_need_no_native_jobs(self) -> None:
+        changes = ["AGENTS.md", "docs/headless-testing.md"]
+        for name in changes:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("Developer test commands.\n")
+        plan = ci_select.make_plan(
+            self.metadata, self.root, changes, 2, allow_security_skip=True)
+        self.assertFalse(plan["rust_required"])
+        self.assertFalse(plan["security_required"])
+        self.assertEqual(plan["matrix"], {"include": []})
+        (self.root / changes[1]).unlink()
+        deleted = ci_select.make_plan(
+            self.metadata, self.root, changes, 2, allow_security_skip=True)
+        self.assertTrue(deleted["security_required"])
+
     def test_developer_docs_do_not_mask_mixed_changes_or_full_override(self) -> None:
-        for doc in ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md"]:
+        for doc in ["AGENTS.md", "DEVELOPMENT.md", "docs/ci-performance.md", "docs/ci-emergency-relief.md", "docs/headless-testing.md"]:
             for extra, force in [(None, True), ("leaf/src/lib.rs", False),
                                  ("Cargo.lock", False), ("docs/packaging.md", False)]:
                 with self.subTest(doc=doc, extra=extra, force=force):

@@ -108,6 +108,7 @@ class AppReleaseTests(unittest.TestCase):
             "tools/apps/final_app_receipt.py": "verification",
             "tools/apps/app_channel_manifest.py": "verification",
             "tools/ci/__init__.py": "verification",
+            "tools/ci/workspace_graph.py": "verification",
             "tools/ci/resolve_builder.py": "binary",
         }
         for path, kind in inputs.items():
@@ -120,6 +121,43 @@ class AppReleaseTests(unittest.TestCase):
         # Non-input prose and an unrelated CI helper must not become fleet rebuilds.
         self.assertEqual([], app_release.apps_from_changes(
             ['docs/architecture.md', 'tools/ci/queue_coalesce.py'], CATALOG))
+
+    def test_check_scheduling_is_not_an_app_release_dependency(self):
+        paths = ['tools/ci/affected_packages.py', 'tools/tests/test_ci_select.py',
+                 'docs/ci-performance.md']
+        self.assertEqual([], app_release.apps_from_changes(paths, CATALOG))
+        self.assertEqual({'binary': [], 'packaging': [], 'verification': []},
+                         app_release.input_classification(paths))
+        # The shared graph remains a release input, even with scheduling edits.
+        self.assertEqual(sorted(CATALOG), app_release.apps_from_changes(
+            paths + ['tools/ci/workspace_graph.py'], CATALOG))
+
+    def test_real_git_scheduling_then_graph_edit_replans_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
+            git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@invalid')
+            for relative in ('tools/ci/affected_packages.py', 'tools/ci/workspace_graph.py'):
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text((ROOT / relative).read_text())
+            git('add', 'tools'); git('commit', '-qm', 'shared graph baseline')
+            base = git('rev-parse', 'HEAD')
+            scheduler = root / 'tools/ci/affected_packages.py'
+            scheduler.write_text(scheduler.read_text().replace('MAX_DEVELOPER_SHARDS = 2', 'MAX_DEVELOPER_SHARDS = 3'))
+            git('commit', '-qam', 'change check fanout')
+            args = SimpleNamespace(root=root, config=ROOT / 'dist/apps/app-collections.toml',
+                                   tag='', apps='', base=base, collection='default')
+            with mock.patch.object(app_release, 'app_catalog', return_value=app_release.app_catalog(ROOT)), \
+                 mock.patch.object(app_release.ci_select, 'cargo_metadata', return_value={'packages': []}):
+                self.assertEqual(app_release.plan(args)['count'], 0)
+                graph = root / 'tools/ci/workspace_graph.py'
+                graph.write_text(graph.read_text().replace('pending = list(selected)', 'pending = sorted(selected)'))
+                git('commit', '-qam', 'change graph traversal')
+                result = app_release.plan(args)
+            self.assertGreater(result['count'], 0)
+            self.assertEqual(result['input_classification']['verification'], ['tools/ci/workspace_graph.py'])
 
     def test_plan_exposes_receipt_only_invalidation_without_binary_claim(self) -> None:
         args = SimpleNamespace(root=ROOT, config=ROOT / 'dist/apps/app-collections.toml',
