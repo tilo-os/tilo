@@ -941,7 +941,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // One lifecycle test keeps all efivarfs mutation assertions together.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one lifecycle test keeps all efivarfs mutation assertions together"
+    )]
     fn firmware_esl_round_trip_uses_attributes_and_refuses_symlinks() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let input = temp.path().join("db.esl");
