@@ -48,8 +48,6 @@ const THREAD_LABEL_SIZE: f32 = 13.0;
 /// The "N replies" bar is never shorter than this at 1×; it grows with its
 /// measured label. Off-scale by design (a 38px bar carrying 22px avatars).
 const THREAD_BAR_MIN_H: f64 = 38.0;
-/// Space between the thread bar and the row's trailing gap.
-const THREAD_BAR_GAP: f64 = 8.0;
 
 /// Channel name in a sidebar row; the row is this measured line box plus a
 /// small pad, never shorter than the 1× row.
