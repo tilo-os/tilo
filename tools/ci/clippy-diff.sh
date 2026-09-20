@@ -92,8 +92,23 @@ run_clippy() {
         # producing bogus missing-item compiler errors instead of a lint diff.
         # Keep artifact graphs separate; sccache still reuses identical compiler
         # work across the two directories.
+        local source_commit result receipt_name
+        source_commit=$(git rev-parse HEAD) || exit 2
         cargo clippy --locked --all-targets "$@" \
             --message-format=json -- --cap-lints warn >"$output" 2>"$errors"
+        result=$?
+        receipt_name=clippy-base-inputs.json
+        [ "$tree" != "$root" ] || receipt_name=clippy-head-inputs.json
+        if [ "$tree" = "$root" ] && [ "${SCCACHE_RECACHE:-}" = 1 ]; then
+            receipt_name=clippy-head-retry-inputs.json
+        fi
+        # Observe while this checkout and its dep-info still exist. Use the HEAD
+        # observer for both revisions; the comparison base may predate it.
+        python3 "$root/tools/ci/compiler_inputs.py" \
+            --output "$root/target/ci/$receipt_name" --from-messages "$output" \
+            --cargo-exit-code "$result" --expected-commit "$source_commit" -- \
+            clippy --locked --all-targets "$@" -- --cap-lints warn || true
+        exit "$result"
     )
 }
 

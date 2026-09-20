@@ -87,6 +87,55 @@ class CompilerInputsTests(unittest.TestCase):
             self.assertEqual(module.main(), 101)
             cargo.assert_called_once_with(["cargo", "check", "--locked"])
 
+    def test_existing_clippy_messages_preserve_failure_and_source_binding(self):
+        for status, expected in ((0, "head"), (101, "head"), (0, "other")):
+            with self.subTest(status=status, expected=expected), tempfile.TemporaryDirectory() as folder:
+                output = Path(folder) / "receipt.json"
+                messages = Path(folder) / "clippy.json"
+                messages.write_text(
+                    json.dumps({"reason": "compiler-message", "message": {"level": "error", "rendered": "large diagnostic"}}) + "\n"
+                    + json.dumps({"reason": "build-finished", "success": status == 0}) + "\n")
+                def command(*args):
+                    if args[:2] == ("cargo", "metadata"):
+                        return json.dumps({"workspace_members": [], "packages": []})
+                    if args[:2] == ("git", "status"):
+                        return ""
+                    return "head"
+                with patch.object(module.sys, "argv", ["collector", "--output", str(output),
+                        "--from-messages", str(messages), "--cargo-exit-code", str(status),
+                        "--expected-commit", expected, "--", "clippy", "--locked", "--all-targets"]), \
+                     patch.object(module, "command", side_effect=command), \
+                     patch.object(module.subprocess, "Popen") as compile_again, \
+                     patch.object(module, "collect", wraps=module.collect) as collected:
+                    self.assertEqual(module.main(), 0)
+                    compile_again.assert_not_called()
+                    self.assertEqual(collected.call_args.args[0], [
+                        {"reason": "build-finished", "success": status == 0}])
+                receipt = json.loads(output.read_text())
+                self.assertEqual(receipt["cargo_exit_code"], status)
+                self.assertEqual(receipt["binding"]["commit"], "head")
+                self.assertEqual(receipt["binding"]["expected_commit"], expected)
+                self.assertEqual("source revision differs from invocation start" in receipt["unknown"], expected != "head")
+                self.assertEqual("Cargo invocation failed; target coverage incomplete" in receipt["unknown"], status != 0)
+                self.assertEqual(receipt["purpose"], "observation-only")
+                self.assertEqual("successful build-finished message missing" in receipt["unknown"], status != 0)
+
+    def test_clippy_collection_precedes_cleanup_and_upload_follows_clippy(self):
+        root = Path(__file__).parents[2]
+        script = (root / "tools/ci/clippy-diff.sh").read_text()
+        body = script.split("run_clippy() {", 1)[1].split("print_compiler_errors()", 1)[0]
+        self.assertLess(body.index("source_commit=$(git rev-parse HEAD)"), body.index("cargo clippy"))
+        self.assertLess(body.index("cargo clippy"), body.index('--from-messages "$output"'))
+        self.assertLess(body.index('--from-messages "$output"'), body.index('exit "$result"'))
+        self.assertIn('receipt_name=clippy-base-inputs.json', body)
+        self.assertIn('receipt_name=clippy-head-inputs.json', body)
+        self.assertIn('"$root/target/ci/$receipt_name"', body)
+        workflow = (root / ".forgejo/workflows/check.yml").read_text()
+        upload = workflow.index("- name: Save observed Clippy inputs")
+        self.assertLess(workflow.index("- name: Clippy shard"), upload)
+        self.assertIn("if: always()", workflow[upload:upload + 400])
+        self.assertIn("path: target/ci/clippy-*-inputs.json", workflow[upload:upload + 500])
+
     def test_failed_cargo_status_and_receipt_are_preserved(self):
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "receipt.json"

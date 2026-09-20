@@ -346,6 +346,16 @@ jobs:
           bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
           tools/ci/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
 
+      - name: Save observed Clippy inputs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: clippy-inputs-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/ci/clippy-*-inputs.json
+          retention-days: 7
+          if-no-files-found: warn
+
       - name: Report remote compiler-cache effectiveness
         if: always()
         run: |
