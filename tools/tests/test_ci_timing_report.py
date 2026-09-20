@@ -55,6 +55,9 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(
             result["jobs"][0]["attempt_created_to_runner_received_seconds"], 94
         )
+        self.assertIsNone(
+            result["jobs"][0]["run_created_to_runner_received_seconds"]
+        )
         self.assertIn("Run 11333 attempt 2", timing.human_summary({
             "runs": [result], "experience": {},
         }))
@@ -176,6 +179,8 @@ class TimingTests(unittest.TestCase):
         }]})["runs"][0]
         job = run["jobs"][0]
         self.assertEqual(run["total_seconds"], 23)
+        self.assertEqual(job["run_created_to_runner_received_seconds"], 2)
+        self.assertEqual(job["attempt_created_to_runner_received_seconds"], 2)
         self.assertEqual(job["run_started_to_runner_received_seconds"], 1)
         self.assertEqual(job["runner_to_create_seconds"], 3)
         self.assertEqual(job["pull_to_create_seconds"], 2)
@@ -187,6 +192,29 @@ class TimingTests(unittest.TestCase):
             "hit_percent": 75.0,
         })
         self.assertNotIn(secret, str(run))
+
+    def test_log_derived_names_are_replaced_with_fixed_labels(self):
+        secret = "ghp_DO_NOT_RETAIN_THIS_CREDENTIAL_1234567890"
+        log = "\n".join([
+            f"2026-09-20T04:00:00Z ⭐ Run Main {secret}",
+            f"2026-09-20T04:00:01Z ✅ Success - Main {secret}",
+            f"2026-09-20T04:00:02Z ==> {secret} measurements",
+            "2026-09-20T04:00:03Z     wall_seconds=1",
+            f"2026-09-20T04:00:04Z ⭐ Run Main Checkout {secret}",
+            f"2026-09-20T04:00:05Z ✅ Success - Main Checkout {secret}",
+            f"2026-09-20T04:00:06Z ==> test {secret} measurements",
+            "2026-09-20T04:00:07Z     wall_seconds=2",
+            f"2026-09-20T04:00:08Z 🐳  docker pull image={secret}",
+            f"2026-09-20T04:00:09Z 🐳  docker create image={secret}",
+        ])
+        metrics = timing.extract_job_metrics(log)
+        self.assertEqual([step["name"] for step in metrics["steps"]], [
+            "other", "checkout",
+        ])
+        self.assertEqual([item["name"] for item in metrics["measurements"]], [
+            "other", "test",
+        ])
+        self.assertNotIn(secret, str(metrics))
 
     def test_snapshot_counts_stale_active_and_cancelled_compute(self):
         runs = timing.report({"runs": [
@@ -223,7 +251,7 @@ class TimingTests(unittest.TestCase):
             "2026-09-20T04:00:20Z ⭐ Run Post Checkout",
         ]))
         self.assertEqual(metrics["steps"], [{
-            "name": "Checkout", "started": "2026-09-20T04:00:00Z",
+            "name": "checkout", "started": "2026-09-20T04:00:00Z",
             "stopped": "2026-09-20T04:00:03Z", "seconds": 3.0,
         }])
 
