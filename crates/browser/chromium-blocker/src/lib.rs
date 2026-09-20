@@ -4,14 +4,35 @@ use adblock::{Engine, request::Request};
 use serde_json::{Value, json};
 use std::ffi::{CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
+use std::thread::{self, JoinHandle};
 
 const MAX_RULE_BYTES: usize = 32 * 1024 * 1024;
 
-/// Immutable compiled rules. Interior regex caching is protected by a mutex;
-/// callers can use one profile matcher from CEF's IO and renderer service threads.
+/// A profile matcher whose engine lives on a dedicated worker thread. The
+/// pinned adblock engine is not `Send`, so requests cross a bounded channel
+/// instead of moving or sharing the engine between CEF service threads.
 pub struct Blocker {
-    engine: Mutex<Engine>,
+    commands: mpsc::SyncSender<Command>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+enum Command {
+    Check {
+        url: String,
+        source: String,
+        kind: String,
+        reply: mpsc::SyncSender<Option<Value>>,
+    },
+    Cosmetics {
+        url: String,
+        classes: Vec<String>,
+        ids: Vec<String>,
+        reply: mpsc::SyncSender<Option<Value>>,
+    },
+    Shutdown,
+    #[cfg(test)]
+    Panic,
 }
 
 fn web_url(value: &str) -> bool {
@@ -20,15 +41,19 @@ fn web_url(value: &str) -> bool {
 
 impl Blocker {
     pub fn new(rules: &str) -> Self {
-        static RESOURCES: OnceLock<Vec<adblock::resources::Resource>> = OnceLock::new();
-        let resources = RESOURCES.get_or_init(|| {
-            serde_json::from_str(include_str!("../resources/resources.json"))
-                .expect("checked-in blocker resources must match the pinned adblock schema")
-        });
-        let mut engine = Engine::from_rules(rules.lines(), Default::default());
-        engine.use_resources(resources.clone());
+        let rules = rules.to_owned();
+        let (commands, requests) = mpsc::sync_channel(64);
+        let (ready, initialized) = mpsc::sync_channel(0);
+        let worker = thread::Builder::new()
+            .name("qos-blocker".into())
+            .spawn(move || worker_loop(&rules, requests, ready))
+            .expect("blocker worker thread must start");
+        initialized
+            .recv()
+            .expect("blocker worker must initialize its engine");
         Self {
-            engine: Mutex::new(engine),
+            commands,
+            worker: Mutex::new(Some(worker)),
         }
     }
 
@@ -36,14 +61,16 @@ impl Blocker {
         if !web_url(url) {
             return Some(json!({"blocked": false, "redirect": null, "rewritten_url": null}));
         }
-        let request = Request::new(url, source, kind).ok()?;
-        let engine = self.engine.lock().ok()?;
-        let result = engine.check_network_request(&request);
-        Some(json!({
-            "blocked": result.matched,
-            "redirect": result.redirect,
-            "rewritten_url": result.rewritten_url,
-        }))
+        let (reply, response) = mpsc::sync_channel(0);
+        self.commands
+            .send(Command::Check {
+                url: url.to_owned(),
+                source: source.to_owned(),
+                kind: kind.to_owned(),
+                reply,
+            })
+            .ok()?;
+        response.recv().ok()?
     }
 
     pub fn cosmetics(&self, url: &str, classes: &[String], ids: &[String]) -> Option<Value> {
@@ -52,18 +79,95 @@ impl Blocker {
         if !web_url(url) {
             return Some(empty());
         }
-        let engine = self.engine.lock().ok()?;
-        let mut resources = engine.url_cosmetic_resources(url);
-        if !resources.generichide {
-            resources
-                .hide_selectors
-                .extend(engine.hidden_class_id_selectors(classes, ids, &resources.exceptions));
+        let (reply, response) = mpsc::sync_channel(0);
+        self.commands
+            .send(Command::Cosmetics {
+                url: url.to_owned(),
+                classes: classes.to_vec(),
+                ids: ids.to_vec(),
+                reply,
+            })
+            .ok()?;
+        response.recv().ok()?
+    }
+
+    #[cfg(test)]
+    fn panic_worker_for_test(&self) {
+        let _ = self.commands.send(Command::Panic);
+        if let Ok(mut worker) = self.worker.lock()
+            && let Some(worker) = worker.take()
+        {
+            let _ = worker.join();
         }
-        Some(json!({
-            "hide_selectors": resources.hide_selectors,
-            "injected_script": resources.injected_script,
-            "procedural_actions": resources.procedural_actions,
-        }))
+    }
+}
+
+impl Drop for Blocker {
+    fn drop(&mut self) {
+        let _ = self.commands.send(Command::Shutdown);
+        if let Ok(worker) = self.worker.get_mut()
+            && let Some(worker) = worker.take()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn worker_loop(rules: &str, requests: mpsc::Receiver<Command>, ready: mpsc::SyncSender<()>) {
+    static RESOURCES: OnceLock<Vec<adblock::resources::Resource>> = OnceLock::new();
+    let resources = RESOURCES.get_or_init(|| {
+        serde_json::from_str(include_str!("../resources/resources.json"))
+            .expect("checked-in blocker resources must match the pinned adblock schema")
+    });
+    let mut engine = Engine::from_rules(rules.lines(), Default::default());
+    engine.use_resources(resources.clone());
+    if ready.send(()).is_err() {
+        return;
+    }
+    for command in requests {
+        match command {
+            Command::Check {
+                url,
+                source,
+                kind,
+                reply,
+            } => {
+                let value = Request::new(&url, &source, &kind).ok().map(|request| {
+                    let result = engine.check_network_request(&request);
+                    json!({
+                        "blocked": result.matched,
+                        "redirect": result.redirect,
+                        "rewritten_url": result.rewritten_url,
+                    })
+                });
+                let _ = reply.send(value);
+            }
+            Command::Cosmetics {
+                url,
+                classes,
+                ids,
+                reply,
+            } => {
+                let mut resources = engine.url_cosmetic_resources(&url);
+                if !resources.generichide {
+                    resources
+                        .hide_selectors
+                        .extend(engine.hidden_class_id_selectors(
+                            &classes,
+                            &ids,
+                            &resources.exceptions,
+                        ));
+                }
+                let _ = reply.send(Some(json!({
+                    "hide_selectors": resources.hide_selectors,
+                    "injected_script": resources.injected_script,
+                    "procedural_actions": resources.procedural_actions,
+                })));
+            }
+            Command::Shutdown => break,
+            #[cfg(test)]
+            Command::Panic => panic!("simulated matcher panic"),
+        }
     }
 }
 
