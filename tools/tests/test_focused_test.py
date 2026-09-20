@@ -29,7 +29,7 @@ class FocusedTests(unittest.TestCase):
                            ('OPERATION', 'build')]:
             with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                 focused.request(dict(self.values, **{key: value}))
-        self.assertEqual(focused.request(self.values), self.values)
+        self.assertEqual(focused.request(self.values)['TEST_CASES'], ['module::case'])
 
     def test_real_failure_retained_and_command_is_exact_locked_argv(self):
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()) as read, \
@@ -47,11 +47,13 @@ class FocusedTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_ignored_test_is_not_a_pass(self):
+        outcomes = []
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
              patch.object(focused.subprocess, 'run', return_value=subprocess.CompletedProcess(
-                 [], 0, 'test result: ok. 0 passed; 0 failed; 1 ignored;\n')), \
-             self.assertRaisesRegex(ValueError, 'non-ignored'):
-            focused.execute(Path('/focused-test-fixture'), self.values)
+                 [], 0, 'test result: ok. 0 passed; 0 failed; 1 ignored;\n')):
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), self.values, outcomes), 1)
+        self.assertFalse(outcomes[0]['passed'])
+        self.assertFalse(outcomes[0]['executed'])
 
     def test_one_passing_test_is_accepted(self):
         with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
@@ -104,6 +106,38 @@ class FocusedTests(unittest.TestCase):
                  self.assertRaisesRegex(ValueError, 'ancestor Cargo'):
                 focused.execute(root / 'source', self.values)
             read.assert_not_called()
+
+    def test_group_inputs_are_bounded_unique_and_exact(self):
+        for cases in ([], ['module::case'] * 2, ['case_' + str(n) for n in range(33)],
+                      ['case; echo bad'], [123], 'case', {'case': True}):
+            with self.subTest(cases=cases), self.assertRaises(ValueError):
+                focused.request(dict(self.values, TEST_NAME='', TEST_NAMES=json.dumps(cases)))
+        with self.assertRaises(ValueError):
+            focused.request(dict(self.values, TEST_NAMES='["other"]'))
+        with self.assertRaises(ValueError):
+            focused.request(dict(self.values, TARGET_KIND='lib'))
+
+    def test_group_runs_every_case_after_failure_and_reuses_one_target(self):
+        values = focused.request(dict(self.values, TARGET_KIND='lib', TEST_TARGET='',
+                                      TEST_NAME='', TEST_NAMES='["first", "second"]'))
+        self.metadata['packages'][0]['targets'] = [{'name': 'shell', 'kind': ['lib']}]
+        outcomes = []
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads('first: test\nsecond: test\n')) as read, \
+             patch.object(focused.subprocess, 'run', side_effect=[
+                 subprocess.CompletedProcess([], 101, 'test result: FAILED. 0 passed; 1 failed; 0 ignored;'),
+                 subprocess.CompletedProcess([], 0, 'test result: ok. 1 passed; 0 failed; 0 ignored;')]) as run:
+            self.assertEqual(focused.execute(Path('/focused-test-fixture'), values, outcomes), 101)
+        self.assertEqual(read.call_args.args[0], ['cargo', 'test', '--locked', '-p', 'shell', '--lib', '--', '--list'])
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual([result['passed'] for result in outcomes], [False, True])
+        self.assertTrue(all(result['executed'] for result in outcomes))
+
+    def test_missing_group_member_prevents_partial_success(self):
+        values = focused.request(dict(self.values, TEST_NAME='', TEST_NAMES='["module::case", "absent"]'))
+        with patch.object(focused.subprocess, 'check_output', side_effect=self.reads()), \
+             patch.object(focused.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'absent'):
+            focused.execute(Path('/focused-test-fixture'), values)
+        run.assert_not_called()
 
 
 if __name__ == '__main__':
