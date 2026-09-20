@@ -42,7 +42,10 @@ fn locked() -> PermissionScope {
 
 /// A context that grants nothing at all.
 fn denying() -> PermissionContext {
-    PermissionContext::from_capabilities(tilo_ui::permissions::Actor::person(None, "nobody"), vec![])
+    PermissionContext::from_capabilities(
+        tilo_ui::permissions::Actor::person(None, "nobody"),
+        vec![],
+    )
 }
 
 fn stamp(

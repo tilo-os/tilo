@@ -30,9 +30,9 @@ use runtime_collab::raw::{
     action_catalogue_stream, action_stream, channel_handle, collab_service, context_stream,
     presence_event, presence_handle, presence_payload, presence_stream, stream,
 };
+use tilo_ui::collaboration::CollaborationManager;
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use tilo_ui::collaboration::CollaborationManager;
 use uuid::Uuid;
 
 const TEST_APP_ID: &str = "ui-integration-test";

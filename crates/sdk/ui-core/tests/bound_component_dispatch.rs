@@ -73,7 +73,9 @@ fn provider_payload_drops_on_close_even_when_the_proxy_outlives_replacement() {
     let provider = &providers[0];
     assert_eq!(provider.name(), "Probe");
     assert_eq!(provider.action_directory_generation(), None);
-    assert!(!provider.action_directory_cursor_is_current(&tilo_ui::search::SearchCursor::default()));
+    assert!(
+        !provider.action_directory_cursor_is_current(&tilo_ui::search::SearchCursor::default())
+    );
     assert!(provider.search("").is_empty());
     assert!(provider.search_limited("", 1).is_empty());
     let page = provider.search_page("", None, 1, 1);
@@ -335,7 +337,12 @@ impl Widget for Leaf {
                 ]),
         )
     }
-    fn perform_action(&mut self, _: &tilo_ui::a11y::Action, doc: &mut AutoCommit, _: &ObjId) -> bool {
+    fn perform_action(
+        &mut self,
+        _: &tilo_ui::a11y::Action,
+        doc: &mut AutoCommit,
+        _: &ObjId,
+    ) -> bool {
         self.edit(doc, "action");
         true
     }
@@ -947,7 +954,9 @@ fn same_record_reentry_reuses_the_borrow_and_cross_record_reentry_is_refused() {
                     same[1],
                     doc,
                     &ROOT,
-                    |widget, doc, root| widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root),
+                    |widget, doc, root| {
+                        widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root)
+                    },
                 )
                 .unwrap();
                 assert!(matches!(
@@ -1211,7 +1220,9 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
             Callback::Capture => {
                 tile.view_state();
             }
-            Callback::Restore => tile.restore_view_state(&tilo_ui::view::ViewContribution::default()),
+            Callback::Restore => {
+                tile.restore_view_state(&tilo_ui::view::ViewContribution::default())
+            }
             Callback::HostIntent => {
                 tile.take_host_intent();
             }
@@ -1569,10 +1580,11 @@ impl Widget for ReplacingHost {
     }
     fn update(&mut self, doc: &mut AutoCommit, path: &ObjId) -> bool {
         if self.1.replace(false) {
-            self.0.replace_content(tilo_ui::widget::TileContent::Notice {
-                title: "Closed".into(),
-                detail: "Fixture replacement".into(),
-            });
+            self.0
+                .replace_content(tilo_ui::widget::TileContent::Notice {
+                    title: "Closed".into(),
+                    detail: "Fixture replacement".into(),
+                });
         }
         self.0.update(doc, path)
     }
@@ -1781,11 +1793,13 @@ fn canonical_fill_geometry_matches_legacy_tile_at_multiple_viewports() {
             viewport,
         );
         let legacy = controlled_driver(
-            Box::new(
-                Column::new().push(Box::new(TileHost::new(tilo_ui::widget::TileContent::App(
-                    Box::new(Root(Column::new().with_no_padding(), String::new(), false)),
-                )))),
-            ),
+            Box::new(Column::new().push(Box::new(TileHost::new(
+                tilo_ui::widget::TileContent::App(Box::new(Root(
+                    Column::new().with_no_padding(),
+                    String::new(),
+                    false,
+                ))),
+            )))),
             viewport,
         );
         let actual = canonical.targets()["dispatch-root"];
@@ -1938,7 +1952,11 @@ fn mutable_container_traversal_invokes_legacy_fallback_once() {
         LEGACY_START_CALLS.set(0);
         let mut tree = Column::new().push(Box::new(tilo_ui::widget::Row::new().push(Box::new(
             tilo_ui::widget::Container::new().with_child(Box::new(TileHost::new(
-                tilo_ui::widget::TileContent::App(Box::new(Root(Column::new(), String::new(), false))),
+                tilo_ui::widget::TileContent::App(Box::new(Root(
+                    Column::new(),
+                    String::new(),
+                    false,
+                ))),
             ))),
         ))));
         let result = tree
@@ -2177,7 +2195,10 @@ fn task4_driver_qualified_equal_resource_ids_use_their_record_and_view_owner() {
     let definition = definition(action_probe_factory);
     let permissions = std::rc::Rc::new(std::cell::RefCell::new(
         tilo_ui::permissions::PermissionContext::from_capabilities(
-            tilo_ui::permissions::Actor::person(Some(tilo_ui::permissions::Role::Owner), "probe-author"),
+            tilo_ui::permissions::Actor::person(
+                Some(tilo_ui::permissions::Role::Owner),
+                "probe-author",
+            ),
             vec![],
         )
         .at_unix_time(100),

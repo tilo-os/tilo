@@ -11,7 +11,9 @@
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use std::time::SystemTime;
 use tilo_ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
-use tilo_ui::permissions::{Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb};
+use tilo_ui::permissions::{
+    Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb,
+};
 use tilo_ui::presence::{PathSegment, PresenceKey};
 use tilo_ui::widget::{TextInput, Widget};
 
@@ -174,7 +176,10 @@ fn status_crosses_the_same_authenticated_room_presence_path() {
         .status_for(&UserId("alice".into()), SystemTime::now())
         .expect("remote status reaches the room presence context");
     assert_eq!(received.text, "Reconciling forecast against actuals");
-    assert!(matches!(received.origin, tilo_ui::StatusOrigin::Inferred { .. }));
+    assert!(matches!(
+        received.origin,
+        tilo_ui::StatusOrigin::Inferred { .. }
+    ));
 }
 
 #[test]

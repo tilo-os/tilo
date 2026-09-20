@@ -710,7 +710,8 @@ impl Widget for ProbeRoot {
                 vec![Box::new(ProbeProvider {
                     observations: observations.clone(),
                     local: LocalState::new(false),
-                }) as Box<dyn tilo_ui::search::SearchProvider>]
+                })
+                    as Box<dyn tilo_ui::search::SearchProvider>]
             })
         })
     }
