@@ -2204,6 +2204,9 @@ impl BlockEditor {
         let Some(parent) = self.blocks.get(idx) else {
             return false;
         };
+        if !parent.kind.supports_indent() && parent.indent() == 0 {
+            return false;
+        }
         let depth = parent.indent();
         let end = self.list_subtree_end(last);
         let deepest = self.blocks[idx..end]
@@ -11812,11 +11815,11 @@ mod tests {
     #[test]
     fn find_ranges_are_case_insensitive_and_unicode_byte_safe() {
         assert_eq!(
-            case_folded_match_ranges("Ä°stanbul CAFÃ‰ cafÃ©", "i\u{307}"),
-            vec![(0, "Ä°".len())]
+            case_folded_match_ranges("İstanbul CAFÉ café", "i\u{307}"),
+            vec![(0, "İ".len())]
         );
         assert_eq!(
-            case_folded_match_ranges("Ä°stanbul CAFÃ‰ cafÃ©", "CAFÃ‰"),
+            case_folded_match_ranges("İstanbul CAFÉ café", "CAFÉ"),
             vec![(10, 15), (16, 21)]
         );
     }
