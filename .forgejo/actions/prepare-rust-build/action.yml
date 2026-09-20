@@ -17,7 +17,7 @@ runs:
       shell: bash
       run: |
         if test -d crates/session/qos-ntfs-helper && ! command -v autoreconf >/dev/null; then
-          dnf install -y autoconf automake libtool
+          dnf install -y autoconf automake libtool libgcrypt-devel
         fi
 
     - name: Restore Cargo downloads
