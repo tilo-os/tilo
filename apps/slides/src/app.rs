@@ -671,26 +671,6 @@ struct InspectorRects {
     font_input: Option<Rect>,
 }
 
-/// Reusable horizontal geometry for every inspector section.
-#[derive(Clone, Copy)]
-struct InspectorColumns {
-    left: f64,
-    right: f64,
-    width: f64,
-}
-
-impl InspectorColumns {
-    fn new(inspector: Rect, padding: f64) -> Self {
-        let left = inspector.x0 + padding;
-        let right = inspector.x1 - padding;
-        Self {
-            left,
-            right,
-            width: right - left,
-        }
-    }
-}
-
 /// Framework event state shared by the small embedded-widget routers.
 ///
 /// Keeping this boundary explicit prevents every router from mirroring the
