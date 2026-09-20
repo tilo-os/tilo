@@ -12,13 +12,27 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def isolated_temp_parent():
+    candidates = [Path(tempfile.gettempdir())]
+    if os.environ.get('SystemRoot'):
+        candidates.append(Path(os.environ['SystemRoot']) / 'Temp')
+    for candidate in candidates:
+        if candidate.is_dir() and os.access(candidate, os.W_OK) and not any(
+                (parent / '.cargo' / name).exists()
+                for parent in (candidate.resolve(), *candidate.resolve().parents)
+                for name in ('config', 'config.toml')):
+            return candidate
+    raise RuntimeError('focused native regression needs a temp path without ancestor Cargo configuration')
+
+
 class NativeFocusedTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         for tool in ('cargo', 'git'):
             if not shutil.which(tool):
                 raise RuntimeError('focused native regression requires ' + tool)
-        cls.temporary = tempfile.TemporaryDirectory(prefix='focused-native-')
+        cls.temporary = tempfile.TemporaryDirectory(
+            prefix='focused-native-', dir=isolated_temp_parent())
         cls.root = Path(cls.temporary.name)
         (cls.root / 'src').mkdir()
         (cls.root / 'tests').mkdir()
