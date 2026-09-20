@@ -68,8 +68,8 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan,
-    PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
+    Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
+    PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
     context_menu::ContextMenu,
 };
 use ui::{CommandEntry, CommandPalette};
