@@ -24,7 +24,7 @@ feedback after the coordinator is in service.
 
 | Product | Present evidence | Next production step |
 | --- | --- | --- |
-| qOS/Linux apps | [`release-apps.yml`](../.forgejo/workflows/release-apps.yml) plans every PR and packages affected apps on relevant `main` pushes. It compiles selected app binaries with full-collection dependency features and publishes immutable qpkgs and collections to Forgejo, reusing unchanged members. Explicit and tagged runs retain x86-64 and ARM64. | Publish the accepted catalogue and atomic signed channel at `registry.tilo.dev`, then make ARM64 continuous after its native lane meets the same reliability target. A toolkit change rebuilds only its transitive app closure. |
+| qOS/Linux apps | [`release-apps.yml`](../.forgejo/workflows/release-apps.yml) plans every PR and packages affected apps on relevant `main` pushes. It compiles selected app binaries with full-collection dependency features and publishes immutable qpkgs and collections to Forgejo, reusing unchanged members. Explicit and tagged runs retain x86-64 and ARM64. | Populate the signed development catalogue at `registry.sandbox.example`, then make ARM64 continuous after its native lane meets the same reliability target. A toolkit change rebuilds only its transitive app closure. |
 | Windows apps | The toolkit and local installer exist; [`ci-product-matrix.md`](ci-product-matrix.md) records the missing release qualification. | Keep this optional. Qualify a small x86-64 set on a disposable native host before choosing archive or MSIX, signing, update and rollback contracts. Add ARM64 only after x86-64 is useful. |
 | macOS apps | No standalone release path is qualified. | Deferred. Do not allocate runners or publish packages. |
 | Linux desktop | [`package-desktop.yml`](../.forgejo/workflows/package-desktop.yml) defines Debian 13, Ubuntu 24.04, Fedora 44, Arch and Nix packages. PRs run preflight; scheduled, manual and tagged runs perform native builds. | Install-test each emitted repository package, retain a last-known-good set per distribution and architecture, then promote one signed desktop release manifest. |
@@ -85,7 +85,7 @@ not hidden dependency drift.
 | Regional OCI/ECR | CI images, builder images, frozen inputs and BuildKit caches close to runners | Replicate by digest before rollout. Runner startup must not depend on repeatedly pulling large images through the Forgejo control-plane node. |
 | Shared Actions cache | Workflow caches restored across disposable runners | Save/restore is qualified by the small cross-runner smoke below; measure real dependency archives separately. This is distinct from sccache and immutable release artifacts. |
 | Forgejo packages | Immutable qpkgs, collections, desktop packages, receipts and workflow-local handoffs | Use immutable versions and digests. Mutable names only point to accepted artifacts. |
-| Tilo registry | Signed app catalogue, channel metadata and public app downloads | Internally deployed and probed, with an empty signed catalogue. Public ingress and ExternalDNS remain disabled pending the `tilo.dev` DNS credential. CI catalogue submission is not implemented; existing app publication goes to Forgejo packages. |
+| Tilo registry | Signed app catalogue, channel metadata and public app downloads | Public HTTPS at `registry.sandbox.example` is deployed through Argo ([infra PR 219](https://code.sandbox.example/PodestaAI/infra/pulls/219)); the live registry accepts ARM64 entries ([PR 223](https://code.sandbox.example/PodestaAI/infra/pulls/223)). The signed catalogue remains empty. CI submission is not merged or enabled; existing app publication still goes to Forgejo packages. The separate `tilo.dev` hostname remains deferred. |
 
 Eviction starts with reconstructible local data. Accepted artifacts, receipts,
 signatures and the inputs required for cross-time reproduction follow a defined
@@ -96,7 +96,7 @@ is released.
 
 | Boundary | Required work |
 | --- | --- |
-| Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. Ordinary product changes use explicit `/merge <full-head-sha>` intent with optional review; requesting official review holds that head for approval or cancellation. CI policy, publication, signing and named security boundaries require the reviewed operator path. Broader admission is deployed; ordinary automatic landing still needs observed evidence. See [delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow). |
+| Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. Ordinary product changes use explicit `/merge <full-head-sha>` intent with optional review; requesting official review holds that head for approval or cancellation. CI policy, publication, signing and named security boundaries require the reviewed operator path. A bounded generated-branch queue pilot has landed one exact tested candidate; this does not establish general queue availability or reliability. See [delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow). |
 | `main` | Preserve check/lint for every commit. Package the affected qOS/Linux apps and update immutable collection inputs. Advance a public development channel only after registry publication is enabled. Coalesce superseded expensive work without discarding fast results. |
 | Scheduled integration | Rebuild full app baselines, Linux desktop packages and a generic x86-64 OS candidate. Rotate ARM64 and other costly coverage according to measured drift and capacity. |
 | App/desktop release | Reuse accepted build nodes, install-test the release set, sign artifacts and provenance, then atomically move a channel manifest. |
@@ -131,8 +131,10 @@ protocol 3 served signed sequence 2 with **zero entries**, and all three interna
 probes passed. The artifact proxy returned the expected 894,976-byte package with
 matching SHA-256; invalid paths and methods returned 404. The CSI snapshot was
 ready, but the qualification backup failed because the Backblaze storage cap was
-exceeded. Offsite upload and restore remain unverified. Internal service health
-does not establish public access, CI catalogue publication or disaster recovery.
+exceeded. Offsite upload and restore remain unverified. The later public rollout
+verified HTTPS, the trusted registry root and the same 894,976-byte calculator
+artifact. The signed catalogue is still empty: public
+read access does not establish CI catalogue publication or disaster recovery.
 
 The targets below are operating goals. Report p50 and p95 over seven and 30
 days, split by workflow and architecture; do not declare them met from one run.
@@ -160,8 +162,8 @@ rollout.
 
 ## Delivery phases
 
-1. **Make continuous apps boring.** Enable public DNS/TLS for the internally
-   deployed registry, recover the failed offsite backup and verify restore,
+1. **Make continuous apps boring.** Recover the failed offsite backup and verify
+   restore, qualify and enable CI submission to the public registry,
    publish the verified x86-64 qpkgs already produced from `main` into its signed
    development catalogue, retain the last-known-good channel on failure, and show
    timing and selection in every run. Exit when 30 consecutive relevant changes
