@@ -1,7 +1,16 @@
 name: Restore Cargo downloads
 description: Restore the shared registry and Git dependency cache without affecting correctness.
 
+inputs:
+  lockfile:
+    description: Workspace-relative lockfile used by this source checkout.
+    required: false
+    default: Cargo.lock
+
 outputs:
+  cache-key:
+    description: Exact download cache key, also used by explicit save steps.
+    value: cargo-deps-${{ hashFiles(inputs.lockfile) }}
   cache-hit:
     description: Whether the exact Cargo.lock cache key was restored.
     value: ${{ steps.restore.outputs.cache-hit }}
@@ -17,5 +26,5 @@ runs:
           /cargo-home/registry/index
           /cargo-home/registry/cache
           /cargo-home/git/db
-        key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+        key: cargo-deps-${{ hashFiles(inputs.lockfile) }}
         restore-keys: cargo-deps-

@@ -32,7 +32,9 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
         self.assertEqual(action.count("/cargo-home/registry/index"), 1)
         self.assertEqual(action.count("/cargo-home/registry/cache"), 1)
         self.assertEqual(action.count("/cargo-home/git/db"), 1)
-        self.assertIn("key: cargo-deps-${{ hashFiles('Cargo.lock') }}", action)
+        self.assertIn("default: Cargo.lock", action)
+        self.assertIn("key: cargo-deps-${{ hashFiles(inputs.lockfile) }}", action)
+        self.assertIn("value: cargo-deps-${{ hashFiles(inputs.lockfile) }}", action)
         self.assertIn("value: ${{ steps.restore.outputs.cache-hit }}", action)
 
     def test_rust_build_action_composes_download_and_compiler_caches(self) -> None:
