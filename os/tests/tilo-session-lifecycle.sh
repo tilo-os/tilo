@@ -22,6 +22,13 @@ grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' "$tar
 grep -Fqx 'After=graphical-session-pre.target' "$target"
 grep -Fqx 'PartOf=graphical-session.target' "$target"
 grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.target' "$target"
+grep -Fqx 'Wants=tilo-ush.service' "$target"
+for socket in \
+  "$repo/os/usr/lib/systemd/user/tilo-models.socket" \
+  "$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket"; do
+  grep -Fqx 'PartOf=tilo-graphical-session.target' "$socket"
+  grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
+done
 grep -Fqx 'Before=graphical-session-pre.target' "$identity_unit"
 grep -Fqx 'WantedBy=graphical-session-pre.target' "$identity_unit"
 grep -Fqx 'ExecStart=/usr/bin/shell --provision-identity' "$identity_unit"

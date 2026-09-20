@@ -1,6 +1,7 @@
 [Unit]
 Description=Tilo hosted-model gateway activation socket
 Documentation=file:///usr/share/doc/tilo/model-gateway.md
+PartOf=tilo-graphical-session.target
 
 [Socket]
 ListenStream=%t/tilo/services/model-gateway.sock
@@ -11,4 +12,4 @@ RemoveOnStop=yes
 Service=tilo-model-gateway.service
 
 [Install]
-WantedBy=sockets.target
+WantedBy=tilo-graphical-session.target
