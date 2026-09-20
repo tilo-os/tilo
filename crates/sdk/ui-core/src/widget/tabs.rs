@@ -1550,6 +1550,9 @@ impl TabBar {
     pub fn bar_rect(&self) -> Rect {
         self.rect
     }
+    pub(crate) fn max_rects_internal(&self) -> &[Rect] {
+        &self.max_rects
+    }
     pub fn tab_rects(&self) -> &[Rect] {
         &self.tab_rects
     }
