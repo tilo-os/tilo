@@ -170,13 +170,16 @@ def main() -> int:
     messages = []
     if observing:
         try:
-            for line in args.from_messages.read_text().splitlines():
-                try:
-                    message = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(message, dict):
-                    messages.append(message)
+            with args.from_messages.open(encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        message = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(message, dict) and message.get("reason") in {
+                        "compiler-artifact", "build-script-executed", "build-finished"
+                    }:
+                        messages.append(message)
         except (OSError, UnicodeError):
             print("::warning::Clippy messages unavailable; existing compilation result unchanged.")
             return 0
