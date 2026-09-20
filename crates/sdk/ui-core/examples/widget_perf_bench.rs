@@ -168,7 +168,10 @@ fn build_tree() -> Box<dyn Widget> {
 // layout engine, render targets, timing out-param). Bundling would trade
 // named parameters for an equally large ad-hoc struct with no behavioural
 // change.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the benchmark keeps independent render-loop inputs explicit"
+)]
 fn full_redraw(
     root: &mut Box<dyn Widget>,
     taffy: &mut TaffyTree<()>,

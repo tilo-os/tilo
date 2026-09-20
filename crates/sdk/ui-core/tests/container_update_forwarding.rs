@@ -70,7 +70,10 @@ impl Widget for Probe {
     ) {
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the test widget implements the framework event contract"
+    )]
     fn handle_event(
         &mut self,
         _event: &WindowEvent,

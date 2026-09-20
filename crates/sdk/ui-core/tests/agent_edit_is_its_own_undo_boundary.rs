@@ -88,7 +88,10 @@ impl Widget for AgentTarget {
         self.inner
             .draw(scene, transform, text_renderer, theme, presence);
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the test widget implements the framework event contract"
+    )]
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
