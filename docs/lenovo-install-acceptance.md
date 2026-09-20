@@ -30,6 +30,72 @@ live-boot acceptance session is required. Before starting installation, confirm:
 Do not record these checks as passed from unit tests, generic VM results or
 firmware hashes alone. They require observations from the laptop.
 
+## Write the VM-accepted medium on Windows
+
+Do this only after the supervised ARM lane has produced its complete operation
+evidence directory and the byte-identical `installer.raw`. Keep
+`acceptance.json`, `raw-identity.json`, `finalized-verification.json`,
+`cycle-evidence.json` and `cycle-evidence.tar` together. The handoff command refuses receipts that
+do not prove independent verification, prepared-alongside installation, cold
+boot and desktop acceptance. A 64 GiB raw image needs a device with at least
+68,719,476,736 usable bytes; a nominal 64 GB stick is too small, so use a
+128 GB device.
+
+Disconnect backup and unrelated removable drives. Inventory disks without
+changing them:
+
+```powershell
+python .\os\dev\write-verified-installer-media.py inventory `
+  --output .\lenovo-media-inventory.json
+```
+
+Review the selected disk's number, model, unique ID and byte capacity. Create a
+read-only plan; this hashes the full raw image and binds it to the successful VM
+acceptance receipt and one removable disk:
+
+```powershell
+python .\os\dev\write-verified-installer-media.py plan `
+  --image C:\tilo-handoff\installer.raw `
+  --acceptance C:\tilo-handoff\acceptance.json `
+  --disk-number 3 `
+  --evidence C:\tilo-handoff\lenovo-media-write.json `
+  --output C:\tilo-handoff\lenovo-media-plan.json
+```
+
+Read the plan, physically check that it names the intended USB device, then
+open an Administrator PowerShell and copy the plan's
+`required_confirmation` value exactly:
+
+```powershell
+python .\os\dev\write-verified-installer-media.py write `
+  --plan C:\tilo-handoff\lenovo-media-plan.json `
+  --confirmation 'ERASE PhysicalDrive3 IDHASH MEDIAHASH'
+```
+
+The writer rehashes the image before changing the device, checks that the
+image, receipt, plan and evidence are not stored on the target, revalidates the
+disk immediately before taking it offline, and opens only the reviewed
+`PhysicalDriveN`. It writes the raw byte range, reads every byte back, restores
+the same device online and records both hashes and the partition table in the
+evidence JSON. On a larger device it also clears and reads back the terminal
+metadata area so a stale backup partition table cannot survive. Any identity,
+capacity, model, safety-flag, hash or read-back
+change fails without a success receipt. Do not substitute `dd`, Rufus or a
+filesystem copy for this development handoff.
+
+Boot the medium with the firmware's one-time boot menu. Before starting the
+actual installation, record these five observations in the installation
+record:
+
+- display reaches a usable desktop and installer;
+- keyboard and touchpad can operate the complete flow;
+- internal storage and the existing Windows partitions are correctly shown;
+- USB remains present and usable;
+- Wi-Fi connects and passes traffic.
+
+Audio, Bluetooth, battery reporting and suspend/resume remain optional for the
+first installation and belong in issue #49.
+
 ## Deferred hardware checks
 
 Audio, Bluetooth, battery reporting and suspend/resume are not gates for this
