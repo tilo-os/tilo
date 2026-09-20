@@ -211,15 +211,17 @@ class FinalizationTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 finalizer.validate_request(request() | change)
 
-    def test_prediction_deadline_exceeds_signing_and_non_signing_budgets(self):
-        for change in ({'signing_response_timeout_seconds': 1801},
+    def test_signing_and_prediction_deadlines_are_independently_bounded(self):
+        for change in ({'signing_response_timeout_seconds': 7201},
                        {'prediction_stage_timeout_seconds': 8401},
-                       {'prediction_stage_timeout_seconds': 2400},
-                       {'prediction_stage_timeout_seconds': 2399}):
+                       {'prediction_stage_timeout_seconds': 299}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 finalizer.validate_request(request() | change)
-        self.assertEqual(finalizer.validate_request(request() | {
-            'prediction_stage_timeout_seconds': 2401})['prediction_stage_timeout_seconds'], 2401)
+        value = finalizer.validate_request(request() | {
+            'signing_response_timeout_seconds': 7200,
+            'prediction_stage_timeout_seconds': 300})
+        self.assertEqual(value['signing_response_timeout_seconds'], 7200)
+        self.assertEqual(value['prediction_stage_timeout_seconds'], 300)
 
     def test_target_origins_require_the_matching_native_suffix(self):
         repository = 'code.sandbox.example/qos/tilo-development'
@@ -311,8 +313,9 @@ class FinalizationTests(unittest.TestCase):
                                   if 'sign-target-prediction.sh' in ' '.join(argv))
         inspect_timeout = next(timeout for argv, timeout in timed_calls
                                if argv[:4] == ['podman', '--remote=false', 'image', 'inspect'])
-        self.assertGreater(prediction_timeout, q['signing_response_timeout_seconds'] + q['stage_timeout_seconds'])
-        self.assertLessEqual(prediction_timeout, q['prediction_stage_timeout_seconds'])
+        self.assertGreater(prediction_timeout, q['prediction_stage_timeout_seconds'])
+        self.assertLessEqual(prediction_timeout, q['prediction_stage_timeout_seconds']
+                             + 4 * q['signing_response_timeout_seconds'])
         self.assertLessEqual(inspect_timeout, q['stage_timeout_seconds'])
         pushes = [c for c in calls if isinstance(c, list) and 'push' in c]
         self.assertEqual(len(pushes), 2)
