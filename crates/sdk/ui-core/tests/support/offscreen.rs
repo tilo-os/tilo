@@ -1,7 +1,7 @@
-//! Test-target re-export of `ui::offscreen` so existing
+//! Test-target re-export of `tilo_ui::offscreen` so existing
 //! integration tests keep their `support::offscreen::OffscreenRenderer`
 //! import path working. New code (binaries, examples, downstream
-//! crates) should import directly from `ui::offscreen`.
+//! crates) should import directly from `tilo_ui::offscreen`.
 
 #![allow(unused_imports)]
 #![allow(
@@ -14,4 +14,4 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-pub use ui::offscreen::OffscreenRenderer;
+pub use tilo_ui::offscreen::OffscreenRenderer;
