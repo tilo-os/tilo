@@ -34,15 +34,19 @@ cleanup() {
   docker volume rm -f "$volume" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-# Kubernetes makes the PVC writable through fsGroup=65532. Give this named
-# smoke volume the same ownership instead of weakening the image's non-root
-# runtime or mounting a runner-owned host path.
-docker volume create \
-  --driver local \
-  --opt type=tmpfs \
-  --opt device=tmpfs \
-  --opt o=uid=65532,gid=65532,mode=0750,size=64m \
-  "$volume" >/dev/null
+# Kubernetes makes the PVC writable through fsGroup=65532. Docker does not
+# implement fsGroup, so model that one kubelet operation with a tiny pinned
+# helper before any registry process sees the persistent named volume.
+docker volume create "$volume" >/dev/null
+docker run --rm \
+  --user 0:0 \
+  --read-only \
+  --cap-drop ALL \
+  --cap-add CHOWN \
+  --security-opt no-new-privileges \
+  --mount "type=volume,source=$volume,target=/state,volume-nocopy" \
+  docker.io/library/busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0 \
+  sh -ec 'chmod 0750 /state && chown 65532:65532 /state'
 
 # RFC 8032 test-vector public key. Only public identity material enters the
 # image; the owner signing seed remains outside the long-running service.
@@ -52,8 +56,9 @@ docker run --rm \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-  --mount "type=volume,source=$volume,target=/var/lib/tilo-registry" \
+  --mount "type=volume,source=$volume,target=/var/lib/tilo-registry,volume-nocopy" \
   "$image" \
+  --data-dir /var/lib/tilo-registry \
   init \
   --owner-pubkey "$owner_pubkey" \
   --name "Tilo registry image smoke test" \
@@ -65,7 +70,7 @@ docker run --detach --name "$container" \
   --cap-drop ALL \
   --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-  --mount "type=volume,source=$volume,target=/var/lib/tilo-registry" \
+  --mount "type=volume,source=$volume,target=/var/lib/tilo-registry,volume-nocopy" \
   --publish 127.0.0.1::8443 \
   "$image" >/dev/null
 

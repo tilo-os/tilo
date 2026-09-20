@@ -59,11 +59,15 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
         smoke = (
             ROOT / "crates/packaging/registry-server/container/test-image.sh"
         ).read_text()
-        self.assertIn("--opt o=uid=65532,gid=65532,mode=0750,size=64m", smoke)
+        self.assertIn('docker volume create "$volume"', smoke)
+        self.assertRegex(smoke, r"docker\.io/library/busybox@sha256:[0-9a-f]{64}")
+        self.assertIn("--cap-add CHOWN", smoke)
+        self.assertIn("chmod 0750 /state && chown 65532:65532 /state", smoke)
         self.assertIn(
-            '--mount "type=volume,source=$volume,target=/var/lib/tilo-registry"',
+            '--mount "type=volume,source=$volume,target=/var/lib/tilo-registry,volume-nocopy"',
             smoke,
         )
+        self.assertIn("--data-dir /var/lib/tilo-registry", smoke)
         self.assertNotIn("type=bind", smoke)
         self.assertIn('docker volume rm -f "$volume"', smoke)
 
