@@ -51,7 +51,7 @@ grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
 
-if grep -Fq 'runner: ubuntu-24.04-arm' "$workflows/build-kernel.yml" \
+if grep -Fq 'runner: blacksmith-4vcpu-ubuntu-2404-arm' "$workflows/build-kernel.yml" \
   && grep -Fxq '            runner: ubuntu-24.04' "$workflows/build-kernel.yml" \
   && grep -Fq 'platforms: ${{ matrix.platform }}' "$workflows/build-kernel.yml" \
   && grep -Fq 'needs: build-and-push-kernel' "$workflows/build-kernel.yml" \
@@ -72,9 +72,9 @@ else
   bad 'native kernel compilation can bypass its guest memory budget or use unbounded CPU parallelism'
 fi
 
-if grep -Fq 'runner: ubuntu-24.04-arm' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'runner: ubuntu-24.04' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'uses: docker/build-push-action@' "$workflows/build-builder-image.yml" \
+if grep -Fq 'runner: blacksmith-4vcpu-ubuntu-2404-arm' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'runner: blacksmith-4vcpu-ubuntu-2404' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'uses: useblacksmith/build-push-action@' "$workflows/build-builder-image.yml" \
   && grep -Fq 'uses: actions/attest-build-provenance@' "$workflows/build-builder-image.yml" \
   && grep -Fq 'docker buildx imagetools create' "$workflows/build-builder-image.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
@@ -102,7 +102,7 @@ fi
 
 kernel_workflow="$workflows/build-kernel.yml"
 if grep -Fq 'runner: ubuntu-24.04' "$kernel_workflow" \
-   && grep -Fq 'runner: ubuntu-24.04-arm' "$kernel_workflow" \
+   && grep -Fq 'runner: blacksmith-4vcpu-ubuntu-2404-arm' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
    && grep -Fq 'tilo-kernel-buildcache:${{ matrix.arch }}' "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \

@@ -33,20 +33,20 @@ def section(text, key, indent=0):
 class QueueReliefTests(unittest.TestCase):
     def test_builder_resolution_keeps_native_context_fixture_in_control_lane(self):
         builder = section(workflow("check"), "builder", 2)
-        self.assertIn("runs-on: ubuntu-24.04", builder)
+        self.assertIn("runs-on: blacksmith-4vcpu-ubuntu-2404", builder)
         self.assertNotIn("    container:", builder)
         self.assertIn("image: ${{ steps.resolve.outputs.image }}", builder)
         self.assertIn('DOCKER_BUILDKIT: "1"', builder)
         self.assertIn("run: bash os/tests/named_public_trust_context.sh docker", builder)
 
-    def test_fast_gates_use_github_hosted_images(self):
+    def test_fast_gates_use_blacksmith_runners(self):
         quality = section(workflow("lint"), "quality", 2)
         self.assertNotIn("    container:", quality)
         for name in ("select", "checks"):
             with self.subTest(job=name):
                 job = section(workflow("check"), name, 2)
                 self.assertNotIn("    container:", job)
-                self.assertIn("runs-on: ubuntu-24.04", job)
+                self.assertIn("runs-on: blacksmith-4vcpu-ubuntu-2404", job)
 
     def test_fast_checks_never_cancel_another_commit_or_event(self):
         for name in ("check", "lint"):

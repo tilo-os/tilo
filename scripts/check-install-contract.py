@@ -52,8 +52,8 @@ for host in ("linux", "windows", "macos"):
 windows_host = next(host for host in contract["imager"]["hosts"] if host["os"].startswith("Windows"))
 assert windows_host["architectures"] == ["x86_64", "aarch64"]
 for architecture in windows_host["architectures"]:
-    runner = "windows-2025" if architecture == "x86_64" else "windows-11-arm"
-    assert f"runner: {runner}" in imager_workflow
+    runner = "blacksmith-4vcpu-windows-2025" if architecture == "x86_64" else "windows-11-arm"
+    assert f"          - arch: {architecture}\n            runner: {runner}\n" in imager_workflow
     assert f"            tilo-imager-setup-windows-{architecture}.exe" in imager_workflow
 assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imager_workflow
 

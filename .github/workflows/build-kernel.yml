@@ -57,7 +57,7 @@ env:
 jobs:
   applicability:
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       applicable: ${{ steps.compare.outputs.applicable }}
@@ -80,7 +80,7 @@ jobs:
 
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout signing policy
@@ -128,7 +128,7 @@ jobs:
             runner: ubuntu-24.04
           - arch: aarch64
             platform: linux/arm64
-            runner: ubuntu-24.04-arm
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
     runs-on: ${{ matrix.runner }}
     # Finish before the existing three-hour runner/server deadline, leaving
     # room for cleanup and reporting. Measure/cache builds within this budget.
@@ -203,6 +203,7 @@ jobs:
           docker system prune --all --force --volumes
           df -h /
 
+      # Keep the container driver: the Blacksmith daemon does not enforce memory driver options.
       - name: Set up buildx for registry cache export
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
@@ -412,7 +413,7 @@ jobs:
   promote-native-kernels:
     needs: build-and-push-kernel
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 60
     permissions:
       actions: write

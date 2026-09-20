@@ -28,7 +28,7 @@ class FeedbackScopeTests(unittest.TestCase):
     def test_nightly_executes_complete_coverage_on_both_native_architectures(self):
         workflow = (ROOT / '.github/workflows/nightly.yml').read_text(encoding='utf-8')
         pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)
-        self.assertEqual(pairs, [('x86_64', 'ubuntu-24.04'), ('aarch64', 'ubuntu-24.04-arm')])
+        self.assertEqual(pairs, [('x86_64', 'ubuntu-24.04'), ('aarch64', 'blacksmith-4vcpu-ubuntu-2404-arm')])
         self.assertIn('runs-on: ${{ matrix.runner }}', workflow)
         self.assertIn("./os/dev/assert-native-arch.sh '${{ matrix.arch }}'", workflow)
         self.assertIn('lvp_icd.${{ matrix.arch }}.json', workflow)

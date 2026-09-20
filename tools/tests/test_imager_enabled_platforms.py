@@ -54,12 +54,12 @@ class EnabledImagerPlatforms(unittest.TestCase):
             self.assertNotIn("imager-macos", block)
         install = section(self.workflow, "homebrew-install-test", 2)
         self.assertNotIn("package_kind: cask", install)
-        self.assertIn("runner: ubuntu-24.04", install)
-        self.assertIn("runner: ubuntu-24.04-arm", install)
+        self.assertEqual(re.findall(r"runner: (\S+)", install),
+                         ["blacksmith-4vcpu-ubuntu-2404", "blacksmith-4vcpu-ubuntu-2404-arm"])
         deferred = section(self.workflow, "homebrew-macos-install-test", 2)
         self.assertIn("    if: ${{ false }}", deferred)
-        self.assertIn("runner: macos-15-intel", deferred)
-        self.assertIn("runner: macos-15", deferred)
+        self.assertEqual(re.findall(r"runner: (\S+)", deferred),
+                         ["macos-15-intel", "blacksmith-6vcpu-macos-15"])
         homebrew = section(self.workflow, "homebrew", 2)
         self.assertIn('TILO_IMAGER_MACOS_ENABLED: "0"', homebrew)
         for job in ("homebrew", "winget", "site-downloads"):
@@ -74,6 +74,12 @@ class EnabledImagerPlatforms(unittest.TestCase):
         self.assertIn("vars.TILO_PUBLIC_RELEASES_ENABLED == '1'", monitor)
         publish = section(desktop, "publish-os-payload", 2)
         self.assertIn("vars.TILO_PUBLIC_RELEASES_ENABLED == '1'", publish)
+
+    def test_macos_matrix_preserves_native_architectures(self):
+        macos = section(self.workflow, "macos", 2)
+        self.assertEqual(re.findall(r"- arch: (\S+)\s+runner: (\S+)", macos),
+                         [("x86_64", "macos-15-intel"),
+                          ("aarch64", "blacksmith-6vcpu-macos-15")])
 
     def test_real_release_gate_accepts_linux_windows_and_rejects_missing_or_corrupt(self):
         script = step_script(self.workflow, "enabled-assets")

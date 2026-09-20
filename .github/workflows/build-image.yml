@@ -59,7 +59,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
@@ -94,7 +94,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout signing policy
@@ -593,22 +593,13 @@ jobs:
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
-      # Set up buildx with the docker-container driver — the default `docker`
-      # driver doesn't support cache export (the registry-backed cache we
-      # need to survive across ephemeral runners).
+      # Retain bounded execution on both GitHub-hosted native build lanes.
       - name: Set up buildx (docker-container driver for cache export)
         id: buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
-          # The OS graph contains several large RPM and Rust stages. Letting
-          # BuildKit run all of them at once exhausts the ephemeral runner's
-          # backing store and can tear SQLite's rpmdb while a layer is being
-          # committed. In particular, composefs needs temporary room comparable
-          # to the completed root while sealing the UKI; a second active solver
-          # operation has exhausted that headroom on otherwise healthy runners.
-          # Serialize the solver so the installed-image and AT-SPI gates are not
-          # skipped because an unrelated stage consumed composefs's workspace.
+          # Serialize large RPM/Rust stages to preserve composefs workspace headroom.
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = 1
@@ -1105,7 +1096,7 @@ jobs:
   promote-multiarch:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

@@ -10,16 +10,14 @@ CHECK = (ROOT / ".github/workflows/check.yml").read_text()
 
 
 class BuilderWorkflow(unittest.TestCase):
-    def test_builds_natively_on_standard_github_images(self):
-        self.assertIn("runner: ubuntu-24.04", WORKFLOW)
-        self.assertIn("runner: ubuntu-24.04-arm", WORKFLOW)
-        self.assertIn("platform: linux/amd64", WORKFLOW)
-        self.assertIn("platform: linux/arm64", WORKFLOW)
+    def test_builds_natively_on_blacksmith_runners(self):
+        self.assertIn("arch: x86_64\n            platform: linux/amd64\n            runner: blacksmith-4vcpu-ubuntu-2404\n", WORKFLOW)
+        self.assertIn("arch: aarch64\n            platform: linux/arm64\n            runner: blacksmith-4vcpu-ubuntu-2404-arm\n", WORKFLOW)
         self.assertIn("runs-on: ${{ matrix.runner }}", WORKFLOW)
 
     def test_builds_from_source_and_publishes_only_to_ghcr(self):
         self.assertIn("file: os/Containerfile.builder", WORKFLOW)
-        self.assertIn("uses: docker/build-push-action@", WORKFLOW)
+        self.assertRegex(WORKFLOW, r"uses: useblacksmith/build-push-action@[0-9a-f]{40}\b")
         self.assertIn("registry: ghcr.io", WORKFLOW)
         self.assertIn("password: ${{ github.token }}", WORKFLOW)
         self.assertIn("ghcr.io/tilo-os/tilo-builder:sha-${{ github.sha }}", WORKFLOW)
@@ -27,9 +25,12 @@ class BuilderWorkflow(unittest.TestCase):
         self.assertNotIn("code.podesta.ai", WORKFLOW)
         self.assertNotIn("REGISTRY_TOKEN", WORKFLOW)
 
-    def test_uses_github_cache_and_github_attestations(self):
-        self.assertIn("cache-from: type=gha,scope=tilo-builder-${{ matrix.arch }}", WORKFLOW)
-        self.assertIn("cache-to: type=gha,scope=tilo-builder-${{ matrix.arch }},mode=max", WORKFLOW)
+    def test_uses_blacksmith_layer_cache_and_github_attestations(self):
+        self.assertRegex(WORKFLOW, r"uses: useblacksmith/setup-docker-builder@[0-9a-f]{40}\b")
+        self.assertLess(WORKFLOW.index("uses: useblacksmith/setup-docker-builder@"),
+                        WORKFLOW.index("uses: useblacksmith/build-push-action@"))
+        self.assertNotIn("cache-from:", WORKFLOW)
+        self.assertNotIn("cache-to:", WORKFLOW)
         self.assertIn("uses: actions/attest-build-provenance@", WORKFLOW)
         self.assertIn("attestations: write", WORKFLOW)
         self.assertIn("id-token: write", WORKFLOW)
