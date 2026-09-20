@@ -34,7 +34,15 @@ cleanup() {
   docker volume rm -f "$volume" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-docker volume create "$volume" >/dev/null
+# Kubernetes makes the PVC writable through fsGroup=65532. Give this named
+# smoke volume the same ownership instead of weakening the image's non-root
+# runtime or mounting a runner-owned host path.
+docker volume create \
+  --driver local \
+  --opt type=tmpfs \
+  --opt device=tmpfs \
+  --opt o=uid=65532,gid=65532,mode=0750,size=64m \
+  "$volume" >/dev/null
 
 # RFC 8032 test-vector public key. Only public identity material enters the
 # image; the owner signing seed remains outside the long-running service.
@@ -50,7 +58,7 @@ docker run --rm \
   --owner-pubkey "$owner_pubkey" \
   --name "Tilo registry image smoke test" \
   --description "ephemeral" \
-  --base-url https://registry.tilo.dev
+  --base-url https://registry.tilo.so
 
 docker run --detach --name "$container" \
   --read-only \
