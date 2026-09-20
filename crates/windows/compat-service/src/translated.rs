@@ -3,6 +3,7 @@
 //! This does not create or relax a sandbox. The caller must already have
 //! entered the capsule, including its namespace and Landlock restrictions.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -319,7 +320,7 @@ impl Drop for PreparationChildren {
 }
 
 fn direct_children() -> io::Result<Vec<libc::pid_t>> {
-    let mut children = Vec::new();
+    let mut children = BTreeSet::new();
     for task in std::fs::read_dir("/proc/self/task")? {
         let task = match task {
             Ok(task) => task,
@@ -336,13 +337,53 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
             Err(error) => return Err(error),
         };
         for pid in raw.split_whitespace() {
-            children.push(
+            children.insert(
                 pid.parse()
                     .map_err(|_| io::Error::other("invalid child PID"))?,
             );
         }
     }
-    Ok(children)
+
+    // `/proc/self/task/*/children` can briefly omit an adopted subreaper
+    // child even after waitid(P_PIDFD) reports that we own it. Cross-check
+    // process status so cleanup cannot release the prefix lock during that
+    // procfs publication race. Entries that disappear or are unreadable are
+    // unrelated snapshots; any owned child remains waitable and keeps its PID.
+    let our_pid = std::process::id();
+    for process in std::fs::read_dir("/proc")? {
+        let process = match process {
+            Ok(process) => process,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<libc::pid_t>().ok())
+        else {
+            continue;
+        };
+        let status = match std::fs::read_to_string(process.path().join("status")) {
+            Ok(status) => status,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let parent = status.lines().find_map(|line| {
+            line.strip_prefix("PPid:")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        });
+        if parent == Some(our_pid) {
+            children.insert(pid);
+        }
+    }
+    Ok(children.into_iter().collect())
 }
 
 fn still_our_child(descriptor: &OwnedFd) -> io::Result<bool> {
