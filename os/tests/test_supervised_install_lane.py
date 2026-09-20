@@ -26,7 +26,14 @@ def node(name,*,disk=False,kvm=False,ready=True):
 class LaneAdmission(unittest.TestCase):
     def test_gui_evidence_requires_desktop_and_rendered_local_browser_page(self):
         html='<!doctype html><h1>Tilo browser offline ready</h1>\n'
-        good={'desktop_ocr':'cycle-tilo',
+        good={'oobe_intro':'Create your local identity',
+              'oobe_backup':'Back up your Tilo identity',
+              'oobe_ready':'Your identity is ready',
+              'tour_move':'Everything is close at hand',
+              'tour_arrange':'A place for each kind of work',
+              'tour_share':'Sharing stays deliberate',
+              'tour_start':'Your first five minutes',
+              'desktop_ocr':'cycle-tilo',
               'browser_ocr':'Tilo browser offline ready',
               'browser_fixture':'url=http://10.0.2.2:18765/index.html\n'
                                 'sha256='+hashlib.sha256(html.encode()).hexdigest()+'\n'
@@ -34,7 +41,7 @@ class LaneAdmission(unittest.TestCase):
                                 'external_references=none\n',
               'browser_fixture_html':html}
         self.assertIsNone(lane.validate_gui_evidence(good))
-        for key,bad in [('desktop_ocr',''),('browser_ocr','Browser opened'),
+        for key,bad in [('oobe_ready',''),('tour_share',''),('desktop_ocr',''),('browser_ocr','Browser opened'),
                         ('browser_fixture',good['browser_fixture'].replace('external_references=none','external_references=https')),
                         ('browser_fixture_html',html+'tampered')]:
             changed=dict(good);changed[key]=bad
@@ -190,6 +197,54 @@ class LaneAdmission(unittest.TestCase):
         receipt['layer_material_audit']['status']='rejected-private-material'
         with self.assertRaisesRegex(ValueError,'source-layer'):
             lane.validate_finalized_verification(receipt,creation)
+
+    def test_transfer_receipt_rebinds_copy_without_losing_creator_identity(self):
+        source={'device':10,'inode':20,'size':64*1024**3}
+        destination={'device':30,'inode':40,'size':64*1024**3}
+        identity={'size':64*1024**3,'sha256':'a'*64}
+        creation=(json.dumps({'path':'/work/disk-output/disk.raw',
+          'file_identity':source,'size_bytes':identity['size'],'disk_created':True},
+          sort_keys=True)+'\n').encode()
+        receipt=lane.transfer_receipt(creation,identity,destination)
+        self.assertEqual(receipt['source_file_identity'],source)
+        self.assertEqual(receipt['file_identity'],destination)
+        self.assertEqual(receipt['source_creation_sha256'],hashlib.sha256(creation).hexdigest())
+        with self.assertRaisesRegex(ValueError,'cannot bind'):
+            lane.transfer_receipt(creation,identity,destination|{'size':1})
+
+    def test_verifier_provisions_exact_loop_devices_before_disk_open(self):
+        verifier={'namespace':'kata-system','pod':'tilo-verify-run1'}
+        with patch.object(lane,'command') as command:
+            lane.prepare_verifier_devices('ctx',verifier)
+        argv=command.call_args.args[0]
+        self.assertEqual(argv[-3:-1],['python3','-c'])
+        self.assertIn('m.ensure_loop_devices()',argv[-1])
+        self.assertEqual(command.call_args.kwargs,{'timeout':30})
+
+    def test_verifier_uses_copy_receipt_and_cleans_auth(self):
+        values={'source':'registry.invalid/os@sha256:'+'a'*64,
+          'target':'registry.invalid/os:dev','architecture':'aarch64','revision':'b'*40,
+          'manifest_sha256':'c'*64,'generation':1,'composefs_digest':'d'*128,
+          'systemd_version':'259.8-1.fc44','source_live_uki':'boot/EFI/Linux/live.efi'}
+        worker={'namespace':'kata-system','pod':'tilo-verify-run1'}
+        with patch.object(lane,'command',side_effect=[b'{}',b'']) as command:
+            lane.verify_disk('ctx',worker,values,b'{"auths":{}}')
+        argv=command.call_args_list[0].args[0]
+        self.assertEqual(argv[argv.index('--copy-receipt')+1],'/work/disk-output/copy.json')
+        self.assertIn("trap 'rm -f -- /work/registry-auth.json'",argv[argv.index('sh')+2])
+
+    def test_vm_preflight_checks_exact_runtime_before_media_transfer(self):
+        worker={'namespace':'agent-sandboxes','pod':'tilo-vm-run1'}
+        with patch.object(lane,'command') as command:
+            lane.preflight_vm('ctx',worker)
+        argv=command.call_args.args[0]
+        self.assertTrue(any('qemu-system-aarch64' in item for item in argv))
+        self.assertIn('PROFILE_SHA256='+lane.PROFILE_ENCODER_SHA256,argv)
+        script=argv[-1]
+        self.assertIn('test -c /dev/kvm',script)
+        self.assertIn('bash -n /work/source/os/dev/_common.sh',script)
+        self.assertIn('rm -rf /work/vm-preflight',script)
+        self.assertEqual(command.call_args.kwargs,{'timeout':120})
 
 
 if __name__=='__main__':unittest.main()
