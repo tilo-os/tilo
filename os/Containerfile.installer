@@ -48,9 +48,18 @@ RUN test -x /usr/bin/tilo-installer \
     && /usr/libexec/tilo-uki-cmdline remove rd.udev.log_level \
     && /usr/libexec/tilo-uki-cmdline remove loglevel \
     && /usr/libexec/tilo-uki-cmdline remove vt.global_cursor_default \
+    # Preserve and validate the base image's target arguments before deriving
+    # the live UKI. Missing, duplicate, bare or conflicting values must fail;
+    # the target must never be repaired by appending reviewed-looking defaults.
+    && install -d -m 0755 /boot/tilo-target/predictions \
+    && target_uki="$(find /boot/EFI/Linux -type f -name '*.efi' -print -quit)" \
+    && cp "$target_uki" /boot/tilo-target/tilo-target.efi \
+    && target_cmdline="$(/usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi)" \
+    && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^root(=|$)')" = root=tilo-auto \
+    && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^rd[.]luks[.]options(=|$)')" = rd.luks.options=tpm2-device=auto,fido2-device=auto \
     # These describe the installed target. The live UKI uses the three
-    # length-stable installer placeholders below; its independently derived
-    # target variant adds root discovery back after removing those slots.
+    # length-stable installer placeholders below, while the independently
+    # preserved target retains its validated discovery arguments.
     && /usr/libexec/tilo-uki-cmdline remove root \
     && /usr/libexec/tilo-uki-cmdline remove rd.luks.options \
     && /usr/libexec/tilo-uki-cmdline append tilo.root=0000000000000000000000000000000000000 \
@@ -59,20 +68,6 @@ RUN test -x /usr/bin/tilo-installer \
     # discovery. tilo-install replaces it after the target LUKS UUID exists.
     && /usr/libexec/tilo-uki-cmdline append tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000 \
     && /usr/libexec/tilo-uki-cmdline append tilo.install \
-    # Keep a deterministic installed-target UKI outside bootc's EFI scan path.
-    # It seals the same composefs tree but contains no live marker or device UUID.
-    && install -d -m 0755 /boot/tilo-target/predictions \
-    && target_uki="$(find /boot/EFI/Linux -type f -name '*.efi' -print -quit)" \
-    && cp "$target_uki" /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline remove tilo.root /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline remove tilo.luks /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline remove tilo.unlock /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline remove tilo.install /boot/tilo-target/tilo-target.efi \
-    # The base UKI already seals these keys. Require one exact inherited token
-    # each; missing, duplicate, bare or conflicting values must fail the build.
-    && target_cmdline="$(/usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi)" \
-    && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^root(=|$)')" = root=tilo-auto \
-    && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^rd[.]luks[.]options(=|$)')" = rd.luks.options=tpm2-device=auto,fido2-device=auto \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.mode=normal \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.install \
     && ! /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw tilo.install \

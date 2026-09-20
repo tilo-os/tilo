@@ -61,7 +61,8 @@ fi
 karg_deletes="$(grep -c -- '--karg-delete tilo.install' "$backend" || true)"
 if [ "$karg_deletes" -eq 2 ] \
    && python3 -B "$repo_root/os/tests/test_installer_target_cmdline.py" \
-   && grep -Fq 'remove tilo.install /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && grep -Fq 'cp "$target_uki" /boot/tilo-target/tilo-target.efi' "$containerfile" \
+   && grep -Fq 'target_cmdline="$(/usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi)"' "$containerfile" \
    && grep -Fq 'install -m 0644 "$TARGET_VARIANT" "$TARGET_UKI.new"' "$backend" \
    && grep -Fq 'mv -f "$TARGET_UKI.new" "$TARGET_UKI"' "$backend" \
    && ! grep -Fq 'tilo-uki-cmdline set "tilo.root=' "$backend"; then

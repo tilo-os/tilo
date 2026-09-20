@@ -170,24 +170,29 @@ class TargetCmdlineTests(unittest.TestCase):
         self.assertEqual(after[raw + size:raw + 2048], bytes(2048 - size))
 
     def test_current_base_projects_without_duplicate_inherited_keys(self):
-        # Duplicate appends, a missed live-token removal, or a lost inherited
-        # argument must break this real producer path.
+        # A missed live-token removal or a lost inherited argument must break
+        # this real producer path.
         self.assertEqual(self.base.count(ROOT_TOKEN), 1)
         self.assertEqual(self.base.count(OPTIONS_TOKEN), 1)
         live_before = self.prepare_live()
-        live_tokens = self.tokens(self.live)
-        self.assertTrue(LIVE_KEYS.issubset({t.split("=", 1)[0] for t in live_tokens}))
+        inherited_tokens = self.tokens(self.live)
+        self.assertEqual(inherited_tokens.count(ROOT_TOKEN), 1)
+        self.assertEqual(inherited_tokens.count(OPTIONS_TOKEN), 1)
         result = self.run_commands(self.project)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        live_tokens = self.tokens(self.live)
         target_tokens = self.tokens(self.target)
         self.assertEqual(target_tokens.count(ROOT_TOKEN), 1)
         self.assertEqual(target_tokens.count(OPTIONS_TOKEN), 1)
-        self.assertEqual(target_tokens, [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_KEYS])
+        self.assertEqual(target_tokens, inherited_tokens)
+        self.assertEqual(self.target.read_bytes(), live_before)
+        self.assertTrue(LIVE_KEYS.issubset({t.split("=", 1)[0] for t in live_tokens}))
         self.assertTrue(LIVE_KEYS.isdisjoint({t.split("=", 1)[0] for t in target_tokens}))
+        self.assertNotIn(ROOT_TOKEN, live_tokens)
+        self.assertNotIn(OPTIONS_TOKEN, live_tokens)
         for token in ("composefs=" + "a" * 128, "tilo.generation=42", "tilo.mode=normal", "preempt=full"):
             self.assertIn(token, target_tokens)
-        self.assertEqual(self.live.read_bytes(), live_before)
-        self.assert_only_cmdline_changed(live_before, self.target.read_bytes())
+        self.assert_only_cmdline_changed(live_before, self.live.read_bytes())
 
     def test_invalid_inherited_keys_are_rejected_without_normalizing_them(self):
         for expected in (ROOT_TOKEN, OPTIONS_TOKEN):
@@ -213,10 +218,9 @@ class TargetCmdlineTests(unittest.TestCase):
                     # checks. The last executed command must be a shell test.
                     trace = [line for line in result.stderr.splitlines() if line.startswith("+ ")]
                     self.assertTrue(trace[-1].startswith("+ test "), result.stderr)
-                    self.assertEqual(self.tokens(self.target),
-                                     [t for t in live_tokens if t.split("=", 1)[0] not in LIVE_KEYS])
+                    self.assertEqual(self.tokens(self.target), live_tokens)
+                    self.assertEqual(self.target.read_bytes(), live_before)
                     self.assertEqual(self.live.read_bytes(), live_before)
-                    self.assert_only_cmdline_changed(live_before, self.target.read_bytes())
 
     def test_shared_helper_still_refuses_duplicate_append_without_writing(self):
         live_before = self.prepare_live()
@@ -229,7 +233,7 @@ class TargetCmdlineTests(unittest.TestCase):
 
     def test_extraction_fails_when_subject_is_missing_or_changes_unsupported(self):
         source = CONTAINERFILE.read_text()
-        marker = f"&& {INSTALLED_HELPER} remove tilo.install {TARGET}"
+        marker = f'&& target_cmdline="$({INSTALLED_HELPER} show {TARGET})"'
         self.assertEqual(source.count(marker), 1)
         for changed in ("", source.replace(marker, marker + " && true"),
                         source.replace(marker, "&& unexpected_command\n    " + marker)):
