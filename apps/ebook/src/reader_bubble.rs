@@ -30,22 +30,6 @@ pub(crate) struct ReaderPosition {
     pub(crate) chapter_count: usize,
 }
 
-pub(crate) struct ReaderBubblePaintCtx<'a> {
-    pub scene: &'a mut Scene,
-    pub transform: Affine,
-    pub text: &'a mut TextRenderer,
-    pub theme: &'a Theme,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ReaderBubbleView {
-    pub viewport: Rect,
-    pub cursor: Point,
-    pub center_x0: f64,
-    pub center_x1: f64,
-    pub position: ReaderPosition,
-}
-
 pub(crate) struct ReaderBubble {
     animation: ui::StatusBubble,
     shown_position: Option<(usize, usize)>,

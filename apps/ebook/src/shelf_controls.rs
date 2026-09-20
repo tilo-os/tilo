@@ -21,29 +21,6 @@ pub(super) enum ShelfControlAction {
     Swallow,
 }
 
-pub(super) struct ShelfPaintCtx<'a> {
-    pub scene: &'a mut Scene,
-    pub transform: Affine,
-    pub text: &'a mut TextRenderer,
-    pub theme: &'a Theme,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ShelfBarView {
-    pub viewport: Rect,
-    pub open_book_x: f64,
-    pub cursor: Point,
-    pub preferences: LibraryPrefs,
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct ShelfMenuView {
-    pub viewport: Rect,
-    pub anchor: Rect,
-    pub cursor: Point,
-    pub selected: LibrarySort,
-}
-
 #[derive(Default)]
 pub(super) struct ShelfControls {
     sort_menu_open: bool,
