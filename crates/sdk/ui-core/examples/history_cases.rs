@@ -461,7 +461,12 @@ fn shoot_long_and_nested(shot: &mut Shot, doc: &AutoCommit, entries: &[HistoryEn
     if let Some(start) = entries.first()
         && let Some(end) = entries.last()
     {
-        tilo_ui::history_groups::name_range(&mut nested_doc, &start.id, Some(&end.id), "Q3 release");
+        tilo_ui::history_groups::name_range(
+            &mut nested_doc,
+            &start.id,
+            Some(&end.id),
+            "Q3 release",
+        );
     }
     qdoc::history::commit_stamped_at(&mut nested_doc, now_i64().saturating_sub(400));
     let nested_entries = rows(&mut nested_doc);
@@ -545,7 +550,11 @@ fn synthetic_entry(i: i32) -> HistoryEntry {
 
 /// Narrow panes over real bands, and a thousand synthesised bands. Split out
 /// of `run` to keep that under the line cap.
-fn shoot_narrow_and_thousand(shot: &mut Shot, entries: &[HistoryEntry], named: &[tilo_ui::NamedRange]) {
+fn shoot_narrow_and_thousand(
+    shot: &mut Shot,
+    entries: &[HistoryEntry],
+    named: &[tilo_ui::NamedRange],
+) {
     // Narrow, with real bands.
     let mut t = timeline(300.0, 640.0, entries.to_vec(), named.to_vec());
     shot.paint("narrow-300", 300, 640, &mut t);

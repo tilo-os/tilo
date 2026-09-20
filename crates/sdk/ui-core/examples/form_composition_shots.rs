@@ -236,8 +236,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    let mut resized =
-        FrameHarness::new_with_theme(tilo_ui::State::new(), automatic(), (1080, 800), Theme::dark());
+    let mut resized = FrameHarness::new_with_theme(
+        tilo_ui::State::new(),
+        automatic(),
+        (1080, 800),
+        Theme::dark(),
+    );
     resized.resize((340, 800))?;
     resized.render_png(&output.join("automatic-resized-narrow.png"));
     std::fs::write(

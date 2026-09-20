@@ -21,7 +21,9 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::permissions::PermissionContext;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::widget::{ActivityTimeline, Column, HistoryScrubber};
-use tilo_ui::{App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Theme, Widget};
+use tilo_ui::{
+    App, AuthorDirectory, HistoryAuthor, HistorySource, PresenceCtx, State, Theme, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
