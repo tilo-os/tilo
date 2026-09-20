@@ -46,10 +46,9 @@ use std::rc::Rc;
 
 use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 
-// Generated schema lands in OUT_DIR as `<schema>_capnp.rs`, which
-// references its own module path absolutely as `crate::collab_capnp`
-// — must be included at the crate root with that exact name (the
-// same pattern capnp's own samples use).
+// Checked-in bindings let app developers build `tilo-app` without installing
+// the Cap'n Proto compiler. build.rs keeps the schema and generated source in
+// lockstep with a checksum gate.
 #[allow(
     clippy::all,
     clippy::nursery,
@@ -60,7 +59,7 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 #[allow(unused)]
 #[allow(dead_code)]
 pub mod collab_capnp {
-    include!(concat!(env!("OUT_DIR"), "/collab_capnp.rs"));
+    include!("generated/collab_capnp.rs");
 }
 
 use capnp_rpc::rpc_twoparty_capnp;
