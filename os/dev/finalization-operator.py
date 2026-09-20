@@ -177,18 +177,23 @@ def admit_job(c, qraw, run, jobs, attempt):
     base = {'request': qraw.decode(), 'request_sha256': c['request_sha256'],
             'helpers_revision': c['helper_revision']}
     restore_fields = ('restore_run_id', 'restore_run_attempt', 'restore_receipt_sha256')
-    require(isinstance(inputs, dict) and set(inputs) == set(base) | set(restore_fields) | {'restore_stage'}
+    required_fields = set(base) | {'restore_stage'}
+    allowed_fields = required_fields | set(restore_fields)
+    require(isinstance(inputs, dict) and required_fields <= set(inputs) <= allowed_fields
             and all(inputs.get(key) == value for key, value in base.items()), 'dispatch inputs differ')
-    restore = tuple(inputs[key] for key in restore_fields)
-    require(all(isinstance(value, str) for value in (*restore, inputs['restore_stage'])),
+    # Forgejo omits optional workflow-dispatch inputs whose submitted value is empty.
+    # Normalize only those known fields; required inputs and unexpected keys remain authenticated.
+    normalized = {**inputs, **{key: inputs.get(key, '') for key in restore_fields}}
+    restore = tuple(normalized[key] for key in restore_fields)
+    require(all(isinstance(value, str) for value in (*restore, normalized['restore_stage'])),
             'dispatch restore inputs differ')
     if any(restore):
         require(all(restore) and re.fullmatch(r'[1-9][0-9]*', restore[0]) is not None
                 and re.fullmatch(r'[1-9][0-9]*', restore[1]) is not None
                 and HEX.fullmatch(restore[2]) is not None
-                and inputs['restore_stage'] in ('2', '5'), 'dispatch restore inputs differ')
+                and normalized['restore_stage'] in ('2', '5'), 'dispatch restore inputs differ')
     else:
-        require(restore == ('', '', '') and inputs['restore_stage'] == '5',
+        require(restore == ('', '', '') and normalized['restore_stage'] == '5',
                 'fresh dispatch restore defaults differ')
     selected = [j for j in jobs if j['run_id'] == run['id'] and j['attempt'] == attempt and j['name'] == 'finalize']
     require(len(selected) == 1, 'ambiguous run attempt')
