@@ -189,6 +189,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      # The amd64 transaction includes Wine, OVMF and the kernel SRPM. Its
+      # temporary BuildKit layers exceed the standard runner's free disk even
+      # though the resulting repository is much smaller. These preinstalled
+      # SDKs are unrelated to this container-only job; removing them keeps the
+      # migration baseline on an ordinary GitHub-hosted runner.
+      - name: Reclaim unused runner disk for the x86_64 snapshot
+        if: matrix.arch == 'x86_64'
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf -- \
+            /opt/ghc \
+            /opt/hostedtoolcache \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/share/dotnet
+          docker system prune --all --force --volumes
+          df -h /
+
       - name: Set up buildx for native snapshot construction
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
