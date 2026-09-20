@@ -24,7 +24,6 @@ capnp-rpc.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
 tokio-util.workspace = true
 thiserror.workspace = true
-serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
