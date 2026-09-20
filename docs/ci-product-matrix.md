@@ -20,18 +20,17 @@ The trusted merge controller classifies changes using the deployed
 and [path policy](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json).
 Ordinary product and documentation changes are routine; tools are classified by
 path, not by being tools. CI/policy, publication, signing and named security
-boundaries require the reviewed scope, as does an existing file's executable-mode
-change. Named dependency exceptions carry their own checks.
+boundaries use the protected scope, as does an existing file's executable-mode
+change. Named dependency exceptions carry their own CI checks. No scope requires
+review.
 
 After exact-head checks pass, the author posts `/merge <full-head-sha>` or follows
-the controller's queue instructions. Review is optional for routine changes and
-is requested explicitly through Forgejo after checks pass; no review agent starts
-automatically. An official request holds integration until cancelled or approved
-for that head; change requests block. A new push requires fresh checks and intent.
+the controller's queue instructions. Reviews are informational and never block
+integration. A new push requires fresh checks and intent.
 
-An optional approval does **not** turn a routine documentation PR into a reviewed-
-scope change. Such a PR still uses routine integration, respecting queue priority.
-The reviewed operator command is only for changes the classifier assigns to that
+Review state does **not** turn a routine documentation PR into a protected-scope
+change. Such a PR still uses routine integration, respecting queue priority. The
+operator command is only for changes the classifier assigns to the protected
 scope. See [Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow)
 for the command and limits, and [Release pipeline](release-pipeline.md) for
 heavy-build and publication triggers.
