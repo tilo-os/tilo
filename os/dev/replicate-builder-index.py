@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Copy a promoted, signed builder index into its regional ECR repository.
+"""Copy a promoted immutable image into its regional ECR repository.
 
-The source and destination must expose identical OCI index bytes. Forgejo OIDC
+The source and destination must expose identical manifest bytes. Forgejo OIDC
 is exchanged for a short-lived, repository-scoped AWS role; neither static AWS
 credentials nor the ECR password are written outside a private temporary
 directory.
@@ -57,6 +57,57 @@ def manifest_digest(document):
     return "sha256:" + hashlib.sha256(document).hexdigest()
 
 
+def valid_descriptor(descriptor):
+    return (
+        isinstance(descriptor, dict)
+        and isinstance(descriptor.get("mediaType"), str)
+        and type(descriptor.get("size")) is int
+        and descriptor["size"] >= 0
+        and isinstance(descriptor.get("digest"), str)
+        and DIGEST.fullmatch(descriptor.get("digest", "")) is not None
+    )
+
+
+def validate_manifest(document, source_repository):
+    if not isinstance(document, dict) or document.get("schemaVersion") != 2:
+        raise ValueError("promoted image is not a schema-2 manifest")
+    media_type = document.get("mediaType")
+    index_types = {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    }
+    image_types = {
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    }
+    has_index_shape = "manifests" in document
+    has_image_shape = "config" in document or "layers" in document
+    if has_index_shape and has_image_shape:
+        raise ValueError("promoted image has an ambiguous manifest shape")
+    if has_index_shape:
+        if media_type not in index_types:
+            raise ValueError("promoted platform index has an unsupported media type")
+        manifests = document.get("manifests")
+        if not isinstance(manifests, list) or not manifests or not all(valid_descriptor(item) for item in manifests):
+            raise ValueError("promoted platform index has invalid child descriptors")
+        if source_repository == SOURCE_REPOSITORY and len(manifests) != 2:
+            raise ValueError("promoted builder is not the accepted two-platform index")
+        return
+    if has_image_shape:
+        if media_type is not None and media_type not in image_types:
+            raise ValueError("promoted image manifest has an unsupported media type")
+        config = document.get("config")
+        layers = document.get("layers")
+        if not valid_descriptor(config) or not isinstance(layers, list) or not all(
+            valid_descriptor(item) for item in layers
+        ):
+            raise ValueError("promoted image manifest has invalid config or layers")
+        if source_repository == SOURCE_REPOSITORY:
+            raise ValueError("promoted builder is not the accepted two-platform index")
+        return
+    raise ValueError("promoted image has neither index nor image-manifest content")
+
+
 def oidc_token(audience):
     url = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_URL", "")
     request_token = os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
@@ -96,7 +147,16 @@ def regional_identity(role, repository, region):
     return role_match.group(1), repository.split("/", 1)[0]
 
 
-def replicate(source_file, target_repository, role, region, audience, public_key, output):
+def replicate(
+    source_file,
+    target_repository,
+    role,
+    region,
+    audience,
+    public_key,
+    output,
+    source_authfile=None,
+):
     source = source_file.read_text().strip()
     source_match = re.fullmatch(r"([^\s@]+)@(sha256:[0-9a-f]{64})", source)
     if not source_match:
@@ -107,21 +167,28 @@ def replicate(source_file, target_repository, role, region, audience, public_key
         raise ValueError("source has no configured regional repository")
     account, registry = regional_identity(role, target_repository, region)
 
-    source_raw = raw_manifest(source)
+    source_raw = raw_manifest(source, authfile=source_authfile)
     if manifest_digest(source_raw) != digest:
-        raise ValueError("source registry returned different index bytes")
-    index = json.loads(source_raw)
-    manifests = index.get("manifests", [])
-    if index.get("schemaVersion") != 2 or not manifests:
-        raise ValueError("promoted image is not a platform index")
-    if source_repository == SOURCE_REPOSITORY and len(manifests) != 2:
-        raise ValueError("promoted builder is not the accepted two-platform index")
-    if public_key is not None:
-        command(("cosign", "verify", "--key", str(public_key), source))
-
-    token, subject = oidc_token(audience)
+        raise ValueError("source registry returned different manifest bytes")
+    validate_manifest(json.loads(source_raw), source_repository)
     with tempfile.TemporaryDirectory(prefix="regional-image-ecr-") as temporary:
         temporary_path = Path(temporary)
+        source_environment = None
+        if source_authfile is not None:
+            source_auth_directory = temporary_path / "source-auth"
+            source_auth_directory.mkdir(mode=0o700)
+            source_auth_snapshot = source_auth_directory / "config.json"
+            source_auth_snapshot.write_bytes(source_authfile.read_bytes())
+            source_auth_snapshot.chmod(0o600)
+            source_environment = os.environ.copy()
+            source_environment["DOCKER_CONFIG"] = str(source_auth_directory)
+        if public_key is not None:
+            command(
+                ("cosign", "verify", "--key", str(public_key), source),
+                environment=source_environment,
+            )
+
+        token, subject = oidc_token(audience)
         token_file = temporary_path / "oidc-token"
         auth_file = temporary_path / "auth.json"
         token_file.write_text(token)
@@ -184,18 +251,18 @@ def replicate(source_file, target_repository, role, region, audience, public_key
         if existing not in {"0", "1"}:
             raise ValueError("ECR returned an invalid image-existence result")
         if existing == "0":
-            command(
-                (
-                    "skopeo",
-                    "copy",
-                    "--all",
-                    "--preserve-digests",
-                    "--dest-authfile",
-                    str(auth_file),
-                    "docker://" + source,
-                    "docker://" + target_tag,
-                )
-            )
+            copy_arguments = [
+                "skopeo",
+                "copy",
+                "--all",
+                "--preserve-digests",
+                "--dest-authfile",
+                str(auth_file),
+            ]
+            if source_authfile is not None:
+                copy_arguments.extend(("--src-authfile", str(source_authfile)))
+            copy_arguments.extend(("docker://" + source, "docker://" + target_tag))
+            command(tuple(copy_arguments))
         target = target_repository + "@" + digest
         target_raw = raw_manifest(target, authfile=auth_file)
         if target_raw != source_raw or manifest_digest(target_raw) != digest:
@@ -213,6 +280,7 @@ def main():
     parser.add_argument("--region", required=True)
     parser.add_argument("--audience", default="tilo-builder-replication")
     parser.add_argument("--public-key", type=Path)
+    parser.add_argument("--source-authfile", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
@@ -225,6 +293,7 @@ def main():
                 args.audience,
                 args.public_key,
                 args.output,
+                args.source_authfile,
             )
         )
     except (OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
