@@ -50,14 +50,6 @@ impl InputEventCtx<'_> {
     }
 }
 
-/// Paint services shared by the reader's retained input widgets.
-pub(crate) struct InputPaintCtx<'a> {
-    pub scene: &'a mut Scene,
-    pub transform: Affine,
-    pub text: &'a mut TextRenderer,
-    pub theme: &'a Theme,
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum NumberField {
     FontScale,
@@ -296,12 +288,6 @@ struct NoteLayout {
     inner_width: f32,
     excerpt: String,
     input_rect: Rect,
-}
-
-pub(crate) struct NoteView<'a> {
-    pub bounds: Rect,
-    pub anchor_y: Option<f64>,
-    pub annotation: &'a Annotation,
 }
 
 impl Default for NoteComposer {
