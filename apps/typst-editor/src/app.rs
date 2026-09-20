@@ -329,23 +329,6 @@ pub struct TypstApp {
 }
 
 impl TypstApp {
-    /// Fixed controls have to grow with system text size as well as their
-    /// labels.  Keeping this calculation beside layout prevents a 200% font
-    /// from painting outside a 100%-sized toolbar.
-    fn pill_height(&self) -> f64 {
-        PILL_H * self.layout_text_scale
-    }
-
-    fn toolbar_height(&self) -> f64 {
-        // At the default scale this remains the established 46px toolbar
-        // (28px control + 18px breathing room).
-        TOOLBAR_H + (self.pill_height() - PILL_H)
-    }
-
-    fn scaled_pill_font_height(tr: &TextRenderer) -> f64 {
-        f64::from(PILL_FONT) * f64::from(tr.text_scale())
-    }
-
     /// The live editor: its document library is the user's real `.typ` files on
     /// disk. If none exist yet it opens a single blank starter document.
     pub fn new() -> Self {
