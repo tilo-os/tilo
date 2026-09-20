@@ -15,9 +15,9 @@
     reason = "floating-window animation and geometry operate on bounded screen coordinates"
 )]
 
+use crate::clock::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use crate::clock::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};

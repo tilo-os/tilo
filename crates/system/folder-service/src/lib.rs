@@ -24,7 +24,6 @@
 
 mod connection;
 mod destination_security;
-mod nofollow;
 mod migration;
 mod migration_durability;
 mod migration_journal;
@@ -37,9 +36,10 @@ mod migration_review;
 mod migration_source;
 mod migration_store;
 mod migration_worker;
+mod nofollow;
 
-pub mod copy;
 pub mod connected;
+pub mod copy;
 pub mod review;
 pub mod scan;
 pub mod session;

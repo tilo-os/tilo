@@ -162,11 +162,11 @@ mod tests {
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use ed25519_dalek::SigningKey;
     use qos_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
+    use serde::{Deserialize, Serialize};
+    use std::collections::BTreeMap;
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, sign_device_cert,
     };
-    use serde::{Deserialize, Serialize};
-    use std::collections::BTreeMap;
     use web_time::{Duration, SystemTime};
 
     #[test]

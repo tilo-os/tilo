@@ -182,36 +182,59 @@ impl FontCatalog {
                 "manifest differs from this Tilo build",
             ));
         }
-        self.build(&root, |asset| {
-            let path = root.join(&asset.file);
-            let metadata = std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;
-            if !metadata.is_file() || metadata.len() != asset.bytes {
-                return Err(FontCatalogError::at(&path, "font size mismatch"));
-            }
-            if hash_file(&path)? != asset.sha256 {
-                return Err(FontCatalogError::at(&path, "SHA-256 mismatch"));
-            }
-            Ok(fontdb::Source::File(path))
-        }, discover)
+        self.build(
+            &root,
+            |asset| {
+                let path = root.join(&asset.file);
+                let metadata =
+                    std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;
+                if !metadata.is_file() || metadata.len() != asset.bytes {
+                    return Err(FontCatalogError::at(&path, "font size mismatch"));
+                }
+                if hash_file(&path)? != asset.sha256 {
+                    return Err(FontCatalogError::at(&path, "SHA-256 mismatch"));
+                }
+                Ok(fontdb::Source::File(path))
+            },
+            discover,
+        )
     }
 
     /// Load canonical assets from host-provided bytes, with no filesystem or ambient fonts.
     /// Every asset is size/hash/face validated before a font system is returned.
     /// # Errors
     /// Rejects missing, corrupt, or mismatched assets.
-    pub fn load_bytes(&self, mut bytes: impl FnMut(&str) -> Option<Vec<u8>>) -> Result<FontSystem, FontCatalogError> {
+    pub fn load_bytes(
+        &self,
+        mut bytes: impl FnMut(&str) -> Option<Vec<u8>>,
+    ) -> Result<FontSystem, FontCatalogError> {
         let mut portable = self.clone();
         portable.system = false;
-        portable.build(Path::new("canonical-fonts"), |asset| {
-            let data = bytes(&asset.file).ok_or_else(|| FontCatalogError::at(&asset.file, "missing font bytes"))?;
-            if data.len() as u64 != asset.bytes || hex::encode(Sha256::digest(&data)) != asset.sha256 {
-                return Err(FontCatalogError::at(&asset.file, "font size or SHA-256 mismatch"));
-            }
-            Ok(fontdb::Source::Binary(std::sync::Arc::new(data)))
-        }, |_| {})
+        portable.build(
+            Path::new("canonical-fonts"),
+            |asset| {
+                let data = bytes(&asset.file)
+                    .ok_or_else(|| FontCatalogError::at(&asset.file, "missing font bytes"))?;
+                if data.len() as u64 != asset.bytes
+                    || hex::encode(Sha256::digest(&data)) != asset.sha256
+                {
+                    return Err(FontCatalogError::at(
+                        &asset.file,
+                        "font size or SHA-256 mismatch",
+                    ));
+                }
+                Ok(fontdb::Source::Binary(std::sync::Arc::new(data)))
+            },
+            |_| {},
+        )
     }
 
-    fn build(&self, root: &Path, mut source: impl FnMut(&Asset) -> Result<fontdb::Source, FontCatalogError>, discover: impl FnOnce(&mut fontdb::Database)) -> Result<FontSystem, FontCatalogError> {
+    fn build(
+        &self,
+        root: &Path,
+        mut source: impl FnMut(&Asset) -> Result<fontdb::Source, FontCatalogError>,
+        discover: impl FnOnce(&mut fontdb::Database),
+    ) -> Result<FontSystem, FontCatalogError> {
         let manifest_path = root.join("manifest.toml");
         let manifest: Manifest =
             toml::from_str(MANIFEST).map_err(|e| FontCatalogError::at(&manifest_path, e))?;
@@ -225,7 +248,9 @@ impl FontCatalog {
         let mut canonical = HashSet::new();
         let mut reserved = HashSet::new();
         for asset in &manifest.font {
-            if asset.scope == Scope::Fixture && !self.fixtures { continue; }
+            if asset.scope == Scope::Fixture && !self.fixtures {
+                continue;
+            }
             reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
             let path = root.join(&asset.file);
             let ids = db.load_font_source(source(asset)?);

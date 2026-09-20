@@ -23,9 +23,7 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
-pub(in crate::connection::transaction) fn maybe_run_lease_receiver(
-    args: &[String],
-) -> Option<i32> {
+pub(in crate::connection::transaction) fn maybe_run_lease_receiver(args: &[String]) -> Option<i32> {
     lease_process::maybe_run(args)
 }
 
@@ -686,9 +684,8 @@ mod tests {
                         .join(format!("{}-{}", entry.id.operation.serial, entry.id.slot)),
                 )
                 .unwrap();
-                let index = usize::from(
-                    entry.original_side != crate::connection::model::Side::Source,
-                );
+                let index =
+                    usize::from(entry.original_side != crate::connection::model::Side::Source);
                 assert_eq!(bytes, values[index]);
             }
             for (index, path) in paths.iter().enumerate() {
@@ -1854,9 +1851,9 @@ mod tests {
                                     .is_err()
                             );
                             if restore_restart == 47 {
-                                crate::connection::store::after_capture_chunk_for_test(
-                                    || panic!("selected stopped copy before acknowledgement"),
-                                );
+                                crate::connection::store::after_capture_chunk_for_test(|| {
+                                    panic!("selected stopped copy before acknowledgement")
+                                });
                                 assert!(
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                         store.drain_selected_capture(
@@ -1886,8 +1883,18 @@ mod tests {
                                 store.recovery_page(record.id, None, 16).unwrap().entries,
                                 slots
                             );
-                            for entry in slots.iter().filter(|entry| entry.id.operation == id && entry.state == crate::connection::store::RecoveryState::BytesVerified) {
-                                assert_eq!(std::fs::read(private.join(format!("{}-{}", id.serial, entry.id.slot))).unwrap(), values[usize::from(entry.original_side != ModelSide::Source)]);
+                            for entry in slots.iter().filter(|entry| {
+                                entry.id.operation == id
+                                    && entry.state
+                                        == crate::connection::store::RecoveryState::BytesVerified
+                            }) {
+                                assert_eq!(
+                                    std::fs::read(
+                                        private.join(format!("{}-{}", id.serial, entry.id.slot))
+                                    )
+                                    .unwrap(),
+                                    values[usize::from(entry.original_side != ModelSide::Source)]
+                                );
                             }
                             if restore_restart == 47 {
                                 let entry = slots.iter().find(|entry| entry.id.operation == id && entry.state == crate::connection::store::RecoveryState::RetainedIncomplete).unwrap();
@@ -2184,8 +2191,7 @@ mod tests {
                                 .unwrap()
                                 .into_iter()
                                 .find(|entry| {
-                                    entry.state
-                                        == crate::connection::store::RecoveryState::Reserved
+                                    entry.state == crate::connection::store::RecoveryState::Reserved
                                 })
                                 .unwrap()
                                 .id,
@@ -2343,8 +2349,18 @@ mod tests {
                         let copied = store
                             .drain_selected_recovery(&mut context, &mut reader, &cancel)
                             .unwrap();
-                        let recovered = store.recovery_page(record.id, None, 16).unwrap().entries.into_iter()
-                            .find(|entry| entry.id.operation == id && entry.state == crate::connection::store::RecoveryState::BytesVerified).unwrap().id;
+                        let recovered = store
+                            .recovery_page(record.id, None, 16)
+                            .unwrap()
+                            .entries
+                            .into_iter()
+                            .find(|entry| {
+                                entry.id.operation == id
+                                    && entry.state
+                                        == crate::connection::store::RecoveryState::BytesVerified
+                            })
+                            .unwrap()
+                            .id;
                         assert_eq!(
                             std::fs::read(
                                 tree.path()
@@ -2630,8 +2646,7 @@ mod tests {
                                 .unwrap()
                                 .into_iter()
                                 .find(|entry| {
-                                    entry.state
-                                        == crate::connection::store::RecoveryState::Reserved
+                                    entry.state == crate::connection::store::RecoveryState::Reserved
                                 })
                                 .unwrap()
                                 .id,
@@ -5631,9 +5646,7 @@ mod tests {
                     )
                     .unwrap();
                     if boundary == 11 {
-                        use crate::connection::store::{
-                            RecoveryId, RecoveryReason, RecoveryState,
-                        };
+                        use crate::connection::store::{RecoveryId, RecoveryReason, RecoveryState};
                         store
                             .retain_native_incomplete(
                                 &mut live,
@@ -5835,10 +5848,8 @@ mod tests {
                     crate::connection::store::RecoveryReason::DisplacedVersion,
                 )
                 .unwrap();
-            crate::connection::store::partial_native_recovery_for_test(
-                &mut store, &slot, b"old",
-            )
-            .unwrap();
+            crate::connection::store::partial_native_recovery_for_test(&mut store, &slot, b"old")
+                .unwrap();
         }
         let original_nonce = epoch.nonce;
         drop(epoch);
@@ -6629,9 +6640,9 @@ mod tests {
                             let disconnect_session = reopened
                                 .transaction_session(deletion_live.id().connection)
                                 .unwrap();
-                            crate::connection::store::after_native_bytes_for_test(
-                                move || disconnect_session.request_disconnect(),
-                            );
+                            crate::connection::store::after_native_bytes_for_test(move || {
+                                disconnect_session.request_disconnect()
+                            });
                             assert!(
                                 reopened
                                     .preserve_native(&mut deletion_live, slot, &mut reader, &cancel)
@@ -6954,8 +6965,7 @@ mod tests {
                     .rev()
                     .find(|entry| {
                         entry.id.operation == id
-                            && entry.state
-                                == crate::connection::store::RecoveryState::BytesVerified
+                            && entry.state == crate::connection::store::RecoveryState::BytesVerified
                     })
                     .unwrap();
                 let connection_name: String =
@@ -9924,9 +9934,7 @@ impl<'e> NativeEpoch<'e> {
         private: &PrivateNamespace,
         source: &StableFileGuard,
         expected: &StableFileGuard,
-        prepared: &crate::connection::store::DurableAck<
-            crate::connection::store::PreparedNative,
-        >,
+        prepared: &crate::connection::store::DurableAck<crate::connection::store::PreparedNative>,
         step: StepAdmission,
     ) -> Result<RelocatedObject> {
         self.relocate_connected_inner(
@@ -9947,9 +9955,7 @@ impl<'e> NativeEpoch<'e> {
         target: &ParentGuard,
         private: &PrivateNamespace,
         expected: &StableFileGuard,
-        prepared: &crate::connection::store::DurableAck<
-            crate::connection::store::PreparedNative,
-        >,
+        prepared: &crate::connection::store::DurableAck<crate::connection::store::PreparedNative>,
         step: StepAdmission,
     ) -> Result<RelocatedObject> {
         if !self.deletion_scope {
@@ -9971,9 +9977,7 @@ impl<'e> NativeEpoch<'e> {
         source_parent: &ParentGuard,
         source: Option<&StableFileGuard>,
         expected: &StableFileGuard,
-        prepared: &crate::connection::store::DurableAck<
-            crate::connection::store::PreparedNative,
-        >,
+        prepared: &crate::connection::store::DurableAck<crate::connection::store::PreparedNative>,
         step: StepAdmission,
     ) -> Result<RelocatedObject> {
         self.admitted(live, &step, StepKind::Relocate)?;
@@ -10081,9 +10085,7 @@ impl<'e> NativeEpoch<'e> {
         displaced: RelocatedObject,
         guard: StableFileGuard,
         private: &PrivateNamespace,
-        recovery: crate::connection::store::DurableAck<
-            crate::connection::store::BoundRecovery,
-        >,
+        recovery: crate::connection::store::DurableAck<crate::connection::store::BoundRecovery>,
     ) -> Result<super::SealedDisplacement> {
         self.connected_check(live)?;
         self.namespace_check(private)?;
@@ -10136,9 +10138,7 @@ impl<'e> NativeEpoch<'e> {
     }
 }
 impl super::NativeRecoveryReader<'_, '_> {
-    pub(in crate::connection) fn checkpoint(
-        &mut self,
-    ) -> std::result::Result<(), StoreError> {
+    pub(in crate::connection) fn checkpoint(&mut self) -> std::result::Result<(), StoreError> {
         self.validate()?;
         self.epoch
             .witness_checkpoint()
@@ -10473,8 +10473,7 @@ impl super::NativeOwnedNames {
         root: &NativeDirectory,
         record: &crate::connection::store::NativeNamespaceRecord,
     ) -> std::result::Result<OwnedSnapshot, EndpointError> {
-        if record.native_kind()
-            == Some(crate::connection::store::NativeOperationKind::DirectoryV1)
+        if record.native_kind() == Some(crate::connection::store::NativeOperationKind::DirectoryV1)
         {
             return self.validate_directory_record(root, record);
         }
@@ -11252,9 +11251,7 @@ impl super::VerifiedComparison<'_> {
         }
         Ok(())
     }
-    pub(in crate::connection) fn value(
-        &self,
-    ) -> Option<&crate::connection::model::EntryState> {
+    pub(in crate::connection) fn value(&self) -> Option<&crate::connection::model::EntryState> {
         self.value.as_ref()
     }
     pub(in crate::connection) fn deadline(&self) -> Instant {
@@ -11340,8 +11337,7 @@ impl<'e> NativeEpoch<'e> {
             Arc::clone(context.reads()),
         )?;
         epoch.cancel_read = Some(cancel);
-        if context.native_kind()
-            == Some(crate::connection::store::NativeOperationKind::DirectoryV1)
+        if context.native_kind() == Some(crate::connection::store::NativeOperationKind::DirectoryV1)
         {
             epoch.directory_requests = Some(Arc::new(std::sync::atomic::AtomicU16::new(0)));
         }
@@ -14171,9 +14167,7 @@ impl super::NativeDrainReader<'_, '_> {
     pub(in crate::connection) fn content(&self) -> &d::Content {
         &self.content
     }
-    pub(in crate::connection) fn deadline(
-        &mut self,
-    ) -> std::result::Result<Instant, StoreError> {
+    pub(in crate::connection) fn deadline(&mut self) -> std::result::Result<Instant, StoreError> {
         Ok(self.boundary.drain_parts()?.0.deadline)
     }
     pub(in crate::connection) fn source(
@@ -16575,7 +16569,9 @@ impl<'e> super::NativeRestore<'e> {
             || self.relocated.is_some()
             || self.sealed.is_some()
             || self.published
-            || store.native_namespace_records(live)?.iter()
+            || store
+                .native_namespace_records(live)?
+                .iter()
                 .any(|record| record.operation() == live.id())
         {
             return Err(StoreError::RecoveryRequired);
@@ -17275,9 +17271,7 @@ pub(in crate::connection) fn execute_reviewed_initial(
         }
         if let Some(reason) = reviewed.regular_prerequisite(store)? {
             return Ok(
-                crate::connection::transaction::TransactionOutcome::StructuralPending(
-                    reason,
-                ),
+                crate::connection::transaction::TransactionOutcome::StructuralPending(reason),
             );
         }
         let metadata = admission_metadata(store, &intent, left, right, cancel)?;
@@ -17441,13 +17435,7 @@ fn execute_next_inner_mode(
             operation: latest.map(|id| store.executor_receipt(id)).transpose()?,
         });
     }
-    match crate::connection::transaction::plan_regular(
-        store,
-        id,
-        &baseline,
-        source,
-        destination,
-    )? {
+    match crate::connection::transaction::plan_regular(store, id, &baseline, source, destination)? {
         RegularPlan::InitialReview(preview) => Ok(TransactionOutcome::InitialReview(preview)),
         RegularPlan::StructuralPending(reason) => Ok(TransactionOutcome::StructuralPending(reason)),
         RegularPlan::Ready(intent) => {
@@ -17500,8 +17488,7 @@ impl<'e> NativeEpoch<'e> {
             Arc::clone(context.reads()),
         )?;
         epoch.cancel_read = Some(cancel);
-        if context.native_kind()
-            == Some(crate::connection::store::NativeOperationKind::DirectoryV1)
+        if context.native_kind() == Some(crate::connection::store::NativeOperationKind::DirectoryV1)
         {
             epoch.directory_requests = Some(Arc::new(std::sync::atomic::AtomicU16::new(0)));
         }
@@ -17807,9 +17794,7 @@ fn execute_pending(
             cancel,
         )?;
     }
-    if context.native_kind()
-        == Some(crate::connection::store::NativeOperationKind::DirectoryV1)
-    {
+    if context.native_kind() == Some(crate::connection::store::NativeOperationKind::DirectoryV1) {
         return directory::execute_pending(store, &context, session, left, right, cancel);
     }
     let action = context.action().clone();
@@ -18131,10 +18116,8 @@ impl NativeEpoch<'_> {
         store: &crate::connection::store::ConnectionStore,
         live: &LiveOperation,
         cancel: &std::sync::atomic::AtomicBool,
-    ) -> std::result::Result<
-        Option<crate::connection::store::ExistingAncestorPatchV1>,
-        StoreError,
-    > {
+    ) -> std::result::Result<Option<crate::connection::store::ExistingAncestorPatchV1>, StoreError>
+    {
         self.connected_check(live)
             .map_err(|_| StoreError::RecoveryRequired)?;
         self.validate_existing_ancestors(true)

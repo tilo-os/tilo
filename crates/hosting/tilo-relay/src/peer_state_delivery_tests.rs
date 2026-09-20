@@ -2,8 +2,8 @@
 use super::private_transport_tests::certified_device;
 use super::*;
 use crate::store::shell_selection_tests::{producer_frame, producer_metadata};
-use tilo_user_identity::{RevocationList, UserIdentity};
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_user_identity::{RevocationList, UserIdentity};
 
 async fn writer_boundary(
     written_before_invalidation: usize,

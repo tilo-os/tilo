@@ -17,6 +17,8 @@ mod common;
 mod anti_entropy_recovers_lost_delta;
 #[path = "auth_reject.rs"]
 mod auth_reject;
+#[path = "browser_transport.rs"]
+mod browser_transport;
 #[path = "client_owns_its_endpoint.rs"]
 mod client_owns_its_endpoint;
 #[path = "coedit_through_host.rs"]
@@ -51,8 +53,6 @@ mod protocol_compat;
 mod relay_daemon;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
-#[path = "browser_transport.rs"]
-mod browser_transport;
 
 #[path = "addressed_actions.rs"]
 mod addressed_actions;

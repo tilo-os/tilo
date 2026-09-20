@@ -1,6 +1,6 @@
 use super::*;
-use crate::cache::fixture_platform as fixture;
 use crate::bundle as internal_bundle;
+use crate::cache::fixture_platform as fixture;
 use crate::test_support::{Server, response};
 
 fn manifest() -> Vec<u8> {
@@ -24,8 +24,12 @@ fn both_authenticated_roles_remain_held_until_matching_consume() {
         move |_, _, first, second| {
             let mut a = Vec::new();
             let mut b = Vec::new();
-            first.read_to_end(&mut a).map_err(|e| crate::error::Failure::from(e.to_string()))?;
-            second.read_to_end(&mut b).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+            first
+                .read_to_end(&mut a)
+                .map_err(|e| crate::error::Failure::from(e.to_string()))?;
+            second
+                .read_to_end(&mut b)
+                .map_err(|e| crate::error::Failure::from(e.to_string()))?;
             *consumed.lock().unwrap() = vec![a, b];
             Ok(())
         },
@@ -86,7 +90,16 @@ fn fixture_worker_hook(
     Worker::spawn_runner(move |shared| {
         ROOT.with(|r| *r.borrow_mut() = root);
         install(shared.clone());
-        with_checkpoint_interval(1024, || worker_loop(shared, transport, consumer, PreferenceStore::at(std::path::PathBuf::from("/nonexistent-tilo-fixture/selection.json"))));
+        with_checkpoint_interval(1024, || {
+            worker_loop(
+                shared,
+                transport,
+                consumer,
+                PreferenceStore::at(std::path::PathBuf::from(
+                    "/nonexistent-tilo-fixture/selection.json",
+                )),
+            )
+        });
         SETUP_HOOK.with(|h| *h.borrow_mut() = None);
         fail(None);
     })
@@ -127,7 +140,6 @@ fn wait(worker: &Worker, phase: Phase) -> Status {
             .0;
     }
 }
-
 
 fn active_flags(shared: &Shared) -> Arc<Flags> {
     shared
@@ -172,7 +184,16 @@ fn transfer_hook_worker(
         let h = shared.clone();
         let mut hook = hook;
         with_hook(Box::new(move |s, n| hook(s, n, &h)), || {
-            with_checkpoint_interval(1024, || worker_loop(shared, transport, noop, PreferenceStore::at(std::path::PathBuf::from("/nonexistent-tilo-fixture/selection.json"))))
+            with_checkpoint_interval(1024, || {
+                worker_loop(
+                    shared,
+                    transport,
+                    noop,
+                    PreferenceStore::at(std::path::PathBuf::from(
+                        "/nonexistent-tilo-fixture/selection.json",
+                    )),
+                )
+            })
         });
         if let Some(counts) = counts {
             *counts.lock().unwrap() = [read_totals("restart"), read_totals("periodic")];
@@ -1096,7 +1117,16 @@ fn preparation_mutation_failure(cancel: bool) {
                     }
                     Ok(())
                 }),
-                || worker_loop(shared, transport, noop, PreferenceStore::at(std::path::PathBuf::from("/nonexistent-tilo-fixture/selection.json"))),
+                || {
+                    worker_loop(
+                        shared,
+                        transport,
+                        noop,
+                        PreferenceStore::at(std::path::PathBuf::from(
+                            "/nonexistent-tilo-fixture/selection.json",
+                        )),
+                    )
+                },
             );
         })
         .unwrap();
@@ -1284,8 +1314,8 @@ fn cancelled_reader_verification_failure_keeps_error_and_uncertainty() {
 // Catches cancellation erasing a known failed preference publication outcome.
 #[test]
 fn cancelled_preference_commit_failure_keeps_publication_and_namespace_facts() {
-    use atomic_file::test_support::{Checkpoint, with_failure, with_observer};
     use crate::test_support::{manifest_bytes, manifest_value};
+    use atomic_file::test_support::{Checkpoint, with_failure, with_observer};
     let bytes = manifest_bytes(&manifest_value());
     let server = Server::new(vec![]);
     let directory = tempfile::tempdir().unwrap();
@@ -1298,21 +1328,35 @@ fn cancelled_preference_commit_failure_keeps_publication_and_namespace_facts() {
     let mut worker = Worker::spawn_runner(move |shared| {
         ROOT.with(|r| *r.borrow_mut() = root);
         let control = shared.clone();
-        with_observer(move |event| {
-            if event.checkpoint == Checkpoint::BeforeCommit {
-                active_flags(&control).cancel.store(true, Ordering::Release);
-                ack.send(()).unwrap();
-            }
-        }, || with_failure(Checkpoint::BeforeCommit,
-            || worker_loop(shared, transport, noop, store)));
-    }).unwrap();
-    worker.start_with_preference(server.release(&bytes), b"new".to_vec()).unwrap();
+        with_observer(
+            move |event| {
+                if event.checkpoint == Checkpoint::BeforeCommit {
+                    active_flags(&control).cancel.store(true, Ordering::Release);
+                    ack.send(()).unwrap();
+                }
+            },
+            || {
+                with_failure(Checkpoint::BeforeCommit, || {
+                    worker_loop(shared, transport, noop, store)
+                })
+            },
+        );
+    })
+    .unwrap();
+    worker
+        .start_with_preference(server.release(&bytes), b"new".to_vec())
+        .unwrap();
     observed.recv_timeout(Duration::from_secs(5)).unwrap();
     let status = wait(&worker, Phase::Cancelled);
     assert!(status.preference_commit.is_none());
     assert!(status.uncertain);
-    let PreferenceState::Failed(failure) = worker.preference() else { panic!("save outcome missing") };
-    assert_eq!(failure.publication, PreferencePublication::PublishedDurabilityUnknown);
+    let PreferenceState::Failed(failure) = worker.preference() else {
+        panic!("save outcome missing")
+    };
+    assert_eq!(
+        failure.publication,
+        PreferencePublication::PublishedDurabilityUnknown
+    );
     assert_eq!(failure.namespace, PreferenceNamespace::Durable);
     assert_eq!(status.failure_kind, Some(failure.kind));
     assert_eq!(status.error.as_deref(), Some(failure.message.as_str()));

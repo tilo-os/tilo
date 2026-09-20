@@ -14,8 +14,8 @@ pub mod owner_commit;
 
 mod action_host;
 mod action_timing;
-mod host_signing;
 mod desktop_commands;
 mod desktop_delivery;
+mod host_signing;
 
 mod publication;

@@ -15,11 +15,19 @@ pub(crate) struct PolicyData {
     pub identities: std::collections::BTreeMap<String, Vec<u8>>,
 }
 impl From<AutoCommit> for CachedDocument {
-    fn from(doc: AutoCommit) -> Self { Self { doc, serialized: Arc::default(), policy: Arc::default() } }
+    fn from(doc: AutoCommit) -> Self {
+        Self {
+            doc,
+            serialized: Arc::default(),
+            policy: Arc::default(),
+        }
+    }
 }
 impl Deref for CachedDocument {
     type Target = AutoCommit;
-    fn deref(&self) -> &AutoCommit { &self.doc }
+    fn deref(&self) -> &AutoCommit {
+        &self.doc
+    }
 }
 impl DerefMut for CachedDocument {
     fn deref_mut(&mut self) -> &mut AutoCommit {
@@ -37,15 +45,21 @@ impl CachedDocument {
         self.policy.get_or_init(|| {
             let (_, owner, caps) = crate::room::extract_governed_fields(&self.doc);
             let identities = crate::room::governance_of(Some(&self.doc)).3;
-            PolicyData { owner, caps, identities }
+            PolicyData {
+                owner,
+                caps,
+                identities,
+            }
         })
     }
     pub(crate) fn saved(&self) -> Vec<u8> {
-        self.serialized.get_or_init(|| {
-            #[cfg(test)]
-            SERIALIZATIONS.with(|count| count.set(count.get() + 1));
-            self.doc.clone().save()
-        }).clone()
+        self.serialized
+            .get_or_init(|| {
+                #[cfg(test)]
+                SERIALIZATIONS.with(|count| count.set(count.get() + 1));
+                self.doc.clone().save()
+            })
+            .clone()
     }
 }
 #[cfg(test)]
@@ -53,20 +67,33 @@ thread_local! { static SERIALIZATIONS: std::cell::Cell<usize> = const { std::cel
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::{ReadDoc, ROOT, transaction::Transactable};
+    use automerge::{ROOT, ReadDoc, transaction::Transactable};
     #[test]
     fn policy_is_shared_until_mutation_and_does_not_commit_pending_changes() {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "owner", "first").unwrap();
-        let identities = doc.put_object(ROOT, "peer_identities_v1", automerge::ObjType::Map).unwrap();
-        doc.put(&identities, "device", automerge::ScalarValue::Bytes(vec![1])).unwrap();
+        let identities = doc
+            .put_object(ROOT, "peer_identities_v1", automerge::ObjType::Map)
+            .unwrap();
+        doc.put(
+            &identities,
+            "device",
+            automerge::ScalarValue::Bytes(vec![1]),
+        )
+        .unwrap();
         doc.commit();
         let mut cached = CachedDocument::from(doc);
         let old = cached.clone();
         assert!(std::ptr::eq(cached.policy(), old.policy()));
         assert_eq!(cached.policy().owner.as_deref(), Some("first"));
         cached.put(ROOT, "owner", "second").unwrap();
-        cached.put(&identities, "device", automerge::ScalarValue::Bytes(vec![2])).unwrap();
+        cached
+            .put(
+                &identities,
+                "device",
+                automerge::ScalarValue::Bytes(vec![2]),
+            )
+            .unwrap();
         let pending = cached.pending_ops();
         assert!(pending > 0);
         assert_eq!(cached.policy().owner.as_deref(), Some("second"));
@@ -80,11 +107,14 @@ mod tests {
     #[test]
     fn unchanged_clones_share_serialization_and_mutations_keep_old_snapshots() {
         let mut doc = AutoCommit::new();
-        doc.put(ROOT, "value", 1).unwrap(); doc.commit();
+        doc.put(ROOT, "value", 1).unwrap();
+        doc.commit();
         let mut cached = CachedDocument::from(doc);
         SERIALIZATIONS.with(|count| count.set(0));
         let initial = cached.saved();
-        for _ in 0..100 { assert_eq!(cached.clone().saved(), initial); }
+        for _ in 0..100 {
+            assert_eq!(cached.clone().saved(), initial);
+        }
         assert_eq!(SERIALIZATIONS.with(|count| count.get()), 1);
         let old = cached.clone();
         cached.put(ROOT, "value", 2).unwrap();
@@ -92,20 +122,36 @@ mod tests {
         assert!(pending > 0);
         let changed = cached.saved();
         assert_ne!(changed, initial);
-        assert_eq!(cached.pending_ops(), pending, "saving must not commit the owner");
+        assert_eq!(
+            cached.pending_ops(),
+            pending,
+            "saving must not commit the owner"
+        );
         assert_eq!(old.saved(), initial);
         assert_eq!(cached.saved(), changed);
         assert_eq!(SERIALIZATIONS.with(|count| count.get()), 2);
-        assert_eq!(AutoCommit::load(&changed).unwrap().get(ROOT,"value").unwrap().unwrap().0.to_i64(),Some(2));
+        assert_eq!(
+            AutoCommit::load(&changed)
+                .unwrap()
+                .get(ROOT, "value")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_i64(),
+            Some(2)
+        );
     }
     #[test]
     fn unresolved_incrementals_invalidate_even_when_heads_do_not_change() {
         let mut seed = AutoCommit::new();
-        seed.put(ROOT,"value",1).unwrap(); seed.commit();
+        seed.put(ROOT, "value", 1).unwrap();
+        seed.commit();
         let mut remote = seed.fork();
-        remote.put(ROOT,"value",2).unwrap(); remote.commit();
+        remote.put(ROOT, "value", 2).unwrap();
+        remote.commit();
         let dependency = remote.get_heads();
-        remote.put(ROOT,"value",3).unwrap(); remote.commit();
+        remote.put(ROOT, "value", 3).unwrap();
+        remote.commit();
         let orphan = remote.save_after(&dependency);
         let mut cached = CachedDocument::from(seed);
         let before = cached.saved();
@@ -114,10 +160,15 @@ mod tests {
         assert_eq!(cached.base_heads(), heads);
         assert!(!cached.get_missing_deps(&[]).is_empty());
         let after = cached.saved();
-        assert_ne!(after,before,"queued changes must survive the durable snapshot");
-        assert_eq!(after,cached.doc.clone().save());
+        assert_ne!(
+            after, before,
+            "queued changes must survive the durable snapshot"
+        );
+        assert_eq!(after, cached.doc.clone().save());
         let mut restored = AutoCommit::load(&after).unwrap();
-        restored.load_incremental(&remote.save_after(&heads)).unwrap();
-        assert_eq!(restored.get_heads(),remote.get_heads());
+        restored
+            .load_incremental(&remote.save_after(&heads))
+            .unwrap();
+        assert_eq!(restored.get_heads(), remote.get_heads());
     }
 }

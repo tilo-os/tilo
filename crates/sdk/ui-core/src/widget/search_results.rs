@@ -219,7 +219,10 @@ impl SearchResultsView {
     /// A missing identity leaves no actionable selection; it never falls back
     /// to the row that inherited the old index.
     pub(crate) fn restore_action_selection(&mut self, id: &str) -> bool {
-        let index = self.flat.iter().position(|&(group,row)| self.groups[group].results[row].action_id == id);
+        let index = self
+            .flat
+            .iter()
+            .position(|&(group, row)| self.groups[group].results[row].action_id == id);
         self.cursor = index.unwrap_or(usize::MAX);
         index.is_some()
     }
@@ -255,7 +258,7 @@ impl SearchResultsView {
             return;
         }
         if self.selected().is_none() {
-            self.cursor = self.flat.len()-1;
+            self.cursor = self.flat.len() - 1;
             return;
         }
         self.cursor = self
@@ -669,30 +672,65 @@ impl Widget for SearchResultsView {
         self.rect
     }
 
-    fn perform_semantic_action(&mut self, target: &str, action: &crate::a11y::Action, _: &mut AutoCommit, _: &automerge::ObjId) -> bool {
-        if !matches!(action, crate::a11y::Action::Focus | crate::a11y::Action::Activate) { return false; }
-        let Some(index)=self.flat.iter().position(|&(group,row)| self.groups[group].results[row].action_id==target) else {return false;};
-        self.cursor=index;
-        if matches!(action,crate::a11y::Action::Activate) {self.activate_selected();}
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _: &mut AutoCommit,
+        _: &automerge::ObjId,
+    ) -> bool {
+        if !matches!(
+            action,
+            crate::a11y::Action::Focus | crate::a11y::Action::Activate
+        ) {
+            return false;
+        }
+        let Some(index) = self
+            .flat
+            .iter()
+            .position(|&(group, row)| self.groups[group].results[row].action_id == target)
+        else {
+            return false;
+        };
+        self.cursor = index;
+        if matches!(action, crate::a11y::Action::Activate) {
+            self.activate_selected();
+        }
         true
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         let children = if self.flat.is_empty() {
-            vec![AccessNode::new(Role::StaticText).with_name(&self.empty_text)
-                .with_live(crate::a11y::Politeness::Polite)]
+            vec![
+                AccessNode::new(Role::StaticText)
+                    .with_name(&self.empty_text)
+                    .with_live(crate::a11y::Politeness::Polite),
+            ]
         } else {
-            self.plan().rows.into_iter().map(|row| {
-                let result = &self.groups[row.gi].results[row.ri];
-                AccessNode::new(Role::ListItem).with_name(&result.title)
-                    .with_optional_value(result.subtitle.clone())
-                    .with_action_target(&result.action_id).with_bounds(row.rect)
-                    .with_position(row.flat+1,self.flat.len())
-                    .with_state(crate::a11y::AccessState {selected:row.flat==self.cursor,..Default::default()})
-            }).collect()
+            self.plan()
+                .rows
+                .into_iter()
+                .map(|row| {
+                    let result = &self.groups[row.gi].results[row.ri];
+                    AccessNode::new(Role::ListItem)
+                        .with_name(&result.title)
+                        .with_optional_value(result.subtitle.clone())
+                        .with_action_target(&result.action_id)
+                        .with_bounds(row.rect)
+                        .with_position(row.flat + 1, self.flat.len())
+                        .with_state(crate::a11y::AccessState {
+                            selected: row.flat == self.cursor,
+                            ..Default::default()
+                        })
+                })
+                .collect()
         };
-        Some(AccessNode::new(Role::List).with_name("Search results").with_children(children))
+        Some(
+            AccessNode::new(Role::List)
+                .with_name("Search results")
+                .with_children(children),
+        )
     }
 }
 

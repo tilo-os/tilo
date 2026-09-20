@@ -1,9 +1,9 @@
 //! Exact authenticated private-response correlation. Never executes effects.
+use std::collections::BTreeMap;
 use tilo_relay::{
     peer_actions::{ActionMessage, DirectedAction},
     transport_v2::EnvelopeV2,
 };
-use std::collections::BTreeMap;
 use uuid::Uuid;
 #[derive(Default)]
 pub struct PendingActions {
@@ -184,8 +184,17 @@ mod tests {
             host: Uuid::from_u128(5),
             catalogue: serde_json::json!({"version":1,"surfaces":[{"actions":vec![serde_json::json!({"resource":"document","action":"edit","params":{}});1500]}]}),
         };
-        assert!(pending.receive(EnvelopeV2::Delivered { action: reply, source_user: [9;32] }, [9;32]));
-        assert!(matches!(pending.take(request.request_id), Some(ActionMessage::BrokerCatalogue { .. })));
+        assert!(pending.receive(
+            EnvelopeV2::Delivered {
+                action: reply,
+                source_user: [9; 32]
+            },
+            [9; 32]
+        ));
+        assert!(matches!(
+            pending.take(request.request_id),
+            Some(ActionMessage::BrokerCatalogue { .. })
+        ));
     }
 
     #[test]

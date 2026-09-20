@@ -1,14 +1,14 @@
 //! Device-local first-login migration choices. Never collaborative state.
 
 use super::controller::{FolderChoice, FolderDestination};
-use ui::folders::review::{directory_identity, inspect_copy_review, path_is_absent};
-use ui::folders::review::DirectoryIdentity as Identity;
-use ui::folders::copy::{MigrationStore, NativePath, OperationRecord};
-use ui::folders::copy::MigrationJob;
 use super::model::FolderMode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
+use ui::folders::copy::MigrationJob;
+use ui::folders::copy::{MigrationStore, NativePath, OperationRecord};
+use ui::folders::review::DirectoryIdentity as Identity;
+use ui::folders::review::{directory_identity, inspect_copy_review, path_is_absent};
 
 const MAX_BYTES: usize = 256 * 1024;
 
@@ -276,7 +276,9 @@ impl Continuation {
         if !path_is_absent(&record.journal()?)? {
             return Err("This copy has a durable journal; its reviewed destination and source revision must be retained.".into());
         }
-        if record.state() != OperationState::AwaitingReview && !path_is_absent(&record.destination()?)? {
+        if record.state() != OperationState::AwaitingReview
+            && !path_is_absent(&record.destination()?)?
+        {
             return Err(
                 "Interrupted output requires review; its existing outcome was retained.".into(),
             );
@@ -418,9 +420,9 @@ mod tests {
     use super::*;
     use crate::setup::controller::{FolderChoice, FolderDestination};
     use crate::setup::folders::FolderScan;
-    use ui::folders::copy::MigrationStore;
     use crate::setup::model::FolderMode;
     use std::fs;
+    use ui::folders::copy::MigrationStore;
 
     fn fixture() -> (tempfile::TempDir, MigrationStore, Vec<FolderChoice>) {
         let temp = tempfile::tempdir_in(std::env::var_os("HOME").unwrap()).unwrap();

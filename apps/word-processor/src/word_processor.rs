@@ -2185,8 +2185,8 @@ impl WordProcessor {
 
     /// Project an admitted document without seeding schema, styles or paragraphs.
     pub fn from_document(state: &AutoCommit) -> Result<Self, String> {
-        let containers = qdoc::model::open(state, &automerge::ROOT)
-            .map_err(|error| error.to_string())?;
+        let containers =
+            qdoc::model::open(state, &automerge::ROOT).map_err(|error| error.to_string())?;
         let mut editor = Self::new();
         editor.ids = Some(qdoc::model::seeded_id_gen(state, &containers));
         editor.containers = Some(containers);

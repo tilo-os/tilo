@@ -480,7 +480,7 @@ impl WidgetNodeMap {
             .iter()
             .find_map(|(id, registered, registered_name)| {
                 (!aliased
-                || std::ptr::eq(pointer, *registered)
+                    || std::ptr::eq(pointer, *registered)
                     || (registered_name == widget.name()
                         && names.get(widget.name()).copied() == Some(1)))
                 .then_some(*id)

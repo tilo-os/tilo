@@ -209,7 +209,12 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     );
 
     driver.click_named("history-restore").unwrap();
-    assert!(driver.inspection_json().unwrap().contains("Restore version"));
+    assert!(
+        driver
+            .inspection_json()
+            .unwrap()
+            .contains("Restore version")
+    );
     assert!(
         !driver.frame_output().needs_redraw,
         "review dialog stayed dirty after draw"

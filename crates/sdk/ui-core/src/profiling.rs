@@ -21,9 +21,9 @@
 
 pub(crate) mod resource_trace;
 
+use crate::clock::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
-use crate::clock::{Duration, Instant};
 
 use serde::Serialize;
 use vello::Scene;

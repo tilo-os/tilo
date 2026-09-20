@@ -11,15 +11,14 @@ pub(super) mod linux;
 #[cfg(any(windows, test))]
 pub(super) mod windows;
 
-#[cfg(any(windows, all(target_os = "linux", not(test))))]
-pub(crate) mod native_coordinator;
 #[cfg(all(unix, any(test, feature = "test-support")))]
 pub(crate) mod fixture_coordinator;
 #[cfg(all(unix, any(test, feature = "test-support")))]
 mod fixture_platform;
 #[cfg(any(test, all(unix, feature = "test-support")))]
 mod fixture_storage;
-
+#[cfg(any(windows, all(target_os = "linux", not(test))))]
+pub(crate) mod native_coordinator;
 
 /// Scoped consumer interface: no File, raw handle, clone or path authority.
 pub(crate) trait HeldReadSeek: std::io::Read + std::io::Seek {}
@@ -51,13 +50,21 @@ fn finish_held_read<T>(
     match result {
         Err(error) => {
             errors.insert(0, error.clone());
-            let message = errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
+            let message = errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ");
             Err(error.with_message(message).with_uncertainty())
         }
         Ok(value) if errors.is_empty() => Ok(value),
         Ok(_) => {
-            let message = errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; ");
+            let message = errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ");
             Err(errors.remove(0).with_message(message).with_uncertainty())
-        },
+        }
     }
 }

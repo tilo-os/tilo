@@ -255,7 +255,6 @@ pub enum NeighbourMsg {
     },
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,10 +15,10 @@
     reason = "bounded usize index arithmetic and finite pixel sums are the core of this geometry index"
 )]
 
+use crate::clock::Duration;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::Range;
-use crate::clock::Duration;
 
 const PAGE_FRACTION: f64 = 0.9;
 const DRAG_SCROLL_THRESHOLD: f64 = 4.0;

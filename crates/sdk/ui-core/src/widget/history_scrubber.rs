@@ -13,8 +13,8 @@
 //! degenerate case — every change is a tick, nothing snaps — not a separate
 //! mode.
 
-use std::collections::HashMap;
 use crate::clock::SystemTime;
+use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1583,11 +1583,11 @@ impl HistoryScrubber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Duration;
     use crate::widget::history::HistoryAuthor;
     use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use crate::clock::Duration;
     use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {
@@ -1803,11 +1803,11 @@ mod tests {
 #[cfg(test)]
 mod version_tests {
     use super::*;
+    use crate::clock::Duration;
     use crate::widget::history::HistoryAuthor;
     use collab_types::{ArtifactKind, OpClass};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use crate::clock::Duration;
     use winit::event::Modifiers;
 
     fn entry(id: u8) -> HistoryEntry {

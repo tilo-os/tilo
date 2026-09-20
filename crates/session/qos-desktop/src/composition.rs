@@ -17,7 +17,11 @@ use vello::{
 
 /// Real host services/chrome. Injecting a widget retains its native state and lifecycle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NavigationChrome { #[default] InSurface, External }
+pub enum NavigationChrome {
+    #[default]
+    InSurface,
+    External,
+}
 pub struct SurfaceChrome {
     pub navigation: NavigationChrome,
     pub topbar: Box<dyn Widget>,
@@ -116,13 +120,35 @@ pub fn build_group(
         .with_maximized(group.maximized)
 }
 impl DesktopSurface {
-    pub fn primary_vertical_scroll(&self, strip: StripId, group: crate::GroupId, tab: crate::TabId) -> Option<ui::widget::PrimaryScrollRegion> {
-        let group = self.row(strip)?.groups.iter().find(|g| g.id == group && g.active_tab_id() == tab)?;
+    pub fn primary_vertical_scroll(
+        &self,
+        strip: StripId,
+        group: crate::GroupId,
+        tab: crate::TabId,
+    ) -> Option<ui::widget::PrimaryScrollRegion> {
+        let group = self
+            .row(strip)?
+            .groups
+            .iter()
+            .find(|g| g.id == group && g.active_tab_id() == tab)?;
         group.primary_vertical_scroll()
     }
-    pub fn apply_primary_vertical_scroll(&mut self, strip: StripId, group: crate::GroupId, tab: crate::TabId, action: ui::widget::PrimaryScrollAction) -> ui::widget::PrimaryScrollResult {
-        self.row_mut(strip).and_then(|r| r.groups.iter_mut().find(|g| g.id == group && g.active_tab_id() == tab))
-            .map_or(ui::widget::PrimaryScrollResult::Unsupported, |g| g.apply_primary_vertical_scroll(action))
+    pub fn apply_primary_vertical_scroll(
+        &mut self,
+        strip: StripId,
+        group: crate::GroupId,
+        tab: crate::TabId,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        self.row_mut(strip)
+            .and_then(|r| {
+                r.groups
+                    .iter_mut()
+                    .find(|g| g.id == group && g.active_tab_id() == tab)
+            })
+            .map_or(ui::widget::PrimaryScrollResult::Unsupported, |g| {
+                g.apply_primary_vertical_scroll(action)
+            })
     }
 
     pub fn build(
@@ -164,14 +190,17 @@ impl DesktopSurface {
             .with_fill_remaining_height()
             .with_vertical_padding(if external_navigation { 0.0 } else { 8.0 })
             .with_horizontal_padding(0.0, 0.0);
-        if !external_navigation { column = column.push(Box::new(WorkspaceView::new(
-                tree.workspaces.len(),
-                tree.workspaces
-                    .iter()
-                    .position(|w| w.id == tree.active)
-                    .unwrap_or(0),
-            )))
-            .push(Box::new(StripView::new(strips, active_strip))); }
+        if !external_navigation {
+            column = column
+                .push(Box::new(WorkspaceView::new(
+                    tree.workspaces.len(),
+                    tree.workspaces
+                        .iter()
+                        .position(|w| w.id == tree.active)
+                        .unwrap_or(0),
+                )))
+                .push(Box::new(StripView::new(strips, active_strip)));
+        }
         let empty_workspace = tree
             .active_workspace()
             .is_some_and(|w| w.strips.iter().all(|s| s.window_groups.is_empty()));
@@ -211,7 +240,9 @@ impl DesktopSurface {
             }
         }
         let mut foreground = Column::new().with_no_padding();
-        if !external_navigation { foreground = foreground.push(chrome.topbar); }
+        if !external_navigation {
+            foreground = foreground.push(chrome.topbar);
+        }
         let foreground = foreground.push(Box::new(column));
         let stack = Stack::new()
             .push(chrome.backdrop)
@@ -223,7 +254,8 @@ impl DesktopSurface {
                 .filling(),
         );
         let mut surface = Self {
-            external_navigation, column_index: usize::from(!external_navigation),
+            external_navigation,
+            column_index: usize::from(!external_navigation),
             navigation: Default::default(),
             root,
             context: tree.active_workspace().map(|w| (w.id, w.room)),
@@ -355,7 +387,9 @@ impl DesktopSurface {
                 }
             }
         }
-        if let Some(view) = (!self.external_navigation).then(|| child(self.root.as_ref(), &[0, 1, 1, 0])).flatten()
+        if let Some(view) = (!self.external_navigation)
+            .then(|| child(self.root.as_ref(), &[0, 1, 1, 0]))
+            .flatten()
             .and_then(Widget::as_any)
             .and_then(|v| v.downcast_ref::<WorkspaceView>())
         {
@@ -366,7 +400,9 @@ impl DesktopSurface {
                 }
             }
         }
-        if let Some(view) = (!self.external_navigation).then(|| child(self.root.as_ref(), &[0, 1, 1, 1])).flatten()
+        if let Some(view) = (!self.external_navigation)
+            .then(|| child(self.root.as_ref(), &[0, 1, 1, 1]))
+            .flatten()
             .and_then(Widget::as_any)
             .and_then(|v| v.downcast_ref::<StripView>())
         {
@@ -419,13 +455,17 @@ impl DesktopSurface {
             .iter()
             .position(|s| Some(&s.id) == tree.active_strip.get(&workspace.id))
             .unwrap_or(0);
-        if let Some(view) = (!self.external_navigation).then(|| child_mut(self.root.as_mut(), &[0, 1, 1, 0])).flatten()
+        if let Some(view) = (!self.external_navigation)
+            .then(|| child_mut(self.root.as_mut(), &[0, 1, 1, 0]))
+            .flatten()
             .and_then(Widget::as_any_mut)
             .and_then(|v| v.downcast_mut::<WorkspaceView>())
         {
             changed |= view.reconcile(tree.workspaces.len(), self.selected_workspace);
         }
-        if let Some(view) = (!self.external_navigation).then(|| child_mut(self.root.as_mut(), &[0, 1, 1, 1])).flatten()
+        if let Some(view) = (!self.external_navigation)
+            .then(|| child_mut(self.root.as_mut(), &[0, 1, 1, 1]))
+            .flatten()
             .and_then(Widget::as_any_mut)
             .and_then(|v| v.downcast_mut::<StripView>())
         {
@@ -710,7 +750,8 @@ impl DesktopSurface {
     ) -> Option<Rect> {
         child_mut(self.root.as_mut(), &[0, 0])?.draw(backdrop, transform, text, theme, presence);
         if self.external_navigation {
-            child_mut(self.root.as_mut(), &[0, 1, 0])?.draw(workspace, transform, text, theme, presence);
+            child_mut(self.root.as_mut(), &[0, 1, 0])?
+                .draw(workspace, transform, text, theme, presence);
             return Some(Rect::ZERO);
         }
         let bar = child_mut(self.root.as_mut(), &[0, 1, 0])?;

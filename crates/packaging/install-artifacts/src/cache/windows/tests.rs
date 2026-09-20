@@ -55,9 +55,9 @@ fn cache_suffix_must_still_fit_the_verifier_path_boundary() {
 mod native {
     use super::super::{native::fixture_acquire, *};
     use crate::{
-        catalog::InternalRelease,
         bundle as internal_bundle,
         cache::{Candidate, Kind, Provider, Session},
+        catalog::InternalRelease,
         transport::SelectedManifest,
     };
     use std::{fs, io::Write, os::windows::ffi::OsStringExt, sync::atomic::AtomicBool};
@@ -268,10 +268,7 @@ mod native {
         a.file.write_all(&vec![b'E'; 4096]).unwrap();
         a.file.sync_all().unwrap();
         assert!(a.publish(&AtomicBool::new(false)).is_err());
-        assert!(
-            crate::cache::initialize_fresh(&s, 1, &mut b.provider, &mut b.file)
-                .is_err()
-        );
+        assert!(crate::cache::initialize_fresh(&s, 1, &mut b.provider, &mut b.file).is_err());
         assert!(b.provider.retain(&[]).is_err());
     }
     #[test]
@@ -331,7 +328,10 @@ mod native {
             .unwrap();
         let stdout = String::from_utf8_lossy(&status.stdout);
         assert!(stdout.contains("running 1 test"), "{stdout}");
-        assert!(stdout.contains("cache::windows::tests::native::lock_probe"), "{stdout}");
+        assert!(
+            stdout.contains("cache::windows::tests::native::lock_probe"),
+            "{stdout}"
+        );
         let status = status.status;
         assert!(status.success());
         drop(final_file);

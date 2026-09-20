@@ -1,8 +1,8 @@
 //! Inert broker descriptors rendered with the shared ActionPalette schema.
+use serde::Deserialize;
 use tilo_actions::{
     ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, OperationKind, Resource,
 };
-use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct Descriptor {

@@ -13,9 +13,17 @@ pub(super) struct CallerPalette {
 impl FrameHarness {
     pub(super) fn caller_resources(&self) -> Vec<tilo_actions::Resource> {
         let mut resources = self.caller_palette.resources.clone();
-        resources.extend(self.root.caller_view_resources(&self.state.doc).into_iter().filter(|resource| {
-            resource.actions.iter().all(|action| action.kind == tilo_actions::OperationKind::View)
-        }));
+        resources.extend(
+            self.root
+                .caller_view_resources(&self.state.doc)
+                .into_iter()
+                .filter(|resource| {
+                    resource
+                        .actions
+                        .iter()
+                        .all(|action| action.kind == tilo_actions::OperationKind::View)
+                }),
+        );
         resources
     }
     /// Replace the caller's currently authenticated action projection. Resource
@@ -34,7 +42,14 @@ impl FrameHarness {
     /// recovery; this frame never acknowledges an effect or mutates its document.
     /// Browser-owned command search opens the same authoritative palette.
     pub fn open_caller_search(&mut self, query: &str) -> Result<(), String> {
-        if self.global_search_query().is_some() || self.global_search_pending() || self.root.modal_capture().is_some() || self.focus_trap_active || self.caller_palette.pending.is_some() { return Err("Finish the current dialog or command first".into()); }
+        if self.global_search_query().is_some()
+            || self.global_search_pending()
+            || self.root.modal_capture().is_some()
+            || self.focus_trap_active
+            || self.caller_palette.pending.is_some()
+        {
+            return Err("Finish the current dialog or command first".into());
+        }
         let mut palette = ActionPalette::with_host_text(self.text.font_system.locale().to_owned());
         palette.load_open_resources(&self.caller_resources());
         palette.open();
@@ -103,12 +118,15 @@ impl FrameHarness {
                 // Validate again after confirmation and before handing intent to
                 // the host. Revoked/replaced addresses never execute locally.
                 if pending.has_valid_input()
-                    && tilo_actions::door::resolve(&resources, &pending.address)
-                        .is_some()
+                    && tilo_actions::door::resolve(&resources, &pending.address).is_some()
                 {
-                    if pending.kind == tilo_actions::OperationKind::View && tilo_actions::door::resolve(&local, &pending.address).is_some() {
+                    if pending.kind == tilo_actions::OperationKind::View
+                        && tilo_actions::door::resolve(&local, &pending.address).is_some()
+                    {
                         local_pending = Some(pending);
-                    } else { self.caller_palette.pending = Some(pending); }
+                    } else {
+                        self.caller_palette.pending = Some(pending);
+                    }
                 }
             }
             if !palette.is_open() {
@@ -116,7 +134,13 @@ impl FrameHarness {
             }
         }
         if let Some(pending) = local_pending {
-            if let Err(error) = self.root.invoke_resource_operation_v2(pending.kind, &pending.encoded.type_id, &pending.encoded.payload, &self.state.doc, &self.state.root) {
+            if let Err(error) = self.root.invoke_resource_operation_v2(
+                pending.kind,
+                &pending.encoded.type_id,
+                &pending.encoded.payload,
+                &self.state.doc,
+                &self.state.root,
+            ) {
                 tracing::warn!(%error, "caller local request refused");
             }
         }
@@ -128,11 +152,23 @@ impl FrameHarness {
         target: Option<&str>,
         action: &crate::a11y::Action,
     ) -> bool {
-        let Some(snapshot) = self.caller_palette_inspection() else { return false; };
-        let Some(results_owner) = semantic_owner(&snapshot, name, target) else { return false; };
-        self.caller_palette.palette.as_mut().unwrap().perform_host_semantic(
-            results_owner, target, action, &mut self.state.doc, &self.state.root,
-        )
+        let Some(snapshot) = self.caller_palette_inspection() else {
+            return false;
+        };
+        let Some(results_owner) = semantic_owner(&snapshot, name, target) else {
+            return false;
+        };
+        self.caller_palette
+            .palette
+            .as_mut()
+            .unwrap()
+            .perform_host_semantic(
+                results_owner,
+                target,
+                action,
+                &mut self.state.doc,
+                &self.state.root,
+            )
     }
 
     pub(super) fn draw_caller_palette(&mut self) {
@@ -179,21 +215,38 @@ impl FrameHarness {
 // Mirror the browser's unique-test-ID or exact-path owner contract using only
 // the current palette tree. Background, invented and ambiguous owners fail closed.
 fn semantic_owner(snapshot: &InspectionNode, name: &str, target: Option<&str>) -> Option<bool> {
-    fn collect<'a>(node: &'a InspectionNode, results: bool, name: &str, found: &mut Vec<(bool, &'a InspectionNode)>) {
-        if node.path == name || node.test_id.as_deref() == Some(name) { found.push((results, node)); }
-        for child in &node.children { collect(child, results, name, found); }
+    fn collect<'a>(
+        node: &'a InspectionNode,
+        results: bool,
+        name: &str,
+        found: &mut Vec<(bool, &'a InspectionNode)>,
+    ) {
+        if node.path == name || node.test_id.as_deref() == Some(name) {
+            found.push((results, node));
+        }
+        for child in &node.children {
+            collect(child, results, name, found);
+        }
     }
     fn target_count(node: &crate::a11y::AccessNode, target: &str) -> usize {
         usize::from(node.action_target.as_deref() == Some(target))
-            + node.children.iter().map(|child| target_count(child, target)).sum::<usize>()
+            + node
+                .children
+                .iter()
+                .map(|child| target_count(child, target))
+                .sum::<usize>()
     }
     let mut found = Vec::new();
     for (index, child) in snapshot.children.iter().enumerate() {
         collect(child, index == 1, name, &mut found);
     }
-    let [(results, node)] = found.as_slice() else { return None; };
+    let [(results, node)] = found.as_slice() else {
+        return None;
+    };
     let semantics = node.semantics.as_ref()?;
-    if target.is_some_and(|target| target_count(semantics, target) != 1) { return None; }
+    if target.is_some_and(|target| target_count(semantics, target) != 1) {
+        return None;
+    }
     Some(*results)
 }
 
@@ -236,8 +289,12 @@ mod tests {
         action.kind = tilo_actions::OperationKind::Effect;
         action.contract.confirmation = confirmation;
         vec![
-            tilo_actions::Resource::new("certified-host/room/record/revision", "document", "Writer")
-                .with_action(action),
+            tilo_actions::Resource::new(
+                "certified-host/room/record/revision",
+                "document",
+                "Writer",
+            )
+            .with_action(action),
         ]
     }
     fn open(frame: &mut FrameHarness) {
@@ -362,8 +419,11 @@ mod tests {
         open(&mut frame);
         let snapshot = frame.caller_palette_inspection().unwrap();
         let field = &snapshot.children[0];
-        assert_eq!(frame.inspection().keyboard_focus_owner.as_deref(), Some(field.path.as_str()),
-            "the caller palette owns keyboard input outside the document focus tree");
+        assert_eq!(
+            frame.inspection().keyboard_focus_owner.as_deref(),
+            Some(field.path.as_str()),
+            "the caller palette owns keyboard input outside the document focus tree"
+        );
         frame
             .perform_semantic_named(
                 &field.path,
@@ -382,67 +442,144 @@ mod tests {
 
     #[test]
     fn open_palette_refreshes_visible_availability_without_input_and_keeps_target() {
-        let mut frame=frame();let original=resources(tilo_actions::ConfirmationPolicy::None,vec![]);
-        frame.set_caller_actions(original.clone());open(&mut frame);
-        assert_eq!(frame.caller_palette.palette.as_ref().unwrap().result_labels(),vec!["Writer — Insert table"]);
+        let mut frame = frame();
+        let original = resources(tilo_actions::ConfirmationPolicy::None, vec![]);
+        frame.set_caller_actions(original.clone());
+        open(&mut frame);
+        assert_eq!(
+            frame
+                .caller_palette
+                .palette
+                .as_ref()
+                .unwrap()
+                .result_labels(),
+            vec!["Writer — Insert table"]
+        );
         frame.set_caller_actions(vec![]);
-        assert!(frame.caller_palette.palette.as_ref().unwrap().result_labels().is_empty(),"revocation removes rendered rows without a keypress");
+        assert!(
+            frame
+                .caller_palette
+                .palette
+                .as_ref()
+                .unwrap()
+                .result_labels()
+                .is_empty(),
+            "revocation removes rendered rows without a keypress"
+        );
         assert!(!frame.inspection_json().unwrap().contains("Insert table"));
         frame.set_caller_actions(original);
-        assert!(frame.inspection_json().unwrap().contains("Insert table"),"restoration is present in real semantics without input");
+        assert!(
+            frame.inspection_json().unwrap().contains("Insert table"),
+            "restoration is present in real semantics without input"
+        );
         enter(&mut frame);
-        assert_eq!(frame.take_caller_operation().unwrap().address.resource,"certified-host/room/record/revision");
+        assert_eq!(
+            frame.take_caller_operation().unwrap().address.resource,
+            "certified-host/room/record/revision"
+        );
     }
 
     #[test]
     fn real_result_semantics_activate_only_the_current_exact_row() {
-        let mut frame=frame();let original=resources(tilo_actions::ConfirmationPolicy::None,vec![]);
-        frame.set_caller_actions(original.clone());open(&mut frame);
-        let snapshot=frame.caller_palette_inspection().unwrap();let results=&snapshot.children[1];
-        let target=results.semantics.as_ref().unwrap().children[0].action_target.clone().unwrap();
+        let mut frame = frame();
+        let original = resources(tilo_actions::ConfirmationPolicy::None, vec![]);
+        frame.set_caller_actions(original.clone());
+        open(&mut frame);
+        let snapshot = frame.caller_palette_inspection().unwrap();
+        let results = &snapshot.children[1];
+        let target = results.semantics.as_ref().unwrap().children[0]
+            .action_target
+            .clone()
+            .unwrap();
         // semanticBridge chooses a unique test ID before the inspection path.
-        let owner=results.test_id.as_deref().unwrap();
-        assert_eq!(owner,"action-palette-results");
+        let owner = results.test_id.as_deref().unwrap();
+        assert_eq!(owner, "action-palette-results");
         frame.set_caller_actions(vec![]);
-        assert!(frame.perform_semantic_named(owner,Some(&target),&crate::a11y::Action::Activate).is_err());
+        assert!(
+            frame
+                .perform_semantic_named(owner, Some(&target), &crate::a11y::Action::Activate)
+                .is_err()
+        );
         frame.set_caller_actions(original);
-        frame.perform_semantic_named(owner,Some(&target),&crate::a11y::Action::Activate).unwrap();
-        assert_eq!(frame.take_caller_operation().unwrap().address.action,"insert");
+        frame
+            .perform_semantic_named(owner, Some(&target), &crate::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(
+            frame.take_caller_operation().unwrap().address.action,
+            "insert"
+        );
     }
 
     #[test]
     fn palette_semantics_refuse_unpublished_owners_and_field_targets() {
-        let mut frame=frame();
-        frame.set_caller_actions(resources(tilo_actions::ConfirmationPolicy::None,vec![]));
+        let mut frame = frame();
+        frame.set_caller_actions(resources(tilo_actions::ConfirmationPolicy::None, vec![]));
         open(&mut frame);
-        let snapshot=frame.caller_palette_inspection().unwrap();
-        let field=&snapshot.children[0];
-        assert!(field.test_id.is_none(),"search publishes its exact path owner");
-        for owner in ["document", "caller-palette/not-a-SearchField", "caller-palette/SearchField[99]"] {
-            assert!(frame.perform_semantic_named(owner,None,&crate::a11y::Action::SetValue("wrong".into())).is_err());
+        let snapshot = frame.caller_palette_inspection().unwrap();
+        let field = &snapshot.children[0];
+        assert!(
+            field.test_id.is_none(),
+            "search publishes its exact path owner"
+        );
+        for owner in [
+            "document",
+            "caller-palette/not-a-SearchField",
+            "caller-palette/SearchField[99]",
+        ] {
+            assert!(
+                frame
+                    .perform_semantic_named(
+                        owner,
+                        None,
+                        &crate::a11y::Action::SetValue("wrong".into())
+                    )
+                    .is_err()
+            );
         }
-        assert!(frame.perform_semantic_named(&field.path,Some("unpublished-child"),&crate::a11y::Action::SetValue("wrong".into())).is_err());
-        assert_eq!(frame.caller_palette.palette.as_ref().unwrap().query(),"");
-        frame.perform_semantic_named(&field.path,None,&crate::a11y::Action::SetValue("Insert table".into())).unwrap();
-        assert_eq!(frame.caller_palette.palette.as_ref().unwrap().query(),"Insert table");
+        assert!(
+            frame
+                .perform_semantic_named(
+                    &field.path,
+                    Some("unpublished-child"),
+                    &crate::a11y::Action::SetValue("wrong".into())
+                )
+                .is_err()
+        );
+        assert_eq!(frame.caller_palette.palette.as_ref().unwrap().query(), "");
+        frame
+            .perform_semantic_named(
+                &field.path,
+                None,
+                &crate::a11y::Action::SetValue("Insert table".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            frame.caller_palette.palette.as_ref().unwrap().query(),
+            "Insert table"
+        );
         assert!(frame.take_caller_operation().is_none());
         assert!(frame.inspection_json().unwrap().contains("Insert table"));
     }
 
     #[test]
     fn palette_semantic_owner_refuses_ambiguous_ids_and_targets() {
-        let mut frame=frame();
-        frame.set_caller_actions(resources(tilo_actions::ConfirmationPolicy::None,vec![]));open(&mut frame);
-        let mut snapshot=frame.caller_palette_inspection().unwrap();
-        let results=&snapshot.children[1];let owner=results.test_id.clone().unwrap();
-        let target=results.semantics.as_ref().unwrap().children[0].action_target.clone().unwrap();
-        assert_eq!(semantic_owner(&snapshot,&owner,Some(&target)),Some(true));
-        snapshot.children[0].test_id=Some(owner.clone());
-        assert_eq!(semantic_owner(&snapshot,&owner,Some(&target)),None);
-        snapshot.children[0].test_id=None;
-        let rows=&mut snapshot.children[1].semantics.as_mut().unwrap().children;
+        let mut frame = frame();
+        frame.set_caller_actions(resources(tilo_actions::ConfirmationPolicy::None, vec![]));
+        open(&mut frame);
+        let mut snapshot = frame.caller_palette_inspection().unwrap();
+        let results = &snapshot.children[1];
+        let owner = results.test_id.clone().unwrap();
+        let target = results.semantics.as_ref().unwrap().children[0]
+            .action_target
+            .clone()
+            .unwrap();
+        assert_eq!(semantic_owner(&snapshot, &owner, Some(&target)), Some(true));
+        snapshot.children[0].test_id = Some(owner.clone());
+        assert_eq!(semantic_owner(&snapshot, &owner, Some(&target)), None);
+        snapshot.children[0].test_id = None;
+        let rows = &mut snapshot.children[1].semantics.as_mut().unwrap().children;
         rows.push(rows[0].clone());
-        assert_eq!(semantic_owner(&snapshot,&owner,Some(&target)),None);
+        assert_eq!(semantic_owner(&snapshot, &owner, Some(&target)), None);
     }
 
     #[test]
@@ -463,7 +600,20 @@ mod tests {
         )));
         enter(&mut frame);
         assert!(frame.take_caller_operation().is_none());
-        assert!(frame.inspection_json().unwrap().contains("Invalid arguments"),"invalid input has a visible semantic diagnostic");
-        assert!(frame.caller_palette.palette.as_ref().unwrap().in_argument_mode());
+        assert!(
+            frame
+                .inspection_json()
+                .unwrap()
+                .contains("Invalid arguments"),
+            "invalid input has a visible semantic diagnostic"
+        );
+        assert!(
+            frame
+                .caller_palette
+                .palette
+                .as_ref()
+                .unwrap()
+                .in_argument_mode()
+        );
     }
 }

@@ -1116,7 +1116,10 @@ impl ChromeState {
     }
 
     /// Private presentation requests share the portable descriptor contract.
-    pub fn request_workspace_view(&mut self, request: qos_desktop::activity::WorkspaceViewRequest) -> Result<(), String> {
+    pub fn request_workspace_view(
+        &mut self,
+        request: qos_desktop::activity::WorkspaceViewRequest,
+    ) -> Result<(), String> {
         use qos_desktop::activity::WorkspaceViewRequest;
         request.validate(&self.tree())?;
         let previous = self.tree().active;
@@ -1126,19 +1129,25 @@ impl ChromeState {
                 self.overlays.room_activity = false;
             }
             WorkspaceViewRequest::OpenActivity { workspace, .. } => {
-                if self.tree().active != *workspace { return Err("Workspace is no longer active".into()); }
+                if self.tree().active != *workspace {
+                    return Err("Workspace is no longer active".into());
+                }
                 self.open_room_activity(None);
             }
             WorkspaceViewRequest::CloseActivity { workspace } => {
-                if previous != *workspace { return Err("Workspace is no longer active".into()); }
+                if previous != *workspace {
+                    return Err("Workspace is no longer active".into());
+                }
                 self.overlays.room_activity = false;
-            },
+            }
         }
         self.workspace_view_request = Some((previous, request));
         self.bump();
         Ok(())
     }
-    pub fn take_workspace_view_request(&mut self) -> Option<(WorkspaceId, qos_desktop::activity::WorkspaceViewRequest)> {
+    pub fn take_workspace_view_request(
+        &mut self,
+    ) -> Option<(WorkspaceId, qos_desktop::activity::WorkspaceViewRequest)> {
         self.workspace_view_request.take()
     }
 

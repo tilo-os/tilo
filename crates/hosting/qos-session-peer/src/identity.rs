@@ -2,12 +2,12 @@
 use crate::store::{Custody, check_dir, custody, private_dir, sync_dir};
 use anyhow::{Result, bail};
 use ed25519_dalek::SigningKey;
+use std::path::Path;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity,
     persist::{self, IdentityPaths},
     sign_device_cert, verify_device_cert_at,
 };
-use std::path::Path;
 pub(crate) struct Identity {
     pub root: SigningKey,
     pub native: SigningKey,

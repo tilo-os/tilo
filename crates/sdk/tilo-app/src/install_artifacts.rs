@@ -16,8 +16,10 @@
 //! Normal SDK builds do not expose the service's development fixture module.
 //! Enabling fixture support on a direct service dev dependency does not widen
 //! this facade.
-pub use tilo_install_artifacts::{Client, ReleaseSelection, Token, Error, ErrorKind,
-    Availability, Phase, Status, Progress, TransferPhase, PreferenceCommit, PreferenceDurability,
-    PreferenceFailure, PreferenceNamespace, PreferencePublication, PreferenceState,
-    bundled_catalog_json, bundled_selections, catalog_architecture, availability, verify_local_components};
+pub use tilo_install_artifacts::{
+    Availability, Client, Error, ErrorKind, Phase, PreferenceCommit, PreferenceDurability,
+    PreferenceFailure, PreferenceNamespace, PreferencePublication, PreferenceState, Progress,
+    ReleaseSelection, Status, Token, TransferPhase, availability, bundled_catalog_json,
+    bundled_selections, catalog_architecture, verify_local_components,
+};
 pub use tilo_install_artifacts::{catalog_data, format};

@@ -108,7 +108,13 @@ impl RoomProjection {
         Self::project_owned_contents_with_empty(doc, strips, local_salt, None, true);
     }
 
-    fn project_owned_contents_with_empty(doc: &mut AutoCommit, strips: &[Strip], local_salt: u16, share_floor: Option<u64>, retain_empty: bool) {
+    fn project_owned_contents_with_empty(
+        doc: &mut AutoCommit,
+        strips: &[Strip],
+        local_salt: u16,
+        share_floor: Option<u64>,
+        retain_empty: bool,
+    ) {
         use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
         use std::collections::HashSet;
 
@@ -138,9 +144,13 @@ impl RoomProjection {
             // Unmarked empty native rows keep their historical local-only
             // policy. An admitted explicit strip has durable lifecycle state:
             // later ordinary projections preserve it until the strip is removed.
-            let retained = doc.get(&contents_id, Self::contents_key(strip.id.raw())).ok().flatten()
+            let retained = doc
+                .get(&contents_id, Self::contents_key(strip.id.raw()))
+                .ok()
+                .flatten()
                 .and_then(|(_, entry)| doc.get(&entry, "retained_empty_v1").ok().flatten())
-                .and_then(|(value, _)| value.to_u64()) == Some(1);
+                .and_then(|(value, _)| value.to_u64())
+                == Some(1);
             if strip.window_groups.is_empty() && !retain_empty && !retained {
                 continue;
             }
@@ -168,7 +178,9 @@ impl RoomProjection {
             };
             if owns_strip {
                 live_strips.insert(skey.clone());
-                if retain_empty { put_uint_if_changed(doc, &strip_entry, "retained_empty_v1", 1); }
+                if retain_empty {
+                    put_uint_if_changed(doc, &strip_entry, "retained_empty_v1", 1);
+                }
                 put_str_if_changed(doc, &strip_entry, "name", &strip.name);
                 put_uint_if_changed(doc, &strip_entry, "order", si as u64);
             }

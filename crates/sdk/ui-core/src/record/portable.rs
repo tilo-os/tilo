@@ -3,7 +3,12 @@
 use super::*;
 
 fn key(package: &str, workspace: &str, id: &RecordId) -> StorageKey {
-    if id.is_package_primary() { return StorageKey::Primary { package: package.into(), workspace: workspace.into() }; }
+    if id.is_package_primary() {
+        return StorageKey::Primary {
+            package: package.into(),
+            workspace: workspace.into(),
+        };
+    }
     StorageKey::Record {
         package: package.into(),
         workspace: workspace.into(),
@@ -33,7 +38,9 @@ impl RecordSet {
             return Err(RecordOpenError::Busy);
         }
         if let Some(slot) = self.open.get(&want.id) {
-            if slot.kind != want.kind { return Err(RecordOpenError::IdentityMismatch); }
+            if slot.kind != want.kind {
+                return Err(RecordOpenError::IdentityMismatch);
+            }
             validate_identity(
                 slot.doc.as_ref().ok_or(RecordOpenError::Busy)?,
                 want,
@@ -261,23 +268,44 @@ mod tests {
         doc.put(automerge::ROOT, "value", 1).unwrap();
         cache.put(storage_key.clone(), doc.save(), None).unwrap();
         let older = cache.pending_writes().remove(0);
-        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saving);
+        assert_eq!(
+            save_status(&cache, "test", "room", &id, &doc),
+            RecordSaveStatus::Saving
+        );
         cache.acknowledge(&older, Ok(())).unwrap();
-        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saved);
+        assert_eq!(
+            save_status(&cache, "test", "room", &id, &doc),
+            RecordSaveStatus::Saved
+        );
         doc.put(automerge::ROOT, "value", 2).unwrap();
         let pending = doc.pending_ops();
-        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saving);
+        assert_eq!(
+            save_status(&cache, "test", "room", &id, &doc),
+            RecordSaveStatus::Saving
+        );
         assert_eq!(doc.pending_ops(), pending, "status must not commit typing");
         cache.put(storage_key.clone(), doc.save(), None).unwrap();
         cache.acknowledge(&older, Ok(())).unwrap();
-        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saving);
+        assert_eq!(
+            save_status(&cache, "test", "room", &id, &doc),
+            RecordSaveStatus::Saving
+        );
         let newer = cache.pending_writes().remove(0);
         cache.acknowledge(&newer, Err("quota".into())).unwrap();
-        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Failed("quota".into()));
+        assert_eq!(
+            save_status(&cache, "test", "room", &id, &doc),
+            RecordSaveStatus::Failed("quota".into())
+        );
         cache.acknowledge(&newer, Ok(())).unwrap();
-        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Saved);
-        cache.put(storage_key, vec![1,2,3], None).unwrap();
-        assert_eq!(save_status(&cache, "test", "room", &id, &doc), RecordSaveStatus::Failed("cached document is corrupt".into()));
+        assert_eq!(
+            save_status(&cache, "test", "room", &id, &doc),
+            RecordSaveStatus::Saved
+        );
+        cache.put(storage_key, vec![1, 2, 3], None).unwrap();
+        assert_eq!(
+            save_status(&cache, "test", "room", &id, &doc),
+            RecordSaveStatus::Failed("cached document is corrupt".into())
+        );
     }
     #[test]
     fn separate_registries_share_one_cache_owner() {

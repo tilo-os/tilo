@@ -1,9 +1,15 @@
 //! Ordinary-file provider for explicitly selected Unix fixtures only.
-use crate::cache::{HeldReadSeek, Session, Ownership, Provider, initialize_fresh};
 use crate::cache::fixture_storage::FreshDisk;
+use crate::cache::{HeldReadSeek, Ownership, Provider, Session, initialize_fresh};
 use crate::transport::SelectedManifest;
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, fs::{self,File},io::{Read,Seek,SeekFrom},path::PathBuf,sync::atomic::{AtomicBool, Ordering}};
+use std::{
+    cell::RefCell,
+    fs::{self, File},
+    io::{Read, Seek, SeekFrom},
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+};
 thread_local! {
     pub(super) static ROOT: RefCell<PathBuf> = RefCell::new(PathBuf::new());
     pub(super) static SETUP_HOOK: RefCell<Option<Box<dyn FnMut(usize, &str) -> Result<(), crate::error::Failure>>>> = RefCell::new(None);
@@ -64,7 +70,9 @@ fn verify(
     let mut buffer = [0; 8192];
     loop {
         check(cancel)?;
-        let n = file.read(&mut buffer).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+        let n = file
+            .read(&mut buffer)
+            .map_err(|e| crate::error::Failure::from(e.to_string()))?;
         if n == 0 {
             break;
         }
@@ -76,9 +84,7 @@ fn verify(
     check(cancel)
 }
 impl CacheRoot {
-    pub(super) fn acquire(
-        _: &SelectedManifest,
-    ) -> Result<Self, crate::error::Failure> {
+    pub(super) fn acquire(_: &SelectedManifest) -> Result<Self, crate::error::Failure> {
         Ok(Self {
             path: ROOT.with(|r| r.borrow().clone()),
         })
@@ -96,7 +102,8 @@ impl CacheRoot {
                 fs::create_dir(&root).unwrap();
             }
             if root.join("final").exists() {
-                let mut file = File::open(root.join("final")).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+                let mut file = File::open(root.join("final"))
+                    .map_err(|e| crate::error::Failure::from(e.to_string()))?;
                 verify(&mut file, selected, index, cancel)?;
                 components.push(Component::Final(FinalHandle {
                     file,
@@ -159,9 +166,11 @@ impl<'s> Partial<'s> {
         if final_path.exists() {
             return Err("fixture final collision retained".into());
         }
-        fs::rename(self.root.join(own.leaf), &final_path).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+        fs::rename(self.root.join(own.leaf), &final_path)
+            .map_err(|e| crate::error::Failure::from(e.to_string()))?;
         drop(self.file);
-        let mut file = File::open(final_path).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+        let mut file =
+            File::open(final_path).map_err(|e| crate::error::Failure::from(e.to_string()))?;
         verify(&mut file, self.selected, self.index, cancel)?;
         Ok(FinalHandle {
             file,
@@ -181,7 +190,8 @@ impl<'s> Partial<'s> {
         check(cancel)?;
         let own = (&mut self.provider).ownership();
         (&mut self.provider).verify(&self.file, &own)?;
-        fs::remove_file(self.root.join(own.leaf)).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+        fs::remove_file(self.root.join(own.leaf))
+            .map_err(|e| crate::error::Failure::from(e.to_string()))?;
         (&mut self.provider).retain(&[])
     }
 }

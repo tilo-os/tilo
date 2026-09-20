@@ -1,14 +1,17 @@
 pub(crate) use super::fixture_storage::*;
-use sha2::{Digest, Sha256};
-use std::{fs::{self,File,OpenOptions},io::{Seek,Write},path::Path,sync::atomic::AtomicBool};
-use crate::transport::SelectedManifest;
 use super::*;
 use crate::catalog::InternalRelease;
+use crate::transport::SelectedManifest;
+use sha2::{Digest, Sha256};
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Seek, Write},
+    path::Path,
+    sync::atomic::AtomicBool,
+};
 
 fn selected() -> SelectedManifest {
-    let bytes = crate::bundle::tests::bytes(
-        &crate::bundle::tests::fixture(),
-    );
+    let bytes = crate::bundle::tests::bytes(&crate::bundle::tests::fixture());
     let release = InternalRelease::transport_fixture(
         &bytes,
         "https://code.podesta.ai/releases/manifest.json",
@@ -850,7 +853,10 @@ impl Provider for &mut LifecycleProvider<'_> {
     fn verify(&mut self, file: &File, own: &Ownership) -> Result<(), crate::error::Failure> {
         self.disk.verify(file, own)
     }
-    fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<(), crate::error::Failure>) -> Result<(), crate::error::Failure> {
+    fn scan(
+        &mut self,
+        visit: &mut dyn FnMut(&[u8]) -> Result<(), crate::error::Failure>,
+    ) -> Result<(), crate::error::Failure> {
         self.disk.scan(visit)?;
         self.events.push("scan");
         Ok(())

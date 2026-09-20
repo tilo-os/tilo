@@ -886,7 +886,8 @@ pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snap
 }
 
 fn materialize_comments_with_ranges(
-    doc: &AutoCommit, c: &Containers,
+    doc: &AutoCommit,
+    c: &Containers,
     mut range: impl FnMut(&str) -> Option<(String, usize, usize)>,
 ) -> Vec<crate::snapshot::CommentView> {
     comment_ids(doc, c)
@@ -1028,7 +1029,8 @@ pub fn materialize_changes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snaps
 }
 
 fn materialize_changes_with_ranges(
-    doc: &AutoCommit, c: &Containers,
+    doc: &AutoCommit,
+    c: &Containers,
     mut range: impl FnMut(&str) -> Option<(String, usize, usize)>,
 ) -> Vec<crate::snapshot::ChangeView> {
     change_ids(doc, c)
@@ -1605,16 +1607,24 @@ struct BodyAnchors<'a> {
 
 impl<'a> BodyAnchors<'a> {
     fn new(blocks: &'a [BlockView]) -> Self {
-        let mut anchors = Self { first: BTreeMap::new(), bookmarks: Vec::new() };
+        let mut anchors = Self {
+            first: BTreeMap::new(),
+            bookmarks: Vec::new(),
+        };
         for block in blocks {
             for mark in &block.marks {
-                let crate::document::MarkValue::Str(value) = &mark.value else { continue };
+                let crate::document::MarkValue::Str(value) = &mark.value else {
+                    continue;
+                };
                 match mark.name.as_str() {
                     MARK_BOOKMARK => anchors.bookmarks.push(crate::snapshot::BookmarkView {
-                        name: value.clone(), range: (block.id.clone(), mark.start, mark.end),
+                        name: value.clone(),
+                        range: (block.id.clone(), mark.start, mark.end),
                     }),
                     MARK_COMMENT | MARK_INS | MARK_DEL => {
-                        anchors.first.entry((&mark.name, value))
+                        anchors
+                            .first
+                            .entry((&mark.name, value))
                             .or_insert((&block.id, mark.start, mark.end));
                     }
                     _ => {}
@@ -1629,7 +1639,9 @@ impl<'a> BodyAnchors<'a> {
     }
 
     fn range(&self, name: &str, id: &str) -> Option<(String, usize, usize)> {
-        self.first.get(&(name, id)).map(|(block, start, end)| ((*block).into(), *start, *end))
+        self.first
+            .get(&(name, id))
+            .map(|(block, start, end)| ((*block).into(), *start, *end))
     }
 }
 
@@ -1640,7 +1652,8 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         .collect();
     let (comments, changes, bookmarks) = {
         let anchors = BodyAnchors::new(&blocks);
-        let comments = materialize_comments_with_ranges(doc, c, |id| anchors.range(MARK_COMMENT, id));
+        let comments =
+            materialize_comments_with_ranges(doc, c, |id| anchors.range(MARK_COMMENT, id));
         let changes = materialize_changes_with_ranges(doc, c, |id| {
             // Malformed/missing change kind has no anchor in change_range,
             // even though its display kind defaults to insertion.
@@ -2964,7 +2977,11 @@ mod snapshot_anchor_tests {
         let mut doc = AutoCommit::new();
         let c = init(&mut doc, &ROOT);
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
-        let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+        let mut dm = DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
         let first = dm.insert_block(None, "paragraph");
         dm.splice_text(&first, 0, 0, "Aé🦀é");
         let second = dm.insert_block(Some(&first), "heading");
@@ -2972,8 +2989,11 @@ mod snapshot_anchor_tests {
         MARK_READS.with(|count| count.set(0));
         let snap = materialize(&doc, &c);
         assert_eq!(snap.blocks.len(), 2);
-        assert_eq!(MARK_READS.with(|count| count.get()), 2,
-            "the bookmark projection must reuse marks already read for the body");
+        assert_eq!(
+            MARK_READS.with(|count| count.get()),
+            2,
+            "the bookmark projection must reuse marks already read for the body"
+        );
     }
 
     #[test]
@@ -2983,7 +3003,11 @@ mod snapshot_anchor_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let first;
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             first = dm.insert_block(None, "paragraph");
             dm.splice_text(&first, 0, 0, "Aé🦀é first text");
             let second = dm.insert_block(Some(&first), "heading");
@@ -3004,15 +3028,29 @@ mod snapshot_anchor_tests {
         let mut remote = doc.fork();
         remote.set_actor(automerge::ActorId::from(vec![97]));
         let mut remote_ids = IdGen::new(remote.get_actor().to_hex_string());
-        DocMut { doc: &mut remote, c: &c, ids: &mut remote_ids }.add_bookmark(&first, 8, 10, "remote");
+        DocMut {
+            doc: &mut remote,
+            c: &c,
+            ids: &mut remote_ids,
+        }
+        .add_bookmark(&first, 8, 10, "remote");
         remote.commit();
         doc.merge(&mut remote).unwrap();
-        DocMut { doc: &mut doc, c: &c, ids: &mut ids }.splice_text(&first, 0, 0, "pending ");
+        DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        }
+        .splice_text(&first, 0, 0, "pending ");
         let pending = doc.pending_ops();
         let heads = doc.base_heads();
         MARK_READS.with(|count| count.set(0));
         let snap = materialize(&doc, &c);
-        assert_eq!(MARK_READS.with(|count| count.get()), 3, "two body blocks and one comment body are each read once");
+        assert_eq!(
+            MARK_READS.with(|count| count.get()),
+            3,
+            "two body blocks and one comment body are each read once"
+        );
         assert_eq!(snap.comments, materialize_comments(&doc, &c));
         assert_eq!(snap.changes, materialize_changes(&doc, &c));
         assert_eq!(snap.bookmarks, bookmarks(&doc, &c));
@@ -3020,7 +3058,13 @@ mod snapshot_anchor_tests {
         assert_eq!(doc.base_heads(), heads);
         assert!(snap.comments.iter().any(|comment| comment.range.is_none()));
         assert!(snap.changes.iter().any(|change| change.range.is_none()));
-        assert_eq!(snap.bookmarks.iter().filter(|bookmark| bookmark.name == "same-name").count(), 2);
+        assert_eq!(
+            snap.bookmarks
+                .iter()
+                .filter(|bookmark| bookmark.name == "same-name")
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -3030,7 +3074,11 @@ mod snapshot_anchor_tests {
         let mut ids = IdGen::new(doc.get_actor().to_hex_string());
         let (body, comment, change);
         {
-            let mut dm = DocMut { doc: &mut doc, c: &c, ids: &mut ids };
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
             body = dm.insert_block(None, "paragraph");
             dm.splice_text(&body, 0, 0, "body");
             comment = dm.insert_comment("Ada", "today");
@@ -3039,18 +3087,38 @@ mod snapshot_anchor_tests {
             dm.add_mark(&body, 2, 4, MARK_BOOKMARK, true);
             let header = dm.insert_block_in(Region::Header, None, "paragraph");
             dm.splice_text_in(Region::Header, &header, 0, 0, "header");
-            dm.add_mark_in(Region::Header, &header, 0, 2, MARK_COMMENT, comment.as_str());
+            dm.add_mark_in(
+                Region::Header,
+                &header,
+                0,
+                2,
+                MARK_COMMENT,
+                comment.as_str(),
+            );
             dm.add_mark_in(Region::Header, &header, 0, 2, MARK_BOOKMARK, "header-only");
         }
         let parent = block_obj(&doc, &c.blocks, &body).unwrap();
-        let children = doc.put_object(&parent, BLOCK_CHILDREN, ObjType::Map).unwrap();
+        let children = doc
+            .put_object(&parent, BLOCK_CHILDREN, ObjType::Map)
+            .unwrap();
         let child = doc.put_object(&children, "child", ObjType::Map).unwrap();
         doc.put(&child, BLOCK_KIND, "paragraph").unwrap();
-        doc.put(&child, BLOCK_ORDER, ScalarValue::Bytes(vec![128])).unwrap();
+        doc.put(&child, BLOCK_ORDER, ScalarValue::Bytes(vec![128]))
+            .unwrap();
         let text = doc.put_object(&child, BLOCK_TEXT, ObjType::Text).unwrap();
         doc.splice_text(&text, 0, 0, "child").unwrap();
-        doc.mark(&text, Mark::new(MARK_COMMENT.into(), comment.as_str(), 0, 2), ExpandMark::After).unwrap();
-        doc.mark(&text, Mark::new(MARK_BOOKMARK.into(), "child-only", 0, 2), ExpandMark::After).unwrap();
+        doc.mark(
+            &text,
+            Mark::new(MARK_COMMENT.into(), comment.as_str(), 0, 2),
+            ExpandMark::After,
+        )
+        .unwrap();
+        doc.mark(
+            &text,
+            Mark::new(MARK_BOOKMARK.into(), "child-only", 0, 2),
+            ExpandMark::After,
+        )
+        .unwrap();
         let change_obj = change_obj(&doc, &c, &change).unwrap();
         doc.delete(&change_obj, CHANGE_KIND).unwrap();
         let snap = materialize(&doc, &c);
@@ -3060,8 +3128,14 @@ mod snapshot_anchor_tests {
         assert!(snap.comments[0].range.is_none());
         assert!(snap.changes[0].range.is_none());
         assert!(snap.bookmarks.is_empty());
-        assert!(!snap.blocks[0].children[0].marks.is_empty(), "nested marks are still rendered");
-        assert!(!snap.header[0].marks.is_empty(), "header marks are still rendered");
+        assert!(
+            !snap.blocks[0].children[0].marks.is_empty(),
+            "nested marks are still rendered"
+        );
+        assert!(
+            !snap.header[0].marks.is_empty(),
+            "header marks are still rendered"
+        );
     }
 }
 

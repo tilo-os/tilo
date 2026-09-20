@@ -28,9 +28,9 @@
 //! [`text_selection`]: crate::text_selection
 //! [`TextInput`]: crate::widget::TextInput
 
+use crate::clock::{Duration, Instant};
 use std::collections::HashMap;
 use std::ops::Range;
-use crate::clock::{Duration, Instant};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};

@@ -517,7 +517,8 @@ fn baseline_commit_has_one_durable_visibility_point() {
     let root = storage::build_pages(&store.storage, std::iter::once(Ok(row))).unwrap();
     assert!(store.load_baseline(record.id).unwrap().entries().is_none());
     store
-        .append(Change::BaselineCommit { directory_chain: None,
+        .append(Change::BaselineCommit {
+            directory_chain: None,
             directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
@@ -892,7 +893,8 @@ fn commit_test_baseline(store: &mut ConnectionStore, id: ConnectionId) -> [u8; 3
     )
     .unwrap();
     store
-        .append(Change::BaselineCommit { directory_chain: None,
+        .append(Change::BaselineCommit {
+            directory_chain: None,
             directory_ancestors: None,
             existing_ancestors: None,
             connection: id.0,
@@ -1076,7 +1078,8 @@ fn intent_or_preserved_record_is_not_publication_authority() {
     ));
     assert!(
         store
-            .append(Change::BaselineCommit { directory_chain: None,
+            .append(Change::BaselineCommit {
+                directory_chain: None,
                 directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
@@ -1212,7 +1215,8 @@ fn baseline_fault_boundaries_never_expose_mixed_pages() {
         FAULT.with(|fault| fault.set(Some((point, false))));
         let result = (|| {
             let root = storage::build_pages(&store.storage, rows)?;
-            store.append(Change::BaselineCommit { directory_chain: None,
+            store.append(Change::BaselineCommit {
+                directory_chain: None,
                 directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
@@ -1354,7 +1358,8 @@ fn baseline_candidate_survives_automatic_checkpoint_before_commit() {
     store.overlay_bytes = 8 * 1024 * 1024;
     let generation = store.current.generation;
     store
-        .append(Change::BaselineCommit { directory_chain: None,
+        .append(Change::BaselineCommit {
+            directory_chain: None,
             directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
@@ -3261,7 +3266,8 @@ fn native_baseline_patch_cannot_drop_an_unprocessed_path() {
     assert!(
         store
             .append_native(
-                Change::BaselineCommit { directory_chain: None,
+                Change::BaselineCommit {
+                    directory_chain: None,
                     directory_ancestors: None,
                     existing_ancestors: None,
                     connection: record.id.0,
@@ -3341,7 +3347,8 @@ fn native_baseline_patches_advance_two_paths_separately_and_reopen() {
         let root = storage::build_pages(&store.storage, rows).unwrap();
         store
             .append_native(
-                Change::BaselineCommit { directory_chain: None,
+                Change::BaselineCommit {
+                    directory_chain: None,
                     directory_ancestors: None,
                     existing_ancestors: None,
                     connection: record.id.0,
@@ -3598,7 +3605,8 @@ fn native_baseline_checkpoint_second_reduction_pays_again_and_pins_candidate() {
     store.overlay_bytes = 8 * 1024 * 1024; // existing pressure seam, real checkpoint/GC follows
     store
         .append_native(
-            Change::BaselineCommit { directory_chain: None,
+            Change::BaselineCommit {
+                directory_chain: None,
                 directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
@@ -3818,7 +3826,8 @@ fn native_initial_baseline_boolean_cannot_replace_review_fact() {
     .unwrap();
     assert!(matches!(
         store.append_native(
-            Change::BaselineCommit { directory_chain: None,
+            Change::BaselineCommit {
+                directory_chain: None,
                 directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
@@ -5109,7 +5118,8 @@ fn native_selected_action_retains_exact_history_and_rejects_ordinary_resume_afte
     )
     .unwrap();
     store
-        .append(Change::BaselineCommit { directory_chain: None,
+        .append(Change::BaselineCommit {
+            directory_chain: None,
             directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
@@ -6332,7 +6342,8 @@ fn reviewed_restore_case(boundary: u8) {
         )
         .unwrap();
         store
-            .append(Change::BaselineCommit { directory_chain: None,
+            .append(Change::BaselineCommit {
+                directory_chain: None,
                 directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
@@ -7204,7 +7215,8 @@ fn reviewed_restore_case(boundary: u8) {
                 .unwrap();
                 store
                     .append_native(
-                        Change::BaselineCommit { directory_chain: None,
+                        Change::BaselineCommit {
+                            directory_chain: None,
                             directory_ancestors: None,
                             existing_ancestors: None,
                             connection: record.id.0,
@@ -7321,7 +7333,8 @@ fn reviewed_restore_case(boundary: u8) {
                 store.overlay_bytes = 9 * 1024 * 1024;
                 assert!(matches!(
                     store.append_checked_with_baseline(
-                        Change::BaselineCommit { directory_chain: None,
+                        Change::BaselineCommit {
+                            directory_chain: None,
                             directory_ancestors: None,
                             existing_ancestors: None,
                             connection: record.id.0,
@@ -7353,7 +7366,8 @@ fn reviewed_restore_case(boundary: u8) {
                 );
                 store
                     .append_native(
-                        Change::BaselineCommit { directory_chain: None,
+                        Change::BaselineCommit {
+                            directory_chain: None,
                             directory_ancestors: None,
                             existing_ancestors: None,
                             connection: record.id.0,
@@ -7457,7 +7471,8 @@ fn native_reviewed_restore_selection_refuses_same_revision_reopen_and_fence() {
         )
         .unwrap();
         store
-            .append(Change::BaselineCommit { directory_chain: None,
+            .append(Change::BaselineCommit {
+                directory_chain: None,
                 directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
@@ -7594,7 +7609,8 @@ fn native_selected_reader_reopens_with_paid_inspection_only() {
     )
     .unwrap();
     store
-        .append(Change::BaselineCommit { directory_chain: None,
+        .append(Change::BaselineCommit {
+            directory_chain: None,
             directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
@@ -7776,7 +7792,8 @@ fn selected_collision_case(stopped: bool) {
     )
     .unwrap();
     store
-        .append(Change::BaselineCommit { directory_chain: None,
+        .append(Change::BaselineCommit {
+            directory_chain: None,
             directory_ancestors: None,
             existing_ancestors: None,
             connection: record.id.0,
@@ -10340,7 +10357,8 @@ fn native_executor_plans_existing_missing_baseline_ancestors() {
         )
         .unwrap();
         store
-            .append(Change::BaselineCommit { directory_chain: None,
+            .append(Change::BaselineCommit {
+                directory_chain: None,
                 directory_ancestors: None,
                 existing_ancestors: None,
                 connection: record.id.0,
@@ -10539,7 +10557,8 @@ fn native_baseline_final_validation_refuses_before_event_after_checkpoint_prepar
                 store.overlay_bytes = 9 * 1024 * 1024;
             }
             let result = store.append_checked_with_baseline(
-                Change::BaselineCommit { directory_chain: None,
+                Change::BaselineCommit {
+                    directory_chain: None,
                     directory_ancestors: None,
                     existing_ancestors: None,
                     connection: record.id.0,

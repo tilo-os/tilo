@@ -3,8 +3,8 @@ use automerge::{
     AutoCommit, AutomergeError, ChangeHash, ObjType, ReadDoc, TextEncoding,
     transaction::Transactable,
 };
-mod projection;
 mod import;
+mod projection;
 pub use import::prepare_external_content_import;
 mod schema;
 mod selection;

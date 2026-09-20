@@ -13,8 +13,8 @@
 //! Ed25519 secret) can be passed in without threading it through the widget
 //! event surface.
 
-use std::collections::HashMap;
 use crate::clock::SystemTime;
+use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelId, Ed25519PublicKey, Role as ChannelRole};
@@ -654,8 +654,8 @@ impl Widget for InviteMintScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::generate_keypair;
     use crate::clock::Duration;
+    use collab_types::generate_keypair;
 
     #[test]
     fn mint_now_produces_url_and_envelope() {

@@ -13,8 +13,8 @@
 //! the field re-parses the link, whether typed, pasted, committed by an
 //! IME or set through an accessibility action.
 
-use std::collections::HashMap;
 use crate::clock::SystemTime;
+use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use collab_types::{ChannelEvent, Ed25519PublicKey};
@@ -402,8 +402,11 @@ impl InviteAcceptScreen {
             env.inviter_label, env.channel_name, env.role
         );
         let when = chrono::DateTime::<chrono::Utc>::from_timestamp(
-            i64::try_from(env.expires_unix).unwrap_or(i64::MAX), 0,
-        ).unwrap_or_default().to_rfc3339();
+            i64::try_from(env.expires_unix).unwrap_or(i64::MAX),
+            0,
+        )
+        .unwrap_or_default()
+        .to_rfc3339();
         Some((banner, format!("Expires {when}")))
     }
 
@@ -653,8 +656,8 @@ impl Widget for InviteAcceptScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
     use crate::clock::Duration;
+    use collab_types::{ChannelId, Role as ChannelRole, generate_keypair};
 
     fn fixture_url(now: SystemTime) -> String {
         use crate::widget::identity_flow::mint_invite;

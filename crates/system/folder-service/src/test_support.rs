@@ -1,9 +1,9 @@
 //! Narrow integration-test hooks, absent from normal builds.
 
-use std::path::Path;
-use std::sync::{atomic::AtomicBool, mpsc};
 use crate::copy::{CopyProgress, CopyReport, MigrationStore, OperationRecord};
 use crate::review::DirectoryIdentity;
+use std::path::Path;
+use std::sync::{atomic::AtomicBool, mpsc};
 
 pub fn hold_save(path: &Path, nth: usize) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
     crate::migration_store::test_support::hold_save(path, nth)
@@ -22,7 +22,15 @@ pub fn run_reviewed_copy_for_test(
     cancelled: &AtomicBool,
     progress: impl FnMut(CopyProgress),
 ) -> Result<CopyReport, String> {
-    crate::migration_journal::copy_reviewed(source, destination, journal_path, reviewed, resume, cancelled, progress)
+    crate::migration_journal::copy_reviewed(
+        source,
+        destination,
+        journal_path,
+        reviewed,
+        resume,
+        cancelled,
+        progress,
+    )
 }
 
 pub use crate::migration_journal::resume_folder;

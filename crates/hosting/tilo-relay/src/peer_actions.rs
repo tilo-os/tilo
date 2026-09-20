@@ -2,8 +2,8 @@
 //! certified native broker with durable admission may execute an invocation.
 #![allow(missing_docs)]
 
-use tilo_actions::{InvocationId, InvocationUpdate};
 use serde::{Deserialize, Serialize};
+use tilo_actions::{InvocationId, InvocationUpdate};
 use uuid::Uuid;
 
 pub const MAX_PRIVATE_BYTES: usize = 256 * 1024;
@@ -142,7 +142,8 @@ impl ActionMessage {
         let Ok(json) = serde_json::to_value(self) else {
             return false;
         };
-        let mut remaining = if matches!(self, Self::Catalogue { .. } | Self::BrokerCatalogue { .. }) {
+        let mut remaining = if matches!(self, Self::Catalogue { .. } | Self::BrokerCatalogue { .. })
+        {
             MAX_CATALOGUE_NODES
         } else {
             4096
@@ -152,10 +153,25 @@ impl ActionMessage {
         }
         let identifier = |value: &str| !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES;
         match self {
-            Self::CommittedDesktop { invocation, packets, opened } => {
-                !invocation.0.is_nil() && !packets.is_empty() && packets.len() <= 64
-                    && packets.iter().all(|p| { let p = p.strip_prefix("z:").unwrap_or(p); !p.is_empty() && p.len() % 2 == 0 && p.bytes().all(|b| b.is_ascii_hexdigit()) })
-                    && opened.as_ref().is_none_or(|route| [&route.strip, &route.group, &route.tab].iter().all(|id| id.parse::<u64>().is_ok_and(|id| id != 0)))
+            Self::CommittedDesktop {
+                invocation,
+                packets,
+                opened,
+            } => {
+                !invocation.0.is_nil()
+                    && !packets.is_empty()
+                    && packets.len() <= 64
+                    && packets.iter().all(|p| {
+                        let p = p.strip_prefix("z:").unwrap_or(p);
+                        !p.is_empty()
+                            && p.len() % 2 == 0
+                            && p.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
+                    && opened.as_ref().is_none_or(|route| {
+                        [&route.strip, &route.group, &route.tab]
+                            .iter()
+                            .all(|id| id.parse::<u64>().is_ok_and(|id| id != 0))
+                    })
             }
             Self::InvokeBound {
                 host,
@@ -285,26 +301,85 @@ mod catalogue_bounds_tests {
     #[test]
     fn catalogue_has_a_separate_node_budget_from_effect_arguments() {
         let catalogue = catalogue(1500);
-        for message in [ActionMessage::Catalogue { catalogue: catalogue.clone() }, ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue: catalogue.clone() }] {
-            let directed = DirectedAction { room: Uuid::new_v4(), request_id: Uuid::new_v4(), source: [1;32], target: [2;32], message };
-            assert!(directed.validate(), "a bounded catalogue with over 4096 nodes must remain discoverable");
-            assert!(crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(directed)).is_ok());
+        for message in [
+            ActionMessage::Catalogue {
+                catalogue: catalogue.clone(),
+            },
+            ActionMessage::BrokerCatalogue {
+                host: Uuid::new_v4(),
+                catalogue: catalogue.clone(),
+            },
+        ] {
+            let directed = DirectedAction {
+                room: Uuid::new_v4(),
+                request_id: Uuid::new_v4(),
+                source: [1; 32],
+                target: [2; 32],
+                message,
+            };
+            assert!(
+                directed.validate(),
+                "a bounded catalogue with over 4096 nodes must remain discoverable"
+            );
+            assert!(
+                crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(directed))
+                    .is_ok()
+            );
         }
-        let invoke = ActionMessage::Invoke { invocation: tilo_actions::InvocationId::new(), app_peer: "1".into(), resource: "document".into(), action: "edit".into(), argument: Some(catalogue), confirmation: None, revision: None };
-        assert!(!invoke.validate(), "effect arguments retain the original node bound");
+        let invoke = ActionMessage::Invoke {
+            invocation: tilo_actions::InvocationId::new(),
+            app_peer: "1".into(),
+            resource: "document".into(),
+            action: "edit".into(),
+            argument: Some(catalogue),
+            confirmation: None,
+            revision: None,
+        };
+        assert!(
+            !invoke.validate(),
+            "effect arguments retain the original node bound"
+        );
     }
 
     #[test]
     fn catalogue_still_rejects_excessive_nodes_depth_surfaces_and_bytes() {
-        for catalogue in [catalogue(9000), serde_json::json!({"version":1,"surfaces": vec![serde_json::json!({});257]}), {
-            let mut deep = serde_json::Value::Null;
-            for _ in 0..33 { deep = serde_json::json!([deep]); }
-            serde_json::json!({"version":1,"surfaces":[],"nested":deep})
-        }] {
-            for message in [ActionMessage::Catalogue { catalogue: catalogue.clone() }, ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue }] { assert!(!message.validate()); }
+        for catalogue in [
+            catalogue(9000),
+            serde_json::json!({"version":1,"surfaces": vec![serde_json::json!({});257]}),
+            {
+                let mut deep = serde_json::Value::Null;
+                for _ in 0..33 {
+                    deep = serde_json::json!([deep]);
+                }
+                serde_json::json!({"version":1,"surfaces":[],"nested":deep})
+            },
+        ] {
+            for message in [
+                ActionMessage::Catalogue {
+                    catalogue: catalogue.clone(),
+                },
+                ActionMessage::BrokerCatalogue {
+                    host: Uuid::new_v4(),
+                    catalogue,
+                },
+            ] {
+                assert!(!message.validate());
+            }
         }
-        let action = DirectedAction { room: Uuid::new_v4(), request_id: Uuid::new_v4(), source: [1;32], target: [2;32], message: ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(MAX_PRIVATE_BYTES)}) } };
+        let action = DirectedAction {
+            room: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+            source: [1; 32],
+            target: [2; 32],
+            message: ActionMessage::BrokerCatalogue {
+                host: Uuid::new_v4(),
+                catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(MAX_PRIVATE_BYTES)}),
+            },
+        };
         assert!(!action.validate());
-        assert!(crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(action)).is_err());
+        assert!(
+            crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(action))
+                .is_err()
+        );
     }
 }

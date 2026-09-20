@@ -166,7 +166,9 @@ impl InstanceViewStore {
             .join(hex_segment(device_id))
             .join(hex_segment(workspace_id));
         Ok(Self {
-            profile_state_root: crate::portable_storage::ProfileNamespace::Native(profile_state_root),
+            profile_state_root: crate::portable_storage::ProfileNamespace::Native(
+                profile_state_root,
+            ),
             portable: None,
             directory,
             device_id: device_id.into(),
@@ -174,15 +176,35 @@ impl InstanceViewStore {
         })
     }
     /// Use the same explicit profile/device cache as the record owner.
-    pub fn portable(cache: crate::portable_storage::PortableStorage, workspace: &str) -> Result<Self, ThawError> {
+    pub fn portable(
+        cache: crate::portable_storage::PortableStorage,
+        workspace: &str,
+    ) -> Result<Self, ThawError> {
         validate_identity(workspace)?;
-        let crate::portable_storage::ProfileNamespace::Portable { device, .. } = cache.namespace() else { return Err(ThawError::BindingMismatch); };
-        Ok(Self { profile_state_root: cache.namespace().clone(), directory: PathBuf::new(), device_id: device.clone(), workspace_id: workspace.into(), portable: Some(cache) })
+        let crate::portable_storage::ProfileNamespace::Portable { device, .. } = cache.namespace()
+        else {
+            return Err(ThawError::BindingMismatch);
+        };
+        Ok(Self {
+            profile_state_root: cache.namespace().clone(),
+            directory: PathBuf::new(),
+            device_id: device.clone(),
+            workspace_id: workspace.into(),
+            portable: Some(cache),
+        })
     }
     fn cache_key(&self, instance: u64) -> crate::portable_storage::StorageKey {
-        crate::portable_storage::StorageKey::View { workspace: self.workspace_id.clone(), instance }
+        crate::portable_storage::StorageKey::View {
+            workspace: self.workspace_id.clone(),
+            instance,
+        }
     }
-    pub(crate) fn matches_namespace(&self, root: &crate::portable_storage::ProfileNamespace, device: &str, workspace: &str) -> bool {
+    pub(crate) fn matches_namespace(
+        &self,
+        root: &crate::portable_storage::ProfileNamespace,
+        device: &str,
+        workspace: &str,
+    ) -> bool {
         &self.profile_state_root == root
             && self.device_id == device
             && self.workspace_id == workspace
@@ -208,13 +230,17 @@ impl InstanceViewStore {
     /// Invalid source bytes are never repaired or replaced.
     pub fn load(&self, instance_id: u64) -> Result<Option<SavedInstanceView>, ThawError> {
         let bytes = if let Some(cache) = &self.portable {
-            let Some(value) = cache.get(&self.cache_key(instance_id)) else { return Ok(None); };
+            let Some(value) = cache.get(&self.cache_key(instance_id)) else {
+                return Ok(None);
+            };
             value.bytes
-        } else { match std::fs::read(self.path(instance_id)) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(ThawError::Io(error)),
-        } };
+        } else {
+            match std::fs::read(self.path(instance_id)) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(ThawError::Io(error)),
+            }
+        };
         let instance = decode_envelope(&bytes)?;
         self.validate(&instance, instance_id)?;
         Ok(Some(instance))
@@ -226,7 +252,9 @@ impl InstanceViewStore {
         let bytes = postcard::to_stdvec(instance).map_err(ThawError::Envelope)?;
         if let Some(cache) = &self.portable {
             let key = self.cache_key(instance.instance_id);
-            return cache.put(key.clone(), bytes, None).and_then(|()| cache.flush(&key))
+            return cache
+                .put(key.clone(), bytes, None)
+                .and_then(|()| cache.flush(&key))
                 .map_err(|e| ThawError::Io(std::io::Error::other(e)));
         }
         std::fs::create_dir_all(&self.directory).map_err(ThawError::Io)?;

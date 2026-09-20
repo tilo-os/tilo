@@ -4,8 +4,8 @@
 compile_error!("the support consumer probe requires the Unix fixture facade");
 
 use std::path::Path;
-use tilo_install_artifacts::{Client, ReleaseSelection};
 use tilo_install_artifacts::test_support::Server;
+use tilo_install_artifacts::{Client, ReleaseSelection};
 
 fn fixture_api(
     server: &Server,
@@ -19,6 +19,5 @@ fn fixture_api(
 }
 
 fn main() {
-    let _ = fixture_api
-        as fn(&Server, &Path, &Path, &[u8]) -> (ReleaseSelection, Client);
+    let _ = fixture_api as fn(&Server, &Path, &Path, &[u8]) -> (ReleaseSelection, Client);
 }

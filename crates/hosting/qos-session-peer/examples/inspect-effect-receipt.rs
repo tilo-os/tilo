@@ -7,9 +7,9 @@
 //! After this process exits, the operator may remove only the inspection destination.
 //! Record source/identity hashes externally before and after inspection. This tool
 //! proves a strict canonical receipt count, not effect-once or UI convergence.
-use tilo_actions::InvocationId;
 use serde::Serialize;
 use std::path::Path;
+use tilo_actions::InvocationId;
 use ui::automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 #[derive(Debug, Serialize)]
@@ -195,8 +195,8 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::{ActionContext, EffectReceiptStatus};
     use qos_desktop::WorkspaceEffectReceipt;
+    use tilo_actions::{ActionContext, EffectReceiptStatus};
     use ui::automerge::{ObjType, ROOT, transaction::Transactable};
     use uuid::Uuid;
 

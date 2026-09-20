@@ -89,9 +89,17 @@ pub(crate) trait Provider {
 
     fn ownership(&self) -> Ownership;
     fn verify(&mut self, file: &File, ownership: &Ownership) -> Result<(), crate::error::Failure>;
-    fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<(), crate::error::Failure>) -> Result<(), crate::error::Failure>;
+    fn scan(
+        &mut self,
+        visit: &mut dyn FnMut(&[u8]) -> Result<(), crate::error::Failure>,
+    ) -> Result<(), crate::error::Failure>;
     fn retain(&mut self, keep: &[u64]) -> Result<(), crate::error::Failure>;
-    fn publish(&mut self, generation: u64, bytes: &[u8], keep: &[u64]) -> Result<(), crate::error::Failure>;
+    fn publish(
+        &mut self,
+        generation: u64,
+        bytes: &[u8],
+        keep: &[u64],
+    ) -> Result<(), crate::error::Failure>;
 }
 /// Opt-in authority from a fully validated exclusive creation in this process.
 /// Implementations consume private freshness BEFORE checking the requested
@@ -163,7 +171,10 @@ pub(super) struct Record {
     digest: [u8; 32],
     kind: Kind,
 }
-fn binding(selected: &SelectedManifest, index: usize) -> Result<([u8; 32], u64), crate::error::Failure> {
+fn binding(
+    selected: &SelectedManifest,
+    index: usize,
+) -> Result<([u8; 32], u64), crate::error::Failure> {
     let c = selected
         .bundle()
         .component(index)
@@ -516,7 +527,11 @@ impl<P: Provider> Session<P> {
             generation: self.base.generation,
         }
     }
-    fn publish(&mut self, file: &mut File, candidate: Candidate) -> Result<(), crate::error::Failure> {
+    fn publish(
+        &mut self,
+        file: &mut File,
+        candidate: Candidate,
+    ) -> Result<(), crate::error::Failure> {
         self.provider.verify(file, &self.base.ownership)?;
         let generation = self
             .base
@@ -576,7 +591,12 @@ impl<P: Provider> Observer for Session<P> {
         self.attempt = Some(id.attempt);
         Ok(())
     }
-    fn boundary(&mut self, id: BoundaryId, file: &mut File, c: Candidate) -> Result<Ack, crate::error::Failure> {
+    fn boundary(
+        &mut self,
+        id: BoundaryId,
+        file: &mut File,
+        c: Candidate,
+    ) -> Result<Ack, crate::error::Failure> {
         if self.poisoned
             || !self.recovered
             || self.attempt != Some(id.attempt)
@@ -672,7 +692,11 @@ impl Hashes {
     pub fn digest(&self) -> [u8; 32] {
         self.stream.clone().finalize().into()
     }
-    pub fn retry(&mut self, file: &mut File, cancel: &AtomicBool) -> Result<(), crate::error::Failure> {
+    pub fn retry(
+        &mut self,
+        file: &mut File,
+        cancel: &AtomicBool,
+    ) -> Result<(), crate::error::Failure> {
         if file.metadata().map_err(io)?.len() != self.length {
             return Err("Retry prefix length changed".into());
         }
@@ -682,7 +706,11 @@ impl Hashes {
     pub fn pending(&self) -> u64 {
         self.length - self.watermark
     }
-    pub fn verify_tail(&mut self, file: &mut File, cancel: &AtomicBool) -> Result<(), crate::error::Failure> {
+    pub fn verify_tail(
+        &mut self,
+        file: &mut File,
+        cancel: &AtomicBool,
+    ) -> Result<(), crate::error::Failure> {
         stopped(cancel)?;
         file.flush().map_err(io)?;
         #[cfg(test)]

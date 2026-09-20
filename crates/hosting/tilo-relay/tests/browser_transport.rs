@@ -4,11 +4,11 @@ use crate::common::TestUser;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};
 use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
+use std::{net::Ipv4Addr, time::Duration};
 use tilo_relay::{
     Envelope, Relay, RelayClient, RelayConfig, WorkspaceBinding, daemon::RelayIdentity,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
-use std::{net::Ipv4Addr, time::Duration};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn certified_clients_use_only_the_injected_packet_relay() {
@@ -114,7 +114,8 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
             Some(Envelope::Ready { .. })
         ));
     }
-    let mut directory = tilo_user_identity::WorkspaceDirectory::new(user.user_pk, a.device_pubkey());
+    let mut directory =
+        tilo_user_identity::WorkspaceDirectory::new(user.user_pk, a.device_pubkey());
     directory
         .add_workspace(workspace_id, "Shared browser workspace")
         .unwrap();

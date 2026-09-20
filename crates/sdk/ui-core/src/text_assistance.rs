@@ -5,8 +5,8 @@
 //! reload it when its modification stamp changes, so Settings changes propagate
 //! to running apps without filesystem I/O on every draw or keypress.
 
-use std::sync::{Mutex, OnceLock};
 use crate::clock::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime; // Filesystem metadata stamp; never sampled as a clock.
 
 pub const SETTINGS_SECTION: &str = "text_assistance";

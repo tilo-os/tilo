@@ -124,8 +124,14 @@ impl HostContext {
         }
         let (record, reservation) = match target {
             LaunchTarget::New | LaunchTarget::PrimaryNew => {
-                let checkout =
-                    RecordCheckout::new(if matches!(target, LaunchTarget::PrimaryNew) { RecordId::package_primary() } else { RecordId::minted() }, definition.record_kind.clone());
+                let checkout = RecordCheckout::new(
+                    if matches!(target, LaunchTarget::PrimaryNew) {
+                        RecordId::package_primary()
+                    } else {
+                        RecordId::minted()
+                    },
+                    definition.record_kind.clone(),
+                );
                 let reservation = records
                     .reserve_record(&checkout)
                     .map_err(LaunchError::Record)?;
@@ -413,7 +419,8 @@ impl ApplicationDefinition {
             return Err(LaunchError::BindingMismatch);
         }
         if matches!(target, LaunchTarget::New) && context.record.id.is_package_primary()
-            || matches!(target, LaunchTarget::PrimaryNew) && !context.record.id.is_package_primary() {
+            || matches!(target, LaunchTarget::PrimaryNew) && !context.record.id.is_package_primary()
+        {
             return Err(LaunchError::BindingMismatch);
         }
         match &target {
@@ -1536,27 +1543,66 @@ mod portable_tests {
     use crate::application_test_support as probe;
     #[test]
     fn portable_host_checks_namespaces_authority_and_persists_real_component() {
-        let cache = crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
-        let records = crate::record::RecordOwners::portable(cache.clone()).open(probe::APP, probe::ROOM).unwrap();
+        let cache =
+            crate::portable_storage::PortableStorage::new("profile", probe::DEVICE).unwrap();
+        let records = crate::record::RecordOwners::portable(cache.clone())
+            .open(probe::APP, probe::ROOM)
+            .unwrap();
         let views = Rc::new(InstanceViewStore::portable(cache.clone(), probe::ROOM).unwrap());
         let definition = probe::definition(probe::probe_factory);
-        let prepare = |views, permissions| HostContext::prepare(&definition, records.clone(), views, probe::DEVICE.into(), 7, permissions, probe::author(), probe::provenance(), &LaunchTarget::New);
-        let foreign = crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
-        assert!(matches!(prepare(Rc::new(InstanceViewStore::portable(foreign, probe::ROOM).unwrap()), probe::permissions()), Err(LaunchError::BindingMismatch)));
+        let prepare = |views, permissions| {
+            HostContext::prepare(
+                &definition,
+                records.clone(),
+                views,
+                probe::DEVICE.into(),
+                7,
+                permissions,
+                probe::author(),
+                probe::provenance(),
+                &LaunchTarget::New,
+            )
+        };
+        let foreign =
+            crate::portable_storage::PortableStorage::new("foreign", probe::DEVICE).unwrap();
+        assert!(matches!(
+            prepare(
+                Rc::new(InstanceViewStore::portable(foreign, probe::ROOM).unwrap()),
+                probe::permissions()
+            ),
+            Err(LaunchError::BindingMismatch)
+        ));
         let context = prepare(views.clone(), probe::permissions()).unwrap();
-        let mut component = definition.instantiate(context, LaunchTarget::New, RestoreInput::None).unwrap();
+        let mut component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
         let checkout = component.record().clone();
         assert!(records.is_ready(&checkout.id));
         let report = component.close();
         assert!(report.record_error.is_some());
         assert!(report.view_error.is_some());
-        for write in cache.pending_writes() { cache.acknowledge(&write, Ok(())).unwrap(); }
+        for write in cache.pending_writes() {
+            cache.acknowledge(&write, Ok(())).unwrap();
+        }
         records.try_flush().unwrap();
         let saved = views.load(7).unwrap().unwrap();
         assert_eq!(saved.record_id, checkout.id.as_str());
         views.save(&saved).unwrap();
         let mut denied = probe::definition(probe::probe_factory);
         denied.required.push(probe::denied_scope());
-        assert!(matches!(HostContext::prepare(&denied, records, views, probe::DEVICE.into(), 8, probe::permissions(), probe::author(), probe::provenance(), &LaunchTarget::New), Err(LaunchError::CapabilityDenied(_))));
+        assert!(matches!(
+            HostContext::prepare(
+                &denied,
+                records,
+                views,
+                probe::DEVICE.into(),
+                8,
+                probe::permissions(),
+                probe::author(),
+                probe::provenance(),
+                &LaunchTarget::New
+            ),
+            Err(LaunchError::CapabilityDenied(_))
+        ));
     }
 }

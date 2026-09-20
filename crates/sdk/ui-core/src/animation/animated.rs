@@ -1,8 +1,8 @@
 //! Unified animation primitives. Replaces ad-hoc Instant-based fields
 //! with a single `Animated<T: Lerp>` driver consumable by widgets.
 
-use crate::color_compat::ColorCompat;
 use crate::clock::{Duration, Instant};
+use crate::color_compat::ColorCompat;
 
 pub trait Lerp {
     #[must_use]

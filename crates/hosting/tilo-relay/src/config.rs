@@ -376,10 +376,9 @@ mod tests {
 
     #[test]
     fn shell_authority_config_accepts_exact_local_binding() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../tests/fixtures/shell-proof/failure.json"
-        ))
-        .unwrap();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/shell-proof/failure.json"))
+                .unwrap();
         let binding = serde_json::json!({"id": "42", "shell_authority": {"room": fixture["room"], "governor": fixture["authority"]}});
         let binding: WorkspaceBinding = serde_json::from_value(binding).unwrap();
         assert_eq!(

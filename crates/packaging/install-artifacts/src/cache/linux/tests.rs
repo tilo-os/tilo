@@ -38,9 +38,9 @@ fn raw_ancestry_is_bounded_lossless_and_refuses_normalization() {
 mod native {
     use super::super::{native::fixture_acquire, *};
     use crate::{
-        catalog::InternalRelease,
         bundle as internal_bundle,
         cache::{Candidate, Kind, Provider, Session},
+        catalog::InternalRelease,
         transport::SelectedManifest,
     };
     use std::{
@@ -247,7 +247,10 @@ mod native {
             .unwrap();
         let stdout = String::from_utf8_lossy(&status.stdout);
         assert!(stdout.contains("running 1 test"), "{stdout}");
-        assert!(stdout.contains("cache::linux::tests::native::lock_probe"), "{stdout}");
+        assert!(
+            stdout.contains("cache::linux::tests::native::lock_probe"),
+            "{stdout}"
+        );
         let status = status.status;
         assert!(status.success());
         drop(final_file);
@@ -819,7 +822,8 @@ pub(super) fn boundary(stage: &'static str) -> Result<(), crate::error::Failure>
             Err(format!(
                 "injected ENOSPC at {stage}: {}",
                 std::io::Error::from_raw_os_error(libc::ENOSPC)
-            ).into())
+            )
+            .into())
         } else {
             Ok(())
         }

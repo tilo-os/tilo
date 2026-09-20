@@ -40,8 +40,8 @@
 // function-by-function.
 #![allow(clippy::result_large_err)]
 
-use std::path::Path;
 use crate::clock::Duration;
+use std::path::Path;
 
 pub use app_state::{Autosave, DEFAULT_DEBOUNCE, DocStore, StoreError};
 

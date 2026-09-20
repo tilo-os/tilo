@@ -3,8 +3,8 @@
 //! `on_hover_enter`/`on_hover_leave`/`tick` drive the timing state so the
 //! primitive is unit-testable without a winit event loop or a wall clock.
 
-use automerge::{AutoCommit, ObjId};
 use crate::clock::{Duration, Instant};
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

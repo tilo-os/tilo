@@ -92,9 +92,14 @@ fn projection_orders_ties_by_id_and_never_publishes_view_or_prejoin_ids() {
 }
 
 #[test]
-fn explicitly_admitted_empty_strip_survives_normal_projection_but_default_empty_strip_stays_local() {
+fn explicitly_admitted_empty_strip_survives_normal_projection_but_default_empty_strip_stays_local()
+{
     let mut doc = AutoCommit::new();
-    let strip = Strip { id: StripId((2 << 48) | 100), name: "Explicit destination".into(), window_groups: vec![] };
+    let strip = Strip {
+        id: StripId((2 << 48) | 100),
+        name: "Explicit destination".into(),
+        window_groups: vec![],
+    };
     RoomProjection::project_owned_contents(&mut doc, std::slice::from_ref(&strip), 2, None);
     assert!(RoomProjection::contents_of(&doc).is_empty());
     RoomProjection::project_owned_command_contents(&mut doc, std::slice::from_ref(&strip), 2);
@@ -102,8 +107,15 @@ fn explicitly_admitted_empty_strip_survives_normal_projection_but_default_empty_
     let mut restored = AutoCommit::load(&doc.save()).unwrap();
     RoomProjection::project_owned_contents(&mut restored, std::slice::from_ref(&strip), 2, None);
     let projected = RoomProjection::contents_of(&restored);
-    assert_eq!(projected.len(), 1, "a later ordinary native projection must retain admitted strip lifecycle");
+    assert_eq!(
+        projected.len(),
+        1,
+        "a later ordinary native projection must retain admitted strip lifecycle"
+    );
     assert_eq!(projected[0].id, strip.id.0);
     RoomProjection::project_owned_contents(&mut restored, &[], 2, None);
-    assert!(RoomProjection::contents_of(&restored).is_empty(), "explicit removal still sweeps owned strip");
+    assert!(
+        RoomProjection::contents_of(&restored).is_empty(),
+        "explicit removal still sweeps owned strip"
+    );
 }

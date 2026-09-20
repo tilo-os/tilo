@@ -27,11 +27,20 @@ pub(crate) struct SelectedManifest {
     asset: Url,
 }
 impl SelectedManifest {
-    pub(crate) fn from_bytes(release: &InternalRelease, bytes: Vec<u8>) -> Result<Self, crate::error::Failure> {
+    pub(crate) fn from_bytes(
+        release: &InternalRelease,
+        bytes: Vec<u8>,
+    ) -> Result<Self, crate::error::Failure> {
         Self::checked(release, bytes, &production_origin())
     }
-    pub(crate) fn checked(release: &InternalRelease, bytes: Vec<u8>, origin: &Url) -> Result<Self, crate::error::Failure> {
-        let bundle = release.verify_manifest(&bytes).map_err(crate::error::Failure::invalid_input)?;
+    pub(crate) fn checked(
+        release: &InternalRelease,
+        bytes: Vec<u8>,
+        origin: &Url,
+    ) -> Result<Self, crate::error::Failure> {
+        let bundle = release
+            .verify_manifest(&bytes)
+            .map_err(crate::error::Failure::invalid_input)?;
         let asset = asset_url(release.manifest_url(), origin)?;
         Ok(Self {
             bytes,
@@ -83,7 +92,9 @@ fn asset_url(value: &str, origin: &Url) -> Result<Url, crate::error::Failure> {
             .and_then(|s| s.last())
             .is_none_or(str::is_empty)
     {
-        return Err(crate::error::Failure::invalid_input("Unsupported selected asset URL"));
+        return Err(crate::error::Failure::invalid_input(
+            "Unsupported selected asset URL",
+        ));
     }
     Ok(url)
 }
@@ -94,7 +105,10 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), crate::error::Failure> {
         Ok(())
     }
 }
-fn completion_stop(cancel: &AtomicBool, pause: Option<&AtomicBool>) -> Result<(), crate::error::Failure> {
+fn completion_stop(
+    cancel: &AtomicBool,
+    pause: Option<&AtomicBool>,
+) -> Result<(), crate::error::Failure> {
     cancelled(cancel)?;
     if pause.is_some_and(|p| p.load(Ordering::Acquire)) {
         Err("Internal transfer paused".into())
@@ -143,7 +157,9 @@ impl InternalTransport {
         let url = asset_url(release.manifest_url(), &self.origin)?;
         let expected = release.manifest_size();
         if expected == 0 || expected > MAX_MANIFEST_BYTES as u64 {
-            return Err(crate::error::Failure::invalid_input("Invalid selected manifest size"));
+            return Err(crate::error::Failure::invalid_input(
+                "Invalid selected manifest size",
+            ));
         }
         let mut response = self
             .request(url, 0, cancel, None)
@@ -232,7 +248,10 @@ impl InternalTransport {
         }
         unreachable!("bounded redirect loop returns")
     }
-    fn response_identity(&self, response: &reqwest::blocking::Response) -> Result<(), crate::error::Failure> {
+    fn response_identity(
+        &self,
+        response: &reqwest::blocking::Response,
+    ) -> Result<(), crate::error::Failure> {
         if !same_origin(response.url(), &self.origin) {
             return Err("Untrusted response origin".into());
         }
@@ -454,9 +473,9 @@ impl InternalTransport {
                 }
             } else {
                 if status != reqwest::StatusCode::OK {
-                    return Err(format!(
-                        "Initial component response must be 200, got {status}"
-                    ).into());
+                    return Err(
+                        format!("Initial component response must be 200, got {status}").into(),
+                    );
                 }
                 declared_length(response.headers(), component.byte_size)?;
                 if response.headers().contains_key(header::CONTENT_RANGE) {
@@ -564,7 +583,8 @@ impl InternalTransport {
         Err(format!(
             "Component incomplete after 3 attempts ({} held bytes): {last_error}",
             regular_length(file, component.byte_size, cancel)?
-        ).into())
+        )
+        .into())
     }
 }
 
@@ -582,7 +602,10 @@ impl RequestError {
     }
 }
 
-fn declared_length(headers: &header::HeaderMap, expected: u64) -> Result<(), crate::error::Failure> {
+fn declared_length(
+    headers: &header::HeaderMap,
+    expected: u64,
+) -> Result<(), crate::error::Failure> {
     let values: Vec<_> = headers.get_all(header::CONTENT_LENGTH).iter().collect();
     if values.len() > 1
         || values
@@ -637,7 +660,12 @@ fn read_body_stoppable(
         }
         let count = match read {
             Ok(n) => n,
-            Err(e) => return Ok(BodyEnd::Interrupted(crate::error::Failure::io_context(e, "Response read failed: "))),
+            Err(e) => {
+                return Ok(BodyEnd::Interrupted(crate::error::Failure::io_context(
+                    e,
+                    "Response read failed: ",
+                )));
+            }
         };
         if count == 0 {
             return Ok(if received == expected {
@@ -666,7 +694,7 @@ pub(crate) struct ResumeCheckpoint {
     pub prefix_size: u64,
     pub prefix_sha256: String,
 }
-pub(crate) use crate::download::{TransferPhase as Phase, Progress};
+pub(crate) use crate::download::{Progress, TransferPhase as Phase};
 /// Observed exact bytes during this invocation only. Later publication/staging must
 /// retain/reacquire its own file identities and reverify these bytes.
 #[derive(Debug)]
@@ -707,7 +735,11 @@ pub(crate) fn capture_checkpoint(
         prefix_sha256: digest,
     })
 }
-fn regular_length(file: &File, max: u64, cancel: &AtomicBool) -> Result<u64, crate::error::Failure> {
+fn regular_length(
+    file: &File,
+    max: u64,
+    cancel: &AtomicBool,
+) -> Result<u64, crate::error::Failure> {
     cancelled(cancel)?;
     let metadata = file.metadata().map_err(io_error)?;
     cancelled(cancel)?;
@@ -716,7 +748,11 @@ fn regular_length(file: &File, max: u64, cancel: &AtomicBool) -> Result<u64, cra
     }
     Ok(metadata.len())
 }
-fn hash_file(file: &mut File, length: u64, cancel: &AtomicBool) -> Result<String, crate::error::Failure> {
+fn hash_file(
+    file: &mut File,
+    length: u64,
+    cancel: &AtomicBool,
+) -> Result<String, crate::error::Failure> {
     hash_file_stoppable(file, length, cancel, None)
 }
 fn hash_file_stoppable(
@@ -957,7 +993,11 @@ struct DurableTransfer<'a> {
     uncertain: bool,
 }
 impl DurableTransfer<'_> {
-    fn acknowledge(&mut self, file: &mut File, candidate: cache::Candidate) -> Result<(), crate::error::Failure> {
+    fn acknowledge(
+        &mut self,
+        file: &mut File,
+        candidate: cache::Candidate,
+    ) -> Result<(), crate::error::Failure> {
         let expected = cache::BoundaryId {
             generation: self
                 .id
@@ -1033,7 +1073,12 @@ impl DurableTransfer<'_> {
         }
         Ok(())
     }
-    fn stop(&mut self, file: &mut File, full: u64, cancel: &AtomicBool) -> Result<bool, crate::error::Failure> {
+    fn stop(
+        &mut self,
+        file: &mut File,
+        full: u64,
+        cancel: &AtomicBool,
+    ) -> Result<bool, crate::error::Failure> {
         cancelled(cancel)?;
         if !self.pause.load(Ordering::Acquire) {
             return Ok(false);
@@ -1049,7 +1094,9 @@ impl DurableTransfer<'_> {
 }
 fn checkpoint_interval() -> u64 {
     #[cfg(all(unix, any(test, feature = "test-support")))]
-    if let Some(value) = crate::test_support::fixture_interval() { return value; }
+    if let Some(value) = crate::test_support::fixture_interval() {
+        return value;
+    }
     #[cfg(test)]
     if let Some(value) = tests::checkpoint_interval_override() {
         return value;

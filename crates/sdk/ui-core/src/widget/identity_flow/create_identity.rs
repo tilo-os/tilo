@@ -36,8 +36,8 @@
 //! screen's layout node as a child of its own so the host's focus order,
 //! the accessibility tree and the headless driver all reach it by name.
 
-use std::collections::HashMap;
 use crate::clock::SystemTime;
+use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use rand_core::OsRng;

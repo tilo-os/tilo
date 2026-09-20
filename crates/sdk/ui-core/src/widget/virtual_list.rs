@@ -4,11 +4,11 @@
 //! to be resident. Only the viewport window owns widget instances; those
 //! instances survive reorder while their key remains visible.
 
+use crate::clock::Instant;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
-use crate::clock::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
@@ -1647,9 +1647,9 @@ fn first_descendant_accessible_name(widget: &dyn Widget) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Duration;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use crate::clock::Duration;
 
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;

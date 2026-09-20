@@ -198,9 +198,16 @@ impl HistoryOwner {
                     return None;
                 }
                 if checkout.id.is_package_primary() {
-                    Some(crate::collaboration::RouteSpec::app(package, uuid::Uuid::parse_str(&workspace).ok()?))
+                    Some(crate::collaboration::RouteSpec::app(
+                        package,
+                        uuid::Uuid::parse_str(&workspace).ok()?,
+                    ))
                 } else {
-                    Some(crate::collaboration::RouteSpec::record(package, uuid::Uuid::parse_str(&workspace).ok()?, checkout.id.as_str()))
+                    Some(crate::collaboration::RouteSpec::record(
+                        package,
+                        uuid::Uuid::parse_str(&workspace).ok()?,
+                        checkout.id.as_str(),
+                    ))
                 }
             }
         }

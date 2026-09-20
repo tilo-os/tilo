@@ -5431,7 +5431,9 @@ impl Widget for BlockEditor {
     }
 
     fn layout_needs_measure(&self) -> bool {
-        self.blocks.iter().any(|block| block.line.layout_needs_measure())
+        self.blocks
+            .iter()
+            .any(|block| block.line.layout_needs_measure())
     }
 }
 
@@ -6913,7 +6915,10 @@ mod tests {
         assert!(editor.needs_redraw());
         layout_and_draw_editor(&mut editor, &Theme::dark());
         editor.mark_drawn();
-        assert!(!editor.needs_redraw(), "a painted solid caret needs no idle redraw");
+        assert!(
+            !editor.needs_redraw(),
+            "a painted solid caret needs no idle redraw"
+        );
         editor.set_focus(false);
         assert!(editor.needs_redraw(), "blur must repaint the caret");
         layout_and_draw_editor(&mut editor, &Theme::dark());
@@ -6933,12 +6938,25 @@ mod tests {
         let mut handled = false;
         editor.handle_event(
             &WindowEvent::Ime(winit::event::Ime::Preedit("candidate".into(), Some((0, 9)))),
-            1.0, &Modifiers::default(), &mut AutoCommit::new(), &automerge::ROOT,
-            &mut handled, &mut None, NodeId::new(0), &TaffyTree::new(),
+            1.0,
+            &Modifiers::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+            &mut None,
+            NodeId::new(0),
+            &TaffyTree::new(),
         );
         assert!(handled);
-        assert!(editor.needs_redraw(), "IME changes must repaint without permanent focus demand");
-        assert_eq!(editor.blocks()[0].text(), "text", "preedit must remain uncommitted");
+        assert!(
+            editor.needs_redraw(),
+            "IME changes must repaint without permanent focus demand"
+        );
+        assert_eq!(
+            editor.blocks()[0].text(),
+            "text",
+            "preedit must remain uncommitted"
+        );
         layout_and_draw_editor(&mut editor, &Theme::dark());
         editor.mark_drawn();
         assert!(!editor.needs_redraw());

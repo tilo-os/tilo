@@ -1,10 +1,21 @@
 //! Private cooperative cache. Linux check-then-unlink/rename cannot confine
 //! arbitrary hostile same-UID or privileged mutation. No support activation.
-fn require_permission_denied(ok: bool, why: &str) -> std::result::Result<(), crate::error::Failure> {
-    if ok { Ok(()) } else { Err(crate::error::Failure::permission_denied(why)) }
+fn require_permission_denied(
+    ok: bool,
+    why: &str,
+) -> std::result::Result<(), crate::error::Failure> {
+    if ok {
+        Ok(())
+    } else {
+        Err(crate::error::Failure::permission_denied(why))
+    }
 }
 fn require_unsupported(ok: bool, why: &str) -> std::result::Result<(), crate::error::Failure> {
-    if ok { Ok(()) } else { Err(crate::error::Failure::unsupported(why)) }
+    if ok {
+        Ok(())
+    } else {
+        Err(crate::error::Failure::unsupported(why))
+    }
 }
 fn raw_components(path: &[u8]) -> Result<Vec<&[u8]>, crate::error::Failure> {
     if path.len() > 4096 || path.first() != Some(&b'/') || path.contains(&0) {
@@ -44,7 +55,9 @@ mod native {
         FreshProvider, MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete,
         Provider, checkpoint::Record, initialize_fresh,
     };
-    use super::{effective_mode_allowed, raw_components, require_permission_denied, require_unsupported};
+    use super::{
+        effective_mode_allowed, raw_components, require_permission_denied, require_unsupported,
+    };
     use crate::transport::SelectedManifest;
     use sha2::{Digest, Sha256};
     use std::{
@@ -1136,11 +1149,7 @@ mod native {
         /// Discard only after a fresh Session::prepare validates all history and
         /// prefix bytes. Failure retains exact/unknown residue and never reports
         /// clean cancellation. Resume-later simply drops the component instead.
-        pub(crate) fn discard(
-            mut self,
-            operation: u64,
-            cancel: &AtomicBool,
-        ) -> Result<()> {
+        pub(crate) fn discard(mut self, operation: u64, cancel: &AtomicBool) -> Result<()> {
             {
                 let selected = self.provider.selected;
                 let mut session = super::super::Session::new(

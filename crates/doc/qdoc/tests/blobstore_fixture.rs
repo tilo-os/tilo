@@ -23,11 +23,14 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 /// swapped it.
 pub fn serialised() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let guard = LOCK.get_or_init(|| Mutex::new(()))
+    let guard = LOCK
+        .get_or_init(|| Mutex::new(()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // Serialization alone does not undo a preceding test's quota or transport.
-    qdoc::blobstore::set_store(std::sync::Arc::new(qdoc::blobstore::MemoryBlobStore::default()));
+    qdoc::blobstore::set_store(std::sync::Arc::new(
+        qdoc::blobstore::MemoryBlobStore::default(),
+    ));
     qdoc::blobstore::clear_transport();
     guard
 }
@@ -39,9 +42,16 @@ fn every_blob_fixture_starts_with_a_fresh_default_quota() {
     {
         let _guard = serialised();
         blobstore::set_store(Arc::new(MemoryBlobStore::new(BlobStoreLimits {
-            max_blob_bytes: 2, max_total_bytes: 2, max_entries: 1, max_scan_entries: 1,
+            max_blob_bytes: 2,
+            max_total_bytes: 2,
+            max_entries: 1,
+            max_scan_entries: 1,
         })));
     }
     let _guard = serialised();
-    assert!(qdoc::Document::new().put_blob(b"larger than the prior quota").is_some());
+    assert!(
+        qdoc::Document::new()
+            .put_blob(b"larger than the prior quota")
+            .is_some()
+    );
 }

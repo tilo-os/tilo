@@ -1561,9 +1561,8 @@ pub(super) fn execute_pending(
 ) -> super::ExecutorResult {
     use crate::connection::{store::ReceiptStage, transaction::TransactionOutcome};
     let id = context.id();
-    let reverse =
-        crate::connection::transaction::directory::addition_side(context.intent())?
-            == Side::Destination;
+    let reverse = crate::connection::transaction::directory::addition_side(context.intent())?
+        == Side::Destination;
     let (source, target) = if reverse {
         (right, left)
     } else {

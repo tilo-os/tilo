@@ -327,9 +327,13 @@ impl Selection {
             // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html
             loop {
                 // SAFETY: file owns this descriptor throughout the call.
-                if unsafe { libc::fsync(file.as_raw_fd()) } == 0 { break; }
+                if unsafe { libc::fsync(file.as_raw_fd()) } == 0 {
+                    break;
+                }
                 let error = std::io::Error::last_os_error();
-                if error.kind() != std::io::ErrorKind::Interrupted { return Err(error.into()); }
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error.into());
+                }
             }
         }
         #[cfg(not(target_os = "macos"))]

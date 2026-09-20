@@ -1,3 +1,4 @@
+use crate::clock::{Duration, Instant};
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
@@ -11,7 +12,6 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, HashSet};
-use crate::clock::{Duration, Instant};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};

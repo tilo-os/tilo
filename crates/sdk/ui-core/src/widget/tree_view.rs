@@ -6,9 +6,9 @@
 //! Expand/select/focus state lives on the widget; `on_select` is how the
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
+use crate::clock::{Duration, Instant};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
-use crate::clock::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};

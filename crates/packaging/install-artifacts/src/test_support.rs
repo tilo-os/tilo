@@ -27,124 +27,170 @@ pub fn manifest_bytes(value: &Value) -> Vec<u8> {
 }
 #[cfg(any(unix, test))]
 mod server {
-use super::response;
-use crate::{transport::InternalTransport, catalog::InternalRelease};
-use reqwest::Url;
-use std::{io::{Read,Write},sync::atomic::{AtomicBool, Ordering},time::Duration};
-use std::{
-    net::TcpListener,
-    sync::{Arc, Mutex},
-    thread,
-};
-pub struct Server {
-    url: String,
-    requests: Arc<Mutex<Vec<String>>>,
-    stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-    consumptions: Arc<std::sync::atomic::AtomicU64>,
-}
-impl Server {
-    pub(crate) fn origin(&self) -> Url { Url::parse(&self.url).unwrap() }
-    pub fn selection(&self, manifest: &[u8]) -> crate::ReleaseSelection {
-        crate::ReleaseSelection { release: self.release(manifest) }
+    use super::response;
+    use crate::{catalog::InternalRelease, transport::InternalTransport};
+    use reqwest::Url;
+    use std::{
+        io::{Read, Write},
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
+    };
+    use std::{
+        net::TcpListener,
+        sync::{Arc, Mutex},
+        thread,
+    };
+    pub struct Server {
+        url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+        consumptions: Arc<std::sync::atomic::AtomicU64>,
     }
-    #[cfg(unix)]
-    pub fn client(&self, root: &std::path::Path, preference: &std::path::Path) -> crate::Client {
-        crate::Client::fixture(root, crate::preference::PreferenceStore::at(preference.to_owned()), self.transport(), self.consumptions.clone())
-    }
-    #[cfg(unix)]
-    pub fn client_with_preference_fault(&self, root: &std::path::Path, preference: &std::path::Path,
-        fault: super::PreferenceFault) -> (crate::Client, std::sync::mpsc::Receiver<super::PreferenceFault>) {
-        let (ack, observed) = std::sync::mpsc::channel();
-        let store = crate::preference::PreferenceStore::at(preference.to_owned())
-            .with_hooks(super::PreferenceHooks::Fault { fault, ack });
-        (crate::Client::fixture(root, store, self.transport(), self.consumptions.clone()), observed)
-    }
-    #[cfg(unix)]
-    pub fn client_with_preference_hold(&self, root: &std::path::Path, preference: &std::path::Path)
-        -> (crate::Client, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
-        let (ack, observed) = std::sync::mpsc::channel();
-        let (release, held) = std::sync::mpsc::channel();
-        let store = crate::preference::PreferenceStore::at(preference.to_owned())
-            .with_hooks(super::PreferenceHooks::Hold { ack, release: Arc::new(Mutex::new(held)) });
-        (crate::Client::fixture(root, store, self.transport(), self.consumptions.clone()), observed, release)
-    }
-    pub fn consumptions(&self) -> u64 { self.consumptions.load(Ordering::Acquire) }
-
-    pub fn new(responses: Vec<Vec<u8>>) -> Self {
-        Self::on_request(responses, || {})
-    }
-    pub fn on_request(
-        responses: Vec<Vec<u8>>,
-        mut on_request: impl FnMut() + Send + 'static,
-    ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let url = format!(
-            "http://{}/releases/manifest.json",
-            listener.local_addr().unwrap()
-        );
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = requests.clone();
-        let stop = Arc::new(AtomicBool::new(false));
-        let done = stop.clone();
-        let thread = thread::spawn(move || {
-            let mut responses = responses.into_iter();
-            while !done.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((mut socket, _)) => {
-                        // Darwin can inherit O_NONBLOCK from the listener. A
-                        // temporary WouldBlock is not an empty HTTP request.
-                        socket.set_nonblocking(false).unwrap();
-                        socket
-                            .set_read_timeout(Some(Duration::from_secs(2)))
-                            .unwrap();
-                        let mut request = Vec::new();
-                        let mut byte = [0];
-                        while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
-                            if socket.read(&mut byte).unwrap_or(0) == 0 {
-                                break;
-                            }
-                            request.push(byte[0]);
-                        }
-                        seen.lock()
-                            .unwrap()
-                            .push(String::from_utf8(request).unwrap());
-                        on_request();
-                        let response = responses.next().unwrap_or_else(|| response(500, "", b""));
-                        let _ = socket.write_all(&response);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2))
-                    }
-                    Err(e) => panic!("{e}"),
-                }
+    impl Server {
+        pub(crate) fn origin(&self) -> Url {
+            Url::parse(&self.url).unwrap()
+        }
+        pub fn selection(&self, manifest: &[u8]) -> crate::ReleaseSelection {
+            crate::ReleaseSelection {
+                release: self.release(manifest),
             }
-        });
-        Self {
-            url,
-            requests,
-            stop,
-            thread: Some(thread),
-            consumptions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+        #[cfg(unix)]
+        pub fn client(
+            &self,
+            root: &std::path::Path,
+            preference: &std::path::Path,
+        ) -> crate::Client {
+            crate::Client::fixture(
+                root,
+                crate::preference::PreferenceStore::at(preference.to_owned()),
+                self.transport(),
+                self.consumptions.clone(),
+            )
+        }
+        #[cfg(unix)]
+        pub fn client_with_preference_fault(
+            &self,
+            root: &std::path::Path,
+            preference: &std::path::Path,
+            fault: super::PreferenceFault,
+        ) -> (
+            crate::Client,
+            std::sync::mpsc::Receiver<super::PreferenceFault>,
+        ) {
+            let (ack, observed) = std::sync::mpsc::channel();
+            let store = crate::preference::PreferenceStore::at(preference.to_owned())
+                .with_hooks(super::PreferenceHooks::Fault { fault, ack });
+            (
+                crate::Client::fixture(root, store, self.transport(), self.consumptions.clone()),
+                observed,
+            )
+        }
+        #[cfg(unix)]
+        pub fn client_with_preference_hold(
+            &self,
+            root: &std::path::Path,
+            preference: &std::path::Path,
+        ) -> (
+            crate::Client,
+            std::sync::mpsc::Receiver<()>,
+            std::sync::mpsc::Sender<()>,
+        ) {
+            let (ack, observed) = std::sync::mpsc::channel();
+            let (release, held) = std::sync::mpsc::channel();
+            let store = crate::preference::PreferenceStore::at(preference.to_owned()).with_hooks(
+                super::PreferenceHooks::Hold {
+                    ack,
+                    release: Arc::new(Mutex::new(held)),
+                },
+            );
+            (
+                crate::Client::fixture(root, store, self.transport(), self.consumptions.clone()),
+                observed,
+                release,
+            )
+        }
+        pub fn consumptions(&self) -> u64 {
+            self.consumptions.load(Ordering::Acquire)
+        }
+
+        pub fn new(responses: Vec<Vec<u8>>) -> Self {
+            Self::on_request(responses, || {})
+        }
+        pub fn on_request(
+            responses: Vec<Vec<u8>>,
+            mut on_request: impl FnMut() + Send + 'static,
+        ) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!(
+                "http://{}/releases/manifest.json",
+                listener.local_addr().unwrap()
+            );
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let seen = requests.clone();
+            let stop = Arc::new(AtomicBool::new(false));
+            let done = stop.clone();
+            let thread = thread::spawn(move || {
+                let mut responses = responses.into_iter();
+                while !done.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            // Darwin can inherit O_NONBLOCK from the listener. A
+                            // temporary WouldBlock is not an empty HTTP request.
+                            socket.set_nonblocking(false).unwrap();
+                            socket
+                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .unwrap();
+                            let mut request = Vec::new();
+                            let mut byte = [0];
+                            while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
+                                if socket.read(&mut byte).unwrap_or(0) == 0 {
+                                    break;
+                                }
+                                request.push(byte[0]);
+                            }
+                            seen.lock()
+                                .unwrap()
+                                .push(String::from_utf8(request).unwrap());
+                            on_request();
+                            let response =
+                                responses.next().unwrap_or_else(|| response(500, "", b""));
+                            let _ = socket.write_all(&response);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(2))
+                        }
+                        Err(e) => panic!("{e}"),
+                    }
+                }
+            });
+            Self {
+                url,
+                requests,
+                stop,
+                thread: Some(thread),
+                consumptions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            }
+        }
+        pub fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+        pub(crate) fn transport(&self) -> InternalTransport {
+            InternalTransport::client(Url::parse(&self.url).unwrap(), Duration::from_secs(2))
+                .unwrap()
+        }
+        pub(crate) fn release(&self, bytes: &[u8]) -> InternalRelease {
+            InternalRelease::transport_fixture(bytes, &self.url)
         }
     }
-    pub fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            self.thread.take().unwrap().join().unwrap();
+        }
     }
-    pub(crate) fn transport(&self) -> InternalTransport {
-        InternalTransport::client(Url::parse(&self.url).unwrap(), Duration::from_secs(2)).unwrap()
-    }
-    pub(crate) fn release(&self, bytes: &[u8]) -> InternalRelease {
-        InternalRelease::transport_fixture(bytes, &self.url)
-    }
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        self.thread.take().unwrap().join().unwrap();
-    }
-}
 }
 #[cfg(unix)]
 pub use server::Server;
@@ -160,9 +206,12 @@ pub fn response(status: u16, headers: &str, bytes: &[u8]) -> Vec<u8> {
 pub fn selection_from_catalog(raw: &str) -> Result<crate::ReleaseSelection, crate::Error> {
     let catalog = crate::catalog_data::parse_catalog(raw).map_err(crate::Error::invalid_input)?;
     match catalog.releases.into_iter().next() {
-        Some(crate::catalog_data::CatalogRelease::Internal(metadata)) =>
-            Ok(crate::catalog::fixture_selection(metadata)),
-        _ => Err(crate::Error::invalid_input("Fixture catalog must begin with an internal selection")),
+        Some(crate::catalog_data::CatalogRelease::Internal(metadata)) => {
+            Ok(crate::catalog::fixture_selection(metadata))
+        }
+        _ => Err(crate::Error::invalid_input(
+            "Fixture catalog must begin with an internal selection",
+        )),
     }
 }
 
@@ -171,21 +220,36 @@ thread_local! {
     static FIXTURE_INTERVAL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 #[cfg(unix)]
-pub(crate) fn fixture_interval() -> Option<u64> { FIXTURE_INTERVAL.with(|value| value.get()) }
+pub(crate) fn fixture_interval() -> Option<u64> {
+    FIXTURE_INTERVAL.with(|value| value.get())
+}
 #[cfg(unix)]
 pub(crate) fn with_fixture_interval(run: impl FnOnce()) {
     struct Reset(Option<u64>);
-    impl Drop for Reset { fn drop(&mut self) { FIXTURE_INTERVAL.with(|v| v.set(self.0)); } }
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            FIXTURE_INTERVAL.with(|v| v.set(self.0));
+        }
+    }
     let _reset = Reset(FIXTURE_INTERVAL.with(|v| v.replace(Some(1024))));
     run();
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PreferenceFault { BeforePublish, BeforeCommit }
+pub enum PreferenceFault {
+    BeforePublish,
+    BeforeCommit,
+}
 #[cfg(unix)]
 pub(crate) enum PreferenceHooks {
-    Fault { fault: PreferenceFault, ack: std::sync::mpsc::Sender<PreferenceFault> },
-    Hold { ack: std::sync::mpsc::Sender<()>, release: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>> },
+    Fault {
+        fault: PreferenceFault,
+        ack: std::sync::mpsc::Sender<PreferenceFault>,
+    },
+    Hold {
+        ack: std::sync::mpsc::Sender<()>,
+        release: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+    },
 }
 #[cfg(unix)]
 impl PreferenceHooks {
@@ -194,22 +258,36 @@ impl PreferenceHooks {
         match self {
             Self::Fault { fault, ack } => {
                 let fault = *fault;
-                let checkpoint = match fault { PreferenceFault::BeforePublish => Checkpoint::BeforePublish,
-                    PreferenceFault::BeforeCommit => Checkpoint::BeforeCommit };
+                let checkpoint = match fault {
+                    PreferenceFault::BeforePublish => Checkpoint::BeforePublish,
+                    PreferenceFault::BeforeCommit => Checkpoint::BeforeCommit,
+                };
                 let ack = ack.clone();
-                with_observer(move |event| {
-                    if event.checkpoint == checkpoint { ack.send(fault).expect("preference checkpoint receiver"); }
-                }, || with_failure(checkpoint, save))
+                with_observer(
+                    move |event| {
+                        if event.checkpoint == checkpoint {
+                            ack.send(fault).expect("preference checkpoint receiver");
+                        }
+                    },
+                    || with_failure(checkpoint, save),
+                )
             }
             Self::Hold { ack, release } => {
-                let ack = ack.clone(); let release = release.clone();
-                with_observer(move |event| {
-                    if event.checkpoint == Checkpoint::BeforeCommit {
-                        ack.send(()).expect("preference hold receiver");
-                        release.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10))
-                            .expect("preference hold must be released within ten seconds");
-                    }
-                }, save)
+                let ack = ack.clone();
+                let release = release.clone();
+                with_observer(
+                    move |event| {
+                        if event.checkpoint == Checkpoint::BeforeCommit {
+                            ack.send(()).expect("preference hold receiver");
+                            release
+                                .lock()
+                                .unwrap()
+                                .recv_timeout(std::time::Duration::from_secs(10))
+                                .expect("preference hold must be released within ten seconds");
+                        }
+                    },
+                    save,
+                )
             }
         }
     }

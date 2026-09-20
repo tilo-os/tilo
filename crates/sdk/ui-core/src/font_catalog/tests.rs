@@ -207,18 +207,28 @@ fn adwaita_axis_order_is_part_of_the_fixture_contract() {
 fn byte_catalog_rejects_missing_and_corrupt_assets() {
     let catalog = fixture_catalog();
     assert!(catalog.load_bytes(|_| None).is_err());
-    assert!(catalog.load_bytes(|name| {
-        let mut bytes = std::fs::read(catalog.root().join(name)).ok()?;
-        bytes[0] ^= 1;
-        Some(bytes)
-    }).is_err());
+    assert!(
+        catalog
+            .load_bytes(|name| {
+                let mut bytes = std::fs::read(catalog.root().join(name)).ok()?;
+                bytes[0] ^= 1;
+                Some(bytes)
+            })
+            .is_err()
+    );
 }
 
 #[test]
 fn byte_catalog_preserves_canonical_faces_and_locale() {
     let catalog = fixture_catalog();
-    let fonts = catalog.load_bytes(|name| std::fs::read(catalog.root().join(name)).ok()).unwrap();
+    let fonts = catalog
+        .load_bytes(|name| std::fs::read(catalog.root().join(name)).ok())
+        .unwrap();
     assert_eq!(fonts.locale(), "en-US");
-    assert!(fonts.db().faces().any(|f| f.families.iter().any(|n| n.0 == crate::text_render::UI_SANS_FAMILY)));
+    assert!(fonts.db().faces().any(|f| {
+        f.families
+            .iter()
+            .any(|n| n.0 == crate::text_render::UI_SANS_FAMILY)
+    }));
     let _renderer = crate::TextRenderer::with_font_system(fonts);
 }

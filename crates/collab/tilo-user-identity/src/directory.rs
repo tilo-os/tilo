@@ -483,10 +483,10 @@ impl WorkspaceDirectory {
             author_device_public_key: device_signing_key.verifying_key().to_bytes(),
             authored_at_ns: now_ns,
             delta: self.doc.clone().save(),
-            signature: [0;64],
+            signature: [0; 64],
         };
-        let digest=crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG,&update.view())?;
-        update.signature=device_signing_key.sign(&digest).to_bytes();
+        let digest = crate::canonical::signing_digest(DIR_DELTA_PREIMAGE_TAG, &update.view())?;
+        update.signature = device_signing_key.sign(&digest).to_bytes();
         Ok(update)
     }
 

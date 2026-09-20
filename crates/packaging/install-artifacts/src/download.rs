@@ -95,15 +95,34 @@ pub struct Progress {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Availability { Available, UnsupportedHost }
+pub enum Availability {
+    Available,
+    UnsupportedHost,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PreferencePublication { NotPublished, Published, PublishedDurabilityUnknown, PublicationUnknown }
+pub enum PreferencePublication {
+    NotPublished,
+    Published,
+    PublishedDurabilityUnknown,
+    PublicationUnknown,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PreferenceNamespace { Unchanged, Durable, CreatedDurabilityUnknown, NamespaceUnknown, Unproven }
+pub enum PreferenceNamespace {
+    Unchanged,
+    Durable,
+    CreatedDurabilityUnknown,
+    NamespaceUnknown,
+    Unproven,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PreferenceDurability { Durable, NamespaceUnproven }
+pub enum PreferenceDurability {
+    Durable,
+    NamespaceUnproven,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PreferenceCommit { pub durability: PreferenceDurability }
+pub struct PreferenceCommit {
+    pub durability: PreferenceDurability,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreferenceFailure {
     pub kind: crate::ErrorKind,
@@ -112,6 +131,14 @@ pub struct PreferenceFailure {
     pub namespace: PreferenceNamespace,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PreferenceState { Loading, Loaded(Option<Vec<u8>>), Failed(PreferenceFailure) }
+pub enum PreferenceState {
+    Loading,
+    Loaded(Option<Vec<u8>>),
+    Failed(PreferenceFailure),
+}
 
-impl Default for PreferenceState { fn default() -> Self { Self::Loading } }
+impl Default for PreferenceState {
+    fn default() -> Self {
+        Self::Loading
+    }
+}

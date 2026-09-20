@@ -155,7 +155,10 @@ mod tests {
     }
 }
 
-pub fn publish(session: &tilo_relay::RelayCoeditSession, messages: Vec<NeighbourMsg>) -> Result<()> {
+pub fn publish(
+    session: &tilo_relay::RelayCoeditSession,
+    messages: Vec<NeighbourMsg>,
+) -> Result<()> {
     use qos_peer_state::transport::{Retention, retention};
     for message in messages {
         let body = postcard::to_stdvec(&message)?;

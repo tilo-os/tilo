@@ -1268,7 +1268,9 @@ impl Widget for CalculatorApp {
         let unchanged = self
             .synced
             .as_ref()
-            .is_some_and(|(synced_heads, synced_pending)| *synced_heads == heads && *synced_pending == 0 && pending == 0);
+            .is_some_and(|(synced_heads, synced_pending)| {
+                *synced_heads == heads && *synced_pending == 0 && pending == 0
+            });
         if !unchanged {
             let _ = crate::doc::load_into(state, &mut self.model);
             self.synced = Some((heads, pending));
@@ -1390,7 +1392,12 @@ impl Widget for CalculatorApp {
     ) {
         self.relayout();
         self.layout_active();
-        let hover_before = (self.calc.hovered_key, self.calc.hovered_mem, self.g2.hovered_row, self.g3.hovered_row);
+        let hover_before = (
+            self.calc.hovered_key,
+            self.calc.hovered_mem,
+            self.g2.hovered_row,
+            self.g3.hovered_row,
+        );
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1417,7 +1424,12 @@ impl Widget for CalculatorApp {
                 }
                 // Motion that changed no hover state and drags nothing is
                 // inert: leave it unconsumed so the host can skip the frame.
-                let hover_now = (self.calc.hovered_key, self.calc.hovered_mem, self.g2.hovered_row, self.g3.hovered_row);
+                let hover_now = (
+                    self.calc.hovered_key,
+                    self.calc.hovered_mem,
+                    self.g2.hovered_row,
+                    self.g3.hovered_row,
+                );
                 *handled = self.dragging || self.field_dragging || hover_now != hover_before;
             }
             WindowEvent::MouseInput {

@@ -7,14 +7,6 @@ use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};
 use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
-use tilo_relay::{
-    Inbound, Relay, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding,
-    daemon::RelayIdentity,
-};
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
-    WorkspaceDirectory, sign_device_cert,
-};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -25,6 +17,14 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
+};
+use tilo_relay::{
+    Inbound, Relay, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding,
+    daemon::RelayIdentity,
+};
+use tilo_user_identity::{
+    DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
+    WorkspaceDirectory, sign_device_cert,
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},

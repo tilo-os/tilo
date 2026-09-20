@@ -1,9 +1,11 @@
 use crate::release::InternalRelease;
-use ui::install_artifacts::{Phase as WorkerPhase, Status, Token, Client as Worker, PreferenceState, PreferenceDurability};
 use crate::setup::model::{Capabilities, Experience};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::collections::VecDeque;
+use ui::install_artifacts::{
+    Client as Worker, Phase as WorkerPhase, PreferenceDurability, PreferenceState, Status, Token,
+};
 
 const MAX_PREFERENCE_BYTES: usize = 4096;
 
@@ -133,8 +135,13 @@ pub(super) struct InternalDownloadFlow {
 impl InternalDownloadFlow {
     #[cfg(not(test))]
     pub(super) fn new(capabilities: Capabilities) -> Result<Self, String> {
-        if ui::install_artifacts::availability() == ui::install_artifacts::Availability::UnsupportedHost {
-            return Err("Full Tilo download is unavailable on this computer. Installation has not started.".into());
+        if ui::install_artifacts::availability()
+            == ui::install_artifacts::Availability::UnsupportedHost
+        {
+            return Err(
+                "Full Tilo download is unavailable on this computer. Installation has not started."
+                    .into(),
+            );
         }
         let worker = Worker::open_legacy_imager().map_err(|error| error.to_string())?;
         let mut flow = Self {
@@ -215,12 +222,7 @@ impl InternalDownloadFlow {
         catalogs: Vec<Vec<InternalRelease>>,
         host_architecture: &str,
     ) -> Self {
-        Self::fixture(
-            capabilities,
-            worker,
-            catalogs,
-            host_architecture,
-        )
+        Self::fixture(capabilities, worker, catalogs, host_architecture)
     }
 
     fn host_architecture(&self) -> &str {
@@ -331,12 +333,14 @@ impl InternalDownloadFlow {
             && self.offered.is_some()
             && self.saved.as_ref() != self.offered.as_ref()
             && (self.token.is_none()
-                || (self.pending_key.as_ref().is_some_and(|(token, _)| {
-                    self.token.as_ref() == Some(token)
-                }) && matches!(
-                    self.presentation.phase,
-                    Some(WorkerPhase::Failed | WorkerPhase::Cancelled | WorkerPhase::Paused)
-                )))
+                || (self
+                    .pending_key
+                    .as_ref()
+                    .is_some_and(|(token, _)| self.token.as_ref() == Some(token))
+                    && matches!(
+                        self.presentation.phase,
+                        Some(WorkerPhase::Failed | WorkerPhase::Cancelled | WorkerPhase::Paused)
+                    )))
             && self.pending.is_none()
     }
 
@@ -381,7 +385,10 @@ impl InternalDownloadFlow {
         }
         let release = self.resolve(&key)?;
         let bytes = key.encode()?;
-        let token = self.ensure_worker()?.start(release, bytes).map_err(|error| error.to_string())?;
+        let token = self
+            .ensure_worker()?
+            .start(release, bytes)
+            .map_err(|error| error.to_string())?;
         self.pending_key = Some((token.clone(), key));
         self.token = Some(token);
         self.pending = None;
@@ -398,7 +405,10 @@ impl InternalDownloadFlow {
             .clone()
             .ok_or("There is no saved download selection to resume.")?;
         let release = self.resolve(&key)?;
-        let token = self.ensure_worker()?.resume(release).map_err(|error| error.to_string())?;
+        let token = self
+            .ensure_worker()?
+            .resume(release)
+            .map_err(|error| error.to_string())?;
         self.token = Some(token);
         self.sync_current_status();
         Ok(())
@@ -469,7 +479,8 @@ impl InternalDownloadFlow {
             .worker
             .as_ref()
             .ok_or("The download worker is unavailable.")?
-            .discard(&target, release).map_err(|error| error.to_string())?;
+            .discard(&target, release)
+            .map_err(|error| error.to_string())?;
         self.token = Some(token);
         self.set_pending(
             PendingCommand::Discard,
@@ -500,16 +511,25 @@ impl InternalDownloadFlow {
     }
 
     fn sync_preference(&mut self) -> bool {
-        if self.preference_loaded { return false; }
-        let Some(worker) = &self.worker else { return false; };
+        if self.preference_loaded {
+            return false;
+        }
+        let Some(worker) = &self.worker else {
+            return false;
+        };
         match worker.preference() {
             PreferenceState::Loading => return false,
             PreferenceState::Loaded(bytes) => {
-                self.saved = bytes.as_deref().and_then(|bytes| SelectionKey::decode(bytes).ok());
+                self.saved = bytes
+                    .as_deref()
+                    .and_then(|bytes| SelectionKey::decode(bytes).ok());
                 self.presentation = DownloadPresentation::default();
             }
             PreferenceState::Failed(failure) => {
-                self.presentation.details = format!("Saved download selection could not be read: {}", failure.message);
+                self.presentation.details = format!(
+                    "Saved download selection could not be read: {}",
+                    failure.message
+                );
             }
         }
         self.preference_loaded = true;
@@ -529,7 +549,11 @@ impl InternalDownloadFlow {
         }
         let mut acknowledged = false;
         if let Some(commit) = status.preference_commit {
-            if self.pending_key.as_ref().is_some_and(|(token, _)| *token == status.token) {
+            if self
+                .pending_key
+                .as_ref()
+                .is_some_and(|(token, _)| *token == status.token)
+            {
                 self.saved = self.pending_key.take().map(|(_, key)| key);
                 acknowledged = true;
             }
@@ -544,16 +568,22 @@ impl InternalDownloadFlow {
             };
             let failed = status.phase == WorkerPhase::Failed;
             if !expected && !failed {
-                if acknowledged { self.revision = self.revision.wrapping_add(1); }
+                if acknowledged {
+                    self.revision = self.revision.wrapping_add(1);
+                }
                 self.append_preference_warning();
                 return acknowledged;
             }
             self.pending = None;
         }
         let mut next = presentation_from_status(&status);
-        if self.preference_warning { append_preference_warning(&mut next); }
+        if self.preference_warning {
+            append_preference_warning(&mut next);
+        }
         if next == self.presentation {
-            if acknowledged { self.revision = self.revision.wrapping_add(1); }
+            if acknowledged {
+                self.revision = self.revision.wrapping_add(1);
+            }
             return acknowledged;
         }
         self.presentation = next;
@@ -562,7 +592,9 @@ impl InternalDownloadFlow {
     }
 
     fn append_preference_warning(&mut self) {
-        if self.preference_warning { append_preference_warning(&mut self.presentation); }
+        if self.preference_warning {
+            append_preference_warning(&mut self.presentation);
+        }
     }
     pub(super) fn poll(&mut self) -> bool {
         let loaded = self.sync_preference();
@@ -573,7 +605,10 @@ impl InternalDownloadFlow {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !self.preference_loaded {
             self.poll();
-            assert!(std::time::Instant::now() < until, "preference load did not settle");
+            assert!(
+                std::time::Instant::now() < until,
+                "preference load did not settle"
+            );
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
@@ -605,7 +640,9 @@ impl InternalDownloadFlow {
 
 fn append_preference_warning(presentation: &mut DownloadPresentation) {
     const WARNING: &str = " The saved selection may not survive power loss on this computer.";
-    if !presentation.details.contains(WARNING) { presentation.details.push_str(WARNING); }
+    if !presentation.details.contains(WARNING) {
+        presentation.details.push_str(WARNING);
+    }
 }
 fn presentation_from_status(status: &Status) -> DownloadPresentation {
     presentation_from_facts(
@@ -722,9 +759,6 @@ fn presentation_from_facts(
 mod tests {
     use super::*;
     use crate::release::InternalRelease;
-    use tilo_install_artifacts::test_support::{manifest_bytes, manifest_value};
-    use ui::install_artifacts::Phase;
-    use tilo_install_artifacts::test_support::{Server, response};
     use crate::setup::model::{Capabilities, HostOs};
     use std::sync::{
         Arc,
@@ -732,6 +766,9 @@ mod tests {
         mpsc,
     };
     use std::time::{Duration, Instant};
+    use tilo_install_artifacts::test_support::{Server, response};
+    use tilo_install_artifacts::test_support::{manifest_bytes, manifest_value};
+    use ui::install_artifacts::Phase;
 
     fn release() -> InternalRelease {
         let bytes = manifest_bytes(&manifest_value());
@@ -791,27 +828,48 @@ mod tests {
     fn preference_round_trip_contains_only_the_advisory_key() {
         let key = SelectionKey::from_release(&release());
         let bytes = key.encode().unwrap();
-        assert_eq!(SelectionKey::decode(&bytes).unwrap(),key);
+        assert_eq!(SelectionKey::decode(&bytes).unwrap(), key);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value.as_object().unwrap().len(),4);
-        let mut replacement = key; replacement.release_id = "fixture-replacement".into();
-        assert_eq!(SelectionKey::decode(&replacement.encode().unwrap()).unwrap(),replacement);
+        assert_eq!(value.as_object().unwrap().len(), 4);
+        let mut replacement = key;
+        replacement.release_id = "fixture-replacement".into();
+        assert_eq!(
+            SelectionKey::decode(&replacement.encode().unwrap()).unwrap(),
+            replacement
+        );
     }
 
     // Catches malformed saved JSON becoming a resumable key.
     #[test]
     fn invalid_preference_is_ignored_and_write_failure_is_reported() {
-        let bytes = manifest_bytes(&manifest_value()); let server = Server::new(vec![]);
-        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("selection.json");
-        std::fs::write(&path,br#"{"schema":1,"release_id":"x"}"#).unwrap();
-        let (worker, observed) = server.client_with_preference_fault(&dir.path().join("cache"),&path,
-            tilo_install_artifacts::test_support::PreferenceFault::BeforePublish);
-        let mut flow = InternalDownloadFlow::fixture(supported(),worker,
-            vec![vec![server.selection(&bytes)],vec![server.selection(&bytes)]],"x86_64");
-        flow.wait_preference(); assert!(flow.saved.is_none()); assert!(!flow.can_resume());
-        flow.start_selected(flow.offered_selection().unwrap()).unwrap();
-        observed.recv_timeout(Duration::from_secs(5)).unwrap(); wait_for(&mut flow,Phase::Failed);
-        assert!(flow.saved.is_none()); assert!(flow.presentation.details.contains("Error:"));
+        let bytes = manifest_bytes(&manifest_value());
+        let server = Server::new(vec![]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("selection.json");
+        std::fs::write(&path, br#"{"schema":1,"release_id":"x"}"#).unwrap();
+        let (worker, observed) = server.client_with_preference_fault(
+            &dir.path().join("cache"),
+            &path,
+            tilo_install_artifacts::test_support::PreferenceFault::BeforePublish,
+        );
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            worker,
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
+            "x86_64",
+        );
+        flow.wait_preference();
+        assert!(flow.saved.is_none());
+        assert!(!flow.can_resume());
+        flow.start_selected(flow.offered_selection().unwrap())
+            .unwrap();
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        wait_for(&mut flow, Phase::Failed);
+        assert!(flow.saved.is_none());
+        assert!(flow.presentation.details.contains("Error:"));
         assert!(server.requests().is_empty());
     }
 
@@ -831,7 +889,10 @@ mod tests {
         let mut flow = InternalDownloadFlow::fixture(
             supported(),
             worker,
-            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
             "x86_64",
         );
         flow.wait_preference();
@@ -1007,7 +1068,10 @@ mod tests {
         let mut flow = InternalDownloadFlow::fixture(
             supported(),
             worker,
-            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
             "x86_64",
         );
         flow.wait_preference();
@@ -1046,7 +1110,11 @@ mod tests {
         let second_token = resumed.token.clone().unwrap();
         assert_ne!(first_token, second_token);
         wait_for(&mut resumed, Phase::Ready);
-        assert_eq!(resumed_server.consumptions(), 0, "No staging consumer may run");
+        assert_eq!(
+            resumed_server.consumptions(),
+            0,
+            "No staging consumer may run"
+        );
     }
 
     // Catches a queued Ready/progress snapshot defeating cancel or discard reusing its token.
@@ -1122,7 +1190,10 @@ mod tests {
         let mut flow = InternalDownloadFlow::fixture(
             supported(),
             worker,
-            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
             "x86_64",
         );
         flow.wait_preference();
@@ -1151,7 +1222,11 @@ mod tests {
         assert_ne!(first_token, reopened.token.clone().unwrap());
         wait_for(&mut reopened, Phase::Ready);
         assert_eq!(reopened_server.requests().len(), 1);
-        assert_eq!(reopened_server.consumptions(), 0, "No staging consumer may run");
+        assert_eq!(
+            reopened_server.consumptions(),
+            0,
+            "No staging consumer may run"
+        );
     }
 
     // Catches dropping the controller while leaving an in-flight worker detached.
@@ -1174,7 +1249,10 @@ mod tests {
         let mut flow = InternalDownloadFlow::fixture(
             supported(),
             worker,
-            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
             "x86_64",
         );
         flow.wait_preference();
@@ -1204,7 +1282,10 @@ mod tests {
         let mut changed_flow = InternalDownloadFlow::fixture(
             supported(),
             worker,
-            vec![vec![server.selection(&bytes)], vec![server.selection(&changed)]],
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&changed)],
+            ],
             "x86_64",
         );
         changed_flow.wait_preference();
@@ -1232,7 +1313,10 @@ mod tests {
         let mut unsupported = InternalDownloadFlow::fixture(
             unsupported_capabilities,
             worker,
-            vec![vec![server.selection(&bytes)], vec![server.selection(&bytes)]],
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
             "x86_64",
         );
         unsupported.wait_preference();
@@ -1340,88 +1424,177 @@ mod tests {
     }
     #[test]
     fn preference_loading_gates_commands_and_commit_ack_survives_coalescing() {
-        let bytes = manifest_bytes(&manifest_value()); let server = Server::new(vec![response(404,"",b"")]);
-        let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("selection.json");
-        let (worker, observed, release) = server.client_with_preference_hold(&dir.path().join("cache"),&path);
+        let bytes = manifest_bytes(&manifest_value());
+        let server = Server::new(vec![response(404, "", b"")]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("selection.json");
+        let (worker, observed, release) =
+            server.client_with_preference_hold(&dir.path().join("cache"), &path);
         let key = SelectionKey::from_release(&server.selection(&bytes));
-        let mut flow = InternalDownloadFlow::fixture(supported(),worker,
-            vec![vec![server.selection(&bytes)],vec![server.selection(&bytes)]],"x86_64");
-        assert!(!flow.can_start()); assert!(!flow.can_resume());
-        assert!(flow.start_selected(key.clone()).is_err()); assert!(server.requests().is_empty());
-        flow.wait_preference(); assert!(flow.can_start());
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            worker,
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
+            "x86_64",
+        );
+        assert!(!flow.can_start());
+        assert!(!flow.can_resume());
+        assert!(flow.start_selected(key.clone()).is_err());
+        assert!(server.requests().is_empty());
+        flow.wait_preference();
+        assert!(flow.can_start());
         flow.start_selected(key.clone()).unwrap();
         observed.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(flow.saved.is_none()); assert!(flow.pending_key.is_some());
+        assert!(flow.saved.is_none());
+        assert!(flow.pending_key.is_some());
         release.send(()).unwrap();
         // Deliberately skip every intermediate status, then deliver only Failed.
-        let until = Instant::now()+Duration::from_secs(10);
+        let until = Instant::now() + Duration::from_secs(10);
         let status = loop {
             let status = flow.worker.as_ref().unwrap().status().unwrap();
-            if status.phase == Phase::Failed { break status; }
-            assert!(Instant::now()<until); std::thread::sleep(Duration::from_millis(2));
+            if status.phase == Phase::Failed {
+                break status;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
         };
-        assert!(status.preference_commit.is_some()); assert!(flow.accept_status(status.clone()));
-        assert_eq!(flow.saved,Some(key)); assert!(flow.pending_key.is_none());
-        let revision = flow.revision(); assert!(!flow.accept_status(status)); assert_eq!(flow.revision(),revision);
+        assert!(status.preference_commit.is_some());
+        assert!(flow.accept_status(status.clone()));
+        assert_eq!(flow.saved, Some(key));
+        assert!(flow.pending_key.is_none());
+        let revision = flow.revision();
+        assert!(!flow.accept_status(status));
+        assert_eq!(flow.revision(), revision);
     }
 
     #[test]
     fn foreign_ack_is_refused_and_namespace_warning_survives_later_token_statuses() {
         use ui::install_artifacts::PreferenceCommit;
-        let bytes = manifest_bytes(&manifest_value()); let server = Server::new(vec![response(404,"",b"")]);
+        let bytes = manifest_bytes(&manifest_value());
+        let server = Server::new(vec![response(404, "", b"")]);
         let dir = tempfile::tempdir().unwrap();
-        let (worker, observed, release) = server.client_with_preference_hold(&dir.path().join("cache"),&dir.path().join("selection.json"));
-        let mut flow = InternalDownloadFlow::fixture(supported(),worker,
-            vec![vec![server.selection(&bytes)],vec![server.selection(&bytes)]],"x86_64");
-        flow.wait_preference(); flow.start_selected(flow.offered_selection().unwrap()).unwrap();
+        let (worker, observed, release) = server.client_with_preference_hold(
+            &dir.path().join("cache"),
+            &dir.path().join("selection.json"),
+        );
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            worker,
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
+            "x86_64",
+        );
+        flow.wait_preference();
+        flow.start_selected(flow.offered_selection().unwrap())
+            .unwrap();
         observed.recv_timeout(Duration::from_secs(5)).unwrap();
-        let other_server = Server::new(vec![response(404,"",b"")]);
-        let other = other_server.client(&dir.path().join("other-cache"),&dir.path().join("other.json"));
-        other.start(other_server.selection(&bytes),b"other".to_vec()).unwrap();
-        let until = Instant::now()+Duration::from_secs(10);
+        let other_server = Server::new(vec![response(404, "", b"")]);
+        let other = other_server.client(
+            &dir.path().join("other-cache"),
+            &dir.path().join("other.json"),
+        );
+        other
+            .start(other_server.selection(&bytes), b"other".to_vec())
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
         let mut foreign = loop {
             let status = other.status().unwrap();
-            if status.phase == Phase::Failed { break status; }
-            assert!(Instant::now()<until); std::thread::sleep(Duration::from_millis(2));
+            if status.phase == Phase::Failed {
+                break status;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(2));
         };
-        assert!(!flow.accept_status(foreign.clone())); assert!(flow.saved.is_none());
+        assert!(!flow.accept_status(foreign.clone()));
+        assert!(flow.saved.is_none());
         // A DTO projection of the real Windows success result, not native Windows evidence.
         foreign.token = flow.token.clone().unwrap();
-        foreign.preference_commit = Some(PreferenceCommit { durability: PreferenceDurability::NamespaceUnproven });
-        assert!(flow.accept_status(foreign.clone())); assert!(flow.saved.is_some());
-        assert!(flow.presentation.details.contains("may not survive power loss"));
-        foreign.preference_commit = None; foreign.phase = Phase::Released;
+        foreign.preference_commit = Some(PreferenceCommit {
+            durability: PreferenceDurability::NamespaceUnproven,
+        });
+        assert!(flow.accept_status(foreign.clone()));
+        assert!(flow.saved.is_some());
+        assert!(
+            flow.presentation
+                .details
+                .contains("may not survive power loss")
+        );
+        foreign.preference_commit = None;
+        foreign.phase = Phase::Released;
         flow.accept_status(foreign);
-        assert!(flow.presentation.details.contains("may not survive power loss"));
+        assert!(
+            flow.presentation
+                .details
+                .contains("may not survive power loss")
+        );
         release.send(()).unwrap();
     }
 
     #[test]
     fn cancel_while_saving_keeps_pending_key_until_commit_and_stops_network() {
-        let bytes = manifest_bytes(&manifest_value()); let server = Server::new(vec![]);
+        let bytes = manifest_bytes(&manifest_value());
+        let server = Server::new(vec![]);
         let dir = tempfile::tempdir().unwrap();
-        let (worker, observed, release) = server.client_with_preference_hold(&dir.path().join("cache"),&dir.path().join("selection.json"));
-        let mut flow = InternalDownloadFlow::fixture(supported(),worker,
-            vec![vec![server.selection(&bytes)],vec![server.selection(&bytes)]],"x86_64");
-        flow.wait_preference(); let key = flow.offered_selection().unwrap(); flow.start_selected(key.clone()).unwrap();
-        observed.recv_timeout(Duration::from_secs(5)).unwrap(); flow.poll();
-        assert_eq!(flow.presentation.phase,Some(Phase::SavingPreference)); assert!(flow.can_cancel());
-        flow.cancel().unwrap(); assert!(flow.saved.is_none()); release.send(()).unwrap();
-        wait_for(&mut flow,Phase::Cancelled); assert_eq!(flow.saved,Some(key));
-        assert!(flow.pending_key.is_none()); assert!(server.requests().is_empty());
+        let (worker, observed, release) = server.client_with_preference_hold(
+            &dir.path().join("cache"),
+            &dir.path().join("selection.json"),
+        );
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            worker,
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&bytes)],
+            ],
+            "x86_64",
+        );
+        flow.wait_preference();
+        let key = flow.offered_selection().unwrap();
+        flow.start_selected(key.clone()).unwrap();
+        observed.recv_timeout(Duration::from_secs(5)).unwrap();
+        flow.poll();
+        assert_eq!(flow.presentation.phase, Some(Phase::SavingPreference));
+        assert!(flow.can_cancel());
+        flow.cancel().unwrap();
+        assert!(flow.saved.is_none());
+        release.send(()).unwrap();
+        wait_for(&mut flow, Phase::Cancelled);
+        assert_eq!(flow.saved, Some(key));
+        assert!(flow.pending_key.is_none());
+        assert!(server.requests().is_empty());
     }
 
     #[test]
     fn saved_key_is_reresolved_against_changed_catalog_before_resume() {
-        let bytes = manifest_bytes(&manifest_value()); let mut changed = bytes.clone(); changed.push(b' ');
-        let server = Server::new(vec![]); let dir = tempfile::tempdir().unwrap(); let path = dir.path().join("selection.json");
-        let key = SelectionKey::from_release(&server.selection(&bytes)); std::fs::write(&path,key.encode().unwrap()).unwrap();
-        let worker = server.client(&dir.path().join("cache"),&path);
-        let mut flow = InternalDownloadFlow::fixture(supported(),worker,
-            vec![vec![server.selection(&bytes)],vec![server.selection(&changed)]],"x86_64");
-        flow.wait_preference(); assert!(flow.can_resume()); assert!(flow.resume().is_err());
-        assert!(flow.token.is_none()); assert!(server.requests().is_empty());
-        assert_eq!(std::fs::read(path).unwrap(),key.encode().unwrap());
+        let bytes = manifest_bytes(&manifest_value());
+        let mut changed = bytes.clone();
+        changed.push(b' ');
+        let server = Server::new(vec![]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("selection.json");
+        let key = SelectionKey::from_release(&server.selection(&bytes));
+        std::fs::write(&path, key.encode().unwrap()).unwrap();
+        let worker = server.client(&dir.path().join("cache"), &path);
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            worker,
+            vec![
+                vec![server.selection(&bytes)],
+                vec![server.selection(&changed)],
+            ],
+            "x86_64",
+        );
+        flow.wait_preference();
+        assert!(flow.can_resume());
+        assert!(flow.resume().is_err());
+        assert!(flow.token.is_none());
+        assert!(server.requests().is_empty());
+        assert_eq!(std::fs::read(path).unwrap(), key.encode().unwrap());
     }
 
     // Catches a failed save consuming the only Start opportunity without committing the key.
@@ -1434,11 +1607,16 @@ mod tests {
         let cache = directory.path().join("cache");
         let preference = directory.path().join("selection.json");
         let key = SelectionKey::from_release(&server.selection(&bytes));
-        let mut old_key = key.clone(); old_key.release_id = "previous-selection".into();
+        let mut old_key = key.clone();
+        old_key.release_id = "previous-selection".into();
         std::fs::write(&preference, old_key.encode().unwrap()).unwrap();
         let worker = server.client(&cache, &preference);
-        let mut flow = InternalDownloadFlow::fixture(supported(), worker,
-            vec![vec![server.selection(&bytes)]; 3], "x86_64");
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            worker,
+            vec![vec![server.selection(&bytes)]; 3],
+            "x86_64",
+        );
         flow.wait_preference();
         assert_eq!(flow.saved, Some(old_key.clone()));
         // A real directory collision refuses publication without a fake storage backend.
@@ -1449,20 +1627,29 @@ mod tests {
         let failed_token = flow.token.clone().unwrap();
         let failed = flow.worker.as_ref().unwrap().status().unwrap();
         let facts = flow.worker.as_ref().unwrap().preference();
-        let PreferenceState::Failed(failure) = &facts else { panic!("save failure missing") };
+        let PreferenceState::Failed(failure) = &facts else {
+            panic!("save failure missing")
+        };
         assert_eq!(failure.publication, PreferencePublication::NotPublished);
         assert_eq!(failure.namespace, PreferenceNamespace::Durable);
         assert!(failed.preference_commit.is_none());
         assert_eq!(failed.error.as_deref(), Some(failure.message.as_str()));
         assert_eq!(flow.saved, Some(old_key.clone()));
-        assert_eq!(flow.pending_key.as_ref(), Some(&(failed_token.clone(), key.clone())));
-        assert!(server.requests().is_empty()); assert!(!cache.exists());
+        assert_eq!(
+            flow.pending_key.as_ref(),
+            Some(&(failed_token.clone(), key.clone()))
+        );
+        assert!(server.requests().is_empty());
+        assert!(!cache.exists());
         let presentation = flow.presentation.clone();
         flow.poll();
         assert_eq!(flow.presentation, presentation);
         assert_eq!(flow.worker.as_ref().unwrap().preference(), facts);
         assert_eq!(flow.token.as_ref(), Some(&failed_token));
-        assert!(flow.can_start(), "a terminal uncommitted save must allow an explicit retry");
+        assert!(
+            flow.can_start(),
+            "a terminal uncommitted save must allow an explicit retry"
+        );
         assert!(!flow.can_resume());
         // Only this explicit repair/retry replaces the failed attempt's token.
         std::fs::remove_dir(&preference).unwrap();
@@ -1472,10 +1659,13 @@ mod tests {
         assert!(!flow.accept_status(failed));
         wait_for(&mut flow, Phase::Failed); // deliberate later 404, after preference commit
         let retried = flow.worker.as_ref().unwrap().status().unwrap();
-        assert_eq!(retried.token, retry); assert!(retried.preference_commit.is_some());
-        assert_eq!(flow.saved, Some(key.clone())); assert!(flow.pending_key.is_none());
+        assert_eq!(retried.token, retry);
+        assert!(retried.preference_commit.is_some());
+        assert_eq!(flow.saved, Some(key.clone()));
+        assert!(flow.pending_key.is_none());
         assert_eq!(std::fs::read(preference).unwrap(), key.encode().unwrap());
-        assert_eq!(server.requests().len(), 1); assert!(!cache.exists());
+        assert_eq!(server.requests().len(), 1);
+        assert!(!cache.exists());
     }
 
     // Catches cancellation before save admission stranding the pending key forever.
@@ -1488,38 +1678,62 @@ mod tests {
         let preference = directory.path().join("selection.json");
         let (worker, observed, release) = server.client_with_preference_hold(&cache, &preference);
         // Hold a real older operation so this flow's first save stays queued.
-        let older = worker.start(server.selection(&bytes), b"older advisory bytes".to_vec()).unwrap();
+        let older = worker
+            .start(server.selection(&bytes), b"older advisory bytes".to_vec())
+            .unwrap();
         observed.recv_timeout(Duration::from_secs(5)).unwrap();
-        let mut flow = InternalDownloadFlow::fixture(supported(), worker,
-            vec![vec![server.selection(&bytes)]; 3], "x86_64");
-        flow.wait_preference(); let key = flow.offered_selection().unwrap();
+        let mut flow = InternalDownloadFlow::fixture(
+            supported(),
+            worker,
+            vec![vec![server.selection(&bytes)]; 3],
+            "x86_64",
+        );
+        flow.wait_preference();
+        let key = flow.offered_selection().unwrap();
         flow.start_selected(key.clone()).unwrap();
         let cancelled_token = flow.token.clone().unwrap();
         assert_ne!(cancelled_token, older);
-        flow.cancel().unwrap(); release.send(()).unwrap();
+        flow.cancel().unwrap();
+        release.send(()).unwrap();
         wait_for(&mut flow, Phase::Cancelled);
         let cancelled = flow.worker.as_ref().unwrap().status().unwrap();
-        assert!(cancelled.preference_commit.is_none()); assert!(flow.saved.is_none());
-        assert_eq!(flow.pending_key.as_ref(), Some(&(cancelled_token.clone(), key.clone())));
-        assert!(server.requests().is_empty()); assert!(!cache.exists());
+        assert!(cancelled.preference_commit.is_none());
+        assert!(flow.saved.is_none());
+        assert_eq!(
+            flow.pending_key.as_ref(),
+            Some(&(cancelled_token.clone(), key.clone()))
+        );
+        assert!(server.requests().is_empty());
+        assert!(!cache.exists());
         assert_eq!(std::fs::read(&preference).unwrap(), b"older advisory bytes");
         let facts = flow.worker.as_ref().unwrap().preference();
-        let presentation = flow.presentation.clone(); flow.poll();
+        let presentation = flow.presentation.clone();
+        flow.poll();
         assert_eq!(flow.presentation, presentation);
         assert_eq!(flow.worker.as_ref().unwrap().preference(), facts);
         assert_eq!(flow.token.as_ref(), Some(&cancelled_token));
-        assert!(flow.can_start(), "cancellation without a commit must allow an explicit retry");
+        assert!(
+            flow.can_start(),
+            "cancellation without a commit must allow an explicit retry"
+        );
         flow.start_selected(key.clone()).unwrap();
-        let retry = flow.token.clone().unwrap(); assert_ne!(retry, cancelled_token);
+        let retry = flow.token.clone().unwrap();
+        assert_ne!(retry, cancelled_token);
         observed.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(flow.saved.is_none(), "only the retry commit may advance saved");
+        assert!(
+            flow.saved.is_none(),
+            "only the retry commit may advance saved"
+        );
         assert!(!flow.accept_status(cancelled));
-        release.send(()).unwrap(); wait_for(&mut flow, Phase::Failed);
+        release.send(()).unwrap();
+        wait_for(&mut flow, Phase::Failed);
         let status = flow.worker.as_ref().unwrap().status().unwrap();
-        assert_eq!(status.token, retry); assert!(status.preference_commit.is_some());
-        assert_eq!(flow.saved, Some(key.clone())); assert!(flow.pending_key.is_none());
+        assert_eq!(status.token, retry);
+        assert!(status.preference_commit.is_some());
+        assert_eq!(flow.saved, Some(key.clone()));
+        assert!(flow.pending_key.is_none());
         assert_eq!(std::fs::read(preference).unwrap(), key.encode().unwrap());
-        assert_eq!(server.requests().len(), 1); assert!(!cache.exists());
+        assert_eq!(server.requests().len(), 1);
+        assert!(!cache.exists());
     }
-
 }

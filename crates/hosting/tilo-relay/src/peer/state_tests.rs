@@ -185,23 +185,44 @@ async fn ordered_checkpoints_reach_a_device_once_per_channel_until_rearmed() {
 
     fixture.enqueue_checkpoint(1, vec![1; 64]).await;
     fixture.drained().await;
-    assert!(fixture.recipient_rx.try_recv().is_ok(), "initial checkpoint was not delivered");
+    assert!(
+        fixture.recipient_rx.try_recv().is_ok(),
+        "initial checkpoint was not delivered"
+    );
 
-    fixture.enqueue_checkpoint(20, vec![2; 16 * 1024 * 1024]).await;
+    fixture
+        .enqueue_checkpoint(20, vec![2; 16 * 1024 * 1024])
+        .await;
     fixture.drained().await;
-    assert!(fixture.recipient_rx.try_recv().is_err(), "an already-current device received the next idle checkpoint");
+    assert!(
+        fixture.recipient_rx.try_recv().is_err(),
+        "an already-current device received the next idle checkpoint"
+    );
     fixture.enqueue(2).await;
     fixture.drained().await;
-    assert!(fixture.recipient_rx.try_recv().is_ok(), "a large gated checkpoint obstructed the next ordered delta");
+    assert!(
+        fixture.recipient_rx.try_recv().is_ok(),
+        "a large gated checkpoint obstructed the next ordered delta"
+    );
 
-    fixture.workspace.lock().await.request_checkpoint(&fixture.recipient.device_public_key);
+    fixture
+        .workspace
+        .lock()
+        .await
+        .request_checkpoint(&fixture.recipient.device_public_key);
     fixture.enqueue_checkpoint(3, vec![3; 64]).await;
     fixture.drained().await;
-    assert!(fixture.recipient_rx.try_recv().is_ok(), "rearmed checkpoint was not delivered");
+    assert!(
+        fixture.recipient_rx.try_recv().is_ok(),
+        "rearmed checkpoint was not delivered"
+    );
 
     fixture.enqueue_checkpoint(4, vec![4; 64]).await;
     fixture.drained().await;
-    assert!(fixture.recipient_rx.try_recv().is_err(), "rearm delivered more than one checkpoint");
+    assert!(
+        fixture.recipient_rx.try_recv().is_err(),
+        "rearm delivered more than one checkpoint"
+    );
     assert!(fixture.recipient_disconnected.try_recv().is_err());
 }
 
@@ -214,21 +235,28 @@ async fn ordered_checkpoint_is_marked_served_only_after_successful_enqueue() {
     fixture.enqueue_checkpoint(1, vec![1; 64]).await;
     fixture.drained().await;
     assert!(
-        fixture.workspace.lock().await.needs_checkpoint(
-            &fixture.recipient.device_public_key,
-            &[3; 32],
-        ),
+        fixture
+            .workspace
+            .lock()
+            .await
+            .needs_checkpoint(&fixture.recipient.device_public_key, &[3; 32],),
         "a full delivery queue incorrectly marked the checkpoint served"
     );
 
     fixture.recipient_rx.try_recv().unwrap();
     fixture.enqueue_checkpoint(2, vec![2; 64]).await;
     fixture.drained().await;
-    assert!(fixture.recipient_rx.try_recv().is_ok(), "the checkpoint was not retried after capacity returned");
-    assert!(!fixture.workspace.lock().await.needs_checkpoint(
-        &fixture.recipient.device_public_key,
-        &[3; 32],
-    ));
+    assert!(
+        fixture.recipient_rx.try_recv().is_ok(),
+        "the checkpoint was not retried after capacity returned"
+    );
+    assert!(
+        !fixture
+            .workspace
+            .lock()
+            .await
+            .needs_checkpoint(&fixture.recipient.device_public_key, &[3; 32],)
+    );
 }
 
 #[tokio::test]
@@ -240,8 +268,16 @@ async fn ordered_checkpoints_remain_live_for_peer_relays() {
     {
         let mut runtime = fixture.workspace.lock().await;
         runtime.record_peer_relay(fixture.recipient.device_public_key);
-        runtime.subscribers.get_mut(&fixture.recipient.device_public_key).unwrap().role = PeerRole::PeerRelay;
-        runtime.state_sessions.get_mut(&fixture.recipient.device_public_key).unwrap().peer = fixture.recipient.clone();
+        runtime
+            .subscribers
+            .get_mut(&fixture.recipient.device_public_key)
+            .unwrap()
+            .role = PeerRole::PeerRelay;
+        runtime
+            .state_sessions
+            .get_mut(&fixture.recipient.device_public_key)
+            .unwrap()
+            .peer = fixture.recipient.clone();
     }
 
     fixture.enqueue_checkpoint(1, vec![1; 64]).await;
@@ -249,7 +285,10 @@ async fn ordered_checkpoints_remain_live_for_peer_relays() {
     assert!(fixture.recipient_rx.try_recv().is_ok());
     fixture.enqueue_checkpoint(2, vec![2; 64]).await;
     fixture.drained().await;
-    assert!(fixture.recipient_rx.try_recv().is_ok(), "peer relay checkpoint was incorrectly gated");
+    assert!(
+        fixture.recipient_rx.try_recv().is_ok(),
+        "peer relay checkpoint was incorrectly gated"
+    );
 }
 
 #[tokio::test]

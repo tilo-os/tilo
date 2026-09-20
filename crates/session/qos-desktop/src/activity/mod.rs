@@ -72,7 +72,12 @@ impl ActivitySnapshot {
             room,
             &snapshot.doc,
         )?;
-        if let Some(workspace) = snapshot.desktop.workspaces.iter_mut().find(|w| w.room == room) {
+        if let Some(workspace) = snapshot
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.room == room)
+        {
             workspace.tasks = crate::projection::workspace_tasks_of(&snapshot.doc);
         }
         Ok(snapshot)
@@ -190,24 +195,61 @@ mod admitted_history_tests {
 
     #[test]
     fn workspace_activity_real_room_topology_enters_pane_feed_and_replay() {
-        use crate::{Strip, StripId, WindowGroup, WindowWidth, Tab, TileContent, AppKind};
+        use crate::{AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
         let workspace = Workspace::new(WorkspaceId(9), "Actual room");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
-        doc.put(ROOT, "name", "Actual room").unwrap(); doc.commit();
-        let mut strips = vec![Strip { id: StripId((5 << 48) | 1), name: "Main".into(), window_groups: vec![WindowGroup {
-            id: (5 << 48) | 2, active_tab: (5 << 48) | 3, width: WindowWidth::Normal, maximized: false,
-            tabs: vec![Tab { id: (5 << 48) | 3, title: "Before".into(), tile: TileContent::AppPlaceholder { kind: AppKind::Other("dev.qos.notes".into()), label: "Notes".into() } }],
-        }] }];
-        crate::projection::RoomProjection::project_owned_contents(&mut doc, &strips, 5, None); doc.commit();
+        doc.put(ROOT, "name", "Actual room").unwrap();
+        doc.commit();
+        let mut strips = vec![Strip {
+            id: StripId((5 << 48) | 1),
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: (5 << 48) | 2,
+                active_tab: (5 << 48) | 3,
+                width: WindowWidth::Normal,
+                maximized: false,
+                tabs: vec![Tab {
+                    id: (5 << 48) | 3,
+                    title: "Before".into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Other("dev.qos.notes".into()),
+                        label: "Notes".into(),
+                    },
+                }],
+            }],
+        }];
+        crate::projection::RoomProjection::project_owned_contents(&mut doc, &strips, 5, None);
+        doc.commit();
         strips[0].window_groups[0].tabs[0].title = "After".into();
-        crate::projection::RoomProjection::project_owned_contents(&mut doc, &strips, 5, None); doc.commit();
-        let mut snapshot = ActivitySnapshot::new(WorkspaceTree { active: workspace.id, workspaces: vec![workspace], ..Default::default() }, doc).unwrap();
+        crate::projection::RoomProjection::project_owned_contents(&mut doc, &strips, 5, None);
+        doc.commit();
+        let mut snapshot = ActivitySnapshot::new(
+            WorkspaceTree {
+                active: workspace.id,
+                workspaces: vec![workspace],
+                ..Default::default()
+            },
+            doc,
+        )
+        .unwrap();
         let heads = snapshot.doc.get_heads();
-        let mut pane = RoomActivityPane::new(); pane.begin_view(9); pane.refresh(&mut snapshot);
+        let mut pane = RoomActivityPane::new();
+        pane.begin_view(9);
+        pane.refresh(&mut snapshot);
         assert_eq!(pane.entries().len(), 3);
-        let labels = pane.replay_frames.iter().flat_map(|frame| &frame.workspaces).flat_map(|workspace| &workspace.groups).flat_map(|group| &group.tabs).cloned().collect::<Vec<_>>();
-        assert!(labels.iter().any(|s| s == "Before"), "actual causal topology was lost: {labels:?}");
+        let labels = pane
+            .replay_frames
+            .iter()
+            .flat_map(|frame| &frame.workspaces)
+            .flat_map(|workspace| &workspace.groups)
+            .flat_map(|group| &group.tabs)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(
+            labels.iter().any(|s| s == "Before"),
+            "actual causal topology was lost: {labels:?}"
+        );
         assert!(labels.iter().any(|s| s == "After"));
         assert_eq!(snapshot.doc.get_heads(), heads);
     }

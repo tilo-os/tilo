@@ -8,9 +8,9 @@
 //! shell owns the breakpoint, eased collapse/push slides, the scrim, and
 //! button/scrim/Esc self-routing.
 
+use crate::clock::Instant;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use crate::clock::Instant;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Cap, Join, Line, Point, Rect, Stroke, Vec2};

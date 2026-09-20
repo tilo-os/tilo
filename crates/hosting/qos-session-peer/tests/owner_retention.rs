@@ -2,20 +2,20 @@
 //! authenticated local relay, selected store, and fresh/offline StatePeer admission.
 use ed25519_dalek::SigningKey;
 use qos_peer_state::{StatePeer, TransportOrigin};
-use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use qos_session_peer::{
     SessionOwner,
     host::{LocalHost, NativeSubscription, publish},
-};
-use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationList,
-    persist::{self, IdentityPaths},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
     time::{Duration, Instant},
+};
+use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_user_identity::{
+    DeviceCapabilities, DeviceCert, RevocationList,
+    persist::{self, IdentityPaths},
 };
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 use web_time::SystemTime;

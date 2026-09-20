@@ -1199,7 +1199,10 @@ mod tests {
         let worker = std::thread::spawn(|| {
             std::thread::sleep(crate::clock::Duration::from_millis(80));
         });
-        assert!(!join_bounded(worker, crate::clock::Duration::from_millis(2)));
+        assert!(!join_bounded(
+            worker,
+            crate::clock::Duration::from_millis(2)
+        ));
         assert!(started.elapsed() < crate::clock::Duration::from_millis(50));
     }
 

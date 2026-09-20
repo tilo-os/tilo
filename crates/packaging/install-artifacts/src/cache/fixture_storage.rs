@@ -102,14 +102,19 @@ impl Provider for DiskProvider {
     fn verify(&mut self, file: &File, own: &Ownership) -> Result<(), crate::error::Failure> {
         if own != &self.own
             || file_id(file) != own.file
-            || file_id(&File::open(self.dir.parent().unwrap()).map_err(|e| crate::error::Failure::from(e.to_string()))?)
-                != own.parent
+            || file_id(
+                &File::open(self.dir.parent().unwrap())
+                    .map_err(|e| crate::error::Failure::from(e.to_string()))?,
+            ) != own.parent
         {
             return Err("Held identity mismatch".into());
         }
         Ok(())
     }
-    fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<(), crate::error::Failure>) -> Result<(), crate::error::Failure> {
+    fn scan(
+        &mut self,
+        visit: &mut dyn FnMut(&[u8]) -> Result<(), crate::error::Failure>,
+    ) -> Result<(), crate::error::Failure> {
         for (n, entry) in fs::read_dir(&self.dir)
             .map_err(|e| crate::error::Failure::from(e.to_string()))?
             .enumerate()
@@ -117,13 +122,18 @@ impl Provider for DiskProvider {
             if n >= MAX_SCAN {
                 return Err("scan bound".into());
             }
-            let mut file =
-                File::open(entry.map_err(|e| crate::error::Failure::from(e.to_string()))?.path()).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+            let mut file = File::open(
+                entry
+                    .map_err(|e| crate::error::Failure::from(e.to_string()))?
+                    .path(),
+            )
+            .map_err(|e| crate::error::Failure::from(e.to_string()))?;
             if file.metadata().unwrap().len() > MAX_RECORD as u64 {
                 return Err("record bound".into());
             }
             let mut b = Vec::new();
-            file.read_to_end(&mut b).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+            file.read_to_end(&mut b)
+                .map_err(|e| crate::error::Failure::from(e.to_string()))?;
             visit(&b)?;
         }
         Ok(())
@@ -139,7 +149,8 @@ impl Provider for DiskProvider {
                 .and_then(|n| n.parse::<u64>().ok())
                 .ok_or("unknown record leaf")?;
             if !keep.contains(&n) {
-                fs::remove_file(entry.path()).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+                fs::remove_file(entry.path())
+                    .map_err(|e| crate::error::Failure::from(e.to_string()))?;
             }
         }
         File::open(&self.dir)
@@ -147,7 +158,12 @@ impl Provider for DiskProvider {
             .sync_all()
             .map_err(|e| crate::error::Failure::from(e.to_string()))
     }
-    fn publish(&mut self, generation: u64, bytes: &[u8], keep: &[u64]) -> Result<(), crate::error::Failure> {
+    fn publish(
+        &mut self,
+        generation: u64,
+        bytes: &[u8],
+        keep: &[u64],
+    ) -> Result<(), crate::error::Failure> {
         fault("record-create")?;
         let temp = self.dir.join(format!("pending-{generation}"));
         let mut f = OpenOptions::new()
@@ -156,12 +172,16 @@ impl Provider for DiskProvider {
             .open(&temp)
             .map_err(|e| crate::error::Failure::from(e.to_string()))?;
         let middle = bytes.len() / 2;
-        f.write_all(&bytes[..middle]).map_err(|e| crate::error::Failure::from(e.to_string()))?;
+        f.write_all(&bytes[..middle])
+            .map_err(|e| crate::error::Failure::from(e.to_string()))?;
         fault("record-write")?;
-        f.write_all(&bytes[middle..]).map_err(|e| crate::error::Failure::from(e.to_string()))?;
-        f.flush().map_err(|e| crate::error::Failure::from(e.to_string()))?;
+        f.write_all(&bytes[middle..])
+            .map_err(|e| crate::error::Failure::from(e.to_string()))?;
+        f.flush()
+            .map_err(|e| crate::error::Failure::from(e.to_string()))?;
         fault("record-flush")?;
-        f.sync_all().map_err(|e| crate::error::Failure::from(e.to_string()))?;
+        f.sync_all()
+            .map_err(|e| crate::error::Failure::from(e.to_string()))?;
         fault("record-publish")?;
         fs::hard_link(&temp, self.dir.join(format!("record-{generation}")))
             .map_err(|e| crate::error::Failure::from(e.to_string()))?;
@@ -323,7 +343,10 @@ impl Provider for &mut FreshDisk<'_> {
         }
         self.disk.verify(file, own)
     }
-    fn scan(&mut self, visit: &mut dyn FnMut(&[u8]) -> Result<(), crate::error::Failure>) -> Result<(), crate::error::Failure> {
+    fn scan(
+        &mut self,
+        visit: &mut dyn FnMut(&[u8]) -> Result<(), crate::error::Failure>,
+    ) -> Result<(), crate::error::Failure> {
         self.revoke_preparation();
         if self.poisoned {
             return Err("poisoned initialization".into());
@@ -338,7 +361,12 @@ impl Provider for &mut FreshDisk<'_> {
         }
         self.disk.retain(keep)
     }
-    fn publish(&mut self, generation: u64, bytes: &[u8], keep: &[u64]) -> Result<(), crate::error::Failure> {
+    fn publish(
+        &mut self,
+        generation: u64,
+        bytes: &[u8],
+        keep: &[u64],
+    ) -> Result<(), crate::error::Failure> {
         if !self.scanned || self.poisoned {
             return Err("no publication authority".into());
         }

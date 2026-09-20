@@ -792,7 +792,10 @@ mod tests {
         tree.set_active(second);
         pane.refresh(&mut tree);
         assert!(pane.feed_coverage().pending_tree);
-        assert!(pane.entries().is_empty(), "old-room rows must not leak while switching");
+        assert!(
+            pane.entries().is_empty(),
+            "old-room rows must not leak while switching"
+        );
         // The native update loop settles the local selection before the next
         // history refresh; read-only history must not own that transaction.
         tree.commit_room_change();

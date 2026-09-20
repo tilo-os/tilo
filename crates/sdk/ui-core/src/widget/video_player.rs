@@ -7,8 +7,8 @@
 //! [`VideoPlayer::feed_frame`] in-process via openh264, kept working for
 //! callers still migrating onto the engine.
 
-use std::sync::Arc;
 use crate::clock::{Duration, Instant};
+use std::sync::Arc;
 
 use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
@@ -694,7 +694,9 @@ impl VideoPlayer {
 
     /// Native H.264 decoding is unavailable; browser hosts may supply decoded frames.
     #[cfg(target_arch = "wasm32")]
-    pub fn feed_frame(&mut self, _: &[u8]) -> bool { false }
+    pub fn feed_frame(&mut self, _: &[u8]) -> bool {
+        false
+    }
 
     pub fn state(&self) -> PlaybackState {
         self.state

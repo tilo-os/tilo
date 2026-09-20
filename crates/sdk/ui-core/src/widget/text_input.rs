@@ -5,9 +5,9 @@
 //! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
 //! below the caret.
 
+use crate::clock::{Duration, Instant};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use crate::clock::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
@@ -3041,7 +3041,9 @@ impl TextInput {
     fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some(s) = self.selected_str() {
             let owned = s.to_string();
-            if crate::text_selection::try_clipboard_copy(&owned) { self.delete_selection(state, obj_id); }
+            if crate::text_selection::try_clipboard_copy(&owned) {
+                self.delete_selection(state, obj_id);
+            }
         }
     }
 

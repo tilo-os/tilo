@@ -3,7 +3,7 @@
 #[cfg(not(target_os = "linux"))]
 use std::{path::PathBuf, process::Command};
 
-pub use ui::folders::scan::{FolderScan, SkippedEntry, SkipReason, scan_folder};
+pub use ui::folders::scan::{FolderScan, SkipReason, SkippedEntry, scan_folder};
 
 /// Open the host's folder chooser without blocking the UI thread.
 #[cfg(target_os = "linux")]

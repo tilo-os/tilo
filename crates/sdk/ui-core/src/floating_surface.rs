@@ -716,7 +716,9 @@ impl FloatingPlacement {
     /// Restore only app-local presentation; never restore desktop surface authority.
     pub fn restore_local_offset(&mut self, offset: Vec2) {
         self.reset_attached();
-        if offset.x.is_finite() && offset.y.is_finite() { self.attachment = Attachment::App { offset }; }
+        if offset.x.is_finite() && offset.y.is_finite() {
+            self.attachment = Attachment::App { offset };
+        }
     }
 
     pub fn reset_attached(&mut self) {

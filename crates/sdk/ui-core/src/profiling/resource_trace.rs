@@ -9,8 +9,8 @@
 //! The environment switch is read once per process. Disabled spans read no
 //! clock and serialize nothing. Diagnostic I/O can perturb subsequent timing.
 
-use std::sync::OnceLock;
 use crate::clock::Instant;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 

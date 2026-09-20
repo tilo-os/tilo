@@ -62,11 +62,19 @@ struct Config {
 /// deltas the relay dropped them for backpressure and replayed the room on
 /// reconnect. Hosts and benchmarks can override with `publication_window_ms`.
 const PUBLICATION_WINDOW_MS: u64 = 100;
-fn publication_schedule(window_ms: Option<u64>) -> RefCell<crate::admitted_records::PublicationSchedule> {
-    RefCell::new(crate::admitted_records::PublicationSchedule::new(std::time::Duration::from_millis(window_ms.unwrap_or(PUBLICATION_WINDOW_MS))))
+fn publication_schedule(
+    window_ms: Option<u64>,
+) -> RefCell<crate::admitted_records::PublicationSchedule> {
+    RefCell::new(crate::admitted_records::PublicationSchedule::new(
+        std::time::Duration::from_millis(window_ms.unwrap_or(PUBLICATION_WINDOW_MS)),
+    ))
 }
 fn semantics_gate(window_ms: Option<u64>) -> RefCell<crate::semantics_status::SemanticsGate> {
-    RefCell::new(crate::semantics_status::SemanticsGate::new(std::time::Duration::from_millis(window_ms.unwrap_or(crate::semantics_status::SEMANTICS_WINDOW_MS))))
+    RefCell::new(crate::semantics_status::SemanticsGate::new(
+        std::time::Duration::from_millis(
+            window_ms.unwrap_or(crate::semantics_status::SEMANTICS_WINDOW_MS),
+        ),
+    ))
 }
 use crate::storage_key::DiskKey;
 use crate::viewport::{Viewport, ViewportState};
@@ -92,9 +100,9 @@ struct Mount {
     /// changes go out at once.
     semantics: RefCell<crate::semantics_status::SemanticsGate>,
     peer_suspended: bool,
-    peer:Option<u32>,
-    desktop:Option<crate::desktop_host::DesktopHandle>,
-    record:Option<crate::desktop_host::OwnedRecord>,
+    peer: Option<u32>,
+    desktop: Option<crate::desktop_host::DesktopHandle>,
+    record: Option<crate::desktop_host::OwnedRecord>,
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
@@ -272,7 +280,9 @@ impl ApplicationHandler<u64> for Runner {
                     }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                    if m.peer_suspended {return;}
+                    if m.peer_suspended {
+                        return;
+                    }
                     if m.queue_resize() && !m.viewport.suspended() {
                         m.window.request_redraw();
                     }
@@ -286,35 +296,56 @@ impl ApplicationHandler<u64> for Runner {
                 }
                 WindowEvent::Destroyed => {}
                 _ => {
-                    if m.peer_suspended { return; }
+                    if m.peer_suspended {
+                        return;
+                    }
                     let mut event = event;
                     // The old layout is still displayed (stretched by CSS) until
                     // redraw commits the requested viewport. Winit reports the
                     // new physical coordinates, so map pointer/touch back to it.
                     match &mut event {
                         WindowEvent::CursorMoved { position, .. } => {
-                            (position.x, position.y) = m.viewport.map_pointer(position.x, position.y);
+                            (position.x, position.y) =
+                                m.viewport.map_pointer(position.x, position.y);
                         }
                         WindowEvent::Touch(touch) => {
-                            (touch.location.x, touch.location.y) = m.viewport.map_pointer(touch.location.x, touch.location.y);
+                            (touch.location.x, touch.location.y) =
+                                m.viewport.map_pointer(touch.location.x, touch.location.y);
                         }
                         _ => {}
                     }
                     let start = m.metric_start();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
-                    if let Some(desktop) = m.desktop.clone() { desktop.finish_local_activation(&mut m.frame); }
+                    if let Some(desktop) = m.desktop.clone() {
+                        desktop.finish_local_activation(&mut m.frame);
+                    }
                     m.metric_end("input", start);
                     if start.is_some() {
-                        if m.frame.last_send_skipped_relayout() { m.metrics.borrow_mut().count("relayout_skipped"); }
-                        for path in m.frame.take_pointer_redraw_sources() { m.metrics.borrow_mut().note(&path); }
+                        if m.frame.last_send_skipped_relayout() {
+                            m.metrics.borrow_mut().count("relayout_skipped");
+                        }
+                        for path in m.frame.take_pointer_redraw_sources() {
+                            m.metrics.borrow_mut().note(&path);
+                        }
                     }
-                    if matches!(event, WindowEvent::Focused(false)) { m.publish_records(id, true); }
+                    if matches!(event, WindowEvent::Focused(false)) {
+                        m.publish_records(id, true);
+                    }
                     if start.is_some() {
                         let demand = m.frame.frame_schedule();
                         let mut metrics = m.metrics.borrow_mut();
-                        if demand.needs_redraw { metrics.count("input_demand.redraw"); }
-                        if demand.needs_animation_frame { metrics.count("input_demand.animation"); }
-                        if demand.next_wake_deadline.is_some_and(|wake| wake <= ui::clock::Instant::now()) { metrics.count("input_demand.deadline"); }
+                        if demand.needs_redraw {
+                            metrics.count("input_demand.redraw");
+                        }
+                        if demand.needs_animation_frame {
+                            metrics.count("input_demand.animation");
+                        }
+                        if demand
+                            .next_wake_deadline
+                            .is_some_and(|wake| wake <= ui::clock::Instant::now())
+                        {
+                            metrics.count("input_demand.deadline");
+                        }
                     }
                     m.pending = true;
                     m.window.request_redraw();
@@ -330,34 +361,55 @@ impl ApplicationHandler<u64> for Runner {
                 // Deferred publication runs when its window elapses, independently
                 // of presentation; otherwise the loop wakes for it.
                 // The RefCell borrow must end before publishing re-borrows it mutably.
-                let due = if m.peer_suspended { None } else { m.publication.borrow().due() };
+                let due = if m.peer_suspended {
+                    None
+                } else {
+                    m.publication.borrow().due()
+                };
                 if let Some(due) = due {
                     if due <= now {
                         let start = m.metric_start();
                         m.publish_records(id, true);
                         m.metric_end("publish_flush", start);
+                    } else {
+                        deadline =
+                            Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due)));
                     }
-                    else { deadline = Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due))); }
                 }
                 // A throttled semantics tree is delivered at its deadline even
                 // when no further frame is presented, so the accessibility DOM
                 // never lags the screen by more than one window.
-                let semantics_due = if m.peer_suspended || m.hidden || m.error.is_some() { None } else { m.semantics.borrow().due() };
+                let semantics_due = if m.peer_suspended || m.hidden || m.error.is_some() {
+                    None
+                } else {
+                    m.semantics.borrow().due()
+                };
                 if let Some(due) = semantics_due {
                     if due <= now {
                         let start = m.metric_start();
                         m.publish(id);
                         m.metric_end("semantics_flush", start);
+                    } else {
+                        deadline =
+                            Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due)));
                     }
-                    else { deadline = Some(deadline.map_or(due, |old: ui::clock::Instant| old.min(due))); }
                 }
-                if m.peer_suspended || m.hidden || m.error.is_some() || m.gpu.is_none() || m.viewport.suspended() {
+                if m.peer_suspended
+                    || m.hidden
+                    || m.error.is_some()
+                    || m.gpu.is_none()
+                    || m.viewport.suspended()
+                {
                     continue;
                 }
                 let start = m.metric_start();
                 let output = m.frame.frame_schedule();
                 m.metric_end("schedule", start);
-                if m.pending || m.viewport.needs_present() || output.needs_redraw || output.needs_animation_frame {
+                if m.pending
+                    || m.viewport.needs_present()
+                    || output.needs_redraw
+                    || output.needs_animation_frame
+                {
                     m.window.request_redraw();
                 }
                 if let Some(wake) = output.next_wake_deadline {
@@ -384,13 +436,15 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         hydrated,
         status,
     } = request;
-    if config.app == "desktop" { return begin_desktop(event_loop,id,canvas,config,fonts,hydrated,status); }
+    if config.app == "desktop" {
+        return begin_desktop(event_loop, id, canvas, config, fonts, hydrated, status);
+    }
     let definition = match config.app.as_str() {
         "writer" => word_processor::definition(),
         "chat" => chat::definition(),
         _ => return Err(error("unsupported application")),
     };
-    let storage=load_cache(&config.profile,&config.device,&hydrated)?;
+    let storage = load_cache(&config.profile, &config.device, &hydrated)?;
     let records = RecordOwners::portable(storage.clone())
         .open(definition.app_id, &config.room)
         .map_err(error)?;
@@ -401,7 +455,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                 checkout,
                 reveal: None,
             },
-            Err(ui::record::RecordOpenError::MissingRecord) if config.peer.is_none() => LaunchTarget::PrimaryNew,
+            Err(ui::record::RecordOpenError::MissingRecord) if config.peer.is_none() => {
+                LaunchTarget::PrimaryNew
+            }
             Err(e) => return Err(error(e)),
         }
     } else if let Some(record) = &config.record {
@@ -420,9 +476,14 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .load(config.instance)
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
-    let permissions = Rc::new(RefCell::new(if let Some(peer)=config.peer {
+    let permissions = Rc::new(RefCell::new(if let Some(peer) = config.peer {
         crate::peer::permissions(peer).map_err(error)?
-    }else{PermissionContext::from_capabilities(Actor::person(Some(Role::Owner), &config.author),vec![])}));
+    } else {
+        PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Owner), &config.author),
+            vec![],
+        )
+    }));
     let context = HostContext::prepare(
         definition,
         records.clone(),
@@ -496,16 +557,24 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         publication: publication_schedule(config.publication_window_ms),
         semantics: semantics_gate(config.semantics_window_ms),
         peer_suspended: false,
-        peer:config.peer,
-        desktop:None,
-        record:Some(crate::desktop_host::OwnedRecord{app:definition.app_id.into(),store:records,checkout}),
+        peer: config.peer,
+        desktop: None,
+        record: Some(crate::desktop_host::OwnedRecord {
+            app: definition.app_id.into(),
+            store: records,
+            checkout,
+        }),
         window: window.clone(),
         canvas,
         frame,
         storage,
         gpu: None,
         pending: true,
-        viewport: ViewportState::new(Viewport { width: size.width, height: size.height, dpr }),
+        viewport: ViewportState::new(Viewport {
+            width: size.width,
+            height: size.height,
+            dpr,
+        }),
         hidden: false,
         generation: 1,
         frames: 0,
@@ -519,24 +588,110 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     initialize_gpu(id, 1, window);
     Ok(())
 }
-fn begin_desktop(event_loop:&ActiveEventLoop,id:u64,canvas:web_sys::HtmlCanvasElement,config:Config,fonts:JsValue,hydrated:JsValue,status:Function)->Result<(),JsValue>{
-    let peer=config.peer.ok_or_else(||error("canonical desktop requires an admitted certified peer"))?;
-    let state=crate::peer::desktop_state(peer).map_err(error)?;
-    if state.room()!=config.room{return Err(error("desktop room binding mismatch"))}
-    let admission=crate::desktop::admission(&state).map_err(error)?;
-    let storage=load_cache(&config.profile,&config.device,&hydrated)?;
-    let permissions=crate::peer::permissions(peer).map_err(error)?;
-    let system=ui::font_catalog::FontCatalog::product("","en-US").load_bytes(|name|Reflect::get(&fonts,&name.into()).ok().filter(|v|!v.is_undefined()).map(|v|Uint8Array::new(&v).to_vec())).map_err(error)?;
-    let window=Arc::new(event_loop.create_window(Window::default_attributes().with_canvas(Some(canvas.clone())).with_append(false).with_prevent_default(true)).map_err(error)?);
-    let size=window.inner_size();let dpr=window.scale_factor();let wake=proxy()?;
-    let (root,desktop)=crate::desktop_host::DesktopRoot::new(admission,storage.clone(),&config.room,&config.device,&config.author,config.instance,permissions,Arc::new(move||{let _=wake.send_event(id);})).map_err(error)?;
-    let mut frame=FrameHarness::new_with_controlled_inputs(ui::state::State::new(),Box::new(root),((size.width as f64/dpr).max(1.0) as u32,(size.height as f64/dpr).max(1.0) as u32),ui::Theme::dark(),ui::TextRenderer::with_font_system(system),UserId(config.author));
+fn begin_desktop(
+    event_loop: &ActiveEventLoop,
+    id: u64,
+    canvas: web_sys::HtmlCanvasElement,
+    config: Config,
+    fonts: JsValue,
+    hydrated: JsValue,
+    status: Function,
+) -> Result<(), JsValue> {
+    let peer = config
+        .peer
+        .ok_or_else(|| error("canonical desktop requires an admitted certified peer"))?;
+    let state = crate::peer::desktop_state(peer).map_err(error)?;
+    if state.room() != config.room {
+        return Err(error("desktop room binding mismatch"));
+    }
+    let admission = crate::desktop::admission(&state).map_err(error)?;
+    let storage = load_cache(&config.profile, &config.device, &hydrated)?;
+    let permissions = crate::peer::permissions(peer).map_err(error)?;
+    let system = ui::font_catalog::FontCatalog::product("", "en-US")
+        .load_bytes(|name| {
+            Reflect::get(&fonts, &name.into())
+                .ok()
+                .filter(|v| !v.is_undefined())
+                .map(|v| Uint8Array::new(&v).to_vec())
+        })
+        .map_err(error)?;
+    let window = Arc::new(
+        event_loop
+            .create_window(
+                Window::default_attributes()
+                    .with_canvas(Some(canvas.clone()))
+                    .with_append(false)
+                    .with_prevent_default(true),
+            )
+            .map_err(error)?,
+    );
+    let size = window.inner_size();
+    let dpr = window.scale_factor();
+    let wake = proxy()?;
+    let (root, desktop) = crate::desktop_host::DesktopRoot::new(
+        admission,
+        storage.clone(),
+        &config.room,
+        &config.device,
+        &config.author,
+        config.instance,
+        permissions,
+        Arc::new(move || {
+            let _ = wake.send_event(id);
+        }),
+    )
+    .map_err(error)?;
+    let mut frame = FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(root),
+        (
+            (size.width as f64 / dpr).max(1.0) as u32,
+            (size.height as f64 / dpr).max(1.0) as u32,
+        ),
+        ui::Theme::dark(),
+        ui::TextRenderer::with_font_system(system),
+        UserId(config.author),
+    );
     frame.set_input_scale(dpr).map_err(error)?;
-    frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac{ui::platform::Platform::MacOs}else{ui::platform::Platform::Linux}));
+    frame.set_platform_conventions(ui::platform::PlatformConventions::new(if config.mac {
+        ui::platform::Platform::MacOs
+    } else {
+        ui::platform::Platform::Linux
+    }));
     desktop.sync_global_search(&mut frame);
-    let images=std::mem::take(&mut *desktop.images.borrow_mut());
-    let mount=Mount{metrics:Default::default(),published_records:Default::default(),publication:publication_schedule(config.publication_window_ms),semantics:semantics_gate(config.semantics_window_ms),peer_suspended:false,peer:Some(peer),desktop:Some(desktop),record:None,window:window.clone(),canvas,frame,storage,gpu:None,pending:true,viewport:ViewportState::new(Viewport{width:size.width,height:size.height,dpr}),hidden:false,generation:1,frames:0,status:status.clone(),writes:HashMap::new(),images,error:None};
-    MOUNTS.with_borrow_mut(|mounts|mounts.insert(id,mount));emit(&status,serde_json::json!({"phase":"gpu-pending","id":id}));initialize_gpu(id,1,window);Ok(())
+    let images = std::mem::take(&mut *desktop.images.borrow_mut());
+    let mount = Mount {
+        metrics: Default::default(),
+        published_records: Default::default(),
+        publication: publication_schedule(config.publication_window_ms),
+        semantics: semantics_gate(config.semantics_window_ms),
+        peer_suspended: false,
+        peer: Some(peer),
+        desktop: Some(desktop),
+        record: None,
+        window: window.clone(),
+        canvas,
+        frame,
+        storage,
+        gpu: None,
+        pending: true,
+        viewport: ViewportState::new(Viewport {
+            width: size.width,
+            height: size.height,
+            dpr,
+        }),
+        hidden: false,
+        generation: 1,
+        frames: 0,
+        status: status.clone(),
+        writes: HashMap::new(),
+        images,
+        error: None,
+    };
+    MOUNTS.with_borrow_mut(|mounts| mounts.insert(id, mount));
+    emit(&status, serde_json::json!({"phase":"gpu-pending","id":id}));
+    initialize_gpu(id, 1, window);
+    Ok(())
 }
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
     wasm_bindgen_futures::spawn_local(async move {
@@ -607,13 +762,27 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
     });
 }
 impl Mount {
-    fn metric_start(&self) -> Option<web_time::Instant> { self.metrics.borrow().begin() }
-    fn metric_end(&self, stage: &'static str, start: Option<web_time::Instant>) { self.metrics.borrow_mut().end(stage, start); }
-
-    fn owned_records(&self)->Vec<crate::desktop_host::OwnedRecord>{
-        if let Some(desktop)=&self.desktop {desktop.records.borrow().values().cloned().collect()}else{self.record.iter().cloned().collect()}
+    fn metric_start(&self) -> Option<web_time::Instant> {
+        self.metrics.borrow().begin()
     }
-    fn collect_desktop(&mut self){if let Some(desktop)=&self.desktop{self.images.extend(std::mem::take(&mut *desktop.images.borrow_mut()));desktop.sync_global_search(&mut self.frame);}}
+    fn metric_end(&self, stage: &'static str, start: Option<web_time::Instant>) {
+        self.metrics.borrow_mut().end(stage, start);
+    }
+
+    fn owned_records(&self) -> Vec<crate::desktop_host::OwnedRecord> {
+        if let Some(desktop) = &self.desktop {
+            desktop.records.borrow().values().cloned().collect()
+        } else {
+            self.record.iter().cloned().collect()
+        }
+    }
+    fn collect_desktop(&mut self) {
+        if let Some(desktop) = &self.desktop {
+            self.images
+                .extend(std::mem::take(&mut *desktop.images.borrow_mut()));
+            desktop.sync_global_search(&mut self.frame);
+        }
+    }
 
     // ResizeObserver/Winit remains the sole source of viewport notifications.
     // Reading the pair again at redraw also covers scale/size event ordering and
@@ -632,7 +801,14 @@ impl Mount {
         let start = self.metric_start();
         let before = self.frames;
         let result = self.draw_measured();
-        self.metric_end(if self.frames > before { "draw_total" } else { "draw_skipped" }, start);
+        self.metric_end(
+            if self.frames > before {
+                "draw_total"
+            } else {
+                "draw_skipped"
+            },
+            start,
+        );
         result
     }
     fn draw_measured(&mut self) -> Result<(), String> {
@@ -652,7 +828,9 @@ impl Mount {
         self.pending |= self.viewport.needs_present()
             || frame.needs_redraw
             || frame.needs_animation_frame
-            || frame.next_wake_deadline.is_some_and(|wake| wake <= ui::clock::Instant::now());
+            || frame
+                .next_wake_deadline
+                .is_some_and(|wake| wake <= ui::clock::Instant::now());
         if !self.pending {
             return Ok(());
         }
@@ -667,11 +845,17 @@ impl Mount {
         // Configuration changes canvas.width/height on WebGPU, clearing its
         // displayed image. Keep configure -> acquire -> submit -> present in
         // this synchronous redraw callback, with no destructive equal-size resize.
-        if self.viewport.needs_surface_resize(gpu.surface.config.width, gpu.surface.config.height) {
-            gpu.cx.resize_surface(&mut gpu.surface, viewport.width, viewport.height);
+        if self
+            .viewport
+            .needs_surface_resize(gpu.surface.config.width, gpu.surface.config.height)
+        {
+            gpu.cx
+                .resize_surface(&mut gpu.surface, viewport.width, viewport.height);
         }
         let mut acquired = gpu.surface.surface.get_current_texture();
-        if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated) && self.viewport.recover_outdated() {
+        if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated)
+            && self.viewport.recover_outdated()
+        {
             gpu.cx.configure_surface(&gpu.surface);
             acquired = gpu.surface.surface.get_current_texture();
         }
@@ -683,10 +867,15 @@ impl Mount {
             | wgpu::CurrentSurfaceTexture::Occluded => None,
             other => return Err(format!("WebGPU surface unavailable: {other:?}")),
         };
-        let Some(output) = self.viewport.apply_for_acquired_texture(output, |viewport| {
-            self.frame.set_input_scale(viewport.dpr)?;
-            self.frame.resize(viewport.logical_size()).map_err(|e| e.to_string())
-        })? else {
+        let Some(output) = self
+            .viewport
+            .apply_for_acquired_texture(output, |viewport| {
+                self.frame.set_input_scale(viewport.dpr)?;
+                self.frame
+                    .resize(viewport.logical_size())
+                    .map_err(|e| e.to_string())
+            })?
+        else {
             // Keep both the old input/layout geometry and pending work on a
             // skipped acquisition. Winit coalesces the retry into the next rAF.
             self.window.request_redraw();
@@ -694,26 +883,44 @@ impl Mount {
         };
         // Poll only after applying the new viewport. This avoids an old-size
         // layout merely to discover work, followed by a second resize layout.
-        self.metrics.borrow_mut().end("draw_acquire_resize", acquire_start);
+        self.metrics
+            .borrow_mut()
+            .end("draw_acquire_resize", acquire_start);
         let poll_start = self.metrics.borrow().begin();
         if poll_start.is_some() {
             let demand = self.frame.frame_schedule();
             let mut metrics = self.metrics.borrow_mut();
-            if demand.needs_redraw { metrics.count("draw_demand.redraw"); }
-            if demand.needs_animation_frame { metrics.count("draw_demand.animation"); }
-            if demand.next_wake_deadline.is_some_and(|wake| wake <= ui::clock::Instant::now()) { metrics.count("draw_demand.deadline"); }
+            if demand.needs_redraw {
+                metrics.count("draw_demand.redraw");
+            }
+            if demand.needs_animation_frame {
+                metrics.count("draw_demand.animation");
+            }
+            if demand
+                .next_wake_deadline
+                .is_some_and(|wake| wake <= ui::clock::Instant::now())
+            {
+                metrics.count("draw_demand.deadline");
+            }
         }
         self.frame.poll_frame().map_err(|e| e.to_string())?;
-        if let Some(desktop)=&self.desktop {
-            if let Err(error)=desktop.process_global_search(&mut self.frame) {desktop.errors.borrow_mut().push(error);}
+        if let Some(desktop) = &self.desktop {
+            if let Err(error) = desktop.process_global_search(&mut self.frame) {
+                desktop.errors.borrow_mut().push(error);
+            }
         }
         self.metrics.borrow_mut().end("draw_poll", poll_start);
         let snapshot_start = self.metrics.borrow().begin();
         let frame = self.frame.frame_render_input();
-        self.metrics.borrow_mut().end("draw_snapshot", snapshot_start);
+        self.metrics
+            .borrow_mut()
+            .end("draw_snapshot", snapshot_start);
         let render_start = self.metrics.borrow().begin();
         let mut physical = vello::Scene::new();
-        physical.append(frame.scene, Some(ui::scale::composite_transform(viewport.dpr)));
+        physical.append(
+            frame.scene,
+            Some(ui::scale::composite_transform(viewport.dpr)),
+        );
         let handle = &gpu.cx.devices[gpu.surface.dev_id];
         gpu.renderer
             .render_to_texture(
@@ -738,7 +945,9 @@ impl Mount {
         );
         handle.queue.submit([encoder.finish()]);
         output.present();
-        self.metrics.borrow_mut().end("draw_gpu_submit", render_start);
+        self.metrics
+            .borrow_mut()
+            .end("draw_gpu_submit", render_start);
         self.viewport.did_present();
         self.pending = false;
         self.frames += 1;
@@ -751,50 +960,124 @@ impl Mount {
     /// window unless forced. Returns false after a failed publication, which has
     /// already been reported.
     fn publish_records(&self, _id: u64, force: bool) -> bool {
-        let Some(peer) = self.peer.filter(|_| !self.peer_suspended) else { return true; };
-        let changed: Vec<_> = self.owned_records().into_iter()
-            .filter(|record| self.published_records.borrow().changed(peer, &record.app, &record.store, &record.checkout.id))
+        let Some(peer) = self.peer.filter(|_| !self.peer_suspended) else {
+            return true;
+        };
+        let changed: Vec<_> = self
+            .owned_records()
+            .into_iter()
+            .filter(|record| {
+                self.published_records.borrow().changed(
+                    peer,
+                    &record.app,
+                    &record.store,
+                    &record.checkout.id,
+                )
+            })
             .collect();
-        if changed.is_empty() { self.publication.borrow_mut().clear_due(); return true; }
+        if changed.is_empty() {
+            self.publication.borrow_mut().clear_due();
+            return true;
+        }
         let now = ui::clock::Instant::now();
-        let decision = if force { self.publication.borrow_mut().mark_published(now); crate::admitted_records::PublicationDecision::Now }
-            else { self.publication.borrow_mut().decide(now) };
+        let decision = if force {
+            self.publication.borrow_mut().mark_published(now);
+            crate::admitted_records::PublicationDecision::Now
+        } else {
+            self.publication.borrow_mut().decide(now)
+        };
         if let crate::admitted_records::PublicationDecision::Deferred(_) = decision {
-            if self.metric_start().is_some() { self.metrics.borrow_mut().count("publish_deferred"); }
+            if self.metric_start().is_some() {
+                self.metrics.borrow_mut().count("publish_deferred");
+            }
             return true;
         }
         for record in changed {
-            let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
-            let published=self.published_records.borrow_mut().publish(peer,&record.app,&record.store,&record.checkout.id,|document|crate::peer::local_owned_document(peer,&record.app,id,document));
-            if let Err(error)=published{crate::peer::mark_failure(peer,error.clone());emit(&self.status,serde_json::json!({"phase":"failed","error":error}));return false;}
+            let id = if record.checkout.id.is_package_primary() {
+                ""
+            } else {
+                record.checkout.id.as_str()
+            };
+            let published = self.published_records.borrow_mut().publish(
+                peer,
+                &record.app,
+                &record.store,
+                &record.checkout.id,
+                |document| crate::peer::local_owned_document(peer, &record.app, id, document),
+            );
+            if let Err(error) = published {
+                crate::peer::mark_failure(peer, error.clone());
+                emit(
+                    &self.status,
+                    serde_json::json!({"phase":"failed","error":error}),
+                );
+                return false;
+            }
         }
         true
     }
-    fn publish(&self, id: u64) { self.publish_with(id, false); }
+    fn publish(&self, id: u64) {
+        self.publish_with(id, false);
+    }
     /// `force` publishes deferred edits now (close, hide, suspension, focus loss, IME end).
     fn publish_with(&self, id: u64, force: bool) {
         let records_start = self.metric_start();
-        if !self.publish_records(id, force) { return; }
+        if !self.publish_records(id, force) {
+            return;
+        }
         self.metric_end("publish_records", records_start);
         let output_start = self.metric_start();
         let f = self.frame.frame_output();
         self.metric_end("publish_frame_output", output_start);
         let status_start = self.metric_start();
-        let heads=self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>())).unwrap_or_default();
-        let document=self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|automerge::AutoSerde::from(doc).serialize(serde_json::value::Serializer).ok())).flatten();
-        let setup_errors=self.desktop.as_ref().map(|desktop|desktop.errors.borrow().clone()).unwrap_or_default();
+        let heads = self
+            .record
+            .as_ref()
+            .and_then(|record| {
+                record.store.read(&record.checkout.id, |doc| {
+                    doc.base_heads()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                })
+            })
+            .unwrap_or_default();
+        let document = self
+            .record
+            .as_ref()
+            .and_then(|record| {
+                record.store.read(&record.checkout.id, |doc| {
+                    automerge::AutoSerde::from(doc)
+                        .serialize(serde_json::value::Serializer)
+                        .ok()
+                })
+            })
+            .flatten();
+        let setup_errors = self
+            .desktop
+            .as_ref()
+            .map(|desktop| desktop.errors.borrow().clone())
+            .unwrap_or_default();
         // The frame retains the original close reports and their retry owners.
         // Retry clones inspect current durability without discarding that custody.
         let component_close_errors=self.frame.component_close_reports().iter().filter_map(|report|{
             let mut report=report.clone();let _=report.retry_record();let _=report.retry_view();
             (report.record_error.is_some()||report.view_error.is_some()||report.teardown_error.is_some()).then(||serde_json::json!({"record":report.record_error,"view":report.view_error,"teardown":report.teardown_error}))
         }).collect::<Vec<_>>();
-        let pending_intents=self.desktop.as_ref().map(|desktop|desktop.session_requests.borrow().len()).unwrap_or(0);
+        let pending_intents = self
+            .desktop
+            .as_ref()
+            .map(|desktop| desktop.session_requests.borrow().len())
+            .unwrap_or(0);
         let ime=f.ime.map(|i|serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.purpose)}));
         // The semantics tree is the bulk of every status; the host keeps the
         // last tree it received, so an unchanged tree is left out entirely and
         // content-only changes while typing are throttled (see semantics_status).
-        let decision = self.semantics.borrow_mut().decide(&f.semantics, f.ime.as_ref(), ui::clock::Instant::now());
+        let decision = self.semantics.borrow_mut().decide(
+            &f.semantics,
+            f.ime.as_ref(),
+            ui::clock::Instant::now(),
+        );
         let value = serde_json::json!({"phase":if self.error.is_some(){"failed"}else if self.peer_suspended{"suspended"}else{"presented"},"inputSuspended":self.peer_suspended,"id":id,"error":self.error,"frames":self.frames,"gpuGeneration":self.generation,"logicalSize":f.logical_size,"deviceSize":f.device_size,"dpr":self.viewport.applied().dpr,"surfaceSize":self.gpu.as_ref().map(|g|[g.surface.config.width,g.surface.config.height]),"scenePaths":f.scene.encoding().n_paths,"sceneSegments":f.scene.encoding().n_path_segments,"sceneDrawTags":f.scene.encoding().draw_tags.len(),"rootRect":f.semantics.root.rect,"record":self.record.as_ref().map(|record|record.checkout.id.as_str()),"actorId":self.record.as_ref().and_then(|record|record.store.read(&record.checkout.id,|doc|doc.get_actor().to_hex_string())),"desktopErrors":setup_errors,"componentCloseErrors":component_close_errors,"pendingSessionIntents":pending_intents,"sessionIntentStatus":if pending_intents>0{Some("awaiting-native-command-admission")}else{None},"heads":heads,"document":document,"ime":ime});
         let mut text = value.to_string();
         use crate::semantics_status::SemanticsDecision;
@@ -807,10 +1090,20 @@ impl Mount {
                 text.push_str(",\"semantics\":");
                 text.push_str(std::str::from_utf8(gate.text()).unwrap_or("null"));
                 text.push('}');
-                if forced && self.metric_start().is_some() { self.metrics.borrow_mut().count("semantics_forced"); }
+                if forced && self.metric_start().is_some() {
+                    self.metrics.borrow_mut().count("semantics_forced");
+                }
             }
-            SemanticsDecision::Deferred(_) => { if self.metric_start().is_some() { self.metrics.borrow_mut().count("semantics_throttled"); } }
-            SemanticsDecision::Unchanged => { if self.metric_start().is_some() { self.metrics.borrow_mut().count("semantics_unchanged"); } }
+            SemanticsDecision::Deferred(_) => {
+                if self.metric_start().is_some() {
+                    self.metrics.borrow_mut().count("semantics_throttled");
+                }
+            }
+            SemanticsDecision::Unchanged => {
+                if self.metric_start().is_some() {
+                    self.metrics.borrow_mut().count("semantics_unchanged");
+                }
+            }
         }
         emit_text(&self.status, &text);
         self.metric_end("publish_status", status_start);
@@ -829,11 +1122,15 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
     };
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        if m.peer_suspended { return Ok(()); }
+        if m.peer_suspended {
+            return Ok(());
+        }
         let start = m.metric_start();
         m.frame.send_host_event(&WindowEvent::Ime(event));
         m.metric_end("input_ime", start);
-        if kind == "end" { m.publish_records(id, true); }
+        if kind == "end" {
+            m.publish_records(id, true);
+        }
         m.pending = true;
         m.window.request_redraw();
         Ok(())
@@ -860,12 +1157,19 @@ pub fn semantic(
     };
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        if m.peer_suspended { return Ok(false); }
+        if m.peer_suspended {
+            return Ok(false);
+        }
         let desktop = m.desktop.clone();
         crate::clipboard::during_input(&m.status, || match desktop {
-            Some(desktop) => desktop.perform_semantic_input(&mut m.frame, path, target.as_deref(), &action),
-            None => m.frame.perform_semantic_named(path, target.as_deref(), &action),
-        }).map_err(error)?;
+            Some(desktop) => {
+                desktop.perform_semantic_input(&mut m.frame, path, target.as_deref(), &action)
+            }
+            None => m
+                .frame
+                .perform_semantic_named(path, target.as_deref(), &action),
+        })
+        .map_err(error)?;
         m.pending = true;
         m.window.request_redraw();
         Ok(true)
@@ -890,11 +1194,30 @@ pub(crate) fn write_json(w: &PendingWrite) -> serde_json::Value {
 /// WASM memory could be invalidated while IndexedDB awaits its transaction.
 pub(crate) fn write_bytes(w: &PendingWrite) -> Result<JsValue, JsValue> {
     let value = js_sys::Object::new();
-    js_sys::Reflect::set(&value, &"key".into(), &serde_json::to_string(&DiskKey::from(&w.key)).map_err(error)?.into())?;
-    js_sys::Reflect::set(&value, &"bytes".into(), &js_sys::Uint8Array::from(w.value.bytes.as_slice()))?;
-    let actor = w.value.actor.as_ref().map(|bytes| JsValue::from(js_sys::Uint8Array::from(bytes.as_slice()))).unwrap_or(JsValue::NULL);
+    js_sys::Reflect::set(
+        &value,
+        &"key".into(),
+        &serde_json::to_string(&DiskKey::from(&w.key))
+            .map_err(error)?
+            .into(),
+    )?;
+    js_sys::Reflect::set(
+        &value,
+        &"bytes".into(),
+        &js_sys::Uint8Array::from(w.value.bytes.as_slice()),
+    )?;
+    let actor = w
+        .value
+        .actor
+        .as_ref()
+        .map(|bytes| JsValue::from(js_sys::Uint8Array::from(bytes.as_slice())))
+        .unwrap_or(JsValue::NULL);
     js_sys::Reflect::set(&value, &"actor".into(), &actor)?;
-    js_sys::Reflect::set(&value, &"revision".into(), &crate::revision_wire_value(w.revision).into())?;
+    js_sys::Reflect::set(
+        &value,
+        &"revision".into(),
+        &crate::revision_wire_value(w.revision).into(),
+    )?;
     Ok(value.into())
 }
 #[wasm_bindgen]
@@ -902,12 +1225,15 @@ pub fn pending_writes(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
         let start = m.metric_start();
-        for record in m.owned_records(){let _ = record.store.try_flush();}
+        for record in m.owned_records() {
+            let _ = record.store.try_flush();
+        }
         let writes = m.storage.pending_writes();
         for w in &writes {
             m.writes.insert(w.revision, w.clone());
         }
-        let result = serde_json::to_string(&writes.iter().map(write_json).collect::<Vec<_>>()).map_err(error);
+        let result = serde_json::to_string(&writes.iter().map(write_json).collect::<Vec<_>>())
+            .map_err(error);
         m.metric_end("persistence", start);
         result
     })
@@ -990,7 +1316,9 @@ pub fn clipboard_event(
     crate::clipboard::during(transfer, || {
         MOUNTS.with_borrow_mut(|m| {
             let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-            if m.peer_suspended { return Ok(false); }
+            if m.peer_suspended {
+                return Ok(false);
+            }
             let mut modifiers =
                 if m.frame.platform_conventions().platform() == ui::platform::Platform::MacOs {
                     winit::keyboard::ModifiersState::SUPER
@@ -1127,8 +1455,15 @@ pub fn complete_asset(
 }
 
 #[wasm_bindgen]
-pub fn retry_asset(id:u64,loader:usize,url:&str)->Result<bool,JsValue>{
-    MOUNTS.with_borrow_mut(|mounts|{let mount=mounts.get_mut(&id).ok_or_else(||error("closed mount"))?;let loader=mount.images.get_mut(loader).ok_or_else(||error("unknown image loader"))?;Ok(loader.retry(url))})
+pub fn retry_asset(id: u64, loader: usize, url: &str) -> Result<bool, JsValue> {
+    MOUNTS.with_borrow_mut(|mounts| {
+        let mount = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        let loader = mount
+            .images
+            .get_mut(loader)
+            .ok_or_else(|| error("unknown image loader"))?;
+        Ok(loader.retry(url))
+    })
 }
 
 /// Publish the DOM event's modifier snapshot before Winit dispatches its key.
@@ -1149,7 +1484,9 @@ pub fn modifiers(
     flags.set(M::SUPER, meta);
     MOUNTS.with_borrow_mut(|mounts| {
         let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
-        if m.peer_suspended {return Ok(());}
+        if m.peer_suspended {
+            return Ok(());
+        }
         m.frame.send_host_event(&WindowEvent::ModifiersChanged(
             winit::event::Modifiers::from(flags),
         ));
@@ -1160,7 +1497,9 @@ pub fn modifiers(
 pub fn visible(id: u64, visible: bool) {
     MOUNTS.with_borrow_mut(|mounts| {
         if let Some(m) = mounts.get_mut(&id) {
-            if !visible { m.publish_records(id, true); }
+            if !visible {
+                m.publish_records(id, true);
+            }
             m.hidden = !visible;
             if visible {
                 m.pending = true;
@@ -1213,7 +1552,11 @@ pub fn component_close_count() -> usize {
     CLOSED.with_borrow(|closed| closed.len())
 }
 
-pub(crate) fn load_cache(profile:&str,device:&str,hydrated:&JsValue)->Result<PortableStorage,JsValue>{
+pub(crate) fn load_cache(
+    profile: &str,
+    device: &str,
+    hydrated: &JsValue,
+) -> Result<PortableStorage, JsValue> {
     let storage = CACHES.with_borrow_mut(|c| {
         let key = (profile.to_owned(), device.to_owned());
         if let Some(cache) = c.get(&key) {
@@ -1231,53 +1574,99 @@ pub(crate) fn load_cache(profile:&str,device:&str,hydrated:&JsValue)->Result<Por
             &storage,
             key.as_deref(),
             bytes,
-            (!actor.is_null() && !actor.is_undefined())
-                .then(|| Uint8Array::new(&actor).to_vec()),
-        ).map_err(error)?;
+            (!actor.is_null() && !actor.is_undefined()).then(|| Uint8Array::new(&actor).to_vec()),
+        )
+        .map_err(error)?;
     }
     Ok(storage)
 }
 
-pub(crate) fn refresh_peer_mounts(peer:u32){
- let state=crate::peer::desktop_state(peer);let permissions=crate::peer::permissions(peer);
- MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(peer)){
-  if let Some(desktop)=&mount.desktop {
-    // A retained document is not a continuing read grant. Withdraw history
-    // until a successful admission is reconciled, including record-level loss.
-    if state.is_err() || permissions.is_err() { desktop.invalidate_history(); }
-    if let Ok(permissions)=&permissions{*desktop.permissions.borrow_mut()=permissions.clone();}
-    match (&state,&permissions){
-      (Ok(state),Ok(permissions))=>{if let Err(error)=desktop.admit(state,permissions.clone()){desktop.invalidate_history();desktop.errors.borrow_mut().push(error);}else{mount.peer_suspended=false;}},
-      (Err(reason),_) if reason.contains("forbidden")||reason.contains("revoked")=>{mount.peer_suspended=true;desktop.errors.borrow_mut().push(reason.clone());},
-      (_,Err(reason))=>{mount.peer_suspended=true;desktop.errors.borrow_mut().push(reason.clone());},
-      _=>{}
+pub(crate) fn refresh_peer_mounts(peer: u32) {
+    let state = crate::peer::desktop_state(peer);
+    let permissions = crate::peer::permissions(peer);
+    MOUNTS.with_borrow_mut(|mounts| {
+        for mount in mounts.values_mut().filter(|mount| mount.peer == Some(peer)) {
+            if let Some(desktop) = &mount.desktop {
+                // A retained document is not a continuing read grant. Withdraw history
+                // until a successful admission is reconciled, including record-level loss.
+                if state.is_err() || permissions.is_err() {
+                    desktop.invalidate_history();
+                }
+                if let Ok(permissions) = &permissions {
+                    *desktop.permissions.borrow_mut() = permissions.clone();
+                }
+                match (&state, &permissions) {
+                    (Ok(state), Ok(permissions)) => {
+                        if let Err(error) = desktop.admit(state, permissions.clone()) {
+                            desktop.invalidate_history();
+                            desktop.errors.borrow_mut().push(error);
+                        } else {
+                            mount.peer_suspended = false;
+                        }
+                    }
+                    (Err(reason), _)
+                        if reason.contains("forbidden") || reason.contains("revoked") =>
+                    {
+                        mount.peer_suspended = true;
+                        desktop.errors.borrow_mut().push(reason.clone());
+                    }
+                    (_, Err(reason)) => {
+                        mount.peer_suspended = true;
+                        desktop.errors.borrow_mut().push(reason.clone());
+                    }
+                    _ => {}
+                }
+            }
+            mount.frame.relayout();
+            mount.collect_desktop();
+            mount.pending = true;
+            mount.window.request_redraw();
+        }
+    });
+}
+
+#[wasm_bindgen]
+pub fn rebind_peer(old: u32, new: u32) {
+    MOUNTS.with_borrow_mut(|mounts| {
+        for mount in mounts.values_mut().filter(|mount| mount.peer == Some(old)) {
+            mount.peer = Some(new);
+            mount.peer_suspended = false;
+            mount.publication.borrow_mut().reset();
+            mount.queue_resize();
+            mount.frame.relayout();
+            mount.pending = true;
+            mount.window.request_redraw();
+        }
+    });
+}
+
+#[wasm_bindgen]
+pub fn suspend_peer(peer: u32, suspended: bool) -> Result<(), JsValue> {
+    if suspended {
+        prepare_peer_remote(peer).map_err(error)?;
     }
-  }
-  mount.frame.relayout();mount.collect_desktop();mount.pending=true;mount.window.request_redraw();
- });
+    MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(peer)){mount.peer_suspended=suspended;emit(&mount.status,serde_json::json!({"phase":if suspended{"suspended"}else{"presented"},"inputSuspended":suspended}));});
+    Ok(())
 }
 
-#[wasm_bindgen]
-pub fn rebind_peer(old:u32,new:u32){MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(old)){mount.peer=Some(new);mount.peer_suspended=false;mount.publication.borrow_mut().reset();mount.queue_resize();mount.frame.relayout();mount.pending=true;mount.window.request_redraw();});}
-
-#[wasm_bindgen]
-pub fn suspend_peer(peer:u32,suspended:bool)->Result<(),JsValue>{
- if suspended { prepare_peer_remote(peer).map_err(error)?; }
- MOUNTS.with_borrow_mut(|mounts|for mount in mounts.values_mut().filter(|mount|mount.peer==Some(peer)){mount.peer_suspended=suspended;emit(&mount.status,serde_json::json!({"phase":if suspended{"suspended"}else{"presented"},"inputSuspended":suspended}));});
- Ok(())
-}
-
-pub(crate) fn prepare_peer_remote(peer:u32)->Result<(),String>{
- MOUNTS.with_borrow(|mounts|{
-  for mount in mounts.values().filter(|mount|mount.peer==Some(peer)){
-   for record in mount.owned_records(){
-       let document=crate::admitted_records::prepare_remote_owned(&record.store,&record.checkout.id)?;
-       let id=if record.checkout.id.is_package_primary(){""}else{record.checkout.id.as_str()};
-       crate::peer::local_owned_document(peer,&record.app,id,document)?;
-   }
-  }
-  Ok(())
- })
+pub(crate) fn prepare_peer_remote(peer: u32) -> Result<(), String> {
+    MOUNTS.with_borrow(|mounts| {
+        for mount in mounts.values().filter(|mount| mount.peer == Some(peer)) {
+            for record in mount.owned_records() {
+                let document = crate::admitted_records::prepare_remote_owned(
+                    &record.store,
+                    &record.checkout.id,
+                )?;
+                let id = if record.checkout.id.is_package_primary() {
+                    ""
+                } else {
+                    record.checkout.id.as_str()
+                };
+                crate::peer::local_owned_document(peer, &record.app, id, document)?;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// Caller projection is supplied only by the session's durable private client.
@@ -1285,7 +1674,9 @@ pub(crate) fn prepare_peer_remote(peer:u32)->Result<(),String>{
 pub fn caller_actions(id: u64, json: &str) -> Result<(), JsValue> {
     let resources = crate::action_palette::resources(json).map_err(error)?;
     MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts.get_mut(&id).ok_or_else(|| error("action surface disposed"))?;
+        let mount = mounts
+            .get_mut(&id)
+            .ok_or_else(|| error("action surface disposed"))?;
         mount.frame.set_caller_actions(resources);
         mount.pending = true;
         mount.window.request_redraw();
@@ -1296,11 +1687,21 @@ pub fn caller_actions(id: u64, json: &str) -> Result<(), JsValue> {
 #[wasm_bindgen]
 pub fn take_caller_action(id: u64) -> Result<Option<String>, JsValue> {
     MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts.get_mut(&id).ok_or_else(|| error("action surface disposed"))?;
-        if mount.peer_suspended { return Ok(None); }
-        mount.frame.take_caller_operation().map(|pending| {
-            crate::action_palette::request(pending).map(|value| value.to_string()).map_err(error)
-        }).transpose()
+        let mount = mounts
+            .get_mut(&id)
+            .ok_or_else(|| error("action surface disposed"))?;
+        if mount.peer_suspended {
+            return Ok(None);
+        }
+        mount
+            .frame
+            .take_caller_operation()
+            .map(|pending| {
+                crate::action_palette::request(pending)
+                    .map(|value| value.to_string())
+                    .map_err(error)
+            })
+            .transpose()
     })
 }
 
@@ -1321,10 +1722,14 @@ pub fn pending_desktop_command(id: u64) -> Result<Option<String>, JsValue> {
 pub fn acknowledge_desktop_command(id: u64, invocation: &str) -> Result<(), JsValue> {
     let invocation: uuid::Uuid = invocation.parse().map_err(error)?;
     MOUNTS.with_borrow_mut(|mounts| {
-        let mount = mounts.get_mut(&id).ok_or_else(|| error("desktop disposed"))?;
+        let mount = mounts
+            .get_mut(&id)
+            .ok_or_else(|| error("desktop disposed"))?;
         if let Some(desktop) = &mount.desktop {
             let mut pending = desktop.session_requests.borrow_mut();
-            if pending.first().is_some_and(|(id, _)| *id == invocation) { pending.remove(0); }
+            if pending.first().is_some_and(|(id, _)| *id == invocation) {
+                pending.remove(0);
+            }
         }
         mount.pending = true;
         mount.window.request_redraw();
@@ -1335,15 +1740,23 @@ pub fn acknowledge_desktop_command(id: u64, invocation: &str) -> Result<(), JsVa
 #[wasm_bindgen]
 pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
     MOUNTS.with_borrow(|mounts| {
-        let mount=mounts.get(&id).ok_or_else(||error("Desktop disposed"))?;
-        Ok(mount.desktop.as_ref().map(|d| d.navigation.borrow().to_string()))
+        let mount = mounts.get(&id).ok_or_else(|| error("Desktop disposed"))?;
+        Ok(mount
+            .desktop
+            .as_ref()
+            .map(|d| d.navigation.borrow().to_string()))
     })
 }
 #[wasm_bindgen]
 pub fn desktop_navigation_revision(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow(|mounts| {
-        let mount=mounts.get(&id).ok_or_else(||error("Desktop disposed"))?;
-        Ok(mount.desktop.as_ref().map(|d|d.navigation_revision.get()).unwrap_or(0).to_string())
+        let mount = mounts.get(&id).ok_or_else(|| error("Desktop disposed"))?;
+        Ok(mount
+            .desktop
+            .as_ref()
+            .map(|d| d.navigation_revision.get())
+            .unwrap_or(0)
+            .to_string())
     })
 }
 #[wasm_bindgen]
@@ -1362,13 +1775,21 @@ pub fn desktop_input_ownership(id: u64) -> Result<String, JsValue> {
 
 #[wasm_bindgen]
 pub fn desktop_navigate(id: u64, command: &str) -> Result<Option<String>, JsValue> {
-    let command=serde_json::from_str(command).map_err(error)?;
+    let command = serde_json::from_str(command).map_err(error)?;
     MOUNTS.with_borrow_mut(|mounts| {
-        let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
-        if mount.peer_suspended { return Err(error("Desktop unavailable while peer is suspended")); }
-        let desktop=mount.desktop.clone().ok_or_else(||error("Desktop navigation unavailable"))?;
-        let invocation=desktop.navigate(&mut mount.frame, command).map_err(error)?;
-        mount.pending=true; mount.window.request_redraw();
+        let mount = mounts
+            .get_mut(&id)
+            .ok_or_else(|| error("Desktop disposed"))?;
+        if mount.peer_suspended {
+            return Err(error("Desktop unavailable while peer is suspended"));
+        }
+        let desktop = mount
+            .desktop
+            .clone()
+            .ok_or_else(|| error("Desktop navigation unavailable"))?;
+        let invocation = desktop.navigate(&mut mount.frame, command).map_err(error)?;
+        mount.pending = true;
+        mount.window.request_redraw();
         Ok(invocation)
     })
 }
@@ -1376,37 +1797,67 @@ pub fn desktop_navigate(id: u64, command: &str) -> Result<Option<String>, JsValu
 #[wasm_bindgen]
 pub fn desktop_command_search(id: u64, generation: &str, query: &str) -> Result<(), JsValue> {
     MOUNTS.with_borrow_mut(|mounts| {
-        let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
-        if mount.peer_suspended { return Err(error("Desktop suspended")); }
-        let desktop=mount.desktop.as_ref().ok_or_else(||error("Desktop search unavailable"))?;
-        if desktop.navigation.borrow()["generation"].as_str()!=Some(generation) { return Err(error("Stale desktop surface")); }
-        if query.len()>512 { return Err(error("Search is too long")); }
+        let mount = mounts
+            .get_mut(&id)
+            .ok_or_else(|| error("Desktop disposed"))?;
+        if mount.peer_suspended {
+            return Err(error("Desktop suspended"));
+        }
+        let desktop = mount
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop search unavailable"))?;
+        if desktop.navigation.borrow()["generation"].as_str() != Some(generation) {
+            return Err(error("Stale desktop surface"));
+        }
+        if query.len() > 512 {
+            return Err(error("Search is too long"));
+        }
         mount.frame.open_caller_search(query).map_err(error)?;
-        mount.pending=true; mount.window.request_redraw(); Ok(())
+        mount.pending = true;
+        mount.window.request_redraw();
+        Ok(())
     })
 }
 
 /// Full system search; the caller-only commands opener remains separate.
 #[wasm_bindgen]
-pub fn desktop_global_search(id:u64,generation:&str,query:&str)->Result<(),JsValue> {
+pub fn desktop_global_search(id: u64, generation: &str, query: &str) -> Result<(), JsValue> {
     MOUNTS.with_borrow_mut(|mounts| {
-        let mount=mounts.get_mut(&id).ok_or_else(||error("Desktop disposed"))?;
-        if mount.peer_suspended {return Err(error("Desktop suspended"));}
-        let desktop=mount.desktop.as_ref().ok_or_else(||error("Desktop search unavailable"))?;
-        desktop.open_global_search(&mut mount.frame,generation,query).map_err(error)?;
-        mount.pending=true;mount.window.request_redraw();Ok(())
+        let mount = mounts
+            .get_mut(&id)
+            .ok_or_else(|| error("Desktop disposed"))?;
+        if mount.peer_suspended {
+            return Err(error("Desktop suspended"));
+        }
+        let desktop = mount
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop search unavailable"))?;
+        desktop
+            .open_global_search(&mut mount.frame, generation, query)
+            .map_err(error)?;
+        mount.pending = true;
+        mount.window.request_redraw();
+        Ok(())
     })
 }
 
 /// Opt-in bounded diagnostic capture; disabled by default and never persisted.
 #[wasm_bindgen]
 pub fn configure_frame_metrics(enabled: bool) {
-    MOUNTS.with_borrow_mut(|mounts| for mount in mounts.values_mut() {
-        mount.metrics.borrow_mut().configure(enabled);
-        mount.frame.set_pointer_redraw_diagnostics(enabled);
-        // Per-pass layout timing (sync, build/compute, apply, draw, input) for
-        // every frame the harness renders while metrics are on.
-        if enabled { mount.frame.begin_profiling(); } else { mount.frame.end_profiling(); }
+    MOUNTS.with_borrow_mut(|mounts| {
+        for mount in mounts.values_mut() {
+            mount.metrics.borrow_mut().configure(enabled);
+            mount.frame.set_pointer_redraw_diagnostics(enabled);
+            // Per-pass layout timing (sync, build/compute, apply, draw, input) for
+            // every frame the harness renders while metrics are on.
+            if enabled {
+                mount.frame.begin_profiling();
+            } else {
+                mount.frame.end_profiling();
+            }
+        }
     });
 }
 #[wasm_bindgen]

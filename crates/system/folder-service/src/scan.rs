@@ -287,5 +287,4 @@ mod tests {
 
         assert!(open_directory_nofollow(&parent_handle, Path::new("selected"), &expected).is_err());
     }
-
 }

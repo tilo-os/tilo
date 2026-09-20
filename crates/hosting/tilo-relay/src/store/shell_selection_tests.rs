@@ -85,9 +85,7 @@ fn admit_frames_with_origin(
         let outcome = peer
             .receive_from(
                 if retained {
-                    qos_peer_state::TransportOrigin::RetainedRelayDelta(
-                        author_device_public_key,
-                    )
+                    qos_peer_state::TransportOrigin::RetainedRelayDelta(author_device_public_key)
                 } else {
                     qos_peer_state::TransportOrigin::RelayDelta(author_device_public_key)
                 },

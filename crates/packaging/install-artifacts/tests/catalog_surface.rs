@@ -16,7 +16,8 @@ fn duplicate_and_positional_catalogs_are_rejected() {
     let duplicate = r#"{"schema":1,"schema":1,"tag":"unreleased","releases":[]}"#;
     assert!(catalog_data::parse_catalog(duplicate).is_err());
     assert!(catalog_data::parse_catalog(r#"[1,"unreleased",[]]"#).is_err());
-    let valid = catalog_data::parse_catalog(r#"{"schema":1,"tag":"unreleased","releases":[]}"#).unwrap();
+    let valid =
+        catalog_data::parse_catalog(r#"{"schema":1,"tag":"unreleased","releases":[]}"#).unwrap();
     assert_eq!(valid.schema, 1);
     assert_eq!(valid.tag, "unreleased");
     assert!(valid.releases.is_empty());

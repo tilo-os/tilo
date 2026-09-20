@@ -348,8 +348,13 @@ impl GroupRow {
     /// shell each frame from compositor state. `(None, false)` restores
     /// normal tiling exactly.
     pub fn set_external_navigation(&mut self, external: bool) {
-        if self.external_navigation != external { self.external_navigation = external; self.structure_dirty = true; }
-        for group in &mut self.groups { group.set_external_navigation(external); }
+        if self.external_navigation != external {
+            self.external_navigation = external;
+            self.structure_dirty = true;
+        }
+        for group in &mut self.groups {
+            group.set_external_navigation(external);
+        }
     }
     pub fn set_fullscreen(&mut self, fullscreen_group: Option<u64>, hidden: bool) {
         if self.fullscreen_group != fullscreen_group || self.hidden != hidden {
@@ -648,7 +653,11 @@ impl GroupRow {
         loop {
             if let Some(index) = self.node_ids.iter().position(|node| *node == target) {
                 let id = self.laid_spans.get(index)?.0;
-                return self.groups.iter().any(|group| group.id == id && !group.is_closing()).then_some(id);
+                return self
+                    .groups
+                    .iter()
+                    .any(|group| group.id == id && !group.is_closing())
+                    .then_some(id);
             }
             target = tree.parent(target)?;
         }
@@ -728,7 +737,11 @@ impl GroupRow {
             sx -= left_bound - gr.x0;
         }
         let viewport = self.rect.width().max(1.0);
-        let upper = if self.absolute_pan { self.max_scroll_x() } else { self.max_scroll_x().max(viewport * 3.0) };
+        let upper = if self.absolute_pan {
+            self.max_scroll_x()
+        } else {
+            self.max_scroll_x().max(viewport * 3.0)
+        };
         sx = sx.clamp(0.0, upper);
         ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
     }
@@ -1482,7 +1495,10 @@ impl Widget for GroupRow {
     ) -> NodeId {
         self.node_ids.clear();
         if self.external_navigation && self.hidden {
-            let node = taffy.leaf_node(Style { display: Display::None, ..Default::default() });
+            let node = taffy.leaf_node(Style {
+                display: Display::None,
+                ..Default::default()
+            });
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
         }
@@ -1511,7 +1527,11 @@ impl Widget for GroupRow {
         // Grow/truncate the handle pool to `max(0, N-1)`; truncating from
         // the tail is fine since an active drag's handle would have had
         // its neighbours change structurally anyway.
-        let desired_handles = if self.external_navigation { 0 } else { self.groups.len().saturating_sub(1) };
+        let desired_handles = if self.external_navigation {
+            0
+        } else {
+            self.groups.len().saturating_sub(1)
+        };
         if self.handles.len() < desired_handles {
             self.handles
                 .extend((self.handles.len()..desired_handles).map(|_| ResizeHandle::new()));
@@ -1609,7 +1629,10 @@ impl Widget for GroupRow {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if self.external_navigation && self.hidden { self.rect = Rect::ZERO; return; }
+        if self.external_navigation && self.hidden {
+            self.rect = Rect::ZERO;
+            return;
+        }
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(l.location.x),
@@ -1660,7 +1683,11 @@ impl Widget for GroupRow {
         // `max_scroll_x` alone would reset scroll every frame on a
         // single-group strip, killing the "scroll into empty space" feel.
         let viewport = self.rect.width().max(1.0);
-        let upper = if self.absolute_pan { self.max_scroll_x() } else { self.max_scroll_x().max(viewport * 3.0) };
+        let upper = if self.absolute_pan {
+            self.max_scroll_x()
+        } else {
+            self.max_scroll_x().max(viewport * 3.0)
+        };
         if self.scroll_x > upper {
             self.scroll_x = upper;
         }
@@ -1697,7 +1724,9 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.external_navigation && self.hidden { return; }
+        if self.external_navigation && self.hidden {
+            return;
+        }
         self.scroll_dirty = false;
         // Clip to the row's rect: `content_width` routinely exceeds
         // `rect.width()`, so off-screen-right groups would bleed past
@@ -1742,7 +1771,9 @@ impl Widget for GroupRow {
         _node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if self.external_navigation && self.hidden { return; }
+        if self.external_navigation && self.hidden {
+            return;
+        }
         // Track the cursor so our post-dispatch detach sweep can hit-test
         // sibling bars even after a child has swallowed the event.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2092,7 +2123,11 @@ impl GroupRow {
     fn sync_handle_neighbours(&mut self) {
         debug_assert_eq!(
             self.handles.len(),
-            if self.external_navigation { 0 } else { self.groups.len().saturating_sub(1) },
+            if self.external_navigation {
+                0
+            } else {
+                self.groups.len().saturating_sub(1)
+            },
             "ResizeHandle pool must mirror inter-group gap count after build_layout",
         );
         for (i, h) in self.handles.iter_mut().enumerate() {

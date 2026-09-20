@@ -385,7 +385,13 @@ pub(crate) enum ResourceRequest<'a> {
 impl ResourceRequest<'_> {
     /// Drain failures belong to one custody boundary; healthy siblings still run.
     pub(crate) fn visit<W: Widget + ?Sized>(&mut self, root: &mut W) -> Result<(), DoorError> {
-        if matches!(self, Self::Feedback { delivered: true, .. }) {
+        if matches!(
+            self,
+            Self::Feedback {
+                delivered: true,
+                ..
+            }
+        ) {
             return Ok(());
         }
         match root.visit_resource_owners_mut(self) {
@@ -454,8 +460,15 @@ impl ResourceRequest<'_> {
             };
             if selected {
                 match self {
-                    Self::Feedback { target, outcome, delivered } if !*delivered => {
-                        target.owner.validate().map_err(|error| refused("record_unavailable", error))?;
+                    Self::Feedback {
+                        target,
+                        outcome,
+                        delivered,
+                    } if !*delivered => {
+                        target
+                            .owner
+                            .validate()
+                            .map_err(|error| refused("record_unavailable", error))?;
                         // Exact current owner only. The callback receives no document
                         // loan; default forwarding stops at nested owner boundaries.
                         live.on_control_invocation_result(&target.address, outcome);
@@ -534,13 +547,29 @@ pub(crate) fn notify_legacy_control_invocation_result(
     target: &LegacyResourceTarget,
     outcome: &Result<crate::widget::ResourceOperationStart, DoorError>,
 ) -> Result<(), DoorError> {
-    target.owner.validate().map_err(|error| refused("record_unavailable", error))?;
-    let mut request = ResourceRequest::Feedback { target, outcome, delivered: false };
+    target
+        .owner
+        .validate()
+        .map_err(|error| refused("record_unavailable", error))?;
+    let mut request = ResourceRequest::Feedback {
+        target,
+        outcome,
+        delivered: false,
+    };
     root.visit_resource_owners_mut(&mut request)?;
-    if matches!(request, ResourceRequest::Feedback { delivered: true, .. }) {
+    if matches!(
+        request,
+        ResourceRequest::Feedback {
+            delivered: true,
+            ..
+        }
+    ) {
         Ok(())
     } else {
-        Err(refused("closed_lifetime", "The originating control owner is no longer mounted or interactive"))
+        Err(refused(
+            "closed_lifetime",
+            "The originating control owner is no longer mounted or interactive",
+        ))
     }
 }
 

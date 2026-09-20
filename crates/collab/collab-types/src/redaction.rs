@@ -21,8 +21,8 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use web_time::SystemTime;
 use thiserror::Error;
+use web_time::SystemTime;
 
 use crate::canonical::{CanonicalError, canonical_bytes, from_canonical_bytes};
 use crate::channel::ArtifactId;

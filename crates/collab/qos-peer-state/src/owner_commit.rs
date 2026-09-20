@@ -61,15 +61,26 @@ impl OwnerCommitRequest {
             return Err("owner commit requires the exact canonical room UUID".into());
         }
         let (target, bytes) = match &self.operation {
-            CommitOperation::DesktopCommand { invocation, caller, command } => {
-                if invocation.is_nil() || command.source.room != self.room
-                    || command.source.heads.is_empty() || command.source.heads.len() > 128
+            CommitOperation::DesktopCommand {
+                invocation,
+                caller,
+                command,
+            } => {
+                if invocation.is_nil()
+                    || command.source.room != self.room
+                    || command.source.heads.is_empty()
+                    || command.source.heads.len() > 128
                     || caller.capabilities.can_act_as_host
                 {
                     return Err("invalid desktop owner command binding".into());
                 }
-                (CommitTarget::DesktopCommand { invocation: *invocation },
-                 postcard::to_allocvec(&(invocation, caller, command)).map_err(|e| e.to_string())?)
+                (
+                    CommitTarget::DesktopCommand {
+                        invocation: *invocation,
+                    },
+                    postcard::to_allocvec(&(invocation, caller, command))
+                        .map_err(|e| e.to_string())?,
+                )
             }
             CommitOperation::Document {
                 app,

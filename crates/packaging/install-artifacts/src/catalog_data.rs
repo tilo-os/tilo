@@ -220,9 +220,7 @@ pub fn parse_catalog(raw: &str) -> Result<Catalog, String> {
                 &media.arch
             }
             CatalogRelease::Internal(internal) => {
-                use crate::bundle::{
-                    MAX_MANIFEST_BYTES, canonical_digest, identifier,
-                };
+                use crate::bundle::{MAX_MANIFEST_BYTES, canonical_digest, identifier};
                 if !identifier(&internal.release_id)
                     || !canonical_digest(&internal.manifest_sha256, 64)
                     || internal.manifest_size == 0

@@ -36,17 +36,33 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
     for _ in 0..3 {
         app.sync(&mut doc, &ROOT);
     }
-    assert!(!app.needs_redraw(), "an unchanged document must not repaint the canonical app");
+    assert!(
+        !app.needs_redraw(),
+        "an unchanged document must not repaint the canonical app"
+    );
 
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.new_leaf(taffy::style::Style::default()).unwrap();
     let device_id = winit::event::DeviceId::dummy();
     let (mut handled, mut focus) = (false, None);
     app.handle_event(
-        &WindowEvent::CursorMoved { device_id, position: winit::dpi::PhysicalPosition::new(5.0, 5.0) },
-        1.0, &Default::default(), &mut doc, &ROOT, &mut handled, &mut focus, node, &taffy,
+        &WindowEvent::CursorMoved {
+            device_id,
+            position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
+        },
+        1.0,
+        &Default::default(),
+        &mut doc,
+        &ROOT,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
     );
-    assert!(!handled && !app.needs_redraw(), "unconsumed pointer motion must not repaint");
+    assert!(
+        !handled && !app.needs_redraw(),
+        "unconsumed pointer motion must not repaint"
+    );
 
     doc.put(ROOT, "remote-change", "newer").unwrap();
     doc.commit();
@@ -54,12 +70,26 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
     assert!(app.needs_redraw(), "a document change repaints");
     app.mark_drawn();
     app.sync(&mut doc, &ROOT);
-    assert!(!app.needs_redraw(), "the change is absorbed after one paint");
+    assert!(
+        !app.needs_redraw(),
+        "the change is absorbed after one paint"
+    );
 
     let (mut handled, mut focus) = (false, None);
     app.handle_event(
-        &WindowEvent::MouseInput { device_id, state: ElementState::Pressed, button: MouseButton::Left },
-        1.0, &Default::default(), &mut doc, &ROOT, &mut handled, &mut focus, node, &taffy,
+        &WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        1.0,
+        &Default::default(),
+        &mut doc,
+        &ROOT,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
     );
     assert!(app.needs_redraw(), "a press repaints");
 }
@@ -126,10 +156,7 @@ fn canonical_composer_exports_ime_purpose_through_app_root() {
 #[test]
 fn canonical_composer_semantics_follow_the_actual_editor_focus() {
     let (mut frame, _records, _checkout) = semantic_component_harness("chat-focused-composer");
-    fn find<'a>(
-        node: &'a ui::a11y::AccessNode,
-        target: &str,
-    ) -> Option<&'a ui::a11y::AccessNode> {
+    fn find<'a>(node: &'a ui::a11y::AccessNode, target: &str) -> Option<&'a ui::a11y::AccessNode> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node);
         }
@@ -142,7 +169,11 @@ fn canonical_composer_semantics_follow_the_actual_editor_focus() {
         node.semantics
             .as_ref()
             .and_then(|semantic| find(semantic, target))
-            .or_else(|| node.children.iter().find_map(|child| inspect(child, target)))
+            .or_else(|| {
+                node.children
+                    .iter()
+                    .find_map(|child| inspect(child, target))
+            })
     }
     fn focused_count(node: &ui::headless::InspectionNode) -> usize {
         fn access(node: &ui::a11y::AccessNode) -> usize {
@@ -455,31 +486,87 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     }
 }
 
-
 #[test]
 fn semantic_composer_enter_shift_enter_and_empty_clear_use_the_real_input_path() {
     let (mut frame, records, checkout) = semantic_component_harness("chat-semantic-enter");
     let owner = semantic_owner_path(&frame.inspection().root, "chat.composer").unwrap();
-    let before = records.read(&checkout.id, |doc| ChatDoc::top_level_count(doc, "c_general")).unwrap();
-    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::Focus).unwrap();
-    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetValue("one message".into())).unwrap();
-    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetSelection { anchor: 11, focus: 11 }).unwrap();
+    let before = records
+        .read(&checkout.id, |doc| {
+            ChatDoc::top_level_count(doc, "c_general")
+        })
+        .unwrap();
+    frame
+        .perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::Focus)
+        .unwrap();
+    frame
+        .perform_semantic_named(
+            &owner,
+            Some("chat.composer"),
+            &ui::a11y::Action::SetValue("one message".into()),
+        )
+        .unwrap();
+    frame
+        .perform_semantic_named(
+            &owner,
+            Some("chat.composer"),
+            &ui::a11y::Action::SetSelection {
+                anchor: 11,
+                focus: 11,
+            },
+        )
+        .unwrap();
     frame.key("Enter");
-    records.read(&checkout.id, |doc| {
-        assert_eq!(ChatDoc::top_level_count(doc, "c_general"), before + 1);
-        assert_eq!(ChatDoc::draft_text(doc, "c_general"), "");
-        assert_eq!(ChatDoc::list_messages(doc, "c_general").last().unwrap().text, "one message");
-    }).unwrap();
-    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetValue("line".into())).unwrap();
-    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetSelection { anchor: 4, focus: 4 }).unwrap();
+    records
+        .read(&checkout.id, |doc| {
+            assert_eq!(ChatDoc::top_level_count(doc, "c_general"), before + 1);
+            assert_eq!(ChatDoc::draft_text(doc, "c_general"), "");
+            assert_eq!(
+                ChatDoc::list_messages(doc, "c_general")
+                    .last()
+                    .unwrap()
+                    .text,
+                "one message"
+            );
+        })
+        .unwrap();
+    frame
+        .perform_semantic_named(
+            &owner,
+            Some("chat.composer"),
+            &ui::a11y::Action::SetValue("line".into()),
+        )
+        .unwrap();
+    frame
+        .perform_semantic_named(
+            &owner,
+            Some("chat.composer"),
+            &ui::a11y::Action::SetSelection {
+                anchor: 4,
+                focus: 4,
+            },
+        )
+        .unwrap();
     frame.set_modifiers(&["shift".into()]);
     frame.key("Enter");
     frame.set_modifiers(&[]);
-    records.read(&checkout.id, |doc| {
-        assert_eq!(ChatDoc::top_level_count(doc, "c_general"), before + 1);
-        assert_eq!(ChatDoc::draft_text(doc, "c_general"), "line\n");
-    }).unwrap();
-    frame.perform_semantic_named(&owner, Some("chat.composer"), &ui::a11y::Action::SetValue(String::new())).unwrap();
-    assert_eq!(records.read(&checkout.id, |doc| ChatDoc::draft_text(doc, "c_general")).unwrap(), "");
+    records
+        .read(&checkout.id, |doc| {
+            assert_eq!(ChatDoc::top_level_count(doc, "c_general"), before + 1);
+            assert_eq!(ChatDoc::draft_text(doc, "c_general"), "line\n");
+        })
+        .unwrap();
+    frame
+        .perform_semantic_named(
+            &owner,
+            Some("chat.composer"),
+            &ui::a11y::Action::SetValue(String::new()),
+        )
+        .unwrap();
+    assert_eq!(
+        records
+            .read(&checkout.id, |doc| ChatDoc::draft_text(doc, "c_general"))
+            .unwrap(),
+        ""
+    );
     frame.close_components();
 }

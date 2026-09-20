@@ -3,6 +3,12 @@ use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use qos_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use serde::Deserialize;
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 use tilo_relay::{
     RelayClient,
     coedit::{Inbound, RelayCoeditSession},
@@ -10,13 +16,7 @@ use tilo_relay::{
 use tilo_user_identity::{
     DeviceCert, DirectoryUpdate, RevocationEntry, RevocationList, WorkspaceDirectory,
 };
-use serde::Deserialize;
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
-    rc::Rc,
-};
-use ui::portable_storage::{PortableStorage, StorageKey, PendingWrite};
+use ui::portable_storage::{PendingWrite, PortableStorage, StorageKey};
 use wasm_bindgen::prelude::*;
 use web_time::SystemTime;
 #[derive(Deserialize)]
@@ -57,7 +57,7 @@ struct Peer {
     admission_progress: RefCell<crate::admission_health::AdmissionProgress>,
     last_relay_contact: std::cell::Cell<Option<f64>>,
     last_peer_contact: std::cell::Cell<Option<f64>>,
-    batches: RefCell<BTreeMap<String,(Vec<PendingWrite>,Option<u64>)>>,
+    batches: RefCell<BTreeMap<String, (Vec<PendingWrite>, Option<u64>)>>,
     next_batch: std::cell::Cell<u64>,
     storage_epoch: RefCell<Option<String>>,
     committed_at: std::cell::Cell<Option<f64>>,
@@ -76,15 +76,30 @@ fn error(e: impl ToString) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 fn report(peer: &Peer, phase: &str, error: Option<String>) {
-    let source=if !peer.transport_connected.get(){crate::admission_health::ReportSource::Transport}else{crate::admission_health::ReportSource::Runtime};
-    report_from(peer,phase,error,source);
+    let source = if !peer.transport_connected.get() {
+        crate::admission_health::ReportSource::Transport
+    } else {
+        crate::admission_health::ReportSource::Runtime
+    };
+    report_from(peer, phase, error, source);
 }
-fn report_from(peer: &Peer, phase: &str, error: Option<String>, source: crate::admission_health::ReportSource) {
+fn report_from(
+    peer: &Peer,
+    phase: &str,
+    error: Option<String>,
+    source: crate::admission_health::ReportSource,
+) {
     let state = peer.state.borrow();
     let complete = crate::desktop::admission(&state).is_ok_and(|admission| admission.complete());
-    let outgoing=state.outbox_status(&peer.outbox.borrow(),SystemTime::now());
-    let incomplete = required_read_failure(peer,&state).or_else(||state.incomplete_reason()).or_else(||peer.admission_failure.borrow().clone())
-        .or_else(||(outgoing.blocked_expired>0).then(||"unsent durable edits await a fresh authorized checkpoint for reconciliation".into()));
+    let outgoing = state.outbox_status(&peer.outbox.borrow(), SystemTime::now());
+    let incomplete = required_read_failure(peer, &state)
+        .or_else(|| state.incomplete_reason())
+        .or_else(|| peer.admission_failure.borrow().clone())
+        .or_else(|| {
+            (outgoing.blocked_expired > 0).then(|| {
+                "unsent durable edits await a fresh authorized checkpoint for reconciliation".into()
+            })
+        });
     // One pass over the pending writes for both the phase and the trigger; the
     // health projection below counts them per record.
     let persistence_needed = !peer.cache.pending_writes().is_empty();
@@ -95,19 +110,36 @@ fn report_from(peer: &Peer, phase: &str, error: Option<String>, source: crate::a
     } else {
         phase
     };
-    let phase=if phase=="admitting"&&peer.was_ready.get()&&complete{"ready"}else{phase};
-    if phase=="ready"{peer.was_ready.set(true);}
+    let phase = if phase == "admitting" && peer.was_ready.get() && complete {
+        "ready"
+    } else {
+        phase
+    };
+    if phase == "ready" {
+        peer.was_ready.set(true);
+    }
     let error = error.or(incomplete);
-    let health=health(peer,&state,phase=="ready",error.as_deref(),source);
-    let synchronized=health["records"].as_array().is_some_and(|records|!records.is_empty()&&records.iter().all(|record|record["acknowledgement"]["coversCurrentBasis"]==true));
+    let health = health(peer, &state, phase == "ready", error.as_deref(), source);
+    let synchronized = health["records"].as_array().is_some_and(|records| {
+        !records.is_empty()
+            && records
+                .iter()
+                .all(|record| record["acknowledgement"]["coversCurrentBasis"] == true)
+    });
     let value = serde_json::json!({"phase":phase,"desktop":{"version":1,"mode":"session"},"room":state.room(),"deviceId":peer._key.verifying_key().to_bytes().iter().map(|b|format!("{b:02x}")).collect::<String>(),"records":state.rows(),"pendingPrerequisites":state.pending_count(),"persistenceNeeded":persistence_needed,"outgoingPending":peer.outbox.borrow().len(),"outgoingBlocked":outgoing.blocked_expired,"synchronization":if outgoing.blocked_expired>0{"blocked"}else if synchronized{"acknowledged"}else{"pending"},"error":error,"health":health});
     let text = value.to_string();
     peer.last_report_ready.set(phase == "ready");
     // Health was recomputed above; only its delivery is skipped when the host
     // already holds this exact text (a forced publication that committed
     // nothing, an inbound frame that changed nothing).
-    if peer.report_dedup.borrow_mut().should_emit(&text, persistence_needed) {
-        let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str(&text));
+    if peer
+        .report_dedup
+        .borrow_mut()
+        .should_emit(&text, persistence_needed)
+    {
+        let _ = peer
+            .callback
+            .call1(&JsValue::NULL, &JsValue::from_str(&text));
     }
 }
 /// Report between commit boundaries without recomputing health. A typed key
@@ -119,11 +151,19 @@ fn report_from(peer: &Peer, phase: &str, error: Option<String>, source: crate::a
 /// commit cycle later. Before the peer has ever been ready this is a full
 /// report.
 fn report_light(peer: &Peer) {
-    if !(peer.was_ready.get() && peer.last_report_ready.get()) { return report(peer, "admitting", None); }
+    if !(peer.was_ready.get() && peer.last_report_ready.get()) {
+        return report(peer, "admitting", None);
+    }
     let persistence_needed = !peer.cache.pending_writes().is_empty();
     let text = crate::report_text::light_report("ready", persistence_needed);
-    if peer.report_dedup.borrow_mut().should_emit(&text, persistence_needed) {
-        let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str(&text));
+    if peer
+        .report_dedup
+        .borrow_mut()
+        .should_emit(&text, persistence_needed)
+    {
+        let _ = peer
+            .callback
+            .call1(&JsValue::NULL, &JsValue::from_str(&text));
     }
 }
 #[wasm_bindgen]
@@ -133,18 +173,26 @@ pub async fn connect_peer(
     hydrated: JsValue,
     callback: js_sys::Function,
 ) -> Result<u32, JsValue> {
-    connect_owner(None,raw,identity,hydrated,Some(callback)).await
+    connect_owner(None, raw, identity, hydrated, Some(callback)).await
 }
 #[wasm_bindgen]
-pub async fn reconnect_peer(id:u32,raw:String,identity:Vec<u8>)->Result<(),JsValue>{
-    connect_owner(Some(id),raw,identity,JsValue::NULL,None).await.map(|_|())
+pub async fn reconnect_peer(id: u32, raw: String, identity: Vec<u8>) -> Result<(), JsValue> {
+    connect_owner(Some(id), raw, identity, JsValue::NULL, None)
+        .await
+        .map(|_| ())
 }
-async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated:JsValue,callback:Option<js_sys::Function>)->Result<u32,JsValue>{
+async fn connect_owner(
+    existing: Option<u32>,
+    raw: String,
+    identity: Vec<u8>,
+    hydrated: JsValue,
+    callback: Option<js_sys::Function>,
+) -> Result<u32, JsValue> {
     let config: Enrollment = serde_json::from_str(&raw).map_err(error)?;
     if config.version != 2 {
         return Err(error("unsupported enrollment version"));
     }
-    let key = crate::identity::key(&identity,&raw).map_err(error)?;
+    let key = crate::identity::key(&identity, &raw).map_err(error)?;
     let device = key.verifying_key().to_bytes();
     if device != config.certificate.device_public_key
         || config.certificate.user_public_key != config.root_public_key
@@ -207,10 +255,29 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let owner=existing.map(|id|PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))).transpose()?;
-    if let Some(peer)=&owner{if peer.state.borrow().room()!=initial.room()||peer.state.borrow().authority()!=initial.authority()||peer._key.verifying_key()!=key.verifying_key(){return Err(error("replacement transport owner binding mismatch"));}}
-    let cache = if let Some(peer)=&owner{peer.cache.clone()}else{crate::browser::load_cache(&profile, &device_hex, &hydrated)?};
-    let (state, outbox) = if let Some(peer)=&owner{(peer.state.borrow().clone(),peer.outbox.borrow().clone())}else if let Some(saved) = cache.get(&StorageKey::Admission {
+    let owner = existing
+        .map(|id| {
+            PEERS
+                .with(|peers| peers.borrow().get(&id).cloned())
+                .ok_or_else(|| error("closed peer"))
+        })
+        .transpose()?;
+    if let Some(peer) = &owner {
+        if peer.state.borrow().room() != initial.room()
+            || peer.state.borrow().authority() != initial.authority()
+            || peer._key.verifying_key() != key.verifying_key()
+        {
+            return Err(error("replacement transport owner binding mismatch"));
+        }
+    }
+    let cache = if let Some(peer) = &owner {
+        peer.cache.clone()
+    } else {
+        crate::browser::load_cache(&profile, &device_hex, &hydrated)?
+    };
+    let (state, outbox) = if let Some(peer) = &owner {
+        (peer.state.borrow().clone(), peer.outbox.borrow().clone())
+    } else if let Some(saved) = cache.get(&StorageKey::Admission {
         workspace: config.bootstrap.room.clone(),
     }) {
         let journal = Journal::decode(&saved.bytes).map_err(error)?;
@@ -244,77 +311,155 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
     .await;
     // Only the typed TLS ALPN refusal permits v1. Auth and policy failures do not.
     let (connected, action_v2) = match connected {
-        Err(tilo_relay::client::ClientError::UnsupportedProtocol) => (RelayClient::connect_to_enrolled_home_peer(
-            endpoint.clone(), config.relay_address, config.root_public_key,
-            config.host_certificate.device_public_key, config.certificate.clone(),key.clone(),revoked,
-        ).await, false),
+        Err(tilo_relay::client::ClientError::UnsupportedProtocol) => (
+            RelayClient::connect_to_enrolled_home_peer(
+                endpoint.clone(),
+                config.relay_address,
+                config.root_public_key,
+                config.host_certificate.device_public_key,
+                config.certificate.clone(),
+                key.clone(),
+                revoked,
+            )
+            .await,
+            false,
+        ),
         result => (result, true),
     };
-    let client=match connected {Ok(client)=>client,Err(failure)=>{endpoint.close().await;return Err(error(failure));}};
-    let session = match RelayCoeditSession::join(client, workspace, device) {Ok(session)=>Rc::new(session),Err(failure)=>{endpoint.close().await;return Err(error(failure));}};
-    let id = existing.unwrap_or_else(||NEXT.with(|next|{let id=next.get();next.set(id+1);id}));
-    let peer=if let Some(peer)=owner{
+    let client = match connected {
+        Ok(client) => client,
+        Err(failure) => {
+            endpoint.close().await;
+            return Err(error(failure));
+        }
+    };
+    let session = match RelayCoeditSession::join(client, workspace, device) {
+        Ok(session) => Rc::new(session),
+        Err(failure) => {
+            endpoint.close().await;
+            return Err(error(failure));
+        }
+    };
+    let id = existing.unwrap_or_else(|| {
+        NEXT.with(|next| {
+            let id = next.get();
+            next.set(id + 1);
+            id
+        })
+    });
+    let peer = if let Some(peer) = owner {
         peer.action_v2.set(action_v2);
-        *peer.actions.borrow_mut()=Default::default();
-        peer.transport_generation.set(peer.transport_generation.get()+1);
-        let prior=peer.endpoint.borrow_mut().replace(endpoint.clone());
-        *peer.session.borrow_mut()=Some(session.clone());
-        peer.transport_connected.set(true);peer.published.borrow_mut().clear();
-        if let Some(prior)=prior{prior.close().await;}
+        *peer.actions.borrow_mut() = Default::default();
+        peer.transport_generation
+            .set(peer.transport_generation.get() + 1);
+        let prior = peer.endpoint.borrow_mut().replace(endpoint.clone());
+        *peer.session.borrow_mut() = Some(session.clone());
+        peer.transport_connected.set(true);
+        peer.published.borrow_mut().clear();
+        if let Some(prior) = prior {
+            prior.close().await;
+        }
         peer
-    }else{Rc::new(Peer {
-        health_projection: RefCell::default(),actions: RefCell::default(),action_v2: std::cell::Cell::new(action_v2),
-        admission_failure: RefCell::new(None),was_ready: std::cell::Cell::new(false),published: RefCell::new(BTreeSet::new()),
-        id,cache,outbox:RefCell::new(outbox),endpoint:RefCell::new(Some(endpoint.clone())),session:RefCell::new(Some(session.clone())),state:RefCell::new(state),_key:key,
-        callback:callback.ok_or_else(||error("missing status callback"))?,closed:std::cell::Cell::new(false),last_report_ready:std::cell::Cell::new(false),report_dedup:RefCell::default(),transport_generation:std::cell::Cell::new(1),transport_connected:std::cell::Cell::new(true),admission_progress:RefCell::default(),last_relay_contact:std::cell::Cell::new(None),last_peer_contact:std::cell::Cell::new(None),batches:RefCell::new(BTreeMap::new()),next_batch:std::cell::Cell::new(0),storage_epoch:RefCell::new(None),committed_at:std::cell::Cell::new(None),
-    })};
-    let transport_generation=peer.transport_generation.get();
+    } else {
+        Rc::new(Peer {
+            health_projection: RefCell::default(),
+            actions: RefCell::default(),
+            action_v2: std::cell::Cell::new(action_v2),
+            admission_failure: RefCell::new(None),
+            was_ready: std::cell::Cell::new(false),
+            published: RefCell::new(BTreeSet::new()),
+            id,
+            cache,
+            outbox: RefCell::new(outbox),
+            endpoint: RefCell::new(Some(endpoint.clone())),
+            session: RefCell::new(Some(session.clone())),
+            state: RefCell::new(state),
+            _key: key,
+            callback: callback.ok_or_else(|| error("missing status callback"))?,
+            closed: std::cell::Cell::new(false),
+            last_report_ready: std::cell::Cell::new(false),
+            report_dedup: RefCell::default(),
+            transport_generation: std::cell::Cell::new(1),
+            transport_connected: std::cell::Cell::new(true),
+            admission_progress: RefCell::default(),
+            last_relay_contact: std::cell::Cell::new(None),
+            last_peer_contact: std::cell::Cell::new(None),
+            batches: RefCell::new(BTreeMap::new()),
+            next_batch: std::cell::Cell::new(0),
+            storage_epoch: RefCell::new(None),
+            committed_at: std::cell::Cell::new(None),
+        })
+    };
+    let transport_generation = peer.transport_generation.get();
     let hello = NeighbourMsg::IdentityHello {
         cert: Box::new(config.certificate),
         revocations: vec![],
     };
     let request = NeighbourMsg::SyncReq {
-        since: vec![], room: config.bootstrap.room, invite_id: None,
+        since: vec![],
+        room: config.bootstrap.room,
+        invite_id: None,
     };
-    let setup=(||->Result<(),JsValue>{
+    let setup = (|| -> Result<(), JsValue> {
         if action_v2 {
             let room = peer.state.borrow().room().parse().map_err(error)?;
             session.enable_actions(room).map_err(error)?;
             session.enable_broker_client(room).map_err(error)?;
         }
         // Rewrite legacy journal framing only through the same atomic cache transaction.
-        stage_journal(&peer,&peer.state.borrow(),&peer.outbox.borrow()).map_err(error)?;
-        session.publish_presence(postcard::to_allocvec(&hello).map_err(error)?).map_err(error)?;
-        session.publish_presence(postcard::to_allocvec(&request).map_err(error)?).map_err(error)?;
+        stage_journal(&peer, &peer.state.borrow(), &peer.outbox.borrow()).map_err(error)?;
+        session
+            .publish_presence(postcard::to_allocvec(&hello).map_err(error)?)
+            .map_err(error)?;
+        session
+            .publish_presence(postcard::to_allocvec(&request).map_err(error)?)
+            .map_err(error)?;
         Ok(())
     })();
-    if let Err(error)=setup {peer.transport_connected.set(false);endpoint.close().await;return Err(error);}
+    if let Err(error) = setup {
+        peer.transport_connected.set(false);
+        endpoint.close().await;
+        return Err(error);
+    }
     PEERS.with(|peers| peers.borrow_mut().insert(id, peer.clone()));
     report(&peer, "admitting", None);
     if action_v2 {
-        let peer=peer.clone();let session=session.clone();
+        let peer = peer.clone();
+        let session = session.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            while let Some(event)=session.recv_action().await {
-                if peer.closed.get()||peer.transport_generation.get()!=transport_generation{return;}
+            while let Some(event) = session.recv_action().await {
+                if peer.closed.get() || peer.transport_generation.get() != transport_generation {
+                    return;
+                }
                 // Delivered is attested by the same mutually authenticated relay.
                 // Current membership/certificate validity is rechecked for every response.
                 if action_context(&peer).is_ok() {
                     if matches!(&event, tilo_relay::transport_v2::EnvelopeV2::Delivered { action, .. }
-                        if matches!(action.message, tilo_relay::peer_actions::ActionMessage::CommittedDesktop { .. })) {
+                        if matches!(action.message, tilo_relay::peer_actions::ActionMessage::CommittedDesktop { .. }))
+                    {
                         // Flush local edits before cloning admission, just as on
                         // the retained channel. A complete batch installs once.
                         if let Err(error) = crate::browser::prepare_peer_remote(peer.id) {
-                            mark_failure(peer.id, error); continue;
+                            mark_failure(peer.id, error);
+                            continue;
                         }
-                        let candidate = crate::committed_desktop::admit(&peer.state.borrow(), &event,
-                            peer._key.verifying_key().to_bytes(), SystemTime::now());
+                        let candidate = crate::committed_desktop::admit(
+                            &peer.state.borrow(),
+                            &event,
+                            peer._key.verifying_key().to_bytes(),
+                            SystemTime::now(),
+                        );
                         match candidate {
                             Ok(Some(candidate)) => {
                                 peer.last_peer_contact.set(Some(js_sys::Date::now()));
                                 if let Err(e) = install_candidate(&peer, candidate) {
                                     *peer.admission_failure.borrow_mut() = Some(e.clone());
                                     report(&peer, "incomplete", Some(e));
-                                } else if let tilo_relay::transport_v2::EnvelopeV2::Delivered { action, .. } = &event {
+                                } else if let tilo_relay::transport_v2::EnvelopeV2::Delivered {
+                                    action,
+                                    ..
+                                } = &event
+                                {
                                     if let tilo_relay::peer_actions::ActionMessage::CommittedDesktop { invocation, opened, .. } = &action.message {
                                         let notice = serde_json::json!({"committedDesktop":{"invocation":invocation,"room":action.room,"opened":opened}}).to_string();
                                         let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str(&notice));
@@ -324,15 +469,20 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                             // This is a best-effort copy; ordinary retained state
                             // supplies missing prerequisites without speculative UI.
                             Ok(None) => (),
-                            Err(error) => web_sys::console::debug_1(&JsValue::from_str(&format!("Committed desktop awaiting retained state: {error}"))),
+                            Err(error) => web_sys::console::debug_1(&JsValue::from_str(&format!(
+                                "Committed desktop awaiting retained state: {error}"
+                            ))),
                         }
                         continue;
                     }
-                    let root=peer.state.borrow().authority().user_public_key;
-                    peer.actions.borrow_mut().receive(event,root);
+                    let root = peer.state.borrow().authority().user_public_key;
+                    peer.actions.borrow_mut().receive(event, root);
                     // Wake command waiters as soon as the authenticated response
                     // is installed. The JS host keeps only a deadline timer.
-                    let _ = peer.callback.call1(&JsValue::NULL, &JsValue::from_str("{\"actionResponseReady\":true}"));
+                    let _ = peer.callback.call1(
+                        &JsValue::NULL,
+                        &JsValue::from_str("{\"actionResponseReady\":true}"),
+                    );
                 }
             }
         });
@@ -340,7 +490,7 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
     wasm_bindgen_futures::spawn_local(async move {
         let mut replaying = true;
         while let Some(inbound) = session.recv().await {
-            if peer.closed.get() || peer.transport_generation.get()!=transport_generation {
+            if peer.closed.get() || peer.transport_generation.get() != transport_generation {
                 return;
             }
             let (author, data, authenticated) = match inbound {
@@ -373,11 +523,19 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                 );
                 continue;
             }
-            if authenticated && matches!(message,NeighbourMsg::SyncResp{..}|NeighbourMsg::AppDocument{..}) {
-                if let Err(error)=crate::browser::prepare_peer_remote(peer.id){mark_failure(peer.id,error);continue;}
+            if authenticated
+                && matches!(
+                    message,
+                    NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
+                )
+            {
+                if let Err(error) = crate::browser::prepare_peer_remote(peer.id) {
+                    mark_failure(peer.id, error);
+                    continue;
+                }
             }
             let mut candidate = peer.state.borrow().clone();
-            let pending_before=candidate.pending_count();
+            let pending_before = candidate.pending_count();
             let result = candidate.receive_from(
                 if authenticated {
                     if replaying {
@@ -393,14 +551,19 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
             );
             match result {
                 Ok(outcome) => {
-                    if authenticated && author==peer.state.borrow().authority().device_public_key{peer.last_peer_contact.set(Some(js_sys::Date::now()));}
+                    if authenticated && author == peer.state.borrow().authority().device_public_key
+                    {
+                        peer.last_peer_contact.set(Some(js_sys::Date::now()));
+                    }
                     if outcome.changed || outcome.metadata_changed {
                         if let Err(e) = install_candidate(&peer, candidate) {
                             *peer.admission_failure.borrow_mut() = Some(e.clone());
                             report(&peer, "incomplete", Some(e));
                         }
                     } else {
-                        if candidate.pending_count()<pending_before {peer.admission_progress.borrow_mut().accepted(None);}
+                        if candidate.pending_count() < pending_before {
+                            peer.admission_progress.borrow_mut().accepted(None);
+                        }
                         *peer.state.borrow_mut() = candidate;
                         report(
                             &peer,
@@ -418,12 +581,12 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
                 // peer ready), while exposing the rejection. Authenticated missing
                 // crypto and failed record installation remain sticky incomplete.
                 Err(e) => {
-                    let source=crate::admission_health::receive_source(&e);
-                    report_from(&peer,"admitting",Some(e),source);
-                },
+                    let source = crate::admission_health::receive_source(&e);
+                    report_from(&peer, "admitting", Some(e), source);
+                }
             }
         }
-        if !peer.closed.get() && peer.transport_generation.get()==transport_generation {
+        if !peer.closed.get() && peer.transport_generation.get() == transport_generation {
             peer.transport_connected.set(false);
             report(
                 &peer,
@@ -437,41 +600,83 @@ async fn connect_owner(existing:Option<u32>,raw:String,identity:Vec<u8>,hydrated
 /// Request bootstrap on the retained authenticated transport without replacing
 /// the owner or requiring the very document permissions bootstrap may supply.
 #[wasm_bindgen]
-pub fn peer_request_sync(id:u32,expected_transport_generation:String)->Result<(),JsValue>{
-    let expected=expected_transport_generation.parse::<u64>().map_err(error)?;
-    PEERS.with(|peers|{
-        let peer=peers.borrow().get(&id).cloned().ok_or_else(||error("closed peer"))?;
-        if peer.closed.get()||!peer.transport_connected.get()||peer.transport_generation.get()!=expected{return Err(error("sync transport generation is unavailable"));}
-        let session=peer.session.borrow().clone().ok_or_else(||error("sync transport disconnected"))?;
-        let request=NeighbourMsg::SyncReq{since:vec![],room:peer.state.borrow().room().into(),invite_id:None};
-        session.publish_presence(postcard::to_allocvec(&request).map_err(error)?).map_err(error)
+pub fn peer_request_sync(id: u32, expected_transport_generation: String) -> Result<(), JsValue> {
+    let expected = expected_transport_generation
+        .parse::<u64>()
+        .map_err(error)?;
+    PEERS.with(|peers| {
+        let peer = peers
+            .borrow()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| error("closed peer"))?;
+        if peer.closed.get()
+            || !peer.transport_connected.get()
+            || peer.transport_generation.get() != expected
+        {
+            return Err(error("sync transport generation is unavailable"));
+        }
+        let session = peer
+            .session
+            .borrow()
+            .clone()
+            .ok_or_else(|| error("sync transport disconnected"))?;
+        let request = NeighbourMsg::SyncReq {
+            since: vec![],
+            room: peer.state.borrow().room().into(),
+            invite_id: None,
+        };
+        session
+            .publish_presence(postcard::to_allocvec(&request).map_err(error)?)
+            .map_err(error)
     })
 }
 /// Disconnect transport without destroying durable cache/outbox ownership.
 #[wasm_bindgen]
-pub async fn disconnect_peer(id:u32) {
-    let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned());
-    if let Some(peer)=peer {peer.transport_generation.set(peer.transport_generation.get()+1);peer.transport_connected.set(false);peer.session.borrow_mut().take();let endpoint=peer.endpoint.borrow_mut().take();if let Some(endpoint)=endpoint{endpoint.close().await;}}
+pub async fn disconnect_peer(id: u32) {
+    let peer = PEERS.with(|peers| peers.borrow().get(&id).cloned());
+    if let Some(peer) = peer {
+        peer.transport_generation
+            .set(peer.transport_generation.get() + 1);
+        peer.transport_connected.set(false);
+        peer.session.borrow_mut().take();
+        let endpoint = peer.endpoint.borrow_mut().take();
+        if let Some(endpoint) = endpoint {
+            endpoint.close().await;
+        }
+    }
 }
 #[wasm_bindgen]
 pub async fn close_peer(id: u32) {
     let peer = PEERS.with(|peers| peers.borrow_mut().remove(&id));
     if let Some(peer) = peer {
         peer.closed.set(true);
-        peer.transport_generation.set(peer.transport_generation.get()+1);
-        let endpoint=peer.endpoint.borrow_mut().take();if let Some(endpoint)=endpoint{endpoint.close().await;}
+        peer.transport_generation
+            .set(peer.transport_generation.get() + 1);
+        let endpoint = peer.endpoint.borrow_mut().take();
+        if let Some(endpoint) = endpoint {
+            endpoint.close().await;
+        }
         report(&peer, "closed", None);
     }
 }
 
 #[wasm_bindgen]
-pub fn create_identity()->Vec<u8>{crate::identity::create()}
+pub fn create_identity() -> Vec<u8> {
+    crate::identity::create()
+}
 #[wasm_bindgen]
-pub fn identity_request(material:&[u8])->Result<String,JsValue>{crate::identity::request(material).map_err(error)}
+pub fn identity_request(material: &[u8]) -> Result<String, JsValue> {
+    crate::identity::request(material).map_err(error)
+}
 #[wasm_bindgen]
-pub fn identity_complete(material:&[u8],challenge:&str)->Result<String,JsValue>{crate::identity::complete(material,challenge).map_err(error)}
+pub fn identity_complete(material: &[u8], challenge: &str) -> Result<String, JsValue> {
+    crate::identity::complete(material, challenge).map_err(error)
+}
 #[wasm_bindgen]
-pub fn bind_identity(material:&[u8],challenge:&str,raw:&str)->Result<Vec<u8>,JsValue>{crate::identity::bind(material,challenge,raw).map_err(error)}
+pub fn bind_identity(material: &[u8], challenge: &str, raw: &str) -> Result<Vec<u8>, JsValue> {
+    crate::identity::bind(material, challenge, raw).map_err(error)
+}
 #[wasm_bindgen]
 pub fn peer_enrollment(raw: &str) -> Result<String, JsValue> {
     let config: Enrollment = serde_json::from_str(raw).map_err(error)?;
@@ -506,8 +711,24 @@ fn stage_journal(peer: &Peer, state: &StatePeer, outbox: &[NeighbourMsg]) -> Res
         state: state.durable()?,
         outbox: outbox.to_vec(),
         records: state.rows(),
-        receipts: state.rows().iter().filter_map(|row|state.durable_coverage(&row.app_id,&row.record_id).ok().flatten().map(|receipt|(qos_peer_state::coverage::route_key(&row.app_id,&row.record_id),receipt.receipt_id))).collect(),
-    }.encode()
+        receipts: state
+            .rows()
+            .iter()
+            .filter_map(|row| {
+                state
+                    .durable_coverage(&row.app_id, &row.record_id)
+                    .ok()
+                    .flatten()
+                    .map(|receipt| {
+                        (
+                            qos_peer_state::coverage::route_key(&row.app_id, &row.record_id),
+                            receipt.receipt_id,
+                        )
+                    })
+            })
+            .collect(),
+    }
+    .encode()
     .map_err(|e| e.to_string())?;
     peer.cache.put(
         StorageKey::Admission {
@@ -519,12 +740,29 @@ fn stage_journal(peer: &Peer, state: &StatePeer, outbox: &[NeighbourMsg]) -> Res
 }
 /// The canonical record owner has already committed this document. Avoid a
 /// full save/load round trip merely to recover its existing CRDT graph.
-pub(crate) fn local_owned_document(id: u32, app: &str, record: &str, mut current: automerge::AutoCommit) -> Result<(), String> {
-    if current.pending_ops() != 0 { return Err("record mutation is still unfinished".into()); }
+pub(crate) fn local_owned_document(
+    id: u32,
+    app: &str,
+    record: &str,
+    mut current: automerge::AutoCommit,
+) -> Result<(), String> {
+    if current.pending_ops() != 0 {
+        return Err("record mutation is still unfinished".into());
+    }
     PEERS.with(|peers| {
-        let peer = peers.borrow().get(&id).cloned().ok_or("certified peer is closed")?;
-        let before = peer.state.borrow().document_heads(app, record).ok_or("canonical native record not admitted")?;
-        if current.base_heads() == before { return Ok(()); }
+        let peer = peers
+            .borrow()
+            .get(&id)
+            .cloned()
+            .ok_or("certified peer is closed")?;
+        let before = peer
+            .state
+            .borrow()
+            .document_heads(app, record)
+            .ok_or("canonical native record not admitted")?;
+        if current.base_heads() == before {
+            return Ok(());
+        }
         let delta = current.save_after(&before);
         let bytes = current.save();
         let mut candidate = peer.state.borrow().clone();
@@ -573,11 +811,13 @@ pub fn peer_committed(id: u32) -> Result<(), JsValue> {
         if !peer.cache.pending_writes().is_empty() {
             return Err(error("admission/record transaction not committed"));
         }
-        if peer.closed.get() { return Ok(()); }
+        if peer.closed.get() {
+            return Ok(());
+        }
         // Iterate the retained outbox in place: it holds every unsent and
         // uncovered document message, and cloning it per commit grew with it.
         let outbox = peer.outbox.borrow();
-        for message in qos_peer_state::outbox::publication_batch(&outbox,SystemTime::now()) {
+        for message in qos_peer_state::outbox::publication_batch(&outbox, SystemTime::now()) {
             let Some((channel, qos_peer_state::transport::Retention::Delta)) =
                 qos_peer_state::transport::retention(message, false)
             else {
@@ -585,7 +825,10 @@ pub fn peer_committed(id: u32) -> Result<(), JsValue> {
             };
             let bytes = postcard::to_allocvec(message).map_err(error)?;
             if !peer.published.borrow().contains(&bytes) {
-                peer.session.borrow().as_ref().ok_or_else(||error("transport unavailable"))?
+                peer.session
+                    .borrow()
+                    .as_ref()
+                    .ok_or_else(|| error("transport unavailable"))?
                     .publish_retained_delta(channel, bytes.clone())
                     .map_err(error)?;
                 peer.published.borrow_mut().insert(bytes);
@@ -594,7 +837,8 @@ pub fn peer_committed(id: u32) -> Result<(), JsValue> {
         drop(outbox);
         // Keep durable outgoing bytes until a validated governor checkpoint covers them.
         // A queued transport send alone is not delivery acknowledgement.
-        let complete = crate::desktop::admission(&peer.state.borrow()).is_ok_and(|admission| admission.complete());
+        let complete = crate::desktop::admission(&peer.state.borrow())
+            .is_ok_and(|admission| admission.complete());
         report(&peer, if complete { "ready" } else { "admitting" }, None);
         Ok(())
     })
@@ -613,88 +857,203 @@ pub(crate) fn permissions(id: u32) -> Result<ui::permissions::PermissionContext,
     })
 }
 
-pub(crate) fn mark_failure(id:u32,failure:String){PEERS.with(|peers|if let Some(peer)=peers.borrow().get(&id){*peer.admission_failure.borrow_mut()=Some(failure.clone());report(peer,"incomplete",Some(failure));});}
+pub(crate) fn mark_failure(id: u32, failure: String) {
+    PEERS.with(|peers| {
+        if let Some(peer) = peers.borrow().get(&id) {
+            *peer.admission_failure.borrow_mut() = Some(failure.clone());
+            report(peer, "incomplete", Some(failure));
+        }
+    });
+}
 
 #[derive(Deserialize)]
-#[serde(rename_all="camelCase",deny_unknown_fields)]
-struct BatchResult { batch_id:String,epoch:String,observed_at_ms:f64,result:BatchOutcome }
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BatchResult {
+    batch_id: String,
+    epoch: String,
+    observed_at_ms: f64,
+    result: BatchOutcome,
+}
 #[derive(Deserialize)]
-struct BatchOutcome {ok:bool,code:Option<String>}
-fn encode_pending_batch<T>(id:u32, encode:impl FnOnce(&str,&[PendingWrite],&[qos_peer_state::DocumentRow])->Result<T,JsValue>)->Result<T,JsValue>{
-    PEERS.with(|peers|{
-        let peer=peers.borrow().get(&id).cloned().ok_or_else(||error("closed peer"))?;
-        let writes=peer.cache.pending_writes();
-        if writes.is_empty(){return encode("0",&[],&[])}
-        let batch=peer.next_batch.get().checked_add(1).ok_or_else(||error("batch sequence exhausted"))?;peer.next_batch.set(batch);
-        let id=format!("{}:{batch}",peer.id);
-        let result=encode(&id,&writes,&peer.state.borrow().rows())?;
-        let journal_revision=writes.iter().find(|write|matches!(write.key,StorageKey::Admission{..})).map(|write|write.revision);
-        let basis=peer.admission_progress.borrow().batch_basis(journal_revision);
-        peer.batches.borrow_mut().insert(id,(writes,basis));
+struct BatchOutcome {
+    ok: bool,
+    code: Option<String>,
+}
+fn encode_pending_batch<T>(
+    id: u32,
+    encode: impl FnOnce(&str, &[PendingWrite], &[qos_peer_state::DocumentRow]) -> Result<T, JsValue>,
+) -> Result<T, JsValue> {
+    PEERS.with(|peers| {
+        let peer = peers
+            .borrow()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| error("closed peer"))?;
+        let writes = peer.cache.pending_writes();
+        if writes.is_empty() {
+            return encode("0", &[], &[]);
+        }
+        let batch = peer
+            .next_batch
+            .get()
+            .checked_add(1)
+            .ok_or_else(|| error("batch sequence exhausted"))?;
+        peer.next_batch.set(batch);
+        let id = format!("{}:{batch}", peer.id);
+        let result = encode(&id, &writes, &peer.state.borrow().rows())?;
+        let journal_revision = writes
+            .iter()
+            .find(|write| matches!(write.key, StorageKey::Admission { .. }))
+            .map(|write| write.revision);
+        let basis = peer
+            .admission_progress
+            .borrow()
+            .batch_basis(journal_revision);
+        peer.batches.borrow_mut().insert(id, (writes, basis));
         Ok(result)
     })
 }
 #[wasm_bindgen]
-pub fn peer_pending_batch(id:u32)->Result<String,JsValue>{
-    encode_pending_batch(id,|id,writes,records|{
-        let values=writes.iter().map(crate::browser::write_json).collect::<Vec<_>>();
+pub fn peer_pending_batch(id: u32) -> Result<String, JsValue> {
+    encode_pending_batch(id, |id, writes, records| {
+        let values = writes
+            .iter()
+            .map(crate::browser::write_json)
+            .collect::<Vec<_>>();
         Ok(serde_json::json!({"id":id,"writes":values,"records":records}).to_string())
     })
 }
 /// JS-owned typed buffers avoid expanding every binary byte into JSON digits.
 /// The Rust-owned batch remains the sole authority for acknowledgement.
 #[wasm_bindgen]
-pub fn peer_pending_batch_bytes(id:u32)->Result<JsValue,JsValue>{
-    encode_pending_batch(id,|id,writes,records|{
-        let result=js_sys::Object::new();
-        let values=js_sys::Array::new();
-        for write in writes { values.push(&crate::browser::write_bytes(write)?); }
-        js_sys::Reflect::set(&result,&"id".into(),&id.into())?;
-        js_sys::Reflect::set(&result,&"writes".into(),&values)?;
-        let records=js_sys::JSON::parse(&serde_json::to_string(records).map_err(error)?)?;
-        js_sys::Reflect::set(&result,&"records".into(),&records)?;
+pub fn peer_pending_batch_bytes(id: u32) -> Result<JsValue, JsValue> {
+    encode_pending_batch(id, |id, writes, records| {
+        let result = js_sys::Object::new();
+        let values = js_sys::Array::new();
+        for write in writes {
+            values.push(&crate::browser::write_bytes(write)?);
+        }
+        js_sys::Reflect::set(&result, &"id".into(), &id.into())?;
+        js_sys::Reflect::set(&result, &"writes".into(), &values)?;
+        let records = js_sys::JSON::parse(&serde_json::to_string(records).map_err(error)?)?;
+        js_sys::Reflect::set(&result, &"records".into(), &records)?;
         Ok(result.into())
     })
 }
 #[wasm_bindgen]
-pub fn acknowledge_peer_storage_batch(id:u32,raw:String)->Result<(),JsValue>{
-    let result:BatchResult=serde_json::from_str(&raw).map_err(error)?;
-    if result.epoch.is_empty()||result.epoch.len()>128||!result.observed_at_ms.is_finite()||result.observed_at_ms<0.0{return Err(error("invalid storage batch observation"));}
-    PEERS.with(|peers|{
-        let peer=peers.borrow().get(&id).cloned().ok_or_else(||error("closed peer"))?;
-        if peer.storage_epoch.borrow().as_ref().is_some_and(|epoch|epoch!=&result.epoch){return Err(error("foreign storage epoch"))}
-        let (writes,basis)=peer.batches.borrow_mut().remove(&result.batch_id).ok_or_else(||error("unknown or settled storage batch"))?;
-        *peer.storage_epoch.borrow_mut()=Some(result.epoch);
-        for write in writes{peer.cache.acknowledge(&write,if result.result.ok{Ok(())}else{Err(result.result.code.clone().unwrap_or_else(||"storage-transaction-failed".into()))}).map_err(error)?;}
-        if result.result.ok{peer.committed_at.set(Some(result.observed_at_ms));peer.admission_progress.borrow_mut().committed(basis);}
-        report_light(&peer);Ok(())
+pub fn acknowledge_peer_storage_batch(id: u32, raw: String) -> Result<(), JsValue> {
+    let result: BatchResult = serde_json::from_str(&raw).map_err(error)?;
+    if result.epoch.is_empty()
+        || result.epoch.len() > 128
+        || !result.observed_at_ms.is_finite()
+        || result.observed_at_ms < 0.0
+    {
+        return Err(error("invalid storage batch observation"));
+    }
+    PEERS.with(|peers| {
+        let peer = peers
+            .borrow()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| error("closed peer"))?;
+        if peer
+            .storage_epoch
+            .borrow()
+            .as_ref()
+            .is_some_and(|epoch| epoch != &result.epoch)
+        {
+            return Err(error("foreign storage epoch"));
+        }
+        let (writes, basis) = peer
+            .batches
+            .borrow_mut()
+            .remove(&result.batch_id)
+            .ok_or_else(|| error("unknown or settled storage batch"))?;
+        *peer.storage_epoch.borrow_mut() = Some(result.epoch);
+        for write in writes {
+            peer.cache
+                .acknowledge(
+                    &write,
+                    if result.result.ok {
+                        Ok(())
+                    } else {
+                        Err(result
+                            .result
+                            .code
+                            .clone()
+                            .unwrap_or_else(|| "storage-transaction-failed".into()))
+                    },
+                )
+                .map_err(error)?;
+        }
+        if result.result.ok {
+            peer.committed_at.set(Some(result.observed_at_ms));
+            peer.admission_progress.borrow_mut().committed(basis);
+        }
+        report_light(&peer);
+        Ok(())
     })
 }
-fn required_read_failure(peer:&Peer,state:&StatePeer)->Option<String>{
-    crate::desktop::admission(state).ok()?.required.iter().find_map(|record|state.check_document_read(peer._key.verifying_key().to_bytes(),&record.app_id,&record.record_id,SystemTime::now()).err())
+fn required_read_failure(peer: &Peer, state: &StatePeer) -> Option<String> {
+    crate::desktop::admission(state)
+        .ok()?
+        .required
+        .iter()
+        .find_map(|record| {
+            state
+                .check_document_read(
+                    peer._key.verifying_key().to_bytes(),
+                    &record.app_id,
+                    &record.record_id,
+                    SystemTime::now(),
+                )
+                .err()
+        })
 }
-fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>,source:crate::admission_health::ReportSource)->serde_json::Value{
-    let journal_status=peer.cache.status(&StorageKey::Admission{workspace:state.room().into()});
-    let journal=journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(_,bytes)|peer.health_projection.borrow_mut().journal(&bytes.bytes));
-    let durable_failure=crate::admission_health::durable_admission_failure(
+fn health(
+    peer: &Peer,
+    state: &StatePeer,
+    ready: bool,
+    reported_error: Option<&str>,
+    source: crate::admission_health::ReportSource,
+) -> serde_json::Value {
+    let journal_status = peer.cache.status(&StorageKey::Admission {
+        workspace: state.room().into(),
+    });
+    let journal = journal_status
+        .as_ref()
+        .and_then(|status| status.committed.as_ref())
+        .and_then(|(_, bytes)| peer.health_projection.borrow_mut().journal(&bytes.bytes));
+    let durable_failure = crate::admission_health::durable_admission_failure(
         state,
         peer._key.verifying_key().to_bytes(),
         SystemTime::now(),
         peer.admission_failure.borrow().clone(),
     );
-    let required_failure=required_read_failure(peer,state);
-    let durable_failure=durable_failure.or(required_failure);
-    let failure=crate::admission_health::reported_failure(durable_failure.as_deref(),reported_error,source,ready&&state.pending_count()==0);
+    let required_failure = required_read_failure(peer, state);
+    let durable_failure = durable_failure.or(required_failure);
+    let failure = crate::admission_health::reported_failure(
+        durable_failure.as_deref(),
+        reported_error,
+        source,
+        ready && state.pending_count() == 0,
+    );
     let mut failures=failure.map(|text|{
         let (code,message,recovery)=crate::admission_health::failure_policy(text,source,durable_failure.is_some(),peer.transport_connected.get());
         serde_json::json!({"id":"runtime:admission","code":code,"scope":{"kind":if !peer.transport_connected.get(){"connection"}else{"admission"}},"severity":if durable_failure.is_some()||matches!(source,crate::admission_health::ReportSource::ReceiveRejection){"error"}else{"notice"},"message":message,"recovery":[if recovery=="review-permissions"{serde_json::json!({"kind":recovery,"failureId":"runtime:admission"})}else{serde_json::json!({"kind":recovery})}],"occurredAtMs":js_sys::Date::now()})
     }).into_iter().collect::<Vec<_>>();
-    if let Ok(admission)=crate::desktop::admission(state){for app in admission.unsupported{
-        failures.push(serde_json::json!({"id":format!("runtime:application:{app}"),"code":"runtime-unavailable","scope":{"kind":"admission"},"severity":"notice","message":format!("{app}: application integration or required service unavailable"),"recovery":[],"occurredAtMs":js_sys::Date::now()}));
-    }}
-    let epoch=peer.storage_epoch.borrow().clone();
-    let revision=|revision:u64|epoch.as_ref().map(|epoch|serde_json::json!({"epoch":epoch,"revision":revision.to_string()}));
-    let pending=peer.cache.pending_writes();
+    if let Ok(admission) = crate::desktop::admission(state) {
+        for app in admission.unsupported {
+            failures.push(serde_json::json!({"id":format!("runtime:application:{app}"),"code":"runtime-unavailable","scope":{"kind":"admission"},"severity":"notice","message":format!("{app}: application integration or required service unavailable"),"recovery":[],"occurredAtMs":js_sys::Date::now()}));
+        }
+    }
+    let epoch = peer.storage_epoch.borrow().clone();
+    let revision = |revision: u64| {
+        epoch
+            .as_ref()
+            .map(|epoch| serde_json::json!({"epoch":epoch,"revision":revision.to_string()}))
+    };
+    let pending = peer.cache.pending_writes();
     let records=state.rows().iter().map(|row|{
         let key=storage_key(state.room(),&row.app_id,&row.record_id);
         let status=peer.cache.status(&key);
@@ -712,94 +1071,190 @@ fn health(peer:&Peer,state:&StatePeer,ready:bool,reported_error:Option<&str>,sou
         let durable_outgoing=journal.as_ref().map(|journal|journal.outbox.iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count()).unwrap_or(0);
         serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":if state.check_document_read(peer._key.verifying_key().to_bytes(),&row.app_id,&row.record_id,SystemTime::now()).is_ok(){"admitted"}else{"unavailable"},"current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"journalRevision":journal_status.as_ref().and_then(|status|status.committed.as_ref()).and_then(|(r,_)|revision(*r)),"pendingWrites":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|write|write.key==key||matches!(write.key,StorageKey::Admission{..})).map(|write|write.value.bytes.len()).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})
     }).collect::<Vec<_>>();
-    let admission_phase=crate::admission_health::admission_phase(state,ready,durable_failure.as_deref());
+    let admission_phase =
+        crate::admission_health::admission_phase(state, ready, durable_failure.as_deref());
     serde_json::json!({"version":1,"transport":{"phase":if peer.closed.get(){"closed"}else if peer.transport_connected.get(){"connected"}else{"offline"},"authenticated":peer.transport_connected.get(),"generation":peer.transport_generation.get().to_string(),"lastRelayContactAtMs":peer.last_relay_contact.get(),"lastSessionPeerContactAtMs":peer.last_peer_contact.get()},"admission":{"phase":admission_phase,"progressRevision":peer.admission_progress.borrow().revision().to_string(),"requiredRecords":crate::desktop::admission(state).map(|admission|admission.required.iter().map(|row|serde_json::json!({"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id})).collect::<Vec<_>>()).unwrap_or_default(),"pendingPrerequisites":state.pending_count(),"deadlineAtMs":null},"records":records,"capabilities":{"automaticRecovery":true,"retrySaving":true,"recoverRenderer":true,"durablePeerAcknowledgement":true},"failures":failures})
 }
 
 /// Read-only handoff from the committed admission owner to the retained desktop.
-pub(crate) fn desktop_state(id:u32)->Result<StatePeer,String>{
-    PEERS.with(|peers|{
-        let peer=peers.borrow().get(&id).cloned().ok_or("closed peer")?;
-        let state=peer.state.borrow();
-        let admission=crate::desktop::admission(&state)?;
-        if !admission.complete(){return Err("canonical desktop records are not admitted".into())}
-        if let Some(reason)=required_read_failure(&peer,&state){return Err(reason)}
-        if let Some(reason)=state.incomplete_reason(){return Err(reason)}
+pub(crate) fn desktop_state(id: u32) -> Result<StatePeer, String> {
+    PEERS.with(|peers| {
+        let peer = peers.borrow().get(&id).cloned().ok_or("closed peer")?;
+        let state = peer.state.borrow();
+        let admission = crate::desktop::admission(&state)?;
+        if !admission.complete() {
+            return Err("canonical desktop records are not admitted".into());
+        }
+        if let Some(reason) = required_read_failure(&peer, &state) {
+            return Err(reason);
+        }
+        if let Some(reason) = state.incomplete_reason() {
+            return Err(reason);
+        }
         Ok(state.clone())
     })
 }
 
 /// One admission installation path for retained and immediate committed state.
 fn install_candidate(peer: &Peer, mut candidate: StatePeer) -> Result<(), String> {
-    let (mut outbox,reconciliation_error)=match candidate.reconcile_outbox(&peer.outbox.borrow(),&peer._key,SystemTime::now()) {
-        Ok(outbox)=>(outbox,None),
-        // Never discard newly accepted revocations/prerequisites
-        // merely because local outgoing recovery is forbidden.
-        Err(error)=>(peer.outbox.borrow().iter().filter(|message|!candidate.covers(message)).cloned().collect(),Some(error)),
-    };
+    let (mut outbox, reconciliation_error) =
+        match candidate.reconcile_outbox(&peer.outbox.borrow(), &peer._key, SystemTime::now()) {
+            Ok(outbox) => (outbox, None),
+            // Never discard newly accepted revocations/prerequisites
+            // merely because local outgoing recovery is forbidden.
+            Err(error) => (
+                peer.outbox
+                    .borrow()
+                    .iter()
+                    .filter(|message| !candidate.covers(message))
+                    .cloned()
+                    .collect(),
+                Some(error),
+            ),
+        };
     // Acceptance may reconcile author sequences, but cannot retire the
     // immutable original without an exact designated durable receipt.
-    for original in peer.outbox.borrow().iter(){
-        let durable=match original {NeighbourMsg::AppDocument{app_id,record_id,..}=>candidate.durable_coverage(app_id,record_id).ok().flatten().is_some()&&candidate.covers(original),_=>false};
-        if !durable && !outbox.iter().any(|other|postcard::to_allocvec(other).ok()==postcard::to_allocvec(original).ok()){outbox.push(original.clone());}
+    for original in peer.outbox.borrow().iter() {
+        let durable = match original {
+            NeighbourMsg::AppDocument {
+                app_id, record_id, ..
+            } => {
+                candidate
+                    .durable_coverage(app_id, record_id)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    && candidate.covers(original)
+            }
+            _ => false,
+        };
+        if !durable
+            && !outbox.iter().any(|other| {
+                postcard::to_allocvec(other).ok() == postcard::to_allocvec(original).ok()
+            })
+        {
+            outbox.push(original.clone());
+        }
     }
     let install = if candidate.incomplete_reason().is_some() {
         Ok(())
     } else {
         install_records(&peer, &candidate)
     };
-        install?;
-        stage_journal(peer, &candidate, &outbox)?;
-        let journal = StorageKey::Admission { workspace: candidate.room().into() };
-        let revision = peer.cache.status(&journal).filter(|status| !status.durable).map(|status| status.revision);
-        peer.admission_progress.borrow_mut().accepted(revision);
-        *peer.admission_failure.borrow_mut() = reconciliation_error;
-        *peer.outbox.borrow_mut() = outbox;
-        *peer.state.borrow_mut() = candidate;
-        crate::browser::refresh_peer_mounts(peer.id);
-        report(peer, "admitting", None);
-        Ok(())
+    install?;
+    stage_journal(peer, &candidate, &outbox)?;
+    let journal = StorageKey::Admission {
+        workspace: candidate.room().into(),
+    };
+    let revision = peer
+        .cache
+        .status(&journal)
+        .filter(|status| !status.durable)
+        .map(|status| status.revision);
+    peer.admission_progress.borrow_mut().accepted(revision);
+    *peer.admission_failure.borrow_mut() = reconciliation_error;
+    *peer.outbox.borrow_mut() = outbox;
+    *peer.state.borrow_mut() = candidate;
+    crate::browser::refresh_peer_mounts(peer.id);
+    report(peer, "admitting", None);
+    Ok(())
 }
 
-fn action_context(peer:&Peer)->Result<serde_json::Value,String>{
-    if peer.closed.get()||!peer.transport_connected.get(){return Err("action transport disconnected".into());}
-    if !peer.action_v2.get(){return Err("state-only peer: actions unavailable".into());}
-    let state=peer.state.borrow();let target=state.authority();let sender=peer._key.verifying_key().to_bytes();
-    state.permissions(target.device_public_key,SystemTime::now())?;
-    state.permissions(sender,SystemTime::now())?;
-    let own=state.certificates().into_iter().find(|cert|cert.device_public_key==sender).ok_or("sender certificate missing")?;
-    let hex=|bytes:[u8;32]|bytes.iter().map(|b|format!("{b:02x}")).collect::<String>();
-    Ok(serde_json::json!({"room":state.room(),"sender":hex(sender),"senderRoot":hex(own.user_public_key),"target":hex(target.device_public_key),"targetRoot":hex(target.user_public_key),"certificate":serde_json::to_string(target).map_err(|e|e.to_string())?}))
+fn action_context(peer: &Peer) -> Result<serde_json::Value, String> {
+    if peer.closed.get() || !peer.transport_connected.get() {
+        return Err("action transport disconnected".into());
+    }
+    if !peer.action_v2.get() {
+        return Err("state-only peer: actions unavailable".into());
+    }
+    let state = peer.state.borrow();
+    let target = state.authority();
+    let sender = peer._key.verifying_key().to_bytes();
+    state.permissions(target.device_public_key, SystemTime::now())?;
+    state.permissions(sender, SystemTime::now())?;
+    let own = state
+        .certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == sender)
+        .ok_or("sender certificate missing")?;
+    let hex = |bytes: [u8; 32]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    Ok(
+        serde_json::json!({"room":state.room(),"sender":hex(sender),"senderRoot":hex(own.user_public_key),"target":hex(target.device_public_key),"targetRoot":hex(target.user_public_key),"certificate":serde_json::to_string(target).map_err(|e|e.to_string())?}),
+    )
 }
 #[wasm_bindgen]
-pub fn peer_action_notifications()->bool { true }
-#[wasm_bindgen]
-pub fn peer_action_context(id:u32)->Result<String,JsValue>{
-    let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))?;
-    action_context(&peer).map(|value|value.to_string()).map_err(error)
+pub fn peer_action_notifications() -> bool {
+    true
 }
 #[wasm_bindgen]
-pub fn peer_action_request(id:u32,message:String)->Result<String,JsValue>{
-    use tilo_relay::peer_actions::{ActionMessage,DirectedAction};
-    let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))?;
+pub fn peer_action_context(id: u32) -> Result<String, JsValue> {
+    let peer = PEERS
+        .with(|peers| peers.borrow().get(&id).cloned())
+        .ok_or_else(|| error("closed peer"))?;
+    action_context(&peer)
+        .map(|value| value.to_string())
+        .map_err(error)
+}
+#[wasm_bindgen]
+pub fn peer_action_request(id: u32, message: String) -> Result<String, JsValue> {
+    use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
+    let peer = PEERS
+        .with(|peers| peers.borrow().get(&id).cloned())
+        .ok_or_else(|| error("closed peer"))?;
     action_context(&peer).map_err(error)?;
-    let message:ActionMessage=serde_json::from_str(&message).map_err(error)?;
-    if !matches!(message,ActionMessage::CatalogueRefresh|ActionMessage::InvokeBound{..}|ActionMessage::Status{..}|ActionMessage::Cancel{..}){return Err(error("unsupported client request"));}
-    let state=peer.state.borrow();
-    let action=DirectedAction{room:state.room().parse().map_err(error)?,request_id:uuid::Uuid::new_v4(),source:peer._key.verifying_key().to_bytes(),target:state.authority().device_public_key,message};
-    let request=action.request_id;
-    peer.actions.borrow_mut().insert(action.clone()).map_err(error)?;
-    let result=peer.session.borrow().as_ref().ok_or_else(||error("action transport disconnected"))?.send_action(action);
-    if let Err(failure)=result{peer.actions.borrow_mut().forget(request);return Err(error(failure));}
+    let message: ActionMessage = serde_json::from_str(&message).map_err(error)?;
+    if !matches!(
+        message,
+        ActionMessage::CatalogueRefresh
+            | ActionMessage::InvokeBound { .. }
+            | ActionMessage::Status { .. }
+            | ActionMessage::Cancel { .. }
+    ) {
+        return Err(error("unsupported client request"));
+    }
+    let state = peer.state.borrow();
+    let action = DirectedAction {
+        room: state.room().parse().map_err(error)?,
+        request_id: uuid::Uuid::new_v4(),
+        source: peer._key.verifying_key().to_bytes(),
+        target: state.authority().device_public_key,
+        message,
+    };
+    let request = action.request_id;
+    peer.actions
+        .borrow_mut()
+        .insert(action.clone())
+        .map_err(error)?;
+    let result = peer
+        .session
+        .borrow()
+        .as_ref()
+        .ok_or_else(|| error("action transport disconnected"))?
+        .send_action(action);
+    if let Err(failure) = result {
+        peer.actions.borrow_mut().forget(request);
+        return Err(error(failure));
+    }
     Ok(request.to_string())
 }
 #[wasm_bindgen]
-pub fn peer_action_response(id:u32,request:String)->Result<Option<String>,JsValue>{
-    let peer=PEERS.with(|peers|peers.borrow().get(&id).cloned()).ok_or_else(||error("closed peer"))?;
+pub fn peer_action_response(id: u32, request: String) -> Result<Option<String>, JsValue> {
+    let peer = PEERS
+        .with(|peers| peers.borrow().get(&id).cloned())
+        .ok_or_else(|| error("closed peer"))?;
     action_context(&peer).map_err(error)?;
-    peer.actions.borrow_mut().take(request.parse().map_err(error)?).map(|value|Ok(crate::action_client::browser_response(value).to_string())).transpose()
+    peer.actions
+        .borrow_mut()
+        .take(request.parse().map_err(error)?)
+        .map(|value| Ok(crate::action_client::browser_response(value).to_string()))
+        .transpose()
 }
 #[wasm_bindgen]
-pub fn peer_action_forget(id:u32,request:String){
-    if let (Some(peer),Ok(request))=(PEERS.with(|peers|peers.borrow().get(&id).cloned()),request.parse()){peer.actions.borrow_mut().forget(request);}
+pub fn peer_action_forget(id: u32, request: String) {
+    if let (Some(peer), Ok(request)) = (
+        PEERS.with(|peers| peers.borrow().get(&id).cloned()),
+        request.parse(),
+    ) {
+        peer.actions.borrow_mut().forget(request);
+    }
 }

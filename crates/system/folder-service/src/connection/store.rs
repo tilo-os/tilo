@@ -604,7 +604,8 @@ impl ConnectionStore {
             return Err(StoreError::LimitExceeded);
         }
         storage.read_log_magic(&mut log)?;
-        let header: format::LogHeader = storage.read_log_record(&mut log, 0)?
+        let header: format::LogHeader = storage
+            .read_log_record(&mut log, 0)?
             .ok_or(StoreError::Corrupt)?;
         if header.schema != 1
             || header.identity != storage.identity
@@ -662,8 +663,9 @@ impl ConnectionStore {
         store.validate_review_history(&[])?;
         loop {
             let offset = store.log.stream_position()?;
-            let event: Option<Event> =
-                store.storage.read_log_record(&mut store.log, format::next(store.sequence)?)?;
+            let event: Option<Event> = store
+                .storage
+                .read_log_record(&mut store.log, format::next(store.sequence)?)?;
             let Some(event) = event else {
                 if offset != store.log.metadata()?.len() {
                     store.validate()?;
@@ -761,10 +763,14 @@ impl ConnectionStore {
     ) -> Result<Page<ConflictRecord>, StoreError> {
         let rows = self.worker_table_page(id, 3, cursor, limit)?;
         Ok(Page {
-            entries: rows.entries.into_iter().map(|row| match row {
-                Row::Conflict(conflict) => conflict.decode(),
-                _ => Err(StoreError::Corrupt),
-            }).collect::<Result<_, _>>()?,
+            entries: rows
+                .entries
+                .into_iter()
+                .map(|row| match row {
+                    Row::Conflict(conflict) => conflict.decode(),
+                    _ => Err(StoreError::Corrupt),
+                })
+                .collect::<Result<_, _>>()?,
             next: rows.next,
         })
     }
@@ -3196,7 +3202,11 @@ impl ConnectionStore {
             }) {
                 continue;
             }
-            previous.selected_applied.as_mut().ok_or(StoreError::Corrupt)?.attention = false;
+            previous
+                .selected_applied
+                .as_mut()
+                .ok_or(StoreError::Corrupt)?
+                .attention = false;
             rows.push(Row::Operation(previous));
         }
         Ok(rows)
@@ -3712,10 +3722,22 @@ impl ConnectionStore {
                 recovery_checks,
             ),
             Change::SelectedAppliedCarryV1 {
-                connection, serial, expected, fence, attempt, outcome, carry,
+                connection,
+                serial,
+                expected,
+                fence,
+                attempt,
+                outcome,
+                carry,
             } => self.reduce_selected_applied(
-                *connection, *serial, *expected, *fence, *attempt, *outcome,
-                Some(carry), recovery_checks,
+                *connection,
+                *serial,
+                *expected,
+                *fence,
+                *attempt,
+                *outcome,
+                Some(carry),
+                recovery_checks,
             ),
             Change::NativeOutcome {
                 registration,
@@ -3976,7 +3998,9 @@ impl ConnectionStore {
                                 &equality, &applied, &conflict,
                             )?;
                         }
-                        if !accepted { return Err(StoreError::RecoveryRequired); }
+                        if !accepted {
+                            return Err(StoreError::RecoveryRequired);
+                        }
                     }
                 }
             }
@@ -5157,7 +5181,9 @@ impl ConnectionStore {
                         &operation, applied, &conflict,
                     )?;
                 }
-                if !accepted { return Err(StoreError::RecoveryRequired); }
+                if !accepted {
+                    return Err(StoreError::RecoveryRequired);
+                }
             }
         }
         let mut entries = if let Some(revision) = connection.baseline {
@@ -6605,9 +6631,12 @@ impl ConnectionStore {
             self.attention_conflict_origin(&conflict)?;
             let mut accepted = false;
             for applied in &selected {
-                accepted |= self.joined_selected_equality_conflict_matches(&equality, applied, &conflict)?;
+                accepted |=
+                    self.joined_selected_equality_conflict_matches(&equality, applied, &conflict)?;
             }
-            if !accepted { return Ok(false); }
+            if !accepted {
+                return Ok(false);
+            }
         }
         Ok(true)
     }

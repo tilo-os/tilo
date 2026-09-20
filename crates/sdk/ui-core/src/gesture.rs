@@ -5,9 +5,9 @@
 //! caret/selection model. Lives in `ui` so every app gets consistent selection
 //! behaviour instead of re-deriving the timing/anchor rules.
 
+use crate::clock::{Duration, Instant};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use crate::clock::{Duration, Instant};
 use vello::kurbo::Point;
 
 // Navigation gestures (back / forward): app-agnostic recognisers for the

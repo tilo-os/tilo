@@ -13,9 +13,9 @@ use chat::{
     doc::ChatDoc,
     model::{AgentRoute, AgentStepOutcome, AgentWorkState},
 };
-use tilo_actions::Action;
 use qos_agent::{Config, Session};
 use std::time::{Duration, Instant};
+use tilo_actions::Action;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 mod typed_peer;
 use typed_peer::{TypedPeer, send};

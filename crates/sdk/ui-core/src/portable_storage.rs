@@ -9,25 +9,44 @@ mod tests {
     fn committed_document_heads_reuse_saved_metadata_only_after_exact_acknowledgement() {
         use automerge::transaction::Transactable;
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let key = StorageKey::Record { package: "test".into(), workspace: "room".into(), record: "record".into() };
+        let key = StorageKey::Record {
+            package: "test".into(),
+            workspace: "room".into(),
+            record: "record".into(),
+        };
         let mut doc = automerge::AutoCommit::new();
         DOCUMENT_DECODES.with(|count| count.set(0));
         for value in 0..3 {
             let before = cache.committed_document_heads(&key);
             doc.put(automerge::ROOT, "value", value).unwrap();
             cache.put_document(key.clone(), &mut doc, None).unwrap();
-            assert_eq!(cache.committed_document_heads(&key), before, "queued heads are not durable heads");
+            assert_eq!(
+                cache.committed_document_heads(&key),
+                before,
+                "queued heads are not durable heads"
+            );
             let write = cache.pending_writes().remove(0);
             cache.acknowledge(&write, Ok(())).unwrap();
-            assert_eq!(cache.committed_document_heads(&key), Some(Ok(doc.base_heads())));
+            assert_eq!(
+                cache.committed_document_heads(&key),
+                Some(Ok(doc.base_heads()))
+            );
         }
-        assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 0, "saved document heads must not require decoding our own bytes");
+        assert_eq!(
+            DOCUMENT_DECODES.with(|count| count.get()),
+            0,
+            "saved document heads must not require decoding our own bytes"
+        );
     }
     #[test]
     fn old_commits_and_failed_new_writes_reuse_their_own_saved_heads() {
         use automerge::transaction::Transactable;
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let key = StorageKey::Record { package: "test".into(), workspace: "room".into(), record: "record".into() };
+        let key = StorageKey::Record {
+            package: "test".into(),
+            workspace: "room".into(),
+            record: "record".into(),
+        };
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "value", 1).unwrap();
         cache.put_document(key.clone(), &mut doc, None).unwrap();
@@ -38,18 +57,33 @@ mod tests {
         let new = cache.pending_writes().remove(0);
         cache.acknowledge(&old, Ok(())).unwrap();
         DOCUMENT_DECODES.with(|count| count.set(0));
-        for _ in 0..10 { assert_eq!(cache.committed_document_heads(&key), Some(Ok(old_heads.clone()))); }
+        for _ in 0..10 {
+            assert_eq!(
+                cache.committed_document_heads(&key),
+                Some(Ok(old_heads.clone()))
+            );
+        }
         assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 0);
         cache.acknowledge(&new, Err("aborted".into())).unwrap();
         assert_eq!(cache.committed_document_heads(&key), Some(Ok(old_heads)));
         cache.acknowledge(&new, Ok(())).unwrap();
-        assert_eq!(cache.committed_document_heads(&key), Some(Ok(doc.base_heads())));
+        assert_eq!(
+            cache.committed_document_heads(&key),
+            Some(Ok(doc.base_heads()))
+        );
         cache.acknowledge(&old, Ok(())).unwrap();
-        assert_eq!(cache.committed_document_heads(&key), Some(Ok(doc.base_heads())));
+        assert_eq!(
+            cache.committed_document_heads(&key),
+            Some(Ok(doc.base_heads()))
+        );
         assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 0);
-        cache.put(key.clone(), vec![1,2,3], None).unwrap();
-        cache.acknowledge(&cache.pending_writes().remove(0), Ok(())).unwrap();
-        for _ in 0..3 { assert_eq!(cache.committed_document_heads(&key), Some(Err(()))); }
+        cache.put(key.clone(), vec![1, 2, 3], None).unwrap();
+        cache
+            .acknowledge(&cache.pending_writes().remove(0), Ok(()))
+            .unwrap();
+        for _ in 0..3 {
+            assert_eq!(cache.committed_document_heads(&key), Some(Err(())));
+        }
         assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 1);
     }
     #[test]
@@ -57,22 +91,35 @@ mod tests {
         use automerge::transaction::Transactable;
         for corrupt in [false, true] {
             let cache = PortableStorage::new("profile", "device").unwrap();
-            let key = StorageKey::Record { package: "test".into(), workspace: "room".into(), record: "record".into() };
+            let key = StorageKey::Record {
+                package: "test".into(),
+                workspace: "room".into(),
+                record: "record".into(),
+            };
             let mut doc = automerge::AutoCommit::new();
             doc.put(automerge::ROOT, "value", 1).unwrap();
             cache.put_document(key.clone(), &mut doc, None).unwrap();
             let mut old = cache.pending_writes().remove(0);
             doc.put(automerge::ROOT, "value", 2).unwrap();
             let replacement = doc.save();
-            let expected = if corrupt { Err(()) } else { Ok(doc.get_heads()) };
+            let expected = if corrupt {
+                Err(())
+            } else {
+                Ok(doc.get_heads())
+            };
             old.value.bytes = if corrupt { vec![1, 2, 3] } else { replacement };
             doc.put(automerge::ROOT, "value", 3).unwrap();
             cache.put_document(key.clone(), &mut doc, None).unwrap();
             cache.acknowledge(&old, Ok(())).unwrap();
             DOCUMENT_DECODES.with(|count| count.set(0));
-            for _ in 0..3 { assert_eq!(cache.committed_document_heads(&key), Some(expected.clone())); }
+            for _ in 0..3 {
+                assert_eq!(cache.committed_document_heads(&key), Some(expected.clone()));
+            }
             assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 1);
-            assert!(cache.flush(&key).is_err(), "old acknowledgement cannot commit newer bytes");
+            assert!(
+                cache.flush(&key).is_err(),
+                "old acknowledgement cannot commit newer bytes"
+            );
             assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
         }
     }
@@ -80,27 +127,36 @@ mod tests {
     fn serialized_document_seeds_heads_without_reloading_its_own_bytes() {
         use automerge::transaction::Transactable;
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let key = StorageKey::Primary { package:"test".into(), workspace:"room".into() };
+        let key = StorageKey::Primary {
+            package: "test".into(),
+            workspace: "room".into(),
+        };
         let mut doc = automerge::AutoCommit::new();
         DOCUMENT_DECODES.with(|count| count.set(0));
         for value in 0..3 {
-            doc.put(automerge::ROOT,"value",value).unwrap();
+            doc.put(automerge::ROOT, "value", value).unwrap();
             cache.put_document(key.clone(), &mut doc, None).unwrap();
-            assert_eq!(cache.document_heads(&key),Some(Ok(doc.base_heads())));
-            assert_eq!(DOCUMENT_DECODES.with(|count| count.get()),0);
-            assert!(cache.flush(&key).is_err(),"queuing known heads does not acknowledge persistence");
+            assert_eq!(cache.document_heads(&key), Some(Ok(doc.base_heads())));
+            assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 0);
+            assert!(
+                cache.flush(&key).is_err(),
+                "queuing known heads does not acknowledge persistence"
+            );
             let mut loaded = automerge::AutoCommit::load(&cache.get(&key).unwrap().bytes).unwrap();
-            assert_eq!(loaded.get_heads(),doc.base_heads());
+            assert_eq!(loaded.get_heads(), doc.base_heads());
         }
-        cache.put(key.clone(),vec![1,2,3],None).unwrap();
-        assert_eq!(cache.document_heads(&key),Some(Err(())));
-        assert_eq!(DOCUMENT_DECODES.with(|count| count.get()),1);
+        cache.put(key.clone(), vec![1, 2, 3], None).unwrap();
+        assert_eq!(cache.document_heads(&key), Some(Err(())));
+        assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 1);
     }
     #[test]
     fn serialized_document_heads_follow_full_graph_when_owner_is_isolated() {
         use automerge::transaction::Transactable;
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let key = StorageKey::Primary { package: "test".into(), workspace: "room".into() };
+        let key = StorageKey::Primary {
+            package: "test".into(),
+            workspace: "room".into(),
+        };
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "value", 1).unwrap();
         let historical = doc.get_heads();
@@ -109,7 +165,11 @@ mod tests {
         doc.isolate(&historical);
         cache.put_document(key.clone(), &mut doc, None).unwrap();
         assert_eq!(cache.document_heads(&key), Some(Ok(current)));
-        assert_eq!(doc.base_heads(), historical, "saving must preserve isolation");
+        assert_eq!(
+            doc.base_heads(),
+            historical,
+            "saving must preserve isolation"
+        );
         let mut loaded = automerge::AutoCommit::load(&cache.get(&key).unwrap().bytes).unwrap();
         assert_eq!(cache.document_heads(&key), Some(Ok(loaded.get_heads())));
     }
@@ -117,14 +177,19 @@ mod tests {
     fn document_heads_decode_once_per_value_and_preserve_ack_state() {
         use automerge::transaction::Transactable;
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let key = StorageKey::Primary { package: "test".into(), workspace: "room".into() };
+        let key = StorageKey::Primary {
+            package: "test".into(),
+            workspace: "room".into(),
+        };
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "value", 1).unwrap();
         let bytes = doc.save();
         let first_heads = doc.get_heads();
         cache.hydrate(key.clone(), bytes.clone(), None).unwrap();
         DOCUMENT_DECODES.with(|count| count.set(0));
-        for _ in 0..100 { assert_eq!(cache.document_heads(&key), Some(Ok(first_heads.clone()))); }
+        for _ in 0..100 {
+            assert_eq!(cache.document_heads(&key), Some(Ok(first_heads.clone())));
+        }
         cache.put(key.clone(), bytes, None).unwrap();
         assert_eq!(cache.document_heads(&key), Some(Ok(first_heads)));
         assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 1);
@@ -132,15 +197,20 @@ mod tests {
         cache.put(key.clone(), doc.save(), None).unwrap();
         let pending = cache.pending_writes().remove(0);
         assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
-        assert!(cache.flush(&key).is_err(), "head decoding must not acknowledge persistence");
+        assert!(
+            cache.flush(&key).is_err(),
+            "head decoding must not acknowledge persistence"
+        );
         cache.acknowledge(&pending, Err("quota".into())).unwrap();
         assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
         assert_eq!(cache.flush(&key), Err("quota".into()));
         cache.acknowledge(&pending, Ok(())).unwrap();
         assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
         assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 2);
-        cache.put(key.clone(), vec![1,2,3], None).unwrap();
-        for _ in 0..3 { assert_eq!(cache.document_heads(&key), Some(Err(()))); }
+        cache.put(key.clone(), vec![1, 2, 3], None).unwrap();
+        for _ in 0..3 {
+            assert_eq!(cache.document_heads(&key), Some(Err(())));
+        }
         assert_eq!(DOCUMENT_DECODES.with(|count| count.get()), 3);
         cache.put(key.clone(), doc.save(), None).unwrap();
         assert_eq!(cache.document_heads(&key), Some(Ok(doc.get_heads())));
@@ -148,15 +218,26 @@ mod tests {
     }
     #[test]
     fn status_retains_exact_prior_commit_across_newer_pending_and_failed_writes() {
-        let cache=PortableStorage::new("profile","device").unwrap();
-        let key=StorageKey::Admission{workspace:"room".into()};
-        cache.put(key.clone(),vec![1],None).unwrap();let first=cache.pending_writes().remove(0);
-        cache.put(key.clone(),vec![2],None).unwrap();
-        cache.acknowledge(&first,Ok(())).unwrap();
-        let status=cache.status(&key).unwrap();assert!(!status.durable);assert_eq!(status.committed.unwrap().1.bytes,vec![1]);
-        let second=cache.pending_writes().remove(0);cache.acknowledge(&second,Err("quota".into())).unwrap();
-        let status=cache.status(&key).unwrap();assert_eq!(status.error.as_deref(),Some("quota"));assert_eq!(status.committed.unwrap().0,first.revision);
-        cache.acknowledge(&second,Ok(())).unwrap();let status=cache.status(&key).unwrap();assert!(status.durable);assert_eq!(status.committed.unwrap().1.bytes,vec![2]);
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::Admission {
+            workspace: "room".into(),
+        };
+        cache.put(key.clone(), vec![1], None).unwrap();
+        let first = cache.pending_writes().remove(0);
+        cache.put(key.clone(), vec![2], None).unwrap();
+        cache.acknowledge(&first, Ok(())).unwrap();
+        let status = cache.status(&key).unwrap();
+        assert!(!status.durable);
+        assert_eq!(status.committed.unwrap().1.bytes, vec![1]);
+        let second = cache.pending_writes().remove(0);
+        cache.acknowledge(&second, Err("quota".into())).unwrap();
+        let status = cache.status(&key).unwrap();
+        assert_eq!(status.error.as_deref(), Some("quota"));
+        assert_eq!(status.committed.unwrap().0, first.revision);
+        cache.acknowledge(&second, Ok(())).unwrap();
+        let status = cache.status(&key).unwrap();
+        assert!(status.durable);
+        assert_eq!(status.committed.unwrap().1.bytes, vec![2]);
     }
     #[test]
     fn cache_flush_requires_matching_durable_ack_and_retains_failed_bytes() {
@@ -208,8 +289,13 @@ pub enum ProfileNamespace {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StorageKey {
-    Admission { workspace: String },
-    Primary { package: String, workspace: String },
+    Admission {
+        workspace: String,
+    },
+    Primary {
+        package: String,
+        workspace: String,
+    },
     Record {
         package: String,
         workspace: String,
@@ -220,7 +306,9 @@ pub enum StorageKey {
         instance: u64,
     },
     /// Private device action intents and observations; never shared app state.
-    PrivateActions { workspace: String },
+    PrivateActions {
+        workspace: String,
+    },
 }
 impl StorageKey {
     fn validate(&self) -> Result<(), String> {
@@ -279,7 +367,10 @@ struct DocumentHeads {
 }
 impl DocumentHeads {
     fn new(bytes: &[u8], heads: Result<Vec<automerge::ChangeHash>, ()>) -> Self {
-        Self { fingerprint: blake3::hash(bytes), heads }
+        Self {
+            fingerprint: blake3::hash(bytes),
+            heads,
+        }
     }
 }
 struct Entry {
@@ -353,35 +444,55 @@ impl PortableStorage {
             .map(|entry| entry.value.clone())
     }
     /// Decode the current cached document without asserting that it is durable.
-    pub(crate) fn document_heads(&self, key: &StorageKey) -> Option<Result<Vec<automerge::ChangeHash>, ()>> {
+    pub(crate) fn document_heads(
+        &self,
+        key: &StorageKey,
+    ) -> Option<Result<Vec<automerge::ChangeHash>, ()>> {
         let mut cache = self.cache.borrow_mut();
         let entry = cache.entries.get_mut(key)?;
         if entry.document_heads.is_none() {
             #[cfg(test)]
             DOCUMENT_DECODES.with(|count| count.set(count.get() + 1));
             let heads = automerge::AutoCommit::load(&entry.value.bytes)
-                .map(|mut doc| doc.get_heads()).map_err(|_| ());
+                .map(|mut doc| doc.get_heads())
+                .map_err(|_| ());
             entry.document_heads = Some(DocumentHeads::new(&entry.value.bytes, heads));
         }
-        entry.document_heads.as_ref().map(|metadata| metadata.heads.clone())
+        entry
+            .document_heads
+            .as_ref()
+            .map(|metadata| metadata.heads.clone())
     }
     /// Heads of the exact acknowledged snapshot, never a newer queued value.
     /// Reuses canonical save metadata only when the committed bytes match it.
-    pub fn committed_document_heads(&self, key: &StorageKey) -> Option<Result<Vec<automerge::ChangeHash>, ()>> {
+    pub fn committed_document_heads(
+        &self,
+        key: &StorageKey,
+    ) -> Option<Result<Vec<automerge::ChangeHash>, ()>> {
         let mut cache = self.cache.borrow_mut();
         let entry = cache.entries.get_mut(key)?;
         let (_, committed) = entry.committed.as_ref()?;
         if entry.committed_document_heads.is_none() {
             let same_bytes = committed.bytes == entry.value.bytes;
-            if same_bytes { entry.committed_document_heads = entry.document_heads.as_ref().map(|metadata| metadata.heads.clone()); }
+            if same_bytes {
+                entry.committed_document_heads = entry
+                    .document_heads
+                    .as_ref()
+                    .map(|metadata| metadata.heads.clone());
+            }
             if entry.committed_document_heads.is_none() {
                 #[cfg(test)]
                 DOCUMENT_DECODES.with(|count| count.set(count.get() + 1));
-                entry.committed_document_heads = Some(automerge::AutoCommit::load(&committed.bytes)
-                    .map(|mut doc| doc.get_heads()).map_err(|_| ()));
+                entry.committed_document_heads = Some(
+                    automerge::AutoCommit::load(&committed.bytes)
+                        .map(|mut doc| doc.get_heads())
+                        .map_err(|_| ()),
+                );
             }
             if same_bytes && entry.document_heads.is_none() {
-                entry.document_heads = entry.committed_document_heads.clone()
+                entry.document_heads = entry
+                    .committed_document_heads
+                    .clone()
                     .map(|heads| DocumentHeads::new(&entry.value.bytes, heads));
             }
         }
@@ -402,7 +513,13 @@ impl PortableStorage {
         cache.entries.insert(
             key,
             Entry {
-                committed: Some((0,CachedBytes{bytes:bytes.clone(),actor:actor.clone()})),
+                committed: Some((
+                    0,
+                    CachedBytes {
+                        bytes: bytes.clone(),
+                        actor: actor.clone(),
+                    },
+                )),
                 value: CachedBytes { bytes, actor },
                 document_heads: None,
                 committed_document_heads: None,
@@ -434,8 +551,14 @@ impl PortableStorage {
             .checked_add(1)
             .ok_or("storage revision exhausted")?;
         let revision = cache.revision;
-        let committed=cache.entries.get(&key).and_then(|entry|entry.committed.clone());
-        let committed_document_heads=cache.entries.get(&key).and_then(|entry|entry.committed_document_heads.clone());
+        let committed = cache
+            .entries
+            .get(&key)
+            .and_then(|entry| entry.committed.clone());
+        let committed_document_heads = cache
+            .entries
+            .get(&key)
+            .and_then(|entry| entry.committed_document_heads.clone());
         cache.entries.insert(
             key,
             Entry {
@@ -453,7 +576,10 @@ impl PortableStorage {
     /// Serialize a canonical document and queue its bytes through the ordinary
     /// persistence path. Callers cannot supply detached or unverified heads.
     pub(crate) fn put_document(
-        &self, key: StorageKey, doc: &mut automerge::AutoCommit, actor: Option<Vec<u8>>,
+        &self,
+        key: StorageKey,
+        doc: &mut automerge::AutoCommit,
+        actor: Option<Vec<u8>>,
     ) -> Result<(), String> {
         let bytes = doc.save();
         // Save serializes the full graph, including when the owner is viewing
@@ -463,7 +589,10 @@ impl PortableStorage {
         // `put` synchronously installs these exact bytes. Retain the heads from
         // their canonical owner instead of decoding our own serialization.
         let mut cache = self.cache.borrow_mut();
-        let entry = cache.entries.get_mut(&key).expect("successful put installs the document");
+        let entry = cache
+            .entries
+            .get_mut(&key)
+            .expect("successful put installs the document");
         if entry.document_heads.is_none() {
             entry.document_heads = Some(DocumentHeads::new(&entry.value.bytes, Ok(heads)));
         }
@@ -499,14 +628,29 @@ impl PortableStorage {
             .entries
             .get_mut(&write.key)
             .ok_or("unknown persistence key")?;
-        if write.revision<=entry.revision && result.is_ok() && entry.committed.as_ref().is_none_or(|(revision,_)|*revision<write.revision){
-            if write.value.actor!=entry.value.actor{return Err("acknowledgement actor differs from persistent custody".into());}
-            if write.revision==entry.revision && write.value.bytes!=entry.value.bytes{return Err("acknowledgement bytes differ from the queued write".into());}
-            entry.committed=Some((write.revision,write.value.clone()));
+        if write.revision <= entry.revision
+            && result.is_ok()
+            && entry
+                .committed
+                .as_ref()
+                .is_none_or(|(revision, _)| *revision < write.revision)
+        {
+            if write.value.actor != entry.value.actor {
+                return Err("acknowledgement actor differs from persistent custody".into());
+            }
+            if write.revision == entry.revision && write.value.bytes != entry.value.bytes {
+                return Err("acknowledgement bytes differ from the queued write".into());
+            }
+            entry.committed = Some((write.revision, write.value.clone()));
             entry.committed_document_heads = if write.value.bytes == entry.value.bytes {
-                entry.document_heads.as_ref().map(|metadata| metadata.heads.clone())
+                entry
+                    .document_heads
+                    .as_ref()
+                    .map(|metadata| metadata.heads.clone())
             } else {
-                write.document_heads.as_ref()
+                write
+                    .document_heads
+                    .as_ref()
                     .filter(|metadata| metadata.fingerprint == blake3::hash(&write.value.bytes))
                     .map(|metadata| metadata.heads.clone())
             };
@@ -529,8 +673,17 @@ impl PortableStorage {
         }
         Ok(())
     }
-    pub fn status(&self,key:&StorageKey)->Option<StorageStatus>{
-        self.cache.borrow().entries.get(key).map(|entry|StorageStatus{revision:entry.revision,durable:entry.durable,error:entry.error.clone(),committed:entry.committed.clone()})
+    pub fn status(&self, key: &StorageKey) -> Option<StorageStatus> {
+        self.cache
+            .borrow()
+            .entries
+            .get(key)
+            .map(|entry| StorageStatus {
+                revision: entry.revision,
+                durable: entry.durable,
+                error: entry.error.clone(),
+                committed: entry.committed.clone(),
+            })
     }
     pub fn flush(&self, key: &StorageKey) -> Result<(), String> {
         let cache = self.cache.borrow();

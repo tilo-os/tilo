@@ -10,12 +10,12 @@
 //! windows paint, hit testing, fetching, scrolling, and accessibility to the
 //! same visible rows.
 
+use crate::clock::Instant;
 use automerge::{AutoCommit, ObjId};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
-use crate::clock::Instant;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -2677,10 +2677,10 @@ mod tier_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Duration;
     use crate::widget::Button;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    use crate::clock::Duration;
 
     #[derive(Clone)]
     struct R {

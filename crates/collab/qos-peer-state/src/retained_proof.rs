@@ -9,9 +9,9 @@ use crate::{NeighbourMsg, coverage::Coverage, durability::DurableReceipt};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, Automerge, ROOT, ReadDoc, ScalarValue, Value};
 use collab_types::{DocumentMutation, DocumentWireVersion, VersionedRoutedDocumentPayload};
-use tilo_user_identity::DeviceCert;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use tilo_user_identity::DeviceCert;
 
 /// A local trust configuration, never inferred from a publication. Deserialization
 /// validates the exact certificate and canonical namespace too.
@@ -434,12 +434,9 @@ fn signed_document(
     collab_types::verify_op(&envelope).map_err(|_| ProofError::Unknown)?;
     let VersionedRoutedDocumentPayload::Cleartext(decoded) =
         collab_types::validate_document_payload_route_versioned(
-            &app_id,
-            room,
-            &record_id,
-            &envelope,
+            &app_id, room, &record_id, &envelope,
         )
-            .map_err(|_| ProofError::Unknown)?
+        .map_err(|_| ProofError::Unknown)?
     else {
         return Err(ProofError::Unknown);
     };
@@ -606,8 +603,7 @@ impl VerifiedSnapshot {
         channel: [u8; 32],
         body: &[u8],
     ) -> bool {
-        self.ordered_tail_readiness()
-            .append(source, channel, body)
+        self.ordered_tail_readiness().append(source, channel, body)
     }
     pub fn ordered_tail_readiness(&self) -> OrderedTailReadiness {
         OrderedTailReadiness {

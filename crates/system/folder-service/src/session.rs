@@ -1,7 +1,10 @@
 //! Legacy authenticated readiness adapter for the installed Tilo session.
 
 #[cfg(target_os = "linux")]
-use std::{fmt::Write as _, path::{Path, PathBuf}};
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+};
 
 /// Read-only confirmation from the live trusted compositor. The UI runs this
 /// off-thread; a missing, unauthentic or incomplete session keeps work pending.
@@ -34,7 +37,8 @@ fn authenticated_session_ready(
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::MetadataExt;
-    let pin = super::migration::PinnedDirectory::open_absolute(runtime).map_err(|e| e.to_string())?;
+    let pin =
+        super::migration::PinnedDirectory::open_absolute(runtime).map_err(|e| e.to_string())?;
     let metadata = pin.file.metadata().map_err(|e| e.to_string())?;
     // SAFETY: getuid has no arguments or memory contract.
     let uid = unsafe { libc::getuid() };
@@ -250,5 +254,4 @@ mod tests {
         }
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
-
 }

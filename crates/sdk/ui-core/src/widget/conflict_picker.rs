@@ -892,10 +892,10 @@ fn draw_merged_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::{Duration, SystemTime};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
-    use crate::clock::{Duration, SystemTime};
     use winit::event::Modifiers;
     use winit::keyboard::PhysicalKey;
 

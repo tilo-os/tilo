@@ -1,3 +1,4 @@
+use crate::clock::Instant;
 use cosmic_text::fontdb::Weight;
 use cosmic_text::{
     Align, Attrs, Buffer, Family, FontFeatures as CosmicFontFeatures, FontSystem, Metrics, Shaping,
@@ -5,7 +6,6 @@ use cosmic_text::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::clock::Instant;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::{Color, Fill, FontData as Font, StyleRef};

@@ -129,4 +129,6 @@ pub(crate) fn take_for_test() -> (Vec<u64>, bool) {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn received(_: u32, _: &[u8], _: u32, _: u32) -> Option<u64> { None }
+pub(crate) fn received(_: u32, _: &[u8], _: u32, _: u32) -> Option<u64> {
+    None
+}

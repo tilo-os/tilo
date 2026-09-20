@@ -1,10 +1,21 @@
 //! Private Windows installer cache. Cooperative current-user boundary only.
 //! FlushFileBuffers orders data, not guaranteed power-loss persistence of directory entries.
-fn require_permission_denied(ok: bool, why: &str) -> std::result::Result<(), crate::error::Failure> {
-    if ok { Ok(()) } else { Err(crate::error::Failure::permission_denied(why)) }
+fn require_permission_denied(
+    ok: bool,
+    why: &str,
+) -> std::result::Result<(), crate::error::Failure> {
+    if ok {
+        Ok(())
+    } else {
+        Err(crate::error::Failure::permission_denied(why))
+    }
 }
 fn require_unsupported(ok: bool, why: &str) -> std::result::Result<(), crate::error::Failure> {
-    if ok { Ok(()) } else { Err(crate::error::Failure::unsupported(why)) }
+    if ok {
+        Ok(())
+    } else {
+        Err(crate::error::Failure::unsupported(why))
+    }
 }
 fn require(ok: bool, why: &str) -> Result<(), crate::error::Failure> {
     if ok { Ok(()) } else { Err(why.into()) }
@@ -78,7 +89,9 @@ fn windows_directory_path(
     })
 }
 
-fn windows_cache_path(raw: impl IntoIterator<Item = u16>) -> Result<WindowsDirectoryPath, crate::error::Failure> {
+fn windows_cache_path(
+    raw: impl IntoIterator<Item = u16>,
+) -> Result<WindowsDirectoryPath, crate::error::Failure> {
     let parsed = windows_directory_path(raw)?;
     // Reserve the private namespace, manifest digest and payload directory before
     // creating anything; the final verifier must accept this exact raw ancestry.
@@ -120,7 +133,10 @@ mod native {
         MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete, Provider,
         checkpoint::Record,
     };
-    use super::{require_permission_denied, require_unsupported,allowed_ace, require, windows_cache_path, windows_directory_leaf_supported};
+    use super::{
+        allowed_ace, require, require_permission_denied, require_unsupported, windows_cache_path,
+        windows_directory_leaf_supported,
+    };
     use crate::transport::SelectedManifest;
     use sha2::{Digest, Sha256};
     use std::{
@@ -1707,16 +1723,14 @@ mod native {
                 final_file.residue = false;
                 Ok(final_file)
             })();
-            result
-                .map_err(|e: crate::error::Failure| { let message = format!("Final publication uncertain; retained residue: {e}"); e.with_message(message).with_uncertainty() })
+            result.map_err(|e: crate::error::Failure| {
+                let message = format!("Final publication uncertain; retained residue: {e}");
+                e.with_message(message).with_uncertainty()
+            })
         }
         /// Resume later drops the owner and keeps records. Discard requires fresh
         /// Session preparation, exact DELETE-capable ownership and closed handles.
-        pub(crate) fn discard(
-            mut self,
-            operation: u64,
-            cancel: &AtomicBool,
-        ) -> Result<()> {
+        pub(crate) fn discard(mut self, operation: u64, cancel: &AtomicBool) -> Result<()> {
             (|| {
                 {
                     let selected = self.provider.selected;
@@ -1765,7 +1779,10 @@ mod native {
                     "Discard retained journal residue",
                 )
             })()
-            .map_err(|e: crate::error::Failure| { let message = format!("Cache discard incomplete; residue may remain: {e}"); e.with_message(message).with_uncertainty() })
+            .map_err(|e: crate::error::Failure| {
+                let message = format!("Cache discard incomplete; residue may remain: {e}");
+                e.with_message(message).with_uncertainty()
+            })
         }
     }
     impl FinalHandle<'_> {

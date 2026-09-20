@@ -1,17 +1,13 @@
 #![allow(dead_code)]
 
-#[cfg(service_api)]
-use tilo_install_artifacts as install_artifacts;
 #[cfg(sdk_api)]
 use tilo_app::install_artifacts;
+#[cfg(service_api)]
+use tilo_install_artifacts as install_artifacts;
 
 use install_artifacts::{Client, Error, ReleaseSelection, Status, Token};
 
-fn api(
-    client: &Client,
-    release: ReleaseSelection,
-    bytes: Vec<u8>,
-) -> Result<Token, Error> {
+fn api(client: &Client, release: ReleaseSelection, bytes: Vec<u8>) -> Result<Token, Error> {
     client.start(release, bytes)
 }
 

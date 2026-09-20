@@ -3,18 +3,18 @@ use anyhow::{Result, bail, ensure};
 use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 use collab_types::DocumentMutation;
 use qos_peer_state::{NeighbourMsg, coverage, room};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 use tilo_relay::{
     coedit::CoeditPayload,
     transport::{self, Envelope},
 };
 use tilo_user_identity::{
     DeviceCert, DirectoryUpdate, RevocationEntry, RevocationList, WorkspaceDirectory,
-};
-use serde::Deserialize;
-use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
 };
 
 #[derive(Clone, Deserialize)]

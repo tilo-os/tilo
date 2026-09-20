@@ -431,12 +431,7 @@ pub fn validate_document_payload_route_versioned(
 ) -> Result<VersionedRoutedDocumentPayload, DocumentMutationError> {
     let matches = |domain: DocumentRouteDomain| {
         op.artifact.0
-            == derived_document_uuid(
-                domain.artifact_domain(),
-                app_id,
-                workspace_id,
-                record_id,
-            )
+            == derived_document_uuid(domain.artifact_domain(), app_id, workspace_id, record_id)
             && op.attestation_id.0
                 == derived_document_uuid(
                     domain.attestation_domain(),
@@ -798,11 +793,16 @@ mod tests {
         let decoded = DocumentMutation::decode_versioned(&legacy).unwrap();
         assert_eq!(decoded.mutation, mutation);
         assert_eq!(decoded.version, DocumentWireVersion::QosV1);
-        assert_eq!(decoded.mutation.encode_for(decoded.version).unwrap(), legacy);
+        assert_eq!(
+            decoded.mutation.encode_for(decoded.version).unwrap(),
+            legacy
+        );
 
         let current = mutation.encode().unwrap();
         assert_eq!(
-            DocumentMutation::decode_versioned(&current).unwrap().version,
+            DocumentMutation::decode_versioned(&current)
+                .unwrap()
+                .version,
             DocumentWireVersion::TiloV2
         );
         assert_ne!(
@@ -908,10 +908,7 @@ mod tests {
             "artifact and MLS channel domains must not alias"
         );
         assert_eq!(first.0.get_version_num(), 8);
-        assert_eq!(
-            first.0.to_string(),
-            "fd9e9e68-54c3-8ae2-bfc6-cb06b0816e07"
-        );
+        assert_eq!(first.0.to_string(), "fd9e9e68-54c3-8ae2-bfc6-cb06b0816e07");
         assert_eq!(
             document_attestation_id("dev.tilo.notes", "room-a", "record-b")
                 .0

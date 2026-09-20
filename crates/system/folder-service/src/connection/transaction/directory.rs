@@ -12,9 +12,7 @@ pub(in crate::connection) enum DirectoryPlan {
     Settled,
 }
 
-pub(in crate::connection) fn addition_side(
-    intent: &OperationIntent,
-) -> Result<Side, StoreError> {
+pub(in crate::connection) fn addition_side(intent: &OperationIntent) -> Result<Side, StoreError> {
     match (
         &intent.source_before,
         &intent.destination_before,

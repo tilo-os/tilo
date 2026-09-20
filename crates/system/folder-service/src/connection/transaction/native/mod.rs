@@ -3,9 +3,7 @@ pub(in crate::connection) mod descriptor;
 #[cfg(target_os = "linux")]
 mod directory;
 #[cfg(target_os = "linux")]
-pub(in crate::connection) use directory::{
-    DirectoryBaselineValue, VerifiedDirectoryComparison,
-};
+pub(in crate::connection) use directory::{DirectoryBaselineValue, VerifiedDirectoryComparison};
 #[cfg(target_os = "linux")]
 pub(in crate::connection) use linux::directory::{
     DirectoryBoundary, DirectoryContinuation, DirectoryOutcome, DirectoryPrepared,
@@ -185,8 +183,7 @@ pub(in crate::connection) struct NativeRecoveryReader<'a, 'e> {
 pub(in crate::connection) struct SealedDisplacement {
     displaced: linux::RelocatedObject,
     guard: linux::StableFileGuard,
-    recovery:
-        crate::connection::store::DurableAck<crate::connection::store::BoundRecovery>,
+    recovery: crate::connection::store::DurableAck<crate::connection::store::BoundRecovery>,
     lifetime: std::sync::Weak<()>,
 }
 
@@ -240,10 +237,7 @@ trait CompletionEvidence {
         store: &crate::connection::store::ConnectionStore,
         live: &crate::connection::store::LiveOperation,
         cancel: &std::sync::atomic::AtomicBool,
-    ) -> Result<
-        Option<crate::connection::model::EntryState>,
-        crate::connection::store::StoreError,
-    >;
+    ) -> Result<Option<crate::connection::model::EntryState>, crate::connection::store::StoreError>;
     fn deadline(&self) -> std::time::Instant;
 }
 

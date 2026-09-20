@@ -205,9 +205,15 @@ impl SuspendedLocalControls {
         });
     }
 
-    pub(crate) fn capture_registered(&mut self, control: crate::control_custody::OwnedControl, witness: Result<crate::bound_dispatch::ControlWitness, String>) {
+    pub(crate) fn capture_registered(
+        &mut self,
+        control: crate::control_custody::OwnedControl,
+        witness: Result<crate::bound_dispatch::ControlWitness, String>,
+    ) {
         self.capture(control.origin, control.invocation, witness);
-        if let Some(item) = self.items.last_mut() { item.control_domain = Some(control.domain); }
+        if let Some(item) = self.items.last_mut() {
+            item.control_domain = Some(control.domain);
+        }
     }
     pub(crate) fn return_to_live(&mut self) -> bool {
         if !self.suspended {
@@ -229,9 +235,18 @@ impl SuspendedLocalControls {
             .map(|item| PendingControlReview {
                 id: item.id,
                 invocation: item.invocation.clone(),
-                status: if item.status != PendingControlStatus::Consumed && item.control_domain.as_ref().is_some_and(|domain| domain.upgrade().is_none_or(|domain|domain.closed())) {
-                    PendingControlStatus::Refused("The original registered control owner is closed".into())
-                } else { item.status.clone() },
+                status: if item.status != PendingControlStatus::Consumed
+                    && item
+                        .control_domain
+                        .as_ref()
+                        .is_some_and(|domain| domain.upgrade().is_none_or(|domain| domain.closed()))
+                {
+                    PendingControlStatus::Refused(
+                        "The original registered control owner is closed".into(),
+                    )
+                } else {
+                    item.status.clone()
+                },
                 confirmation: item
                     .witness
                     .as_ref()
@@ -299,7 +314,16 @@ impl SuspendedLocalControls {
         } else {
             ContinuationStage::Review
         };
-        if self.items.iter().find(|item| item.id == token.item_id)?.control_domain.as_ref().is_some_and(|domain| !domain.live()) { return None; }
+        if self
+            .items
+            .iter()
+            .find(|item| item.id == token.item_id)?
+            .control_domain
+            .as_ref()
+            .is_some_and(|domain| !domain.live())
+        {
+            return None;
+        }
         let index = self.consume(token, stage)?;
         let item = self.items.get(index)?;
         let expected = if confirmed {

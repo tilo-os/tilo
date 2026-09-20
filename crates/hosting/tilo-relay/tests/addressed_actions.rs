@@ -24,11 +24,11 @@ async fn addressed_actions_alpn_is_served_by_the_existing_relay() {
 }
 
 use crate::common::{TestDevice, TestRelay};
+use std::time::Duration;
 use tilo_relay::peer_actions::{ActionMessage, DirectedAction, UnavailableReason};
 use tilo_relay::transport_v2::{ActionCapability, EnvelopeV2};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::RevocationList;
-use std::time::Duration;
 use uuid::Uuid;
 
 async fn next_state(client: &RelayClient) -> Envelope {

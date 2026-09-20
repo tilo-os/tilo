@@ -13,9 +13,9 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 
 use super::platform;
-use crate::{PreferenceState, PreferenceFailure, PreferenceNamespace, PreferencePublication};
+use crate::download::{Cancellation, NEXT_OPERATION, Phase, Status, Token, next_operation};
 use crate::preference::PreferenceStore;
-use crate::download::{Cancellation, Token, Phase, Status, NEXT_OPERATION, next_operation};
+use crate::{PreferenceFailure, PreferenceNamespace, PreferencePublication, PreferenceState};
 #[derive(Default)]
 struct Flags {
     cancel: AtomicBool,
@@ -83,9 +83,13 @@ impl Worker {
         + Send
         + 'static,
     ) -> Result<Self, crate::error::Failure> {
-        Self::spawn_runner(move |shared| worker_loop(shared, transport, consumer, PreferenceStore::live()))
+        Self::spawn_runner(move |shared| {
+            worker_loop(shared, transport, consumer, PreferenceStore::live())
+        })
     }
-    fn spawn_runner(run: impl FnOnce(Arc<Shared>) + Send + 'static) -> Result<Self, crate::error::Failure> {
+    fn spawn_runner(
+        run: impl FnOnce(Arc<Shared>) + Send + 'static,
+    ) -> Result<Self, crate::error::Failure> {
         let shared = Arc::new(Shared::default());
         let worker = shared.clone();
         let thread = thread::Builder::new()
@@ -100,7 +104,11 @@ impl Worker {
     pub(crate) fn start(&self, release: InternalRelease) -> Result<Token, crate::error::Failure> {
         self.submit(release, None, None)
     }
-    pub(crate) fn start_with_preference(&self, release: InternalRelease, bytes: Vec<u8>) -> Result<Token, crate::error::Failure> {
+    pub(crate) fn start_with_preference(
+        &self,
+        release: InternalRelease,
+        bytes: Vec<u8>,
+    ) -> Result<Token, crate::error::Failure> {
         self.submit(release, None, Some(bytes))
     }
     pub(crate) fn preference(&self) -> PreferenceState {
@@ -115,7 +123,12 @@ impl Worker {
     ) -> Result<Token, crate::error::Failure> {
         self.submit(release, Some(target), None)
     }
-    fn submit(&self, release: InternalRelease, target: Option<&Token>, saved_key: Option<Vec<u8>>) -> Result<Token, crate::error::Failure> {
+    fn submit(
+        &self,
+        release: InternalRelease,
+        target: Option<&Token>,
+        saved_key: Option<Vec<u8>>,
+    ) -> Result<Token, crate::error::Failure> {
         let mut m = self.shared.mailbox.lock().unwrap();
         if m.shutdown {
             return Err(crate::error::Failure::closed("Worker is shut down"));
@@ -124,7 +137,9 @@ impl Worker {
             if m.active.as_ref().is_none_or(|(t, _)| t != target)
                 || target.selection != release.manifest_sha256()
             {
-                return Err(crate::error::Failure::stale("Stale cleanup selection/operation"));
+                return Err(crate::error::Failure::stale(
+                    "Stale cleanup selection/operation",
+                ));
             }
         }
         let operation = next_operation(&NEXT_OPERATION)?;
@@ -157,9 +172,13 @@ impl Worker {
     }
     fn stop(&self, token: &Token, cancel: bool) -> Result<(), crate::error::Failure> {
         let m = self.shared.mailbox.lock().unwrap();
-        if m.shutdown { return Err(crate::error::Failure::closed("Worker is shut down")); }
+        if m.shutdown {
+            return Err(crate::error::Failure::closed("Worker is shut down"));
+        }
         if m.status.as_ref().is_none_or(|s| terminal(s.phase)) {
-            return Err(crate::error::Failure::stale("Operation is already terminal"));
+            return Err(crate::error::Failure::stale(
+                "Operation is already terminal",
+            ));
         }
         let (_, flags) = m
             .active
@@ -186,14 +205,16 @@ impl Worker {
             return Err(crate::error::Failure::closed("Worker is shut down"));
         }
         if m.active.as_ref().is_none_or(|(t, f)| {
-                t != token || f.cancel.load(Ordering::Acquire) || f.pause.load(Ordering::Acquire)
-            })
-            || m.status
-                .as_ref()
-                .is_none_or(|s| s.token != *token || s.phase != Phase::Ready)
+            t != token || f.cancel.load(Ordering::Acquire) || f.pause.load(Ordering::Acquire)
+        }) || m
+            .status
+            .as_ref()
+            .is_none_or(|s| s.token != *token || s.phase != Phase::Ready)
             || m.action.is_some()
         {
-            return Err(crate::error::Failure::stale("Stale or unavailable held Ready"));
+            return Err(crate::error::Failure::stale(
+                "Stale or unavailable held Ready",
+            ));
         }
         m.action = Some(action);
         self.shared.wake.notify_all();
@@ -231,9 +252,18 @@ impl Worker {
                 status.phase = Phase::Cancelled;
             }
         }
-        if panicked { Err(crate::error::Failure::from("Download worker panicked; cache may be retained").with_uncertainty()) } else { Ok(()) }
+        if panicked {
+            Err(
+                crate::error::Failure::from("Download worker panicked; cache may be retained")
+                    .with_uncertainty(),
+            )
+        } else {
+            Ok(())
+        }
     }
-    pub(crate) fn shutdown(&mut self) { let _ = self.close(); }
+    pub(crate) fn shutdown(&mut self) {
+        let _ = self.close();
+    }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -247,10 +277,18 @@ fn publish_preference_failure(shared: &Shared, failure: &PreferenceFailure) {
 }
 fn preference_operation_error(failure: PreferenceFailure) -> crate::Error {
     let uncertain = failure.publication != PreferencePublication::NotPublished
-        || matches!(failure.namespace, PreferenceNamespace::CreatedDurabilityUnknown
-            | PreferenceNamespace::NamespaceUnknown | PreferenceNamespace::Unproven);
+        || matches!(
+            failure.namespace,
+            PreferenceNamespace::CreatedDurabilityUnknown
+                | PreferenceNamespace::NamespaceUnknown
+                | PreferenceNamespace::Unproven
+        );
     let error = crate::Error::new(failure.kind, failure.message);
-    if uncertain { error.with_uncertainty() } else { error }
+    if uncertain {
+        error.with_uncertainty()
+    } else {
+        error
+    }
 }
 fn terminal(phase: Phase) -> bool {
     matches!(
@@ -624,14 +662,27 @@ mod tests;
 
 #[cfg(all(unix, any(test, feature = "test-support")))]
 impl Worker {
-    pub(crate) fn fixture(root: &std::path::Path, preference: PreferenceStore, transport: InternalTransport, consumptions: Arc<AtomicU64>) -> Self {
+    pub(crate) fn fixture(
+        root: &std::path::Path,
+        preference: PreferenceStore,
+        transport: InternalTransport,
+        consumptions: Arc<AtomicU64>,
+    ) -> Self {
         let root = root.to_owned();
         Self::spawn_runner(move |shared| {
             crate::cache::fixture_platform::ROOT.with(|r| *r.borrow_mut() = root);
-            crate::test_support::with_fixture_interval(|| worker_loop(shared, transport, move |selected, cancel, first, second| {
-                consumptions.fetch_add(1, Ordering::AcqRel);
-                crate::refuse_protected_staging(selected, cancel, first, second)
-            }, preference));
-        }).expect("fixture worker")
+            crate::test_support::with_fixture_interval(|| {
+                worker_loop(
+                    shared,
+                    transport,
+                    move |selected, cancel, first, second| {
+                        consumptions.fetch_add(1, Ordering::AcqRel);
+                        crate::refuse_protected_staging(selected, cancel, first, second)
+                    },
+                    preference,
+                )
+            });
+        })
+        .expect("fixture worker")
     }
 }

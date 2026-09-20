@@ -31,8 +31,14 @@ impl Journal {
 
     /// Storage supplies heads of its exact committed bytes; the current journal
     /// must independently agree before they can prove an atomic durable basis.
-    pub fn match_document_heads(&self, app: &str, record: &str, heads: &[String]) -> Option<Vec<String>> {
-        self.records.iter()
+    pub fn match_document_heads(
+        &self,
+        app: &str,
+        record: &str,
+        heads: &[String],
+    ) -> Option<Vec<String>> {
+        self.records
+            .iter()
             .any(|row| row.app_id == app && row.record_id == record && row.heads == heads)
             .then(|| heads.to_vec())
     }
@@ -79,12 +85,21 @@ struct DecodedBytes<T> {
     cached: Option<(Vec<u8>, Option<std::rc::Rc<T>>)>,
 }
 impl<T> Default for DecodedBytes<T> {
-    fn default() -> Self { Self { cached: None } }
+    fn default() -> Self {
+        Self { cached: None }
+    }
 }
 impl<T> DecodedBytes<T> {
-    fn get(&mut self, bytes: &[u8], decode: impl FnOnce(&[u8]) -> Option<T>) -> Option<std::rc::Rc<T>> {
+    fn get(
+        &mut self,
+        bytes: &[u8],
+        decode: impl FnOnce(&[u8]) -> Option<T>,
+    ) -> Option<std::rc::Rc<T>> {
         if let Some((previous, value)) = &self.cached
-            && previous == bytes { return value.clone(); }
+            && previous == bytes
+        {
+            return value.clone();
+        }
         if bytes.len() > HEALTH_CACHE_BYTES {
             self.cached = None;
             return decode(bytes).map(std::rc::Rc::new);
@@ -97,7 +112,6 @@ impl HealthProjection {
     pub fn journal(&mut self, bytes: &[u8]) -> Option<std::rc::Rc<Journal>> {
         self.journal.get(bytes, |bytes| Journal::decode(bytes).ok())
     }
-
 }
 
 #[cfg(test)]
@@ -108,12 +122,42 @@ mod tests {
         let mut cache = DecodedBytes::default();
         let mut calls = 0;
         for _ in 0..100 {
-            assert_eq!(*cache.get(b"valid", |_| { calls += 1; Some(42) }).unwrap(), 42);
+            assert_eq!(
+                *cache
+                    .get(b"valid", |_| {
+                        calls += 1;
+                        Some(42)
+                    })
+                    .unwrap(),
+                42
+            );
         }
-        assert_eq!(calls, 1, "unchanged committed bytes must not be reparsed per status report");
-        assert!(cache.get(b"bad", |_| { calls += 1; None }).is_none());
-        assert!(cache.get(b"bad", |_| panic!("invalid result should also be cached")).is_none());
-        assert_eq!(*cache.get(b"valid", |_| { calls += 1; Some(43) }).unwrap(), 43);
+        assert_eq!(
+            calls, 1,
+            "unchanged committed bytes must not be reparsed per status report"
+        );
+        assert!(
+            cache
+                .get(b"bad", |_| {
+                    calls += 1;
+                    None
+                })
+                .is_none()
+        );
+        assert!(
+            cache
+                .get(b"bad", |_| panic!("invalid result should also be cached"))
+                .is_none()
+        );
+        assert_eq!(
+            *cache
+                .get(b"valid", |_| {
+                    calls += 1;
+                    Some(43)
+                })
+                .unwrap(),
+            43
+        );
         assert_eq!(calls, 3);
     }
     #[test]
@@ -122,7 +166,17 @@ mod tests {
         cache.get(b"small", |_| Some(1));
         let large = vec![0; HEALTH_CACHE_BYTES + 1];
         let mut calls = 0;
-        for _ in 0..2 { assert_eq!(*cache.get(&large, |_| { calls += 1; Some(2) }).unwrap(), 2); }
+        for _ in 0..2 {
+            assert_eq!(
+                *cache
+                    .get(&large, |_| {
+                        calls += 1;
+                        Some(2)
+                    })
+                    .unwrap(),
+                2
+            );
+        }
         assert_eq!(calls, 2);
         assert!(cache.cached.is_none());
     }
@@ -132,23 +186,59 @@ mod tests {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "text", "A").unwrap();
         doc.save();
-        let heads_a = doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
-        let mut journal = Journal { state: vec![], outbox: vec![], records: vec![DocumentRow {
-            app_id: "app".into(), record_id: "record".into(), heads: heads_a.clone(),
-        }], receipts: Default::default() };
+        let heads_a = doc
+            .base_heads()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let mut journal = Journal {
+            state: vec![],
+            outbox: vec![],
+            records: vec![DocumentRow {
+                app_id: "app".into(),
+                record_id: "record".into(),
+                heads: heads_a.clone(),
+            }],
+            receipts: Default::default(),
+        };
         let mut projection = HealthProjection::default();
-        assert_eq!(journal.match_document_heads("app", "record", &heads_a), Some(heads_a.clone()));
+        assert_eq!(
+            journal.match_document_heads("app", "record", &heads_a),
+            Some(heads_a.clone())
+        );
         doc.put(ROOT, "text", "B").unwrap();
         doc.save();
-        let heads_b = doc.base_heads().iter().map(ToString::to_string).collect::<Vec<_>>();
+        let heads_b = doc
+            .base_heads()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         journal.records[0].heads = heads_b.clone();
-        assert!(journal.match_document_heads("app", "record", &heads_a).is_none());
-        assert_eq!(journal.match_document_heads("app", "record", &heads_b), Some(heads_b.clone()));
-        assert!(journal.match_document_heads("other-app", "record", &heads_b).is_none());
-        assert!(journal.match_document_heads("app", "other-record", &heads_b).is_none());
+        assert!(
+            journal
+                .match_document_heads("app", "record", &heads_a)
+                .is_none()
+        );
+        assert_eq!(
+            journal.match_document_heads("app", "record", &heads_b),
+            Some(heads_b.clone())
+        );
+        assert!(
+            journal
+                .match_document_heads("other-app", "record", &heads_b)
+                .is_none()
+        );
+        assert!(
+            journal
+                .match_document_heads("app", "other-record", &heads_b)
+                .is_none()
+        );
         let encoded = journal.encode().unwrap();
         let first = projection.journal(&encoded).unwrap();
-        assert!(std::rc::Rc::ptr_eq(&first, &projection.journal(&encoded).unwrap()));
+        assert!(std::rc::Rc::ptr_eq(
+            &first,
+            &projection.journal(&encoded).unwrap()
+        ));
         assert!(projection.journal(b"corrupt").is_none());
     }
     #[test]
@@ -225,11 +315,23 @@ mod tests {
             old_journal.durable_heads("app", "record", &old_record.bytes),
             Some(heads_a.clone())
         );
-        let committed_heads = cache.committed_document_heads(&record).unwrap().unwrap()
-            .iter().map(ToString::to_string).collect::<Vec<_>>();
-        assert_eq!(old_journal.match_document_heads("app", "record", &committed_heads), Some(heads_a.clone()));
-        assert!(journal(heads_b.clone()).match_document_heads("app", "record", &committed_heads).is_none(),
-            "new journal metadata cannot turn an old record acknowledgement into a new durable basis");
+        let committed_heads = cache
+            .committed_document_heads(&record)
+            .unwrap()
+            .unwrap()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            old_journal.match_document_heads("app", "record", &committed_heads),
+            Some(heads_a.clone())
+        );
+        assert!(
+            journal(heads_b.clone())
+                .match_document_heads("app", "record", &committed_heads)
+                .is_none(),
+            "new journal metadata cannot turn an old record acknowledgement into a new durable basis"
+        );
         assert_ne!(heads_a, heads_b);
         assert!(cache.flush(&record).is_err());
         assert!(cache.flush(&admission).is_err());
@@ -246,8 +348,16 @@ mod tests {
             cache.status(&record).unwrap().committed.unwrap().1.bytes,
             old_record.bytes
         );
-        assert_eq!(cache.committed_document_heads(&record).unwrap().unwrap()
-            .iter().map(ToString::to_string).collect::<Vec<_>>(), committed_heads);
+        assert_eq!(
+            cache
+                .committed_document_heads(&record)
+                .unwrap()
+                .unwrap()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            committed_heads
+        );
     }
     #[test]
     fn legacy_bytes_and_operation_identity_survive_versioned_roundtrip() {

@@ -1,8 +1,8 @@
 //! Permissioned peer adapter for the ordinary native action broker.
 //! Only inert authenticated requests cross into its bounded LocalSet queue.
+use std::sync::Arc;
 use tilo_relay::client::{CertifiedAction, CertifiedActionEvent};
 use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
-use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
@@ -230,10 +230,10 @@ impl PeerActionQueue {
     ) -> Result<(), PeerActionAttachmentError> {
         acknowledged.send_replace(false);
         let readiness = ReadinessReset(acknowledged);
-        let ActionMessage::BrokerCatalogue { host: current, .. } =
-            self.request(None, None, None)
-                .await
-                .map_err(|_| PeerActionAttachmentError::Failed)?
+        let ActionMessage::BrokerCatalogue { host: current, .. } = self
+            .request(None, None, None)
+            .await
+            .map_err(|_| PeerActionAttachmentError::Failed)?
         else {
             return Err(PeerActionAttachmentError::Failed);
         };
@@ -346,7 +346,10 @@ fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAc
     // Reject locally with the original correlation ID. Letting the relay reject
     // an invalid response reports only to us and leaves the caller waiting.
     if !reply.validate()
-        || tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::Directed(reply.clone())).is_err()
+        || tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::Directed(
+            reply.clone(),
+        ))
+        .is_err()
     {
         reply.message = ActionMessage::Rejected {
             code: "action_response_exceeds_limits".into(),
@@ -355,9 +358,7 @@ fn bounded_reply(request: &DirectedAction, message: ActionMessage) -> DirectedAc
     reply
 }
 
-fn attachment_send_error(
-    error: tilo_relay::client::ClientError,
-) -> PeerActionAttachmentError {
+fn attachment_send_error(error: tilo_relay::client::ClientError) -> PeerActionAttachmentError {
     match error {
         tilo_relay::client::ClientError::PrivateTransportClosed => {
             PeerActionAttachmentError::TransportClosed
@@ -372,13 +373,33 @@ mod tests {
 
     #[test]
     fn oversized_reply_returns_a_correlated_rejection_instead_of_disappearing() {
-        let request = DirectedAction { room: Uuid::new_v4(), request_id: Uuid::new_v4(), source: [1;32], target: [2;32], message: ActionMessage::CatalogueRefresh };
-        let reply = bounded_reply(&request, ActionMessage::BrokerCatalogue { host: Uuid::new_v4(), catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(tilo_relay::peer_actions::MAX_PRIVATE_BYTES)}) });
+        let request = DirectedAction {
+            room: Uuid::new_v4(),
+            request_id: Uuid::new_v4(),
+            source: [1; 32],
+            target: [2; 32],
+            message: ActionMessage::CatalogueRefresh,
+        };
+        let reply = bounded_reply(
+            &request,
+            ActionMessage::BrokerCatalogue {
+                host: Uuid::new_v4(),
+                catalogue: serde_json::json!({"version":1,"surfaces":[],"text":"x".repeat(tilo_relay::peer_actions::MAX_PRIVATE_BYTES)}),
+            },
+        );
         assert!(matches!(reply.message, ActionMessage::Rejected { .. }));
         assert!(reply.validate());
         assert_eq!(reply.request_id, request.request_id);
-        assert_eq!((reply.source, reply.target), (request.target, request.source));
-        assert!(tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::Directed(reply)).is_ok());
+        assert_eq!(
+            (reply.source, reply.target),
+            (request.target, request.source)
+        );
+        assert!(
+            tilo_relay::transport_v2::encode(&tilo_relay::transport_v2::EnvelopeV2::Directed(
+                reply
+            ))
+            .is_ok()
+        );
     }
 
     #[test]
@@ -452,7 +473,10 @@ mod tests {
             ClientError::Codec("private queue full".into()),
             ClientError::UnsupportedProtocol,
         ] {
-            assert_eq!(attachment_send_error(error), PeerActionAttachmentError::Failed);
+            assert_eq!(
+                attachment_send_error(error),
+                PeerActionAttachmentError::Failed
+            );
         }
     }
 

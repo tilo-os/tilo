@@ -1,8 +1,8 @@
 //! Revalidated copy expectations; identities are comparison hints, never grants.
 
-use std::path::{Component, Path, PathBuf};
-use crate::{migration::PinnedDirectory, migration_durability};
 pub use crate::migration_durability::Identity as DirectoryIdentity;
+use crate::{migration::PinnedDirectory, migration_durability};
+use std::path::{Component, Path, PathBuf};
 
 pub fn directory_identity(path: &Path) -> Result<migration_durability::Identity, String> {
     if !path.is_absolute()

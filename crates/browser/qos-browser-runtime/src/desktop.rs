@@ -7,7 +7,12 @@ use ui::application::ApplicationDefinition;
 use ui::record::{RecordCheckout, RecordId};
 
 pub(crate) fn definitions() -> [&'static ApplicationDefinition; 4] {
-    [word_processor::definition(), chat::definition(), notes::definition(), calculator::definition()]
+    [
+        word_processor::definition(),
+        chat::definition(),
+        notes::definition(),
+        calculator::definition(),
+    ]
 }
 pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
     definitions().into_iter().find(|definition| {
@@ -116,7 +121,12 @@ pub(crate) fn admission(state: &StatePeer) -> Result<Admission, String> {
     }
     Ok(Admission {
         admitted_room: doc.clone(),
-        source_heads: doc.clone().get_heads().into_iter().map(|head| head.0).collect(),
+        source_heads: doc
+            .clone()
+            .get_heads()
+            .into_iter()
+            .map(|head| head.0)
+            .collect(),
         tree,
         routes,
         required,
@@ -134,7 +144,9 @@ mod tests {
     use qos_desktop::{projection::RoomProjection, *};
     use qos_peer_state::{SeedState, StatePeer};
     fn state() -> (StatePeer, SigningKey) {
-        use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+        use tilo_user_identity::{
+            DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,
+        };
         let root = SigningKey::from_bytes(&[61; 32]);
         let key = SigningKey::from_bytes(&[62; 32]);
         let mut cert = DeviceCert {
@@ -243,7 +255,19 @@ mod tests {
         let admission = super::admission(&peer).unwrap();
         assert!(admission.complete());
         assert!(admission.required.is_empty());
-        assert_eq!(admission.admitted_room.clone().get_heads(), peer.admitted_room().unwrap().clone().get_heads());
-        assert_eq!(admission.source_heads, admission.admitted_room.clone().get_heads().iter().map(|head| head.0).collect::<Vec<_>>());
+        assert_eq!(
+            admission.admitted_room.clone().get_heads(),
+            peer.admitted_room().unwrap().clone().get_heads()
+        );
+        assert_eq!(
+            admission.source_heads,
+            admission
+                .admitted_room
+                .clone()
+                .get_heads()
+                .iter()
+                .map(|head| head.0)
+                .collect::<Vec<_>>()
+        );
     }
 }

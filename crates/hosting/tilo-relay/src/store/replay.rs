@@ -843,8 +843,8 @@ impl WorkDiscard {
                                 "pins",
                                 "index",
                             ]
-                                .iter()
-                                .any(|s| name == *s)
+                            .iter()
+                            .any(|s| name == *s)
                         {
                             match DirectoryCursor::open(&entry.path()) {
                                 Ok(cursor) => self.child = Some((entry.path(), cursor)),

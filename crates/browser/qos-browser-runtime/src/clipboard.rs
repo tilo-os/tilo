@@ -42,7 +42,9 @@ impl ClipboardBackend for BrowserClipboard {
         TRANSFER.with_borrow_mut(|slot| {
             let Some(t) = slot.as_mut() else {
                 return INPUT_STATUS.with_borrow(|status| {
-                    status.as_ref().is_some_and(|report| write_clipboard_text(text, report))
+                    status
+                        .as_ref()
+                        .is_some_and(|report| write_clipboard_text(text, report))
                 });
             };
             if t.copied {

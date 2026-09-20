@@ -4,15 +4,15 @@ use anyhow::{Context, Result, bail};
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
 use iroh_base::{EndpointAddr, RelayUrl};
 use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
+use serde_json::json;
+use std::future::Future;
+use std::sync::Arc;
+use std::{io::BufRead, net::Ipv4Addr, path::Path, task::Poll, time::Duration};
 use tilo_relay::{
     Inbound, Relay, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding,
     daemon::RelayIdentity,
 };
 use tilo_user_identity::RevocationList;
-use serde_json::json;
-use std::future::Future;
-use std::sync::Arc;
-use std::{io::BufRead, net::Ipv4Addr, path::Path, task::Poll, time::Duration};
 use tokio::net::TcpListener;
 
 // Nondefault, local-process qualification only; never a wire capability.
@@ -24,8 +24,9 @@ struct QualificationHold {
     deadline: Option<std::time::Instant>,
     expired: bool,
     action_registration: Option<ActionRegistrationHold>,
-    action_attachment_exit:
-        Option<tokio::sync::oneshot::Sender<qos_action_broker::peer_actions::PeerActionAttachmentError>>,
+    action_attachment_exit: Option<
+        tokio::sync::oneshot::Sender<qos_action_broker::peer_actions::PeerActionAttachmentError>,
+    >,
 }
 #[cfg(feature = "test-support")]
 struct ActionRegistrationHold {
@@ -66,7 +67,9 @@ impl QualificationHold {
         }
         if let Some(kind) = line.strip_prefix("qualification action-attachment ") {
             let exit = match kind {
-                "eof" => qos_action_broker::peer_actions::PeerActionAttachmentError::TransportClosed,
+                "eof" => {
+                    qos_action_broker::peer_actions::PeerActionAttachmentError::TransportClosed
+                }
                 "failure" => qos_action_broker::peer_actions::PeerActionAttachmentError::Failed,
                 _ => return false,
             };
@@ -189,10 +192,7 @@ impl CheckpointCadence {
     }
 }
 
-fn signed_commit_publication_due(
-    cadence: &mut CheckpointCadence,
-    now: std::time::Instant,
-) -> bool {
+fn signed_commit_publication_due(cadence: &mut CheckpointCadence, now: std::time::Instant) -> bool {
     cadence.on_commit(now)
 }
 
@@ -219,9 +219,11 @@ pub struct NativeSubscription {
     publication: std::sync::Mutex<crate::publication::PublicationCursor>,
 }
 struct AttachedActions {
-    task: Option<tokio::task::JoinHandle<
-        Result<(), qos_action_broker::peer_actions::PeerActionAttachmentError>,
-    >>,
+    task: Option<
+        tokio::task::JoinHandle<
+            Result<(), qos_action_broker::peer_actions::PeerActionAttachmentError>,
+        >,
+    >,
     acknowledged: tokio::sync::watch::Receiver<bool>,
 }
 impl AttachedActions {
@@ -1031,11 +1033,23 @@ mod cadence_tests {
                 during_burst += 1;
             }
         }
-        assert_eq!(during_burst, 0, "a 50-delta burst under the cap publishes nothing mid-stream");
-        assert!(cadence.pending, "the burst is coalesced, awaiting an idle flush");
+        assert_eq!(
+            during_burst, 0,
+            "a 50-delta burst under the cap publishes nothing mid-stream"
+        );
+        assert!(
+            cadence.pending,
+            "the burst is coalesced, awaiting an idle flush"
+        );
         let idle = start + Duration::from_millis(50 * 10) + CheckpointCadence::IDLE;
-        assert!(cadence.due_on_idle(idle), "the paused burst flushes exactly one checkpoint");
-        assert!(!cadence.due_on_idle(idle), "an already-flushed idle does not re-fire");
+        assert!(
+            cadence.due_on_idle(idle),
+            "the paused burst flushes exactly one checkpoint"
+        );
+        assert!(
+            !cadence.due_on_idle(idle),
+            "an already-flushed idle does not re-fire"
+        );
         assert!(!cadence.pending);
     }
 
@@ -1052,7 +1066,10 @@ mod cadence_tests {
                 publishes += 1;
             }
         }
-        assert_eq!(publishes, 1, "the hard cap fires exactly once across MAX_DELTAS+5 deltas");
+        assert_eq!(
+            publishes, 1,
+            "the hard cap fires exactly once across MAX_DELTAS+5 deltas"
+        );
     }
 
     #[test]
@@ -1087,6 +1104,10 @@ mod cadence_tests {
         let gesture = start + Duration::from_millis(20);
         assert!(owner_commit_publication_due(&mut cadence, gesture, true));
         assert!(!cadence.due_on_idle(gesture + CheckpointCadence::IDLE));
-        assert!(!owner_commit_publication_due(&mut cadence, gesture + CheckpointCadence::IDLE, false));
+        assert!(!owner_commit_publication_due(
+            &mut cadence,
+            gesture + CheckpointCadence::IDLE,
+            false
+        ));
     }
 }

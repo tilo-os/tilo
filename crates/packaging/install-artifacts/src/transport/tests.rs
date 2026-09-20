@@ -32,9 +32,9 @@ fn selected_context_requires_exact_original_authenticated_bytes_and_asset_url() 
 }
 
 pub(crate) use crate::test_support::{Server, response};
+use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::net::TcpListener;
 #[test]
 fn manifest_http_requires_exact_length_digest_status_and_eof() {
     let bytes = manifest();
@@ -79,12 +79,7 @@ fn manifest_http_requires_exact_length_digest_status_and_eof() {
 }
 fn context(server: &Server) -> SelectedManifest {
     let bytes = manifest();
-    SelectedManifest::checked(
-        &server.release(&bytes),
-        bytes,
-        &server.origin(),
-    )
-    .unwrap()
+    SelectedManifest::checked(&server.release(&bytes), bytes, &server.origin()).unwrap()
 }
 fn contents(file: &mut File) -> Vec<u8> {
     file.rewind().unwrap();
@@ -861,12 +856,9 @@ fn final_hash_cancellation_checks_first_middle_last_chunks_and_eof() {
         ("hash-eof", 131584),
     ] {
         let server = Server::new(vec![response(200, "", &payload)]);
-        let selected = SelectedManifest::checked(
-            &server.release(&bytes),
-            bytes.clone(),
-            &server.origin(),
-        )
-        .unwrap();
+        let selected =
+            SelectedManifest::checked(&server.release(&bytes), bytes.clone(), &server.origin())
+                .unwrap();
         let mut file = tempfile::tempfile().unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         let signal = cancel.clone();
@@ -1082,9 +1074,7 @@ fn framing_refuses_before_redirect_or_ignored_range_reset() {
             1,
             |_| {},
         );
-        if result.is_ok()
-            || server.requests().len() != 1
-            || contents(&mut file) != vec![b'E'; 1024]
+        if result.is_ok() || server.requests().len() != 1 || contents(&mut file) != vec![b'E'; 1024]
         {
             violations.push(format!("reset {name}"));
         }
@@ -1465,12 +1455,8 @@ fn persistent_success_has_linear_readback_final_verification_and_reopened_candid
     value["source_image_bytes"] = serde_json::json!(payload.len() + 21504);
     let bytes = serde_json::to_vec(&value).unwrap();
     let server = Server::new(vec![response(200, "", &payload)]);
-    let selected = SelectedManifest::checked(
-        &server.release(&bytes),
-        bytes,
-        &server.origin(),
-    )
-    .unwrap();
+    let selected =
+        SelectedManifest::checked(&server.release(&bytes), bytes, &server.origin()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let (p, mut f) = DiskProvider::new(dir.path());
     let own = p.ownership();
@@ -1715,7 +1701,11 @@ struct AckAdapter<'a> {
 }
 #[cfg(unix)]
 impl cache::Observer for AckAdapter<'_> {
-    fn begin_attempt(&mut self, id: cache::BoundaryId, file: &File) -> Result<(), crate::error::Failure> {
+    fn begin_attempt(
+        &mut self,
+        id: cache::BoundaryId,
+        file: &File,
+    ) -> Result<(), crate::error::Failure> {
         self.inner.begin_attempt(id, file)
     }
     fn boundary(
@@ -2296,7 +2286,11 @@ struct PauseAtFinalAck<'a> {
 }
 #[cfg(unix)]
 impl cache::Observer for PauseAtFinalAck<'_> {
-    fn begin_attempt(&mut self, id: cache::BoundaryId, file: &File) -> Result<(), crate::error::Failure> {
+    fn begin_attempt(
+        &mut self,
+        id: cache::BoundaryId,
+        file: &File,
+    ) -> Result<(), crate::error::Failure> {
         self.inner.begin_attempt(id, file)
     }
     fn boundary(

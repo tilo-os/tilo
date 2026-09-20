@@ -1,23 +1,44 @@
 //! Embedded catalog admission and private manifest authentication.
-use crate::catalog_data::{CatalogRelease, InternalMetadata, InternalPurpose, InternalLayout, parse_catalog};
+use crate::catalog_data::{
+    CatalogRelease, InternalLayout, InternalMetadata, InternalPurpose, parse_catalog,
+};
 use sha2::{Digest, Sha256};
 const BUNDLED_CATALOG: &str = include_str!("../release-catalog.json");
-pub fn bundled_catalog_json() -> &'static str { BUNDLED_CATALOG }
-pub fn catalog_architecture() -> &'static str { std::env::consts::ARCH }
+pub fn bundled_catalog_json() -> &'static str {
+    BUNDLED_CATALOG
+}
+pub fn catalog_architecture() -> &'static str {
+    std::env::consts::ARCH
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReleaseSelection { pub(crate) release: InternalRelease }
+pub struct ReleaseSelection {
+    pub(crate) release: InternalRelease,
+}
 impl ReleaseSelection {
-    pub fn release_id(&self) -> &str { self.release.release_id() }
-    pub fn architecture(&self) -> &str { self.release.architecture() }
-    pub fn manifest_sha256(&self) -> &str { self.release.manifest_sha256() }
+    pub fn release_id(&self) -> &str {
+        self.release.release_id()
+    }
+    pub fn architecture(&self) -> &str {
+        self.release.architecture()
+    }
+    pub fn manifest_sha256(&self) -> &str {
+        self.release.manifest_sha256()
+    }
 }
 pub fn bundled_selections() -> Result<Vec<ReleaseSelection>, crate::Error> {
     let catalog = parse_catalog(BUNDLED_CATALOG).map_err(crate::Error::invalid_input)?;
-    Ok(catalog.releases.into_iter().filter_map(|entry| match entry {
-        CatalogRelease::Internal(metadata) if metadata.arch == catalog_architecture() =>
-            Some(ReleaseSelection { release: InternalRelease { metadata } }),
-        _ => None,
-    }).collect())
+    Ok(catalog
+        .releases
+        .into_iter()
+        .filter_map(|entry| match entry {
+            CatalogRelease::Internal(metadata) if metadata.arch == catalog_architecture() => {
+                Some(ReleaseSelection {
+                    release: InternalRelease { metadata },
+                })
+            }
+            _ => None,
+        })
+        .collect())
 }
 /// A selection obtained only from this build's embedded catalog. Authentication
 /// depends on a genuinely signed build; development embedding is not a signature.
@@ -146,12 +167,14 @@ mod internal_catalog_tests {
     }
     #[test]
     fn internal_entries_remain_separate_and_bind_exact_manifest_bytes() {
-        let bytes = crate::bundle::tests::bytes(
-            &crate::bundle::tests::fixture(),
-        );
+        let bytes = crate::bundle::tests::bytes(&crate::bundle::tests::fixture());
         let value = internal(&bytes);
         assert!(
-            parse_catalog(&catalog(value.clone())).unwrap().releases.iter().all(|entry| !matches!(entry, CatalogRelease::Media(_)))
+            parse_catalog(&catalog(value.clone()))
+                .unwrap()
+                .releases
+                .iter()
+                .all(|entry| !matches!(entry, CatalogRelease::Media(_)))
         );
         let release = selection(value);
         assert!(release.verify_manifest(&bytes).is_ok());
@@ -169,9 +192,7 @@ mod internal_catalog_tests {
     }
     #[test]
     fn internal_selection_rejects_release_and_architecture_mismatch() {
-        let bytes = crate::bundle::tests::bytes(
-            &crate::bundle::tests::fixture(),
-        );
+        let bytes = crate::bundle::tests::bytes(&crate::bundle::tests::fixture());
         for (key, value) in [
             ("release_id", json!("other-release")),
             ("arch", json!("aarch64")),
@@ -191,7 +212,12 @@ mod internal_catalog_tests {
         tagged["purpose"] = json!("removable-media");
         tagged["layout"] = json!("whole-disk-image");
         assert_eq!(
-            parse_catalog(&catalog(tagged.clone())).unwrap().releases.iter().filter(|entry| matches!(entry, CatalogRelease::Media(_))).count(),
+            parse_catalog(&catalog(tagged.clone()))
+                .unwrap()
+                .releases
+                .iter()
+                .filter(|entry| matches!(entry, CatalogRelease::Media(_)))
+                .count(),
             1
         );
         for bad in [Value::Null, json!("unknown"), json!(true)] {
@@ -201,9 +227,7 @@ mod internal_catalog_tests {
         }
         tagged.as_object_mut().unwrap().remove("layout");
         assert!(parse_catalog(&catalog(tagged)).is_err());
-        let bytes = crate::bundle::tests::bytes(
-            &crate::bundle::tests::fixture(),
-        );
+        let bytes = crate::bundle::tests::bytes(&crate::bundle::tests::fixture());
         for (field, bad) in [
             ("layout", json!("whole-disk-image")),
             ("manifest_size", json!(65537)),
@@ -219,7 +243,12 @@ mod internal_catalog_tests {
             assert!(parse_catalog(&catalog(value)).is_err(), "accepted {field}");
         }
         assert!(bundled_selections().unwrap().is_empty());
-        assert!(parse_catalog(bundled_catalog_json()).unwrap().releases.is_empty());
+        assert!(
+            parse_catalog(bundled_catalog_json())
+                .unwrap()
+                .releases
+                .is_empty()
+        );
         let raw = catalog(media()).replacen("\"arch\":", "\"arch\":\"x86_64\",\"arch\":", 1);
         assert!(parse_catalog(&raw).is_err());
     }
@@ -230,10 +259,16 @@ mod internal_catalog_tests {
         metadata["release_id"] = json!("mutated-valid-id");
         assert!(parse_catalog(&catalog(metadata)).is_ok());
         let embedded = parse_catalog(bundled_catalog_json()).unwrap();
-        let expected: Vec<_> = embedded.releases.into_iter().filter_map(|entry| match entry {
-            CatalogRelease::Internal(metadata) if metadata.arch == catalog_architecture() => Some(metadata),
-            _ => None,
-        }).collect();
+        let expected: Vec<_> = embedded
+            .releases
+            .into_iter()
+            .filter_map(|entry| match entry {
+                CatalogRelease::Internal(metadata) if metadata.arch == catalog_architecture() => {
+                    Some(metadata)
+                }
+                _ => None,
+            })
+            .collect();
         let selections = bundled_selections().unwrap();
         assert_eq!(selections.len(), expected.len());
         for (selection, expected) in selections.iter().zip(expected) {
@@ -251,7 +286,11 @@ mod internal_catalog_tests {
         let mut wrong_purpose = crate::bundle::tests::fixture();
         wrong_purpose["purpose"] = json!("removable-media");
         let wrong_bytes = crate::bundle::tests::bytes(&wrong_purpose);
-        assert!(selection(internal(&wrong_bytes)).verify_manifest(&wrong_bytes).is_err());
+        assert!(
+            selection(internal(&wrong_bytes))
+                .verify_manifest(&wrong_bytes)
+                .is_err()
+        );
     }
     fn positional_record(value: &Value, fields: &str) -> Value {
         Value::Array(
@@ -283,9 +322,7 @@ mod internal_catalog_tests {
     }
     #[test]
     fn representation_internal_entry_must_be_an_object() {
-        let bytes = crate::bundle::tests::bytes(
-            &crate::bundle::tests::fixture(),
-        );
+        let bytes = crate::bundle::tests::bytes(&crate::bundle::tests::fixture());
         let value = internal(&bytes);
         assert!(parse_catalog(&catalog(value.clone())).is_ok());
         let array = positional_record(
@@ -296,9 +333,7 @@ mod internal_catalog_tests {
     }
     #[test]
     fn representation_internal_purpose_and_layout_must_be_strings() {
-        let bytes = crate::bundle::tests::bytes(
-            &crate::bundle::tests::fixture(),
-        );
+        let bytes = crate::bundle::tests::bytes(&crate::bundle::tests::fixture());
         let entry = internal(&bytes);
         assert!(parse_catalog(&catalog(entry.clone())).is_ok());
         let accepted: Vec<_> = ["purpose", "layout"]
@@ -335,9 +370,7 @@ mod internal_catalog_tests {
     }
     #[test]
     fn representation_checks_do_not_collapse_duplicate_catalog_keys() {
-        let bytes = crate::bundle::tests::bytes(
-            &crate::bundle::tests::fixture(),
-        );
+        let bytes = crate::bundle::tests::bytes(&crate::bundle::tests::fixture());
         for entry in [media(), internal(&bytes)] {
             let raw = catalog(entry);
             assert!(parse_catalog(&raw).is_ok());
@@ -358,5 +391,7 @@ mod internal_catalog_tests {
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn fixture_selection(metadata: InternalMetadata) -> ReleaseSelection {
-    ReleaseSelection { release: InternalRelease { metadata } }
+    ReleaseSelection {
+        release: InternalRelease { metadata },
+    }
 }

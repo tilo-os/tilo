@@ -8,8 +8,8 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
-use std::collections::HashMap;
 use crate::clock::SystemTime;
+use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -1354,9 +1354,9 @@ impl Widget for ChannelBrowser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::Duration;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use crate::clock::Duration;
     use winit::event::Modifiers;
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 

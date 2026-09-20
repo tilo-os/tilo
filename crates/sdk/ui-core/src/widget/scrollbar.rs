@@ -503,12 +503,21 @@ mod primary_region_tests {
         let metrics = ScrollMetrics::new(1000.0, 200.0, 96.0);
         assert_eq!(PrimaryScrollAction::Line(1).offset(metrics), Some(144.0));
         assert_eq!(PrimaryScrollAction::Page(-1).offset(metrics), Some(0.0));
-        assert_eq!(PrimaryScrollAction::Absolute(9999.0).offset(metrics), Some(800.0));
+        assert_eq!(
+            PrimaryScrollAction::Absolute(9999.0).offset(metrics),
+            Some(800.0)
+        );
         assert_eq!(PrimaryScrollAction::Start.offset(metrics), Some(0.0));
         assert_eq!(PrimaryScrollAction::End.offset(metrics), Some(800.0));
-        assert_eq!(PrimaryScrollAction::Absolute(f64::NAN).offset(metrics), None);
+        assert_eq!(
+            PrimaryScrollAction::Absolute(f64::NAN).offset(metrics),
+            None
+        );
         assert_eq!(PrimaryScrollAction::Line(0).offset(metrics), None);
-        assert_eq!(PrimaryScrollAction::End.offset(ScrollMetrics::new(f64::INFINITY, 20.0, 0.0)), None);
+        assert_eq!(
+            PrimaryScrollAction::End.offset(ScrollMetrics::new(f64::INFINITY, 20.0, 0.0)),
+            None
+        );
     }
 }
 
@@ -520,10 +529,23 @@ pub struct PrimaryScrollRegion {
     pub metrics: ScrollMetrics,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PrimaryScrollAction { Line(i8), Page(i8), Absolute(f64), Start, End }
+pub enum PrimaryScrollAction {
+    Line(i8),
+    Page(i8),
+    Absolute(f64),
+    Start,
+    End,
+}
 impl PrimaryScrollAction {
     pub fn offset(self, m: ScrollMetrics) -> Option<f64> {
-        if !m.content.is_finite() || !m.viewport.is_finite() || !m.offset.is_finite() || m.content < 0.0 || m.viewport < 0.0 { return None; }
+        if !m.content.is_finite()
+            || !m.viewport.is_finite()
+            || !m.offset.is_finite()
+            || m.content < 0.0
+            || m.viewport < 0.0
+        {
+            return None;
+        }
         let next = match self {
             Self::Line(sign @ (-1 | 1)) => m.offset + f64::from(sign) * 48.0,
             Self::Page(sign @ (-1 | 1)) => m.offset + f64::from(sign) * m.viewport * PAGE_FRACTION,
@@ -536,13 +558,23 @@ impl PrimaryScrollAction {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PrimaryScrollResult { Unsupported, Unchanged(PrimaryScrollRegion), Changed(PrimaryScrollRegion) }
+pub enum PrimaryScrollResult {
+    Unsupported,
+    Unchanged(PrimaryScrollRegion),
+    Changed(PrimaryScrollRegion),
+}
 impl PrimaryScrollResult {
     pub fn stamp(self, generation: uuid::Uuid) -> Self {
         match self {
             Self::Unsupported => self,
-            Self::Unchanged(mut r) => { r.owner_generation = Some(generation); Self::Unchanged(r) },
-            Self::Changed(mut r) => { r.owner_generation = Some(generation); Self::Changed(r) },
+            Self::Unchanged(mut r) => {
+                r.owner_generation = Some(generation);
+                Self::Unchanged(r)
+            }
+            Self::Changed(mut r) => {
+                r.owner_generation = Some(generation);
+                Self::Changed(r)
+            }
         }
     }
 }

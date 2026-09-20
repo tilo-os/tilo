@@ -352,14 +352,7 @@ impl Persistence {
             .clone()
             .try_acquire_many_owned(byte_count)
             .map_err(|_| error("state byte backpressure"))?;
-        let (job, rx) = resumable_job(
-            slot,
-            bytes,
-            byte_count,
-            preparation,
-            operation,
-            completion,
-        );
+        let (job, rx) = resumable_job(slot, bytes, byte_count, preparation, operation, completion);
         self.tx
             .try_send(job)
             .map_err(|_| error("workspace state backpressure"))?;
@@ -394,14 +387,7 @@ impl Persistence {
             .acquire_many_owned(byte_count)
             .await
             .map_err(|_| error("state persistence unavailable"))?;
-        let (job, rx) = resumable_job(
-            slot,
-            bytes,
-            byte_count,
-            preparation,
-            operation,
-            completion,
-        );
+        let (job, rx) = resumable_job(slot, bytes, byte_count, preparation, operation, completion);
         self.tx
             .send(job)
             .await
@@ -458,10 +444,9 @@ where
                                     tracing::info!(
                                         phase = "state_persist",
                                         charged_bytes = byte_count,
-                                        queue_us = u64::try_from(
-                                            start.duration_since(queued).as_micros()
-                                        )
-                                        .unwrap_or(u64::MAX),
+                                        queue_us =
+                                            u64::try_from(start.duration_since(queued).as_micros())
+                                                .unwrap_or(u64::MAX),
                                         persist_us = u64::try_from(start.elapsed().as_micros())
                                             .unwrap_or(u64::MAX)
                                     );

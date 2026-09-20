@@ -6,8 +6,8 @@
 //! briefs for tone, but it is never the source of grouping, attribution, or
 //! counts.
 
-use std::collections::HashSet;
 use crate::clock::SystemTime;
+use std::collections::HashSet;
 
 use crate::history_source::seen::HistorySeenFrontier;
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};

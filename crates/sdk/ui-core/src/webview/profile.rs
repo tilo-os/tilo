@@ -19,10 +19,10 @@
 //! All timing uses `crate::clock::Instant`; the whole module is a no-op
 //! (one relaxed atomic load) when disabled.
 
+use crate::clock::{Duration, Instant};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::clock::{Duration, Instant};
 
 /// Frames between periodic stderr summaries.
 const SUMMARY_EVERY: u64 = 120;
